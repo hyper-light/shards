@@ -1,4 +1,5 @@
-//! Boot-path init: announce arrival to the VMM, report the guest's uptime, power off.
+//! PID 1's start: announce arrival to the VMM, then run a workload in an image (run.rs),
+//! or report the guest's uptime and power off (the boot benchmark).
 
 use std::ffi::CStr;
 use std::io::{self, Write};
@@ -11,6 +12,11 @@ pub fn main() {
     }
     if let Err(e) = mark(marker::INIT_STARTED) {
         let _ = writeln!(io::stderr(), "shards-init: control page: {e}");
+    }
+    // `shards_root=<device>` on the kernel command line: boot into the image on that
+    // device and run the host's workload in it.
+    if let Some(device) = std::env::var_os("shards_root") {
+        crate::run::main(&device.to_string_lossy())
     }
     let mut ts = libc::timespec {
         tv_sec: 0,
@@ -97,7 +103,7 @@ fn mark(value: u32) -> io::Result<()> {
     Ok(())
 }
 
-fn power_off() -> ! {
+pub(crate) fn power_off() -> ! {
     // SAFETY: PID 1 flushing filesystems and asking the kernel to power off (PSCI SYSTEM_OFF).
     unsafe {
         libc::sync();

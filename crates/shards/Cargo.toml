@@ -11,6 +11,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+shards-abi = { path = "../abi" }
 shards-vmm = { path = "../vmm" }
 
 [target.'cfg(unix)'.dependencies]
@@ -21,7 +22,6 @@ windows-sys = { workspace = true }
 
 [dev-dependencies]
 sha2 = "0.10"
-shards-abi = { path = "../abi" }
 shards-image = { path = "../image" }
 shards-testguest = { path = "../testguest" }
 

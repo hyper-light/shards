@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 mod terminal;
 mod vm_run;
+mod workload;
 
 const USAGE: &str = "usage: shards <command> [args...]
 

@@ -166,8 +166,8 @@ SHARDS-TEST PASS
 | Snapshot and restore | Works on macOS; Linux is next |
 | arm64 Linux, Intel Macs, Windows | Builds, but can't run machines yet |
 | Connect host programs to programs in a running machine (vsock) | Works |
-| Run commands in a running machine | Next |
-| Build microVMs like Docker images | Planned; our own kernel with EROFS is building in CI |
+| Run a command in an image, as `docker run` does | Works (`--rootfs`); `shards run IMAGE` comes with pulling images, next |
+| Build microVMs like Docker images | In progress: image layers become bootable images |
 | Run many agents on a microVM's OS, each isolated like a container | Planned |
 | Networks, files, devices and permissions per agent and per microVM | Planned |
 | Docker's commands (`run`, `build`, `ps`, `exec` and the rest) and Compose files | Planned. Today: `shards vm run` and `shards vm restore` |
@@ -193,11 +193,13 @@ Firecracker. The plan and its evidence are in
 | `--cpus N` · `--memory MIB` | Size (default: 1 CPU, 256 MiB) |
 | `--disk FILE[:ro]` | A disk. Repeat for more |
 | `--vsock PATH` | A vsock device. Host programs connect to the Unix socket `PATH` and send `CONNECT <port>`; the guest reaches host port P at `PATH_P`. A restored copy needs its own `PATH` |
+| `--rootfs FILE -- COMMAND [ARG...]` | Boot into the EROFS image `FILE` and run `COMMAND` there, as `docker run` would. Its output and exit status are shards'. `--init` must be shards-init |
+| `-e` · `-w` · `-u` · `--hostname` · `-i` | With `--rootfs`: as for `docker run` |
 | `--snapshot-dir DIR` | Save the machine to `DIR` when it asks, then exit. `--snapshot-then resume` keeps it running. Works with `restore` too |
 | `--no-console` | Hide the console |
 
 Exit codes: 0 for shutdown or snapshot, 1 for an error, 2 for bad usage, 3 when the guest
-reboots. `SHARDS_LOG=debug` shows what shards is doing.
+reboots. With `--rootfs`, the command's own, or 125–127 as for `docker run`. `SHARDS_LOG=debug` shows what shards is doing.
 
 ## Performance
 

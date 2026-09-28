@@ -158,6 +158,70 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
   opaque directory, hard links, a file capability). A guest mounts the image over pmem and
   must find exactly the expected tree.
 
+### Running a workload (D16)
+
+`shards vm run --rootfs IMAGE -- COMMAND` boots into an image and runs a command there as
+`docker run` does. The guest side is `crates/init/src/run.rs`; the host side is
+`crates/shards/src/workload.rs`.
+
+- **Root filesystem.** shards-init mounts the image from `/dev/pmem0` (EROFS,
+  `dax=always`) as the lower layer of an overlay with a tmpfs upper (image-storage R3, R4).
+  - It moves the overlay over the initramfs, which cannot be unmounted
+    (`Documentation/filesystems/ramfs-rootfs-initramfs.rst`).
+  - It then makes Docker's mounts (moby `daemon/pkg/oci/defaults.go`): proc, read-only
+    sysfs, devpts, a 64 MiB `/dev/shm`, and mqueue.
+  - `/dev` is devtmpfs, the VM's own devices.
+  - Unlike Docker, there is no cgroup mount, `/etc/hosts` or `resolv.conf` yet.
+- **Protocol.** Once the image is mounted, the guest dials host port 1024 over vsock, so
+  the host never polls. A restored guest can dial again (D14).
+  - One connection carries everything, in the frames of Docker's attach streams
+    (stdcopy). The host sends the workload and stdin; the guest sends stdout, stderr,
+    errors and the exit status.
+  - The guest waits for the host to close the connection before powering off, so the
+    status is never lost in flight.
+- **Semantics**, each from Docker's own sources:
+  - `-u`: moby/sys/user v0.4.1 `GetExecUser`, held to its own test cases. The primary
+    group comes first (moby `getUser`).
+  - Environment: Docker's `PATH` and `HOSTNAME`, then `-e` (moby
+    `CreateDaemonEnvironment` and `ReplaceOrAppendEnvValues`; docker/cli `ValidateEnv`).
+    Then runc v1.5.2's `prepareEnv`: the last value wins, and `HOME` comes from
+    `/etc/passwd`, else `/`.
+  - The working directory is made 0755 if missing (moby `SetupWorkingDirectory`). The
+    command is found on `PATH` as Go's `exec.LookPath` finds it, as the user.
+  - The exit status is what `docker run` reports (docker/cli `runStartContainerErr`):
+    the command's own; 128 plus a fatal signal; 127 if the command is not found; 126 if
+    it is not executable or is a directory; 125 otherwise.
+  - The run ends with the main process. Everything left is killed, as when a container's
+    PID namespace ends.
+- **Not yet:** TTYs (`-t`), forwarding signals, detached runs.
+- **Tests:** E2E runs a minimal image (no `/proc`, `/sys` or `/dev`). It covers users,
+  groups, the environment, working directories, mounts and every exit status. It also
+  sends 8 MiB through stdin and back, and reads 32 MiB of output.
+
+### Mounts (D17, design)
+
+A mount applies to one workload, a subset of the workloads, or all of them. It is
+attached in one step: the user names it once, with the workloads it is for. shards does
+not mount it into the microVM and again into each workload, which would also show it to
+workloads it is not for. Built with the in-VM runtime (phase 4).
+
+- **One source, one instance.** Each source (a host directory, a volume, a device) gets
+  one transport into the VM and one filesystem instance there, however many workloads
+  use it.
+- **Attached only where it applies.** Linux v6.18 (`fs/namespace.c`) supports this:
+  - init creates the instance as a detached mount (`fsopen`/`fsmount`), which appears in
+    no mount tree;
+  - it clones the mount for each target workload (`open_tree` with `OPEN_TREE_CLONE`;
+    `may_copy_tree` permits clones in the namespace the mount came from);
+  - it attaches each clone inside the target workload's mount namespace (`move_mount`;
+    `do_move_mount` attaches a detached mount wherever the caller is).
+  - The clones share one superblock.
+- **Scopes.** One workload or a subset get clones at attach time. "All workloads" also
+  records the mount, so every workload created later gets a clone when it starts.
+- **Detail:** a thread that shares its filesystem context cannot join a mount namespace
+  (`mntns_install` refuses it). So attaching runs in a dedicated thread that has
+  unshared `CLONE_FS`.
+
 ## 3. Components
 
 ```
@@ -222,7 +286,8 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
    - Scope: `shards-init`; tuned kernel built in a shards builder VM; OCI pull →
      rootfs image; `shards run IMAGE CMD`.
    - Built: our kernel (CI releases); virtio-pmem; the EROFS writer; layers → one EROFS
-     image (D15). Next: registry pull, then boot into an image and run a command.
+     image (D15); booting into an image to run a command (D16). Next: registry pulls, and
+     `shards run IMAGE`.
 4. **In-VM engine.**
    - Scope: Docker Engine API subset → full; the rootless runtime (compatible, not
      containers underneath); networks, volumes, build; compose.

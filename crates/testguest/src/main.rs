@@ -1,13 +1,19 @@
 //! shards-testguest: PID 1 of E2E test VMs. Runs the test named by `shards_test=` on
 //! the kernel command line, prints `SHARDS-TEST PASS` or `SHARDS-TEST FAIL <why>`, and
-//! powers the VM off.
+//! powers the VM off. Run as any other process, it is a workload for images (workload.rs).
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "linux")]
+mod workload;
 
 fn main() {
     #[cfg(target_os = "linux")]
-    linux::main();
+    if std::process::id() == 1 {
+        linux::main();
+    } else {
+        workload::main();
+    }
     #[cfg(not(target_os = "linux"))]
     {
         use std::io::Write;

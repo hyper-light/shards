@@ -3,6 +3,10 @@
 
 #![no_std]
 
+extern crate alloc;
+
+pub mod run;
+
 /// Guest-physical address of the control page. Guests share the host's architecture,
 /// so the VMM and the guest build of this crate always agree.
 #[cfg(target_arch = "aarch64")]
