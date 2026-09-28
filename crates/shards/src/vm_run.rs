@@ -1,5 +1,8 @@
 //! `shards vm run` boots a kernel directly in a microVM; `shards vm restore` resumes one
-//! from a snapshot.
+//! from a snapshot. Either can run a command in an image as `docker run` does
+//! (workload.rs): `vm run --rootfs IMAGE -- COMMAND` boots into the image for it, and
+//! `vm run --rootfs IMAGE --snapshot-dir DIR` saves a template, booted and mounted, that
+//! `vm restore DIR -- COMMAND` resumes for each command.
 
 use std::ffi::OsString;
 use std::fmt::Display;
@@ -12,22 +15,31 @@ use shards_vmm::vm::{
 };
 
 use crate::terminal::RawTerminal;
+use crate::workload::Options;
 
 const RUN_USAGE: &str = "usage: shards vm run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
-       shards vm run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [-e NAME[=VALUE]]... [-w DIR] [-u USER[:GROUP]] [--hostname NAME] [-i] [OPTIONS] -- COMMAND [ARG...]
+       shards vm run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
+       shards vm run --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
-  --rootfs: boot into the EROFS image IMAGE and run COMMAND in it as `docker run` would:
-            its output is shards' output, and its exit status shards' exit status.
-  -e, -w, -u, --hostname, -i: as for `docker run`.
+  --rootfs: boot into the EROFS image IMAGE. With a COMMAND, run it there as `docker run`
+            would: its output is shards' output, and its exit status shards' exit status.
+            With --snapshot-dir instead, save the VM to DIR once the image is mounted: a
+            template for `shards vm restore DIR -- COMMAND`.
+  Workload options, as for `docker run`: -e NAME[=VALUE], -w DIR, -u USER[:GROUP],
+  --hostname NAME, -i.
   --vsock: a vsock device. Host programs connect to the Unix socket PATH and send
            `CONNECT <port>`; the guest's connections to host port P reach PATH_P.
   --snapshot-dir: where to write a snapshot when the guest asks for one (then stop, by default)
   Console escape: Ctrl-A x stops the VM.";
 
-const RESTORE_USAGE: &str =
-    "usage: shards vm restore DIR [--hold] [--vsock PATH] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
-  Resumes the VM in snapshot directory DIR.
-  --vsock: this VM's vsock socket, required when the snapshot has a vsock device.
+const RESTORE_USAGE: &str = "usage: shards vm restore DIR [--hold] [--vsock PATH] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+       shards vm restore DIR [--hold] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
+  Resumes the VM in snapshot directory DIR. With a COMMAND, DIR is a template saved by
+  `shards vm run --rootfs`, and the command runs there as `docker run` would.
+  Workload options, as for `docker run`: -e NAME[=VALUE], -w DIR, -u USER[:GROUP],
+  --hostname NAME, -i.
+  --vsock: this VM's vsock socket; without a COMMAND, required when the snapshot has a
+           vsock device.
   --hold: prepare the VM, print `shards-ready` on stderr, and start it when a line arrives
           on stdin: a warm VM whose start costs only the release.
   Console escape: Ctrl-A x stops the VM.";
@@ -46,6 +58,9 @@ struct Common {
     snapshot_dir: Option<PathBuf>,
     then: AfterSnapshot,
     vsock: Option<PathBuf>,
+    workload: Options,
+    /// Whether a workload option was given.
+    workload_options: bool,
 }
 
 impl Common {
@@ -55,6 +70,8 @@ impl Common {
             snapshot_dir: None,
             then: AfterSnapshot::Stop,
             vsock: None,
+            workload: Options::default(),
+            workload_options: false,
         }
     }
 
@@ -64,6 +81,7 @@ impl Common {
         arg: &str,
         value: &mut dyn FnMut(&str) -> Result<String, String>,
     ) -> Result<bool, String> {
+        let w = &mut self.workload;
         match arg {
             "--no-console" => self.console = Console::Discard,
             "--snapshot-dir" => self.snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
@@ -75,8 +93,17 @@ impl Common {
                 }
             }
             "--vsock" => self.vsock = Some(PathBuf::from(value("--vsock")?)),
+            "-e" | "--env" => w.env.push(value("--env")?),
+            "-w" | "--workdir" => w.workdir = value("--workdir")?,
+            "-u" | "--user" => w.user = value("--user")?,
+            "--hostname" => w.hostname = Some(value("--hostname")?),
+            "-i" | "--interactive" => w.interactive = true,
             _ => return Ok(false),
         }
+        self.workload_options |= matches!(
+            arg,
+            "-e" | "--env" | "-w" | "--workdir" | "-u" | "--user" | "--hostname" | "-i" | "--interactive"
+        );
         Ok(true)
     }
 
@@ -84,17 +111,35 @@ impl Common {
         let then = self.then;
         self.snapshot_dir.take().map(|dir| SnapshotPolicy { dir, then })
     }
+
+    /// Checks that workload options come with a command.
+    fn check_workload(&self) -> Result<(), String> {
+        if self.workload_options && self.workload.argv.is_empty() {
+            return Err("-e, -w, -u, --hostname and -i need a command after --".into());
+        }
+        Ok(())
+    }
 }
 
-/// `vm run`'s options: the VM, and a workload to run in an image (`--rootfs`, `--`).
+/// What `vm run` boots.
+enum Mode {
+    /// The kernel and init as given.
+    Plain,
+    /// Into an image, for a command.
+    Workload(PathBuf),
+    /// Into an image, to save it as a template.
+    Template(PathBuf),
+}
+
 struct Run {
     cfg: Config,
-    workload: Option<(PathBuf, crate::workload::Options)>,
+    mode: Mode,
+    workload: Options,
 }
 
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut args = utf8(args);
-    let (mut rootfs, mut options, mut workload_flags) = (None, crate::workload::Options::default(), false);
+    let mut rootfs = None;
     let mut cfg = Config {
         kernel: PathBuf::new(),
         initrd: None,
@@ -137,49 +182,40 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             }
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
-            "-e" | "--env" => {
-                options.env.push(value("--env")?);
-                workload_flags = true;
-            }
-            "-w" | "--workdir" => {
-                options.workdir = value("--workdir")?;
-                workload_flags = true;
-            }
-            "-u" | "--user" => {
-                options.user = value("--user")?;
-                workload_flags = true;
-            }
-            "--hostname" => {
-                options.hostname = Some(value("--hostname")?);
-                workload_flags = true;
-            }
-            "-i" | "--interactive" => {
-                options.interactive = true;
-                workload_flags = true;
-            }
             "--" => {
-                options.argv = args.by_ref().collect::<Result<_, _>>()?;
+                common.workload.argv = args.by_ref().collect::<Result<_, _>>()?;
                 break;
             }
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
+    common.check_workload()?;
     cfg.kernel = kernel.ok_or("--kernel is required")?;
     cfg.snapshot = common.policy();
     cfg.console = common.console;
     cfg.vsock = common.vsock;
-    let workload = match (rootfs, options.argv.is_empty()) {
-        (Some(rootfs), false) => Some((rootfs, options)),
-        (Some(_), true) => return Err("--rootfs needs a command after --".into()),
-        (None, false) => return Err("a command needs --rootfs".into()),
-        (None, true) if workload_flags => return Err("-e, -w, -u, --hostname and -i need a command".into()),
-        (None, true) => None,
+    let command = !common.workload.argv.is_empty();
+    let mode = match rootfs {
+        Some(rootfs) if command => Mode::Workload(rootfs),
+        Some(rootfs) if cfg.snapshot.is_some() => Mode::Template(rootfs),
+        Some(_) => return Err("--rootfs needs a command after --, or --snapshot-dir for a template".into()),
+        None if command => return Err("a command needs --rootfs".into()),
+        None => Mode::Plain,
     };
-    Ok(Run { cfg, workload })
+    Ok(Run {
+        cfg,
+        mode,
+        workload: common.workload,
+    })
 }
 
-fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<RestoreConfig, String> {
+struct Restore {
+    cfg: RestoreConfig,
+    workload: Options,
+}
+
+fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String> {
     let mut args = utf8(args);
     let (mut dir, mut common, mut hold) = (None, Common::new(), false);
     while let Some(arg) = args.next() {
@@ -191,17 +227,26 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<RestoreConfig, 
         match arg.as_str() {
             "-h" | "--help" => return Err(String::new()),
             "--hold" => hold = true,
+            "--" => {
+                common.workload.argv = args.by_ref().collect::<Result<_, _>>()?;
+                break;
+            }
             flag if flag.starts_with('-') => return Err(format!("unknown argument {flag:?}")),
             _ if dir.is_some() => return Err(format!("unexpected argument {arg:?}")),
             _ => dir = Some(PathBuf::from(arg)),
         }
     }
-    Ok(RestoreConfig {
+    common.check_workload()?;
+    let cfg = RestoreConfig {
         dir: dir.ok_or("the snapshot directory is required")?,
         console: common.console,
         snapshot: common.policy(),
         hold,
         vsock: common.vsock,
+    };
+    Ok(Restore {
+        cfg,
+        workload: common.workload,
     })
 }
 
@@ -254,20 +299,107 @@ fn parsed<T>(parse: Result<T, String>, usage: &str) -> Result<T, ExitCode> {
     }
 }
 
-pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
-    match parsed(parse_run(args), RUN_USAGE) {
-        Ok(Run {
-            cfg,
-            workload: Some((rootfs, options)),
-        }) => run_workload(cfg, rootfs, &options),
-        Ok(Run { cfg, workload: None }) => supervise(vm::start(&cfg), cfg.console),
-        Err(code) => code,
+/// Boots into the image `rootfs`: /dev/pmem0, which shards-init mounts as the root.
+fn boot_into(cfg: &mut Config, rootfs: PathBuf, template: bool) {
+    cfg.pmem.insert(0, rootfs);
+    // A workload's output is shards' output, so the kernel need not print to the console.
+    cfg.cmdline.push_str(" quiet shards_root=/dev/pmem0");
+    if template {
+        cfg.cmdline.push_str(" shards_template=1");
     }
 }
 
-/// Boots into `rootfs` and runs the workload there; exits as it does.
+pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
+    let Run {
+        mut cfg,
+        mode,
+        workload,
+    } = match parsed(parse_run(args), RUN_USAGE) {
+        Ok(run) => run,
+        Err(code) => return code,
+    };
+    match mode {
+        Mode::Plain => supervise(vm::start(&cfg), cfg.console, false),
+        Mode::Template(rootfs) => {
+            boot_into(&mut cfg, rootfs, true);
+            with_vsock(cfg.vsock.clone(), |vsock| {
+                // Restored copies dial the host through this device.
+                cfg.vsock = Some(vsock);
+                supervise(vm::start(&cfg), cfg.console, true)
+            })
+        }
+        Mode::Workload(rootfs) => {
+            boot_into(&mut cfg, rootfs, false);
+            cfg.console = Console::Discard;
+            serve_workload(cfg.vsock.clone(), &workload, false, move |vsock| {
+                cfg.vsock = Some(vsock);
+                vm::start(&cfg)
+            })
+        }
+    }
+}
+
+pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
+    let Restore { mut cfg, workload } = match parsed(parse_restore(args), RESTORE_USAGE) {
+        Ok(restore) => restore,
+        Err(code) => return code,
+    };
+    if !workload.argv.is_empty() {
+        cfg.console = Console::Discard;
+        let hold = cfg.hold;
+        return serve_workload(cfg.vsock.clone(), &workload, hold, move |vsock| {
+            cfg.vsock = Some(vsock);
+            vm::restore(&cfg)
+        });
+    }
+    let started = vm::restore(&cfg);
+    if cfg.hold
+        && let Ok((handle, _)) = &started
+    {
+        wait_for_release(handle);
+    }
+    supervise(started, cfg.console, false)
+}
+
+/// `--hold`: announces the prepared VM and releases it when a line (or end of input)
+/// arrives on stdin.
+fn wait_for_release(handle: &Handle) {
+    let _ = writeln!(std::io::stderr(), "shards-ready");
+    let _ = std::io::stdin().read_line(&mut String::new());
+    handle.release();
+}
+
+/// Calls `f` with a vsock socket path: `given`, or one in a private directory that lives
+/// as long as the call.
 #[cfg(unix)]
-fn run_workload(mut cfg: Config, rootfs: PathBuf, options: &crate::workload::Options) -> ExitCode {
+fn with_vsock(given: Option<PathBuf>, f: impl FnOnce(PathBuf) -> ExitCode) -> ExitCode {
+    if let Some(path) = given {
+        return f(path);
+    }
+    match crate::workload::SocketDir::new() {
+        Ok(dir) => f(dir.path().join("vsock")),
+        Err(e) => {
+            report(format!("socket directory: {e}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn with_vsock(_: Option<PathBuf>, _: impl FnOnce(PathBuf) -> ExitCode) -> ExitCode {
+    report("images need vsock, which shards does not support on this platform yet");
+    ExitCode::from(125)
+}
+
+/// Runs a workload in the VM `start` starts, whose vsock device it gives the socket path
+/// for. Exits as the workload does.
+#[cfg(unix)]
+fn serve_workload(
+    vsock: Option<PathBuf>,
+    options: &Options,
+    hold: bool,
+    start: impl FnOnce(PathBuf) -> Result<(Handle, Running), String>,
+) -> ExitCode {
     use crate::workload::{self, NOT_RUN};
     let failed = |e: String| {
         report(e);
@@ -277,80 +409,78 @@ fn run_workload(mut cfg: Config, rootfs: PathBuf, options: &crate::workload::Opt
         Ok(spec) => spec,
         Err(e) => return failed(e),
     };
-    // Without --vsock, the device's sockets go in a private directory.
-    let mut sockets = None;
-    let vsock = match &cfg.vsock {
-        Some(path) => path.clone(),
-        None => match workload::SocketDir::new() {
-            Ok(dir) => sockets.insert(dir).path().join("vsock"),
-            Err(e) => return failed(format!("socket directory: {e}")),
-        },
-    };
-    cfg.vsock = Some(vsock.clone());
-    let listener = match workload::listen(&vsock) {
-        Ok(l) => l,
-        Err(e) => return failed(format!("listening for the guest: {e}")),
-    };
-    cfg.pmem.insert(0, rootfs);
-    // The workload's output is shards' output, so the console goes nowhere, and the
-    // kernel need not print to it.
-    cfg.cmdline.push_str(" quiet shards_root=/dev/pmem0");
-    cfg.console = Console::Discard;
-    let (handle, running) = match vm::start(&cfg) {
-        Ok(started) => started,
-        Err(e) => return failed(e),
-    };
-    let (tx, rx) = std::sync::mpsc::channel();
-    let interactive = options.interactive;
-    let served = std::thread::Builder::new()
-        .name("workload".into())
-        .spawn(move || {
-            let _ = tx.send(workload::serve(&listener, &spec, interactive));
-        });
-    if let Err(e) = served {
-        handle.stop();
-        return failed(format!("workload thread: {e}"));
-    }
-    let reason = running.wait(handle);
-    if let ExitReason::Error(e) = &reason {
-        report(e);
-    }
-    // The guest waits for its status to be read before it powers off, so the relay has
-    // finished unless the guest never ran the command.
-    let status = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(Ok(status)) => ExitCode::from(status),
-        Ok(Err(e)) => failed(e),
-        Err(_) => failed("the guest stopped without running the command".into()),
-    };
-    drop(sockets);
-    status
+    with_vsock(vsock, |vsock| {
+        let listener = match workload::listen(&vsock) {
+            Ok(l) => l,
+            Err(e) => return failed(format!("listening for the guest: {e}")),
+        };
+        let (handle, running) = match start(vsock) {
+            Ok(started) => started,
+            Err(e) => return failed(e),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let interactive = options.interactive;
+        let served = std::thread::Builder::new()
+            .name("workload".into())
+            .spawn(move || {
+                let _ = tx.send(workload::serve(&listener, &spec, interactive));
+            });
+        if let Err(e) = served {
+            handle.stop();
+            return failed(format!("workload thread: {e}"));
+        }
+        if hold {
+            wait_for_release(&handle);
+        }
+        let reason = running.wait(handle.clone());
+        report_timing(&handle);
+        if let ExitReason::Error(e) = &reason {
+            report(e);
+        }
+        // The guest waits for its status to be read before it powers off, so the relay
+        // has finished unless the guest never ran the command.
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(status)) => ExitCode::from(status),
+            Ok(Err(e)) => failed(e),
+            Err(_) => failed("the guest stopped without running the command".into()),
+        }
+    })
 }
 
 #[cfg(not(unix))]
-fn run_workload(_: Config, _: PathBuf, _: &crate::workload::Options) -> ExitCode {
+fn serve_workload(
+    _: Option<PathBuf>,
+    _: &Options,
+    _: bool,
+    _: impl FnOnce(PathBuf) -> Result<(Handle, Running), String>,
+) -> ExitCode {
     report("running a command in a microVM needs vsock, which shards does not support on this platform yet");
     ExitCode::from(125)
 }
 
-pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
-    let cfg = match parsed(parse_restore(args), RESTORE_USAGE) {
-        Ok(cfg) => cfg,
-        Err(code) => return code,
-    };
-    let started = vm::restore(&cfg);
-    if cfg.hold
-        && let Ok((handle, _)) = &started
-    {
-        let _ = writeln!(std::io::stderr(), "shards-ready");
-        // Any line (or end of input) is the start request.
-        let _ = std::io::stdin().read_line(&mut String::new());
-        handle.release();
+/// With `SHARDS_TIMING` set: one machine-readable line on stderr, for benchmark harnesses.
+fn report_timing(handle: &Handle) {
+    if std::env::var_os("SHARDS_TIMING").is_none() {
+        return;
     }
-    supervise(started, cfg.console)
+    let markers: Vec<String> = handle
+        .markers()
+        .iter()
+        .map(|(m, t)| format!("[{m},{t}]"))
+        .collect();
+    let _ = writeln!(
+        std::io::stderr(),
+        "shards-timing {{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"markers\":[{}]}}",
+        handle.released_at_us().unwrap_or(0),
+        handle.entered_at_us().unwrap_or(0),
+        handle.exited_at_us().unwrap_or(0),
+        markers.join(",")
+    );
 }
 
-/// Runs a started VM to its end: console, timing report, exit code.
-fn supervise(started: Result<(Handle, Running), String>, console: Console) -> ExitCode {
+/// Runs a started VM to its end: console, timing report, exit code. A template must end
+/// in its snapshot.
+fn supervise(started: Result<(Handle, Running), String>, console: Console, template: bool) -> ExitCode {
     let (handle, running) = match started {
         Ok(v) => v,
         Err(e) => {
@@ -362,24 +492,14 @@ fn supervise(started: Result<(Handle, Running), String>, console: Console) -> Ex
     forward_stdin(handle.clone());
     let reason = running.wait(handle.clone());
     drop(terminal);
-    if std::env::var_os("SHARDS_TIMING").is_some() {
-        // One machine-readable line for benchmark harnesses.
-        let markers: Vec<String> = handle
-            .markers()
-            .iter()
-            .map(|(m, t)| format!("[{m},{t}]"))
-            .collect();
-        let _ = writeln!(
-            std::io::stderr(),
-            "shards-timing {{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"markers\":[{}]}}",
-            handle.released_at_us().unwrap_or(0),
-            handle.entered_at_us().unwrap_or(0),
-            handle.exited_at_us().unwrap_or(0),
-            markers.join(",")
-        );
-    }
+    report_timing(&handle);
     match reason {
-        ExitReason::PowerOff | ExitReason::Stopped | ExitReason::Snapshotted => ExitCode::SUCCESS,
+        ExitReason::Snapshotted => ExitCode::SUCCESS,
+        ExitReason::PowerOff | ExitReason::Stopped if template => {
+            report("the guest stopped before its template was saved");
+            ExitCode::FAILURE
+        }
+        ExitReason::PowerOff | ExitReason::Stopped => ExitCode::SUCCESS,
         ExitReason::Reset => {
             report("guest requested a reset");
             ExitCode::from(3)

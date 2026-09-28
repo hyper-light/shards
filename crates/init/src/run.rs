@@ -10,6 +10,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 
 use shards_abi::run::{self, Spec, kind};
+use shards_abi::{control, marker};
 
 use crate::linux::power_off;
 use crate::user::{self, ExecUser};
@@ -38,9 +39,19 @@ fn setup_failed(message: impl Into<String>) -> Failure {
     }
 }
 
-/// Boots into the image on `device`, runs the host's workload, and powers off.
-pub fn main(device: &str) -> ! {
+/// Boots into the image on `device`, runs the host's workload, and powers off. As a
+/// template (`template`), it asks for a snapshot once the image is mounted: every VM
+/// restored from it continues from there, and dials the host for its own workload.
+pub fn main(device: &str, template: bool) -> ! {
     let mounted = mount_root(device);
+    if template && mounted.is_ok() {
+        if let Err(e) = crate::linux::control_write(control::SNAPSHOT, control::SNAPSHOT_NOW) {
+            let _ = writeln!(io::stderr(), "shards-init: requesting a snapshot: {e}");
+            power_off()
+        }
+        // A restored VM continues here.
+        let _ = crate::linux::control_write(control::MARKER, marker::RESUMED);
+    }
     let conn = match dial() {
         Ok(conn) => conn,
         Err(e) => {
@@ -48,11 +59,15 @@ pub fn main(device: &str) -> ! {
             power_off()
         }
     };
+    let _ = crate::linux::control_write(control::MARKER, marker::CONNECTED);
     let started = mounted
         .and_then(|()| receive(&conn))
         .and_then(|spec| Workload::start(&spec));
     let status = match started {
-        Ok(workload) => workload.relay(&conn),
+        Ok(workload) => {
+            let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_STARTED);
+            workload.relay(&conn)
+        }
         Err(f) => {
             let _ = send(&conn, kind::SYSTEM_ERR, f.message.as_bytes());
             f.status
@@ -62,6 +77,7 @@ pub fn main(device: &str) -> ! {
     // The host closes the connection once it has the status. Powering off before then
     // could lose the frame on its way out.
     let _ = shutdown_and_wait(&conn);
+    let _ = crate::linux::control_write(control::MARKER, marker::POWERING_OFF);
     power_off()
 }
 
@@ -528,6 +544,7 @@ impl Workload {
                 return;
             }
             if pid == self.pid {
+                let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_EXITED);
                 *status = Some(if libc::WIFSIGNALED(st) {
                     128 + libc::WTERMSIG(st) as u32
                 } else {

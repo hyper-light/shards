@@ -96,6 +96,8 @@ fn report() -> i32 {
         .find_map(|l| l.strip_prefix("SigBlk:"))
         .unwrap_or_default();
     out.push_str(&format!("sigblk {}\n", blocked.trim()));
+    let existed = std::path::Path::new("/written").exists();
+    out.push_str(&format!("existed {existed}\n"));
     let written =
         std::fs::write("/written", b"x").is_ok() && std::fs::read("/written").is_ok_and(|d| d == b"x");
     out.push_str(&format!("writable {written}\n"));

@@ -8,92 +8,15 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::io::{Read, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{TempDir, cannot_run_vms, guest_init, kernel, shards, test_guest};
-use shards_image::erofs::{self, DataRef, Kind, Meta, Node, NodeId, Source, Tree};
+use common::{TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, shards, workload_image};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
-const PASSWD: &str = "root:x:0:0:root:/root:/bin/sh\napp:x:1000:1000:app:/home/app:/bin/sh\n";
-const GROUP: &str = "root:x:0:\napp:x:1000:\nstaff:x:50:app\n";
-
-struct Files(Vec<Vec<u8>>);
-
-impl Source for Files {
-    fn read_at(&mut self, data: DataRef, at: u64, buf: &mut [u8]) -> io::Result<()> {
-        let bytes = &self.0[data.source as usize];
-        let start = (data.offset + at) as usize;
-        buf.copy_from_slice(&bytes[start..start + buf.len()]);
-        Ok(())
-    }
-}
-
-/// A minimal image: the test guest as /bin/testguest, users, and nothing else. There is
-/// no /proc, /sys or /dev: init must make them.
-fn image(dir: &Path) -> PathBuf {
-    let meta = |mode: u16, owner: u32| Meta {
-        mode,
-        uid: owner,
-        gid: owner,
-        mtime: 1_700_000_000,
-        ..Meta::default()
-    };
-    let mut tree = Tree::new(meta(0o755, 0));
-    let mut files = Files(Vec::new());
-    let mut file = |tree: &mut Tree, at: NodeId, name: &str, mode: u16, bytes: Vec<u8>| {
-        let data = DataRef {
-            source: files.0.len() as u32,
-            offset: 0,
-        };
-        let size = bytes.len() as u64;
-        files.0.push(bytes);
-        let kind = Kind::File { size, data };
-        tree.insert(
-            at,
-            name.as_bytes(),
-            Node {
-                kind,
-                meta: meta(mode, 0),
-            },
-        )
-        .unwrap();
-    };
-    let dir_node = |tree: &mut Tree, at: NodeId, name: &str, mode: u16, owner: u32| {
-        let kind = Kind::Dir(BTreeMap::new());
-        tree.insert(
-            at,
-            name.as_bytes(),
-            Node {
-                kind,
-                meta: meta(mode, owner),
-            },
-        )
-        .unwrap()
-    };
-    let bin = dir_node(&mut tree, Tree::ROOT, "bin", 0o755, 0);
-    file(
-        &mut tree,
-        bin,
-        "testguest",
-        0o755,
-        std::fs::read(test_guest()).unwrap(),
-    );
-    let etc = dir_node(&mut tree, Tree::ROOT, "etc", 0o755, 0);
-    file(&mut tree, etc, "passwd", 0o644, PASSWD.into());
-    file(&mut tree, etc, "group", 0o644, GROUP.into());
-    let home = dir_node(&mut tree, Tree::ROOT, "home", 0o755, 0);
-    dir_node(&mut tree, home, "app", 0o755, 1000);
-    dir_node(&mut tree, Tree::ROOT, "tmp", 0o1777, 0);
-    let path = dir.join("image.erofs");
-    let mut out = io::BufWriter::new(std::fs::File::create(&path).unwrap());
-    erofs::write(&tree, &mut files, &mut out).unwrap();
-    out.flush().unwrap();
-    path
-}
-
 struct Output {
     status: Option<i32>,
     stdout: Vec<u8>,
@@ -115,16 +38,37 @@ impl std::fmt::Display for Output {
 /// Runs `shards vm run ... --rootfs IMAGE <options> -- <command>`, with `stdin` as its
 /// input.
 fn run(image: &Path, options: &[&str], command: &[&str], stdin: &[u8]) -> Output {
+    let mut args: Vec<&OsStr> = vec![
+        "vm".as_ref(),
+        "run".as_ref(),
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+    ];
+    args.extend([
+        "--init".as_ref(),
+        guest_init().as_os_str(),
+        "--rootfs".as_ref(),
+        image.as_os_str(),
+    ]);
+    args.extend(options.iter().map(OsStr::new));
+    args.push("--".as_ref());
+    args.extend(command.iter().map(OsStr::new));
+    shards_with(&args, stdin)
+}
+
+/// Runs `shards vm restore TEMPLATE <options> -- <command>`.
+fn restore(template: &Path, options: &[&str], command: &[&str]) -> Output {
+    let mut args: Vec<&OsStr> = vec!["vm".as_ref(), "restore".as_ref(), template.as_os_str()];
+    args.extend(options.iter().map(OsStr::new));
+    args.push("--".as_ref());
+    args.extend(command.iter().map(OsStr::new));
+    shards_with(&args, b"")
+}
+
+/// Runs shards with `args`, `stdin` as its input, and a timeout.
+fn shards_with(args: &[&OsStr], stdin: &[u8]) -> Output {
     let mut child = Command::new(shards())
-        .args(["vm", "run", "--kernel"])
-        .arg(kernel())
-        .arg("--init")
-        .arg(guest_init())
-        .arg("--rootfs")
-        .arg(image)
-        .args(options)
-        .arg("--")
-        .args(command)
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -190,7 +134,7 @@ fn commands_run_in_the_image_as_docker_runs_them() {
         return;
     }
     let dir = TempDir::new("run");
-    let image = image(&dir);
+    let image = workload_image(&dir);
 
     let out = run(
         &image,
@@ -265,7 +209,7 @@ fn exit_statuses_are_the_ones_docker_run_gives() {
         return;
     }
     let dir = TempDir::new("run-status");
-    let image = image(&dir);
+    let image = workload_image(&dir);
     for (options, command, status, stderr) in [
         (&[][..], &["/bin/testguest", "exit", "3"][..], 3, ""),
         (&[], &["/bin/testguest", "kill"], 128 + 9, ""),
@@ -308,7 +252,7 @@ fn stdio_carries_bulk_data_both_ways() {
         return;
     }
     let dir = TempDir::new("run-stdio");
-    let image = image(&dir);
+    let image = workload_image(&dir);
     let mut input = vec![0u8; 8 << 20];
     shards_testguest::fill(7, 0, &mut input);
     let out = run(&image, &["-i"], &["/bin/testguest", "cat"], &input);
@@ -333,4 +277,64 @@ fn stdio_carries_bulk_data_both_ways() {
     assert_eq!(out.status, Some(0), "{}", out.stderr);
     assert_eq!(out.stdout.len(), len);
     assert_eq!(shards_testguest::first_mismatch(9, 0, &out.stdout), None);
+}
+
+#[test]
+fn templates_restore_into_runs_of_their_own() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let dir = TempDir::new("run-template");
+    let image = workload_image(&dir);
+    let template = dir.join("template");
+    let saved = Command::new(shards())
+        .args(["vm", "run", "--kernel"])
+        .arg(kernel())
+        .args([
+            "--init".as_ref(),
+            guest_init().as_os_str(),
+            "--rootfs".as_ref(),
+            image.as_os_str(),
+        ])
+        .args([
+            "--snapshot-dir".as_ref(),
+            template.as_os_str(),
+            "--no-console".as_ref(),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        saved.status.success(),
+        "{}",
+        String::from_utf8_lossy(&saved.stderr)
+    );
+
+    // Each run resumes the mounted image and writes to its own copy of it.
+    let first = restore(&template, &[], &["/bin/testguest", "report"]);
+    assert_eq!(first.status, Some(0), "{first}");
+    let first = report(&first);
+    let second = restore(&template, &["-u", "app", "-e", "X=1"], &["testguest", "report"]);
+    assert_eq!(second.status, Some(0), "{second}");
+    let second = report(&second);
+    let get = |r: &BTreeMap<String, String>, k: &str| r.get(k).cloned().unwrap_or_default();
+    assert_eq!(
+        (get(&first, "uid"), get(&first, "writable")),
+        ("0".into(), "true".into())
+    );
+    assert_eq!(
+        (get(&second, "uid"), get(&second, "env X")),
+        ("1000".into(), "1".into())
+    );
+    assert_eq!(
+        get(&second, "existed"),
+        "false",
+        "the first run's file is not the second's"
+    );
+    assert_ne!(
+        get(&first, "hostname"),
+        get(&second, "hostname"),
+        "each run has its own name"
+    );
+    assert_eq!(get(&second, "mount /"), "overlay");
 }

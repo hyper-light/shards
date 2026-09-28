@@ -37,4 +37,12 @@ pub mod marker {
     pub const INIT_STARTED: u32 = 1;
     /// The guest resumed from a snapshot.
     pub const RESUMED: u32 = 2;
+    /// shards-init connected to the host for its workload.
+    pub const CONNECTED: u32 = 3;
+    /// The workload's command is executing.
+    pub const WORKLOAD_STARTED: u32 = 4;
+    /// The workload's main process exited.
+    pub const WORKLOAD_EXITED: u32 = 5;
+    /// shards-init is powering the VM off.
+    pub const POWERING_OFF: u32 = 6;
 }

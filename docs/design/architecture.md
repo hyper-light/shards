@@ -193,6 +193,11 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     it is not executable or is a directory; 125 otherwise.
   - The run ends with the main process. Everything left is killed, as when a container's
     PID namespace ends.
+- **Warm runs.** `vm run --rootfs IMAGE --snapshot-dir DIR` saves a template: shards-init
+  asks for the snapshot once the image is mounted, before it dials the host. Each
+  `vm restore DIR -- COMMAND` resumes a copy that dials in for its own command (D2, D14).
+  Copies share the image and nothing they write. A command in a warm VM is answered in
+  2 ms (p50, n=30, benchmarks.md "Run").
 - **Not yet:** TTYs (`-t`), forwarding signals, detached runs.
 - **Tests:** E2E runs a minimal image (no `/proc`, `/sys` or `/dev`). It covers users,
   groups, the environment, working directories, mounts and every exit status. It also

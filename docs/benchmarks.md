@@ -137,6 +137,76 @@ background load as the boot run above
 | **warm_request** | **149 µs** | **169 µs** | **197 µs** | **201 µs** |
 | warm_peak_rss | 12.5 MiB | 12.5 MiB | 12.5 MiB | 12.5 MiB |
 
+## Run (`crates/shards/benches/run.rs`)
+
+`cargo bench -p shards --bench run [-- --runs N]`
+
+Method:
+- The command is `/bin/testguest exit 0`, in the minimal image the E2E tests use
+  (`workload_image` in tests/common).
+- **cold**: `shards vm run --rootfs IMAGE -- COMMAND` boots the kernel into the image for
+  every command.
+- **warm**: a template is saved once, booted and with its image mounted (`vm run --rootfs
+  --snapshot-dir`, D16). Each sample restores it with `--hold` and then sends the start
+  request.
+- Cold and warm samples alternate, after three warm-up pairs.
+
+| Phase | Measured from | Measured to |
+|---|---|---|
+| `cold_spawn_exit`, `warm_spawn_exit` | spawn | reap (host wall clock around the whole process) |
+| **`warm_request`** | the release (the start request) | the VM stops, which it does once shards has read the command's exit status |
+| `cold_boot` | first guest entry | shards-init running |
+| `warm_resume` | the release | the guest running again |
+| `*_connect` | init running | connected to the host (cold: the image mounted first) |
+| `*_spawn` | connected | the command executing: workload received, user resolved, fork, exec |
+| `*_command` | the command executing | its exit |
+| `*_report` | its exit | init powering off: output drained, status sent and read |
+| `*_power_off` | init powering off | the VM stopped |
+
+Phases come from markers shards-init writes to the control page (the VMM's clock).
+
+### Runs
+
+**2026-09-28** · 97d8b7e plus templates and this harness (uncommitted) · Apple M5 Max
+(Mac17,6) · macOS 26.4.1 (25E253) · kernel Image-6.18.48-aarch64-1bff175d35cb · n=30,
+1 vCPU, 256 MiB
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| **warm_request** | **1988 µs** | **2162 µs** | **2233 µs** | **2233 µs** |
+| warm_resume | 271 µs | 290 µs | 325 µs | 325 µs |
+| warm_connect | 513 µs | 565 µs | 579 µs | 579 µs |
+| warm_spawn | 803 µs | 878 µs | 893 µs | 893 µs |
+| warm_command | 11 µs | 12 µs | 14 µs | 14 µs |
+| warm_report | 103 µs | 116 µs | 139 µs | 139 µs |
+| warm_power_off | 290 µs | 319 µs | 341 µs | 341 µs |
+| warm_spawn_exit | 7076 µs | 7799 µs | 13497 µs | 13497 µs |
+| warm_peak_rss | 17.2 MiB | 17.3 MiB | 17.3 MiB | 17.3 MiB |
+| cold_spawn_exit | 34825 µs | 43064 µs | 46106 µs | 46106 µs |
+| cold_boot | 15712 µs | 25487 µs | 26328 µs | 26328 µs |
+| cold_connect | 9780 µs | 9822 µs | 9830 µs | 9830 µs |
+| cold_spawn | 187 µs | 9900 µs | 9998 µs | 9998 µs |
+| cold_command | 137 µs | 172 µs | 201 µs | 201 µs |
+| cold_report | 71 µs | 101 µs | 163 µs | 163 µs |
+| cold_power_off | 137 µs | 152 µs | 173 µs | 173 µs |
+
+A command in a warm VM is answered in 2 ms, including its restore, a vsock connection, a
+fork and exec, and the power-off. Preparing the warm VM (`warm_spawn_exit` minus the
+request) happens before the request, in the warm pool.
+
+**Stalls of one guest tick.** The guest kernel runs at `CONFIG_HZ=100`, and several
+phases stall for about 10 ms, ending at a tick:
+- Warm, fixed. In the first version, shards-init opened, mapped and unmapped `/dev/mem`
+  for every marker. A restored guest then stalled twice per run, for 9.85 ms after the
+  release and 9.15 ms between fork and exec (two traced runs), so `warm_request` was
+  20.4 ms (p50, n=30). Mapping the control page once removed both stalls. The kernel
+  path that waited is not identified.
+- Cold, open. `cold_connect` (mounting the image) waits one tick at the median, and boot
+  and spawn do at p90. With `rcupdate.rcu_expedited=1` on the kernel command line,
+  `cold_connect` fell from 9758 to 651 µs (p50, n=10), so the mounts wait for an RCU
+  grace period, which a 100 Hz kernel completes on its tick. The p90 stalls remained.
+  Tuning the tick rate and RCU for our kernel is still to be measured.
+
 ## Firecracker (`crates/shards/benches/firecracker.rs`)
 
 `cargo bench -p shards --bench firecracker [-- --runs N --cpus N --memory MIB]` (Linux, KVM)

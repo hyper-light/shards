@@ -166,7 +166,7 @@ SHARDS-TEST PASS
 | Snapshot and restore | Works on macOS; Linux is next |
 | arm64 Linux, Intel Macs, Windows | Builds, but can't run machines yet |
 | Connect host programs to programs in a running machine (vsock) | Works |
-| Run a command in an image, as `docker run` does | Works (`--rootfs`); `shards run IMAGE` comes with pulling images, next |
+| Run a command in an image, as `docker run` does | Works (`--rootfs`): 2 ms in a warm microVM on the Mac. `shards run IMAGE` comes with pulling images, next |
 | Build microVMs like Docker images | In progress: image layers become bootable images |
 | Run many agents on a microVM's OS, each isolated like a container | Planned |
 | Networks, files, devices and permissions per agent and per microVM | Planned |
@@ -183,6 +183,7 @@ Firecracker. The plan and its evidence are in
 |---|---|
 | `shards vm run --kernel FILE [options]` | Boot a new machine |
 | `shards vm restore DIR [--hold]` | Start a copy of the machine saved in `DIR`. `--hold` preloads it and waits for a line on stdin |
+| `shards vm restore DIR [--hold] [-e …] [-w …] [-u …] -- COMMAND [ARG...]` | Run `COMMAND` in a copy of a template saved by `--rootfs` with `--snapshot-dir` |
 | `shards version` · `shards help` | |
 
 | Option | What it does |
@@ -194,6 +195,7 @@ Firecracker. The plan and its evidence are in
 | `--disk FILE[:ro]` | A disk. Repeat for more |
 | `--vsock PATH` | A vsock device. Host programs connect to the Unix socket `PATH` and send `CONNECT <port>`; the guest reaches host port P at `PATH_P`. A restored copy needs its own `PATH` |
 | `--rootfs FILE -- COMMAND [ARG...]` | Boot into the EROFS image `FILE` and run `COMMAND` there, as `docker run` would. Its output and exit status are shards'. `--init` must be shards-init |
+| `--rootfs FILE --snapshot-dir DIR` | Boot into `FILE` and save a template to `DIR` once the image is mounted, for `vm restore DIR -- COMMAND` |
 | `-e` · `-w` · `-u` · `--hostname` · `-i` | With `--rootfs`: as for `docker run` |
 | `--snapshot-dir DIR` | Save the machine to `DIR` when it asks, then exit. `--snapshot-then resume` keeps it running. Works with `restore` too |
 | `--no-console` | Hide the console |

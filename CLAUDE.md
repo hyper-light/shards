@@ -31,7 +31,7 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 
 ## Commands and gotchas
 
-- One binary, `shards`, with subcommands. Today: `shards vm run --kernel … [--init …] [--disk PATH[:ro]]… [--vsock PATH] [--snapshot-dir DIR]` and `shards vm restore DIR [--hold] [--vsock PATH]`.
+- One binary, `shards`, with subcommands. Today: `shards vm run --kernel … [--init …] [--disk PATH[:ro]]… [--vsock PATH] [--snapshot-dir DIR]` and `shards vm restore DIR [--hold] [--vsock PATH]`. With `--rootfs IMAGE` (and `--init` = shards-init), `vm run … -- CMD` runs a command in an image as `docker run` does, and `--snapshot-dir` saves a template that `vm restore DIR -- CMD` runs commands from.
 - `cargo test --workspace --release` runs unit and E2E tests. E2E downloads a pinned kernel into `target/artifacts`.
   - On macOS, `scripts/hvf-run` (the cargo runner) ad-hoc signs each binary with `resources/hvf.entitlements`. Unsigned binaries fail with `HV_DENIED`.
 - Guest binaries are static musl, linked by `rust-lld`, so no cross toolchain is needed:

@@ -3,8 +3,9 @@
 
 use std::ffi::CStr;
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use shards_abi::{CONTROL_PAGE, marker};
+use shards_abi::{CONTROL_PAGE, control, marker};
 
 pub fn main() {
     if let Err(e) = mount(c"devtmpfs", c"/dev", c"devtmpfs") {
@@ -14,9 +15,10 @@ pub fn main() {
         let _ = writeln!(io::stderr(), "shards-init: control page: {e}");
     }
     // `shards_root=<device>` on the kernel command line: boot into the image on that
-    // device and run the host's workload in it.
+    // device and run the host's workload in it; with `shards_template=1`, snapshot first.
     if let Some(device) = std::env::var_os("shards_root") {
-        crate::run::main(&device.to_string_lossy())
+        let template = std::env::var_os("shards_template").is_some();
+        crate::run::main(&device.to_string_lossy(), template)
     }
     let mut ts = libc::timespec {
         tv_sec: 0,
@@ -75,9 +77,20 @@ fn mount(src: &CStr, target: &CStr, fstype: &CStr) -> io::Result<()> {
 
 /// Writes `value` to the VMM's control page through /dev/mem.
 fn mark(value: u32) -> io::Result<()> {
-    // SAFETY: plain syscalls; the mapping is used for a single aligned volatile store and
-    // unmapped before returning.
-    unsafe {
+    control_write(control::MARKER, value)
+}
+
+/// The VMM's control page, mapped once from /dev/mem and kept: init's markers are stores,
+/// not syscalls, and a child can write them before it execs.
+static CONTROL: AtomicUsize = AtomicUsize::new(0);
+
+fn control_page() -> io::Result<*mut u8> {
+    let mapped = CONTROL.load(Ordering::Relaxed);
+    if mapped != 0 {
+        return Ok(mapped as *mut u8);
+    }
+    // SAFETY: plain syscalls; the mapping is never unmapped.
+    let page = unsafe {
         let fd = libc::open(
             c"/dev/mem".as_ptr(),
             libc::O_RDWR | libc::O_SYNC | libc::O_CLOEXEC,
@@ -94,12 +107,24 @@ fn mark(value: u32) -> io::Result<()> {
             CONTROL_PAGE as libc::off_t,
         );
         libc::close(fd);
-        if page == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
-        std::ptr::write_volatile(page.cast::<u32>(), value);
-        libc::munmap(page, 4096);
+        page
+    };
+    if page == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
     }
+    CONTROL.store(page as usize, Ordering::Relaxed);
+    Ok(page.cast())
+}
+
+/// Writes one register of the VMM's control page.
+pub(crate) fn control_write(register: u64, value: u32) -> io::Result<()> {
+    let page = control_page()?;
+    let offset = usize::try_from(register)
+        .ok()
+        .filter(|&o| o % 4 == 0 && o < 4096)
+        .ok_or_else(|| io::Error::other("no such control register"))?;
+    // SAFETY: an aligned register inside the mapped page.
+    unsafe { std::ptr::write_volatile(page.add(offset).cast::<u32>(), value) };
     Ok(())
 }
 

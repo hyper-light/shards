@@ -44,6 +44,11 @@ pub struct Options {
 /// Docker CLI, a variable given without a value first takes shards' own, if shards has
 /// one (docker/cli opts/env.go, ValidateEnv).
 pub fn spec(o: &Options) -> Result<Spec, String> {
+    spec_in(o, |name| std::env::var_os(name))
+}
+
+/// [`spec`], with `lookup` for shards' own environment.
+fn spec_in(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<Spec, String> {
     let hostname = match &o.hostname {
         Some(h) => h.clone(),
         None => {
@@ -65,7 +70,7 @@ pub fn spec(o: &Options) -> Result<Spec, String> {
             Some(("", _)) => return Err(format!("invalid environment variable: {entry}")),
             Some(_) => entry.clone().into_bytes(),
             None if entry.is_empty() => return Err("invalid environment variable: ".into()),
-            None => match std::env::var_os(entry) {
+            None => match lookup(entry) {
                 Some(value) => [entry.as_bytes(), b"=", &os_bytes(&value)].concat(),
                 None => entry.clone().into_bytes(),
             },
@@ -243,6 +248,8 @@ fn os_bytes(value: &std::ffi::OsStr) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    /// The environment for `-e` entries `env`, with shards' own environment holding only
+    /// `FROM_SHARDS=yes`.
     fn env_of(env: &[&str], hostname: &str) -> Vec<String> {
         let o = Options {
             argv: vec!["x".into()],
@@ -250,7 +257,7 @@ mod tests {
             hostname: Some(hostname.into()),
             ..Options::default()
         };
-        spec(&o)
+        spec_in(&o, |name| (name == "FROM_SHARDS").then(|| "yes".into()))
             .unwrap()
             .env
             .into_iter()
@@ -269,11 +276,15 @@ mod tests {
             env_of(&["PATH=/bin", "A=1", "A=2"], "box"),
             ["PATH=/bin", "HOSTNAME=box", "A=1", "A=2"]
         );
-        // A name alone, when shards has no value for it, unsets PATH or HOSTNAME and is
+        // A name alone takes shards' value; without one, it unsets PATH or HOSTNAME and is
         // otherwise dropped.
         assert_eq!(
-            env_of(&["A=1", "HOSTNAME", "SHARDS_TEST_UNSET_A"], "box"),
-            [format!("PATH={DEFAULT_PATH}"), "A=1".into()]
+            env_of(&["A=1", "HOSTNAME", "MISSING", "FROM_SHARDS"], "box"),
+            [
+                format!("PATH={DEFAULT_PATH}"),
+                "A=1".into(),
+                "FROM_SHARDS=yes".into()
+            ]
         );
         assert!(
             spec(&Options {

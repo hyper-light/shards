@@ -8,12 +8,15 @@
     clippy::indexing_slicing
 )]
 
+use std::collections::BTreeMap;
 use std::fmt;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+use shards_image::erofs::{self, DataRef, Kind, Meta, Node, NodeId, Source, Tree};
 
 pub fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -317,4 +320,81 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+const PASSWD: &str = "root:x:0:0:root:/root:/bin/sh\napp:x:1000:1000:app:/home/app:/bin/sh\n";
+const GROUP: &str = "root:x:0:\napp:x:1000:\nstaff:x:50:app\n";
+
+struct Files(Vec<Vec<u8>>);
+
+impl Source for Files {
+    fn read_at(&mut self, data: DataRef, at: u64, buf: &mut [u8]) -> io::Result<()> {
+        let bytes = &self.0[data.source as usize];
+        let start = (data.offset + at) as usize;
+        buf.copy_from_slice(&bytes[start..start + buf.len()]);
+        Ok(())
+    }
+}
+
+/// A minimal image for workloads: the test guest as /bin/testguest, users, and nothing
+/// else. There is no /proc, /sys or /dev: init must make them.
+pub fn workload_image(dir: &Path) -> PathBuf {
+    let meta = |mode: u16, owner: u32| Meta {
+        mode,
+        uid: owner,
+        gid: owner,
+        mtime: 1_700_000_000,
+        ..Meta::default()
+    };
+    let mut tree = Tree::new(meta(0o755, 0));
+    let mut files = Files(Vec::new());
+    let mut file = |tree: &mut Tree, at: NodeId, name: &str, mode: u16, bytes: Vec<u8>| {
+        let data = DataRef {
+            source: files.0.len() as u32,
+            offset: 0,
+        };
+        let size = bytes.len() as u64;
+        files.0.push(bytes);
+        let kind = Kind::File { size, data };
+        tree.insert(
+            at,
+            name.as_bytes(),
+            Node {
+                kind,
+                meta: meta(mode, 0),
+            },
+        )
+        .unwrap();
+    };
+    let dir_node = |tree: &mut Tree, at: NodeId, name: &str, mode: u16, owner: u32| {
+        let kind = Kind::Dir(BTreeMap::new());
+        tree.insert(
+            at,
+            name.as_bytes(),
+            Node {
+                kind,
+                meta: meta(mode, owner),
+            },
+        )
+        .unwrap()
+    };
+    let bin = dir_node(&mut tree, Tree::ROOT, "bin", 0o755, 0);
+    file(
+        &mut tree,
+        bin,
+        "testguest",
+        0o755,
+        std::fs::read(test_guest()).unwrap(),
+    );
+    let etc = dir_node(&mut tree, Tree::ROOT, "etc", 0o755, 0);
+    file(&mut tree, etc, "passwd", 0o644, PASSWD.into());
+    file(&mut tree, etc, "group", 0o644, GROUP.into());
+    let home = dir_node(&mut tree, Tree::ROOT, "home", 0o755, 0);
+    dir_node(&mut tree, home, "app", 0o755, 1000);
+    dir_node(&mut tree, Tree::ROOT, "tmp", 0o1777, 0);
+    let path = dir.join("image.erofs");
+    let mut out = io::BufWriter::new(std::fs::File::create(&path).unwrap());
+    erofs::write(&tree, &mut files, &mut out).unwrap();
+    out.flush().unwrap();
+    path
 }
