@@ -71,8 +71,10 @@ re-run that work.
   every vCPU exists:** HVF routes an SPI when IROUTER is written, and routing to a CPU
   that does not exist yet loses the SPI (found by the E2E test). Devices follow, and the
   vCPUs are released.
-- **Identity.** The control page's `GENERATION` counts restores. A new RNG seed per clone
-  (VMGenID; the guest kernel has the `microsoft,vmgenid` driver) is next.
+- **Identity.** The control page's `GENERATION` counts restores. Every restore also writes
+  a new VMGenID and raises its interrupt (the guest kernel has the `microsoft,vmgenid`
+  driver), so each clone reseeds its RNG before its first user instruction. The E2E test
+  checks that clones of one snapshot draw different random bytes.
 
 ### Platforms (D13)
 
@@ -82,9 +84,9 @@ the guest arch is always the host arch.
 
 | Host OS | Arch (Rust triple / OCI name) | Backend (`hv`) | Status |
 |---|---|---|---|
-| Linux (glibc, musl) | x86_64 / amd64 | KVM | planned |
+| Linux (glibc, musl) | x86_64 / amd64 | KVM | booting Linux: SMP, ACPI, virtio-blk; CI on both libcs. Snapshots next |
 | Linux (glibc, musl) | aarch64 / arm64 | KVM | planned |
-| macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux |
+| macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux; snapshots with cold and warm restore |
 | macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | planned |
 | Windows | x86_64 / amd64 | Windows Hypervisor Platform | planned |
 | Windows | aarch64 / arm64 | Windows Hypervisor Platform (arm64) | planned |
@@ -188,8 +190,9 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
    - Scope: userspace network stack, port publishing, per-VM and per-container
      isolation policy. Pending: networking research.
 6. **KVM backend.**
-   - Scope: arm64 first, tested inside an EL2-enabled shards VM on this host; then
-     x86_64. virtio-pci plus VFIO.
+   - Scope: x86_64 first, since hosted CI runners expose `/dev/kvm` (booting since
+     4dd2799). Then arm64, tested inside an EL2-enabled shards VM on this host.
+     virtio-pci plus VFIO.
 7. **GPU classes** [GPU R1–R6]: Linux VFIO warm pools; macOS virtio-gpu/Venus plus
    a remoting broker.
 8. **Hardening.**

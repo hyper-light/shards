@@ -58,6 +58,19 @@ boots stalled up to 1.06 s (5 of 200); copied boots never did (max 23.6 ms). M15
 such tail in 6.3 M in-process faults. The stall comes from fresh processes mapping the
 file, so D7 maps snapshot memory before the request arrives.
 
+**2026-09-28** · e8ec2e6 · same host and OS · kernel vmlinux-6.18.48-aarch64 · n=100,
+1 vCPU, 256 MiB · about 1.5 of 18 cores busy with other work (a Docker Desktop VM and a
+file-sync agent)
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| vmm_setup | 2660 µs | 2833 µs | 3122 µs | 3317 µs |
+| kernel | 18558 µs | 19117 µs | 19312 µs | 19457 µs |
+| to_init | 21242 µs | 21870 µs | 22181 µs | 22324 µs |
+| to_exit | 21396 µs | 22031 µs | 22401 µs | 22482 µs |
+| spawn_to_exit | 25580 µs | 26345 µs | 26663 µs | 27466 µs |
+| peak_rss | 59.3 MiB | 59.3 MiB | 59.3 MiB | 59.3 MiB |
+
 ## Restore (`crates/shards/benches/restore.rs`)
 
 `cargo bench -p shards --bench restore [-- --runs N --cpus N --memory MIB]`
@@ -113,3 +126,13 @@ user instruction: about 140 µs of guest work on the request path. Without the r
 clones of one snapshot share RNG state (the E2E test shows identical `getrandom` output),
 so it stays. Next step for the warm pool: release warm VMs ahead of the request, so they
 reseed and idle in-kernel (WFI costs no exits, PM M7), and make the request a wakeup.
+
+**2026-09-28** · e8ec2e6 · same host, OS and kernel · n=100, 1 vCPU, 256 MiB · the same
+background load as the boot run above
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| cold_restore | 794 µs | 996 µs | 1725 µs | 2134 µs |
+| cold_spawn_exit | 4201 µs | 4765 µs | 6450 µs | 7920 µs |
+| **warm_request** | **149 µs** | **169 µs** | **197 µs** | **201 µs** |
+| warm_peak_rss | 12.5 MiB | 12.5 MiB | 12.5 MiB | 12.5 MiB |
