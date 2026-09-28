@@ -1,0 +1,4 @@
+# Hypervisor.framework refuses unentitled processes, so every binary cargo runs on
+# macOS (including test harnesses) is ad-hoc signed with the entitlement first.
+[target.aarch64-apple-darwin]
+runner = "scripts/hvf-run"

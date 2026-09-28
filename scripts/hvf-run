@@ -1,0 +1,7 @@
+#!/bin/sh
+# Cargo runner for macOS: ad-hoc sign with the hypervisor entitlement, then exec.
+set -eu
+bin=$1
+shift
+codesign --entitlements "$(dirname "$0")/../resources/hvf.entitlements" --force -s - "$bin" 2>/dev/null
+exec "$bin" "$@"

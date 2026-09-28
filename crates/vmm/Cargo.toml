@@ -1,0 +1,18 @@
+[package]
+name = "shards-vmm"
+version = "0.1.0"
+description = "The shards virtual machine monitor"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "shards-vmm"
+path = "src/main.rs"
