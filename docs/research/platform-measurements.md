@@ -1,0 +1,230 @@
+# Platform measurements: Hypervisor.framework on Apple M5 Max
+
+Ground-truth numbers for the primitives the shards VMM is built on, measured on the
+development host. Every design decision that depends on a macOS/HVF cost cites a row
+here. Harness: [`measurements/hvf/hvfbench.c`](measurements/hvf/hvfbench.c).
+
+## Environment
+
+| | |
+|---|---|
+| Machine | Apple M5 Max, 18 cores, 128 GiB |
+| OS | macOS 26.4.1 (25E253), Darwin 25.4.0 |
+| SDK / compiler | CommandLineTools MacOSX.sdk, Apple clang 21.0.0, `-O2` |
+| Date | 2026-09-28 |
+| Counter | `mach_absolute_time` / `CNTVCT_EL0`, 24 MHz (41.67 ns resolution) |
+
+Caveat: runs were taken while other workloads (background research agents) were
+active, so tail percentiles carry system noise. Repeated runs of the same test moved
+p50 interrupt latency between 8.9 and 19.5 µs. Treat single-run tails as indicative,
+and re-run on a quiet machine before quoting final numbers.
+
+## Method
+
+Each test boots a bare-metal AArch64 guest whose code is assembled into the harness
+binary and copied into guest RAM. The guest runs EL1 with MMU on: identity map,
+4 KiB stage-1 granule, 1 GiB blocks, Normal WB for RAM and Device-nGnRE for GIC/MMIO.
+Guest RAM layout:
+
+- a 2 MiB system region at `0x8000_0000` (code, L1 table, vectors, stack)
+- the region under test at `0x1_0000_0000`
+- an unmapped MMIO page at `0x4000_0000`
+- the in-kernel GIC distributor at `0x0800_0000`
+
+Timings are host `mach_absolute_time` deltas. Aggregate rates divide a loop's total
+time by its iteration count. Distributions report min/p50/p90/p99/max.
+
+Thread policy is varied with flags that apply to every harness thread:
+`--qos=ui|in|ut|bg` (QoS class), `--rt` (Mach `THREAD_TIME_CONSTRAINT_POLICY`,
+computation 0.5 ms / constraint 1 ms) and `--lat0` (`THREAD_LATENCY_QOS_POLICY`
+tier 0). Pass flags as separate argv words. An early run bundled them into one word
+under zsh (which does not word-split unquoted variables) and silently ran at
+background QoS. Those numbers were discarded, and the harness now rejects unknown
+values.
+
+Reproduce: `docs/research/measurements/hvf/build.sh && TMPDIR=<dir> ./hvfbench [flags] [tests]`.
+
+## Results
+
+### M1. Capabilities (`info`)
+- max vCPUs 64.
+- IPA size 36 bits by default, 40 bits max.
+- **EL2 (nested virtualization) supported**.
+- Default IPA granule is **16 KiB**; the host page is 16 KiB.
+- `CNTFRQ` 24 MHz.
+
+In-kernel GIC:
+
+| Item | Value |
+|---|---|
+| Distributor | 64 KiB (64 KiB aligned) |
+| Redistributor | 128 KiB per vCPU; 32 MiB region; 64 KiB aligned |
+| MSI frame | 64 KiB |
+| SPIs | INTID 32–1019 (988) |
+| EL1 virtual timer | PPI INTID 27 |
+
+### M2. Object lifecycle (`lifecycle`, n=200, µs)
+
+| Operation | p50 | p99 |
+|---|---|---|
+| `hv_vm_create` (warm process) | 10.8 | 16.6 |
+| `hv_vm_destroy` | 17.7 | 27.4 |
+| `hv_gic_create` (incl. config) | 2.3 | 5.6 |
+| `hv_vcpu_create` | 6.8 | 16.3 |
+| `hv_vcpu_destroy` | 3.9 | 11.5 |
+
+### M3. Stage-2 mapping (`map`, n=20, µs, p50)
+
+| Size | `hv_vm_map` | `hv_vm_protect` | `hv_vm_unmap` |
+|---|---|---|---|
+| 16 MiB | 0.33 | 0.21 | 0.21 |
+| 256 MiB | 0.46 | 0.21 | 0.29 |
+| 1 GiB | 1.13 | 0.42 | 0.79 |
+| 8 GiB | 20.0 | 2.4 | 6.8 |
+
+Mapping is lazy: cost is near-constant, and memory is only faulted in on guest touch
+(M5). With a 4 KiB IPA granule, `hv_vm_map`/`hv_vm_protect` accept 4 KiB-aligned
+host offsets and IPAs even though host pages are 16 KiB.
+
+### M4. Exit round trips (`exits`, 200k iterations)
+
+| Exit | aggregate | p50 | p99 |
+|---|---|---|---|
+| `hvc #0` → userspace → re-enter | 700 ns | 708 ns | 833 ns |
+| MMIO write (data abort + get/set PC) | 808 ns | 792 ns | 917 ns |
+| MMIO read (data abort + set Rt + PC) | 799 ns | 792 ns | 917 ns |
+
+- After an HVC exit, PC already points past the `hvc`. After a data abort, the VMM
+  must advance PC.
+- Data-abort syndromes arrive with ISV=1 and valid SAS/SRT/WnR. The faulting IPA is in
+  `exit->exception.physical_address`.
+
+### M5. Stage-2 first-touch cost (`faults`, 512 MiB region, ns per page)
+
+16 KiB IPA granule, 16 KiB stride:
+
+| Backing | read first | write first | resident |
+|---|---|---|---|
+| anon (untouched) | 1219 | 1357 | 7–10 |
+| anon, host-prefaulted | 1251 | 1245 | 8–10 |
+| file `MAP_PRIVATE`, page-cache hot | **1072** | 1900 (CoW) | 7–9 |
+| file `MAP_PRIVATE`, host pre-read | 1372 | 2425 | 9–10 |
+| file `MAP_SHARED`, page-cache hot | 1314 | — | 8 |
+
+4 KiB IPA granule: 1560–2030 ns per **4 KiB** page at 4 KiB stride. That is about
+4× the per-byte cost of the 16 KiB granule.
+
+Write-protect dirty tracking (`hv_vm_protect` → guest write → permission-fault exit
+→ unprotect page → resume):
+
+| Granule | per dirtied page | protect pass (512 MiB) |
+|---|---|---|
+| 16 KiB | 3744 ns | 1.17 ms |
+| 4 KiB | 4658 ns | 4.0 ms |
+
+### M6. Parallel first-touch (`pfault`, 1 GiB cache-hot `MAP_PRIVATE` file, 16 KiB)
+
+| vCPUs faulting disjoint slices | 1 | 2 | 4 | 8 | 12 |
+|---|---|---|---|---|---|
+| effective ns/page | 999 | 722 | 453 | 418 | 326 |
+| throughput (GB/s) | 16.4 | 22.7 | 36.1 | 39.2 | 50.2 |
+
+### M7. Idle (`wfi`)
+- Without a GIC, guest `WFI` exits to userspace (EC 0x01).
+- **With `hv_gic`, `WFI` blocks inside HVF.** The only way out is a pending interrupt
+  or `hv_vcpus_exit`, and no userspace exits occur while the guest is idle.
+
+### M8. Interrupt injection (`irq`: `hv_gic_set_spi` on a host thread → guest IRQ handler → `hvc` exit; µs)
+
+| Thread policy | vCPU idle (WFI) p50 / p99 | vCPU busy p50 / p99 |
+|---|---|---|
+| default QoS (two runs) | 8.9 / 61.5 · 19.5 / 315 | 3.75 / 5.9 · 6.7 / 86 |
+| `--qos=ui` | 14.8 / 96 | 6.3 / 66 |
+| `--qos=ui --lat0` | 8.5 / 20.6 | 3.75 / 5.8 |
+| **`--qos=ui --rt`** | **8.2 / 11.0** | **3.75 / 4.7** |
+
+These figures include the guest handler's `hvc` exit (≈0.7 µs, M4).
+
+### M9. vCPU kick (`kick`: `hv_vcpus_exit` → `hv_vcpu_run` returns CANCELED; µs)
+
+| Thread policy | busy p50 / p99 | idle (WFI) p50 / p99 |
+|---|---|---|
+| default | 1.96 / 44 | 11.9 / 102 |
+| `--qos=ui --rt` | **0.92 / 1.33** | **4.5 / 8.5** |
+
+### M10. Guest timer precision (`vtimer`: guest arms `CNTV` for +period, then idles; lateness = handler entry − deadline; µs p50 (p99))
+
+| Idle path, thread policy | period 100 µs | 1 ms | 10 ms |
+|---|---|---|---|
+| WFI in HVF, default | 30.8 (41) | 258 (276) | 2002 (2530) |
+| WFI in HVF, `ui` | 31.3 (37) | 259 (287) | 1985 (2548) |
+| WFI in HVF, `ui` + `lat0` | 18.3 (24) | 132 (152) | 1010 (1041) |
+| **WFI in HVF, `ui` + `rt`** | **5.2 (10.4)** | **8.7 (23)** | **18.8 (33)** |
+| `hvc` idle hint → VMM `kevent` `NOTE_CRITICAL`, leeway 0, default | 9.2 (23) | 23.4 (32) | 22.5 (35) |
+| same, `ui` + `rt` | 7.5 (18) | 20.5 (46) | 34.3 (70) |
+
+Host sleep precision, standalone (`sleep`), lateness p50 for a 1 ms deadline:
+`mach_wait_until` 252 µs, `nanosleep` 253 µs, `kevent` `EVFILT_TIMER`
+`NOTE_CRITICAL|NOTE_LEEWAY` (leeway 0) 16 µs. The first two scale with the interval,
+with leeway of about 25% capped near 2.5 ms, which is macOS timer coalescing.
+
+### M11. Process spawn → first guest instruction (`spawn`, n=50)
+
+| | p50 | p99 |
+|---|---|---|
+| `posix_spawn` → child `main()` (entitled, ad-hoc signed binary) | **3.70 ms** | 4.77 ms |
+| `posix_spawn` → VM + GIC + 128 MiB map → vCPU → first guest exit | 3.82 ms | 4.88 ms |
+| in child: first `hv_vm_create` + GIC + maps | 554 µs | 790 µs |
+| in child: `hv_vcpu_create` + sysreg setup | 51 µs | 97 µs |
+| in child: first `hv_vcpu_run` → `hvc` | 9.7 µs | 24 µs |
+
+## Implications for shards (macOS/HVF backend)
+
+1. **≤5 ms start cannot include a process spawn on macOS.**
+   - Spawn alone is 3.7 ms p50 (M11), and HVF allows one VM per process.
+   - Start must therefore be served by a **pool of pre-spawned VMM processes**. Each
+     has already paid dyld, first-`hv_vm_create` (~0.55 ms, M11), GIC and vCPU-thread
+     creation.
+   - A start request then only maps snapshot memory and restores state.
+2. **Use the in-kernel GIC (`hv_gic`).**
+   - Idle vCPUs stay in the kernel with zero userspace exits (M7).
+   - SPI injection reaches a running guest in ~3.8 µs (M8).
+   - Its state APIs (`hv_gic_state_*`, `hv_gic_set_state`) are what snapshots need.
+3. **vCPU threads run under Mach time-constraint policy plus QoS user-interactive.**
+   - Timer lateness drops from ~26% of the interval to 5–19 µs (M10).
+   - Kick latency drops to 0.9 µs busy / 4.5 µs idle (M9).
+   - Interrupt p99 drops to ≤11 µs (M8).
+   - Open risk: XNU's real-time fail-safe demotion under CPU-bound guests, and
+     fairness across many VMs. Must be measured before committing (see open
+     questions).
+4. **Keep the 16 KiB IPA granule for RAM.**
+   - First-touch costs ~1.1–1.4 µs per 16 KiB page, about 4× cheaper per byte than
+     4 KiB (M5).
+   - A restored working set of W MiB costs ≈ 64·W µs of faults on one vCPU (e.g.
+     16 MiB ≈ 1.0 ms), or ~2.2× less with 4 prefetch vCPUs (M6).
+   - Guest stage-1 can remain 4 KiB; the stage-2 granule is independent.
+5. **Snapshot memory: file `MAP_PRIVATE` is the cheapest first-touch backing** (1.07 µs
+   per 16 KiB read, M5).
+   - Host-side pre-reading does *not* help (1.37 µs), because the stage-2 fault
+     itself dominates.
+   - On macOS, working-set prefetch (cf. REAP) must therefore be done from guest
+     context (helper vCPUs), not by host reads.
+   - Every page a restored guest writes costs a ~1.9 µs CoW fault plus 16 KiB of
+     private memory.
+6. **Exits are expensive (~0.7–0.8 µs, M4) and HVF has no ioeventfd.**
+   - Each virtio queue notify is a vCPU exit handled on the vCPU thread.
+   - The design must suppress notifications (EVENT_IDX), batch, and make the notify
+     handler do nothing but hand off to the device.
+7. **Dirty tracking is feasible but not free** (3.7 µs per dirtied 16 KiB page, M5).
+   It's fine for diff snapshots taken from a quiesced template, not for continuous
+   tracking.
+
+## Open questions (to measure)
+
+- Behaviour of real-time vCPU threads under sustained CPU-bound guests:
+  - demotion, throughput, and host responsiveness with N ≫ cores VMs.
+- Whether `hv_gic_state` save/restore plus vCPU register restore fits in <100 µs
+  inside a warm process.
+- End-to-end restore of a real Linux guest snapshot: working-set size after resume,
+  and time to first userspace instruction.
+- Linux/KVM counterparts of M4–M11 (to be measured on a KVM host and in an EL2 guest).
