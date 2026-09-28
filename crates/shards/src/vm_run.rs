@@ -1,12 +1,14 @@
+//! `shards vm run`: boot a kernel directly in a microVM.
+
 use std::ffi::OsString;
 use std::fmt::Display;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use shards_vmm::vm::{self, Config, Console, ExitReason};
+use shards_vmm::vm::{self, Config, Console, Disk, ExitReason};
 
-const USAGE: &str = "usage: shards-vmm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--no-console]
+const USAGE: &str = "usage: shards vm run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--disk PATH[:ro]]... [--no-console]
   Console escape: Ctrl-A x stops the VM.";
 
 fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Config, String> {
@@ -22,6 +24,7 @@ fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Config, String> {
         vcpus: 1,
         memory_mib: 256,
         console: Console::Stdout,
+        disks: Vec::new(),
     };
     let mut kernel = None;
     while let Some(arg) = args.next() {
@@ -37,6 +40,17 @@ fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Config, String> {
                 cfg.memory_mib = value("--memory")?.parse().map_err(|e| format!("--memory: {e}"))?
             }
             "--no-console" => cfg.console = Console::Discard,
+            "--disk" => {
+                let spec = value("--disk")?;
+                let (path, read_only) = match spec.strip_suffix(":ro") {
+                    Some(path) => (path, true),
+                    None => (spec.as_str(), false),
+                };
+                cfg.disks.push(Disk {
+                    path: PathBuf::from(path),
+                    read_only,
+                });
+            }
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -76,7 +90,7 @@ impl Drop for RawTerminal {
 
 /// Console output that never fails the caller (e.g. with stderr closed).
 fn report(message: impl Display) {
-    let _ = writeln!(std::io::stderr(), "shards-vmm: {message}");
+    let _ = writeln!(std::io::stderr(), "shards: {message}");
 }
 
 fn forward_stdin(handle: vm::Handle) {
@@ -108,9 +122,8 @@ fn forward_stdin(handle: vm::Handle) {
     }
 }
 
-fn main() -> ExitCode {
-    shards_vmm::log::init();
-    let cfg = match parse_args(std::env::args_os().skip(1)) {
+pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
+    let cfg = match parse_args(args) {
         Ok(cfg) => cfg,
         Err(e) if e.is_empty() => {
             let _ = writeln!(std::io::stdout(), "{USAGE}");
@@ -143,7 +156,8 @@ fn main() -> ExitCode {
             .collect();
         let _ = writeln!(
             std::io::stderr(),
-            "shards-timing {{\"exit_us\":{},\"markers\":[{}]}}",
+            "shards-timing {{\"entry_us\":{},\"exit_us\":{},\"markers\":[{}]}}",
+            handle.entered_at_us().unwrap_or(0),
             handle.exited_at_us().unwrap_or(0),
             markers.join(",")
         );

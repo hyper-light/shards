@@ -3,6 +3,7 @@
 pub mod control;
 pub mod rtc;
 pub mod serial;
+pub mod virtio;
 
 use std::sync::Arc;
 

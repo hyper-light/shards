@@ -1,15 +1,19 @@
 [package]
-name = "shards-vmm"
+name = "shards-testguest"
 version = "0.1.0"
-description = "The shards virtual machine monitor (library)"
+description = "Guest-side agent for shards E2E tests (runs as PID 1 inside test VMs)"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+publish = false
 
 [lints]
 workspace = true
 
 [dependencies]
 libc = "0.2"
-shards-abi = { path = "../abi" }
+
+[[bin]]
+name = "shards-testguest"
+path = "src/main.rs"

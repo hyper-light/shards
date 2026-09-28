@@ -12,6 +12,7 @@ use crate::devices::control::Control;
 use crate::devices::get_le;
 use crate::devices::rtc::Pl031;
 use crate::devices::serial::Serial;
+use crate::devices::virtio::{block::Block, mmio as virtio_mmio};
 use crate::devices::{Interrupt, MmioBus};
 use crate::hvf::{self, Exit, Gic, GicLayout, Granule, Perms, Reg, Vcpu, VcpuKicker};
 use crate::memory::GuestMemory;
@@ -36,6 +37,14 @@ pub struct Config {
     pub memory_mib: u64,
     /// Where guest console (UART) output goes.
     pub console: Console,
+    /// virtio-blk disks, in the order the guest enumerates them (vda, vdb, ...).
+    pub disks: Vec<Disk>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Disk {
+    pub path: PathBuf,
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +76,11 @@ impl Handle {
     /// Guest boot markers as `(marker, µs since VMM start)`.
     pub fn markers(&self) -> Vec<(u32, u128)> {
         self.control.markers()
+    }
+
+    /// Microseconds since VMM start at which the boot vCPU first entered the guest.
+    pub fn entered_at_us(&self) -> Option<u128> {
+        self.shared.entered_at_us.get().copied()
     }
 
     /// Microseconds since VMM start at which the guest exited (once it has).
@@ -128,6 +142,8 @@ struct Shared {
     exit: Mutex<Option<ExitReason>>,
     exited_at_us: Mutex<Option<u128>>,
     exited: Condvar,
+    /// When the boot vCPU first entered the guest (µs since VMM start).
+    entered_at_us: OnceLock<u128>,
 }
 
 impl std::fmt::Debug for Shared {
@@ -338,6 +354,36 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     if unsafe { libc::getentropy(rng_seed.as_mut_ptr().cast(), rng_seed.len()) } != 0 {
         return Err(format!("getentropy: {}", std::io::Error::last_os_error()));
     }
+    if cfg.disks.len() as u64 > layout::VIRTIO_MMIO_MAX {
+        return Err(format!(
+            "at most {} virtio devices are supported",
+            layout::VIRTIO_MMIO_MAX
+        ));
+    }
+    let mut virtio_devices = Vec::with_capacity(cfg.disks.len());
+    let mut virtio_nodes = Vec::with_capacity(cfg.disks.len());
+    for (i, disk) in cfg.disks.iter().enumerate() {
+        let block = Block::open(&disk.path, disk.read_only, &format!("shards-disk{i}"))?;
+        let spi = layout::SPI_VIRTIO_MMIO + i as u32;
+        let base = layout::VIRTIO_MMIO + i as u64 * layout::VIRTIO_MMIO_STRIDE;
+        let line = Arc::new(GicLine {
+            gic,
+            intid: SPI_INTID_BASE + spi,
+        });
+        virtio_devices.push((
+            base,
+            Arc::new(virtio_mmio::MmioTransport::new(
+                Box::new(block),
+                memory.clone(),
+                line,
+            )),
+        ));
+        virtio_nodes.push(boot::MmioDevice {
+            base,
+            size: virtio_mmio::WINDOW,
+            spi,
+        });
+    }
     let fdt = boot::build_fdt(&boot::Machine {
         mpidrs: &mpidrs,
         ram_size: ram,
@@ -345,7 +391,7 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
         initrd,
         gic_dist: (layout::GIC_DIST, gp.dist_size),
         gic_redist: (layout::GIC_REDIST, redist_total),
-        virtio: &[],
+        virtio: &virtio_nodes,
         rng_seed,
     })
     .map_err(|e| e.to_string())?;
@@ -381,6 +427,9 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     bus.insert(layout::RTC, 0x1000, Arc::new(Pl031::default()))?;
     let control = Arc::new(Control::default());
     bus.insert(layout::CONTROL, 0x1000, control.clone())?;
+    for (base, transport) in virtio_devices {
+        bus.insert(base, virtio_mmio::WINDOW, transport)?;
+    }
 
     let shared = Arc::new(Shared {
         memory: memory.clone(),
@@ -401,6 +450,7 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
         exit: Mutex::new(None),
         exited_at_us: Mutex::new(None),
         exited: Condvar::new(),
+        entered_at_us: OnceLock::new(),
     });
 
     // vCPUs are created strictly in index order: HVF assigns redistributor frames by
@@ -488,6 +538,9 @@ fn vcpu_thread(
         if let Err(e) = enter_at(&mut vcpu, start) {
             sh.stop(ExitReason::Error(format!("vCPU {index}: {e}")));
             return;
+        }
+        if index == 0 {
+            let _ = sh.entered_at_us.set(crate::log::uptime_us());
         }
         match run_vcpu(&mut vcpu, &sh, index) {
             Stop::CpuOff => *lock(&slot.power) = Power::Off,

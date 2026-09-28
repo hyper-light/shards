@@ -27,10 +27,12 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 
 ## Commands and gotchas
 
-- `cargo test -p shards-vmm --release` runs unit and E2E tests. E2E downloads a pinned kernel into `target/artifacts`.
+- One binary, `shards`, with subcommands. Today: `shards vm run --kernel … [--init …] [--disk PATH[:ro]]…`.
+- `cargo test --workspace --release` runs unit and E2E tests. E2E downloads a pinned kernel into `target/artifacts`.
   - On macOS, `scripts/hvf-run` (the cargo runner) ad-hoc signs each binary with `resources/hvf.entitlements`. Unsigned binaries fail with `HV_DENIED`.
 - Guest binaries are static musl, linked by `rust-lld`, so no cross toolchain is needed:
   `cargo build -p shards-init --profile guest --target aarch64-unknown-linux-musl`
+  - Lint them with the same `--target`, because host builds compile only their stub.
 - When tests invoke cargo, call the rustup proxy on `PATH` with `DYLD_*` removed. Otherwise `rust-lld` cannot load `libLLVM`.
 - `../linux` sits on case-insensitive APFS, which corrupts files whose names differ only by case. Build kernels inside a Linux VM.
 
@@ -38,4 +40,8 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 
 - `docs/design/architecture.md`: decisions D1–Dn with evidence, the start-path budget, and the phased plan.
 - `docs/research/`: literature reviews, plus `platform-measurements.md` for Hypervisor.framework ground truth.
-- `crates/vmm`: VMM. `crates/init`: guest PID 1. `crates/abi`: constants shared by the VMM and the guest.
+- `crates/shards`: the CLI, and the real-VM E2E tests.
+- `crates/vmm`: the VMM library.
+- `crates/init`: guest PID 1.
+- `crates/testguest`: PID 1 of test VMs. Its library holds the data patterns the host tests share.
+- `crates/abi`: constants shared by the VMM and the guest.

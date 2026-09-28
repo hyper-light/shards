@@ -77,44 +77,53 @@ pub fn kernel() -> &'static Path {
     K.get_or_init(|| fetch(&KERNEL_6_18))
 }
 
-/// Builds `shards-init` for the guest (static musl, `guest` profile).
-pub fn guest_init() -> &'static Path {
-    static I: OnceLock<PathBuf> = OnceLock::new();
-    I.get_or_init(|| {
-        let target_dir = workspace().join("target/guest");
-        // Go through the rustup proxy on PATH (not $CARGO, the bare cargo binary) and drop
-        // the dyld paths cargo injects into test processes: the proxy's environment is
-        // what lets rust-lld find the toolchain's libLLVM.
-        let st = Command::new("cargo")
-            .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
-            .env_remove("DYLD_LIBRARY_PATH")
-            .current_dir(workspace())
-            .args([
-                "build",
-                "-p",
-                "shards-init",
-                "--profile",
-                "guest",
-                "--target",
-                "aarch64-unknown-linux-musl",
-            ])
-            .arg("--target-dir")
-            .arg(&target_dir)
-            .status()
-            .unwrap();
-        assert!(st.success(), "building shards-init");
-        target_dir.join("aarch64-unknown-linux-musl/guest/shards-init")
-    })
+/// Builds guest package `name` (static musl, `guest` profile) and returns its binary.
+fn guest_binary(name: &str) -> PathBuf {
+    let target_dir = workspace().join("target/guest");
+    // Go through the rustup proxy on PATH (not $CARGO, the bare cargo binary) and drop
+    // the dyld paths cargo injects into test processes: the proxy's environment is
+    // what lets rust-lld find the toolchain's libLLVM.
+    let st = Command::new("cargo")
+        .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
+        .env_remove("DYLD_LIBRARY_PATH")
+        .current_dir(workspace())
+        .args([
+            "build",
+            "-p",
+            name,
+            "--profile",
+            "guest",
+            "--target",
+            "aarch64-unknown-linux-musl",
+        ])
+        .arg("--target-dir")
+        .arg(&target_dir)
+        .status()
+        .unwrap();
+    assert!(st.success(), "building {name}");
+    target_dir.join("aarch64-unknown-linux-musl/guest").join(name)
 }
 
-/// A private copy of the VMM binary, ad-hoc signed with the hypervisor entitlement.
-pub fn vmm() -> &'static Path {
+/// The production guest init (PID 1).
+pub fn guest_init() -> &'static Path {
+    static I: OnceLock<PathBuf> = OnceLock::new();
+    I.get_or_init(|| guest_binary("shards-init"))
+}
+
+/// The E2E test agent (PID 1 of test VMs).
+pub fn test_guest() -> &'static Path {
+    static T: OnceLock<PathBuf> = OnceLock::new();
+    T.get_or_init(|| guest_binary("shards-testguest"))
+}
+
+/// A private copy of the `shards` binary, ad-hoc signed with the hypervisor entitlement.
+pub fn shards() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
     V.get_or_init(|| {
         let dir = workspace().join("target/e2e");
         std::fs::create_dir_all(&dir).unwrap();
-        let copy = dir.join(format!("shards-vmm-{}", std::process::id()));
-        std::fs::copy(env!("CARGO_BIN_EXE_shards-vmm"), &copy).unwrap();
+        let copy = dir.join(format!("shards-{}", std::process::id()));
+        std::fs::copy(env!("CARGO_BIN_EXE_shards"), &copy).unwrap();
         let st = Command::new("codesign")
             .arg("--entitlements")
             .arg(workspace().join("resources/hvf.entitlements"))
@@ -170,17 +179,23 @@ impl Run {
     }
 }
 
-/// Runs the VMM with `args`, killing it (and failing) after `timeout`.
-pub fn run_vmm<S: AsRef<std::ffi::OsStr>>(args: &[S], timeout: Duration) -> Run {
+/// Runs `shards vm run <args>`, killing it (and failing) after `timeout`.
+pub fn vm_run<S: AsRef<std::ffi::OsStr>>(args: &[S], timeout: Duration) -> Run {
+    run_shards(&["vm", "run"], args, timeout)
+}
+
+/// Runs `shards <command...> <args...>`, killing it (and failing) after `timeout`.
+pub fn run_shards<S: AsRef<std::ffi::OsStr>>(command: &[&str], args: &[S], timeout: Duration) -> Run {
     let start = Instant::now();
-    let mut child = Command::new(vmm())
+    let mut child = Command::new(shards())
+        .args(command)
         .args(args)
         .env("SHARDS_TIMING", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawning shards-vmm");
+        .expect("spawning shards");
     let collect = |mut r: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
             let mut s = String::new();
@@ -198,7 +213,7 @@ pub fn run_vmm<S: AsRef<std::ffi::OsStr>>(args: &[S], timeout: Duration) -> Run 
             let _ = child.kill();
             let _ = child.wait();
             panic!(
-                "shards-vmm did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}",
+                "shards did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}",
                 out.join().unwrap(),
                 err.join().unwrap()
             );
