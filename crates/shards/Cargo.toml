@@ -1,7 +1,7 @@
 [package]
 name = "shards"
 version = "0.1.0"
-description = "shards: rootless microVMs you build and run like containers"
+description = "shards: microVMs for agents, designed for home or at scale"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

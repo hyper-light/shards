@@ -1,4 +1,4 @@
-//! shards: rootless microVMs you build and run like containers.
+//! shards: microVMs for agents, designed for home or at scale.
 
 use std::io::Write;
 use std::process::ExitCode;

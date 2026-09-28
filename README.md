@@ -9,7 +9,7 @@
 </p>
 
 <h1 align="center">shards</h1>
-<p align="center"><em>Rootless microVMs for agents, built and run like containers.</em></p>
+<p align="center"><em>MicroVMs for agents, designed for home or at scale.</em></p>
 
 Give an agent a shell and it will install packages, start servers, run builds and, sooner or
 later, break something. Shards gives your agents a microVM to do that in. It has its own Linux
