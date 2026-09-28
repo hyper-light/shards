@@ -50,6 +50,8 @@ pub struct Config {
     pub disks: Vec<Disk>,
     /// What to do when the guest asks for a snapshot; without it, requests are ignored.
     pub snapshot: Option<SnapshotPolicy>,
+    /// Read-only virtio-pmem devices backed by these files, in guest order (pmem0, ...).
+    pub pmem: Vec<PathBuf>,
     /// A virtio-vsock device whose host side listens at this Unix socket path.
     pub vsock: Option<PathBuf>,
 }

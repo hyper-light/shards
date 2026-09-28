@@ -231,6 +231,9 @@ impl Shared {
 pub struct Running {
     vm: Option<Arc<hv::Vm>>,
     threads: Vec<JoinHandle<()>>,
+    /// Devices own memory the VM maps (virtio-pmem regions): they go after the VM, as
+    /// guest RAM does.
+    _bus: Arc<machine::Bus>,
     _memory: Arc<GuestMemory>,
 }
 
@@ -374,6 +377,7 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         Running {
             vm: Some(vm),
             threads,
+            _bus: bus,
             _memory: memory,
         },
     ))

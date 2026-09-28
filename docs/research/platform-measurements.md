@@ -282,6 +282,25 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
     request arrives, never on the request path.
   - Restore benchmarks must include fresh-process restores, so they can catch this.
 
+### M17. Which host mappings `hv_vm_map` accepts for read-only device memory
+
+- **Method.** One VM. A 2 MiB file, opened read-only, mapped `PROT_READ` into this
+  process, shared or private, then `hv_vm_map`ped with guest permissions R, RX and RWX.
+  Controls: a shared mapping of the file opened read-write, and anonymous memory. Harness:
+  `hvf_maps_private_but_not_shared_read_only_files` in crates/vmm/src/hv/hvf/mod.rs
+  (`cargo test -p shards-vmm --lib -- --ignored --exact
+  hv::hvf::tests::hvf_maps_private_but_not_shared_read_only_files`), 2026-09-28, macOS
+  26.4.1 on the M5 Max.
+- **Results.** `MAP_SHARED` of the read-only file fails with `HV_ERROR` (0xfae94001) for
+  every guest permission, even R alone. `MAP_PRIVATE` of the same file succeeds for all
+  three. So do the controls.
+- **Consequence.** virtio-pmem maps image files `MAP_PRIVATE` and read-only
+  (`platform::map_file_readonly`). Pages still come from, and stay shared with, the host
+  page cache: nothing writes them, since the host mapping is read-only and so is the
+  guest's stage 2. Image files are never opened for writing. Our reading, **UNVERIFIED**:
+  HVF wants mappings whose maximum protection includes write, which a copy-on-write
+  mapping has and a shared mapping of a read-only descriptor does not.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

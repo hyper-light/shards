@@ -21,7 +21,8 @@ pub const STATE: &str = "state";
 pub const MEMORY: &str = "memory";
 const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 2: MachineConfig records whether the machine has a vsock device.
-const VERSION: u32 = 2;
+/// 3: and its virtio-pmem files.
+const VERSION: u32 = 3;
 /// A state file is kilobytes; anything past this is not one of ours.
 const MAX_STATE: u64 = 64 << 20;
 const MAX_DISKS: usize = 64;
@@ -35,8 +36,11 @@ pub struct MachineConfig {
     /// virtio-blk disks by path, in guest order. A restore reopens the same files, which
     /// must hold what the guest's page cache expects (as with Firecracker).
     pub disks: Vec<(PathBuf, bool)>,
-    /// Whether a vsock device follows the disks. Its host socket path is not recorded: a
-    /// restored VM needs a path of its own.
+    /// Read-only virtio-pmem files, in guest order, after the disks. A restore maps the
+    /// same files, which must be unchanged.
+    pub pmem: Vec<PathBuf>,
+    /// Whether a vsock device follows the pmem devices. Its host socket path is not
+    /// recorded: a restored VM needs a path of its own.
     pub vsock: bool,
 }
 
@@ -59,6 +63,9 @@ fn encode(s: &Snapshot) -> Vec<u8> {
     w.seq(&s.config.disks, |w, (path, ro)| {
         w.bytes(path.to_string_lossy().as_bytes());
         w.bool(*ro);
+    });
+    w.seq(&s.config.pmem, |w, path| {
+        w.bytes(path.to_string_lossy().as_bytes())
     });
     w.bool(s.config.vsock);
     w.bytes(&s.arch);
@@ -96,6 +103,11 @@ fn decode(bytes: &[u8]) -> codec::Result<Snapshot> {
             .map_err(|_| DecodeError("disk path is not UTF-8".into()))?;
         Ok((PathBuf::from(path), r.bool()?))
     })?;
+    let pmem = r.seq(MAX_DISKS, |r| {
+        let path = std::str::from_utf8(r.bytes(MAX_PATH)?)
+            .map_err(|_| DecodeError("pmem path is not UTF-8".into()))?;
+        Ok(PathBuf::from(path))
+    })?;
     let vsock = r.bool()?;
     let arch_state = r.bytes(usize::MAX)?.to_vec();
     let devices = r.bytes(usize::MAX)?.to_vec();
@@ -105,6 +117,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Snapshot> {
             vcpus,
             memory_mib,
             disks,
+            pmem,
             vsock,
         },
         arch: arch_state,
@@ -181,6 +194,7 @@ mod tests {
                     (PathBuf::from("/data/a.img"), true),
                     (PathBuf::from("b.img"), false),
                 ],
+                pmem: vec![PathBuf::from("/images/base.erofs")],
                 vsock: true,
             },
             arch: vec![1, 2, 3],

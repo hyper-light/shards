@@ -43,8 +43,9 @@ fn call(op: &'static str) -> impl Fn(io::Error) -> Error {
 }
 
 /// What KVM must offer (research doc §9 step 1). IMMEDIATE_EXIT backs the kick.
-const REQUIRED: [(u64, &str); 7] = [
+const REQUIRED: [(u64, &str); 8] = [
     (sys::CAP_IRQCHIP, "KVM_CAP_IRQCHIP"),
+    (sys::CAP_READONLY_MEM, "KVM_CAP_READONLY_MEM"),
     (sys::CAP_USER_MEMORY, "KVM_CAP_USER_MEMORY"),
     (sys::CAP_SET_TSS_ADDR, "KVM_CAP_SET_TSS_ADDR"),
     (sys::CAP_EXT_CPUID, "KVM_CAP_EXT_CPUID"),
@@ -193,6 +194,30 @@ impl Vm {
         let region = sys::kvm_userspace_memory_region {
             slot: self.next_slot.fetch_add(1, Ordering::Relaxed),
             flags: 0,
+            guest_phys_addr: gpa,
+            memory_size: len as u64,
+            userspace_addr: host as u64,
+        };
+        // SAFETY: forwarded caller contract.
+        unsafe { self.fd.set_user_memory_region(&region) }.map_err(call("KVM_SET_USER_MEMORY_REGION"))
+    }
+
+    /// Maps device memory (a virtio-pmem region) at `gpa`, writable by the guest only if
+    /// `writable`. A guest write to a read-only slot exits as an MMIO write to nothing,
+    /// and is dropped.
+    ///
+    /// # Safety
+    /// As for `map_ram`.
+    pub unsafe fn map_device_memory(
+        &self,
+        host: *mut u8,
+        gpa: u64,
+        len: usize,
+        writable: bool,
+    ) -> Result<()> {
+        let region = sys::kvm_userspace_memory_region {
+            slot: self.next_slot.fetch_add(1, Ordering::Relaxed),
+            flags: if writable { 0 } else { sys::MEM_READONLY },
             guest_phys_addr: gpa,
             memory_size: len as u64,
             userspace_addr: host as u64,

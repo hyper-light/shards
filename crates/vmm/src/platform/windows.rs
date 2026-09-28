@@ -54,6 +54,14 @@ pub unsafe fn map_file_private(_file: &File, _offset: u64, _len: usize, _at: Non
     Err(io::ErrorKind::Unsupported.into())
 }
 
+/// File views need placeholders on Windows too (see `map_file_private`).
+///
+/// # Safety
+/// None: this never touches memory.
+pub unsafe fn map_file_readonly(_file: &File, _len: usize, _at: NonNull<u8>) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
 /// Windows hosts are x86_64 or arm64 under Hyper-V, which keeps guest memory coherent.
 ///
 /// # Safety

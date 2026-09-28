@@ -121,6 +121,36 @@ pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull
     Ok(())
 }
 
+/// Replaces `len` bytes at `at` with a read-only mapping of the start of `file`. It is
+/// private, yet every VM mapping the same file shares one copy in the page cache: pages
+/// are copied only when written, and nothing writes them (the host maps them read-only,
+/// the guest's stage 2 too). Private, because HVF refuses shared read-only file mappings
+/// (platform-measurements M17).
+///
+/// # Safety
+/// `at..at+len` must be page-aligned, inside a reservation from [`reserve`] that no
+/// hypervisor maps and nothing references yet.
+pub unsafe fn map_file_readonly(file: &File, len: usize, at: NonNull<u8>) -> io::Result<()> {
+    // SAFETY: MAP_FIXED over memory the caller owns and nothing references.
+    let p = unsafe {
+        libc::mmap(
+            at.as_ptr().cast(),
+            len,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE | libc::MAP_FIXED,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    if p != at.as_ptr().cast() {
+        return Err(io::Error::other("mmap(MAP_FIXED) placed the mapping elsewhere"));
+    }
+    Ok(())
+}
+
 /// Writes back `len` bytes at `ptr` from the data cache to memory, so a guest that maps
 /// them as a device (non-cacheable) reads what the VMM wrote. On macOS: sys_dcache_flush
 /// (libkern/OSCacheControl.h). Whether HVF's stage 2 already makes such accesses coherent

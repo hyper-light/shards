@@ -13,7 +13,8 @@ use shards_vmm::vm::{
 
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards vm run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--disk PATH[:ro]]... [--vsock PATH] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards vm run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+  --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
   --vsock: a vsock device. Host programs connect to the Unix socket PATH and send
            `CONNECT <port>`; the guest's connections to host port P reach PATH_P.
   --snapshot-dir: where to write a snapshot when the guest asks for one (then stop, by default)
@@ -93,6 +94,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Config, String> {
         console: Console::Stdout,
         disks: Vec::new(),
         snapshot: None,
+        pmem: Vec::new(),
         vsock: None,
     };
     let (mut kernel, mut common) = (None, Common::new());
@@ -122,6 +124,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Config, String> {
                     read_only,
                 });
             }
+            "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown argument {other:?}")),
         }

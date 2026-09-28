@@ -19,6 +19,7 @@ pub fn main() {
             "idle" => idle(),
             "vsock" => vsock(),
             "vsock_snapshot" => vsock_snapshot(),
+            "pmem" => pmem(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -548,4 +549,74 @@ fn vsock_snapshot() -> Result<(), String> {
     control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
     let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
     serve_echo(&listener)
+}
+
+/// The pmem region size the VMM gives a file of `len` bytes.
+const PMEM_ALIGN: u64 = 2 << 20;
+
+/// Checks every pmem device against `shards_pmem=<bytes>:<salt>,...`: its size is the
+/// file's rounded up to 2 MiB, the file's bytes match pattern `salt`, and the rest reads as
+/// zeros. Reads bypass the page cache, so they come from the region itself. With
+/// `shards_snapshot=1`, asks for a snapshot and checks again in the restored copy.
+fn pmem() -> Result<(), String> {
+    let spec = std::env::var("shards_pmem").map_err(|_| "shards_pmem not set".to_string())?;
+    let files: Vec<(u64, u64)> = spec
+        .split(',')
+        .map(|f| {
+            let (len, salt) = f.split_once(':').ok_or(format!("bad shards_pmem entry {f:?}"))?;
+            Ok((
+                len.parse().map_err(|e| format!("{len}: {e}"))?,
+                salt.parse().map_err(|e| format!("{salt}: {e}"))?,
+            ))
+        })
+        .collect::<Result<_, String>>()?;
+    let check = || -> Result<(), String> {
+        for (i, &(len, salt)) in files.iter().enumerate() {
+            check_pmem(i, len, salt)?;
+        }
+        Ok(())
+    };
+    check()?;
+    if std::env::var("shards_snapshot").is_ok_and(|v| v == "1") {
+        let control = ControlPage::map()?;
+        control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+        check()?;
+    }
+    Ok(())
+}
+
+fn check_pmem(i: usize, len: u64, salt: u64) -> Result<(), String> {
+    let sectors: u64 = sysfs(&format!("/sys/block/pmem{i}/size"))?
+        .parse()
+        .map_err(|e| format!("pmem{i} size: {e}"))?;
+    let size = sectors * 512;
+    let want = len.next_multiple_of(PMEM_ALIGN);
+    if size != want {
+        return Err(format!(
+            "pmem{i} holds {size} bytes; its file rounds up to {want}"
+        ));
+    }
+    let fd = open(&format!("/dev/pmem{i}"), libc::O_RDONLY | libc::O_DIRECT)?;
+    let mut buf = Aligned::new(1 << 20)?;
+    let mut at = 0u64;
+    while at < size {
+        let n = (size - at).min(1 << 20) as usize;
+        let chunk = buf.slice(n);
+        pread_exact(fd, chunk, at)?;
+        let file_end = len.saturating_sub(at).min(n as u64) as usize;
+        let (data, pad) = chunk.split_at(file_end);
+        if let Some(bad) = first_mismatch(salt, at, data) {
+            return Err(format!("pmem{i} byte {} differs from its file", at + bad as u64));
+        }
+        if let Some(bad) = pad.iter().position(|&b| b != 0) {
+            return Err(format!(
+                "pmem{i} byte {} past the file is not zero",
+                at + file_end as u64 + bad as u64
+            ));
+        }
+        at += n as u64;
+    }
+    // SAFETY: closing our own descriptor.
+    unsafe { libc::close(fd) };
+    Ok(())
 }

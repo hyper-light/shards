@@ -54,6 +54,9 @@ pub struct Perms(u64);
 
 impl Perms {
     pub const RWX: Perms = Perms(ffi::HV_MEMORY_READ | ffi::HV_MEMORY_WRITE | ffi::HV_MEMORY_EXEC);
+    pub const RX: Perms = Perms(ffi::HV_MEMORY_READ | ffi::HV_MEMORY_EXEC);
+    #[cfg(test)]
+    pub const R: Perms = Perms(ffi::HV_MEMORY_READ);
 }
 
 #[derive(Debug, Clone, Copy)]

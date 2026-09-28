@@ -21,7 +21,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use common::{cannot_run_vms, cannot_snapshot, kernel, shards, test_guest};
+use common::{TempDir, cannot_run_vms, cannot_snapshot, kernel, shards, test_guest};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const ECHO_PORT: u32 = 1234;
@@ -88,32 +88,6 @@ impl Drop for Vm {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-    }
-}
-
-/// A fresh directory, short enough for sockaddr_un paths, removed with everything in it
-/// (sockets, snapshots) when dropped. Declare it before the VMs that use it.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(name: &str) -> TempDir {
-        let dir = std::env::temp_dir().join(format!("shards-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
-    }
-}
-
-impl std::ops::Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 

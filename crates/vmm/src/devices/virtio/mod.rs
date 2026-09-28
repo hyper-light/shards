@@ -6,6 +6,7 @@
 
 pub mod block;
 pub mod mmio;
+pub mod pmem;
 pub mod queue;
 #[cfg(unix)]
 pub mod vsock;
@@ -129,7 +130,8 @@ pub trait VirtioDevice: Send {
     fn write_config(&mut self, offset: u64, data: &[u8]);
     /// Starts processing. On error the transport reports DEVICE_NEEDS_RESET.
     fn activate(&mut self, activation: Activation) -> Result<(), String>;
-    /// Called on a vCPU thread when the driver notifies `queue`. Must only hand off.
+    /// Called on a vCPU thread when the driver notifies `queue`. Must not block: work that
+    /// can wait goes to a device thread.
     fn notify(&self, queue: u16);
     /// Stops all processing; when this returns the device no longer touches guest
     /// memory, so the driver may reuse it.

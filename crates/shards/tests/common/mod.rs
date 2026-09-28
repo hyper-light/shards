@@ -286,3 +286,29 @@ pub fn run_shards<S: AsRef<std::ffi::OsStr>>(command: &[&str], args: &[S], timeo
         elapsed: start.elapsed(),
     }
 }
+
+/// A fresh directory, short enough for sockaddr_un paths, removed with everything in it
+/// (sockets, snapshots) when dropped. Declare it before the VMs that use it.
+pub struct TempDir(PathBuf);
+
+impl TempDir {
+    pub fn new(name: &str) -> TempDir {
+        let dir = std::env::temp_dir().join(format!("shards-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        TempDir(dir)
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}

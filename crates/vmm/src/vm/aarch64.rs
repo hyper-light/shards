@@ -13,7 +13,7 @@ use crate::devices::control::Control;
 use crate::devices::power::Power;
 use crate::devices::rtc::Pl031;
 use crate::devices::serial::Serial;
-use crate::devices::virtio::{VirtioDevice, block::Block, mmio as virtio_mmio, vsock};
+use crate::devices::virtio::{VirtioDevice, block::Block, mmio as virtio_mmio, pmem, vsock};
 use crate::devices::vmgenid::VmGenId;
 use crate::devices::{Interrupt, MmioBus};
 use crate::hv::{self, Gic, GicLayout};
@@ -23,6 +23,7 @@ use crate::snapshot::{MachineConfig, Snapshot};
 use crate::{debug, initramfs, platform, warn};
 
 const MIB: u64 = 1 << 20;
+const GIB: u64 = 1 << 30;
 /// Smallest guest that can hold a kernel, its early allocations and the DTB window.
 const MIN_MEMORY_MIB: u64 = 64;
 const SPI_INTID_BASE: u32 = 32;
@@ -86,14 +87,14 @@ impl Interrupt for GicLine {
 }
 
 /// The smallest architected IPA width that covers guest RAM, within the host's limit.
-fn ipa_bits(ram_end: u64) -> Result<u32, String> {
-    let needed = 64 - ram_end.saturating_sub(1).leading_zeros();
+fn ipa_bits(end: u64) -> Result<u32, String> {
+    let needed = 64 - end.saturating_sub(1).leading_zeros();
     let max = hv::max_ipa_bits().map_err(|e| e.to_string())?;
     [36, 40, 42, 44, 48]
         .into_iter()
         .find(|&b| b >= needed && b <= max)
         .ok_or_else(|| {
-            format!("guest RAM ending at {ram_end:#x} needs {needed} address bits; host allows {max}")
+            format!("guest memory ending at {end:#x} needs {needed} address bits; host allows {max}")
         })
 }
 
@@ -135,7 +136,21 @@ fn assemble(
     vsock: Option<&Path>,
 ) -> Result<Assembled, String> {
     let ram = ram_bytes(config.memory_mib)?;
-    let ipa_bits = ipa_bits(layout::DRAM_BASE + ram)?;
+    // Device memory (pmem regions) starts at the first GiB boundary after RAM, and the
+    // address space must reach its end.
+    let mut top = layout::DRAM_BASE + ram;
+    let mut regions = Vec::with_capacity(config.pmem.len());
+    let mut next = top.next_multiple_of(GIB);
+    for path in &config.pmem {
+        let region = Arc::new(pmem::Region::open(path)?);
+        let gpa = next;
+        next = gpa
+            .checked_add(region.len() as u64)
+            .ok_or("pmem regions overflow the address space")?;
+        top = next;
+        regions.push((region, gpa));
+    }
+    let ipa_bits = ipa_bits(top)?;
     let mpidrs: Vec<u64> = (0..config.vcpus).map(aarch64::mpidr).collect();
     let vm = hv::Vm::new(hv::VmConfig {
         ipa_bits,
@@ -145,6 +160,12 @@ fn assemble(
     for (gpa, host, len) in memory.regions() {
         // SAFETY: `memory` outlives the VM: `Machine` and `Running` drop the VM first.
         unsafe { vm.map_ram(host, gpa, len) }.map_err(|e| e.to_string())?;
+    }
+    for (region, gpa) in &regions {
+        // SAFETY: the region outlives the VM: its device sits on the bus, which
+        // `Machine` and `Running` drop after the VM.
+        unsafe { vm.map_device_memory(region.host(), *gpa, region.len(), false) }
+            .map_err(|e| e.to_string())?;
     }
     debug!("VM created and RAM mapped");
 
@@ -168,7 +189,7 @@ fn assemble(
         .map_err(|e| e.to_string())?;
     debug!("GIC created");
 
-    let slots = config.disks.len() + usize::from(config.vsock);
+    let slots = config.disks.len() + regions.len() + usize::from(config.vsock);
     if slots as u64 > layout::VIRTIO_MMIO_MAX {
         return Err(format!(
             "at most {} virtio devices are supported",
@@ -198,6 +219,9 @@ fn assemble(
     for (i, (path, read_only)) in config.disks.iter().enumerate() {
         let block = Block::open(path, *read_only, &format!("shards-disk{i}"))?;
         add_virtio(&mut bus, Box::new(block))?;
+    }
+    for (region, gpa) in regions {
+        add_virtio(&mut bus, Box::new(pmem::Pmem::new(region, gpa)))?;
     }
     if config.vsock {
         let path = vsock.ok_or("the machine has a vsock device but no socket path for it")?;
@@ -253,6 +277,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         vcpus: cfg.vcpus,
         memory_mib: cfg.memory_mib,
         disks: cfg.disks.iter().map(|d| (d.path.clone(), d.read_only)).collect(),
+        pmem: cfg.pmem.clone(),
         vsock: cfg.vsock.is_some(),
     };
     let a = assemble(&memory, &config, cfg.console, cfg.vsock.as_deref())?;

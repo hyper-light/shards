@@ -118,6 +118,25 @@ impl Vm {
         Ok(())
     }
 
+    /// Maps device memory (a virtio-pmem region) at `gpa`, writable by the guest only if
+    /// `writable`. It is not RAM: CPU_ON never enters it. A guest write to a read-only
+    /// mapping traps like an MMIO write to nothing, and is dropped.
+    ///
+    /// # Safety
+    /// As for `map_ram`.
+    pub unsafe fn map_device_memory(
+        &self,
+        host: *mut u8,
+        gpa: u64,
+        len: usize,
+        writable: bool,
+    ) -> Result<()> {
+        let perms = if writable { sys::Perms::RWX } else { sys::Perms::RX };
+        // SAFETY: forwarded caller contract.
+        unsafe { self.sys.map(host, gpa, len, perms) }?;
+        Ok(())
+    }
+
     /// Creates the in-kernel GICv3. HVF requires it before any vCPU exists.
     pub fn create_gic(&self, layout: &GicLayout) -> Result<Gic> {
         let redist_size = sys::gic_params()?.redist_size;
@@ -628,5 +647,52 @@ mod tests {
                 done_tx.send(()).unwrap();
             });
         });
+    }
+
+    /// Which host mappings `hv_vm_map` accepts for read-only device memory
+    /// (platform-measurements M17). Ignored because HVF allows one VM per process: run it
+    /// alone with `--ignored --exact`.
+    #[test]
+    #[ignore]
+    fn hvf_maps_private_but_not_shared_read_only_files() {
+        use std::os::fd::AsRawFd;
+        let vm = Vm::new(VmConfig {
+            ipa_bits: 36,
+            mpidrs: vec![0],
+        })
+        .unwrap();
+        let path = std::env::temp_dir().join(format!("shards-m17-{}.img", std::process::id()));
+        std::fs::write(&path, vec![1u8; 2 << 20]).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let len = 2usize << 20;
+        let mut gpa = 0x1_0000_0000u64;
+        let mut map = |flags: libc::c_int, perms: sys::Perms| {
+            // SAFETY: a fresh mapping of our own file; never unmapped while the VM lives.
+            let p = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    libc::PROT_READ,
+                    flags,
+                    file.as_raw_fd(),
+                    0,
+                )
+            };
+            assert_ne!(p, libc::MAP_FAILED);
+            gpa += len as u64;
+            // SAFETY: as above.
+            unsafe { vm.sys.map(p.cast(), gpa, len, perms) }.is_ok()
+        };
+        for perms in [sys::Perms::R, sys::Perms::RX, sys::Perms::RWX] {
+            assert!(
+                !map(libc::MAP_SHARED, perms),
+                "HVF now maps shared read-only files"
+            );
+            assert!(
+                map(libc::MAP_PRIVATE, perms),
+                "HVF refused a private read-only file"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }

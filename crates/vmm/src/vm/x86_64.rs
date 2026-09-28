@@ -14,7 +14,7 @@ use crate::devices::control::Control;
 use crate::devices::i8042::I8042;
 use crate::devices::power::Power;
 use crate::devices::serial::Serial;
-use crate::devices::virtio::{VirtioDevice, block::Block, mmio as virtio_mmio, vsock};
+use crate::devices::virtio::{VirtioDevice, block::Block, mmio as virtio_mmio, pmem, vsock};
 use crate::devices::{Interrupt, MmioBus};
 use crate::hv::{self, Io};
 use crate::memory::GuestMemory;
@@ -23,6 +23,7 @@ use crate::snapshot::{MachineConfig, Snapshot};
 use crate::{debug, initramfs, platform, warn};
 
 const MIB: u64 = 1 << 20;
+const GIB: u64 = 1 << 30;
 /// Smallest guest that holds the kernel (loaded at 16 MiB), its bss and early allocations.
 const MIN_MEMORY_MIB: u64 = 128;
 /// Kernel parameters the machine depends on: restart through the i8042 (the device the
@@ -158,10 +159,25 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         // SAFETY: `memory` outlives the VM: `Machine` and `Running` drop the VM first.
         unsafe { vm.map_ram(host, gpa, len) }.map_err(|e| e.to_string())?;
     }
+    // Device memory (pmem regions) goes above 4 GiB, after any high RAM.
+    let mut regions = Vec::with_capacity(cfg.pmem.len());
+    let mut next = (layout::MMIO_GAP_END + ram.saturating_sub(layout::MMIO_GAP)).next_multiple_of(GIB);
+    for path in &cfg.pmem {
+        let region = Arc::new(pmem::Region::open(path)?);
+        let gpa = next;
+        next = gpa
+            .checked_add(region.len() as u64)
+            .ok_or("pmem regions overflow the address space")?;
+        // SAFETY: the region outlives the VM: its device sits on the bus, which
+        // `Machine` and `Running` drop after the VM.
+        unsafe { vm.map_device_memory(region.host(), gpa, region.len(), false) }
+            .map_err(|e| e.to_string())?;
+        regions.push((region, gpa));
+    }
     let irqs = vm.irqs();
     debug!("VM created and RAM mapped");
 
-    let slots = cfg.disks.len() + usize::from(cfg.vsock.is_some());
+    let slots = cfg.disks.len() + regions.len() + usize::from(cfg.vsock.is_some());
     if slots as u64 > layout::VIRTIO_MMIO_MAX {
         return Err(format!(
             "at most {} virtio devices are supported",
@@ -191,6 +207,9 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     for (i, disk) in cfg.disks.iter().enumerate() {
         let block = Block::open(&disk.path, disk.read_only, &format!("shards-disk{i}"))?;
         add_virtio(&mut bus, Box::new(block))?;
+    }
+    for (region, gpa) in regions {
+        add_virtio(&mut bus, Box::new(pmem::Pmem::new(region, gpa)))?;
     }
     if let Some(path) = &cfg.vsock {
         add_virtio(&mut bus, Box::new(vsock::Vsock::new(path, vsock::GUEST_CID)?))?;
@@ -264,6 +283,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             vcpus: cfg.vcpus,
             memory_mib: cfg.memory_mib,
             disks: cfg.disks.iter().map(|d| (d.path.clone(), d.read_only)).collect(),
+            pmem: cfg.pmem.clone(),
             vsock: cfg.vsock.is_some(),
         },
     })

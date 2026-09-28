@@ -38,6 +38,10 @@ pub const CAP_SET_IDENTITY_MAP_ADDR: u64 = 37;
 pub const CAP_MAX_VCPUS: u64 = 66;
 pub const CAP_TSC_DEADLINE_TIMER: u64 = 72;
 pub const CAP_IMMEDIATE_EXIT: u64 = 136;
+pub const CAP_READONLY_MEM: u64 = 81;
+
+/// kvm_userspace_memory_region flags.
+pub const MEM_READONLY: u32 = 1 << 1;
 
 pub const EXIT_IO: u32 = 2;
 pub const EXIT_HLT: u32 = 5;
