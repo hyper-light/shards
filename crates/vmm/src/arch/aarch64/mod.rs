@@ -19,7 +19,7 @@ pub mod layout {
     /// PL031 RTC (4 KiB).
     pub const RTC: u64 = 0x0901_0000;
     /// shards control page: boot-time markers written by the guest.
-    pub const CONTROL: u64 = shards_abi::CONTROL_PAGE_AARCH64;
+    pub const CONTROL: u64 = shards_abi::CONTROL_PAGE;
     /// virtio-mmio transports, `VIRTIO_MMIO_STRIDE` apart.
     pub const VIRTIO_MMIO: u64 = 0x0a00_0000;
     pub const VIRTIO_MMIO_STRIDE: u64 = 0x200;

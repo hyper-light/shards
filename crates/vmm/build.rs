@@ -7,11 +7,12 @@
 #![allow(clippy::print_stdout)]
 
 fn main() {
-    println!("cargo::rustc-check-cfg=cfg(hv, values(none(), \"hvf\"))");
+    println!("cargo::rustc-check-cfg=cfg(hv, values(none(), \"hvf\", \"kvm\"))");
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     if let Some(backend) = match (os.as_str(), arch.as_str()) {
         ("macos", "aarch64") => Some("hvf"),
+        ("linux", "x86_64") => Some("kvm"),
         _ => None,
     } {
         println!("cargo::rustc-cfg=hv");

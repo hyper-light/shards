@@ -1,3 +1,4 @@
 //! Guest architectures.
 
 pub mod aarch64;
+pub mod x86_64;

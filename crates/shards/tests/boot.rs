@@ -1,6 +1,7 @@
-//! Boots real Linux guests on the host hypervisor. The guest-visible expectations (PSCI,
-//! GICv3, the arm64 timer) are those of an arm64 guest; other architectures add theirs as
-//! their backends land.
+//! Boots real Linux guests on the host hypervisor, with each architecture's expectations
+//! of what the guest finds (PSCI and GICv3 on arm64; ACPI and the IOAPIC on x86_64).
+
+#![allow(clippy::panic)]
 
 mod common;
 
@@ -10,6 +11,21 @@ use common::{cannot_run_vms, guest_init, kernel, run_shards, vm_run};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
+
+/// Kernel log lines that show the machine as each architecture's firmware describes it.
+fn machine_lines() -> &'static [&'static str] {
+    match common::ARCH {
+        "aarch64" => &[
+            "Machine model: linux,dummy-virt",
+            "psci: PSCIv1.1 detected in firmware",
+            "GICv3: CPU0: found redistributor 0 region 0:0x00000000080a0000",
+            "arch_timer: cp15 timer running at 24.00MHz (virt)",
+        ],
+        // ACPI is how the x86 guest finds its CPUs and interrupt controller.
+        "x86_64" => &["ACPI: RSDP 0x00000000000E0000", "IOAPIC[0]: apic_id 0"],
+        other => panic!("no machine expectations for {other}"),
+    }
+}
 
 #[test]
 fn boots_to_root_mount_without_a_root_device() {
@@ -29,18 +45,9 @@ fn boots_to_root_mount_without_a_root_device() {
         TIMEOUT,
     );
     assert_eq!(r.status, Some(EXIT_RESET), "{r}");
-    assert!(r.stdout.contains("Machine model: linux,dummy-virt"), "{r}");
-    assert!(r.stdout.contains("psci: PSCIv1.1 detected in firmware"), "{r}");
-    assert!(
-        r.stdout
-            .contains("GICv3: CPU0: found redistributor 0 region 0:0x00000000080a0000"),
-        "{r}"
-    );
-    assert!(
-        r.stdout
-            .contains("arch_timer: cp15 timer running at 24.00MHz (virt)"),
-        "{r}"
-    );
+    for line in machine_lines() {
+        assert!(r.stdout.contains(line), "missing {line:?}: {r}");
+    }
     assert!(
         r.stdout
             .contains("Kernel panic - not syncing: VFS: Unable to mount root fs"),
@@ -48,8 +55,9 @@ fn boots_to_root_mount_without_a_root_device() {
     );
 }
 
+/// Secondary CPUs come up through the firmware: PSCI CPU_ON on arm64, INIT/SIPI on x86.
 #[test]
-fn brings_up_every_vcpu_through_psci() {
+fn brings_up_every_vcpu() {
     if cannot_run_vms() {
         return;
     }
@@ -153,6 +161,14 @@ fn survives_back_to_back_boots() {
     }
 }
 
+fn not_a_kernel() -> &'static str {
+    if common::ARCH == "x86_64" {
+        "not an x86_64 vmlinux"
+    } else {
+        "not an arm64 Image"
+    }
+}
+
 #[test]
 fn rejects_invalid_vm_configuration() {
     if cannot_run_vms() {
@@ -165,7 +181,7 @@ fn rejects_invalid_vm_configuration() {
         (&["--kernel", k, "--memory", "63"], "even number of MiB"),
         (&["--kernel", k, "--memory", "65"], "even number of MiB"),
         (&["--kernel", "/nonexistent/kernel"], "/nonexistent/kernel"),
-        (&["--kernel", init], "not an arm64 Image"),
+        (&["--kernel", init], not_a_kernel()),
         (
             &["--kernel", k, "--init", init, "--initrd", init],
             "mutually exclusive",
@@ -200,6 +216,7 @@ fn rejects_malformed_vm_arguments() {
 fn this_host_has_its_hypervisor_backend() {
     let expected = match (std::env::consts::OS, common::ARCH) {
         ("macos", "aarch64") => Some("hvf"),
+        ("linux", "x86_64") => Some("kvm"),
         _ => None,
     };
     assert_eq!(shards_vmm::hv::BACKEND, expected);

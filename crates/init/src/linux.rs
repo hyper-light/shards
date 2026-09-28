@@ -3,7 +3,7 @@
 use std::ffi::CStr;
 use std::io::{self, Write};
 
-use shards_abi::{CONTROL_PAGE_AARCH64, marker};
+use shards_abi::{CONTROL_PAGE, marker};
 
 pub fn main() {
     if let Err(e) = mount(c"devtmpfs", c"/dev", c"devtmpfs") {
@@ -83,7 +83,7 @@ fn mark(value: u32) -> io::Result<()> {
             libc::PROT_WRITE,
             libc::MAP_SHARED,
             fd,
-            CONTROL_PAGE_AARCH64 as libc::off_t,
+            CONTROL_PAGE as libc::off_t,
         );
         libc::close(fd);
         if page == libc::MAP_FAILED {

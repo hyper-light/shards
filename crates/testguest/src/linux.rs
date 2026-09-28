@@ -290,7 +290,7 @@ impl ControlPage {
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
                 fd,
-                shards_abi::CONTROL_PAGE_AARCH64 as libc::off_t,
+                shards_abi::CONTROL_PAGE as libc::off_t,
             );
             libc::close(fd);
             p

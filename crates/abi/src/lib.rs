@@ -3,8 +3,14 @@
 
 #![no_std]
 
-/// Guest-physical address of the control page on arm64 guests.
-pub const CONTROL_PAGE_AARCH64: u64 = 0x0902_0000;
+/// Guest-physical address of the control page. Guests share the host's architecture,
+/// so the VMM and the guest build of this crate always agree.
+#[cfg(target_arch = "aarch64")]
+pub const CONTROL_PAGE: u64 = 0x0902_0000;
+/// On x86_64, the first page of the 32-bit MMIO gap, where Firecracker's boot timer is
+/// (docs/research/kvm-x86_64-ground-truth.md §6.4).
+#[cfg(target_arch = "x86_64")]
+pub const CONTROL_PAGE: u64 = 0xc000_0000;
 
 /// Registers of the control page: 32-bit, little-endian.
 pub mod control {

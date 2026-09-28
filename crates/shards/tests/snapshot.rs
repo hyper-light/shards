@@ -7,7 +7,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use common::{Run, cannot_run_vms, kernel, run_shards, test_guest, vm_run};
+use common::{Run, cannot_run_vms, cannot_snapshot, kernel, run_shards, test_guest, vm_run};
 use shards_testguest::fill;
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -75,7 +75,7 @@ fn restore(dir: &Path) -> Run {
 
 #[test]
 fn every_restore_continues_the_guest_where_it_asked_for_the_snapshot() {
-    if cannot_run_vms() {
+    if cannot_run_vms() || cannot_snapshot() {
         return;
     }
     let s = Scratch::new("snapshot");
@@ -111,7 +111,7 @@ fn every_restore_continues_the_guest_where_it_asked_for_the_snapshot() {
 
 #[test]
 fn the_original_guest_can_continue_after_its_snapshot() {
-    if cannot_run_vms() {
+    if cannot_run_vms() || cannot_snapshot() {
         return;
     }
     let s = Scratch::new("snapshot-resume");
@@ -126,7 +126,7 @@ fn the_original_guest_can_continue_after_its_snapshot() {
 
 #[test]
 fn damaged_or_missing_snapshots_are_refused() {
-    if cannot_run_vms() {
+    if cannot_run_vms() || cannot_snapshot() {
         return;
     }
     let s = Scratch::new("snapshot-damaged");

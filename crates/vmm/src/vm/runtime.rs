@@ -7,9 +7,8 @@ use std::thread::JoinHandle;
 
 use super::machine::{self, Machine, Start};
 use super::{AfterSnapshot, Config, ExitReason, RestoreConfig, SnapshotPolicy};
-use crate::arch::aarch64::state::VcpuState;
-use crate::devices::MmioBus;
 use crate::devices::control::Control;
+use crate::devices::power::PowerEvent;
 use crate::devices::serial::Serial;
 use crate::hv;
 use crate::memory::GuestMemory;
@@ -77,8 +76,7 @@ impl Handle {
 struct Pause {
     requested: bool,
     /// Per vCPU, while parked: its state and its guest counter when it stopped.
-    captured: Vec<Option<(VcpuState, u64)>>,
-    cpu_id: Option<Vec<(u16, u64)>>,
+    captured: Vec<Option<machine::Captured>>,
     /// Bumped to release parked vCPUs.
     epoch: u64,
 }
@@ -99,7 +97,7 @@ struct Shared {
     released: Mutex<Release>,
     release: Condvar,
     /// A restored guest's counter at its snapshot.
-    resume_counter: Option<u64>,
+    start: Arc<Start>,
     /// When the vCPUs were released (µs since VMM start).
     released_at_us: OnceLock<u128>,
 }
@@ -113,7 +111,7 @@ struct Release {
 }
 
 impl Shared {
-    fn new(vcpus: u32, resume_counter: Option<u64>) -> Shared {
+    fn new(vcpus: u32, start: Arc<Start>) -> Shared {
         Shared {
             kickers: (0..vcpus).map(|_| OnceLock::new()).collect(),
             exiting: AtomicBool::new(false),
@@ -128,7 +126,7 @@ impl Shared {
             paused: Condvar::new(),
             released: Mutex::new(Release::default()),
             release: Condvar::new(),
-            resume_counter,
+            start,
             released_at_us: OnceLock::new(),
         }
     }
@@ -140,7 +138,7 @@ impl Shared {
             return;
         }
         r.done = true;
-        r.counter_offset = self.resume_counter.map(|c| hv::host_counter().wrapping_sub(c));
+        r.counter_offset = machine::release_offset(&self.start);
         let _ = self.released_at_us.set(crate::log::uptime_us());
         drop(r);
         self.release.notify_all();
@@ -214,20 +212,10 @@ impl Shared {
         if !lock(&self.pause).requested {
             return Ok(());
         }
-        let e = |e: hv::Error| e.to_string();
-        let state = vcpu.save_state().map_err(e)?;
-        let counter = vcpu.guest_counter().map_err(e)?;
-        let cpu_id = if index == 0 {
-            Some(vcpu.cpu_id().map_err(e)?)
-        } else {
-            None
-        };
+        let captured = machine::capture(vcpu, index)?;
         let mut p = lock(&self.pause);
         if let Some(slot) = p.captured.get_mut(index) {
-            *slot = Some((state, counter));
-        }
-        if cpu_id.is_some() {
-            p.cpu_id = cpu_id;
+            *slot = Some(captured);
         }
         let epoch = p.epoch;
         self.paused.notify_all();
@@ -299,19 +287,23 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         bus,
         serial,
         control,
-        vmgenid,
+        power,
+        finish,
         start,
         config,
     } = m;
     let vcpus = config.vcpus;
     let vm = Arc::new(vm);
     let bus = Arc::new(bus);
-    let resume_counter = match &start {
-        Start::Restore(r) => Some(r.counter),
-        Start::Boot(_) => None,
-    };
     let start = Arc::new(start);
-    let shared = Arc::new(Shared::new(vcpus, resume_counter));
+    let shared = Arc::new(Shared::new(vcpus, start.clone()));
+    let sh = shared.clone();
+    power.on_event(Box::new(move |event| {
+        sh.stop(match event {
+            PowerEvent::Off => ExitReason::PowerOff,
+            PowerEvent::Reset => ExitReason::Reset,
+        })
+    }));
 
     let mut threads = Vec::with_capacity(vcpus as usize + 1);
     if let Some(policy) = snapshots {
@@ -363,7 +355,7 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         }
     }
     if !shared.exiting() {
-        match machine::finish(&vm, &bus, &vmgenid, &start) {
+        match machine::finish(&vm, &bus, &finish, &start) {
             Ok(()) if !hold => shared.release_vcpus(),
             Ok(()) => {}
             Err(e) => shared.stop(ExitReason::Error(e)),
@@ -387,37 +379,6 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
     ))
 }
 
-/// Creates vCPU `index` and puts it where `start` says: the boot entry, parked for
-/// PSCI CPU_ON, or its restored state.
-fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu, String> {
-    let e = |e: hv::Error| e.to_string();
-    let mut vcpu = vm.create_vcpu(index).map_err(e)?;
-    match start {
-        Start::Boot(entry) => {
-            if index == 0 {
-                vcpu.boot(*entry);
-            }
-        }
-        Start::Restore(r) => {
-            if index == 0 {
-                let here = vcpu.cpu_id().map_err(e)?;
-                if here != r.cpu_id {
-                    return Err(format!(
-                        "this CPU is not the one the snapshot was taken on: {here:x?} vs {:x?}",
-                        r.cpu_id
-                    ));
-                }
-            }
-            let state = r
-                .vcpus
-                .get(index)
-                .ok_or_else(|| format!("the snapshot has no vCPU {index}"))?;
-            vcpu.restore_state(state).map_err(e)?;
-        }
-    }
-    Ok(vcpu)
-}
-
 fn vcpu_thread(
     vm: &hv::Vm,
     sh: &Shared,
@@ -431,7 +392,7 @@ fn vcpu_thread(
     {
         warn!("vCPU threads run without real-time policy (coarser guest timers): {e}");
     }
-    let mut vcpu = match setup_vcpu(vm, index, start) {
+    let mut vcpu = match machine::setup_vcpu(vm, index, start) {
         Ok(v) => v,
         Err(e) => {
             let _ = created.send(Err(e));
@@ -443,7 +404,7 @@ fn vcpu_thread(
     }
     let _ = created.send(Ok(()));
     if let Some(offset) = sh.wait_release()
-        && let Err(e) = vcpu.set_counter_offset(offset)
+        && let Err(e) = machine::set_counter_offset(&mut vcpu, offset)
     {
         return sh.stop(ExitReason::Error(format!("vCPU {index}: {e}")));
     }
@@ -471,7 +432,7 @@ fn vcpu_thread(
 struct Coordinator {
     sh: Arc<Shared>,
     vm: Arc<hv::Vm>,
-    bus: Arc<MmioBus>,
+    bus: Arc<machine::Bus>,
     memory: Arc<GuestMemory>,
     config: MachineConfig,
     policy: SnapshotPolicy,
@@ -483,13 +444,12 @@ impl Coordinator {
             let Some(mut p) = self.wait_until_parked() else {
                 return;
             };
-            let captured: Option<Vec<(VcpuState, u64)>> = p.captured.iter_mut().map(Option::take).collect();
-            let cpu_id = p.cpu_id.take();
+            let captured: Option<Vec<machine::Captured>> = p.captured.iter_mut().map(Option::take).collect();
             drop(p);
             let t0 = crate::log::uptime_us();
-            let written = match (captured, cpu_id) {
-                (Some(captured), Some(cpu_id)) => self.write(captured, cpu_id),
-                _ => Err("a vCPU parked without its state".into()),
+            let written = match captured {
+                Some(captured) => self.write(captured),
+                None => Err("a vCPU parked without its state".into()),
             };
             if let Err(e) = written {
                 return self.sh.stop(ExitReason::Error(format!("snapshot: {e}")));
@@ -530,11 +490,9 @@ impl Coordinator {
     }
 
     /// Quiesces devices, then saves interrupt controller, devices and memory.
-    fn write(&self, captured: Vec<(VcpuState, u64)>, cpu_id: Vec<(u16, u64)>) -> Result<(), String> {
+    fn write(&self, captured: Vec<machine::Captured>) -> Result<(), String> {
         self.bus.pause();
-        let counter = captured.iter().map(|&(_, c)| c).max().unwrap_or(0);
-        let states = captured.into_iter().map(|(s, _)| s).collect();
-        let arch = machine::encode_state(&self.vm, states, counter, cpu_id)?;
+        let arch = machine::encode_state(&self.vm, captured)?;
         let mut w = Writer::default();
         self.bus.save(&mut w);
         let snap = Snapshot {

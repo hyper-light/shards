@@ -1,0 +1,403 @@
+//! The KVM backend (Linux on x86_64), with the contract every backend presents
+//! (hv/mod.rs): device accesses complete inside [`Vcpu::run`] through [`Io`], and `run`
+//! returns only a kick, power-off or reset. On x86 the guest powers off and resets
+//! through devices (ACPI sleep control, i8042), so those come from the machine, and a
+//! triple fault is a reset. Ground truth: docs/research/kvm-x86_64-ground-truth.md.
+
+mod sys;
+
+use std::fmt;
+use std::io;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use super::{Exit, Io};
+use crate::arch::x86_64::{Boot, Segment, cpuid, layout};
+use crate::sync::lock;
+
+/// A failed KVM call, or guest behavior the VMM does not emulate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    Call { op: &'static str, error: String },
+    Guest(String),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Call { op, error } => write!(f, "{op} failed: {error}"),
+            Error::Guest(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+fn call(op: &'static str) -> impl Fn(io::Error) -> Error {
+    move |e| Error::Call {
+        op,
+        error: e.to_string(),
+    }
+}
+
+/// What KVM must offer (research doc §9 step 1). IMMEDIATE_EXIT backs the kick.
+const REQUIRED: [(u64, &str); 7] = [
+    (sys::CAP_IRQCHIP, "KVM_CAP_IRQCHIP"),
+    (sys::CAP_USER_MEMORY, "KVM_CAP_USER_MEMORY"),
+    (sys::CAP_SET_TSS_ADDR, "KVM_CAP_SET_TSS_ADDR"),
+    (sys::CAP_EXT_CPUID, "KVM_CAP_EXT_CPUID"),
+    (sys::CAP_MP_STATE, "KVM_CAP_MP_STATE"),
+    (sys::CAP_SET_IDENTITY_MAP_ADDR, "KVM_CAP_SET_IDENTITY_MAP_ADDR"),
+    (sys::CAP_IMMEDIATE_EXIT, "KVM_CAP_IMMEDIATE_EXIT"),
+];
+
+fn open() -> std::result::Result<sys::Kvm, String> {
+    let kvm = sys::Kvm::open().map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => {
+            "KVM is unavailable on this host: /dev/kvm does not exist (no hardware virtualization, or the kvm module is not loaded)".to_string()
+        }
+        io::ErrorKind::PermissionDenied => {
+            "cannot open /dev/kvm: permission denied (add this user to the `kvm` group)".to_string()
+        }
+        _ => format!("cannot open /dev/kvm: {e}"),
+    })?;
+    let version = kvm
+        .api_version()
+        .map_err(|e| format!("KVM_GET_API_VERSION: {e}"))?;
+    if version != sys::API_VERSION {
+        return Err(format!(
+            "KVM API version {version}; shards needs {}",
+            sys::API_VERSION
+        ));
+    }
+    for (cap, name) in REQUIRED {
+        if kvm
+            .check_extension(cap)
+            .map_err(|e| format!("KVM_CHECK_EXTENSION: {e}"))?
+            <= 0
+        {
+            return Err(format!("this host's KVM lacks {name}"));
+        }
+    }
+    Ok(kvm)
+}
+
+/// Ok when this host can run VMs: /dev/kvm opens and offers what shards needs.
+pub fn check_host() -> std::result::Result<(), String> {
+    open().map(drop)
+}
+
+/// The most vCPUs one VM can have: KVM's limit, and 254, since the MADT carries 8-bit
+/// APIC ids (research doc §3.5).
+pub fn max_vcpus() -> Result<u32> {
+    let kvm = open().map_err(Error::Guest)?;
+    let max = kvm
+        .check_extension(sys::CAP_MAX_VCPUS)
+        .map_err(call("KVM_CHECK_EXTENSION"))?;
+    let max = if max > 0 {
+        max
+    } else {
+        kvm.check_extension(sys::CAP_NR_VCPUS)
+            .map_err(call("KVM_CHECK_EXTENSION"))?
+    };
+    Ok(max.unsigned_abs().min(254))
+}
+
+/// Installs the process's kick signal handler: a no-op, and no SA_RESTART, so a kick
+/// makes KVM_RUN return EINTR. The kicker sets `immediate_exit` itself (§1.6).
+fn install_kick_handler() -> Result<()> {
+    static INSTALLED: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+    extern "C" fn on_kick(_: libc::c_int) {}
+    INSTALLED
+        .get_or_init(|| {
+            // SAFETY: a zeroed sigaction with a valid handler and an empty mask.
+            unsafe {
+                let mut sa: libc::sigaction = std::mem::zeroed();
+                sa.sa_sigaction = on_kick as extern "C" fn(libc::c_int) as libc::sighandler_t;
+                libc::sigemptyset(&mut sa.sa_mask);
+                if libc::sigaction(libc::SIGRTMIN(), &sa, std::ptr::null_mut()) != 0 {
+                    return Err(io::Error::last_os_error().to_string());
+                }
+            }
+            Ok(())
+        })
+        .clone()
+        .map_err(|error| Error::Call {
+            op: "sigaction(SIGRTMIN)",
+            error,
+        })
+}
+
+#[derive(Debug, Clone)]
+pub struct VmConfig {
+    pub vcpus: u32,
+}
+
+/// The VM. It must outlive every [`Vcpu`], and guest memory must outlive it.
+#[derive(Debug)]
+pub struct Vm {
+    fd: Arc<sys::VmFd>,
+    cpuid: Vec<cpuid::Leaf>,
+    mmap_size: usize,
+    tsc_deadline: bool,
+    vcpus: u32,
+    next_slot: AtomicU32,
+}
+
+impl Vm {
+    /// Creates the VM with the in-kernel irqchip (PIC, IOAPIC, LAPICs), before any vCPU
+    /// (research doc §9 step 2). No PIT: with a HW-reduced FADT the guest never uses one.
+    pub fn new(config: VmConfig) -> Result<Vm> {
+        install_kick_handler()?;
+        let kvm = open().map_err(Error::Guest)?;
+        let fd = kvm.create_vm().map_err(call("KVM_CREATE_VM"))?;
+        fd.set_tss_addr(layout::TSS).map_err(call("KVM_SET_TSS_ADDR"))?;
+        fd.set_identity_map_addr(layout::IDENTITY_MAP)
+            .map_err(call("KVM_SET_IDENTITY_MAP_ADDR"))?;
+        fd.create_irqchip().map_err(call("KVM_CREATE_IRQCHIP"))?;
+        let cpuid = kvm
+            .supported_cpuid()
+            .map_err(call("KVM_GET_SUPPORTED_CPUID"))?
+            .into_iter()
+            .map(|e| cpuid::Leaf {
+                function: e.function,
+                index: e.index,
+                flags: e.flags,
+                eax: e.eax,
+                ebx: e.ebx,
+                ecx: e.ecx,
+                edx: e.edx,
+            })
+            .collect();
+        let tsc_deadline = kvm
+            .check_extension(sys::CAP_TSC_DEADLINE_TIMER)
+            .map_err(call("KVM_CHECK_EXTENSION"))?
+            > 0;
+        Ok(Vm {
+            fd: Arc::new(fd),
+            cpuid,
+            mmap_size: kvm.vcpu_mmap_size().map_err(call("KVM_GET_VCPU_MMAP_SIZE"))?,
+            tsc_deadline,
+            vcpus: config.vcpus,
+            next_slot: AtomicU32::new(0),
+        })
+    }
+
+    /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`, in a new memslot.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped until the VM is destroyed.
+    pub unsafe fn map_ram(&self, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+        let region = sys::kvm_userspace_memory_region {
+            slot: self.next_slot.fetch_add(1, Ordering::Relaxed),
+            flags: 0,
+            guest_phys_addr: gpa,
+            memory_size: len as u64,
+            userspace_addr: host as u64,
+        };
+        // SAFETY: forwarded caller contract.
+        unsafe { self.fd.set_user_memory_region(&region) }.map_err(call("KVM_SET_USER_MEMORY_REGION"))
+    }
+
+    /// A handle for driving interrupt lines from any thread.
+    pub fn irqs(&self) -> Irqs {
+        Irqs(self.fd.clone())
+    }
+
+    /// Creates vCPU `index` on the calling thread, which runs it. Its CPUID has its own
+    /// APIC id and a flat topology. Application processors start in wait-for-SIPI.
+    pub fn create_vcpu(&self, index: usize) -> Result<Vcpu> {
+        let fd = self
+            .fd
+            .create_vcpu(index as u64, self.mmap_size)
+            .map_err(call("KVM_CREATE_VCPU"))?;
+        let leaves: Vec<sys::kvm_cpuid_entry2> =
+            cpuid::for_vcpu(&self.cpuid, index as u32, self.vcpus, self.tsc_deadline)
+                .into_iter()
+                .map(|l| sys::kvm_cpuid_entry2 {
+                    function: l.function,
+                    index: l.index,
+                    flags: l.flags,
+                    eax: l.eax,
+                    ebx: l.ebx,
+                    ecx: l.ecx,
+                    edx: l.edx,
+                    padding: [0; 3],
+                })
+                .collect();
+        fd.set_cpuid(&leaves).map_err(call("KVM_SET_CPUID2"))?;
+        // SAFETY: pthread_self has no preconditions.
+        let thread = Arc::new(Mutex::new(Some(Thread(unsafe { libc::pthread_self() }))));
+        Ok(Vcpu {
+            kicker: Kicker {
+                run: fd.run.clone(),
+                thread: thread.clone(),
+            },
+            fd,
+            thread,
+        })
+    }
+}
+
+/// Drives the in-kernel IOAPIC's pins (GSIs) from any thread.
+#[derive(Debug, Clone)]
+pub struct Irqs(Arc<sys::VmFd>);
+
+impl Irqs {
+    pub fn set(&self, gsi: u32, level: bool) -> Result<()> {
+        self.0.irq_line(gsi, level).map_err(call("KVM_IRQ_LINE"))
+    }
+
+    /// One edge on an edge-triggered pin: KVM coalesces a re-assertion that finds the
+    /// line still high, so it is raised and lowered (research doc §1.7).
+    pub fn pulse(&self, gsi: u32) -> Result<()> {
+        self.set(gsi, true)?;
+        self.set(gsi, false)
+    }
+}
+
+fn kvm_segment(s: &Segment) -> sys::kvm_segment {
+    sys::kvm_segment {
+        base: s.base,
+        limit: s.limit,
+        selector: s.selector,
+        type_: s.kind,
+        present: u8::from(s.present),
+        dpl: 0,
+        db: u8::from(s.db),
+        s: u8::from(s.code_or_data),
+        l: u8::from(s.long),
+        g: u8::from(s.granular),
+        avl: 0,
+        unusable: 0,
+        padding: 0,
+    }
+}
+
+/// A vCPU, run by the thread that created it.
+#[derive(Debug)]
+pub struct Vcpu {
+    fd: sys::VcpuFd,
+    kicker: Kicker,
+    /// Cleared on drop, so no kick can signal a thread that no longer runs this vCPU.
+    thread: Arc<Mutex<Option<Thread>>>,
+}
+
+impl Vcpu {
+    pub fn kicker(&self) -> Kicker {
+        self.kicker.clone()
+    }
+
+    /// The boot vCPU's registers for the 64-bit boot protocol. Every field is written, so
+    /// nothing of KVM's reset state (CR0.CD|NW among it) is inherited (research §2.5).
+    pub fn boot(&mut self, b: &Boot) -> Result<()> {
+        let mut s = self.fd.get_sregs().map_err(call("KVM_GET_SREGS"))?;
+        s.cs = kvm_segment(&b.cs);
+        let data = kvm_segment(&b.data);
+        (s.ds, s.es, s.fs, s.gs, s.ss) = (data, data, data, data, data);
+        s.tr = kvm_segment(&b.tr);
+        s.gdt = sys::kvm_dtable {
+            base: b.gdt.0,
+            limit: b.gdt.1,
+            padding: [0; 3],
+        };
+        s.idt = sys::kvm_dtable {
+            base: b.idt.0,
+            limit: b.idt.1,
+            padding: [0; 3],
+        };
+        (s.cr0, s.cr3, s.cr4, s.efer) = (b.cr0, b.cr3, b.cr4, b.efer);
+        self.fd.set_sregs(&s).map_err(call("KVM_SET_SREGS"))?;
+        self.fd
+            .set_regs(&sys::kvm_regs {
+                rip: b.rip,
+                rsi: b.rsi,
+                rflags: 0x2,
+                ..sys::kvm_regs::default()
+            })
+            .map_err(call("KVM_SET_REGS"))
+    }
+
+    /// Runs the guest until a kick, power-off or reset; device accesses complete through
+    /// `io` on the way.
+    pub fn run(&mut self, io: &dyn Io) -> Result<Exit> {
+        loop {
+            match self.fd.run().map_err(call("KVM_RUN"))? {
+                sys::RunExit::Interrupted => {
+                    self.fd.clear_immediate_exit();
+                    return Ok(Exit::Canceled);
+                }
+                sys::RunExit::Again => {}
+                // String I/O arrives as `count` elements of `size` bytes.
+                sys::RunExit::IoIn { port, size, data } => {
+                    data.chunks_mut(size.max(1)).for_each(|c| io.pio_read(port, c));
+                }
+                sys::RunExit::IoOut { port, size, data } => {
+                    data.chunks(size.max(1)).for_each(|c| io.pio_write(port, c));
+                }
+                sys::RunExit::MmioRead { addr, data } => io.mmio_read(addr, data),
+                sys::RunExit::MmioWrite { addr, data } => io.mmio_write(addr, data),
+                // A triple fault: the guest crashed.
+                sys::RunExit::Shutdown => return Ok(Exit::Reset),
+                sys::RunExit::SystemEvent(sys::SYSTEM_EVENT_SHUTDOWN) => return Ok(Exit::Shutdown),
+                sys::RunExit::SystemEvent(sys::SYSTEM_EVENT_RESET | sys::SYSTEM_EVENT_CRASH) => {
+                    return Ok(Exit::Reset);
+                }
+                sys::RunExit::SystemEvent(t) => {
+                    return Err(Error::Guest(format!("unexpected KVM system event {t}")));
+                }
+                sys::RunExit::Hlt => {
+                    return Err(Error::Guest("HLT exit despite the in-kernel LAPIC".into()));
+                }
+                sys::RunExit::FailEntry(reason) => {
+                    return Err(Error::Guest(format!(
+                        "VM entry failed (hardware reason {reason:#x})"
+                    )));
+                }
+                sys::RunExit::InternalError(suberror) => {
+                    return Err(Error::Guest(format!("KVM internal error (suberror {suberror})")));
+                }
+                sys::RunExit::Other(reason) => {
+                    return Err(Error::Guest(format!("unexpected KVM exit {reason}")));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Vcpu {
+    fn drop(&mut self) {
+        *lock(&self.thread) = None;
+    }
+}
+
+/// A thread handle. `pthread_t` is an opaque id meant for use from other threads (it is
+/// a pointer on musl, an integer on glibc).
+#[derive(Debug, Clone, Copy)]
+struct Thread(libc::pthread_t);
+
+// SAFETY: a pthread_t names a thread; pthread_kill may be called with it from any thread.
+unsafe impl Send for Thread {}
+// SAFETY: as above.
+unsafe impl Sync for Thread {}
+
+/// Interrupts a vCPU's `run` from any thread (research doc §1.6): `immediate_exit`
+/// covers a vCPU about to enter the guest, the signal one inside it.
+#[derive(Debug, Clone)]
+pub struct Kicker {
+    run: Arc<sys::RunMap>,
+    thread: Arc<Mutex<Option<Thread>>>,
+}
+
+impl Kicker {
+    pub fn kick(&self) {
+        let thread = lock(&self.thread);
+        if let Some(Thread(t)) = *thread {
+            self.run.immediate_exit().store(1, Ordering::SeqCst);
+            // SAFETY: `t` runs this vCPU until the Vcpu drops, which waits for this lock.
+            unsafe { libc::pthread_kill(t, libc::SIGRTMIN()) };
+        }
+    }
+}

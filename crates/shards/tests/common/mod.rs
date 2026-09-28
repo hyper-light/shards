@@ -47,6 +47,18 @@ pub fn cannot_run_vms() -> bool {
     }
 }
 
+/// Snapshots exist on arm64 (HVF) so far; tests of them skip elsewhere with a SKIP line.
+pub fn cannot_snapshot() -> bool {
+    if ARCH == "aarch64" {
+        return false;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIP: snapshots are not supported on {ARCH} yet"
+    );
+    true
+}
+
 /// Firecracker CI's guest kernel for the host architecture (uncompressed, virtio built in).
 pub fn kernel_artifact() -> Artifact {
     match ARCH {
@@ -54,6 +66,12 @@ pub fn kernel_artifact() -> Artifact {
             name: "vmlinux-6.18.48-aarch64",
             url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260923-6f82ac4cf331-0/aarch64/vmlinux-6.18.48",
             sha256: "a80108af80d9549b357ea7e00bd5c12f80686869541d135a8a67f6fe1ec3451e",
+        },
+        // docs/research/kvm-x86_64-ground-truth.md §7.2
+        "x86_64" => Artifact {
+            name: "vmlinux-6.18.48-x86_64",
+            url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260923-6f82ac4cf331-0/x86_64/vmlinux-6.18.48",
+            sha256: "9204218e8bcca6ac23848d74f45df2eb19d7f31e8277840a7d145a0df8b078d2",
         },
         other => panic!("no pinned guest kernel for {other} yet"),
     }

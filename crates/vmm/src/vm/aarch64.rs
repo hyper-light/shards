@@ -10,6 +10,7 @@ use super::{Config, Console};
 use crate::arch::aarch64::state::{MachineState, VcpuState};
 use crate::arch::aarch64::{self, Entry, boot, layout};
 use crate::devices::control::Control;
+use crate::devices::power::Power;
 use crate::devices::rtc::Pl031;
 use crate::devices::serial::Serial;
 use crate::devices::virtio::{block::Block, mmio as virtio_mmio};
@@ -48,16 +49,24 @@ pub struct Restored {
     pub devices: Vec<u8>,
 }
 
+/// The devices' address space: MMIO only on arm64.
+pub type Bus = MmioBus;
+
+/// What [`finish`] needs besides the VM and bus.
+pub type Finish = VmGenId;
+
 /// A VM ready for its vCPUs. Field order is drop order: the VM goes before the memory
 /// it maps.
 #[derive(Debug)]
 pub struct Machine {
     pub vm: hv::Vm,
     pub memory: Arc<GuestMemory>,
-    pub bus: MmioBus,
+    pub bus: Bus,
     pub serial: Arc<Serial>,
     pub control: Arc<Control>,
-    pub vmgenid: VmGenId,
+    /// Device-raised power events; on arm64 power management is PSCI, so none do yet.
+    pub power: Arc<Power>,
+    pub finish: Finish,
     pub start: Start,
     pub config: MachineConfig,
 }
@@ -275,7 +284,8 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         bus: a.bus,
         serial: a.serial,
         control: a.control,
-        vmgenid: a.vmgenid,
+        power: Arc::new(Power::default()),
+        finish: a.vmgenid,
         start: Start::Boot(Entry {
             pc: kernel.entry,
             x0: fdt_addr,
@@ -306,7 +316,8 @@ pub fn restore(snap: &Snapshot, memory_file: &File, console: Console) -> Result<
         bus: a.bus,
         serial: a.serial,
         control: a.control,
-        vmgenid: a.vmgenid,
+        power: Arc::new(Power::default()),
+        finish: a.vmgenid,
         start: Start::Restore(Restored {
             vcpus: state.vcpus,
             counter: state.counter,
@@ -336,18 +347,86 @@ pub fn finish(vm: &hv::Vm, bus: &MmioBus, vmgenid: &VmGenId, start: &Start) -> R
     vmgenid.new_generation()
 }
 
-/// The architecture state a snapshot records, from the state each vCPU thread captured.
-pub fn encode_state(
-    vm: &hv::Vm,
-    vcpus: Vec<VcpuState>,
+/// Creates vCPU `index` and puts it where `start` says: the boot entry, parked for
+/// PSCI CPU_ON, or its restored state.
+pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu, String> {
+    let e = |e: hv::Error| e.to_string();
+    let mut vcpu = vm.create_vcpu(index).map_err(e)?;
+    match start {
+        Start::Boot(entry) => {
+            if index == 0 {
+                vcpu.boot(*entry);
+            }
+        }
+        Start::Restore(r) => {
+            if index == 0 {
+                let here = vcpu.cpu_id().map_err(e)?;
+                if here != r.cpu_id {
+                    return Err(format!(
+                        "this CPU is not the one the snapshot was taken on: {here:x?} vs {:x?}",
+                        r.cpu_id
+                    ));
+                }
+            }
+            let state = r
+                .vcpus
+                .get(index)
+                .ok_or_else(|| format!("the snapshot has no vCPU {index}"))?;
+            vcpu.restore_state(state).map_err(e)?;
+        }
+    }
+    Ok(vcpu)
+}
+
+/// For a restore, the counter offset every vCPU applies at release, taken now so the
+/// guest counter continues from the snapshot.
+pub fn release_offset(start: &Start) -> Option<u64> {
+    match start {
+        Start::Restore(r) => Some(hv::host_counter().wrapping_sub(r.counter)),
+        Start::Boot(_) => None,
+    }
+}
+
+pub fn set_counter_offset(vcpu: &mut hv::Vcpu, offset: u64) -> Result<(), String> {
+    vcpu.set_counter_offset(offset).map_err(|e| e.to_string())
+}
+
+/// One vCPU's contribution to a snapshot, captured on its own thread.
+#[derive(Debug)]
+pub struct Captured {
+    state: VcpuState,
+    /// Its guest counter when it stopped.
     counter: u64,
-    cpu_id: Vec<(u16, u64)>,
-) -> Result<Vec<u8>, String> {
+    /// The CPU identity, from vCPU 0.
+    cpu_id: Option<Vec<(u16, u64)>>,
+}
+
+pub fn capture(vcpu: &hv::Vcpu, index: usize) -> Result<Captured, String> {
+    let e = |e: hv::Error| e.to_string();
+    Ok(Captured {
+        state: vcpu.save_state().map_err(e)?,
+        counter: vcpu.guest_counter().map_err(e)?,
+        cpu_id: if index == 0 {
+            Some(vcpu.cpu_id().map_err(e)?)
+        } else {
+            None
+        },
+    })
+}
+
+/// The architecture state a snapshot records: every vCPU's, in index order, and the
+/// distributor. The VM's counter is the latest any vCPU saw.
+pub fn encode_state(vm: &hv::Vm, captured: Vec<Captured>) -> Result<Vec<u8>, String> {
+    let counter = captured.iter().map(|c| c.counter).max().unwrap_or(0);
+    let cpu_id = captured
+        .iter()
+        .find_map(|c| c.cpu_id.clone())
+        .ok_or("vCPU 0 captured no CPU identity")?;
     let state = MachineState {
         counter,
         cpu_id,
         dist: vm.save_gic().map_err(|e| e.to_string())?,
-        vcpus,
+        vcpus: captured.into_iter().map(|c| c.state).collect(),
     };
     let mut w = Writer::default();
     state.encode(&mut w);
