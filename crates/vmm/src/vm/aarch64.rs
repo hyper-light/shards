@@ -76,6 +76,12 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         GuestMemory::anonymous(&[(layout::DRAM_BASE, ram as usize)])
             .map_err(|e| format!("guest RAM: {e}"))?,
     );
+    // A bad kernel fails the start before any hypervisor state exists. The image is copied,
+    // not mapped: a mapped image shifted 2.4 ms into the guest and added stalls of up to
+    // 149 ms (docs/benchmarks.md, 2026-09-28 A/B).
+    let kernel_file = File::open(&cfg.kernel).map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
+    let kernel = boot::load_kernel(&memory, &kernel_file, ram).map_err(|e| e.to_string())?;
+    debug!("kernel loaded");
     let vm = hv::Vm::new(hv::VmConfig {
         ipa_bits,
         mpidrs: mpidrs.clone(),
@@ -85,6 +91,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         // SAFETY: `memory` outlives the VM: `Machine` and `Running` drop the VM first.
         unsafe { vm.map_ram(host, gpa, len) }.map_err(|e| e.to_string())?;
     }
+    debug!("VM created and RAM mapped");
 
     let gp = hv::gic_params().map_err(|e| e.to_string())?;
     let redist_total = gp.redist_size * u64::from(cfg.vcpus);
@@ -105,8 +112,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         })
         .map_err(|e| e.to_string())?;
 
-    let kernel_file = File::open(&cfg.kernel).map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
-    let kernel = boot::load_kernel(&memory, &kernel_file, ram).map_err(|e| e.to_string())?;
+    debug!("GIC created");
     let fdt_addr = layout::DRAM_BASE + ram - boot::FDT_MAX;
     let read = |p: &PathBuf| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
     let initrd_bytes = match (&cfg.initrd, &cfg.init) {

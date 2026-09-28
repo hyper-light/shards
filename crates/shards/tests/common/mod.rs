@@ -184,9 +184,17 @@ impl Run {
         self.stderr.lines().find_map(|l| l.strip_prefix("shards-timing "))
     }
 
+    pub fn entry_us(&self) -> Option<u128> {
+        self.timing_field("entry_us")
+    }
+
     pub fn exit_us(&self) -> Option<u128> {
+        self.timing_field("exit_us")
+    }
+
+    fn timing_field(&self, name: &str) -> Option<u128> {
         let t = self.timing()?;
-        let v = t.split("\"exit_us\":").nth(1)?.split(',').next()?;
+        let v = t.split(&format!("\"{name}\":")).nth(1)?.split(',').next()?;
         v.parse().ok()
     }
 

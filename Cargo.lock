@@ -79,6 +79,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "sha2",
+ "shards-abi",
  "shards-testguest",
  "shards-vmm",
  "windows-sys",
