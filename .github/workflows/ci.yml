@@ -69,6 +69,23 @@ jobs:
         shell: bash
         run: cargo test --locked --workspace --release --target ${{ matrix.target }}
 
+  # shards against Firecracker on one KVM host: the same kernel, initrd and command line,
+  # interleaved (crates/shards/benches/firecracker.rs). Hosted arm64 runners have no /dev/kvm.
+  firecracker:
+    name: firecracker comparison (x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      - name: Host
+        run: nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
+      - name: Compare
+        run: cargo bench --locked -p shards --bench firecracker -- --runs 30
+
   musl:
     name: ${{ matrix.target }}
     timeout-minutes: 60

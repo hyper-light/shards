@@ -16,6 +16,7 @@ pub fn main() {
             "blk_stress" => blk_stress(),
             "snapshot" => snapshot(),
             "resume" => resume(),
+            "idle" => idle(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -414,4 +415,15 @@ fn resume() -> Result<(), String> {
     control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
     control.write(shards_abi::control::MARKER, shards_abi::marker::RESUMED);
     Ok(())
+}
+
+/// A booted guest at rest, for measuring any VMM that holds it (the Firecracker
+/// comparison): prints `SHARDS-TEST READY` and waits for the host to end the VM. It uses
+/// nothing shards-specific, so every VMM runs the same guest.
+fn idle() -> Result<(), String> {
+    let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
+    loop {
+        // SAFETY: pause(2) takes no arguments; it returns only after a signal handler ran.
+        unsafe { libc::pause() };
+    }
 }

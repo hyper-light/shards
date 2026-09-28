@@ -31,3 +31,7 @@ harness = false
 [[bench]]
 name = "restore"
 harness = false
+
+[[bench]]
+name = "firecracker"
+harness = false
