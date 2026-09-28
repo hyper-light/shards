@@ -77,6 +77,11 @@ pub fn kernel_artifact() -> Artifact {
     }
 }
 
+/// `CONFIG_NR_CPUS` of both pinned kernels (Firecracker 6f82ac4cf331,
+/// resources/guest_configs/microvm-kernel-ci-{aarch64,x86_64}-6.18.config). A guest brings
+/// up at most this many vCPUs and refuses the rest.
+pub const KERNEL_NR_CPUS: u32 = 64;
+
 fn sha256(path: &Path) -> String {
     use sha2::Digest;
     let bytes = std::fs::read(path).unwrap();

@@ -7,7 +7,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{cannot_run_vms, guest_init, kernel, run_shards, vm_run};
+use common::{KERNEL_NR_CPUS, cannot_run_vms, guest_init, kernel, run_shards, vm_run};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
@@ -105,10 +105,24 @@ fn boots_the_hosts_maximum_vcpu_count() {
         ],
         TIMEOUT,
     );
+    // The guest runs as many as its kernel was built for. It must have been shown the
+    // rest: the kernel names the vCPUs it refused.
+    let up = max.min(KERNEL_NR_CPUS);
+    let plural = if up == 1 { "" } else { "s" };
     assert!(
-        r.stdout.contains(&format!("smp: Brought up 1 node, {max} CPUs")),
+        r.stdout
+            .contains(&format!("smp: Brought up 1 node, {up} CPU{plural}")),
         "{r}"
     );
+    if max > KERNEL_NR_CPUS {
+        let refused = match common::ARCH {
+            // arch/x86/kernel/cpu/topology.c
+            "x86_64" => format!("CPU topo: Rejected CPUs {}", max - KERNEL_NR_CPUS),
+            // arch/arm64/kernel/smp.c
+            _ => format!("Number of cores ({max}) exceeds configured maximum of {KERNEL_NR_CPUS}"),
+        };
+        assert!(r.stdout.contains(&refused), "{r}");
+    }
 }
 
 #[test]
