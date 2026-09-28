@@ -91,12 +91,30 @@ impl Drop for Vm {
     }
 }
 
-/// A fresh directory for socket paths short enough for sockaddr_un.
-fn socket_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("shards-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+/// A fresh directory, short enough for sockaddr_un paths, removed with everything in it
+/// (sockets, snapshots) when dropped. Declare it before the VMs that use it.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> TempDir {
+        let dir = std::env::temp_dir().join(format!("shards-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        TempDir(dir)
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn guest_args(mode: &str, vsock: &Path) -> Vec<std::ffi::OsString> {
@@ -207,7 +225,7 @@ fn host_and_guest_connect_both_ways_and_stream_in_parallel() {
     if cannot_run_vms() {
         return;
     }
-    let dir = socket_dir("vsock-both");
+    let dir = TempDir::new("vsock-both");
     let (_vm, sock) = boot_echo_guest(&dir);
     // Eight streams at once, each far past every credit window and socket buffer.
     let streams: Vec<_> = (0..8u64)
@@ -226,7 +244,7 @@ fn refused_ports_and_bad_handshakes_close_the_host_socket() {
     if cannot_run_vms() {
         return;
     }
-    let dir = socket_dir("vsock-refuse");
+    let dir = TempDir::new("vsock-refuse");
     let (_vm, sock) = boot_echo_guest(&dir);
     assert!(
         connect(&sock, 4321).is_err(),
@@ -250,7 +268,7 @@ fn restored_copies_listen_on_their_own_sockets() {
     if cannot_snapshot() {
         return;
     }
-    let dir = socket_dir("vsock-restore");
+    let dir = TempDir::new("vsock-restore");
     let snap = dir.join("snap");
     let mut args = guest_args("vsock_snapshot", &dir.join("original.sock"));
     args.extend(["--snapshot-dir".into(), snap.clone().into()]);
