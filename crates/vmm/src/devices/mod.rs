@@ -4,6 +4,7 @@ pub mod control;
 pub mod rtc;
 pub mod serial;
 pub mod virtio;
+pub mod vmgenid;
 
 use std::sync::Arc;
 

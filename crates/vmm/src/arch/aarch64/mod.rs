@@ -25,10 +25,21 @@ pub mod layout {
     pub const VIRTIO_MMIO_STRIDE: u64 = 0x200;
     pub const VIRTIO_MMIO_MAX: u64 = 32;
     pub const DRAM_BASE: u64 = 0x8000_0000;
+    /// The first 2 MiB of DRAM hold data the VMM writes for guest drivers that map it as
+    /// a device (VMGenID). Left out of the devicetree's memory node, so Linux can
+    /// ioremap it; the kernel loads above it, 2 MiB aligned (Firecracker's layout:
+    /// arch/aarch64/layout.rs SYSTEM_MEM_*, fdt.rs create_memory_node).
+    pub const SYSTEM_MEM_SIZE: u64 = 0x20_0000;
+    /// The 16-byte VM generation ID (drivers/virt/vmgenid.c).
+    pub const VMGENID: u64 = DRAM_BASE;
+    pub const VMGENID_SIZE: u64 = 16;
+    /// Where the kernel's 2 MiB-aligned base goes.
+    pub const KERNEL_BASE: u64 = DRAM_BASE + SYSTEM_MEM_SIZE;
 
     /// SPI numbers (INTID = 32 + SPI), as written in devicetree interrupt specifiers.
     pub const SPI_UART: u32 = 1;
     pub const SPI_RTC: u32 = 2;
+    pub const SPI_VMGENID: u32 = 3;
     pub const SPI_VIRTIO_MMIO: u32 = 16;
 }
 

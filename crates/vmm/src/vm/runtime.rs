@@ -299,6 +299,7 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         bus,
         serial,
         control,
+        vmgenid,
         start,
         config,
     } = m;
@@ -362,7 +363,7 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         }
     }
     if !shared.exiting() {
-        match machine::finish(&vm, &bus, &start) {
+        match machine::finish(&vm, &bus, &vmgenid, &start) {
             Ok(()) if !hold => shared.release_vcpus(),
             Ok(()) => {}
             Err(e) => shared.stop(ExitReason::Error(e)),

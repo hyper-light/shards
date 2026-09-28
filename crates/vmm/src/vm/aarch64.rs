@@ -13,6 +13,7 @@ use crate::devices::control::Control;
 use crate::devices::rtc::Pl031;
 use crate::devices::serial::Serial;
 use crate::devices::virtio::{block::Block, mmio as virtio_mmio};
+use crate::devices::vmgenid::VmGenId;
 use crate::devices::{Interrupt, MmioBus};
 use crate::hv::{self, Gic, GicLayout};
 use crate::memory::GuestMemory;
@@ -56,6 +57,7 @@ pub struct Machine {
     pub bus: MmioBus,
     pub serial: Arc<Serial>,
     pub control: Arc<Control>,
+    pub vmgenid: VmGenId,
     pub start: Start,
     pub config: MachineConfig,
 }
@@ -109,6 +111,7 @@ struct Assembled {
     bus: MmioBus,
     serial: Arc<Serial>,
     control: Arc<Control>,
+    vmgenid: VmGenId,
     gic_dist_size: u64,
     redist_total: u64,
     virtio: Vec<boot::MmioDevice>,
@@ -193,11 +196,20 @@ fn assemble(
     bus.insert(layout::RTC, 0x1000, Arc::new(Pl031::default()))?;
     let control = Arc::new(Control::default());
     bus.insert(layout::CONTROL, 0x1000, control.clone())?;
+    let vmgenid = VmGenId::new(
+        memory.clone(),
+        layout::VMGENID,
+        Arc::new(GicLine {
+            gic,
+            intid: SPI_INTID_BASE + layout::SPI_VMGENID,
+        }),
+    );
     Ok(Assembled {
         vm,
         bus,
         serial,
         control,
+        vmgenid,
         gic_dist_size: gp.dist_size,
         redist_total,
         virtio,
@@ -221,6 +233,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         disks: cfg.disks.iter().map(|d| (d.path.clone(), d.read_only)).collect(),
     };
     let a = assemble(&memory, &config, cfg.console)?;
+    a.vmgenid.write_new_id()?;
 
     let fdt_addr = layout::DRAM_BASE + ram - boot::FDT_MAX;
     let read = |p: &PathBuf| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
@@ -262,6 +275,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         bus: a.bus,
         serial: a.serial,
         control: a.control,
+        vmgenid: a.vmgenid,
         start: Start::Boot(Entry {
             pc: kernel.entry,
             x0: fdt_addr,
@@ -292,6 +306,7 @@ pub fn restore(snap: &Snapshot, memory_file: &File, console: Console) -> Result<
         bus: a.bus,
         serial: a.serial,
         control: a.control,
+        vmgenid: a.vmgenid,
         start: Start::Restore(Restored {
             vcpus: state.vcpus,
             counter: state.counter,
@@ -307,8 +322,9 @@ pub fn restore(snap: &Snapshot, memory_file: &File, console: Console) -> Result<
 /// the GIC distributor only now: HVF routes an SPI when its IROUTER is written, and
 /// routing to a CPU that does not exist yet loses the SPI for good. Found by the snapshot
 /// E2E test; SPIs were pending but never delivered. Devices go after the GIC, because
-/// they re-raise their interrupt lines as they restore.
-pub fn finish(vm: &hv::Vm, bus: &MmioBus, start: &Start) -> Result<(), String> {
+/// they re-raise their interrupt lines as they restore. Last, the restored guest gets a
+/// new generation ID, so it reseeds its RNG before it runs anything that uses it.
+pub fn finish(vm: &hv::Vm, bus: &MmioBus, vmgenid: &VmGenId, start: &Start) -> Result<(), String> {
     let Start::Restore(r) = start else {
         return Ok(());
     };
@@ -316,7 +332,8 @@ pub fn finish(vm: &hv::Vm, bus: &MmioBus, start: &Start) -> Result<(), String> {
     let mut devices = Reader::new(&r.devices);
     bus.restore(&mut devices)
         .and_then(|()| devices.finish())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    vmgenid.new_generation()
 }
 
 /// The architecture state a snapshot records, from the state each vCPU thread captured.

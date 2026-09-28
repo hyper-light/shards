@@ -97,3 +97,19 @@ engine acknowledges over vsock; that part is to be measured.
 | cold_spawn_exit | 5574 µs | 6083 µs | 7378 µs | 7378 µs |
 | **warm_request** | **17 µs** | **20 µs** | **35 µs** | **35 µs** |
 | warm_peak_rss | 13.4 MiB | 13.4 MiB | 13.4 MiB | 13.4 MiB |
+
+**2026-09-28, with VMGenID** · 747b215 plus VMGenID (uncommitted) · same host, OS, kernel
+and parameters
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| cold_restore | 939 µs | 1153 µs | 1378 µs | 1378 µs |
+| cold_spawn_exit | 4632 µs | 5310 µs | 5889 µs | 5889 µs |
+| **warm_request** | **157 µs** | **173 µs** | **209 µs** | **209 µs** |
+| warm_peak_rss | 12.5 MiB | 12.5 MiB | 12.6 MiB | 12.6 MiB |
+
+A restored clone now handles the VMGenID interrupt and reseeds its RNG before its first
+user instruction: about 140 µs of guest work on the request path. Without the reseed,
+clones of one snapshot share RNG state (the E2E test shows identical `getrandom` output),
+so it stays. Next step for the warm pool: release warm VMs ahead of the request, so they
+reseed and idle in-kernel (WFI costs no exits, PM M7), and make the request a wakeup.

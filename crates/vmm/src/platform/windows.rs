@@ -48,6 +48,12 @@ pub unsafe fn map_file_private(_file: &File, _offset: u64, _len: usize, _at: Non
     Err(io::ErrorKind::Unsupported.into())
 }
 
+/// Windows hosts are x86_64 or arm64 under Hyper-V, which keeps guest memory coherent.
+///
+/// # Safety
+/// None: this never touches memory.
+pub unsafe fn clean_dcache(_ptr: *const u8, _len: usize) {}
+
 pub fn fill_random(buf: &mut [u8]) -> io::Result<()> {
     for chunk in buf.chunks_mut(u32::MAX as usize) {
         // SAFETY: writes `chunk.len()` (≤ u32::MAX) bytes into `chunk`.

@@ -1,6 +1,6 @@
 //! Snapshots end to end: a real guest builds state, asks for a snapshot, and every
 //! restore of it, each in its own process, must continue with that state intact.
-#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
 mod common;
 
@@ -85,13 +85,28 @@ fn every_restore_continues_the_guest_where_it_asked_for_the_snapshot() {
     assert!(s.snapshot().join("state").is_file(), "{original}");
     assert!(s.snapshot().join("memory").is_file(), "{original}");
 
+    let mut randoms = Vec::new();
     for i in 0..3 {
         let r = restore(&s.snapshot());
         assert_eq!(r.status, Some(0), "restore {i}: {r}");
         assert!(r.stdout.contains("generation=1"), "restore {i}: {r}");
         assert!(r.stdout.contains("SHARDS-TEST PASS"), "restore {i}: {r}");
         assert!(r.marker_us(RESUMED).is_some(), "restore {i}: {r}");
+        let random = r
+            .stdout
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("SHARDS-TEST INFO random="))
+            .map(str::to_string);
+        randoms.push(random.unwrap_or_else(|| panic!("restore {i} printed no random bytes: {r}")));
     }
+    // Clones of one snapshot must not share their kernel RNG state (VMGenID reseeds it).
+    randoms.sort();
+    randoms.dedup();
+    assert_eq!(
+        randoms.len(),
+        3,
+        "clones produced identical random bytes: {randoms:?}"
+    );
 }
 
 #[test]

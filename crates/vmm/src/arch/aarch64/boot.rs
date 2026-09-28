@@ -110,14 +110,14 @@ pub fn parse_image_header(h: &[u8]) -> Result<ImageHeader, BootError> {
     })
 }
 
-/// Loads `kernel` at the 2 MiB-aligned base of RAM (+ text_offset).
+/// Loads `kernel` at [`layout::KERNEL_BASE`] (+ text_offset), 2 MiB aligned.
 pub fn load_kernel(mem: &GuestMemory, kernel: &File, ram_size: u64) -> Result<LoadedKernel, BootError> {
     let file_len = kernel.metadata()?.len();
     let mut header = [0u8; IMAGE_HEADER_LEN];
     platform::read_exact_at(kernel, &mut header, 0)?;
     let h = parse_image_header(&header)?;
     // Header fields are untrusted: every sum is checked.
-    let have = ram_size.saturating_sub(FDT_MAX);
+    let have = ram_size.saturating_sub(FDT_MAX + layout::SYSTEM_MEM_SIZE);
     let too_big = |need| BootError::DoesNotFit {
         what: "kernel",
         need,
@@ -129,11 +129,11 @@ pub fn load_kernel(mem: &GuestMemory, kernel: &File, ram_size: u64) -> Result<Lo
     } else {
         h.image_size.max(file_len)
     };
-    let load = layout::DRAM_BASE
+    let load = layout::KERNEL_BASE
         .checked_add(h.text_offset)
         .ok_or(too_big(footprint))?;
     let end = load.checked_add(footprint).ok_or(too_big(footprint))?;
-    if end > layout::DRAM_BASE.saturating_add(have) {
+    if end > layout::KERNEL_BASE.saturating_add(have) {
         return Err(too_big(footprint));
     }
     read_into_guest(mem, kernel, load, file_len)?;
@@ -220,9 +220,22 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
     }
     f.end_node();
 
-    f.begin_node(&format!("memory@{:x}", layout::DRAM_BASE));
+    // Guest RAM minus the system region the VMM writes for devices (layout::SYSTEM_MEM_SIZE).
+    f.begin_node(&format!("memory@{:x}", layout::KERNEL_BASE));
     f.prop_str("device_type", "memory");
-    f.prop_u64s("reg", &[layout::DRAM_BASE, m.ram_size]);
+    f.prop_u64s(
+        "reg",
+        &[
+            layout::KERNEL_BASE,
+            m.ram_size.saturating_sub(layout::SYSTEM_MEM_SIZE),
+        ],
+    );
+    f.end_node();
+
+    f.begin_node(&format!("vmgenid@{:x}", layout::VMGENID));
+    f.prop_str("compatible", "microsoft,vmgenid");
+    f.prop_u64s("reg", &[layout::VMGENID, layout::VMGENID_SIZE]);
+    f.prop_cells("interrupts", &[GIC_SPI, layout::SPI_VMGENID, IRQ_EDGE_RISING]);
     f.end_node();
 
     f.begin_node("chosen");
@@ -384,6 +397,15 @@ mod tests {
             vec![0, 0x0800_0000, 0, 0x1_0000, 0, 0x080a_0000, 0, 0x6_0000]
         );
         assert_eq!(root.path("rtc@9010000").str("clock-names"), "apb_pclk");
+        // RAM starts above the system region that holds the VM generation ID.
+        assert_eq!(
+            root.path("memory@80200000").cells("reg"),
+            vec![0, 0x8020_0000, 0, (512 << 20) - 0x20_0000]
+        );
+        let genid = root.path("vmgenid@80000000");
+        assert_eq!(genid.str("compatible"), "microsoft,vmgenid");
+        assert_eq!(genid.cells("reg"), vec![0, 0x8000_0000, 0, 16]);
+        assert_eq!(genid.cells("interrupts"), vec![0, 3, 1]);
         assert_eq!(
             root.path("virtio_mmio@a000000").cells("interrupts"),
             vec![0, 16, 1]

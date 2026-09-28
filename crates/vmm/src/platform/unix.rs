@@ -68,6 +68,27 @@ pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull
     Ok(())
 }
 
+/// Writes back `len` bytes at `ptr` from the data cache to memory, so a guest that maps
+/// them as a device (non-cacheable) reads what the VMM wrote. On macOS: sys_dcache_flush
+/// (libkern/OSCacheControl.h). Whether HVF's stage 2 already makes such accesses coherent
+/// is unverified (ground-truth doc §5 row 25). Linux hosts need nothing: x86 is coherent,
+/// and arm64 KVM forces write-back memory with FEAT_S2FWB.
+///
+/// # Safety
+/// `ptr..ptr+len` must be mapped.
+pub unsafe fn clean_dcache(ptr: *const u8, len: usize) {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn sys_dcache_flush(start: *mut libc::c_void, len: usize);
+        }
+        // SAFETY: forwarded caller contract; cache maintenance does not change memory.
+        unsafe { sys_dcache_flush(ptr.cast_mut().cast(), len) };
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (ptr, len);
+}
+
 /// Fills `buf` from the kernel CSPRNG, blocking only until it is first seeded.
 #[cfg(target_os = "linux")]
 pub fn fill_random(buf: &mut [u8]) -> io::Result<()> {
