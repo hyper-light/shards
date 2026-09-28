@@ -195,6 +195,24 @@ impl Drop for Vm {
     }
 }
 
+/// Whether this Mac can run Hypervisor.framework VMs: `sysctl kern.hv_support`, the check
+/// Apple documents. It reads 0 inside VMs that lack nested virtualization.
+pub fn supported() -> bool {
+    let mut value: libc::c_int = 0;
+    let mut len = size_of::<libc::c_int>();
+    // SAFETY: sysctlbyname writes at most `len` bytes into `value`.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"kern.hv_support".as_ptr(),
+            (&raw mut value).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    rc == 0 && value == 1
+}
+
 /// Maximum number of vCPUs a VM can have on this host.
 pub fn max_vcpus() -> Result<u32> {
     let mut n = 0;

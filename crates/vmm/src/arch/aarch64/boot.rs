@@ -5,11 +5,11 @@
 
 use std::fmt;
 use std::fs::File;
-use std::os::unix::fs::FileExt;
 
 use super::layout;
 use crate::fdt::{Fdt, FdtError};
 use crate::memory::{GuestMemory, OutOfBounds};
+use crate::platform;
 
 const IMAGE_MAGIC: u32 = 0x644d_5241; // "ARM\x64"
 const IMAGE_HEADER_LEN: usize = 64;
@@ -114,7 +114,7 @@ pub fn parse_image_header(h: &[u8]) -> Result<ImageHeader, BootError> {
 pub fn load_kernel(mem: &GuestMemory, kernel: &File, ram_size: u64) -> Result<LoadedKernel, BootError> {
     let file_len = kernel.metadata()?.len();
     let mut header = [0u8; IMAGE_HEADER_LEN];
-    kernel.read_exact_at(&mut header, 0)?;
+    platform::read_exact_at(kernel, &mut header, 0)?;
     let h = parse_image_header(&header)?;
     // Header fields are untrusted: every sum is checked.
     let have = ram_size.saturating_sub(FDT_MAX);
@@ -165,7 +165,7 @@ fn read_into_guest(mem: &GuestMemory, file: &File, gpa: u64, len: u64) -> Result
     let dst = mem.host_ptr(gpa, len as usize)?;
     // SAFETY: `dst` is valid for `len` bytes of guest RAM, and no vCPU runs yet.
     let buf = unsafe { std::slice::from_raw_parts_mut(dst, len as usize) };
-    file.read_exact_at(buf, 0)?;
+    platform::read_exact_at(file, buf, 0)?;
     Ok(())
 }
 

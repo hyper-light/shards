@@ -8,6 +8,8 @@ use std::process::ExitCode;
 
 use shards_vmm::vm::{self, Config, Console, Disk, ExitReason};
 
+use crate::terminal::RawTerminal;
+
 const USAGE: &str = "usage: shards vm run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--disk PATH[:ro]]... [--no-console]
   Console escape: Ctrl-A x stops the VM.";
 
@@ -57,35 +59,6 @@ fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Config, String> {
     }
     cfg.kernel = kernel.ok_or("--kernel is required")?;
     Ok(cfg)
-}
-
-/// Puts the controlling terminal in raw mode so keystrokes reach the guest unchanged;
-/// restores it on drop.
-struct RawTerminal(libc::termios);
-
-impl RawTerminal {
-    fn enable() -> Option<RawTerminal> {
-        // SAFETY: termios calls on fd 0 with a zero-initialized struct they fill in.
-        unsafe {
-            if libc::isatty(0) != 1 {
-                return None;
-            }
-            let mut saved: libc::termios = std::mem::zeroed();
-            if libc::tcgetattr(0, &mut saved) != 0 {
-                return None;
-            }
-            let mut raw = saved;
-            libc::cfmakeraw(&mut raw);
-            (libc::tcsetattr(0, libc::TCSANOW, &raw) == 0).then_some(RawTerminal(saved))
-        }
-    }
-}
-
-impl Drop for RawTerminal {
-    fn drop(&mut self) {
-        // SAFETY: restores the attributes saved by `enable`.
-        unsafe { libc::tcsetattr(0, libc::TCSANOW, &self.0) };
-    }
 }
 
 /// Console output that never fails the caller (e.g. with stderr closed).

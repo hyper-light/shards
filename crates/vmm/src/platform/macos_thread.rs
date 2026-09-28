@@ -1,4 +1,4 @@
-//! Host scheduling policy for vCPU threads (macOS).
+//! vCPU thread scheduling policy on macOS.
 //!
 //! With the default policy, HVF's in-kernel WFI wake-ups for guest timers are late by
 //! ~25% of the interval (258 µs on a 1 ms timer) because of timer coalescing. Under

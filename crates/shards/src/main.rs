@@ -3,6 +3,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+mod terminal;
 mod vm_run;
 
 const USAGE: &str = "usage: shards <command> [args...]

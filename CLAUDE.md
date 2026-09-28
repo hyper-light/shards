@@ -11,6 +11,10 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 
 ## Rules
 
+- **Platform- and architecture-agnostic.**
+  - shards runs on Linux (glibc and musl), macOS and Windows, on x86_64/amd64 and aarch64/arm64: the 8-target matrix CI lints and tests.
+  - Hypervisor specifics live behind `hv` (KVM, Hypervisor.framework, WHP), guest-architecture specifics behind `arch`, and OS specifics behind `platform`. Everything else is written once.
+  - Configs, builds, optimizations and tests cover every architecture. Use OCI platform names (`amd64`, `arm64`) wherever users see platforms.
 - **Panic-free production code.** Every fallible step returns an error, and the caller handles it.
   - Use `?`, `ok_or`, `.get()`, checked arithmetic on untrusted sizes, `thread::Builder::spawn`, `env::args_os`, and poison-tolerant locks.
   - Write console output with `let _ = writeln!(...)`.
@@ -31,8 +35,11 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 - `cargo test --workspace --release` runs unit and E2E tests. E2E downloads a pinned kernel into `target/artifacts`.
   - On macOS, `scripts/hvf-run` (the cargo runner) ad-hoc signs each binary with `resources/hvf.entitlements`. Unsigned binaries fail with `HV_DENIED`.
 - Guest binaries are static musl, linked by `rust-lld`, so no cross toolchain is needed:
-  `cargo build -p shards-init --profile guest --target aarch64-unknown-linux-musl`
+  `cargo build -p shards-init --profile guest --target <arch>-unknown-linux-musl`
+  - The guest arch is the host arch.
   - Lint them with the same `--target`, because host builds compile only their stub.
+- Lint every matrix target before pushing: `cargo clippy --workspace --all-targets --target <triple> -- -D warnings`. `.github/workflows/ci.yml` lists the triples.
+- VM tests print `SKIP:` and return where the host cannot run VMs (`vm::check_host`). `this_host_has_its_hypervisor_backend` pins which hosts must have a backend.
 - When tests invoke cargo, call the rustup proxy on `PATH` with `DYLD_*` removed. Otherwise `rust-lld` cannot load `libLLVM`.
 - `../linux` sits on case-insensitive APFS, which corrupts files whose names differ only by case. Build kernels inside a Linux VM.
 

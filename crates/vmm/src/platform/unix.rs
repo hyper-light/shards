@@ -1,0 +1,129 @@
+use std::fs::File;
+use std::io;
+use std::os::fd::AsRawFd;
+use std::ptr::NonNull;
+
+pub fn page_size() -> io::Result<usize> {
+    // SAFETY: sysconf has no preconditions.
+    let n = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    match usize::try_from(n) {
+        Ok(p) if p.is_power_of_two() => Ok(p),
+        _ => Err(io::Error::other(format!("sysconf(_SC_PAGESIZE) returned {n}"))),
+    }
+}
+
+/// Reserves `len` bytes of zero-filled read/write memory. Pages are materialized on
+/// first touch, so reserved-but-untouched guest RAM costs no host memory.
+pub fn reserve(len: usize) -> io::Result<NonNull<u8>> {
+    // SAFETY: fresh private anonymous mapping; the caller owns it until `release`.
+    let p = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE,
+            -1,
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    NonNull::new(p.cast()).ok_or_else(|| io::Error::other("mmap returned NULL"))
+}
+
+/// # Safety
+/// `ptr..ptr+len` must be a mapping returned by `reserve` and not used afterwards.
+pub unsafe fn release(ptr: NonNull<u8>, len: usize) {
+    // SAFETY: forwarded caller contract.
+    unsafe { libc::munmap(ptr.as_ptr().cast(), len) };
+}
+
+/// Fills `buf` from the kernel CSPRNG, blocking only until it is first seeded.
+#[cfg(target_os = "linux")]
+pub fn fill_random(buf: &mut [u8]) -> io::Result<()> {
+    let mut done = 0;
+    while let Some(rest) = buf.get_mut(done..).filter(|r| !r.is_empty()) {
+        // SAFETY: getrandom(2) writes at most `rest.len()` bytes into `rest`.
+        let n = unsafe { libc::getrandom(rest.as_mut_ptr().cast(), rest.len(), 0) };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+            continue;
+        }
+        done += n.unsigned_abs();
+    }
+    Ok(())
+}
+
+/// Fills `buf` from the kernel CSPRNG.
+#[cfg(not(target_os = "linux"))]
+pub fn fill_random(buf: &mut [u8]) -> io::Result<()> {
+    // getentropy(2) returns at most 256 bytes per call.
+    for chunk in buf.chunks_mut(256) {
+        // SAFETY: writes exactly `chunk.len()` (≤ 256) bytes into `chunk`.
+        if unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+fn file_offset(offset: u64) -> io::Result<libc::off_t> {
+    libc::off_t::try_from(offset)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, format!("file offset {offset:#x}")))
+}
+
+/// Reads up to `len` bytes at `offset` into raw memory, retrying on EINTR; 0 at end of file.
+///
+/// # Safety
+/// `dst` must be valid for writes of `len` bytes for the duration of the call.
+pub unsafe fn read_at(file: &File, dst: *mut u8, len: usize, offset: u64) -> io::Result<usize> {
+    let offset = file_offset(offset)?;
+    loop {
+        // SAFETY: forwarded caller contract; the kernel writes into `dst`.
+        let n = unsafe { libc::pread(file.as_raw_fd(), dst.cast(), len, offset) };
+        if n >= 0 {
+            return Ok(n.unsigned_abs());
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// Writes up to `len` bytes from raw memory at `offset`, retrying on EINTR.
+///
+/// # Safety
+/// `src` must be valid for reads of `len` bytes for the duration of the call.
+pub unsafe fn write_at(file: &File, src: *const u8, len: usize, offset: u64) -> io::Result<usize> {
+    let offset = file_offset(offset)?;
+    loop {
+        // SAFETY: forwarded caller contract; the kernel reads from `src`.
+        let n = unsafe { libc::pwrite(file.as_raw_fd(), src.cast(), len, offset) };
+        if n >= 0 {
+            return Ok(n.unsigned_abs());
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// Makes completed writes durable on stable storage. On macOS `fsync` does not flush the
+/// drive's write cache; `F_FULLFSYNC` does (fsync(2), fcntl(2)).
+pub fn sync_durable(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: fcntl on an owned, open descriptor.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
+            return Ok(());
+        }
+        // Filesystems without F_FULLFSYNC support fall back to fsync semantics.
+    }
+    file.sync_data()
+}

@@ -9,6 +9,8 @@ use std::io;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicU16;
 
+use crate::platform;
+
 /// A guest-physical range that is not backed by guest RAM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutOfBounds {
@@ -52,23 +54,23 @@ impl Region {
     }
 }
 
-/// Guest RAM regions, each backed by a private anonymous host mapping.
+/// Guest RAM regions, each backed by its own host reservation.
 #[derive(Debug)]
 pub struct GuestMemory {
     regions: Vec<Region>,
 }
 
-// SAFETY: the mappings are plain memory owned by this value; all access is via raw
+// SAFETY: the reservations are plain memory owned by this value; all access is via raw
 // copies/atomics that tolerate concurrent mutation by guest vCPUs.
 unsafe impl Send for GuestMemory {}
 // SAFETY: as above.
 unsafe impl Sync for GuestMemory {}
 
 impl GuestMemory {
-    /// Reserves lazily-populated anonymous memory for each `(gpa, len)` range. Pages are
-    /// materialized on first touch, so untouched guest RAM costs no host memory.
+    /// Reserves zero-filled memory for each `(gpa, len)` range. Pages are materialized on
+    /// first touch, so untouched guest RAM costs no host memory.
     pub fn anonymous(ranges: &[(u64, usize)]) -> io::Result<GuestMemory> {
-        let page = page_size()?;
+        let page = platform::page_size()?;
         let invalid = |msg: String| io::Error::new(io::ErrorKind::InvalidInput, msg);
         // Built incrementally so that Drop unmaps whatever was mapped if a later range fails.
         let mut mem = GuestMemory {
@@ -86,21 +88,8 @@ impl GuestMemory {
             if mem.regions.iter().any(|r| gpa < r.end() && r.gpa < end) {
                 return Err(invalid("overlapping guest RAM regions".into()));
             }
-            // SAFETY: fresh private anonymous mapping; ownership moves into `mem`.
-            let host = unsafe {
-                libc::mmap(
-                    std::ptr::null_mut(),
-                    len,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE,
-                    -1,
-                    0,
-                )
-            };
-            if host == libc::MAP_FAILED {
-                return Err(io::Error::last_os_error());
-            }
-            let host = NonNull::new(host.cast()).ok_or_else(|| io::Error::other("mmap returned NULL"))?;
+            // Ownership moves into `mem`, whose Drop releases it.
+            let host = platform::reserve(len)?;
             mem.regions.push(Region { gpa, len, host });
         }
         mem.regions.sort_by_key(|r| r.gpa);
@@ -167,19 +156,9 @@ impl GuestMemory {
 impl Drop for GuestMemory {
     fn drop(&mut self) {
         for r in &self.regions {
-            // SAFETY: each region is a mapping we created and still own.
-            unsafe { libc::munmap(r.host.as_ptr().cast(), r.len) };
+            // SAFETY: each region is a reservation we made and still own.
+            unsafe { platform::release(r.host, r.len) };
         }
-    }
-}
-
-/// The host page size, which every guest RAM mapping must be aligned to.
-pub fn page_size() -> io::Result<usize> {
-    // SAFETY: sysconf has no preconditions.
-    let n = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    match usize::try_from(n) {
-        Ok(p) if p.is_power_of_two() => Ok(p),
-        _ => Err(io::Error::other(format!("sysconf(_SC_PAGESIZE) returned {n}"))),
     }
 }
 
@@ -187,6 +166,7 @@ pub fn page_size() -> io::Result<usize> {
 #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::platform::page_size;
 
     fn mem() -> GuestMemory {
         let p = page_size().unwrap();

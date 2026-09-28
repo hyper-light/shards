@@ -12,7 +12,7 @@ publish = false
 workspace = true
 
 [dependencies]
-libc = "0.2"
+libc = { workspace = true }
 
 [[bin]]
 name = "shards-testguest"

@@ -1,16 +1,21 @@
-//! Boots real Linux guests on the host hypervisor.
+//! Boots real Linux guests on the host hypervisor. The guest-visible expectations (PSCI,
+//! GICv3, the arm64 timer) are those of an arm64 guest; other architectures add theirs as
+//! their backends land.
 
 mod common;
 
 use std::time::Duration;
 
-use common::{guest_init, kernel, run_shards, vm_run};
+use common::{cannot_run_vms, guest_init, kernel, run_shards, vm_run};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
 
 #[test]
 fn boots_to_root_mount_without_a_root_device() {
+    if cannot_run_vms() {
+        return;
+    }
     let k = kernel().to_str().unwrap();
     let r = vm_run(
         &[
@@ -45,6 +50,9 @@ fn boots_to_root_mount_without_a_root_device() {
 
 #[test]
 fn brings_up_every_vcpu_through_psci() {
+    if cannot_run_vms() {
+        return;
+    }
     let k = kernel().to_str().unwrap();
     for n in [2u32, 7, 16] {
         let cpus = n.to_string();
@@ -70,7 +78,10 @@ fn brings_up_every_vcpu_through_psci() {
 
 #[test]
 fn boots_the_hosts_maximum_vcpu_count() {
-    let max = shards_vmm::hvf::max_vcpus().unwrap();
+    if cannot_run_vms() {
+        return;
+    }
+    let max = shards_vmm::vm::max_vcpus().unwrap();
     let k = kernel().to_str().unwrap();
     let cpus = max.to_string();
     let r = vm_run(
@@ -94,6 +105,9 @@ fn boots_the_hosts_maximum_vcpu_count() {
 
 #[test]
 fn runs_init_as_pid_1_and_powers_off() {
+    if cannot_run_vms() {
+        return;
+    }
     let (k, init) = (kernel().to_str().unwrap(), guest_init().to_str().unwrap());
     let r = vm_run(
         &[
@@ -117,6 +131,9 @@ fn runs_init_as_pid_1_and_powers_off() {
 
 #[test]
 fn survives_back_to_back_boots() {
+    if cannot_run_vms() {
+        return;
+    }
     let (k, init) = (kernel().to_str().unwrap(), guest_init().to_str().unwrap());
     for i in 0..20 {
         let r = vm_run(
@@ -137,7 +154,10 @@ fn survives_back_to_back_boots() {
 }
 
 #[test]
-fn rejects_invalid_configuration() {
+fn rejects_invalid_vm_configuration() {
+    if cannot_run_vms() {
+        return;
+    }
     let (k, init) = (kernel().to_str().unwrap(), guest_init().to_str().unwrap());
     let cases: &[(&[&str], &str)] = &[
         (&["--kernel", k, "--cpus", "0"], "at least one vCPU"),
@@ -150,14 +170,50 @@ fn rejects_invalid_configuration() {
             &["--kernel", k, "--init", init, "--initrd", init],
             "mutually exclusive",
         ),
-        (&["--cpus", "1"], "--kernel is required"),
-        (&["--kernel", k, "--bogus"], "unknown argument"),
     ];
     for (args, message) in cases {
         let r = vm_run(args, TIMEOUT);
         assert_ne!(r.status, Some(0), "{args:?} should fail: {r}");
         assert!(r.stderr.contains(message), "{args:?}: expected {message:?}: {r}");
     }
+}
+
+/// Argument errors are reported the same way on every host, backend or not.
+#[test]
+fn rejects_malformed_vm_arguments() {
+    let cases: &[(&[&str], &str)] = &[
+        (&["--cpus", "1"], "--kernel is required"),
+        (&["--kernel", "k", "--bogus"], "unknown argument"),
+        (&["--kernel"], "--kernel needs a value"),
+        (&["--kernel", "k", "--cpus", "two"], "--cpus"),
+    ];
+    for (args, message) in cases {
+        let r = vm_run(args, TIMEOUT);
+        assert_eq!(r.status, Some(2), "{args:?}: {r}");
+        assert!(r.stderr.contains(message), "{args:?}: expected {message:?}: {r}");
+    }
+}
+
+/// The platform matrix (docs/design/architecture.md D13): the hosts whose backend has
+/// landed must have it, so VM tests can never skip there.
+#[test]
+fn this_host_has_its_hypervisor_backend() {
+    let expected = match (std::env::consts::OS, common::ARCH) {
+        ("macos", "aarch64") => Some("hvf"),
+        _ => None,
+    };
+    assert_eq!(shards_vmm::hv::BACKEND, expected);
+}
+
+/// Where VMs cannot run, `vm run` fails with the reason instead of crashing.
+#[test]
+fn explains_when_this_host_cannot_run_vms() {
+    let Err(why) = shards_vmm::vm::check_host() else {
+        return;
+    };
+    let r = vm_run(&["--kernel", "k"], TIMEOUT);
+    assert_eq!(r.status, Some(1), "{r}");
+    assert!(r.stderr.contains(&why), "{r}");
 }
 
 #[test]

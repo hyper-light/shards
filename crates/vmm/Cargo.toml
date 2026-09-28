@@ -11,5 +11,10 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-libc = "0.2"
 shards-abi = { path = "../abi" }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }

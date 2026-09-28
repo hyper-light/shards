@@ -9,7 +9,7 @@
 )]
 
 use std::fmt;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -29,25 +29,43 @@ pub struct Artifact {
     pub sha256: &'static str,
 }
 
-/// Firecracker CI's aarch64 guest kernel (uncompressed Image with virtio built in).
-pub const KERNEL_6_18: Artifact = Artifact {
-    name: "vmlinux-6.18.48-aarch64",
-    url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260923-6f82ac4cf331-0/aarch64/vmlinux-6.18.48",
-    sha256: "a80108af80d9549b357ea7e00bd5c12f80686869541d135a8a67f6fe1ec3451e",
-};
+/// The guest architecture: hardware virtualization runs guests of the host's own ISA.
+pub const ARCH: &str = std::env::consts::ARCH;
+
+/// Whether this host cannot run VMs: no backend for it yet, or no hardware virtualization
+/// (e.g. a CI runner that is itself a VM). VM tests then return early with a SKIP line;
+/// `this_host_has_its_hypervisor_backend` pins which hosts must have a backend.
+pub fn cannot_run_vms() -> bool {
+    match shards_vmm::vm::check_host() {
+        Ok(()) => false,
+        Err(why) => {
+            // Straight to stderr: libtest captures `eprintln!`, and a passing test's
+            // captured output is never shown.
+            let _ = writeln!(std::io::stderr(), "SKIP: {why}");
+            true
+        }
+    }
+}
+
+/// Firecracker CI's guest kernel for the host architecture (uncompressed, virtio built in).
+pub fn kernel_artifact() -> Artifact {
+    match ARCH {
+        "aarch64" => Artifact {
+            name: "vmlinux-6.18.48-aarch64",
+            url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260923-6f82ac4cf331-0/aarch64/vmlinux-6.18.48",
+            sha256: "a80108af80d9549b357ea7e00bd5c12f80686869541d135a8a67f6fe1ec3451e",
+        },
+        other => panic!("no pinned guest kernel for {other} yet"),
+    }
+}
 
 fn sha256(path: &Path) -> String {
-    let out = Command::new("shasum")
-        .args(["-a", "256"])
-        .arg(path)
-        .output()
-        .expect("running shasum");
-    String::from_utf8(out.stdout)
-        .unwrap()
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_string()
+    use sha2::Digest;
+    let bytes = std::fs::read(path).unwrap();
+    sha2::Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Returns the artifact's cached path, downloading and verifying it if needed.
@@ -74,12 +92,13 @@ pub fn fetch(a: &Artifact) -> PathBuf {
 
 pub fn kernel() -> &'static Path {
     static K: OnceLock<PathBuf> = OnceLock::new();
-    K.get_or_init(|| fetch(&KERNEL_6_18))
+    K.get_or_init(|| fetch(&kernel_artifact()))
 }
 
 /// Builds guest package `name` (static musl, `guest` profile) and returns its binary.
 fn guest_binary(name: &str) -> PathBuf {
     let target_dir = workspace().join("target/guest");
+    let guest_target = format!("{ARCH}-unknown-linux-musl");
     // Go through the rustup proxy on PATH (not $CARGO, the bare cargo binary) and drop
     // the dyld paths cargo injects into test processes: the proxy's environment is
     // what lets rust-lld find the toolchain's libLLVM.
@@ -94,14 +113,14 @@ fn guest_binary(name: &str) -> PathBuf {
             "--profile",
             "guest",
             "--target",
-            "aarch64-unknown-linux-musl",
+            &guest_target,
         ])
         .arg("--target-dir")
         .arg(&target_dir)
         .status()
         .unwrap();
     assert!(st.success(), "building {name}");
-    target_dir.join("aarch64-unknown-linux-musl/guest").join(name)
+    target_dir.join(guest_target).join("guest").join(name)
 }
 
 /// The production guest init (PID 1).
@@ -116,23 +135,28 @@ pub fn test_guest() -> &'static Path {
     T.get_or_init(|| guest_binary("shards-testguest"))
 }
 
-/// A private copy of the `shards` binary, ad-hoc signed with the hypervisor entitlement.
+/// A private copy of the `shards` binary; on macOS, ad-hoc signed with the hypervisor
+/// entitlement, without which Hypervisor.framework refuses the process.
 pub fn shards() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
     V.get_or_init(|| {
         let dir = workspace().join("target/e2e");
         std::fs::create_dir_all(&dir).unwrap();
-        let copy = dir.join(format!("shards-{}", std::process::id()));
+        let copy = dir
+            .join(format!("shards-{}", std::process::id()))
+            .with_extension(std::env::consts::EXE_EXTENSION);
         std::fs::copy(env!("CARGO_BIN_EXE_shards"), &copy).unwrap();
-        let st = Command::new("codesign")
-            .arg("--entitlements")
-            .arg(workspace().join("resources/hvf.entitlements"))
-            .args(["--force", "-s", "-"])
-            .arg(&copy)
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
-        assert!(st.success(), "codesign");
+        if cfg!(target_os = "macos") {
+            let st = Command::new("codesign")
+                .arg("--entitlements")
+                .arg(workspace().join("resources/hvf.entitlements"))
+                .args(["--force", "-s", "-"])
+                .arg(&copy)
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(st.success(), "codesign");
+        }
         copy
     })
 }

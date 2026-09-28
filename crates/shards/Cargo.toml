@@ -11,8 +11,14 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-libc = "0.2"
 shards-vmm = { path = "../vmm" }
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
 [dev-dependencies]
+sha2 = "0.10"
 shards-testguest = { path = "../testguest" }

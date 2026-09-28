@@ -1,12 +1,12 @@
-//! A virtual machine on Hypervisor.framework: construction, vCPU threads, exit handling.
+//! An arm64 VM on Hypervisor.framework: construction, vCPU threads, exit handling.
 
 use std::fs::File;
 use std::io::Write;
-use std::os::fd::FromRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 
+use super::{Config, Console, ExitReason};
 use crate::arch::aarch64::{self, boot, esr, layout, psci, sysreg};
 use crate::devices::control::Control;
 use crate::devices::get_le;
@@ -14,55 +14,15 @@ use crate::devices::rtc::Pl031;
 use crate::devices::serial::Serial;
 use crate::devices::virtio::{block::Block, mmio as virtio_mmio};
 use crate::devices::{Interrupt, MmioBus};
-use crate::hvf::{self, Exit, Gic, GicLayout, Granule, Perms, Reg, Vcpu, VcpuKicker};
+use crate::hv::hvf::{self, Exit, Gic, GicLayout, Granule, Perms, Reg, Vcpu, VcpuKicker};
 use crate::memory::GuestMemory;
 use crate::sync::{lock, wait};
-use crate::{debug, info, initramfs, warn};
+use crate::{debug, info, initramfs, platform, warn};
 
 const MIB: u64 = 1 << 20;
 /// Smallest guest that can hold a kernel, its early allocations and the DTB window.
 const MIN_MEMORY_MIB: u64 = 64;
 const SPI_INTID_BASE: u32 = 32;
-
-#[derive(Debug, Clone)]
-pub struct Config {
-    pub kernel: PathBuf,
-    /// A prebuilt initramfs image.
-    pub initrd: Option<PathBuf>,
-    /// A guest executable to run as PID 1 from a generated initramfs (exclusive with
-    /// `initrd`).
-    pub init: Option<PathBuf>,
-    pub cmdline: String,
-    pub vcpus: u32,
-    pub memory_mib: u64,
-    /// Where guest console (UART) output goes.
-    pub console: Console,
-    /// virtio-blk disks, in the order the guest enumerates them (vda, vdb, ...).
-    pub disks: Vec<Disk>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Disk {
-    pub path: PathBuf,
-    pub read_only: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Console {
-    Stdout,
-    Discard,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExitReason {
-    /// PSCI SYSTEM_OFF.
-    PowerOff,
-    /// PSCI SYSTEM_RESET (Linux issues it on reboot and, with `panic=-1`, on panic).
-    Reset,
-    /// Stopped by the host.
-    Stopped,
-    Error(String),
-}
 
 /// A running VM's handle for host-side control.
 #[derive(Debug, Clone)]
@@ -251,10 +211,22 @@ fn architected_ipa_bits(ram_end: u64) -> Result<u32, String> {
         })
 }
 
-/// Boots a VM and runs it on the calling thread's behalf until it exits.
-pub fn run(cfg: &Config) -> Result<ExitReason, String> {
-    let (handle, join) = start(cfg)?;
-    Ok(join.wait(handle))
+/// Ok when this host can run VMs; otherwise, why not.
+pub fn check_host() -> Result<(), String> {
+    if hvf::supported() {
+        Ok(())
+    } else {
+        Err(
+            "Hypervisor.framework is unavailable on this host (sysctl kern.hv_support = 0), \
+             as inside a VM without nested virtualization"
+                .into(),
+        )
+    }
+}
+
+/// The most vCPUs one VM can have on this host.
+pub fn max_vcpus() -> Result<u32, String> {
+    hvf::max_vcpus().map_err(|e| e.to_string())
 }
 
 /// Joins the vCPU threads and tears the VM down once the guest exits.
@@ -279,6 +251,7 @@ impl Running {
 }
 
 pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
+    check_host()?;
     if cfg.vcpus == 0 {
         return Err("at least one vCPU is required".into());
     }
@@ -350,10 +323,7 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     };
     let mpidrs: Vec<u64> = (0..cfg.vcpus).map(aarch64::mpidr).collect();
     let mut rng_seed = [0u8; 64];
-    // SAFETY: getentropy writes at most 256 bytes into the provided buffer.
-    if unsafe { libc::getentropy(rng_seed.as_mut_ptr().cast(), rng_seed.len()) } != 0 {
-        return Err(format!("getentropy: {}", std::io::Error::last_os_error()));
-    }
+    platform::fill_random(&mut rng_seed).map_err(|e| format!("host entropy: {e}"))?;
     if cfg.disks.len() as u64 > layout::VIRTIO_MMIO_MAX {
         return Err(format!(
             "at most {} virtio devices are supported",
@@ -404,15 +374,7 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     );
 
     let out: Box<dyn Write + Send> = match cfg.console {
-        Console::Stdout => {
-            // SAFETY: dup has no memory-safety preconditions.
-            let fd = unsafe { libc::dup(1) };
-            if fd < 0 {
-                return Err(format!("dup(stdout): {}", std::io::Error::last_os_error()));
-            }
-            // SAFETY: `fd` is a fresh descriptor that the File owns from here on.
-            Box::new(unsafe { File::from_raw_fd(fd) })
-        }
+        Console::Stdout => Box::new(platform::stdout_file().map_err(|e| format!("console: {e}"))?),
         Console::Discard => Box::new(std::io::sink()),
     };
     let serial = Arc::new(Serial::new(
@@ -510,7 +472,7 @@ fn vcpu_thread(
     boot_start: Option<Start>,
     created: mpsc::Sender<Result<(), String>>,
 ) {
-    if let Err(e) = crate::thread::make_current_realtime()
+    if let Err(e) = platform::prioritize_vcpu_thread()
         && index == 0
     {
         warn!("vCPU threads run without real-time policy (coarser guest timers): {e}");

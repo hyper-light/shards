@@ -1,11 +1,10 @@
 //! virtio-blk backed by a host file (virtio 1.3 §5.2).
 //!
 //! Data moves directly between the file and guest memory: the device passes raw guest
-//! pointers to `pread`/`pwrite`, so no Rust reference ever aliases memory the guest
+//! pointers to positional reads and writes, so no Rust reference ever aliases memory the guest
 //! may modify concurrently.
 
 use std::fs::{File, OpenOptions};
-use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,7 +13,7 @@ use std::thread::{self, JoinHandle, Thread};
 use super::queue::{Chain, Descriptor, Queue};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
 use crate::memory::GuestMemory;
-use crate::{debug, warn};
+use crate::{debug, platform, warn};
 
 pub const DEVICE_ID: u32 = 2;
 const SECTOR: u64 = 512;
@@ -255,7 +254,10 @@ fn execute(chain: &Chain, status: Descriptor, mem: &GuestMemory, backend: &Backe
         T_IN => transfer(&out, sector, mem, backend, Direction::Read),
         T_OUT if backend.read_only => Err(S_IOERR),
         T_OUT => transfer(&body, sector, mem, backend, Direction::Write).map(|_| 0),
-        T_FLUSH => flush(&backend.file).map(|()| 0),
+        // Durable on stable storage, not just in the host page cache (platform::sync_durable).
+        T_FLUSH => platform::sync_durable(&backend.file)
+            .map(|()| 0)
+            .map_err(|_| S_IOERR),
         T_GET_ID => {
             let mut written = 0u32;
             let mut id = backend.id.as_slice();
@@ -330,7 +332,6 @@ fn transfer(
     if end > backend.capacity * SECTOR {
         return Err(S_IOERR);
     }
-    let fd = backend.file.as_raw_fd();
     let mut offset = start;
     for d in bufs {
         let ptr = mem.host_ptr(d.addr, d.len as usize).map_err(|_| S_IOERR)?;
@@ -342,35 +343,20 @@ fn transfer(
             let n = unsafe {
                 let p = ptr.add(done);
                 match dir {
-                    Direction::Read => libc::pread(fd, p.cast(), remaining, offset as libc::off_t),
-                    Direction::Write => libc::pwrite(fd, p.cast(), remaining, offset as libc::off_t),
+                    Direction::Read => platform::read_at(&backend.file, p, remaining, offset),
+                    Direction::Write => platform::write_at(&backend.file, p, remaining, offset),
                 }
             };
             match n {
-                n if n > 0 => {
-                    done += n as usize;
+                Ok(0) | Err(_) => return Err(S_IOERR), // 0: unexpected end of file
+                Ok(n) => {
+                    done += n;
                     offset += n as u64;
                 }
-                0 => return Err(S_IOERR), // unexpected end of file
-                _ if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted => {}
-                _ => return Err(S_IOERR),
             }
         }
     }
     u32::try_from(total).map_err(|_| S_IOERR)
-}
-
-/// Makes completed writes durable. On macOS `fsync` does not flush the drive's cache;
-/// `F_FULLFSYNC` does (fsync(2), fcntl(2)).
-fn flush(file: &File) -> Result<(), u8> {
-    #[cfg(target_os = "macos")]
-    {
-        // SAFETY: fcntl on an owned, open descriptor.
-        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
-            return Ok(());
-        }
-    }
-    file.sync_data().map_err(|_| S_IOERR)
 }
 
 #[cfg(test)]

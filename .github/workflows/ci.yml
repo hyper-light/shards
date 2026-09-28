@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0 # keep in sync with rust-toolchain.toml
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # The platform matrix (docs/design/architecture.md D13). Every target is linted; targets
+  # the runner can execute are tested. VM tests skip, with a SKIP line, where the host has
+  # no backend yet or no hardware virtualization (hosted runners are VMs themselves).
+  target:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-15, test: true }
+          - { target: x86_64-apple-darwin, os: macos-15, test: false }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04, test: true }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, test: true }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04, test: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, test: true }
+          - { target: x86_64-pc-windows-msvc, os: windows-2025, test: true }
+          - { target: aarch64-pc-windows-msvc, os: windows-2025, test: false }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0 # keep in sync with rust-toolchain.toml
+          targets: ${{ matrix.target }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Lints (production code never panics; clippy.toml exempts tests)
+        shell: bash
+        run: cargo clippy --locked --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
+      - name: Tests
+        if: matrix.test
+        shell: bash
+        run: cargo test --locked --workspace --release --target ${{ matrix.target }}

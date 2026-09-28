@@ -6,7 +6,7 @@ mod common;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use common::{kernel, test_guest, vm_run};
+use common::{cannot_run_vms, kernel, test_guest, vm_run};
 use shards_testguest::{fill, first_mismatch};
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -67,6 +67,9 @@ fn run_test(disks: &Disks, test: &str, extra: &str) -> common::Run {
 
 #[test]
 fn guest_reads_writes_and_flushes_through_virtio_blk() {
+    if cannot_run_vms() {
+        return;
+    }
     let disks = Disks::new("blk", 64 << 20, 16 << 20);
     let r = run_test(&disks, "blk", "");
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
@@ -90,6 +93,9 @@ fn guest_reads_writes_and_flushes_through_virtio_blk() {
 
 #[test]
 fn concurrent_readers_see_consistent_data() {
+    if cannot_run_vms() {
+        return;
+    }
     let disks = Disks::new("blk-stress", 32 << 20, 1 << 20);
     let r = run_test(&disks, "blk_stress", "shards_seconds=3");
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");

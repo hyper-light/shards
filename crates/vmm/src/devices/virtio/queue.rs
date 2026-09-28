@@ -371,7 +371,7 @@ mod tests {
 
     impl Driver {
         fn new(size: u16) -> Driver {
-            let p = crate::memory::page_size().unwrap();
+            let p = crate::platform::page_size().unwrap();
             let mem = GuestMemory::anonymous(&[(BASE, 8 * p)]).unwrap();
             Driver {
                 mem,

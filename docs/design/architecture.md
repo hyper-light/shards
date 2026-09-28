@@ -49,6 +49,44 @@ performance and resource usage.
 | D11 | GPUs are zero-cost when unused. GPU VMs are a separate class assigned from a warm pool (VFIO via iommufd on Linux; virtio-gpu/Venus plus a remoting broker on macOS). | Assigned devices pin all RAM and break CoW; FLR ≥ 100 ms; CUDA init takes seconds [GPU §2.3, R1–R6] |
 | D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7] |
 
+### Platforms (D13)
+
+shards is platform- and architecture-agnostic. The matrix is the sibling projects' release
+matrix: 8 targets, all 64-bit. Hardware virtualization runs guests of the host's own ISA, so
+the guest arch is always the host arch.
+
+| Host OS | Arch (Rust triple / OCI name) | Backend (`hv`) | Status |
+|---|---|---|---|
+| Linux (glibc, musl) | x86_64 / amd64 | KVM | planned |
+| Linux (glibc, musl) | aarch64 / arm64 | KVM | planned |
+| macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux |
+| macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | planned |
+| Windows | x86_64 / amd64 | Windows Hypervisor Platform | planned |
+| Windows | aarch64 / arm64 | Windows Hypervisor Platform (arm64) | planned |
+
+Every target builds and passes the lints. Until a target's backend lands, `vm run` there
+fails with an explanation (`vm::check_host`), as it does where the OS reports no hardware
+virtualization, such as hosted CI runners without nested virtualization.
+
+Code layers:
+
+- **`hv`**: one backend per host platform. build.rs selects it at compile time as
+  `cfg(hv = "...")`. The backend-neutral vCPU interface is designed together with the second
+  backend (KVM), so that two real implementations shape it. Each backend completes an MMIO
+  access its own way:
+  - HVF: the VMM writes the register and advances PC
+  - KVM: the kernel does it on the next `KVM_RUN`
+  - WHP: the instruction emulator does it
+- **`arch`**: per guest architecture. Covers memory map, boot protocol (arm64 `Image` + FDT;
+  x86_64 64-bit boot protocol/PVH), interrupt-controller description, firmware interface (PSCI
+  on arm64) and vCPU reset state.
+- **`platform`**: per host OS. Covers memory reservation (mmap / VirtualAlloc), positional I/O,
+  durable flush, entropy, thread scheduling policy, and the console.
+- **`vm`**: backend-neutral configuration and lifecycle types, with one implementation per
+  backend.
+- **Written once**: everything else — devices, virtio, the runtime, and guest software (built
+  for every arch's musl target).
+
 ## 3. Components
 
 ```
@@ -57,7 +95,7 @@ shards (host CLI, docker-compatible) ──unix socket──▶ shardsd (daemon)
                                                      │  volumes · templates/snapshots
                                                      │  warm VMM pool · policy
                                                      ▼
-                                       shards-vmm process (one per microVM)
+                                       VMM process (one per microVM)
                                        hv backend (HVF | KVM) · memory · boot/FDT
                                        vCPU threads · GIC · virtio devices · snapshot
                                                      │ virtio (blk/net/vsock/console/rng/pmem/fs/gpu)
@@ -67,7 +105,7 @@ shards (host CLI, docker-compatible) ──unix socket──▶ shardsd (daemon)
                                        containers (agents, compose services)
 ```
 
-- **VMM** (`shards-vmm`): one process per microVM. That is forced on macOS
+- **VMM** (the `shards-vmm` library, run by the `shards` binary): one process per microVM. That is forced on macOS
   [GT §1.1] and chosen on Linux for fault isolation, as Firecracker does. The hot
   path is kept free of allocation and locks; device threads communicate with vCPU
   threads through lock-free rings.
