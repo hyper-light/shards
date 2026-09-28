@@ -57,3 +57,43 @@ An interleaved rerun (200 + 200 boots, platform-measurements.md M16) confirmed i
 boots stalled up to 1.06 s (5 of 200); copied boots never did (max 23.6 ms). M15 found no
 such tail in 6.3 M in-process faults. The stall comes from fresh processes mapping the
 file, so D7 maps snapshot memory before the request arrives.
+
+## Restore (`crates/shards/benches/restore.rs`)
+
+`cargo bench -p shards --bench restore [-- --runs N --cpus N --memory MIB]`
+
+Method:
+- One snapshot is taken of the `resume` test guest. It asks for the snapshot and, as its
+  first act afterwards, writes the RESUMED marker, then powers off.
+- The snapshot is restored many times, alternating cold and warm samples after three
+  warm-up pairs:
+  - **cold**: a fresh `shards vm restore` process per sample
+  - **warm**: `shards vm restore --hold` prepares everything, then receives its start
+    request (a line on stdin)
+
+| Phase | Measured from | Measured to |
+|---|---|---|
+| `cold_restore` | VMM `main` | the RESUMED marker (guest running again) |
+| `cold_spawn_exit` | spawn | reap (host wall clock around the whole process) |
+| `warm_request` | the release (the start request) | the RESUMED marker |
+| `warm_peak_rss` | — | `ru_maxrss`, including touched guest memory |
+
+A warm VMM has already mapped snapshot memory, created the VM, GIC and vCPUs, loaded
+vCPU state, and restored the distributor and devices (D2, D14). A start request only
+releases the vCPUs; the counter offset is taken at release, so the guest sees no time
+jump.
+
+"Guest running again" is not yet "usable". The ≤5 ms target counts until the in-VM
+engine acknowledges over vsock; that part is to be measured.
+
+### Runs
+
+**2026-09-28** · f190071 plus the uncommitted harness · Apple M5 Max (Mac17,6) · macOS
+26.4.1 (25E253) · kernel vmlinux-6.18.48-aarch64 · n=50, 1 vCPU, 256 MiB
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| cold_restore | 744 µs | 937 µs | 1195 µs | 1195 µs |
+| cold_spawn_exit | 5574 µs | 6083 µs | 7378 µs | 7378 µs |
+| **warm_request** | **17 µs** | **20 µs** | **35 µs** | **35 µs** |
+| warm_peak_rss | 13.4 MiB | 13.4 MiB | 13.4 MiB | 13.4 MiB |

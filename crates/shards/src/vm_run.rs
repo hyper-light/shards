@@ -18,8 +18,10 @@ const RUN_USAGE: &str = "usage: shards vm run --kernel PATH [--initrd PATH | --i
   Console escape: Ctrl-A x stops the VM.";
 
 const RESTORE_USAGE: &str =
-    "usage: shards vm restore DIR [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+    "usage: shards vm restore DIR [--hold] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
   Resumes the VM in snapshot directory DIR.
+  --hold: prepare the VM, print `shards-ready` on stderr, and start it when a line arrives
+          on stdin: a warm VM whose start costs only the release.
   Console escape: Ctrl-A x stops the VM.";
 
 /// Arguments as UTF-8 strings, with an error naming the first one that is not.
@@ -110,6 +112,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<RestoreConfig, 
     let mut args = utf8(args);
     let (mut dir, mut console, mut snapshot_dir, mut then) =
         (None, Console::Stdout, None, AfterSnapshot::Stop);
+    let mut hold = false;
     while let Some(arg) = args.next() {
         let arg = arg?;
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"))?;
@@ -118,6 +121,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<RestoreConfig, 
         }
         match arg.as_str() {
             "-h" | "--help" => return Err(String::new()),
+            "--hold" => hold = true,
             flag if flag.starts_with('-') => return Err(format!("unknown argument {flag:?}")),
             _ if dir.is_some() => return Err(format!("unexpected argument {arg:?}")),
             _ => dir = Some(PathBuf::from(arg)),
@@ -127,6 +131,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<RestoreConfig, 
         dir: dir.ok_or("the snapshot directory is required")?,
         console,
         snapshot: policy(snapshot_dir, then),
+        hold,
     })
 }
 
@@ -187,10 +192,20 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
 }
 
 pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
-    match parsed(parse_restore(args), RESTORE_USAGE) {
-        Ok(cfg) => supervise(vm::restore(&cfg), cfg.console),
-        Err(code) => code,
+    let cfg = match parsed(parse_restore(args), RESTORE_USAGE) {
+        Ok(cfg) => cfg,
+        Err(code) => return code,
+    };
+    let started = vm::restore(&cfg);
+    if cfg.hold
+        && let Ok((handle, _)) = &started
+    {
+        let _ = writeln!(std::io::stderr(), "shards-ready");
+        // Any line (or end of input) is the start request.
+        let _ = std::io::stdin().read_line(&mut String::new());
+        handle.release();
     }
+    supervise(started, cfg.console)
 }
 
 /// Runs a started VM to its end: console, timing report, exit code.
@@ -215,7 +230,8 @@ fn supervise(started: Result<(Handle, Running), String>, console: Console) -> Ex
             .collect();
         let _ = writeln!(
             std::io::stderr(),
-            "shards-timing {{\"entry_us\":{},\"exit_us\":{},\"markers\":[{}]}}",
+            "shards-timing {{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"markers\":[{}]}}",
+            handle.released_at_us().unwrap_or(0),
             handle.entered_at_us().unwrap_or(0),
             handle.exited_at_us().unwrap_or(0),
             markers.join(",")

@@ -184,6 +184,10 @@ impl Run {
         self.stderr.lines().find_map(|l| l.strip_prefix("shards-timing "))
     }
 
+    pub fn released_us(&self) -> Option<u128> {
+        self.timing_field("released_us")
+    }
+
     pub fn entry_us(&self) -> Option<u128> {
         self.timing_field("entry_us")
     }

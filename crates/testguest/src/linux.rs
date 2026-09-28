@@ -15,6 +15,7 @@ pub fn main() {
             "blk" => blk(),
             "blk_stress" => blk_stress(),
             "snapshot" => snapshot(),
+            "resume" => resume(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -403,5 +404,14 @@ fn snapshot() -> Result<(), String> {
     }
     let hex: String = entropy.iter().map(|b| format!("{b:02x}")).collect();
     let _ = writeln!(io::stdout(), "SHARDS-TEST INFO random={hex}");
+    Ok(())
+}
+
+/// The benchmark guest: asks for a snapshot; a restored clone marks that it runs again
+/// and powers off at once, so restore timings contain no guest work.
+fn resume() -> Result<(), String> {
+    let control = ControlPage::map()?;
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+    control.write(shards_abi::control::MARKER, shards_abi::marker::RESUMED);
     Ok(())
 }

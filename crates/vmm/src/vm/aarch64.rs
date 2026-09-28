@@ -36,9 +36,9 @@ pub enum Start {
 #[derive(Debug)]
 pub struct Restored {
     pub vcpus: Vec<VcpuState>,
-    /// One counter offset for every vCPU, so the guest's counter continues from the
-    /// snapshot and agrees across CPUs.
-    pub counter_offset: u64,
+    /// The guest counter when the snapshot was taken. At release every vCPU gets one
+    /// offset, so the counter continues from here and agrees across CPUs.
+    pub counter: u64,
     /// The CPU the snapshot was taken on; a restore on a different one is refused.
     pub cpu_id: Vec<(u16, u64)>,
     /// GIC distributor registers, applied once every vCPU exists (see [`finish`]).
@@ -294,7 +294,7 @@ pub fn restore(snap: &Snapshot, memory_file: &File, console: Console) -> Result<
         control: a.control,
         start: Start::Restore(Restored {
             vcpus: state.vcpus,
-            counter_offset: hv::host_counter().wrapping_sub(state.counter),
+            counter: state.counter,
             cpu_id: state.cpu_id,
             dist: state.dist,
             devices: snap.devices.clone(),

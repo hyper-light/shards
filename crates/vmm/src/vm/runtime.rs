@@ -55,6 +55,17 @@ impl Handle {
         self.shared.stop(ExitReason::Stopped);
     }
 
+    /// Starts the vCPUs of a VM restored with `hold`. Everything else is ready, so this
+    /// is all a start request costs.
+    pub fn release(&self) {
+        self.shared.release_vcpus();
+    }
+
+    /// Microseconds since VMM start at which the vCPUs were released.
+    pub fn released_at_us(&self) -> Option<u128> {
+        self.shared.released_at_us.get().copied()
+    }
+
     /// Feeds bytes to the guest console as if typed.
     pub fn console_input(&self, bytes: &[u8]) {
         self.serial.enqueue_input(bytes);
@@ -83,13 +94,26 @@ struct Shared {
     entered_at_us: OnceLock<u128>,
     pause: Mutex<Pause>,
     paused: Condvar,
-    /// vCPUs wait here after creation until the machine is complete.
-    released: Mutex<bool>,
+    /// vCPUs wait here after creation until the machine is complete (and, for a held
+    /// restore, until the request arrives).
+    released: Mutex<Release>,
     release: Condvar,
+    /// A restored guest's counter at its snapshot.
+    resume_counter: Option<u64>,
+    /// When the vCPUs were released (µs since VMM start).
+    released_at_us: OnceLock<u128>,
+}
+
+#[derive(Debug, Default)]
+struct Release {
+    done: bool,
+    /// For a restore: the counter offset every vCPU applies, taken at release so the
+    /// guest counter continues from the snapshot with no jump.
+    counter_offset: Option<u64>,
 }
 
 impl Shared {
-    fn new(vcpus: u32) -> Shared {
+    fn new(vcpus: u32, resume_counter: Option<u64>) -> Shared {
         Shared {
             kickers: (0..vcpus).map(|_| OnceLock::new()).collect(),
             exiting: AtomicBool::new(false),
@@ -102,23 +126,34 @@ impl Shared {
                 ..Pause::default()
             }),
             paused: Condvar::new(),
-            released: Mutex::new(false),
+            released: Mutex::new(Release::default()),
             release: Condvar::new(),
+            resume_counter,
+            released_at_us: OnceLock::new(),
         }
     }
 
-    /// Lets every created vCPU run.
+    /// Lets every created vCPU run (once).
     fn release_vcpus(&self) {
-        *lock(&self.released) = true;
+        let mut r = lock(&self.released);
+        if r.done {
+            return;
+        }
+        r.done = true;
+        r.counter_offset = self.resume_counter.map(|c| hv::host_counter().wrapping_sub(c));
+        let _ = self.released_at_us.set(crate::log::uptime_us());
+        drop(r);
         self.release.notify_all();
     }
 
-    /// Blocks a created vCPU until the machine is complete, or the VM is stopping.
-    fn wait_release(&self) {
+    /// Blocks a created vCPU until released; returns the counter offset to apply, if
+    /// any. Returns at once if the VM is stopping.
+    fn wait_release(&self) -> Option<u64> {
         let mut r = lock(&self.released);
-        while !*r && !self.exiting() {
+        while !r.done && !self.exiting() {
             r = wait(&self.release, r);
         }
+        r.counter_offset
     }
 
     fn kick_all(&self) {
@@ -239,7 +274,7 @@ fn check_vcpus(vcpus: u32) -> Result<(), String> {
 pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     check_host()?;
     check_vcpus(cfg.vcpus)?;
-    launch(machine::build(cfg)?, cfg.snapshot.clone())
+    launch(machine::build(cfg)?, cfg.snapshot.clone(), false)
 }
 
 /// Resumes the VM a snapshot holds, in this process.
@@ -253,10 +288,11 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
         snap.config.memory_mib,
         cfg.dir.display()
     );
-    launch(machine, cfg.snapshot.clone())
+    launch(machine, cfg.snapshot.clone(), cfg.hold)
 }
 
-fn launch(m: Machine, snapshots: Option<SnapshotPolicy>) -> Result<(Handle, Running), String> {
+/// Starts the machine's vCPUs; with `hold`, they wait for [`Handle::release`].
+fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(Handle, Running), String> {
     let Machine {
         vm,
         memory,
@@ -269,8 +305,12 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>) -> Result<(Handle, Runn
     let vcpus = config.vcpus;
     let vm = Arc::new(vm);
     let bus = Arc::new(bus);
+    let resume_counter = match &start {
+        Start::Restore(r) => Some(r.counter),
+        Start::Boot(_) => None,
+    };
     let start = Arc::new(start);
-    let shared = Arc::new(Shared::new(vcpus));
+    let shared = Arc::new(Shared::new(vcpus, resume_counter));
 
     let mut threads = Vec::with_capacity(vcpus as usize + 1);
     if let Some(policy) = snapshots {
@@ -323,7 +363,8 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>) -> Result<(Handle, Runn
     }
     if !shared.exiting() {
         match machine::finish(&vm, &bus, &start) {
-            Ok(()) => shared.release_vcpus(),
+            Ok(()) if !hold => shared.release_vcpus(),
+            Ok(()) => {}
             Err(e) => shared.stop(ExitReason::Error(e)),
         }
     }
@@ -370,7 +411,7 @@ fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu, Stri
                 .vcpus
                 .get(index)
                 .ok_or_else(|| format!("the snapshot has no vCPU {index}"))?;
-            vcpu.restore_state(state, r.counter_offset).map_err(e)?;
+            vcpu.restore_state(state).map_err(e)?;
         }
     }
     Ok(vcpu)
@@ -400,7 +441,11 @@ fn vcpu_thread(
         let _ = slot.set(vcpu.kicker());
     }
     let _ = created.send(Ok(()));
-    sh.wait_release();
+    if let Some(offset) = sh.wait_release()
+        && let Err(e) = vcpu.set_counter_offset(offset)
+    {
+        return sh.stop(ExitReason::Error(format!("vCPU {index}: {e}")));
+    }
     if index == 0 {
         let _ = sh.entered_at_us.set(crate::log::uptime_us());
     }

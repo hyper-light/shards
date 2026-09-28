@@ -53,6 +53,14 @@ impl Handle {
     pub fn console_input(&self, _bytes: &[u8]) {
         match self.0 {}
     }
+
+    pub fn release(&self) {
+        match self.0 {}
+    }
+
+    pub fn released_at_us(&self) -> Option<u128> {
+        match self.0 {}
+    }
 }
 
 #[derive(Debug)]

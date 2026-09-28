@@ -44,6 +44,9 @@ pub struct RestoreConfig {
     pub console: Console,
     /// For snapshots the restored guest asks for.
     pub snapshot: Option<SnapshotPolicy>,
+    /// Prepare everything, then wait for [`Handle::release`]: a warm VM whose start
+    /// request costs only the release.
+    pub hold: bool,
 }
 
 #[derive(Debug, Clone)]

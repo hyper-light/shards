@@ -470,6 +470,12 @@ impl Vcpu {
         ID_REGS.iter().map(|&r| Ok((r, self.sys.sys_reg(r)?))).collect()
     }
 
+    /// Sets `CNTVCT_EL0 = host_counter() - offset`. Every vCPU of a VM gets the same
+    /// offset, so their counters agree.
+    pub fn set_counter_offset(&mut self, offset: u64) -> Result<()> {
+        Ok(self.sys.set_vtimer_offset(offset)?)
+    }
+
     /// The guest's virtual counter now.
     pub fn guest_counter(&self) -> Result<u64> {
         Ok(sys::host_counter().wrapping_sub(self.sys.vtimer_offset()?))
@@ -521,9 +527,9 @@ impl Vcpu {
         })
     }
 
-    /// Loads captured state into this freshly created vCPU. `counter_offset` makes the
-    /// guest counter continuous and must be the same for every vCPU of the VM.
-    pub fn restore_state(&mut self, st: &VcpuState, counter_offset: u64) -> Result<()> {
+    /// Loads captured state into this freshly created vCPU. The guest counter is set
+    /// separately, when the vCPU is released ([`Vcpu::set_counter_offset`]).
+    pub fn restore_state(&mut self, st: &VcpuState) -> Result<()> {
         let s = &mut self.sys;
         for (n, &v) in (0u8..).zip(st.x.iter()) {
             s.set_x(n, v)?;
@@ -544,7 +550,6 @@ impl Vcpu {
         for &(r, v) in &st.icc {
             s.set_icc_reg(r, v)?;
         }
-        s.set_vtimer_offset(counter_offset)?;
         self.power.set_state(self.index, st.power);
         // A running vCPU resumes where it stopped; others park until their CPU_ON.
         self.on = st.power == Power::On;
@@ -618,7 +623,7 @@ mod tests {
             s.spawn(move || {
                 let st = from_a.recv().unwrap();
                 let mut b = vm.create_vcpu(1).unwrap();
-                b.restore_state(&st, 0).unwrap();
+                b.restore_state(&st).unwrap();
                 assert_eq!(b.save_state().unwrap(), st);
                 done_tx.send(()).unwrap();
             });
