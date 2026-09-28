@@ -1,7 +1,7 @@
 //! Targets without a hypervisor backend: every start fails with an explanation. The
 //! handle types hold a private uninhabited field, so no value of them can exist.
 
-use super::{Config, ExitReason};
+use super::{Config, ExitReason, RestoreConfig};
 
 fn no_backend() -> String {
     format!(
@@ -12,6 +12,10 @@ fn no_backend() -> String {
 }
 
 pub fn start(_cfg: &Config) -> Result<(Handle, Running), String> {
+    Err(no_backend())
+}
+
+pub fn restore(_cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     Err(no_backend())
 }
 

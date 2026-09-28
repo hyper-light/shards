@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{MmioDevice, get_le, put_le};
+use crate::snapshot::codec::{self, Reader, Writer};
 use crate::sync::lock;
 
 const DR: u64 = 0x000; // data (current seconds)
@@ -69,6 +70,29 @@ impl MmioDevice for Pl031 {
             IMSC => s.imsc = v & 1,
             _ => {}
         }
+    }
+
+    fn pause(&self) {}
+
+    fn resume(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// The guest's offset from host time is its state: a restored guest reads current
+    /// wall time with the same offset.
+    fn save(&self, w: &mut Writer) {
+        let s = lock(&self.state);
+        w.u64(s.offset as u64);
+        w.u32(s.mr);
+        w.u32(s.imsc);
+    }
+
+    fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()> {
+        let mut s = lock(&self.state);
+        s.offset = r.u64()? as i64;
+        s.mr = r.u32()?;
+        s.imsc = r.u32()? & 1;
+        Ok(())
     }
 }
 

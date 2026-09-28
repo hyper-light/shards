@@ -10,6 +10,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use super::{Interrupt, MmioDevice};
+use crate::snapshot::codec::{self, Reader, Writer};
 use crate::sync::lock;
 
 const RBR_THR_DLL: u64 = 0;
@@ -225,6 +226,51 @@ impl MmioDevice for Serial {
             _ => {}
         }
         self.update_irq(&mut s);
+    }
+
+    fn pause(&self) {}
+
+    fn resume(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn save(&self, w: &mut Writer) {
+        let s = lock(&self.state);
+        for v in [s.ier, s.lcr, s.mcr, s.scr, s.dll, s.dlm] {
+            w.u8(v);
+        }
+        w.bool(s.fifo_enabled);
+        w.bool(s.thri_pending);
+        w.bool(s.overrun);
+        let (a, b) = s.rx.as_slices();
+        w.u32((a.len() + b.len()) as u32);
+        a.iter().chain(b).for_each(|&byte| w.u8(byte));
+    }
+
+    /// The restored GIC starts with every line low, so a pending interrupt is raised
+    /// again here.
+    fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()> {
+        let mut s = lock(&self.state);
+        s.ier = r.u8()? & (IER_RDI | IER_THRI | IER_RLSI | IER_MSI);
+        s.lcr = r.u8()?;
+        s.mcr = r.u8()? & 0x1f;
+        s.scr = r.u8()?;
+        s.dll = r.u8()?;
+        s.dlm = r.u8()?;
+        s.fifo_enabled = r.bool()?;
+        s.thri_pending = r.bool()?;
+        s.overrun = r.bool()?;
+        let n = r.u32()? as usize;
+        if n > RX_CAPACITY {
+            return Err(codec::DecodeError(format!("UART receive buffer of {n}")));
+        }
+        s.rx.clear();
+        for _ in 0..n {
+            s.rx.push_back(r.u8()?);
+        }
+        s.level = false;
+        self.update_irq(&mut s);
+        Ok(())
     }
 }
 

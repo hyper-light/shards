@@ -7,12 +7,26 @@ pub mod virtio;
 
 use std::sync::Arc;
 
+use crate::snapshot::codec::{self, Reader, Writer};
+
 /// A device occupying a guest-physical MMIO window. Accesses arrive from vCPU threads
 /// concurrently, so devices synchronize internally.
+///
+/// Every device takes part in snapshots, so none can silently lose state.
 pub trait MmioDevice: Send + Sync {
     /// Fills `data` (1, 2, 4 or 8 bytes, little-endian) from register `offset`.
     fn read(&self, offset: u64, data: &mut [u8]);
     fn write(&self, offset: u64, data: &[u8]);
+    /// Stops background work at a clean boundary, with vCPUs already stopped, so the
+    /// device's state and the guest memory it touches hold still for a snapshot.
+    fn pause(&self);
+    /// Continues after `pause`.
+    fn resume(&self) -> Result<(), String>;
+    /// Appends the device's state. The device is paused.
+    fn save(&self, w: &mut Writer);
+    /// Loads state that `save` wrote into a device built from the same configuration,
+    /// then continues as if resumed.
+    fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()>;
 }
 
 /// Stores `value` little-endian into `data` (an access of 1-8 bytes); bytes past the
@@ -97,6 +111,46 @@ impl MmioBus {
     }
 }
 
+/// Snapshots cover every device, in address order: the order a restored machine, built
+/// from the same configuration, has too.
+impl MmioBus {
+    pub fn pause(&self) {
+        self.devices.iter().for_each(|(_, _, d)| d.pause());
+    }
+
+    pub fn resume(&self) -> Result<(), String> {
+        self.devices.iter().try_for_each(|(_, _, d)| d.resume())
+    }
+
+    pub fn save(&self, w: &mut Writer) {
+        w.u32(self.devices.len() as u32);
+        for (base, _, device) in &self.devices {
+            w.u64(*base);
+            device.save(w);
+        }
+    }
+
+    pub fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()> {
+        let count = r.u32()? as usize;
+        if count != self.devices.len() {
+            return Err(codec::DecodeError(format!(
+                "snapshot has {count} devices; this machine has {}",
+                self.devices.len()
+            )));
+        }
+        for (base, _, device) in &self.devices {
+            let saved = r.u64()?;
+            if saved != *base {
+                return Err(codec::DecodeError(format!(
+                    "snapshot device at {saved:#x}; this machine has one at {base:#x}"
+                )));
+            }
+            device.restore(r)?;
+        }
+        Ok(())
+    }
+}
+
 /// The guest's MMIO accesses. Accesses no device claims read as zero and are logged.
 impl crate::hv::Io for MmioBus {
     fn mmio_read(&self, addr: u64, data: &mut [u8]) {
@@ -131,6 +185,53 @@ mod tests {
         fn write(&self, offset: u64, data: &[u8]) {
             self.0.lock().unwrap().push((offset, data.to_vec()));
         }
+        fn pause(&self) {}
+        fn resume(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn save(&self, w: &mut Writer) {
+            let writes = self.0.lock().unwrap();
+            w.seq(&writes, |w, (offset, data)| {
+                w.u64(*offset);
+                w.bytes(data);
+            });
+        }
+        fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()> {
+            let writes = r.seq(64, |r| Ok((r.u64()?, r.bytes(8)?.to_vec())))?;
+            *self.0.lock().unwrap() = writes;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn snapshots_restore_into_the_same_layout_only() {
+        let bus = |bases: &[u64]| {
+            let mut bus = MmioBus::default();
+            let devices: Vec<_> = bases.iter().map(|_| Arc::new(Recorder::default())).collect();
+            for (&base, d) in bases.iter().zip(&devices) {
+                bus.insert(base, 0x100, d.clone()).unwrap();
+            }
+            (bus, devices)
+        };
+        let (a, a_devs) = bus(&[0x2000, 0x1000]);
+        a.write(0x1004, &[1, 2]);
+        a.write(0x2008, &[3]);
+        let mut w = Writer::default();
+        a.save(&mut w);
+        let saved = w.into_bytes();
+
+        let (b, b_devs) = bus(&[0x1000, 0x2000]);
+        let mut r = Reader::new(&saved);
+        b.restore(&mut r).unwrap();
+        r.finish().unwrap();
+        // Address order, whatever the insertion order.
+        assert_eq!(*b_devs[0].0.lock().unwrap(), *a_devs[1].0.lock().unwrap());
+        assert_eq!(*b_devs[1].0.lock().unwrap(), *a_devs[0].0.lock().unwrap());
+
+        let (c, _) = bus(&[0x1000, 0x3000]);
+        assert!(c.restore(&mut Reader::new(&saved)).is_err());
+        let (d, _) = bus(&[0x1000]);
+        assert!(d.restore(&mut Reader::new(&saved)).is_err());
     }
 
     #[test]

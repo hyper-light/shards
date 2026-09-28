@@ -2,10 +2,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::queue::{Queue, QueueConfig};
+use super::queue::{Queue, QueueConfig, QueueState};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature, status};
 use crate::devices::{Interrupt, MmioDevice, get_le, put_le};
 use crate::memory::GuestMemory;
+use crate::snapshot::codec::{self, Reader, Writer};
 use crate::sync::lock;
 use crate::warn;
 
@@ -51,6 +52,8 @@ struct State {
     queue_sel: u32,
     queues: Vec<QueueConfig>,
     config_generation: u32,
+    /// Each queue's progress while paused, for a snapshot.
+    paused: Vec<QueueState>,
 }
 
 /// One virtio device behind an MMIO register window.
@@ -99,6 +102,7 @@ impl MmioTransport {
                 queue_sel: 0,
                 queues,
                 config_generation: 0,
+                paused: Vec::new(),
             }),
             interrupt: Arc::new(DeviceInterrupt::new(line)),
             memory,
@@ -141,7 +145,7 @@ impl MmioTransport {
         }
         s.status = new;
         if added & status::DRIVER_OK != 0
-            && let Err(e) = self.activate(s)
+            && let Err(e) = self.activate(s, &[])
         {
             warn!("virtio device {}: {e}", s.device.device_id());
             s.status |= status::DEVICE_NEEDS_RESET;
@@ -149,7 +153,9 @@ impl MmioTransport {
         }
     }
 
-    fn activate(&self, s: &mut State) -> Result<(), String> {
+    /// Starts the device on the driver's queues, continuing from `progress` where a
+    /// snapshot recorded it (empty: from the beginning).
+    fn activate(&self, s: &mut State, progress: &[QueueState]) -> Result<(), String> {
         if s.status & status::FEATURES_OK == 0 {
             return Err("DRIVER_OK before FEATURES_OK".into());
         }
@@ -159,10 +165,12 @@ impl MmioTransport {
             if !cfg.ready {
                 return Err(format!("queue {i} not ready at DRIVER_OK"));
             }
-            queues.push(
-                Queue::new(*cfg, max, &self.memory, s.driver_features)
-                    .map_err(|e| format!("queue {i}: {e}"))?,
-            );
+            let mut queue = Queue::new(*cfg, max, &self.memory, s.driver_features)
+                .map_err(|e| format!("queue {i}: {e}"))?;
+            if let Some(&st) = progress.get(i) {
+                queue.set_state(st);
+            }
+            queues.push(queue);
         }
         s.device.activate(Activation {
             memory: self.memory.clone(),
@@ -268,5 +276,93 @@ impl MmioDevice for MmioTransport {
             STATUS => self.set_status(&mut s, v),
             _ => {}
         }
+    }
+
+    fn pause(&self) {
+        let mut s = lock(&self.state);
+        s.paused = s.device.pause();
+    }
+
+    fn resume(&self) -> Result<(), String> {
+        lock(&self.state).device.resume()
+    }
+
+    fn save(&self, w: &mut Writer) {
+        let s = lock(&self.state);
+        for v in [
+            s.status,
+            s.device_features_sel,
+            s.driver_features_sel,
+            s.queue_sel,
+            s.config_generation,
+            self.interrupt.status(),
+        ] {
+            w.u32(v);
+        }
+        w.u64(s.driver_features);
+        w.bool(self.interrupt.failed());
+        w.seq(&s.queues, |w, q| {
+            w.u16(q.size);
+            w.u64(q.desc);
+            w.u64(q.avail);
+            w.u64(q.used);
+            w.bool(q.ready);
+        });
+        w.seq(&s.paused, |w, p| {
+            w.u16(p.next_avail);
+            w.u16(p.next_used);
+            w.bool(p.signalled_used.is_some());
+            w.u16(p.signalled_used.unwrap_or(0));
+        });
+    }
+
+    /// A device that was live resumes on its queues at the saved progress, so requests
+    /// published before the snapshot but not yet consumed are served.
+    fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()> {
+        let mut s = lock(&self.state);
+        let [status_reg, dev_sel, drv_sel, queue_sel, generation, interrupt] =
+            [r.u32()?, r.u32()?, r.u32()?, r.u32()?, r.u32()?, r.u32()?];
+        let driver_features = r.u64()?;
+        let failed = r.bool()?;
+        let queues = r.seq(s.queues.len(), |r| {
+            Ok(QueueConfig {
+                size: r.u16()?,
+                desc: r.u64()?,
+                avail: r.u64()?,
+                used: r.u64()?,
+                ready: r.bool()?,
+            })
+        })?;
+        if queues.len() != s.queues.len() {
+            return Err(codec::DecodeError(format!(
+                "virtio snapshot has {} queues; the device has {}",
+                queues.len(),
+                s.queues.len()
+            )));
+        }
+        let progress = r.seq(s.queues.len(), |r| {
+            let (next_avail, next_used, signalled) = (r.u16()?, r.u16()?, r.bool()?);
+            let at = r.u16()?;
+            Ok(QueueState {
+                next_avail,
+                next_used,
+                signalled_used: signalled.then_some(at),
+            })
+        })?;
+        s.status = status_reg;
+        s.device_features_sel = dev_sel;
+        s.driver_features_sel = drv_sel;
+        s.queue_sel = queue_sel;
+        s.config_generation = generation;
+        s.driver_features = driver_features;
+        s.queues = queues;
+        self.interrupt.set_state(interrupt, failed);
+        let live = status::DRIVER_OK;
+        let dead = status::DEVICE_NEEDS_RESET | status::FAILED;
+        if s.status & live != 0 && s.status & dead == 0 && !failed {
+            self.activate(&mut s, &progress)
+                .map_err(|e| codec::DecodeError(format!("restoring virtio device: {e}")))?;
+        }
+        Ok(())
     }
 }

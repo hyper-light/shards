@@ -45,15 +45,21 @@ struct Backend {
     id: [u8; ID_BYTES],
 }
 
+/// The worker thread returns its queue when stopped, or nothing if a malformed ring
+/// failed the device.
 struct Worker {
-    thread: JoinHandle<()>,
+    thread: JoinHandle<Option<Queue>>,
     waker: Thread,
     stop: Arc<AtomicBool>,
 }
 
 pub struct Block {
     backend: Arc<Backend>,
+    /// What a worker needs besides its queue, from activation until reset.
+    context: Option<(Arc<GuestMemory>, Arc<DeviceInterrupt>)>,
     worker: Option<Worker>,
+    /// The queue while paused.
+    paused: Option<Queue>,
 }
 
 impl std::fmt::Debug for Block {
@@ -93,8 +99,41 @@ impl Block {
                 read_only,
                 id: serial,
             }),
+            context: None,
             worker: None,
+            paused: None,
         })
+    }
+
+    fn start(&mut self, queue: Queue) -> Result<(), String> {
+        let (memory, interrupt) = self
+            .context
+            .clone()
+            .ok_or("virtio-blk started before activation")?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let backend = self.backend.clone();
+        let stop_flag = stop.clone();
+        let thread = thread::Builder::new()
+            .name("virtio-blk".into())
+            .spawn(move || serve(queue, &memory, &interrupt, &backend, &stop_flag))
+            .map_err(|e| format!("spawning virtio-blk worker: {e}"))?;
+        let waker = thread.thread().clone();
+        self.worker = Some(Worker { thread, waker, stop });
+        Ok(())
+    }
+
+    /// Stops the worker after the request it is executing; returns its queue.
+    fn stop(&mut self) -> Option<Queue> {
+        let w = self.worker.take()?;
+        w.stop.store(true, Ordering::Release);
+        w.waker.unpark();
+        match w.thread.join() {
+            Ok(queue) => queue,
+            Err(_) => {
+                warn!("virtio-blk worker ended abnormally");
+                None
+            }
+        }
     }
 }
 
@@ -145,16 +184,8 @@ impl VirtioDevice for Block {
             ..
         } = activation;
         let queue = queues.pop().ok_or("virtio-blk activated without a queue")?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let backend = self.backend.clone();
-        let stop_flag = stop.clone();
-        let thread = thread::Builder::new()
-            .name("virtio-blk".into())
-            .spawn(move || serve(queue, &memory, &interrupt, &backend, &stop_flag))
-            .map_err(|e| format!("spawning virtio-blk worker: {e}"))?;
-        let waker = thread.thread().clone();
-        self.worker = Some(Worker { thread, waker, stop });
-        Ok(())
+        self.context = Some((memory, interrupt));
+        self.start(queue)
     }
 
     fn notify(&self, _queue: u16) {
@@ -164,12 +195,25 @@ impl VirtioDevice for Block {
     }
 
     fn reset(&mut self) {
-        if let Some(w) = self.worker.take() {
-            w.stop.store(true, Ordering::Release);
-            w.waker.unpark();
-            if w.thread.join().is_err() {
-                warn!("virtio-blk worker ended abnormally");
-            }
+        self.stop();
+        self.paused = None;
+        self.context = None;
+    }
+
+    /// With vCPUs stopped the available ring holds still, so the worker's current
+    /// drain finishes and the queue comes back consistent with guest memory.
+    fn pause(&mut self) -> Vec<super::QueueState> {
+        if let Some(queue) = self.stop() {
+            self.paused = Some(queue);
+        }
+        self.paused.iter().map(Queue::state).collect()
+    }
+
+    /// The new worker drains first, so requests published meanwhile are served.
+    fn resume(&mut self) -> Result<(), String> {
+        match self.paused.take() {
+            Some(queue) => self.start(queue),
+            None => Ok(()),
         }
     }
 }
@@ -182,15 +226,22 @@ impl Drop for Block {
 
 /// Drains the queue whenever notified, until stopped. A malformed ring marks the device
 /// as needing reset and stops processing (virtio 1.3 §2.1.2).
-fn serve(mut queue: Queue, mem: &GuestMemory, irq: &DeviceInterrupt, backend: &Backend, stop: &AtomicBool) {
+fn serve(
+    mut queue: Queue,
+    mem: &GuestMemory,
+    irq: &DeviceInterrupt,
+    backend: &Backend,
+    stop: &AtomicBool,
+) -> Option<Queue> {
     while !stop.load(Ordering::Acquire) {
         if let Err(e) = drain(&mut queue, mem, irq, backend) {
             warn!("virtio-blk: {e}; device needs reset");
             irq.fail();
-            return;
+            return None;
         }
         thread::park();
     }
+    Some(queue)
 }
 
 fn drain(

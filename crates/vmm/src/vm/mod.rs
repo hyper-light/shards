@@ -10,12 +10,12 @@ use aarch64 as machine;
 #[cfg(hv)]
 mod runtime;
 #[cfg(hv)]
-pub use runtime::{Handle, Running, check_host, max_vcpus, start};
+pub use runtime::{Handle, Running, check_host, max_vcpus, restore, start};
 
 #[cfg(not(hv))]
 mod unsupported;
 #[cfg(not(hv))]
-pub use unsupported::{Handle, Running, check_host, max_vcpus, start};
+pub use unsupported::{Handle, Running, check_host, max_vcpus, restore, start};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -32,6 +32,32 @@ pub struct Config {
     pub console: Console,
     /// virtio-blk disks, in the order the guest enumerates them (vda, vdb, ...).
     pub disks: Vec<Disk>,
+    /// What to do when the guest asks for a snapshot; without it, requests are ignored.
+    pub snapshot: Option<SnapshotPolicy>,
+}
+
+/// Starts a VM from a snapshot instead of booting one.
+#[derive(Debug, Clone)]
+pub struct RestoreConfig {
+    /// The snapshot directory.
+    pub dir: PathBuf,
+    pub console: Console,
+    /// For snapshots the restored guest asks for.
+    pub snapshot: Option<SnapshotPolicy>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapshotPolicy {
+    /// Where to write the snapshot when the guest asks for one.
+    pub dir: PathBuf,
+    pub then: AfterSnapshot,
+}
+
+/// What the VM does once its snapshot is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterSnapshot {
+    Resume,
+    Stop,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +80,8 @@ pub enum ExitReason {
     Reset,
     /// Stopped by the host.
     Stopped,
+    /// Stopped after writing a snapshot ([`AfterSnapshot::Stop`]).
+    Snapshotted,
     Error(String),
 }
 

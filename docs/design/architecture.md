@@ -49,6 +49,31 @@ performance and resource usage.
 | D11 | GPUs are zero-cost when unused. GPU VMs are a separate class assigned from a warm pool (VFIO via iommufd on Linux; virtio-gpu/Venus plus a remoting broker on macOS). | Assigned devices pin all RAM and break CoW; FLR ≥ 100 ms; CUDA init takes seconds [GPU §2.3, R1–R6] |
 | D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7] |
 
+### Snapshots (D14)
+
+A snapshot is taken at a point the guest chooses. The guest writes the control page's
+`SNAPSHOT` register, and every clone resumes at the instruction after that store. A
+template is thus a guest that has finished initializing and says so; restores never
+re-run that work.
+
+- **Pause.** The request kicks every vCPU. Each captures its own state on its own thread
+  (HVF's owning-thread rule), including redistributor, ICC and PSCI power state, and parks.
+  A coordinator then pauses devices at a request boundary (the virtio-blk worker stops and
+  hands back its queue), and saves the GIC distributor, the devices and guest memory.
+- **Format.** The state is backend-neutral: system registers are keyed by op0..op2
+  encoding and GIC registers by GICv3 offset (ground-truth doc §5 row 16). It records one
+  guest counter for the whole VM and the CPU ID registers; a restore on another CPU is
+  refused. Memory is sparse (zero pages are holes). Files are written, synced and renamed.
+  Decoding treats the files as untrusted.
+- **Restore.** Memory is mapped copy-on-write from the snapshot file; clones share every
+  page none of them writes. vCPUs are created in order and loaded with one counter offset,
+  so CNTVCT continues and agrees across CPUs. **The GIC distributor is applied only after
+  every vCPU exists:** HVF routes an SPI when IROUTER is written, and routing to a CPU
+  that does not exist yet loses the SPI (found by the E2E test). Devices follow, and the
+  vCPUs are released.
+- **Identity.** The control page's `GENERATION` counts restores. A new RNG seed per clone
+  (VMGenID; the guest kernel has the `microsoft,vmgenid` driver) is next.
+
 ### Platforms (D13)
 
 shards is platform- and architecture-agnostic. The matrix is the sibling projects' release

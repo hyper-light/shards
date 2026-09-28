@@ -1,36 +1,94 @@
-//! shards control page: the guest writes 32-bit boot-phase markers at offset 0 and the
-//! VMM timestamps them. This is how boot time is measured end to end, in the manner of
-//! Firecracker's boot-timer device (docs/research/boot-latency.md).
+//! shards control page: the guest's side channel to the VMM (crates/abi `control`).
+//! Markers are timestamped on arrival, which is how boot and restore time are measured
+//! end to end, in the manner of Firecracker's boot-timer device
+//! (docs/research/boot-latency.md). The guest also asks for snapshots here, and reads
+//! how many restores precede it.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 
-use super::{MmioDevice, get_le};
+use shards_abi::control;
+
+use super::{MmioDevice, get_le, put_le};
+use crate::snapshot::codec::{Reader, Result, Writer};
 use crate::sync::lock;
 
-#[derive(Debug, Default)]
+pub type SnapshotRequest = Box<dyn Fn() + Send + Sync>;
+
+#[derive(Default)]
 pub struct Control {
     /// `(marker, microseconds since VMM start)`, in arrival order.
     markers: Mutex<Vec<(u32, u128)>>,
+    generation: AtomicU32,
+    on_snapshot: OnceLock<SnapshotRequest>,
+}
+
+impl std::fmt::Debug for Control {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Control")
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Control {
     pub fn markers(&self) -> Vec<(u32, u128)> {
         lock(&self.markers).clone()
     }
+
+    /// Where guest snapshot requests go. Without one, requests are ignored.
+    pub fn on_snapshot(&self, request: SnapshotRequest) {
+        let _ = self.on_snapshot.set(request);
+    }
+
+    pub fn generation(&self) -> u32 {
+        self.generation.load(Ordering::Acquire)
+    }
 }
 
 impl MmioDevice for Control {
-    fn read(&self, _offset: u64, data: &mut [u8]) {
-        data.fill(0);
+    fn read(&self, offset: u64, data: &mut [u8]) {
+        let value = match offset {
+            control::GENERATION => self.generation(),
+            _ => 0,
+        };
+        put_le(data, u64::from(value));
     }
 
     fn write(&self, offset: u64, data: &[u8]) {
-        if offset != 0 || data.len() != 4 {
+        if data.len() != 4 {
             return;
         }
-        let at = crate::log::uptime_us();
-        let marker = get_le(data) as u32;
-        crate::info!("guest marker {marker} at {at} us");
-        lock(&self.markers).push((marker, at));
+        let value = get_le(data) as u32;
+        match offset {
+            control::MARKER => {
+                let at = crate::log::uptime_us();
+                crate::info!("guest marker {value} at {at} us");
+                lock(&self.markers).push((value, at));
+            }
+            control::SNAPSHOT if value == control::SNAPSHOT_NOW => match self.on_snapshot.get() {
+                Some(request) => request(),
+                None => crate::warn!("guest asked for a snapshot, but snapshots are not enabled"),
+            },
+            _ => {}
+        }
+    }
+
+    fn pause(&self) {}
+
+    fn resume(&self) -> std::result::Result<(), String> {
+        Ok(())
+    }
+
+    /// Markers are this run's measurements, not guest state.
+    fn save(&self, w: &mut Writer) {
+        w.u32(self.generation());
+    }
+
+    /// A restored VM is the next generation of the one saved.
+    fn restore(&self, r: &mut Reader<'_>) -> Result<()> {
+        let saved = r.u32()?;
+        self.generation.store(saved.saturating_add(1), Ordering::Release);
+        Ok(())
     }
 }

@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use super::Interrupt;
 use crate::memory::GuestMemory;
-use queue::Queue;
+use queue::{Queue, QueueState};
 
 /// Feature bits (virtio 1.3 §6).
 pub mod feature {
@@ -86,6 +86,14 @@ impl DeviceInterrupt {
         self.status.load(Ordering::Acquire)
     }
 
+    /// Restores the InterruptStatus bits and the failed flag without raising the line:
+    /// the restored GIC already holds any pending edge.
+    fn set_state(&self, status: u32, failed: bool) {
+        self.status
+            .store(status & (INT_USED_BUFFER | INT_CONFIG_CHANGE), Ordering::Release);
+        self.failed.store(failed, Ordering::Release);
+    }
+
     fn ack(&self, bits: u32) {
         self.status.fetch_and(!bits, Ordering::AcqRel);
     }
@@ -122,4 +130,8 @@ pub trait VirtioDevice: Send {
     /// Stops all processing; when this returns the device no longer touches guest
     /// memory, so the driver may reuse it.
     fn reset(&mut self);
+    /// Stops processing at a request boundary; nothing touches guest memory until
+    /// `resume`. Returns each queue's progress, or nothing if the device is not active.
+    fn pause(&mut self) -> Vec<QueueState>;
+    fn resume(&mut self) -> Result<(), String>;
 }

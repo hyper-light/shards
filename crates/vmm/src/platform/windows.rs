@@ -39,6 +39,15 @@ pub unsafe fn release(ptr: NonNull<u8>, _len: usize) {
     unsafe { VirtualFree(ptr.as_ptr().cast(), 0, MEM_RELEASE) };
 }
 
+/// A file view cannot replace part of a `VirtualAlloc` region without placeholders
+/// (VirtualAlloc2 + MapViewOfFile3), so callers fall back to reading.
+///
+/// # Safety
+/// None: this never touches memory.
+pub unsafe fn map_file_private(_file: &File, _offset: u64, _len: usize, _at: NonNull<u8>) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
 pub fn fill_random(buf: &mut [u8]) -> io::Result<()> {
     for chunk in buf.chunks_mut(u32::MAX as usize) {
         // SAFETY: writes `chunk.len()` (≤ u32::MAX) bytes into `chunk`.

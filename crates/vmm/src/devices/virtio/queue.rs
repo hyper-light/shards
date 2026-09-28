@@ -193,6 +193,15 @@ fn walk_indirect(mem: &GuestMemory, table: &RawDesc, chain: &mut ChainBuilder) -
     Err(QueueError::ChainTooLong)
 }
 
+/// How far the device has got through a queue: what a snapshot records beyond the
+/// driver's configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QueueState {
+    pub next_avail: u16,
+    pub next_used: u16,
+    pub signalled_used: Option<u16>,
+}
+
 #[derive(Debug)]
 pub struct Queue {
     size: u16,
@@ -245,6 +254,21 @@ impl Queue {
 
     pub fn size(&self) -> u16 {
         self.size
+    }
+
+    pub fn state(&self) -> QueueState {
+        QueueState {
+            next_avail: self.next_avail.0,
+            next_used: self.next_used.0,
+            signalled_used: self.signalled_used.map(|w| w.0),
+        }
+    }
+
+    /// Continues from where a snapshot of this queue left off.
+    pub fn set_state(&mut self, st: QueueState) {
+        self.next_avail = Wrapping(st.next_avail);
+        self.next_used = Wrapping(st.next_used);
+        self.signalled_used = st.signalled_used.map(Wrapping);
     }
 
     fn slot(&self, index: Wrapping<u16>) -> u64 {

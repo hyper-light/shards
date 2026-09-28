@@ -433,17 +433,12 @@ fn dist_regs(nint: u32) -> Vec<u16> {
     regs
 }
 
-/// The guest counter value corresponding to a vtimer offset now.
+/// The host counter guest counters are offset from, now.
 pub fn host_counter() -> u64 {
     sys::host_counter()
 }
 
 impl Vm {
-    /// The CPU identity the guest sees, for a snapshot to record.
-    pub fn cpu_id(vcpu: &Vcpu) -> Result<Vec<(u16, u64)>> {
-        ID_REGS.iter().map(|&r| Ok((r, vcpu.sys.sys_reg(r)?))).collect()
-    }
-
     /// Distributor state. Every vCPU must be stopped.
     pub fn save_gic(&self) -> Result<Vec<(u32, u64)>> {
         let p = sys::gic_params()?;
@@ -470,6 +465,11 @@ impl Vm {
 }
 
 impl Vcpu {
+    /// The CPU identity the guest sees: ID registers by encoding.
+    pub fn cpu_id(&self) -> Result<Vec<(u16, u64)>> {
+        ID_REGS.iter().map(|&r| Ok((r, self.sys.sys_reg(r)?))).collect()
+    }
+
     /// The guest's virtual counter now.
     pub fn guest_counter(&self) -> Result<u64> {
         Ok(sys::host_counter().wrapping_sub(self.sys.vtimer_offset()?))

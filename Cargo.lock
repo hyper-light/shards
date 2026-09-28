@@ -102,6 +102,7 @@ name = "shards-testguest"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "shards-abi",
 ]
 
 [[package]]

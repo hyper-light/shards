@@ -39,6 +39,35 @@ pub unsafe fn release(ptr: NonNull<u8>, len: usize) {
     unsafe { libc::munmap(ptr.as_ptr().cast(), len) };
 }
 
+/// Replaces `len` bytes at `at` with a private, copy-on-write mapping of `file` from
+/// `offset`. Pages come from the page cache on first touch; a write copies only the page
+/// written.
+///
+/// # Safety
+/// `at..at+len` must be page-aligned, inside a reservation from [`reserve`] that no
+/// hypervisor maps and nothing references yet; `offset` must be page-aligned.
+pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull<u8>) -> io::Result<()> {
+    let offset = file_offset(offset)?;
+    // SAFETY: MAP_FIXED over memory the caller owns and nothing references.
+    let p = unsafe {
+        libc::mmap(
+            at.as_ptr().cast(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_FIXED,
+            file.as_raw_fd(),
+            offset,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    if p != at.as_ptr().cast() {
+        return Err(io::Error::other("mmap(MAP_FIXED) placed the mapping elsewhere"));
+    }
+    Ok(())
+}
+
 /// Fills `buf` from the kernel CSPRNG, blocking only until it is first seeded.
 #[cfg(target_os = "linux")]
 pub fn fill_random(buf: &mut [u8]) -> io::Result<()> {

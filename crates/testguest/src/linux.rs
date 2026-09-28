@@ -7,12 +7,14 @@ use shards_testguest::{fill, first_mismatch};
 
 const RO_SALT: u64 = 1;
 const RW_SALT: u64 = 2;
+const HEAP_SALT: u64 = 3;
 
 pub fn main() {
     let result = setup().and_then(
         |()| match std::env::var("shards_test").unwrap_or_default().as_str() {
             "blk" => blk(),
             "blk_stress" => blk_stress(),
+            "snapshot" => snapshot(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -266,5 +268,140 @@ fn blk_stress() -> Result<(), String> {
         total += w.join().map_err(|_| "worker panicked".to_string())??;
     }
     let _ = writeln!(io::stdout(), "SHARDS-TEST INFO ops={total} seconds={seconds}");
+    Ok(())
+}
+
+/// The VMM's control page, mapped through /dev/mem.
+struct ControlPage {
+    regs: *mut u32,
+}
+
+impl ControlPage {
+    const LEN: usize = 4096;
+
+    fn map() -> Result<ControlPage, String> {
+        let fd = open("/dev/mem", libc::O_RDWR | libc::O_SYNC)?;
+        // SAFETY: maps one page of the control device; the fd is closed after mapping.
+        let p = unsafe {
+            let p = libc::mmap(
+                std::ptr::null_mut(),
+                Self::LEN,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                shards_abi::CONTROL_PAGE_AARCH64 as libc::off_t,
+            );
+            libc::close(fd);
+            p
+        };
+        if p == libc::MAP_FAILED {
+            return Err(format!(
+                "mapping the control page: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        Ok(ControlPage { regs: p.cast() })
+    }
+
+    fn write(&self, offset: u64, value: u32) {
+        // SAFETY: an aligned register inside the mapped page.
+        unsafe { self.regs.add(offset as usize / 4).write_volatile(value) };
+    }
+
+    fn read(&self, offset: u64) -> u32 {
+        // SAFETY: an aligned register inside the mapped page.
+        unsafe { self.regs.add(offset as usize / 4).read_volatile() }
+    }
+}
+
+impl Drop for ControlPage {
+    fn drop(&mut self) {
+        // SAFETY: the mapping made in `map`.
+        unsafe { libc::munmap(self.regs.cast(), Self::LEN) };
+    }
+}
+
+fn monotonic_ns() -> u128 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: writes one timespec.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as u128 * 1_000_000_000 + ts.tv_nsec as u128
+}
+
+/// Builds state worth checking, asks the VMM for a snapshot, and then, in the VM that
+/// booted and in every VM restored from it, checks that the state survived and that
+/// the machine still works: memory, files, a thread on another CPU, the clock, disks.
+fn snapshot() -> Result<(), String> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let ro_bytes = env_u64("shards_vda_bytes")?;
+    let mut heap = vec![0u8; 32 << 20];
+    fill(HEAP_SALT, 0, &mut heap);
+    std::fs::write("/snapshot-probe", b"written before the snapshot").map_err(|e| e.to_string())?;
+    let counter = Arc::new(AtomicU64::new(0));
+    let running = Arc::new(AtomicBool::new(true));
+    let spinner = {
+        let (counter, running) = (counter.clone(), running.clone());
+        thread::spawn(move || {
+            while running.load(Ordering::Relaxed) {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+    };
+    while counter.load(Ordering::Relaxed) == 0 {
+        thread::yield_now();
+    }
+    let control = ControlPage::map()?;
+    let before = monotonic_ns();
+
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+    // A restored guest continues here.
+    control.write(shards_abi::control::MARKER, shards_abi::marker::RESUMED);
+    let generation = control.read(shards_abi::control::GENERATION);
+    let after = monotonic_ns();
+    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO generation={generation}");
+
+    if after < before {
+        return Err(format!("CLOCK_MONOTONIC went backwards: {before} -> {after}"));
+    }
+    if let Some(i) = first_mismatch(HEAP_SALT, 0, &heap) {
+        return Err(format!("heap differs at byte {i}"));
+    }
+    let probe = std::fs::read("/snapshot-probe").map_err(|e| e.to_string())?;
+    if probe != b"written before the snapshot" {
+        return Err("rootfs file changed across the snapshot".into());
+    }
+    let seen = counter.load(Ordering::Relaxed);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while counter.load(Ordering::Relaxed) == seen {
+        if Instant::now() > deadline {
+            return Err("the second CPU's thread stopped running".into());
+        }
+        thread::yield_now();
+    }
+    running.store(false, Ordering::Relaxed);
+    spinner
+        .join()
+        .map_err(|_| "spinner thread panicked".to_string())?;
+
+    let fd = open("/dev/vda", libc::O_RDONLY | libc::O_DIRECT)?;
+    let mut buf = Aligned::new(1 << 20)?;
+    let len = (1 << 20).min(ro_bytes as usize);
+    let checked = verify(fd, RO_SALT, 0, len, &mut buf);
+    // SAFETY: closing our own descriptor.
+    unsafe { libc::close(fd) };
+    checked?;
+
+    let mut entropy = [0u8; 16];
+    // SAFETY: getrandom writes at most 16 bytes into `entropy`.
+    if unsafe { libc::getrandom(entropy.as_mut_ptr().cast(), 16, 0) } != 16 {
+        return Err(format!("getrandom: {}", io::Error::last_os_error()));
+    }
+    let hex: String = entropy.iter().map(|b| format!("{b:02x}")).collect();
+    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO random={hex}");
     Ok(())
 }

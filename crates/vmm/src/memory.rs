@@ -96,6 +96,65 @@ impl GuestMemory {
         Ok(mem)
     }
 
+    /// Guest RAM backed copy-on-write by `file`, which holds each region in turn (as
+    /// [`save`](Self::save) writes them). Clones share every page none of them writes.
+    /// Where the platform cannot map a file into reserved memory, the file is read in.
+    ///
+    /// The file must not change while the VM runs: pages the guest has not yet touched
+    /// come from it.
+    pub fn from_file(ranges: &[(u64, usize)], file: &std::fs::File) -> io::Result<GuestMemory> {
+        let mem = GuestMemory::anonymous(ranges)?;
+        let mut offset = 0u64;
+        for &(gpa, len) in ranges {
+            let host = mem
+                .host_ptr(gpa, len)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            let host = NonNull::new(host).ok_or_else(|| io::Error::other("null guest pointer"))?;
+            // SAFETY: a whole region we just reserved: page-aligned, unmapped by any
+            // hypervisor, unreferenced; region offsets in the file are page-aligned sums.
+            match unsafe { platform::map_file_private(file, offset, len, host) } {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+                    // SAFETY: the region is ours and nothing else references it yet.
+                    let region = unsafe { std::slice::from_raw_parts_mut(host.as_ptr(), len) };
+                    platform::read_exact_at(file, region, offset)?;
+                }
+                Err(e) => return Err(e),
+            }
+            offset += len as u64;
+        }
+        Ok(mem)
+    }
+
+    /// Writes every region in turn to `file`, leaving all-zero pages as holes so the file
+    /// stays as small as the memory the guest used. Every vCPU and device must be paused.
+    pub fn save(&self, file: &std::fs::File) -> io::Result<()> {
+        let page = platform::page_size()?;
+        let mut offset = 0u64;
+        for r in &self.regions {
+            // SAFETY: the VM is paused (caller contract), so nothing writes this region
+            // while the slice lives.
+            let region = unsafe { std::slice::from_raw_parts(r.host.as_ptr(), r.len) };
+            for (i, chunk) in region.chunks(page).enumerate() {
+                if chunk.iter().all(|&b| b == 0) {
+                    continue;
+                }
+                let at = offset + (i * page) as u64;
+                let mut done = 0;
+                while let Some(rest) = chunk.get(done..).filter(|c| !c.is_empty()) {
+                    // SAFETY: `rest` is a live slice of `rest.len()` bytes.
+                    let n = unsafe { platform::write_at(file, rest.as_ptr(), rest.len(), at + done as u64)? };
+                    if n == 0 {
+                        return Err(io::ErrorKind::WriteZero.into());
+                    }
+                    done += n;
+                }
+            }
+            offset += r.len as u64;
+        }
+        file.set_len(offset)
+    }
+
     /// `(gpa, host pointer, len)` for each region, for stage-2 mapping.
     pub fn regions(&self) -> impl Iterator<Item = (u64, *mut u8, usize)> + '_ {
         self.regions.iter().map(|r| (r.gpa, r.host.as_ptr(), r.len))
@@ -194,6 +253,43 @@ mod tests {
         assert!(GuestMemory::anonymous(&[(0x8000_0000, p + 1)]).is_err());
         assert!(GuestMemory::anonymous(&[(0x8000_0001, p)]).is_err());
         assert!(GuestMemory::anonymous(&[(0x8000_0000, 2 * p), (0x8000_0000 + p as u64, p)]).is_err());
+    }
+
+    #[test]
+    fn saves_sparsely_and_restores_copy_on_write() {
+        let p = page_size().unwrap();
+        let ranges = [(0x8000_0000u64, 4 * p), (0x1_0000_0000, 2 * p)];
+        let m = GuestMemory::anonymous(&ranges).unwrap();
+        m.write(0x8000_0000 + p as u64 + 5, b"hello").unwrap();
+        m.write(0x1_0000_0000 + 2 * p as u64 - 1, &[0xee]).unwrap();
+        let path = std::env::temp_dir().join(format!("shards-mem-{}", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        m.save(&file).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 6 * p as u64);
+
+        let a = GuestMemory::from_file(&ranges, &file).unwrap();
+        let b = GuestMemory::from_file(&ranges, &file).unwrap();
+        let mut buf = [0u8; 5];
+        a.read(0x8000_0000 + p as u64 + 5, &mut buf).unwrap();
+        assert_eq!(&buf, b"hello");
+        assert_eq!(a.read_obj::<u8>(0x1_0000_0000 + 2 * p as u64 - 1).unwrap(), 0xee);
+        assert_eq!(a.read_obj::<u64>(0x8000_0000).unwrap(), 0);
+        // Writes stay private to each copy and never reach the file.
+        a.write(0x8000_0000 + p as u64 + 5, b"HELLO").unwrap();
+        b.read(0x8000_0000 + p as u64 + 5, &mut buf).unwrap();
+        assert_eq!(&buf, b"hello");
+        drop((a, b));
+        let c = GuestMemory::from_file(&ranges, &file).unwrap();
+        c.read(0x8000_0000 + p as u64 + 5, &mut buf).unwrap();
+        assert_eq!(&buf, b"hello");
+        drop(file);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
