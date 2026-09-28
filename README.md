@@ -160,6 +160,7 @@ SHARDS-TEST PASS
 | Boot Linux on x86_64 Linux | Works, tested in CI on every push |
 | Snapshot and restore | Works on macOS; Linux is next |
 | arm64 Linux, Intel Macs, Windows | Builds, but can't run machines yet |
+| Connect host programs to programs in a running machine (vsock) | Works |
 | Run commands in a running machine | Next |
 | Build machines like Docker images | Planned |
 | Docker's commands (`run`, `build`, `ps`, `exec` and the rest) | Planned. Today: `shards vm run` and `shards vm restore` |
@@ -186,6 +187,7 @@ Firecracker. The plan and its evidence are in
 | `--cmdline TEXT` | The kernel command line (default: `console=ttyS0 earlycon panic=-1`) |
 | `--cpus N` · `--memory MIB` | Size (default: 1 CPU, 256 MiB) |
 | `--disk FILE[:ro]` | A disk. Repeat for more |
+| `--vsock PATH` | A vsock device. Host programs connect to the Unix socket `PATH` and send `CONNECT <port>`; the guest reaches host port P at `PATH_P`. A restored copy needs its own `PATH` |
 | `--snapshot-dir DIR` | Save the machine to `DIR` when it asks, then exit. `--snapshot-then resume` keeps it running. Works with `restore` too |
 | `--no-console` | Hide the console |
 
