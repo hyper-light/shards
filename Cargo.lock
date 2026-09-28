@@ -80,6 +80,7 @@ dependencies = [
  "libc",
  "sha2",
  "shards-abi",
+ "shards-image",
  "shards-testguest",
  "shards-vmm",
  "windows-sys",
@@ -87,6 +88,10 @@ dependencies = [
 
 [[package]]
 name = "shards-abi"
+version = "0.1.0"
+
+[[package]]
+name = "shards-image"
 version = "0.1.0"
 
 [[package]]

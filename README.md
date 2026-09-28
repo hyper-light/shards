@@ -56,7 +56,7 @@ took 7 ms, most of it process start and exit. The saved machine runs the test pr
 
 > [!NOTE]
 > Output captured on an Apple M5 Max with macOS 26.4.1, from a release build at `e8ec2e6`,
-> with the pinned Linux 6.18 kernel as `vmlinux`.
+> with Firecracker's CI build of Linux 6.18 as `vmlinux`.
 
 > [!IMPORTANT]
 > Shards has no release yet. Today it boots Linux microVMs on Apple silicon Macs and x86_64
@@ -84,19 +84,20 @@ cp target/release/shards ~/.local/bin/
 
 ## Quickstart
 
-You need a kernel and a program to run as PID 1. Until shards ships its own kernel, use
-Firecracker's:
+You need a kernel and a program to run as PID 1. Download shards' kernel, built
+reproducibly by CI ([resources/kernel](resources/kernel/README.md)):
 
 ```sh
 arch=$(uname -m | sed s/arm64/aarch64/)
-curl -fLo vmlinux https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260923-6f82ac4cf331-0/$arch/vmlinux-6.18.48
+file=$([ $arch = x86_64 ] && echo vmlinux || echo Image)-6.18.48-$arch
+curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-1bff175d35cb/$file
 shasum -a 256 vmlinux
 ```
 
 | Architecture | SHA-256 |
 |---|---|
-| aarch64 (arm64) | `a80108af80d9549b357ea7e00bd5c12f80686869541d135a8a67f6fe1ec3451e` |
-| x86_64 | `9204218e8bcca6ac23848d74f45df2eb19d7f31e8277840a7d145a0df8b078d2` |
+| aarch64 (arm64) | `ed7fb50d27b59e29e9e6c9f57f02c4bb82f8c3f5ecd51bd8083741f77597913b` |
+| x86_64 | `136a182b7013fa32d852a7f227b91f6c113d9ad9dbe7a9b9d4baac7153ddd59c` |
 
 Build `shards-init`, a tiny PID 1 that reports Linux's boot time and powers off:
 
@@ -270,7 +271,8 @@ are in [CLAUDE.md](CLAUDE.md).
 
 ## Acknowledgements
 
-Shards learned a great deal from [Firecracker], and its tests boot Firecracker's CI kernels.
+Shards learned a great deal from [Firecracker], and its guest kernel starts from Firecracker's
+microVM kernel configuration.
 
 ## License
 

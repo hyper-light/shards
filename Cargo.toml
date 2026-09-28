@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/abi", "crates/init", "crates/shards", "crates/testguest", "crates/vmm"]
+members = ["crates/abi", "crates/image", "crates/init", "crates/shards", "crates/testguest", "crates/vmm"]
 # The guest init only builds for Linux guests; host builds default to the rest.
-default-members = ["crates/abi", "crates/shards", "crates/vmm"]
+default-members = ["crates/abi", "crates/image", "crates/shards", "crates/vmm"]
 
 [workspace.package]
 edition = "2024"

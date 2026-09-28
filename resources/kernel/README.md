@@ -29,7 +29,9 @@ scripts/build-kernel.sh "$(uname -m)" out
 ```
 
 Build metadata (timestamp, user, host, version) is fixed and nothing in the configuration
-generates keys, so the same inputs and toolchain produce the same bytes.
+generates keys, so the same inputs and toolchain produce the same bytes. Two independent CI
+runs (releases kernel-6.18.48-0c3e7e3279fd and kernel-6.18.48-1bff175d35cb, whose inputs
+differ only for aarch64) built byte-identical x86_64 kernels: SHA-256 136a182b…c6e181.
 
 ## Licences
 

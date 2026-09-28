@@ -20,6 +20,7 @@ pub fn main() {
             "vsock" => vsock(),
             "vsock_snapshot" => vsock_snapshot(),
             "pmem" => pmem(),
+            "erofs" => erofs(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -619,4 +620,159 @@ fn check_pmem(i: usize, len: u64, salt: u64) -> Result<(), String> {
     // SAFETY: closing our own descriptor.
     unsafe { libc::close(fd) };
     Ok(())
+}
+
+fn cstr(s: &str) -> Result<CString, String> {
+    CString::new(s).map_err(|e| e.to_string())
+}
+
+/// Mounts /dev/pmem0 as EROFS with DAX and checks it against its own /MANIFEST: one line
+/// per entry, written by the host test (crates/shards/tests/erofs.rs).
+fn erofs() -> Result<(), String> {
+    std::fs::create_dir_all("/mnt").map_err(|e| format!("/mnt: {e}"))?;
+    let (src, target, fs, opts) = (
+        cstr("/dev/pmem0")?,
+        cstr("/mnt")?,
+        cstr("erofs")?,
+        cstr("dax=always")?,
+    );
+    // SAFETY: NUL-terminated strings.
+    if unsafe {
+        libc::mount(
+            src.as_ptr(),
+            target.as_ptr(),
+            fs.as_ptr(),
+            libc::MS_RDONLY,
+            opts.as_ptr().cast(),
+        )
+    } != 0
+    {
+        return Err(format!("mount erofs: {}", io::Error::last_os_error()));
+    }
+    let mounts = std::fs::read_to_string("/proc/mounts").map_err(|e| e.to_string())?;
+    let line = mounts.lines().find(|l| l.contains(" /mnt ")).unwrap_or_default();
+    if !line.contains("dax=always") {
+        return Err(format!("EROFS is not using DAX: {line}"));
+    }
+    let manifest = std::fs::read_to_string("/mnt/MANIFEST").map_err(|e| format!("MANIFEST: {e}"))?;
+    let mut checked = 0;
+    for line in manifest.lines() {
+        check_entry(line).map_err(|e| format!("{line:?}: {e}"))?;
+        checked += 1;
+    }
+    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO checked {checked} entries");
+    Ok(())
+}
+
+fn lstat(path: &str) -> Result<libc::stat, String> {
+    let p = cstr(path)?;
+    // SAFETY: an all-zero stat is a valid out-parameter; `p` is NUL-terminated.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    if unsafe { libc::lstat(p.as_ptr(), &mut st) } != 0 {
+        return Err(format!("lstat {path}: {}", io::Error::last_os_error()));
+    }
+    Ok(st)
+}
+
+fn num<T: std::str::FromStr>(field: Option<&str>) -> Result<T, String> {
+    field
+        .ok_or("missing field")?
+        .parse()
+        .map_err(|_| "bad number".to_string())
+}
+
+/// One manifest line: `<kind> <path> ...` (see crates/shards/tests/erofs.rs).
+fn check_entry(line: &str) -> Result<(), String> {
+    let mut f = line.split(' ');
+    let kind = f.next().ok_or("empty line")?;
+    let path = format!("/mnt{}", f.next().ok_or("no path")?);
+    let st = lstat(&path)?;
+    let file_type = st.st_mode & libc::S_IFMT;
+    let expect_meta = |f: &mut std::str::Split<'_, char>| -> Result<(), String> {
+        let mode = u32::from_str_radix(f.next().ok_or("no mode")?, 8).map_err(|e| e.to_string())?;
+        let (uid, gid): (u32, u32) = (num(f.next())?, num(f.next())?);
+        if (st.st_mode & 0o7777, st.st_uid, st.st_gid) != (mode, uid, gid) {
+            return Err(format!(
+                "mode {:o} uid {} gid {}",
+                st.st_mode & 0o7777,
+                st.st_uid,
+                st.st_gid
+            ));
+        }
+        Ok(())
+    };
+    match kind {
+        "d" => {
+            if file_type != libc::S_IFDIR {
+                return Err("not a directory".into());
+            }
+            expect_meta(&mut f)
+        }
+        "f" => {
+            if file_type != libc::S_IFREG {
+                return Err("not a regular file".into());
+            }
+            expect_meta(&mut f)?;
+            let (size, salt): (u64, u64) = (num(f.next())?, num(f.next())?);
+            let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+            if data.len() as u64 != size {
+                return Err(format!("{} bytes", data.len()));
+            }
+            match first_mismatch(salt, 0, &data) {
+                Some(at) => Err(format!("byte {at} differs")),
+                None => Ok(()),
+            }
+        }
+        "l" => {
+            let target = std::fs::read_link(&path).map_err(|e| e.to_string())?;
+            let want = f.next().ok_or("no target")?;
+            if target.as_os_str().as_encoded_bytes() != want.as_bytes() {
+                return Err(format!("points to {}", target.display()));
+            }
+            Ok(())
+        }
+        "c" | "b" => {
+            let want = if kind == "c" { libc::S_IFCHR } else { libc::S_IFBLK };
+            let (major, minor): (u32, u32) = (num(f.next())?, num(f.next())?);
+            if file_type != want || (libc::major(st.st_rdev), libc::minor(st.st_rdev)) != (major, minor) {
+                return Err(format!(
+                    "type {file_type:o} rdev {}:{}",
+                    libc::major(st.st_rdev),
+                    libc::minor(st.st_rdev)
+                ));
+            }
+            Ok(())
+        }
+        "p" if file_type == libc::S_IFIFO => Ok(()),
+        "s" if file_type == libc::S_IFSOCK => Ok(()),
+        "h" => {
+            let other = lstat(&format!("/mnt{}", f.next().ok_or("no other path")?))?;
+            if (st.st_ino, st.st_nlink) != (other.st_ino, 2) {
+                return Err(format!(
+                    "inode {} links {}, other inode {}",
+                    st.st_ino, st.st_nlink, other.st_ino
+                ));
+            }
+            Ok(())
+        }
+        "x" => {
+            let name = cstr(f.next().ok_or("no name")?)?;
+            let hex = f.next().unwrap_or_default();
+            let want: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(hex.get(i..i + 2).unwrap_or("zz"), 16).map_err(|e| e.to_string()))
+                .collect::<Result<_, _>>()?;
+            let p = cstr(&path)?;
+            let mut buf = vec![0u8; 4096];
+            // SAFETY: NUL-terminated strings; `buf` is valid for its length.
+            let n = unsafe { libc::lgetxattr(p.as_ptr(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+            let n = usize::try_from(n).map_err(|_| format!("getxattr: {}", io::Error::last_os_error()))?;
+            if buf.get(..n) != Some(&want[..]) {
+                return Err(format!("xattr is {:?}", buf.get(..n)));
+            }
+            Ok(())
+        }
+        _ => Err(format!("kind {kind} with type {file_type:o}")),
+    }
 }

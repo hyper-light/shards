@@ -60,26 +60,27 @@ pub fn cannot_snapshot() -> bool {
 }
 
 /// Firecracker CI's guest kernel for the host architecture (uncompressed, virtio built in).
+/// shards' guest kernel for the host architecture: Linux 6.18.48 with Firecracker's
+/// microVM config and ours (resources/kernel), built reproducibly by CI.
 pub fn kernel_artifact() -> Artifact {
     match ARCH {
         "aarch64" => Artifact {
-            name: "vmlinux-6.18.48-aarch64",
-            url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260923-6f82ac4cf331-0/aarch64/vmlinux-6.18.48",
-            sha256: "a80108af80d9549b357ea7e00bd5c12f80686869541d135a8a67f6fe1ec3451e",
+            name: "Image-6.18.48-aarch64-1bff175d35cb",
+            url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-1bff175d35cb/Image-6.18.48-aarch64",
+            sha256: "ed7fb50d27b59e29e9e6c9f57f02c4bb82f8c3f5ecd51bd8083741f77597913b",
         },
-        // docs/research/kvm-x86_64-ground-truth.md §7.2
         "x86_64" => Artifact {
-            name: "vmlinux-6.18.48-x86_64",
-            url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260923-6f82ac4cf331-0/x86_64/vmlinux-6.18.48",
-            sha256: "9204218e8bcca6ac23848d74f45df2eb19d7f31e8277840a7d145a0df8b078d2",
+            name: "vmlinux-6.18.48-x86_64-1bff175d35cb",
+            url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-1bff175d35cb/vmlinux-6.18.48-x86_64",
+            sha256: "136a182b7013fa32d852a7f227b91f6c113d9ad9dbe7a9b9d4baac7153ddd59c",
         },
         other => panic!("no pinned guest kernel for {other} yet"),
     }
 }
 
-/// `CONFIG_NR_CPUS` of both pinned kernels (Firecracker 6f82ac4cf331,
-/// resources/guest_configs/microvm-kernel-ci-{aarch64,x86_64}-6.18.config). A guest brings
-/// up at most this many vCPUs and refuses the rest.
+/// `CONFIG_NR_CPUS` of both pinned kernels (resources/kernel/firecracker-*-6.18.config,
+/// which shards.config leaves alone). A guest brings up at most this many vCPUs and refuses
+/// the rest.
 pub const KERNEL_NR_CPUS: u32 = 64;
 
 fn sha256(path: &Path) -> String {
@@ -113,9 +114,14 @@ pub fn fetch(a: &Artifact) -> PathBuf {
     path
 }
 
+/// The guest kernel: `SHARDS_TEST_KERNEL` if set (to try a kernel before pinning it),
+/// else the pinned one.
 pub fn kernel() -> &'static Path {
     static K: OnceLock<PathBuf> = OnceLock::new();
-    K.get_or_init(|| fetch(&kernel_artifact()))
+    K.get_or_init(|| match std::env::var_os("SHARDS_TEST_KERNEL") {
+        Some(path) => PathBuf::from(path),
+        None => fetch(&kernel_artifact()),
+    })
 }
 
 /// Builds guest package `name` (static musl, `guest` profile) and returns its binary.

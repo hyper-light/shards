@@ -22,6 +22,7 @@ windows-sys = { workspace = true }
 [dev-dependencies]
 sha2 = "0.10"
 shards-abi = { path = "../abi" }
+shards-image = { path = "../image" }
 shards-testguest = { path = "../testguest" }
 
 [[bench]]
