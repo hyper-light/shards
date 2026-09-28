@@ -209,8 +209,17 @@ leaner kernel is coming.
 Peak memory is 12.5 MiB for a restored machine and 59.3 MiB for a booted one, guest memory
 included.
 
-Firecracker's published bounds are 125 ms to `/sbin/init` and 5 MiB of VMM overhead, for
-1 CPU and 128 MiB. A same-host comparison is in progress.
+Against Firecracker v1.17.0 on one host (GitHub's x86_64 runner), with the same kernel and
+guest, 1 CPU and 128 MiB, 30 interleaved runs each:
+
+| | shards | Firecracker |
+|---|---:|---:|
+| Boot to ready, p50 | **143 ms** | 147 ms |
+| Boot to ready, p99 | **162 ms** | 228 ms |
+| VMM memory | **2.4 MiB** | 4.5 MiB |
+
+The guest kernel dominates boot there, under nested virtualization. Snapshot restores are
+next.
 
 ## How it works
 

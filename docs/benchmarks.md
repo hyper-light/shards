@@ -171,3 +171,21 @@ vmlinux-6.18.48-x86_64 · n=30, 1 vCPU, 128 MiB
 
 Boot latency is a tie: nearly all of it is the guest kernel, the same for both. The VMM
 overhead is 47% lower.
+
+**2026-09-28, guest RAM on transparent huge pages** · 173c5b2 (a69e070's MADV_HUGEPAGE) ·
+GitHub `ubuntu-24.04` runner: AMD EPYC 7763, Linux 6.17.0-1022-azure, THP `enabled=always`,
+`defrag=madvise` · otherwise as above
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| **shards to_ready** | **143168 µs** | **146830 µs** | **162390 µs** | **162390 µs** |
+| Firecracker to_ready | 147311 µs | 159104 µs | 228157 µs | 228157 µs |
+| shards overhead | 2.4 MiB | 2.4 MiB | 2.5 MiB | 2.5 MiB |
+| Firecracker overhead | 4.5 MiB | 4.5 MiB | 4.5 MiB | 4.5 MiB |
+| shards peak_rss | 64.4 MiB | 66.4 MiB | 66.4 MiB | 66.4 MiB |
+| Firecracker peak_rss | 64.4 MiB | 66.3 MiB | 66.5 MiB | 66.5 MiB |
+
+The runner's THP mode is `always`, so both VMMs' 2 MiB-aligned guest RAM could already get
+huge pages. `MADV_HUGEPAGE` adds alignment by construction and, under `defrag=madvise`,
+direct compaction on fault. shards is 2.8% faster at p50 and 29% faster at p99. Peak RSS is
+unchanged. A same-runner A/B without the advice is still needed to attribute the gain.
