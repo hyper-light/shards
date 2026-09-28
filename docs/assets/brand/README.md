@@ -17,11 +17,20 @@ they read as a fleet of separate machines rather than one object broken into pie
 - `shards-fleet-preview.png` shows both themes at 252, 90 and 28 pixels high. These sizes
   were visually checked on 2026-09-28.
 
-The geometry is the site mark's, on its 32-unit grid. Each shard is drawn whole at 55%
-ink, then its solid face on top, so the ridge between the faces has no anti-aliasing seam.
-The solid face is the one left of the ridge. One vector mask cuts the three glints,
-0.45 units wide with round caps, and uses black and white whatever the artwork's theme
-color. The viewBox leaves one unit around the shards.
+The geometry is the site mark's, on its 32-unit grid. Each shard is drawn whole in its
+lit-face grey, then its solid face on top, so the ridge between the faces has no
+anti-aliasing seam. The solid face is the one left of the ridge.
+
+The lit faces are solid greys, vorpal's blade-face colors: `#8e9399` in the light variant and
+`#7c8794` in the dark one. On its intended background each looks almost the same as ink at
+55% opacity, but it stays visible on the other background too. That matters because GitHub
+picks the variant with the browser's `prefers-color-scheme`, not its own theme setting. A
+reader whose GitHub is dark and whose system is light gets the light variant on a dark page,
+where ink alone disappears. This was checked on 2026-09-28 in all four combinations of
+variant and background.
+
+One vector mask cuts the three glints, 0.45 units wide with round caps, and uses black and
+white whatever the artwork's theme color. The viewBox leaves one unit around the shards.
 
 The background and the cuts are transparent. The assets contain no embedded bitmaps,
 filters, fonts, scripts or external resources.

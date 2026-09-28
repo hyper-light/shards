@@ -19,8 +19,11 @@ An all-in-one, rootless microVM platform for agents. There are two layers:
   are microVMs. It ships its own VMM with native backends: Hypervisor.framework
   (macOS/arm64) and KVM (Linux). Microvm images are specified and built like Docker
   images.
-- **Guest layer.** Every default microVM runs shards' own Docker- and
-  Compose-compatible engine, rootless. Agents run in containers inside it.
+- **Guest layer.** Every default microVM runs shards' own runtime, rootless, in the place
+  containerd has on a Docker host. One microVM holds many agents and their compose services.
+  The runtime is Docker- and Compose-compatible at its interface, but it is not containerd,
+  runc or any container runtime underneath: it is a different implementation, built so that
+  a microVM full of running agents snapshots and restores at our start-time targets.
 
 ### Targets
 
@@ -132,8 +135,8 @@ shards (host CLI, docker-compatible) ──unix socket──▶ shardsd (daemon)
                                                      │ virtio (blk/net/vsock/console/rng/pmem/fs/gpu)
                                                      ▼
                                        guest: Linux (tuned) · shards-init (PID 1)
-                                       shards-engine (Docker Engine API, rootless)
-                                       containers (agents, compose services)
+                                       shards-engine (containerd's place; Docker Engine API)
+                                       agents and compose services, many per microVM
 ```
 
 - **VMM** (the `shards-vmm` library, run by the `shards` binary): one process per microVM. That is forced on macOS
@@ -145,8 +148,9 @@ shards (host CLI, docker-compatible) ──unix socket──▶ shardsd (daemon)
 - **Guest**:
   - a tuned Linux kernel built from source inside a shards builder VM
   - `shards-init`, a minimal static PID 1 that sets up and then drops privilege
-  - `shards-engine`, our own Docker/Compose-compatible engine and OCI runtime,
-    rootless. **pending**: engine-internals and rootless research.
+  - `shards-engine`, our own runtime, rootless. It walks and talks like containerd and
+    Docker (Engine API, Compose) but runs no containers underneath. **pending**: its
+    design, informed by the engine-internals and rootless research.
 
 ## 4. Start path (≤ 5 ms budget)
 
@@ -182,8 +186,8 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
      rootfs image; `shards run IMAGE CMD`.
    - Pending: image-storage, boot-latency research.
 4. **In-VM engine.**
-   - Scope: Docker Engine API subset → full; rootless OCI runtime; networks,
-     volumes, build; compose.
+   - Scope: Docker Engine API subset → full; the rootless runtime (compatible, not
+     containers underneath); networks, volumes, build; compose.
    - Proven by running the official Docker CLI/Compose conformance suites against
      it. Pending: compat, engine, rootless research.
 5. **Host CLI/daemon parity and networking.**

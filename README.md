@@ -12,20 +12,23 @@
 <p align="center"><em>Rootless microVMs for agents, built and run like containers.</em></p>
 
 Give an agent a shell and it will install packages, start servers, run builds and, sooner or
-later, break something. Shards gives each agent you run a machine of its own to do that in.
-Each one is a real virtual machine with its own Linux kernel, so unlike a container, it does
-not share a kernel with your computer or with the other agents. Whatever an agent does,
-including the damage, stays in its machine.
+later, break something. Shards gives your agents a machine to do that in: a microVM with its
+own Linux kernel, so nothing that happens inside it reaches your computer.
 
-You shouldn't have to give up the tools you know to get that. Shards machines are described
-and built like Docker images, you run them with commands that work like Docker's, and inside
-each one your agents get Docker and Compose of their own. Your agents can:
+One machine holds as many agents as you like. Inside it, shards runs a runtime of its own in
+the place containerd has on a Docker host. It takes Docker's commands and Compose files, so
+your agents and the services they depend on run side by side, just as they would under
+Docker. Underneath it is built differently, with no containerd, runc or containers, so that a
+machine full of running agents can be saved and started again in well under a millisecond.
+You describe and build these machines like Docker images. Your agents can:
 
-- Get a machine of their own in well under a millisecond
-- Run Docker and Compose inside it, without root, with the commands they already use
-- Reach only the network, devices and files you allow
+- Start in a machine that is already set up, in well under a millisecond
+- Work side by side in one machine, with the Docker commands and Compose files you already
+  have
+- Get a machine to themselves when they shouldn't share one
+- Reach only the network, devices and files you allow, per agent and per machine
 - Use a GPU when a job needs one
-- Break anything inside it without it reaching you or each other
+- Break anything without it reaching your computer
 
 Shards is one binary, and it never needs root.
 
@@ -61,8 +64,9 @@ in [Set up once, start many](#set-up-once-start-many).
 > [!IMPORTANT]
 > Shards has no release yet. Today you can boot Linux machines on a Mac with Apple silicon
 > or on x86_64 Linux, and on the Mac, save a running machine and start copies of it. Building
-> machines like Docker images, the Docker-compatible commands, Docker and Compose inside each
-> machine, network and device controls, and GPU support are still being built.
+> machines like Docker images, the Docker-compatible commands, the runtime that runs your
+> agents inside each machine, per-agent network and device controls, and GPU support are still
+> being built.
 > [Where things stand](#where-things-stand) goes through each one.
 
 ## Install
@@ -135,9 +139,9 @@ which it sees as `/dev/vda`, the next one as `/dev/vdb`, and so on. Machines get
 
 ## Set up once, start many
 
-Booting Linux, installing what an agent needs and starting its services all take time. With
-shards you do that once. Save the machine when it's ready, and every agent after that starts
-from a copy of it, already set up.
+Booting Linux, installing what your agents need and starting their services all take time.
+With shards you do that once. Save the machine when it's ready, and whenever you need another
+one, start a copy of it that is already set up.
 
 For now, the machine decides when it is ready: a program inside it asks shards to save it.
 The test program in this repository asks as soon as it starts, so you can try the whole flow
@@ -199,8 +203,8 @@ SHARDS-TEST PASS
 | Run commands in a running machine and talk to it from the host | Next |
 | Describe and build machines like Docker images | Planned |
 | Use Docker's commands (`run`, `build`, `ps`, `exec` and the rest) with shards | Planned. Today there are `shards vm run` and `shards vm restore` |
-| Run Docker and Compose inside a machine, without root | Planned |
-| Choose each machine's and each container's network, devices and permissions | Planned |
+| Run agents side by side in one machine, with Docker's commands and Compose files | Planned |
+| Choose each agent's and each machine's network, devices and permissions | Planned |
 | Give a machine a GPU | Planned |
 
 The goal is a machine you can use within 5 ms of asking for it, boot included, using less
@@ -263,8 +267,9 @@ run on one Linux host, once shards can save and restore machines there.
 ## How it works
 
 - **Why nothing an agent does reaches you.** Every machine is a real virtual machine with its
-  own Linux kernel, run by its own `shards` process. A container shares your kernel; a shards
-  machine doesn't. A crash, a runaway process or an exploit stays inside its machine.
+  own Linux kernel, run by its own `shards` process. A container on your computer runs on
+  your kernel; a shards machine runs its own. A crash, a runaway process or an exploit stays
+  inside its machine, and agents that must share nothing get a machine each.
 - **Why a machine is ready in microseconds.** Booting Linux takes about 20 ms, so shards
   boots once, saves the machine, and starts copies of it. A copy prepared with `--hold` has
   already loaded everything, so starting it only means letting it run.

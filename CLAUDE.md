@@ -5,7 +5,7 @@ An all-in-one, rootless microVM platform for agents:
 - our own VMM (Hypervisor.framework on macOS, KVM on Linux)
 - microVMs specified and built like Docker images
 - a Docker drop-in CLI
-- inside every VM, our own Docker/Compose-compatible engine, where agents run as containers
+- inside every VM, our own runtime in containerd's place: many agents per VM, Docker- and Compose-compatible at the interface, but no containerd, runc or containers underneath (a different implementation, built for snapshot-speed starts)
 
 Targets: request → usable in **under 5 ms, boot included**, and less memory per VM than Firecracker.
 
