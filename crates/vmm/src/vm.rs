@@ -8,12 +8,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 
 use crate::arch::aarch64::{self, boot, esr, layout, psci, sysreg};
+use crate::devices::control::Control;
 use crate::devices::rtc::Pl031;
 use crate::devices::serial::Serial;
 use crate::devices::{Interrupt, MmioBus};
 use crate::hvf::{self, Exit, Gic, GicLayout, Granule, Perms, Reg, Vcpu, VcpuKicker};
 use crate::memory::GuestMemory;
-use crate::{debug, info, warn};
+use crate::{debug, info, initramfs, warn};
 
 const MIB: u64 = 1 << 20;
 /// Smallest guest that can hold a kernel, its early allocations and the DTB window.
@@ -23,7 +24,11 @@ const SPI_INTID_BASE: u32 = 32;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub kernel: PathBuf,
+    /// A prebuilt initramfs image.
     pub initrd: Option<PathBuf>,
+    /// A guest executable to run as PID 1 from a generated initramfs (exclusive with
+    /// `initrd`).
+    pub init: Option<PathBuf>,
     pub cmdline: String,
     pub vcpus: u32,
     pub memory_mib: u64,
@@ -53,9 +58,20 @@ pub enum ExitReason {
 pub struct Handle {
     shared: Arc<Shared>,
     serial: Arc<Serial>,
+    control: Arc<Control>,
 }
 
 impl Handle {
+    /// Guest boot markers as `(marker, µs since VMM start)`.
+    pub fn markers(&self) -> Vec<(u32, u128)> {
+        self.control.markers()
+    }
+
+    /// Microseconds since VMM start at which the guest exited (once it has).
+    pub fn exited_at_us(&self) -> Option<u128> {
+        *self.shared.exited_at_us.lock().unwrap()
+    }
+
     pub fn stop(&self) {
         self.shared.stop(ExitReason::Stopped);
     }
@@ -108,12 +124,16 @@ struct Shared {
     redist_size: u64,
     exiting: AtomicBool,
     exit: Mutex<Option<ExitReason>>,
+    exited_at_us: Mutex<Option<u128>>,
     exited: Condvar,
 }
 
 impl std::fmt::Debug for Shared {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Shared").field("cpus", &self.cpus.len()).field("bus", &self.bus).finish_non_exhaustive()
+        f.debug_struct("Shared")
+            .field("cpus", &self.cpus.len())
+            .field("bus", &self.bus)
+            .finish_non_exhaustive()
     }
 }
 
@@ -124,6 +144,7 @@ impl Shared {
             let mut exit = self.exit.lock().unwrap();
             if exit.is_none() {
                 *exit = Some(reason);
+                *self.exited_at_us.lock().unwrap() = Some(crate::log::uptime_us());
             }
             self.exiting.store(true, Ordering::Release);
         }
@@ -208,7 +229,9 @@ fn architected_ipa_bits(ram_end: u64) -> Result<u32, String> {
     [36, 40, 42, 44, 48]
         .into_iter()
         .find(|&b| b >= needed && b <= max)
-        .ok_or_else(|| format!("guest RAM ending at {ram_end:#x} needs {needed} address bits; host allows {max}"))
+        .ok_or_else(|| {
+            format!("guest RAM ending at {ram_end:#x} needs {needed} address bits; host allows {max}")
+        })
 }
 
 /// Boots a VM and runs it on the calling thread's behalf until it exits.
@@ -244,20 +267,29 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     }
     let max_vcpus = hvf::max_vcpus().map_err(|e| e.to_string())?;
     if cfg.vcpus > max_vcpus {
-        return Err(format!("{} vCPUs requested; this host supports {max_vcpus}", cfg.vcpus));
+        return Err(format!(
+            "{} vCPUs requested; this host supports {max_vcpus}",
+            cfg.vcpus
+        ));
     }
-    if cfg.memory_mib < MIN_MEMORY_MIB || cfg.memory_mib % 2 != 0 {
-        return Err(format!("guest memory must be an even number of MiB, at least {MIN_MEMORY_MIB}"));
+    if cfg.memory_mib < MIN_MEMORY_MIB || !cfg.memory_mib.is_multiple_of(2) {
+        return Err(format!(
+            "guest memory must be an even number of MiB, at least {MIN_MEMORY_MIB}"
+        ));
     }
     let ram = cfg.memory_mib * MIB;
     let ipa_bits = architected_ipa_bits(layout::DRAM_BASE + ram)?;
 
     // Declared before the VM so it outlives it: HVF must stop mapping it first.
     let memory = Arc::new(
-        GuestMemory::anonymous(&[(layout::DRAM_BASE, ram as usize)]).map_err(|e| format!("guest RAM: {e}"))?,
+        GuestMemory::anonymous(&[(layout::DRAM_BASE, ram as usize)])
+            .map_err(|e| format!("guest RAM: {e}"))?,
     );
-    let vm = hvf::Vm::new(hvf::VmConfig { ipa_bits: (ipa_bits > 36).then_some(ipa_bits), granule: Granule::K16 })
-        .map_err(|e| e.to_string())?;
+    let vm = hvf::Vm::new(hvf::VmConfig {
+        ipa_bits: (ipa_bits > 36).then_some(ipa_bits),
+        granule: Granule::K16,
+    })
+    .map_err(|e| e.to_string())?;
     for (gpa, host, len) in memory.regions() {
         // SAFETY: `memory` is an owned mmap region kept alive in `Running` until after
         // the VM is destroyed.
@@ -266,25 +298,37 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
 
     let gp = hvf::gic_params().map_err(|e| e.to_string())?;
     let redist_total = gp.redist_size * cfg.vcpus as u64;
-    if layout::GIC_DIST % gp.dist_align != 0
-        || layout::GIC_REDIST % gp.redist_align != 0
+    if !layout::GIC_DIST.is_multiple_of(gp.dist_align)
+        || !layout::GIC_REDIST.is_multiple_of(gp.redist_align)
         || layout::GIC_DIST + gp.dist_size > layout::GIC_MSI
         || layout::GIC_REDIST + redist_total > layout::GIC_REDIST_MAX_END
     {
-        return Err(format!("host GIC geometry {gp:?} does not fit the guest memory map"));
+        return Err(format!(
+            "host GIC geometry {gp:?} does not fit the guest memory map"
+        ));
     }
     let gic = vm
-        .create_gic(&GicLayout { dist_base: layout::GIC_DIST, redist_base: layout::GIC_REDIST, msi: None })
+        .create_gic(&GicLayout {
+            dist_base: layout::GIC_DIST,
+            redist_base: layout::GIC_REDIST,
+            msi: None,
+        })
         .map_err(|e| e.to_string())?;
 
     let kernel_file = File::open(&cfg.kernel).map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
     let kernel = boot::load_kernel(&memory, &kernel_file, ram).map_err(|e| e.to_string())?;
     let fdt_addr = layout::DRAM_BASE + ram - boot::FDT_MAX;
-    let initrd = match &cfg.initrd {
+    let read = |p: &PathBuf| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
+    let initrd_bytes = match (&cfg.initrd, &cfg.init) {
+        (Some(_), Some(_)) => return Err("--initrd and --init are mutually exclusive".into()),
+        (Some(p), None) => Some(read(p)?),
+        (None, Some(p)) => Some(initramfs::with_init(&read(p)?)),
+        (None, None) => None,
+    };
+    let initrd = match initrd_bytes {
         None => None,
-        Some(p) => {
-            let f = File::open(p).map_err(|e| format!("{}: {e}", p.display()))?;
-            Some(boot::load_initrd(&memory, &f, kernel.end, fdt_addr).map_err(|e| e.to_string())?)
+        Some(bytes) => {
+            Some(boot::load_initrd(&memory, &bytes, kernel.end, fdt_addr).map_err(|e| e.to_string())?)
         }
     };
     let mpidrs: Vec<u64> = (0..cfg.vcpus).map(aarch64::mpidr).collect();
@@ -305,17 +349,30 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     })
     .map_err(|e| e.to_string())?;
     memory.write(fdt_addr, &fdt).map_err(|e| e.to_string())?;
-    debug!("kernel entry {:#x} end {:#x}; dtb at {fdt_addr:#x} ({} bytes)", kernel.entry, kernel.end, fdt.len());
+    debug!(
+        "kernel entry {:#x} end {:#x}; dtb at {fdt_addr:#x} ({} bytes)",
+        kernel.entry,
+        kernel.end,
+        fdt.len()
+    );
 
     let out: Box<dyn Write + Send> = match cfg.console {
         // SAFETY: dup returns a fresh descriptor that the File then owns.
         Console::Stdout => Box::new(unsafe { File::from_raw_fd(libc::dup(1)) }),
         Console::Discard => Box::new(std::io::sink()),
     };
-    let serial = Arc::new(Serial::new(out, Arc::new(GicLine { gic, intid: SPI_INTID_BASE + layout::SPI_UART })));
+    let serial = Arc::new(Serial::new(
+        out,
+        Arc::new(GicLine {
+            gic,
+            intid: SPI_INTID_BASE + layout::SPI_UART,
+        }),
+    ));
     let mut bus = MmioBus::default();
     bus.insert(layout::UART, 0x1000, serial.clone())?;
     bus.insert(layout::RTC, 0x1000, Arc::new(Pl031::default()))?;
+    let control = Arc::new(Control::default());
+    bus.insert(layout::CONTROL, 0x1000, control.clone())?;
 
     let shared = Arc::new(Shared {
         memory: memory.clone(),
@@ -334,6 +391,7 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
         redist_size: gp.redist_size,
         exiting: AtomicBool::new(false),
         exit: Mutex::new(None),
+        exited_at_us: Mutex::new(None),
         exited: Condvar::new(),
     });
 
@@ -343,7 +401,10 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     for i in 0..cfg.vcpus as usize {
         let (created_tx, created_rx) = mpsc::channel();
         let sh = shared.clone();
-        let boot_start = (i == 0).then_some(Start { entry: kernel.entry, x0: fdt_addr });
+        let boot_start = (i == 0).then_some(Start {
+            entry: kernel.entry,
+            x0: fdt_addr,
+        });
         let spawned = std::thread::Builder::new()
             .name(format!("vcpu{i}"))
             .spawn(move || vcpu_thread(sh, i, boot_start, created_tx));
@@ -366,15 +427,35 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
             }
         }
     }
-    info!("started {} vCPU(s), {} MiB, IPA {} bits", cfg.vcpus, cfg.memory_mib, ipa_bits);
-    Ok((Handle { shared, serial }, Running { vm: Some(vm), threads, _memory: memory }))
+    info!(
+        "started {} vCPU(s), {} MiB, IPA {} bits",
+        cfg.vcpus, cfg.memory_mib, ipa_bits
+    );
+    info!("VM ready to run after {} us", crate::log::uptime_us());
+    Ok((
+        Handle {
+            shared,
+            serial,
+            control,
+        },
+        Running {
+            vm: Some(vm),
+            threads,
+            _memory: memory,
+        },
+    ))
 }
 
-fn vcpu_thread(sh: Arc<Shared>, index: usize, boot_start: Option<Start>, created: mpsc::Sender<Result<(), String>>) {
-    if let Err(e) = crate::thread::make_current_realtime() {
-        if index == 0 {
-            warn!("vCPU threads run without real-time policy (coarser guest timers): {e}");
-        }
+fn vcpu_thread(
+    sh: Arc<Shared>,
+    index: usize,
+    boot_start: Option<Start>,
+    created: mpsc::Sender<Result<(), String>>,
+) {
+    if let Err(e) = crate::thread::make_current_realtime()
+        && index == 0
+    {
+        warn!("vCPU threads run without real-time policy (coarser guest timers): {e}");
     }
     let mut vcpu = match init_vcpu(&sh, index) {
         Ok(v) => v,
@@ -406,13 +487,16 @@ fn vcpu_thread(sh: Arc<Shared>, index: usize, boot_start: Option<Start>, created
 fn init_vcpu(sh: &Shared, index: usize) -> Result<Vcpu, String> {
     let mut vcpu = Vcpu::new().map_err(|e| e.to_string())?;
     let e = |e: hvf::Error| e.to_string();
-    vcpu.set_sys_reg(sysreg::MPIDR_EL1, sh.cpus[index].mpidr).map_err(e)?;
+    vcpu.set_sys_reg(sysreg::MPIDR_EL1, sh.cpus[index].mpidr)
+        .map_err(e)?;
 
     // The redistributor must be the index-th frame, or GIC routing and the DT disagree.
     let expected = layout::GIC_REDIST + index as u64 * sh.redist_size;
     let actual = vcpu.redistributor_base().map_err(e)?;
     if actual != expected {
-        return Err(format!("redistributor at {actual:#x}, expected {expected:#x} (vCPU creation order)"));
+        return Err(format!(
+            "redistributor at {actual:#x}, expected {expected:#x} (vCPU creation order)"
+        ));
     }
 
     // Advertise the physical address width the stage-2 actually covers.
@@ -423,10 +507,17 @@ fn init_vcpu(sh: &Shared, index: usize) -> Result<Vcpu, String> {
         vcpu.set_sys_reg(sysreg::ID_AA64MMFR0_EL1, want).map_err(e)?;
         let got = vcpu.sys_reg(sysreg::ID_AA64MMFR0_EL1).map_err(e)?;
         if got != want && index == 0 {
-            warn!("ID_AA64MMFR0_EL1.PARange stays {:#x}; guest may probe beyond {} IPA bits", got & 0xf, sh.ipa_bits);
+            warn!(
+                "ID_AA64MMFR0_EL1.PARange stays {:#x}; guest may probe beyond {} IPA bits",
+                got & 0xf,
+                sh.ipa_bits
+            );
         }
     }
-    sh.cpus[index].kicker.set(vcpu.kicker()).expect("kicker set once per vCPU");
+    sh.cpus[index]
+        .kicker
+        .set(vcpu.kicker())
+        .expect("kicker set once per vCPU");
     Ok(vcpu)
 }
 
@@ -472,10 +563,10 @@ fn run_vcpu(vcpu: &mut Vcpu, sh: &Shared, index: usize) -> Stop {
             esr::EC_DABT_LOW => mmio(vcpu, sh, esr, ipa),
             esr::EC_HVC64 | esr::EC_SMC64 => {
                 // HVC exits with PC already past the instruction; a trapped SMC does not.
-                if esr::ec(esr) == esr::EC_SMC64 {
-                    if let Err(e) = advance_pc(vcpu, esr) {
-                        return fail(e);
-                    }
+                if esr::ec(esr) == esr::EC_SMC64
+                    && let Err(e) = advance_pc(vcpu, esr)
+                {
+                    return fail(e);
                 }
                 match firmware_call(vcpu, sh) {
                     Ok(None) => Ok(()),
@@ -495,7 +586,8 @@ fn run_vcpu(vcpu: &mut Vcpu, sh: &Shared, index: usize) -> Stop {
 
 fn advance_pc(vcpu: &mut Vcpu, esr: u64) -> Result<(), String> {
     let pc = vcpu.reg(Reg::PC).map_err(|e| e.to_string())?;
-    vcpu.set_reg(Reg::PC, pc + esr::instr_len(esr)).map_err(|e| e.to_string())
+    vcpu.set_reg(Reg::PC, pc + esr::instr_len(esr))
+        .map_err(|e| e.to_string())
 }
 
 fn mmio(vcpu: &mut Vcpu, sh: &Shared, esr: u64, ipa: u64) -> Result<(), String> {
@@ -505,7 +597,11 @@ fn mmio(vcpu: &mut Vcpu, sh: &Shared, esr: u64, ipa: u64) -> Result<(), String> 
     let e = |e: hvf::Error| e.to_string();
     if da.write {
         // Register 31 is XZR here, never PC.
-        let value = if da.reg == 31 { 0 } else { vcpu.reg(Reg::x(da.reg)).map_err(e)? };
+        let value = if da.reg == 31 {
+            0
+        } else {
+            vcpu.reg(Reg::x(da.reg)).map_err(e)?
+        };
         if !sh.bus.write(ipa, &value.to_le_bytes()[..da.size]) {
             debug!("unclaimed MMIO write {ipa:#x} <- {value:#x} ({} bytes)", da.size);
         }
@@ -515,7 +611,8 @@ fn mmio(vcpu: &mut Vcpu, sh: &Shared, esr: u64, ipa: u64) -> Result<(), String> 
             debug!("unclaimed MMIO read {ipa:#x} ({} bytes)", da.size);
         }
         if da.reg != 31 {
-            vcpu.set_reg(Reg::x(da.reg), da.load_value(u64::from_le_bytes(raw))).map_err(e)?;
+            vcpu.set_reg(Reg::x(da.reg), da.load_value(u64::from_le_bytes(raw)))
+                .map_err(e)?;
         }
     }
     advance_pc(vcpu, esr)
@@ -532,7 +629,11 @@ fn firmware_call(vcpu: &mut Vcpu, sh: &Shared) -> Result<Option<Stop>, String> {
         psci::Call::Immediate(v) => v,
         psci::Call::CpuSuspend => psci::SUCCESS,
         psci::Call::CpuOff => return Ok(Some(Stop::CpuOff)),
-        psci::Call::CpuOn { target, entry, context } => sh.cpu_on(target, entry, context),
+        psci::Call::CpuOn {
+            target,
+            entry,
+            context,
+        } => sh.cpu_on(target, entry, context),
         psci::Call::AffinityInfo { target } => sh.affinity_info(target),
         psci::Call::SystemOff => {
             sh.stop(ExitReason::PowerOff);
@@ -551,7 +652,11 @@ fn firmware_call(vcpu: &mut Vcpu, sh: &Shared) -> Result<Option<Stop>, String> {
 /// few debug/OS-lock registers here (e.g. OSLAR_EL1, MDCCINT_EL1 on macOS 26).
 fn sysreg_trap(vcpu: &mut Vcpu, esr: u64) -> Result<(), String> {
     let a = esr::sysreg_access(esr);
-    debug!("trapped {} of sysreg {:#06x}", if a.read { "read" } else { "write" }, a.encoding);
+    debug!(
+        "trapped {} of sysreg {:#06x}",
+        if a.read { "read" } else { "write" },
+        a.encoding
+    );
     if a.read && a.reg != 31 {
         vcpu.set_reg(Reg::x(a.reg), 0).map_err(|e| e.to_string())?;
     }

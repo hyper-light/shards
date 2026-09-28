@@ -89,7 +89,11 @@ unsafe extern "C" {
     pub fn hv_gic_config_set_distributor_base(config: hv_gic_config_t, base: hv_ipa_t) -> hv_return_t;
     pub fn hv_gic_config_set_redistributor_base(config: hv_gic_config_t, base: hv_ipa_t) -> hv_return_t;
     pub fn hv_gic_config_set_msi_region_base(config: hv_gic_config_t, base: hv_ipa_t) -> hv_return_t;
-    pub fn hv_gic_config_set_msi_interrupt_range(config: hv_gic_config_t, base: u32, count: u32) -> hv_return_t;
+    pub fn hv_gic_config_set_msi_interrupt_range(
+        config: hv_gic_config_t,
+        base: u32,
+        count: u32,
+    ) -> hv_return_t;
     pub fn hv_gic_create(config: hv_gic_config_t) -> hv_return_t;
     pub fn hv_gic_set_spi(intid: u32, level: bool) -> hv_return_t;
     pub fn hv_gic_send_msi(address: hv_ipa_t, intid: u32) -> hv_return_t;

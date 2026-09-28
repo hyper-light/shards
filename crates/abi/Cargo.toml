@@ -1,0 +1,11 @@
+[package]
+name = "shards-abi"
+version = "0.1.0"
+description = "Constants shared by the shards VMM and guest"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

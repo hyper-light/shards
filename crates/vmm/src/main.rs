@@ -4,13 +4,14 @@ use std::process::ExitCode;
 
 use shards_vmm::vm::{self, Config, Console, ExitReason};
 
-const USAGE: &str = "usage: shards-vmm --kernel PATH [--initrd PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--no-console]
+const USAGE: &str = "usage: shards-vmm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--no-console]
   Console escape: Ctrl-A x stops the VM.";
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Config, String> {
     let mut cfg = Config {
         kernel: PathBuf::new(),
         initrd: None,
+        init: None,
         cmdline: "console=ttyS0 earlycon panic=-1".into(),
         vcpus: 1,
         memory_mib: 256,
@@ -22,9 +23,12 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Config, String> 
         match arg.as_str() {
             "--kernel" => kernel = Some(PathBuf::from(value("--kernel")?)),
             "--initrd" => cfg.initrd = Some(PathBuf::from(value("--initrd")?)),
+            "--init" => cfg.init = Some(PathBuf::from(value("--init")?)),
             "--cmdline" => cfg.cmdline = value("--cmdline")?,
             "--cpus" => cfg.vcpus = value("--cpus")?.parse().map_err(|e| format!("--cpus: {e}"))?,
-            "--memory" => cfg.memory_mib = value("--memory")?.parse().map_err(|e| format!("--memory: {e}"))?,
+            "--memory" => {
+                cfg.memory_mib = value("--memory")?.parse().map_err(|e| format!("--memory: {e}"))?
+            }
             "--no-console" => cfg.console = Console::Discard,
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown argument {other:?}")),
@@ -107,10 +111,25 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let terminal = (cfg.console == Console::Stdout).then(RawTerminal::enable).flatten();
+    let terminal = (cfg.console == Console::Stdout)
+        .then(RawTerminal::enable)
+        .flatten();
     forward_stdin(handle.clone());
-    let reason = running.wait(handle);
+    let reason = running.wait(handle.clone());
     drop(terminal);
+    if std::env::var_os("SHARDS_TIMING").is_some() {
+        // One machine-readable line for benchmark harnesses.
+        let markers: Vec<String> = handle
+            .markers()
+            .iter()
+            .map(|(m, t)| format!("[{m},{t}]"))
+            .collect();
+        eprintln!(
+            "shards-timing {{\"exit_us\":{},\"markers\":[{}]}}",
+            handle.exited_at_us().unwrap_or(0),
+            markers.join(",")
+        );
+    }
     match reason {
         ExitReason::PowerOff | ExitReason::Stopped => ExitCode::SUCCESS,
         ExitReason::Reset => {

@@ -49,8 +49,14 @@ pub enum Call {
     /// permitted for standby states, DEN0022 §5.4).
     CpuSuspend,
     CpuOff,
-    CpuOn { target: u64, entry: u64, context: u64 },
-    AffinityInfo { target: u64 },
+    CpuOn {
+        target: u64,
+        entry: u64,
+        context: u64,
+    },
+    AffinityInfo {
+        target: u64,
+    },
     SystemOff,
     SystemReset,
 }
@@ -59,7 +65,13 @@ pub enum Call {
 pub fn decode(x: [u64; 4]) -> Call {
     let func = x[0] as u32;
     // SMC32/HVC32 calls pass 32-bit arguments; ignore upper halves (KVM does the same).
-    let arg = |i: usize| if func & 0x4000_0000 == 0 { x[i] & 0xffff_ffff } else { x[i] };
+    let arg = |i: usize| {
+        if func & 0x4000_0000 == 0 {
+            x[i] & 0xffff_ffff
+        } else {
+            x[i]
+        }
+    };
     // Only the function ID is in W0; bits above 31 of X0 are not part of it.
     if x[0] >> 32 != 0 {
         return Call::Immediate(NOT_SUPPORTED);
@@ -68,7 +80,11 @@ pub fn decode(x: [u64; 4]) -> Call {
         PSCI_VERSION => Call::Immediate(VERSION_1_1),
         CPU_SUSPEND | CPU_SUSPEND_64 => Call::CpuSuspend,
         CPU_OFF => Call::CpuOff,
-        CPU_ON | CPU_ON_64 => Call::CpuOn { target: arg(1), entry: arg(2), context: arg(3) },
+        CPU_ON | CPU_ON_64 => Call::CpuOn {
+            target: arg(1),
+            entry: arg(2),
+            context: arg(3),
+        },
         AFFINITY_INFO | AFFINITY_INFO_64 => {
             // From PSCI 1.0, lowest_affinity_level > 0 may be rejected.
             if arg(2) != 0 {
@@ -97,9 +113,8 @@ pub fn decode(x: [u64; 4]) -> Call {
 pub fn features(func: u32) -> i64 {
     match func {
         PSCI_VERSION | CPU_SUSPEND | CPU_SUSPEND_64 | CPU_OFF | CPU_ON | CPU_ON_64 | AFFINITY_INFO
-        | AFFINITY_INFO_64 | MIGRATE_INFO_TYPE | SYSTEM_OFF | SYSTEM_RESET | PSCI_FEATURES | SMCCC_VERSION => {
-            SUCCESS
-        }
+        | AFFINITY_INFO_64 | MIGRATE_INFO_TYPE | SYSTEM_OFF | SYSTEM_RESET | PSCI_FEATURES
+        | SMCCC_VERSION => SUCCESS,
         _ => NOT_SUPPORTED,
     }
 }
@@ -113,13 +128,22 @@ mod tests {
         // psci_probe order (Linux 7.2 drivers/firmware/psci/psci.c:690-717).
         assert_eq!(decode([PSCI_VERSION as u64, 0, 0, 0]), Call::Immediate(0x1_0001));
         assert_eq!(decode([MIGRATE_INFO_TYPE as u64, 0, 0, 0]), Call::Immediate(2));
-        assert_eq!(decode([PSCI_FEATURES as u64, SMCCC_VERSION as u64, 0, 0]), Call::Immediate(SUCCESS));
+        assert_eq!(
+            decode([PSCI_FEATURES as u64, SMCCC_VERSION as u64, 0, 0]),
+            Call::Immediate(SUCCESS)
+        );
         assert_eq!(decode([SMCCC_VERSION as u64, 0, 0, 0]), Call::Immediate(0x1_0001));
-        assert_eq!(decode([PSCI_FEATURES as u64, 0xc400_0001, 0, 0]), Call::Immediate(SUCCESS));
+        assert_eq!(
+            decode([PSCI_FEATURES as u64, 0xc400_0001, 0, 0]),
+            Call::Immediate(SUCCESS)
+        );
         // SYSTEM_SUSPEND, SYSTEM_RESET2, SYSTEM_OFF2 must read as unsupported so Linux
         // keeps plain SYSTEM_RESET/SYSTEM_OFF.
         for f in [0xc400_000eu64, 0xc400_0012, 0xc400_0015] {
-            assert_eq!(decode([PSCI_FEATURES as u64, f, 0, 0]), Call::Immediate(NOT_SUPPORTED));
+            assert_eq!(
+                decode([PSCI_FEATURES as u64, f, 0, 0]),
+                Call::Immediate(NOT_SUPPORTED)
+            );
         }
         assert_eq!(decode([0x8600_ff01, 0, 0, 0]), Call::Immediate(NOT_SUPPORTED)); // vendor hyp UID
         assert_eq!(decode([0x8400_0050, 0, 0, 0]), Call::Immediate(NOT_SUPPORTED)); // TRNG_VERSION
@@ -128,12 +152,35 @@ mod tests {
     #[test]
     fn cpu_on_and_argument_width() {
         let x = [CPU_ON_64 as u64, 0x1_0000_0003, 0x8000_1000, 7];
-        assert_eq!(decode(x), Call::CpuOn { target: 0x1_0000_0003, entry: 0x8000_1000, context: 7 });
+        assert_eq!(
+            decode(x),
+            Call::CpuOn {
+                target: 0x1_0000_0003,
+                entry: 0x8000_1000,
+                context: 7
+            }
+        );
         // SMC32 variant truncates arguments to 32 bits.
         let x = [CPU_ON as u64, 0xdead_0000_0003, 0x1_8000_1000, 0x2_0000_0007];
-        assert_eq!(decode(x), Call::CpuOn { target: 3, entry: 0x8000_1000, context: 7 });
-        assert_eq!(decode([AFFINITY_INFO_64 as u64, 1, 1, 0]), Call::Immediate(INVALID_PARAMETERS));
-        assert_eq!(decode([AFFINITY_INFO_64 as u64, 1, 0, 0]), Call::AffinityInfo { target: 1 });
-        assert_eq!(decode([1 << 32 | PSCI_VERSION as u64, 0, 0, 0]), Call::Immediate(NOT_SUPPORTED));
+        assert_eq!(
+            decode(x),
+            Call::CpuOn {
+                target: 3,
+                entry: 0x8000_1000,
+                context: 7
+            }
+        );
+        assert_eq!(
+            decode([AFFINITY_INFO_64 as u64, 1, 1, 0]),
+            Call::Immediate(INVALID_PARAMETERS)
+        );
+        assert_eq!(
+            decode([AFFINITY_INFO_64 as u64, 1, 0, 0]),
+            Call::AffinityInfo { target: 1 }
+        );
+        assert_eq!(
+            decode([1 << 32 | PSCI_VERSION as u64, 0, 0, 0]),
+            Call::Immediate(NOT_SUPPORTED)
+        );
     }
 }

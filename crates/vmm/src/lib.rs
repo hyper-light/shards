@@ -3,6 +3,7 @@
 pub mod arch;
 pub mod devices;
 pub mod fdt;
+pub mod initramfs;
 pub mod log;
 pub mod memory;
 

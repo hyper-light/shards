@@ -28,7 +28,10 @@ pub fn make_current_realtime() -> Result<(), String> {
     unsafe {
         let rc = libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
         if rc != 0 {
-            return Err(format!("pthread_set_qos_class_self_np: {}", std::io::Error::from_raw_os_error(rc)));
+            return Err(format!(
+                "pthread_set_qos_class_self_np: {}",
+                std::io::Error::from_raw_os_error(rc)
+            ));
         }
         let mut tb = MachTimebaseInfo { numer: 0, denom: 0 };
         mach_timebase_info(&mut tb);

@@ -1,5 +1,6 @@
 //! Emulated devices and the MMIO bus that routes trapped guest accesses to them.
 
+pub mod control;
 pub mod rtc;
 pub mod serial;
 
@@ -27,7 +28,9 @@ pub struct MmioBus {
 
 impl std::fmt::Debug for MmioBus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.devices.iter().map(|(b, s, _)| (b, s))).finish()
+        f.debug_list()
+            .entries(self.devices.iter().map(|(b, s, _)| (b, s)))
+            .finish()
     }
 }
 
@@ -35,7 +38,9 @@ impl MmioBus {
     pub fn insert(&mut self, base: u64, size: u64, device: Arc<dyn MmioDevice>) -> Result<(), String> {
         let end = base.checked_add(size).ok_or("MMIO window wraps")?;
         if self.devices.iter().any(|&(b, s, _)| base < b + s && b < end) {
-            return Err(format!("MMIO window {base:#x}+{size:#x} overlaps an existing device"));
+            return Err(format!(
+                "MMIO window {base:#x}+{size:#x} overlaps an existing device"
+            ));
         }
         self.devices.push((base, size, device));
         self.devices.sort_by_key(|d| d.0);
@@ -97,7 +102,10 @@ mod tests {
         bus.insert(0x1000, 0x100, a.clone()).unwrap();
         bus.insert(0x2000, 0x100, Arc::new(Recorder::default())).unwrap();
         assert!(bus.insert(0x10f0, 0x20, Arc::new(Recorder::default())).is_err());
-        assert!(bus.insert(u64::MAX - 1, 4, Arc::new(Recorder::default())).is_err());
+        assert!(
+            bus.insert(u64::MAX - 1, 4, Arc::new(Recorder::default()))
+                .is_err()
+        );
 
         let mut b = [0u8; 4];
         assert!(bus.read(0x1010, &mut b));

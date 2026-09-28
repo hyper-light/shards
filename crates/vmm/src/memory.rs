@@ -71,8 +71,14 @@ impl GuestMemory {
                     format!("guest RAM {gpa:#x}+{len:#x} is not host-page ({page:#x}) aligned"),
                 ));
             }
-            if regions.iter().any(|r| gpa < r.gpa + r.len as u64 && r.gpa < gpa + len as u64) {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "overlapping guest RAM regions"));
+            if regions
+                .iter()
+                .any(|r| gpa < r.gpa + r.len as u64 && r.gpa < gpa + len as u64)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "overlapping guest RAM regions",
+                ));
             }
             // SAFETY: fresh private anonymous mapping; ownership moves into `regions`.
             let host = unsafe {
@@ -88,7 +94,11 @@ impl GuestMemory {
             if host == libc::MAP_FAILED {
                 return Err(io::Error::last_os_error());
             }
-            regions.push(Region { gpa, len, host: NonNull::new(host.cast()).expect("mmap returned NULL") });
+            regions.push(Region {
+                gpa,
+                len,
+                host: NonNull::new(host.cast()).expect("mmap returned NULL"),
+            });
         }
         regions.sort_by_key(|r| r.gpa);
         Ok(GuestMemory { regions })
@@ -103,7 +113,11 @@ impl GuestMemory {
     pub fn host_ptr(&self, gpa: u64, len: usize) -> Result<*mut u8, OutOfBounds> {
         let oob = OutOfBounds { gpa, len: len as u64 };
         let end = gpa.checked_add(len as u64).ok_or(oob)?;
-        let r = self.regions.iter().find(|r| gpa >= r.gpa && end <= r.gpa + r.len as u64).ok_or(oob)?;
+        let r = self
+            .regions
+            .iter()
+            .find(|r| gpa >= r.gpa && end <= r.gpa + r.len as u64)
+            .ok_or(oob)?;
         // SAFETY: offset is within the region's mapping (checked above).
         Ok(unsafe { r.host.as_ptr().add((gpa - r.gpa) as usize) })
     }
@@ -137,7 +151,7 @@ impl GuestMemory {
 
     /// An atomic view of the naturally aligned `u16` at `gpa` (virtqueue indices).
     pub fn atomic_u16(&self, gpa: u64) -> Result<&AtomicU16, OutOfBounds> {
-        if gpa % 2 != 0 {
+        if !gpa.is_multiple_of(2) {
             return Err(OutOfBounds { gpa, len: 2 });
         }
         let p = self.host_ptr(gpa, 2)?;
@@ -197,7 +211,9 @@ mod tests {
     fn atomic_view_is_aligned_only() {
         let m = mem();
         use std::sync::atomic::Ordering;
-        m.atomic_u16(0x8000_0010).unwrap().store(0xabcd, Ordering::Release);
+        m.atomic_u16(0x8000_0010)
+            .unwrap()
+            .store(0xabcd, Ordering::Release);
         assert_eq!(m.read_obj::<u16>(0x8000_0010).unwrap(), 0xabcd);
         assert!(m.atomic_u16(0x8000_0011).is_err());
     }

@@ -60,14 +60,18 @@ impl Fdt {
     }
 
     fn pad(&mut self) {
-        while self.structure.len() % 4 != 0 {
+        while !self.structure.len().is_multiple_of(4) {
             self.structure.push(0);
         }
     }
 
     /// Opens a node. The root node's name is the empty string.
     pub fn begin_node(&mut self, name: &str) {
-        let valid = if self.depth == 0 { name.is_empty() } else { !name.is_empty() && !name.contains('\0') };
+        let valid = if self.depth == 0 {
+            name.is_empty()
+        } else {
+            !name.is_empty() && !name.contains('\0')
+        };
         if !valid {
             self.fail(FdtError::InvalidName(name.to_string()));
         }
@@ -207,13 +211,18 @@ pub mod decode {
 
     impl Node {
         pub fn path(&self, path: &str) -> &Node {
-            path.split('/').filter(|s| !s.is_empty()).fold(self, |n, c| &n.children[c])
+            path.split('/')
+                .filter(|s| !s.is_empty())
+                .fold(self, |n, c| &n.children[c])
         }
         pub fn u32(&self, prop: &str) -> u32 {
             u32::from_be_bytes(self.props[prop][..4].try_into().unwrap())
         }
         pub fn cells(&self, prop: &str) -> Vec<u32> {
-            self.props[prop].chunks(4).map(|c| u32::from_be_bytes(c.try_into().unwrap())).collect()
+            self.props[prop]
+                .chunks(4)
+                .map(|c| u32::from_be_bytes(c.try_into().unwrap()))
+                .collect()
         }
         pub fn str(&self, prop: &str) -> &str {
             let v = &self.props[prop];
@@ -231,7 +240,9 @@ pub mod decode {
         let (so, st) = (be32(blob, 8) as usize, be32(blob, 12) as usize);
         let name_at = |off: usize| {
             let s = &blob[st + off..];
-            std::str::from_utf8(&s[..s.iter().position(|&c| c == 0).unwrap()]).unwrap().to_string()
+            std::str::from_utf8(&s[..s.iter().position(|&c| c == 0).unwrap()])
+                .unwrap()
+                .to_string()
         };
         let mut stack: Vec<(String, Node)> = Vec::new();
         let mut pos = so;

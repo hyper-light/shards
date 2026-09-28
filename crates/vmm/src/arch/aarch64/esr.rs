@@ -50,7 +50,11 @@ impl DataAbort {
     /// instruction would produce (sign extension and W-register truncation).
     pub fn load_value(&self, raw: u64) -> u64 {
         let bits = self.size * 8;
-        let mut v = if bits == 64 { raw } else { raw & ((1u64 << bits) - 1) };
+        let mut v = if bits == 64 {
+            raw
+        } else {
+            raw & ((1u64 << bits) - 1)
+        };
         if self.sign_extend && bits < 64 && v & (1 << (bits - 1)) != 0 {
             v |= !0u64 << bits;
         }
@@ -93,7 +97,10 @@ mod tests {
         // Syndromes observed on the M5 Max (platform-measurements.md M4):
         // `str w2, [x1]` -> 0x93820046 and `ldr w2, [x1]` -> 0x93820006.
         let w = data_abort(0x9382_0046).unwrap();
-        assert_eq!((w.size, w.write, w.reg, w.sign_extend, w.sixty_four), (4, true, 2, false, false));
+        assert_eq!(
+            (w.size, w.write, w.reg, w.sign_extend, w.sixty_four),
+            (4, true, 2, false, false)
+        );
         assert_eq!(ec(0x9382_0046), EC_DABT_LOW);
         assert_eq!(instr_len(0x9382_0046), 4);
         let r = data_abort(0x9382_0006).unwrap();
@@ -103,13 +110,34 @@ mod tests {
 
     #[test]
     fn load_value_extends_like_hardware() {
-        let ldrsb_w = DataAbort { size: 1, write: false, reg: 0, sign_extend: true, sixty_four: false };
+        let ldrsb_w = DataAbort {
+            size: 1,
+            write: false,
+            reg: 0,
+            sign_extend: true,
+            sixty_four: false,
+        };
         assert_eq!(ldrsb_w.load_value(0x80), 0xffff_ff80);
-        let ldrsb_x = DataAbort { sixty_four: true, ..ldrsb_w };
+        let ldrsb_x = DataAbort {
+            sixty_four: true,
+            ..ldrsb_w
+        };
         assert_eq!(ldrsb_x.load_value(0x80), 0xffff_ffff_ffff_ff80);
-        let ldrh = DataAbort { size: 2, write: false, reg: 0, sign_extend: false, sixty_four: false };
+        let ldrh = DataAbort {
+            size: 2,
+            write: false,
+            reg: 0,
+            sign_extend: false,
+            sixty_four: false,
+        };
         assert_eq!(ldrh.load_value(0xdead_beef), 0xbeef);
-        let ldr_x = DataAbort { size: 8, write: false, reg: 0, sign_extend: false, sixty_four: true };
+        let ldr_x = DataAbort {
+            size: 8,
+            write: false,
+            reg: 0,
+            sign_extend: false,
+            sixty_four: true,
+        };
         assert_eq!(ldr_x.load_value(u64::MAX), u64::MAX);
     }
 
@@ -118,6 +146,13 @@ mod tests {
         // mrs x3, MDCCINT_EL1 (op0=2 op1=0 CRn=0 CRm=2 op2=0): ISS = op0<<20|op2<<17|op1<<14|CRn<<10|Rt<<5|CRm<<1|dir
         let iss = (2 << 20) | (3 << 5) | (2 << 1) | 1;
         let a = sysreg_access(((EC_SYS64 as u64) << 26) | (1 << 25) | iss);
-        assert_eq!(a, SysRegAccess { encoding: super::super::sysreg::enc(2, 0, 0, 2, 0), reg: 3, read: true });
+        assert_eq!(
+            a,
+            SysRegAccess {
+                encoding: super::super::sysreg::enc(2, 0, 0, 2, 0),
+                reg: 3,
+                read: true
+            }
+        );
     }
 }

@@ -43,7 +43,11 @@ impl std::error::Error for Error {}
 pub type Result<T> = std::result::Result<T, Error>;
 
 fn check(op: &'static str, code: ffi::hv_return_t) -> Result<()> {
-    if code == ffi::HV_SUCCESS { Ok(()) } else { Err(Error { op, code }) }
+    if code == ffi::HV_SUCCESS {
+        Ok(())
+    } else {
+        Err(Error { op, code })
+    }
 }
 
 /// Stage-2 permissions for a guest-physical mapping.
@@ -78,7 +82,10 @@ pub struct Vm(());
 impl Vm {
     pub fn new(config: VmConfig) -> Result<Vm> {
         if VM_EXISTS.swap(true, Ordering::AcqRel) {
-            return Err(Error { op: "hv_vm_create (second VM in process)", code: 0xfae9_4008u32 as i32 });
+            return Err(Error {
+                op: "hv_vm_create (second VM in process)",
+                code: 0xfae9_4008u32 as i32,
+            });
         }
         // SAFETY: config objects are created, configured and released on this thread.
         let res = unsafe {
@@ -87,9 +94,15 @@ impl Vm {
                 Granule::K4 => ffi::HV_IPA_GRANULE_4KB,
                 Granule::K16 => ffi::HV_IPA_GRANULE_16KB,
             };
-            let mut res = check("hv_vm_config_set_ipa_granule", ffi::hv_vm_config_set_ipa_granule(cfg, granule));
+            let mut res = check(
+                "hv_vm_config_set_ipa_granule",
+                ffi::hv_vm_config_set_ipa_granule(cfg, granule),
+            );
             if let (Ok(()), Some(bits)) = (res, config.ipa_bits) {
-                res = check("hv_vm_config_set_ipa_size", ffi::hv_vm_config_set_ipa_size(cfg, bits));
+                res = check(
+                    "hv_vm_config_set_ipa_size",
+                    ffi::hv_vm_config_set_ipa_size(cfg, bits),
+                );
             }
             if res.is_ok() {
                 res = check("hv_vm_create", ffi::hv_vm_create(cfg));
@@ -113,7 +126,9 @@ impl Vm {
     /// mapped until it is unmapped here or the VM is destroyed.
     pub unsafe fn map(&self, host: *mut u8, gpa: u64, size: usize, perms: Perms) -> Result<()> {
         // SAFETY: forwarded caller contract.
-        check("hv_vm_map", unsafe { ffi::hv_vm_map(host as *mut c_void, gpa, size, perms.0) })
+        check("hv_vm_map", unsafe {
+            ffi::hv_vm_map(host as *mut c_void, gpa, size, perms.0)
+        })
     }
 
     pub fn unmap(&self, gpa: u64, size: usize) -> Result<()> {
@@ -142,7 +157,10 @@ impl Vm {
                 );
             }
             if let (Ok(()), Some(msi)) = (res, layout.msi) {
-                res = check("hv_gic_config_set_msi_region_base", ffi::hv_gic_config_set_msi_region_base(cfg, msi.base));
+                res = check(
+                    "hv_gic_config_set_msi_region_base",
+                    ffi::hv_gic_config_set_msi_region_base(cfg, msi.base),
+                );
                 if res.is_ok() {
                     res = check(
                         "hv_gic_config_set_msi_interrupt_range",
@@ -173,7 +191,9 @@ impl Drop for Vm {
 pub fn max_vcpus() -> Result<u32> {
     let mut n = 0;
     // SAFETY: writes one u32.
-    check("hv_vm_get_max_vcpu_count", unsafe { ffi::hv_vm_get_max_vcpu_count(&mut n) })?;
+    check("hv_vm_get_max_vcpu_count", unsafe {
+        ffi::hv_vm_get_max_vcpu_count(&mut n)
+    })?;
     Ok(n)
 }
 
@@ -181,7 +201,9 @@ pub fn max_vcpus() -> Result<u32> {
 pub fn max_ipa_bits() -> Result<u32> {
     let mut n = 0;
     // SAFETY: writes one u32.
-    check("hv_vm_config_get_max_ipa_size", unsafe { ffi::hv_vm_config_get_max_ipa_size(&mut n) })?;
+    check("hv_vm_config_get_max_ipa_size", unsafe {
+        ffi::hv_vm_config_get_max_ipa_size(&mut n)
+    })?;
     Ok(n)
 }
 
@@ -204,13 +226,34 @@ pub fn gic_params() -> Result<GicParams> {
     let (mut sb, mut sc) = (0u32, 0u32);
     // SAFETY: each call writes one scalar.
     unsafe {
-        check("hv_gic_get_distributor_size", ffi::hv_gic_get_distributor_size(&mut ds))?;
-        check("hv_gic_get_distributor_base_alignment", ffi::hv_gic_get_distributor_base_alignment(&mut da))?;
-        check("hv_gic_get_redistributor_size", ffi::hv_gic_get_redistributor_size(&mut rs))?;
-        check("hv_gic_get_redistributor_base_alignment", ffi::hv_gic_get_redistributor_base_alignment(&mut ra))?;
-        check("hv_gic_get_msi_region_size", ffi::hv_gic_get_msi_region_size(&mut ms))?;
-        check("hv_gic_get_msi_region_base_alignment", ffi::hv_gic_get_msi_region_base_alignment(&mut ma))?;
-        check("hv_gic_get_spi_interrupt_range", ffi::hv_gic_get_spi_interrupt_range(&mut sb, &mut sc))?;
+        check(
+            "hv_gic_get_distributor_size",
+            ffi::hv_gic_get_distributor_size(&mut ds),
+        )?;
+        check(
+            "hv_gic_get_distributor_base_alignment",
+            ffi::hv_gic_get_distributor_base_alignment(&mut da),
+        )?;
+        check(
+            "hv_gic_get_redistributor_size",
+            ffi::hv_gic_get_redistributor_size(&mut rs),
+        )?;
+        check(
+            "hv_gic_get_redistributor_base_alignment",
+            ffi::hv_gic_get_redistributor_base_alignment(&mut ra),
+        )?;
+        check(
+            "hv_gic_get_msi_region_size",
+            ffi::hv_gic_get_msi_region_size(&mut ms),
+        )?;
+        check(
+            "hv_gic_get_msi_region_base_alignment",
+            ffi::hv_gic_get_msi_region_base_alignment(&mut ma),
+        )?;
+        check(
+            "hv_gic_get_spi_interrupt_range",
+            ffi::hv_gic_get_spi_interrupt_range(&mut sb, &mut sc),
+        )?;
     }
     Ok(GicParams {
         dist_size: ds as u64,
@@ -253,7 +296,9 @@ impl Gic {
     /// Delivers an MSI written to `doorbell` (the frame's GICM_SET_SPI_NSR address).
     pub fn send_msi(&self, doorbell: u64, intid: u32) -> Result<()> {
         // SAFETY: no memory is passed; HVF validates address and INTID.
-        check("hv_gic_send_msi", unsafe { ffi::hv_gic_send_msi(doorbell, intid) })
+        check("hv_gic_send_msi", unsafe {
+            ffi::hv_gic_send_msi(doorbell, intid)
+        })
     }
 }
 
@@ -281,7 +326,11 @@ pub enum Exit {
     /// Forced by [`VcpuKicker::kick`].
     Canceled,
     /// Synchronous exception to EL2; `syndrome` is ESR_EL2, `ipa` the faulting IPA.
-    Exception { syndrome: u64, va: u64, ipa: u64 },
+    Exception {
+        syndrome: u64,
+        va: u64,
+        ipa: u64,
+    },
     /// Only without an in-kernel GIC.
     VtimerActivated,
     Unknown(u32),
@@ -302,8 +351,14 @@ impl Vcpu {
         let mut id = 0;
         let mut exit = std::ptr::null();
         // SAFETY: out-parameters are valid; NULL config selects defaults.
-        check("hv_vcpu_create", unsafe { ffi::hv_vcpu_create(&mut id, &mut exit, std::ptr::null_mut()) })?;
-        Ok(Vcpu { id, exit, _thread_bound: PhantomData })
+        check("hv_vcpu_create", unsafe {
+            ffi::hv_vcpu_create(&mut id, &mut exit, std::ptr::null_mut())
+        })?;
+        Ok(Vcpu {
+            id,
+            exit,
+            _thread_bound: PhantomData,
+        })
     }
 
     pub fn kicker(&self) -> VcpuKicker {
@@ -332,45 +387,59 @@ impl Vcpu {
     pub fn reg(&self, reg: Reg) -> Result<u64> {
         let mut v = 0;
         // SAFETY: owning thread; writes one u64.
-        check("hv_vcpu_get_reg", unsafe { ffi::hv_vcpu_get_reg(self.id, reg.0, &mut v) })?;
+        check("hv_vcpu_get_reg", unsafe {
+            ffi::hv_vcpu_get_reg(self.id, reg.0, &mut v)
+        })?;
         Ok(v)
     }
 
     pub fn set_reg(&mut self, reg: Reg, value: u64) -> Result<()> {
         // SAFETY: owning thread.
-        check("hv_vcpu_set_reg", unsafe { ffi::hv_vcpu_set_reg(self.id, reg.0, value) })
+        check("hv_vcpu_set_reg", unsafe {
+            ffi::hv_vcpu_set_reg(self.id, reg.0, value)
+        })
     }
 
     pub fn sys_reg(&self, reg: u16) -> Result<u64> {
         let mut v = 0;
         // SAFETY: owning thread; writes one u64.
-        check("hv_vcpu_get_sys_reg", unsafe { ffi::hv_vcpu_get_sys_reg(self.id, reg, &mut v) })?;
+        check("hv_vcpu_get_sys_reg", unsafe {
+            ffi::hv_vcpu_get_sys_reg(self.id, reg, &mut v)
+        })?;
         Ok(v)
     }
 
     pub fn set_sys_reg(&mut self, reg: u16, value: u64) -> Result<()> {
         // SAFETY: owning thread.
-        check("hv_vcpu_set_sys_reg", unsafe { ffi::hv_vcpu_set_sys_reg(self.id, reg, value) })
+        check("hv_vcpu_set_sys_reg", unsafe {
+            ffi::hv_vcpu_set_sys_reg(self.id, reg, value)
+        })
     }
 
     /// `CNTVCT_EL0 = mach_absolute_time() - offset` for this vCPU.
     pub fn vtimer_offset(&self) -> Result<u64> {
         let mut v = 0;
         // SAFETY: owning thread; writes one u64.
-        check("hv_vcpu_get_vtimer_offset", unsafe { ffi::hv_vcpu_get_vtimer_offset(self.id, &mut v) })?;
+        check("hv_vcpu_get_vtimer_offset", unsafe {
+            ffi::hv_vcpu_get_vtimer_offset(self.id, &mut v)
+        })?;
         Ok(v)
     }
 
     pub fn set_vtimer_offset(&mut self, offset: u64) -> Result<()> {
         // SAFETY: owning thread.
-        check("hv_vcpu_set_vtimer_offset", unsafe { ffi::hv_vcpu_set_vtimer_offset(self.id, offset) })
+        check("hv_vcpu_set_vtimer_offset", unsafe {
+            ffi::hv_vcpu_set_vtimer_offset(self.id, offset)
+        })
     }
 
     /// Guest-physical base of this vCPU's GIC redistributor (MPIDR must be set first).
     pub fn redistributor_base(&self) -> Result<u64> {
         let mut v = 0;
         // SAFETY: writes one u64.
-        check("hv_gic_get_redistributor_base", unsafe { ffi::hv_gic_get_redistributor_base(self.id, &mut v) })?;
+        check("hv_gic_get_redistributor_base", unsafe {
+            ffi::hv_gic_get_redistributor_base(self.id, &mut v)
+        })?;
         Ok(v)
     }
 }

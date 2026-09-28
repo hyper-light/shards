@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/vmm"]
+members = ["crates/abi", "crates/init", "crates/vmm"]
+# The guest init only builds for Linux guests; host builds default to the rest.
+default-members = ["crates/abi", "crates/vmm"]
 
 [workspace.package]
 edition = "2024"
@@ -21,6 +23,13 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 debug = "line-tables-only"
+
+# Guest binaries: small, fully stripped (they ship inside every microVM).
+[profile.guest]
+inherits = "release"
+opt-level = "s"
+debug = false
+strip = true
 
 [profile.dev]
 panic = "abort"

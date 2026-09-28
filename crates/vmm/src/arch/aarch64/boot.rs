@@ -21,7 +21,11 @@ pub const FDT_MAX: u64 = SZ_2M;
 pub enum BootError {
     Io(std::io::Error),
     NotAnImage(&'static str),
-    DoesNotFit { what: &'static str, need: u64, have: u64 },
+    DoesNotFit {
+        what: &'static str,
+        need: u64,
+        have: u64,
+    },
     Memory(OutOfBounds),
     Fdt(FdtError),
 }
@@ -32,7 +36,10 @@ impl fmt::Display for BootError {
             BootError::Io(e) => write!(f, "reading boot file: {e}"),
             BootError::NotAnImage(why) => write!(f, "kernel is not an arm64 Image: {why}"),
             BootError::DoesNotFit { what, need, have } => {
-                write!(f, "{what} needs {need:#x} bytes of guest RAM but only {have:#x} are available")
+                write!(
+                    f,
+                    "{what} needs {need:#x} bytes of guest RAM but only {have:#x} are available"
+                )
             }
             BootError::Memory(e) => write!(f, "{e}"),
             BootError::Fdt(e) => write!(f, "{e}"),
@@ -81,7 +88,9 @@ pub fn parse_image_header(h: &[u8]) -> Result<ImageHeader, BootError> {
     }
     let u64_at = |o: usize| u64::from_le_bytes(h[o..o + 8].try_into().unwrap());
     if u32::from_le_bytes(h[0x38..0x3c].try_into().unwrap()) != IMAGE_MAGIC {
-        return Err(BootError::NotAnImage("bad magic (compressed Image.gz and vmlinux ELF are not accepted)"));
+        return Err(BootError::NotAnImage(
+            "bad magic (compressed Image.gz and vmlinux ELF are not accepted)",
+        ));
     }
     let (mut text_offset, image_size, flags) = (u64_at(0x08), u64_at(0x10), u64_at(0x18));
     if flags & 1 != 0 {
@@ -91,7 +100,11 @@ pub fn parse_image_header(h: &[u8]) -> Result<ImageHeader, BootError> {
         // Pre-3.17 kernels: text_offset is 0x80000 (booting.rst).
         text_offset = 0x80000;
     }
-    Ok(ImageHeader { text_offset, image_size, flags })
+    Ok(ImageHeader {
+        text_offset,
+        image_size,
+        flags,
+    })
 }
 
 /// Loads `kernel` at the 2 MiB-aligned base of RAM (+ text_offset).
@@ -102,24 +115,41 @@ pub fn load_kernel(mem: &GuestMemory, kernel: &File, ram_size: u64) -> Result<Lo
     let h = parse_image_header(&header)?;
     let load = layout::DRAM_BASE + h.text_offset;
     // image_size == 0 (old kernels): leave generous room after the file.
-    let footprint = if h.image_size == 0 { file_len + SZ_2M } else { h.image_size.max(file_len) };
+    let footprint = if h.image_size == 0 {
+        file_len + SZ_2M
+    } else {
+        h.image_size.max(file_len)
+    };
     let end = load + footprint;
     if end > layout::DRAM_BASE + ram_size - FDT_MAX {
-        return Err(BootError::DoesNotFit { what: "kernel", need: footprint, have: ram_size - FDT_MAX });
+        return Err(BootError::DoesNotFit {
+            what: "kernel",
+            need: footprint,
+            have: ram_size - FDT_MAX,
+        });
     }
     read_into_guest(mem, kernel, load, file_len)?;
     Ok(LoadedKernel { entry: load, end })
 }
 
-/// Loads an initrd directly after the kernel footprint, which keeps it inside the
+/// Places an initrd directly after the kernel footprint, which keeps it inside the
 /// 1 GiB-aligned, ≤32 GiB window that must also cover the Image (booting.rst).
-pub fn load_initrd(mem: &GuestMemory, initrd: &File, after: u64, limit: u64) -> Result<(u64, u64), BootError> {
-    let len = initrd.metadata()?.len();
+pub fn load_initrd(
+    mem: &GuestMemory,
+    initrd: &[u8],
+    after: u64,
+    limit: u64,
+) -> Result<(u64, u64), BootError> {
+    let len = initrd.len() as u64;
     let start = after.next_multiple_of(SZ_2M);
     if start + len > limit {
-        return Err(BootError::DoesNotFit { what: "initrd", need: len, have: limit.saturating_sub(start) });
+        return Err(BootError::DoesNotFit {
+            what: "initrd",
+            need: len,
+            have: limit.saturating_sub(start),
+        });
     }
-    read_into_guest(mem, initrd, start, len)?;
+    mem.write(start, initrd)?;
     Ok((start, len))
 }
 
@@ -204,7 +234,10 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
     f.prop_u32("#address-cells", 2);
     f.prop_u32("#size-cells", 2);
     f.prop_null("ranges");
-    f.prop_u64s("reg", &[m.gic_dist.0, m.gic_dist.1, m.gic_redist.0, m.gic_redist.1]);
+    f.prop_u64s(
+        "reg",
+        &[m.gic_dist.0, m.gic_dist.1, m.gic_redist.0, m.gic_redist.1],
+    );
     f.prop_u32("phandle", PHANDLE_GIC);
     f.end_node();
 
@@ -215,7 +248,17 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
     f.prop_cells(
         "interrupts",
         &[
-            GIC_PPI, 13, IRQ_LEVEL_HIGH, GIC_PPI, 14, IRQ_LEVEL_HIGH, GIC_PPI, 11, IRQ_LEVEL_HIGH, GIC_PPI, 10,
+            GIC_PPI,
+            13,
+            IRQ_LEVEL_HIGH,
+            GIC_PPI,
+            14,
+            IRQ_LEVEL_HIGH,
+            GIC_PPI,
+            11,
+            IRQ_LEVEL_HIGH,
+            GIC_PPI,
+            10,
             IRQ_LEVEL_HIGH,
         ],
     );
@@ -276,7 +319,14 @@ mod tests {
         h[0x18..0x20].copy_from_slice(&0xau64.to_le_bytes());
         h[0x38..0x3c].copy_from_slice(&IMAGE_MAGIC.to_le_bytes());
         let p = parse_image_header(&h).unwrap();
-        assert_eq!(p, ImageHeader { text_offset: 0, image_size: 0x13a_0000, flags: 0xa });
+        assert_eq!(
+            p,
+            ImageHeader {
+                text_offset: 0,
+                image_size: 0x13a_0000,
+                flags: 0xa
+            }
+        );
 
         h[0x18] |= 1;
         assert!(matches!(parse_image_header(&h), Err(BootError::NotAnImage(_))));
@@ -287,8 +337,16 @@ mod tests {
 
     #[test]
     fn devicetree_matches_the_boot_contract() {
-        let mpidrs = [super::super::mpidr(0), super::super::mpidr(1), super::super::mpidr(17)];
-        let virtio = [MmioDevice { base: layout::VIRTIO_MMIO, size: 0x200, spi: layout::SPI_VIRTIO_MMIO }];
+        let mpidrs = [
+            super::super::mpidr(0),
+            super::super::mpidr(1),
+            super::super::mpidr(17),
+        ];
+        let virtio = [MmioDevice {
+            base: layout::VIRTIO_MMIO,
+            size: 0x200,
+            spi: layout::SPI_VIRTIO_MMIO,
+        }];
         let m = Machine {
             mpidrs: &mpidrs,
             ram_size: 512 << 20,
@@ -312,8 +370,14 @@ mod tests {
         let timer = root.path("timer").cells("interrupts");
         assert_eq!(&timer[6..9], &[1, 11, 4]); // [2] = EL1 virtual timer, PPI 11 = INTID 27
         let gic = root.path("intc@8000000");
-        assert_eq!(gic.cells("reg"), vec![0, 0x0800_0000, 0, 0x1_0000, 0, 0x080a_0000, 0, 0x6_0000]);
+        assert_eq!(
+            gic.cells("reg"),
+            vec![0, 0x0800_0000, 0, 0x1_0000, 0, 0x080a_0000, 0, 0x6_0000]
+        );
         assert_eq!(root.path("rtc@9010000").str("clock-names"), "apb_pclk");
-        assert_eq!(root.path("virtio_mmio@a000000").cells("interrupts"), vec![0, 16, 1]);
+        assert_eq!(
+            root.path("virtio_mmio@a000000").cells("interrupts"),
+            vec![0, 16, 1]
+        );
     }
 }
