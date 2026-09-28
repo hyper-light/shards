@@ -265,7 +265,7 @@ fn refused_ports_and_bad_handshakes_close_the_host_socket() {
 
 #[test]
 fn restored_copies_listen_on_their_own_sockets() {
-    if cannot_snapshot() {
+    if cannot_run_vms() || cannot_snapshot() {
         return;
     }
     let dir = TempDir::new("vsock-restore");
