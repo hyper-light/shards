@@ -9,11 +9,13 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 
 use crate::arch::aarch64::{self, boot, esr, layout, psci, sysreg};
 use crate::devices::control::Control;
+use crate::devices::get_le;
 use crate::devices::rtc::Pl031;
 use crate::devices::serial::Serial;
 use crate::devices::{Interrupt, MmioBus};
 use crate::hvf::{self, Exit, Gic, GicLayout, Granule, Perms, Reg, Vcpu, VcpuKicker};
 use crate::memory::GuestMemory;
+use crate::sync::{lock, wait};
 use crate::{debug, info, initramfs, warn};
 
 const MIB: u64 = 1 << 20;
@@ -69,7 +71,7 @@ impl Handle {
 
     /// Microseconds since VMM start at which the guest exited (once it has).
     pub fn exited_at_us(&self) -> Option<u128> {
-        *self.shared.exited_at_us.lock().unwrap()
+        *lock(&self.shared.exited_at_us)
     }
 
     pub fn stop(&self) {
@@ -141,16 +143,16 @@ impl Shared {
     /// Records the first exit reason and wakes every vCPU so it can wind down.
     fn stop(&self, reason: ExitReason) {
         {
-            let mut exit = self.exit.lock().unwrap();
+            let mut exit = lock(&self.exit);
             if exit.is_none() {
                 *exit = Some(reason);
-                *self.exited_at_us.lock().unwrap() = Some(crate::log::uptime_us());
+                *lock(&self.exited_at_us) = Some(crate::log::uptime_us());
             }
             self.exiting.store(true, Ordering::Release);
         }
         self.exited.notify_all();
         for cpu in &self.cpus {
-            drop(cpu.power.lock().unwrap());
+            drop(lock(&cpu.power));
             cpu.wake.notify_all();
             if let Some(k) = cpu.kicker.get() {
                 // A vCPU that already exited reports an error here; nothing to do then.
@@ -160,12 +162,12 @@ impl Shared {
     }
 
     fn wait_exit(&self) -> ExitReason {
-        let mut exit = self.exit.lock().unwrap();
+        let mut exit = lock(&self.exit);
         loop {
             if let Some(r) = exit.clone() {
                 return r;
             }
-            exit = self.exited.wait(exit).unwrap();
+            exit = wait(&self.exited, exit);
         }
     }
 
@@ -174,9 +176,8 @@ impl Shared {
     }
 
     /// Parks an off vCPU until PSCI CPU_ON targets it; `None` once the VM is stopping.
-    fn wait_power_on(&self, index: usize) -> Option<Start> {
-        let cpu = &self.cpus[index];
-        let mut p = cpu.power.lock().unwrap();
+    fn wait_power_on(&self, cpu: &CpuSlot) -> Option<Start> {
+        let mut p = lock(&cpu.power);
         loop {
             if self.exiting() {
                 return None;
@@ -185,7 +186,7 @@ impl Shared {
                 *p = Power::On;
                 return Some(start);
             }
-            p = cpu.wake.wait(p).unwrap();
+            p = wait(&cpu.wake, p);
         }
     }
 
@@ -199,7 +200,7 @@ impl Shared {
         if self.memory.host_ptr(entry, 4).is_err() {
             return psci::INVALID_ADDRESS;
         }
-        let mut p = cpu.power.lock().unwrap();
+        let mut p = lock(&cpu.power);
         match *p {
             Power::On => psci::ALREADY_ON,
             Power::Pending(_) => psci::ON_PENDING,
@@ -214,7 +215,7 @@ impl Shared {
     fn affinity_info(&self, target: u64) -> i64 {
         match self.cpus.iter().find(|c| c.mpidr == target) {
             None => psci::INVALID_PARAMETERS,
-            Some(cpu) => match *cpu.power.lock().unwrap() {
+            Some(cpu) => match *lock(&cpu.power) {
                 Power::Off => psci::AFF_OFF,
                 Power::Pending(_) => psci::AFF_ON_PENDING,
                 Power::On => psci::AFF_ON,
@@ -224,7 +225,7 @@ impl Shared {
 }
 
 fn architected_ipa_bits(ram_end: u64) -> Result<u32, String> {
-    let needed = 64 - (ram_end - 1).leading_zeros();
+    let needed = 64 - ram_end.saturating_sub(1).leading_zeros();
     let max = hvf::max_ipa_bits().map_err(|e| e.to_string())?;
     [36, 40, 42, 44, 48]
         .into_iter()
@@ -357,8 +358,15 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     );
 
     let out: Box<dyn Write + Send> = match cfg.console {
-        // SAFETY: dup returns a fresh descriptor that the File then owns.
-        Console::Stdout => Box::new(unsafe { File::from_raw_fd(libc::dup(1)) }),
+        Console::Stdout => {
+            // SAFETY: dup has no memory-safety preconditions.
+            let fd = unsafe { libc::dup(1) };
+            if fd < 0 {
+                return Err(format!("dup(stdout): {}", std::io::Error::last_os_error()));
+            }
+            // SAFETY: `fd` is a fresh descriptor that the File owns from here on.
+            Box::new(unsafe { File::from_raw_fd(fd) })
+        }
         Console::Discard => Box::new(std::io::sink()),
     };
     let serial = Arc::new(Serial::new(
@@ -457,7 +465,12 @@ fn vcpu_thread(
     {
         warn!("vCPU threads run without real-time policy (coarser guest timers): {e}");
     }
-    let mut vcpu = match init_vcpu(&sh, index) {
+    let setup = sh
+        .cpus
+        .get(index)
+        .ok_or_else(|| format!("no CPU slot for vCPU {index}"))
+        .and_then(|slot| init_vcpu(&sh, slot, index).map(|vcpu| (slot, vcpu)));
+    let (slot, mut vcpu) = match setup {
         Ok(v) => v,
         Err(e) => {
             let _ = created.send(Err(e));
@@ -469,29 +482,30 @@ fn vcpu_thread(
 
     let mut next = boot_start;
     loop {
-        let start = match next.take().or_else(|| sh.wait_power_on(index)) {
-            Some(s) => s,
-            None => return,
+        let Some(start) = next.take().or_else(|| sh.wait_power_on(slot)) else {
+            return;
         };
         if let Err(e) = enter_at(&mut vcpu, start) {
             sh.stop(ExitReason::Error(format!("vCPU {index}: {e}")));
             return;
         }
         match run_vcpu(&mut vcpu, &sh, index) {
-            Stop::CpuOff => *sh.cpus[index].power.lock().unwrap() = Power::Off,
+            Stop::CpuOff => *lock(&slot.power) = Power::Off,
             Stop::Vm => return,
         }
     }
 }
 
-fn init_vcpu(sh: &Shared, index: usize) -> Result<Vcpu, String> {
+fn init_vcpu(sh: &Shared, slot: &CpuSlot, index: usize) -> Result<Vcpu, String> {
     let mut vcpu = Vcpu::new().map_err(|e| e.to_string())?;
     let e = |e: hvf::Error| e.to_string();
-    vcpu.set_sys_reg(sysreg::MPIDR_EL1, sh.cpus[index].mpidr)
-        .map_err(e)?;
+    vcpu.set_sys_reg(sysreg::MPIDR_EL1, slot.mpidr).map_err(e)?;
 
     // The redistributor must be the index-th frame, or GIC routing and the DT disagree.
-    let expected = layout::GIC_REDIST + index as u64 * sh.redist_size;
+    let expected = (index as u64)
+        .checked_mul(sh.redist_size)
+        .and_then(|off| off.checked_add(layout::GIC_REDIST))
+        .ok_or("redistributor offset overflows")?;
     let actual = vcpu.redistributor_base().map_err(e)?;
     if actual != expected {
         return Err(format!(
@@ -500,8 +514,9 @@ fn init_vcpu(sh: &Shared, index: usize) -> Result<Vcpu, String> {
     }
 
     // Advertise the physical address width the stage-2 actually covers.
+    let parange = aarch64::parange_for_bits(sh.ipa_bits)
+        .ok_or_else(|| format!("no PARange encoding for {} IPA bits", sh.ipa_bits))?;
     let mmfr0 = vcpu.sys_reg(sysreg::ID_AA64MMFR0_EL1).map_err(e)?;
-    let parange = aarch64::parange_for_bits(sh.ipa_bits).expect("architected IPA width");
     let want = (mmfr0 & !0xf) | parange;
     if want != mmfr0 {
         vcpu.set_sys_reg(sysreg::ID_AA64MMFR0_EL1, want).map_err(e)?;
@@ -514,10 +529,9 @@ fn init_vcpu(sh: &Shared, index: usize) -> Result<Vcpu, String> {
             );
         }
     }
-    sh.cpus[index]
-        .kicker
+    slot.kicker
         .set(vcpu.kicker())
-        .expect("kicker set once per vCPU");
+        .map_err(|_| format!("vCPU {index} registered twice"))?;
     Ok(vcpu)
 }
 
@@ -525,9 +539,9 @@ fn init_vcpu(sh: &Shared, index: usize) -> Result<Vcpu, String> {
 fn enter_at(vcpu: &mut Vcpu, start: Start) -> Result<(), hvf::Error> {
     vcpu.set_reg(Reg::CPSR, sysreg::PSTATE_EL1H_DAIF)?;
     vcpu.set_sys_reg(sysreg::SCTLR_EL1, sysreg::SCTLR_EL1_RESET)?;
-    vcpu.set_reg(Reg::x(0), start.x0)?;
+    vcpu.set_x(0, start.x0)?;
     for n in 1..=30 {
-        vcpu.set_reg(Reg::x(n), 0)?;
+        vcpu.set_x(n, 0)?;
     }
     vcpu.set_reg(Reg::PC, start.entry)
 }
@@ -586,7 +600,7 @@ fn run_vcpu(vcpu: &mut Vcpu, sh: &Shared, index: usize) -> Stop {
 
 fn advance_pc(vcpu: &mut Vcpu, esr: u64) -> Result<(), String> {
     let pc = vcpu.reg(Reg::PC).map_err(|e| e.to_string())?;
-    vcpu.set_reg(Reg::PC, pc + esr::instr_len(esr))
+    vcpu.set_reg(Reg::PC, pc.wrapping_add(esr::instr_len(esr)))
         .map_err(|e| e.to_string())
 }
 
@@ -595,25 +609,21 @@ fn mmio(vcpu: &mut Vcpu, sh: &Shared, esr: u64, ipa: u64) -> Result<(), String> 
         return Err(describe_fault(vcpu, esr::EC_DABT_LOW, esr, ipa));
     };
     let e = |e: hvf::Error| e.to_string();
+    let bad_size = || format!("MMIO access of {} bytes at {ipa:#x}", da.size);
     if da.write {
-        // Register 31 is XZR here, never PC.
-        let value = if da.reg == 31 {
-            0
-        } else {
-            vcpu.reg(Reg::x(da.reg)).map_err(e)?
-        };
-        if !sh.bus.write(ipa, &value.to_le_bytes()[..da.size]) {
+        let value = vcpu.x(da.reg).map_err(e)?;
+        let bytes = value.to_le_bytes();
+        let data = bytes.get(..da.size).ok_or_else(bad_size)?;
+        if !sh.bus.write(ipa, data) {
             debug!("unclaimed MMIO write {ipa:#x} <- {value:#x} ({} bytes)", da.size);
         }
     } else {
         let mut raw = [0u8; 8];
-        if !sh.bus.read(ipa, &mut raw[..da.size]) {
+        let data = raw.get_mut(..da.size).ok_or_else(bad_size)?;
+        if !sh.bus.read(ipa, data) {
             debug!("unclaimed MMIO read {ipa:#x} ({} bytes)", da.size);
         }
-        if da.reg != 31 {
-            vcpu.set_reg(Reg::x(da.reg), da.load_value(u64::from_le_bytes(raw)))
-                .map_err(e)?;
-        }
+        vcpu.set_x(da.reg, da.load_value(get_le(data))).map_err(e)?;
     }
     advance_pc(vcpu, esr)
 }
@@ -621,10 +631,12 @@ fn mmio(vcpu: &mut Vcpu, sh: &Shared, esr: u64, ipa: u64) -> Result<(), String> 
 /// Handles PSCI/SMCCC. Returns `Some` when the vCPU must stop running.
 fn firmware_call(vcpu: &mut Vcpu, sh: &Shared) -> Result<Option<Stop>, String> {
     let e = |e: hvf::Error| e.to_string();
-    let mut x = [0u64; 4];
-    for (n, slot) in x.iter_mut().enumerate() {
-        *slot = vcpu.reg(Reg::x(n as u8)).map_err(e)?;
-    }
+    let x = [
+        vcpu.x(0).map_err(e)?,
+        vcpu.x(1).map_err(e)?,
+        vcpu.x(2).map_err(e)?,
+        vcpu.x(3).map_err(e)?,
+    ];
     let ret = match psci::decode(x) {
         psci::Call::Immediate(v) => v,
         psci::Call::CpuSuspend => psci::SUCCESS,
@@ -644,7 +656,7 @@ fn firmware_call(vcpu: &mut Vcpu, sh: &Shared) -> Result<Option<Stop>, String> {
             return Ok(Some(Stop::Vm));
         }
     };
-    vcpu.set_reg(Reg::x(0), ret as u64).map_err(e)?;
+    vcpu.set_x(0, ret as u64).map_err(e)?;
     Ok(None)
 }
 
@@ -657,8 +669,8 @@ fn sysreg_trap(vcpu: &mut Vcpu, esr: u64) -> Result<(), String> {
         if a.read { "read" } else { "write" },
         a.encoding
     );
-    if a.read && a.reg != 31 {
-        vcpu.set_reg(Reg::x(a.reg), 0).map_err(|e| e.to_string())?;
+    if a.read {
+        vcpu.set_x(a.reg, 0).map_err(|e| e.to_string())?;
     }
     advance_pc(vcpu, esr)
 }

@@ -45,7 +45,9 @@ pub fn write(level: Level, args: std::fmt::Arguments<'_>) {
         Level::Info => "INFO",
         Level::Debug => "DEBUG",
     };
-    eprintln!("[{:>10}us {tag}] {args}", uptime_us());
+    use std::io::Write;
+    // Logging never fails the caller, even with stderr closed.
+    let _ = writeln!(std::io::stderr().lock(), "[{:>10}us {tag}] {args}", uptime_us());
 }
 
 #[macro_export]

@@ -34,12 +34,19 @@ pub fn make_current_realtime() -> Result<(), String> {
             ));
         }
         let mut tb = MachTimebaseInfo { numer: 0, denom: 0 };
-        mach_timebase_info(&mut tb);
-        let to_abs = |ns: u64| (ns * tb.denom as u64 / tb.numer as u64) as u32;
+        if mach_timebase_info(&mut tb) != 0 || tb.numer == 0 {
+            return Err("mach_timebase_info failed".into());
+        }
+        let to_abs = |ns: u64| {
+            ns.checked_mul(u64::from(tb.denom))
+                .map(|v| v / u64::from(tb.numer))
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or("thread policy interval out of range")
+        };
         let mut policy = libc::thread_time_constraint_policy {
             period: 0,
-            computation: to_abs(COMPUTATION_NS),
-            constraint: to_abs(CONSTRAINT_NS),
+            computation: to_abs(COMPUTATION_NS)?,
+            constraint: to_abs(CONSTRAINT_NS)?,
             preemptible: 1,
         };
         let kr = libc::thread_policy_set(

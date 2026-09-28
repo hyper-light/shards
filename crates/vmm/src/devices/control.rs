@@ -4,7 +4,8 @@
 
 use std::sync::Mutex;
 
-use super::MmioDevice;
+use super::{MmioDevice, get_le};
+use crate::sync::lock;
 
 #[derive(Debug, Default)]
 pub struct Control {
@@ -14,7 +15,7 @@ pub struct Control {
 
 impl Control {
     pub fn markers(&self) -> Vec<(u32, u128)> {
-        self.markers.lock().unwrap().clone()
+        lock(&self.markers).clone()
     }
 }
 
@@ -28,8 +29,8 @@ impl MmioDevice for Control {
             return;
         }
         let at = crate::log::uptime_us();
-        let marker = u32::from_le_bytes(data.try_into().unwrap());
+        let marker = get_le(data) as u32;
         crate::info!("guest marker {marker} at {at} us");
-        self.markers.lock().unwrap().push((marker, at));
+        lock(&self.markers).push((marker, at));
     }
 }

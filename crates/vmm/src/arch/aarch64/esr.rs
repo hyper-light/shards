@@ -49,7 +49,7 @@ impl DataAbort {
     /// Converts `size` bytes read from a device into the register value the load
     /// instruction would produce (sign extension and W-register truncation).
     pub fn load_value(&self, raw: u64) -> u64 {
-        let bits = self.size * 8;
+        let bits = (self.size.clamp(1, 8) * 8) as u32;
         let mut v = if bits == 64 {
             raw
         } else {

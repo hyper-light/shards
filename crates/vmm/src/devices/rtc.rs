@@ -6,7 +6,8 @@
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::MmioDevice;
+use super::{MmioDevice, get_le, put_le};
+use crate::sync::lock;
 
 const DR: u64 = 0x000; // data (current seconds)
 const MR: u64 = 0x004; // match
@@ -42,33 +43,28 @@ fn host_seconds() -> i64 {
 
 impl MmioDevice for Pl031 {
     fn read(&self, offset: u64, data: &mut [u8]) {
-        let s = self.state.lock().unwrap();
+        let s = lock(&self.state);
+        let now = host_seconds().wrapping_add(s.offset) as u32;
         let v: u32 = match offset {
-            DR => (host_seconds() + s.offset) as u32,
+            DR | LR => now,
             MR => s.mr,
-            LR => (host_seconds() + s.offset) as u32,
             CR => 1, // always enabled
             IMSC => s.imsc,
             RIS | MIS => 0,
-            o if (ID_BASE..ID_BASE + 32).contains(&o) && o % 4 == 0 => {
-                ID_BYTES[((o - ID_BASE) / 4) as usize] as u32
-            }
+            o if (ID_BASE..ID_BASE + 32).contains(&o) && o.is_multiple_of(4) => ID_BYTES
+                .get(((o - ID_BASE) / 4) as usize)
+                .copied()
+                .map_or(0, u32::from),
             _ => 0,
         };
-        let bytes = v.to_le_bytes();
-        let n = data.len().min(4);
-        data[..n].copy_from_slice(&bytes[..n]);
-        data[n..].fill(0);
+        put_le(data, u64::from(v));
     }
 
     fn write(&self, offset: u64, data: &[u8]) {
-        let mut raw = [0u8; 4];
-        let n = data.len().min(4);
-        raw[..n].copy_from_slice(&data[..n]);
-        let v = u32::from_le_bytes(raw);
-        let mut s = self.state.lock().unwrap();
+        let v = get_le(data) as u32;
+        let mut s = lock(&self.state);
         match offset {
-            LR => s.offset = v as i64 - host_seconds(),
+            LR => s.offset = i64::from(v).wrapping_sub(host_seconds()),
             MR => s.mr = v,
             IMSC => s.imsc = v & 1,
             _ => {}
@@ -77,6 +73,7 @@ impl MmioDevice for Pl031 {
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

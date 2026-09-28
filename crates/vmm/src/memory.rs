@@ -46,6 +46,12 @@ struct Region {
     host: NonNull<u8>,
 }
 
+impl Region {
+    fn end(&self) -> u64 {
+        self.gpa + self.len as u64 // cannot wrap: checked on creation
+    }
+}
+
 /// Guest RAM regions, each backed by a private anonymous host mapping.
 #[derive(Debug)]
 pub struct GuestMemory {
@@ -62,25 +68,25 @@ impl GuestMemory {
     /// Reserves lazily-populated anonymous memory for each `(gpa, len)` range. Pages are
     /// materialized on first touch, so untouched guest RAM costs no host memory.
     pub fn anonymous(ranges: &[(u64, usize)]) -> io::Result<GuestMemory> {
-        let page = page_size();
-        let mut regions: Vec<Region> = Vec::with_capacity(ranges.len());
+        let page = page_size()?;
+        let invalid = |msg: String| io::Error::new(io::ErrorKind::InvalidInput, msg);
+        // Built incrementally so that Drop unmaps whatever was mapped if a later range fails.
+        let mut mem = GuestMemory {
+            regions: Vec::with_capacity(ranges.len()),
+        };
         for &(gpa, len) in ranges {
-            if len == 0 || len % page != 0 || gpa % page as u64 != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("guest RAM {gpa:#x}+{len:#x} is not host-page ({page:#x}) aligned"),
-                ));
+            if len == 0 || !len.is_multiple_of(page) || !gpa.is_multiple_of(page as u64) {
+                return Err(invalid(format!(
+                    "guest RAM {gpa:#x}+{len:#x} is not host-page ({page:#x}) aligned"
+                )));
             }
-            if regions
-                .iter()
-                .any(|r| gpa < r.gpa + r.len as u64 && r.gpa < gpa + len as u64)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "overlapping guest RAM regions",
-                ));
+            let end = gpa
+                .checked_add(len as u64)
+                .ok_or_else(|| invalid(format!("guest RAM {gpa:#x}+{len:#x} wraps")))?;
+            if mem.regions.iter().any(|r| gpa < r.end() && r.gpa < end) {
+                return Err(invalid("overlapping guest RAM regions".into()));
             }
-            // SAFETY: fresh private anonymous mapping; ownership moves into `regions`.
+            // SAFETY: fresh private anonymous mapping; ownership moves into `mem`.
             let host = unsafe {
                 libc::mmap(
                     std::ptr::null_mut(),
@@ -94,14 +100,11 @@ impl GuestMemory {
             if host == libc::MAP_FAILED {
                 return Err(io::Error::last_os_error());
             }
-            regions.push(Region {
-                gpa,
-                len,
-                host: NonNull::new(host.cast()).expect("mmap returned NULL"),
-            });
+            let host = NonNull::new(host.cast()).ok_or_else(|| io::Error::other("mmap returned NULL"))?;
+            mem.regions.push(Region { gpa, len, host });
         }
-        regions.sort_by_key(|r| r.gpa);
-        Ok(GuestMemory { regions })
+        mem.regions.sort_by_key(|r| r.gpa);
+        Ok(mem)
     }
 
     /// `(gpa, host pointer, len)` for each region, for stage-2 mapping.
@@ -116,7 +119,7 @@ impl GuestMemory {
         let r = self
             .regions
             .iter()
-            .find(|r| gpa >= r.gpa && end <= r.gpa + r.len as u64)
+            .find(|r| gpa >= r.gpa && end <= r.end())
             .ok_or(oob)?;
         // SAFETY: offset is within the region's mapping (checked above).
         Ok(unsafe { r.host.as_ptr().add((gpa - r.gpa) as usize) })
@@ -170,24 +173,30 @@ impl Drop for GuestMemory {
     }
 }
 
-pub fn page_size() -> usize {
+/// The host page size, which every guest RAM mapping must be aligned to.
+pub fn page_size() -> io::Result<usize> {
     // SAFETY: sysconf has no preconditions.
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+    let n = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    match usize::try_from(n) {
+        Ok(p) if p.is_power_of_two() => Ok(p),
+        _ => Err(io::Error::other(format!("sysconf(_SC_PAGESIZE) returned {n}"))),
+    }
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
     use super::*;
 
     fn mem() -> GuestMemory {
-        let p = page_size();
+        let p = page_size().unwrap();
         GuestMemory::anonymous(&[(0x8000_0000, 4 * p), (0x1_0000_0000, p)]).unwrap()
     }
 
     #[test]
     fn roundtrip_and_bounds() {
         let m = mem();
-        let p = page_size() as u64;
+        let p = page_size().unwrap() as u64;
         m.write_obj(0x8000_0003u64, 0xdead_beef_u32).unwrap();
         assert_eq!(m.read_obj::<u32>(0x8000_0003).unwrap(), 0xdead_beef);
         // Last byte of a region is fine; one past is not; ranges may not straddle holes.
@@ -201,7 +210,7 @@ mod tests {
 
     #[test]
     fn rejects_misaligned_and_overlapping() {
-        let p = page_size();
+        let p = page_size().unwrap();
         assert!(GuestMemory::anonymous(&[(0x8000_0000, p + 1)]).is_err());
         assert!(GuestMemory::anonymous(&[(0x8000_0001, p)]).is_err());
         assert!(GuestMemory::anonymous(&[(0x8000_0000, 2 * p), (0x8000_0000 + p as u64, p)]).is_err());

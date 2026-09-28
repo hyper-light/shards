@@ -62,46 +62,47 @@ pub enum Call {
 }
 
 /// Decodes the call in `x[0]` with arguments `x[1..4]` (SMCCC calling convention).
-pub fn decode(x: [u64; 4]) -> Call {
-    let func = x[0] as u32;
-    // SMC32/HVC32 calls pass 32-bit arguments; ignore upper halves (KVM does the same).
-    let arg = |i: usize| {
-        if func & 0x4000_0000 == 0 {
-            x[i] & 0xffff_ffff
-        } else {
-            x[i]
-        }
-    };
+pub fn decode([x0, x1, x2, x3]: [u64; 4]) -> Call {
     // Only the function ID is in W0; bits above 31 of X0 are not part of it.
-    if x[0] >> 32 != 0 {
+    if x0 >> 32 != 0 {
         return Call::Immediate(NOT_SUPPORTED);
     }
+    let func = x0 as u32;
+    // SMC32/HVC32 calls pass 32-bit arguments; ignore upper halves (KVM does the same).
+    let width = |v: u64| {
+        if func & 0x4000_0000 == 0 {
+            v & 0xffff_ffff
+        } else {
+            v
+        }
+    };
+    let (a1, a2, a3) = (width(x1), width(x2), width(x3));
     match func {
         PSCI_VERSION => Call::Immediate(VERSION_1_1),
         CPU_SUSPEND | CPU_SUSPEND_64 => Call::CpuSuspend,
         CPU_OFF => Call::CpuOff,
         CPU_ON | CPU_ON_64 => Call::CpuOn {
-            target: arg(1),
-            entry: arg(2),
-            context: arg(3),
+            target: a1,
+            entry: a2,
+            context: a3,
         },
         AFFINITY_INFO | AFFINITY_INFO_64 => {
             // From PSCI 1.0, lowest_affinity_level > 0 may be rejected.
-            if arg(2) != 0 {
+            if a2 != 0 {
                 Call::Immediate(INVALID_PARAMETERS)
             } else {
-                Call::AffinityInfo { target: arg(1) }
+                Call::AffinityInfo { target: a1 }
             }
         }
         // 2: no trusted OS; no migration needed. Keeps Linux from pinning a resident CPU.
         MIGRATE_INFO_TYPE => Call::Immediate(2),
         SYSTEM_OFF => Call::SystemOff,
         SYSTEM_RESET => Call::SystemReset,
-        PSCI_FEATURES => Call::Immediate(features(arg(1) as u32)),
+        PSCI_FEATURES => Call::Immediate(features(a1 as u32)),
         SMCCC_VERSION => Call::Immediate(SMCCC_1_1),
         // Workaround discovery: we cannot vouch for a firmware mitigation, and Linux
         // only asks when the CPU's ID registers don't already report immunity.
-        SMCCC_ARCH_FEATURES => Call::Immediate(match arg(1) as u32 {
+        SMCCC_ARCH_FEATURES => Call::Immediate(match a1 as u32 {
             SMCCC_VERSION | SMCCC_ARCH_FEATURES => SUCCESS,
             _ => NOT_SUPPORTED,
         }),

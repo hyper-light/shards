@@ -89,11 +89,14 @@ pub fn with_init(init: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
     use super::*;
 
+    type Entry = (String, u32, (u32, u32), Vec<u8>);
+
     /// Parses newc entries back: (name, mode, rdev, data).
-    fn parse(mut b: &[u8]) -> Vec<(String, u32, (u32, u32), Vec<u8>)> {
+    fn parse(mut b: &[u8]) -> Vec<Entry> {
         let hex = |s: &[u8]| u32::from_str_radix(std::str::from_utf8(s).unwrap(), 16).unwrap();
         let mut out = Vec::new();
         let total = b.len();

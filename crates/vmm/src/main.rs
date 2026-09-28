@@ -1,4 +1,6 @@
-use std::io::Read;
+use std::ffi::OsString;
+use std::fmt::Display;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -7,7 +9,11 @@ use shards_vmm::vm::{self, Config, Console, ExitReason};
 const USAGE: &str = "usage: shards-vmm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--no-console]
   Console escape: Ctrl-A x stops the VM.";
 
-fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Config, String> {
+fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Config, String> {
+    let mut args = args.map(|a| {
+        a.into_string()
+            .map_err(|a| format!("argument {a:?} is not valid UTF-8"))
+    });
     let mut cfg = Config {
         kernel: PathBuf::new(),
         initrd: None,
@@ -19,7 +25,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Config, String> 
     };
     let mut kernel = None;
     while let Some(arg) = args.next() {
-        let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
+        let arg = arg?;
+        let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"))?;
         match arg.as_str() {
             "--kernel" => kernel = Some(PathBuf::from(value("--kernel")?)),
             "--initrd" => cfg.initrd = Some(PathBuf::from(value("--initrd")?)),
@@ -67,47 +74,57 @@ impl Drop for RawTerminal {
     }
 }
 
+/// Console output that never fails the caller (e.g. with stderr closed).
+fn report(message: impl Display) {
+    let _ = writeln!(std::io::stderr(), "shards-vmm: {message}");
+}
+
 fn forward_stdin(handle: vm::Handle) {
-    std::thread::spawn(move || {
-        let mut stdin = std::io::stdin().lock();
-        let mut buf = [0u8; 256];
-        let mut escape = false;
-        loop {
-            let n = match stdin.read(&mut buf) {
-                Ok(0) | Err(_) => return,
-                Ok(n) => n,
-            };
-            for &b in &buf[..n] {
-                match (escape, b) {
-                    (true, b'x') => return handle.stop(),
-                    (true, 0x01) => handle.console_input(&[0x01]), // Ctrl-A Ctrl-A sends one
-                    (true, other) => handle.console_input(&[0x01, other]),
-                    (false, 0x01) => {}
-                    (false, other) => handle.console_input(&[other]),
+    let spawned = std::thread::Builder::new()
+        .name("console-in".into())
+        .spawn(move || {
+            let mut stdin = std::io::stdin().lock();
+            let mut buf = [0u8; 256];
+            let mut escape = false;
+            loop {
+                let n = match stdin.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => n,
+                };
+                for &b in buf.iter().take(n) {
+                    match (escape, b) {
+                        (true, b'x') => return handle.stop(),
+                        (true, 0x01) => handle.console_input(&[0x01]), // Ctrl-A Ctrl-A sends one
+                        (true, other) => handle.console_input(&[0x01, other]),
+                        (false, 0x01) => {}
+                        (false, other) => handle.console_input(&[other]),
+                    }
+                    escape = !escape && b == 0x01;
                 }
-                escape = !escape && b == 0x01;
             }
-        }
-    });
+        });
+    if let Err(e) = spawned {
+        report(format!("console input unavailable: {e}"));
+    }
 }
 
 fn main() -> ExitCode {
     shards_vmm::log::init();
-    let cfg = match parse_args(std::env::args().skip(1)) {
+    let cfg = match parse_args(std::env::args_os().skip(1)) {
         Ok(cfg) => cfg,
         Err(e) if e.is_empty() => {
-            println!("{USAGE}");
+            let _ = writeln!(std::io::stdout(), "{USAGE}");
             return ExitCode::SUCCESS;
         }
         Err(e) => {
-            eprintln!("shards-vmm: {e}\n{USAGE}");
+            report(format!("{e}\n{USAGE}"));
             return ExitCode::from(2);
         }
     };
     let (handle, running) = match vm::start(&cfg) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("shards-vmm: {e}");
+            report(e);
             return ExitCode::FAILURE;
         }
     };
@@ -124,7 +141,8 @@ fn main() -> ExitCode {
             .iter()
             .map(|(m, t)| format!("[{m},{t}]"))
             .collect();
-        eprintln!(
+        let _ = writeln!(
+            std::io::stderr(),
             "shards-timing {{\"exit_us\":{},\"markers\":[{}]}}",
             handle.exited_at_us().unwrap_or(0),
             markers.join(",")
@@ -133,11 +151,11 @@ fn main() -> ExitCode {
     match reason {
         ExitReason::PowerOff | ExitReason::Stopped => ExitCode::SUCCESS,
         ExitReason::Reset => {
-            eprintln!("shards-vmm: guest requested a reset");
+            report("guest requested a reset");
             ExitCode::from(3)
         }
         ExitReason::Error(e) => {
-            eprintln!("shards-vmm: {e}");
+            report(e);
             ExitCode::FAILURE
         }
     }

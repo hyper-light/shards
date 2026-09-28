@@ -82,17 +82,20 @@ pub struct ImageHeader {
     pub flags: u64,
 }
 
+fn le_bytes<const N: usize>(h: &[u8], at: usize) -> Result<[u8; N], BootError> {
+    h.get(at..at + N)
+        .and_then(|b| b.try_into().ok())
+        .ok_or(BootError::NotAnImage("shorter than the 64-byte header"))
+}
+
 pub fn parse_image_header(h: &[u8]) -> Result<ImageHeader, BootError> {
-    if h.len() < IMAGE_HEADER_LEN {
-        return Err(BootError::NotAnImage("shorter than the 64-byte header"));
-    }
-    let u64_at = |o: usize| u64::from_le_bytes(h[o..o + 8].try_into().unwrap());
-    if u32::from_le_bytes(h[0x38..0x3c].try_into().unwrap()) != IMAGE_MAGIC {
+    let field = |at| le_bytes::<8>(h, at).map(u64::from_le_bytes);
+    if u32::from_le_bytes(le_bytes::<4>(h, 0x38)?) != IMAGE_MAGIC {
         return Err(BootError::NotAnImage(
             "bad magic (compressed Image.gz and vmlinux ELF are not accepted)",
         ));
     }
-    let (mut text_offset, image_size, flags) = (u64_at(0x08), u64_at(0x10), u64_at(0x18));
+    let (mut text_offset, image_size, flags) = (field(0x08)?, field(0x10)?, field(0x18)?);
     if flags & 1 != 0 {
         return Err(BootError::NotAnImage("big-endian kernels are not supported"));
     }
@@ -113,20 +116,25 @@ pub fn load_kernel(mem: &GuestMemory, kernel: &File, ram_size: u64) -> Result<Lo
     let mut header = [0u8; IMAGE_HEADER_LEN];
     kernel.read_exact_at(&mut header, 0)?;
     let h = parse_image_header(&header)?;
-    let load = layout::DRAM_BASE + h.text_offset;
+    // Header fields are untrusted: every sum is checked.
+    let have = ram_size.saturating_sub(FDT_MAX);
+    let too_big = |need| BootError::DoesNotFit {
+        what: "kernel",
+        need,
+        have,
+    };
     // image_size == 0 (old kernels): leave generous room after the file.
     let footprint = if h.image_size == 0 {
-        file_len + SZ_2M
+        file_len.saturating_add(SZ_2M)
     } else {
         h.image_size.max(file_len)
     };
-    let end = load + footprint;
-    if end > layout::DRAM_BASE + ram_size - FDT_MAX {
-        return Err(BootError::DoesNotFit {
-            what: "kernel",
-            need: footprint,
-            have: ram_size - FDT_MAX,
-        });
+    let load = layout::DRAM_BASE
+        .checked_add(h.text_offset)
+        .ok_or(too_big(footprint))?;
+    let end = load.checked_add(footprint).ok_or(too_big(footprint))?;
+    if end > layout::DRAM_BASE.saturating_add(have) {
+        return Err(too_big(footprint));
     }
     read_into_guest(mem, kernel, load, file_len)?;
     Ok(LoadedKernel { entry: load, end })
@@ -141,8 +149,8 @@ pub fn load_initrd(
     limit: u64,
 ) -> Result<(u64, u64), BootError> {
     let len = initrd.len() as u64;
-    let start = after.next_multiple_of(SZ_2M);
-    if start + len > limit {
+    let start = after.checked_next_multiple_of(SZ_2M).unwrap_or(u64::MAX);
+    if start.checked_add(len).is_none_or(|end| end > limit) {
         return Err(BootError::DoesNotFit {
             what: "initrd",
             need: len,
@@ -306,6 +314,7 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::fdt::decode;

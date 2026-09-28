@@ -182,7 +182,15 @@ impl Drop for Vm {
         // SAFETY: all vCPUs borrow nothing from `Vm`, but HVF requires they be destroyed
         // first; the VMM joins every vCPU thread before dropping the VM.
         let code = unsafe { ffi::hv_vm_destroy() };
-        debug_assert_eq!(code, ffi::HV_SUCCESS, "hv_vm_destroy");
+        if code != ffi::HV_SUCCESS {
+            crate::warn!(
+                "{}",
+                Error {
+                    op: "hv_vm_destroy",
+                    code
+                }
+            );
+        }
         VM_EXISTS.store(false, Ordering::Release);
     }
 }
@@ -312,11 +320,14 @@ impl Reg {
     pub const FPSR: Reg = Reg(ffi::HV_REG_FPSR);
     pub const CPSR: Reg = Reg(ffi::HV_REG_CPSR);
 
-    /// `Xn` for n in 0..=30. (Register number 31 in an instruction encoding is XZR/SP,
-    /// never PC; callers must handle it before asking for a register.)
-    pub const fn x(n: u8) -> Reg {
-        assert!(n <= 30);
-        Reg(ffi::HV_REG_X0 + n as u32)
+    /// `Xn` for n in 0..=30. `None` for 31, which in MMIO and system-register syndromes
+    /// names XZR (reads as zero, writes discarded) and must never alias `hv_reg_t` 31 (PC).
+    pub const fn x(n: u8) -> Option<Reg> {
+        if n <= 30 {
+            Some(Reg(ffi::HV_REG_X0 + n as u32))
+        } else {
+            None
+        }
     }
 }
 
@@ -400,6 +411,17 @@ impl Vcpu {
         })
     }
 
+    /// Reads general-purpose register `n` as an instruction would: 31 is XZR (zero).
+    pub fn x(&self, n: u8) -> Result<u64> {
+        Reg::x(n).map_or(Ok(0), |r| self.reg(r))
+    }
+
+    /// Writes general-purpose register `n` as an instruction would: writes to 31 (XZR)
+    /// are discarded.
+    pub fn set_x(&mut self, n: u8, value: u64) -> Result<()> {
+        Reg::x(n).map_or(Ok(()), |r| self.set_reg(r, value))
+    }
+
     pub fn sys_reg(&self, reg: u16) -> Result<u64> {
         let mut v = 0;
         // SAFETY: owning thread; writes one u64.
@@ -448,7 +470,15 @@ impl Drop for Vcpu {
     fn drop(&mut self) {
         // SAFETY: owning thread (the value never left it).
         let code = unsafe { ffi::hv_vcpu_destroy(self.id) };
-        debug_assert_eq!(code, ffi::HV_SUCCESS, "hv_vcpu_destroy");
+        if code != ffi::HV_SUCCESS {
+            crate::warn!(
+                "{}",
+                Error {
+                    op: "hv_vcpu_destroy",
+                    code
+                }
+            );
+        }
     }
 }
 

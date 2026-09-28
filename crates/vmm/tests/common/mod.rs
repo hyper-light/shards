@@ -1,5 +1,12 @@
 //! E2E fixtures: pinned real kernels, real guest binaries, a signed VMM, bounded runs.
-#![allow(dead_code)]
+//! Test-support code: failing loudly is the point, so the no-panic lints are off here.
+#![allow(
+    dead_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 use std::fmt;
 use std::io::Read;

@@ -14,6 +14,23 @@ pub trait MmioDevice: Send + Sync {
     fn write(&self, offset: u64, data: &[u8]);
 }
 
+/// Stores `value` little-endian into `data` (an access of 1-8 bytes); bytes past the
+/// value's width read as zero.
+pub fn put_le(data: &mut [u8], value: u64) {
+    let bytes = value.to_le_bytes();
+    for (i, b) in data.iter_mut().enumerate() {
+        *b = bytes.get(i).copied().unwrap_or(0);
+    }
+}
+
+/// Reads a little-endian value from an access of 1-8 bytes (extra bytes are ignored).
+pub fn get_le(data: &[u8]) -> u64 {
+    data.iter()
+        .take(8)
+        .enumerate()
+        .fold(0, |v, (i, &b)| v | (u64::from(b) << (8 * i)))
+}
+
 /// Drives a level-sensitive or edge-triggered interrupt line into the guest.
 pub trait Interrupt: Send + Sync {
     /// Sets the line level. For edge-triggered lines, `true` produces one edge.
@@ -49,9 +66,9 @@ impl MmioBus {
 
     fn find(&self, addr: u64, len: usize) -> Option<(&dyn MmioDevice, u64)> {
         let i = self.devices.partition_point(|d| d.0 <= addr).checked_sub(1)?;
-        let (base, size, dev) = &self.devices[i];
-        let off = addr - base;
-        (off + len as u64 <= *size).then_some((dev.as_ref(), off))
+        let (base, size, dev) = self.devices.get(i)?;
+        let off = addr.checked_sub(*base)?;
+        (off.checked_add(len as u64)? <= *size).then_some((dev.as_ref(), off))
     }
 
     /// Returns false if no device claims the access (reads then yield zeros).
@@ -80,6 +97,7 @@ impl MmioBus {
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::sync::Mutex;

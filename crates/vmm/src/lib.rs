@@ -6,6 +6,7 @@ pub mod fdt;
 pub mod initramfs;
 pub mod log;
 pub mod memory;
+pub mod sync;
 
 #[cfg(target_os = "macos")]
 pub mod hvf;

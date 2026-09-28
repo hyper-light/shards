@@ -8,7 +8,11 @@ fn main() {
     linux::main();
     #[cfg(not(target_os = "linux"))]
     {
-        eprintln!("shards-init only runs as PID 1 inside a Linux guest");
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "shards-init only runs as PID 1 inside a Linux guest"
+        );
         std::process::exit(1);
     }
 }

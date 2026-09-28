@@ -16,6 +16,18 @@ missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"
+# Production code never panics (CLAUDE.md); clippy.toml exempts tests.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
 
 [profile.release]
 opt-level = 3

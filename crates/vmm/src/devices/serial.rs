@@ -10,6 +10,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use super::{Interrupt, MmioDevice};
+use crate::sync::lock;
 
 const RBR_THR_DLL: u64 = 0;
 const IER_DLM: u64 = 1;
@@ -99,7 +100,7 @@ impl Serial {
 
     /// Queues host input for the guest. Bytes beyond the buffer set the overrun flag.
     pub fn enqueue_input(&self, bytes: &[u8]) {
-        let mut s = self.state.lock().unwrap();
+        let mut s = lock(&self.state);
         for &b in bytes {
             if s.rx.len() < RX_CAPACITY {
                 s.rx.push_back(b);
@@ -146,7 +147,7 @@ impl Serial {
 
 impl MmioDevice for Serial {
     fn read(&self, offset: u64, data: &mut [u8]) {
-        let mut s = self.state.lock().unwrap();
+        let mut s = lock(&self.state);
         let dlab = s.lcr & LCR_DLAB != 0;
         let v = match offset {
             RBR_THR_DLL if dlab => s.dll,
@@ -175,13 +176,17 @@ impl MmioDevice for Serial {
             _ => 0,
         };
         data.fill(0);
-        data[0] = v;
+        if let Some(first) = data.first_mut() {
+            *first = v;
+        }
         self.update_irq(&mut s);
     }
 
     fn write(&self, offset: u64, data: &[u8]) {
-        let v = data[0];
-        let mut s = self.state.lock().unwrap();
+        let Some(&v) = data.first() else {
+            return;
+        };
+        let mut s = lock(&self.state);
         let dlab = s.lcr & LCR_DLAB != 0;
         match offset {
             RBR_THR_DLL if dlab => s.dll = v,
@@ -224,6 +229,7 @@ impl MmioDevice for Serial {
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -280,7 +286,7 @@ mod tests {
         assert!(line.0.load(Ordering::SeqCst));
         assert_eq!(rd(&s, IIR_FCR) & 0x0f, IIR_THRI);
         assert!(!line.0.load(Ordering::SeqCst));
-        s.write(RBR_THR_DLL, &[b'x']);
+        s.write(RBR_THR_DLL, b"x");
         assert!(line.0.load(Ordering::SeqCst));
     }
 
