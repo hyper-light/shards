@@ -24,6 +24,10 @@ An all-in-one, rootless microVM platform for agents. There are two layers:
   The runtime is Docker- and Compose-compatible at its interface, but it is not containerd,
   runc or any container runtime underneath: it is a different implementation, built so that
   a microVM full of running agents snapshots and restores at our start-time targets.
+  Each workload in a microVM gets its own boundaries, set per workload as Docker and Compose
+  set them per container: which networks it joins (none, its own, or one shared with chosen
+  workloads), its file view (root, volumes, read-only or writable), its devices and its
+  permissions. The microVM boundary sits outside all of them.
 
 ### Targets
 
