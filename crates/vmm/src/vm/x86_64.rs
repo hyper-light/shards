@@ -4,7 +4,7 @@
 
 use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{Config, Console};
@@ -14,7 +14,7 @@ use crate::devices::control::Control;
 use crate::devices::i8042::I8042;
 use crate::devices::power::Power;
 use crate::devices::serial::Serial;
-use crate::devices::virtio::{block::Block, mmio as virtio_mmio};
+use crate::devices::virtio::{VirtioDevice, block::Block, mmio as virtio_mmio, vsock};
 use crate::devices::{Interrupt, MmioBus};
 use crate::hv::{self, Io};
 use crate::memory::GuestMemory;
@@ -161,29 +161,39 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     let irqs = vm.irqs();
     debug!("VM created and RAM mapped");
 
-    if cfg.disks.len() as u64 > layout::VIRTIO_MMIO_MAX {
+    let slots = cfg.disks.len() + usize::from(cfg.vsock.is_some());
+    if slots as u64 > layout::VIRTIO_MMIO_MAX {
         return Err(format!(
             "at most {} virtio devices are supported",
             layout::VIRTIO_MMIO_MAX
         ));
     }
     let mut bus = Bus::default();
-    let mut virtio = Vec::with_capacity(cfg.disks.len());
-    for (i, disk) in cfg.disks.iter().enumerate() {
-        let block = Block::open(&disk.path, disk.read_only, &format!("shards-disk{i}"))?;
+    let mut virtio = Vec::with_capacity(slots);
+    // Each virtio device takes the next MMIO window and GSI, in the guest's probe order.
+    let mut add_virtio = |bus: &mut Bus, device: Box<dyn VirtioDevice>| -> Result<(), String> {
+        let i = virtio.len();
         let gsi = layout::GSI_VIRTIO + i as u32;
         let base = layout::VIRTIO_MMIO + i as u64 * layout::VIRTIO_MMIO_STRIDE;
         let line = Arc::new(EdgeLine {
             irqs: irqs.clone(),
             gsi,
         });
-        let transport = virtio_mmio::MmioTransport::new(Box::new(block), memory.clone(), line);
+        let transport = virtio_mmio::MmioTransport::new(device, memory.clone(), line);
         bus.mmio.insert(base, virtio_mmio::WINDOW, Arc::new(transport))?;
         virtio.push(acpi::MmioDevice {
             base,
             size: virtio_mmio::WINDOW,
             gsi,
         });
+        Ok(())
+    };
+    for (i, disk) in cfg.disks.iter().enumerate() {
+        let block = Block::open(&disk.path, disk.read_only, &format!("shards-disk{i}"))?;
+        add_virtio(&mut bus, Box::new(block))?;
+    }
+    if let Some(path) = &cfg.vsock {
+        add_virtio(&mut bus, Box::new(vsock::Vsock::new(path, vsock::GUEST_CID)?))?;
     }
     let control = Arc::new(Control::default());
     bus.mmio.insert(layout::CONTROL, 0x1000, control.clone())?;
@@ -254,13 +264,20 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             vcpus: cfg.vcpus,
             memory_mib: cfg.memory_mib,
             disks: cfg.disks.iter().map(|d| (d.path.clone(), d.read_only)).collect(),
+            vsock: cfg.vsock.is_some(),
         },
     })
 }
 
 const NO_SNAPSHOTS: &str = "snapshots are not supported on x86_64 yet";
 
-pub fn restore(_snap: &Snapshot, _memory_file: &File, _console: Console) -> Result<Machine, String> {
+pub fn restore(
+    snap: &Snapshot,
+    _memory_file: &File,
+    _console: Console,
+    vsock: Option<&Path>,
+) -> Result<Machine, String> {
+    super::check_vsock(snap, vsock)?;
     Err(NO_SNAPSHOTS.into())
 }
 

@@ -3,7 +3,7 @@
 
 use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{Config, Console};
@@ -13,7 +13,7 @@ use crate::devices::control::Control;
 use crate::devices::power::Power;
 use crate::devices::rtc::Pl031;
 use crate::devices::serial::Serial;
-use crate::devices::virtio::{block::Block, mmio as virtio_mmio};
+use crate::devices::virtio::{VirtioDevice, block::Block, mmio as virtio_mmio, vsock};
 use crate::devices::vmgenid::VmGenId;
 use crate::devices::{Interrupt, MmioBus};
 use crate::hv::{self, Gic, GicLayout};
@@ -127,10 +127,12 @@ struct Assembled {
     mpidrs: Vec<u64>,
 }
 
+/// `vsock` is the host socket path of the vsock device `config` asks for.
 fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
     console: Console,
+    vsock: Option<&Path>,
 ) -> Result<Assembled, String> {
     let ram = ram_bytes(config.memory_mib)?;
     let ipa_bits = ipa_bits(layout::DRAM_BASE + ram)?;
@@ -166,29 +168,40 @@ fn assemble(
         .map_err(|e| e.to_string())?;
     debug!("GIC created");
 
-    if config.disks.len() as u64 > layout::VIRTIO_MMIO_MAX {
+    let slots = config.disks.len() + usize::from(config.vsock);
+    if slots as u64 > layout::VIRTIO_MMIO_MAX {
         return Err(format!(
             "at most {} virtio devices are supported",
             layout::VIRTIO_MMIO_MAX
         ));
     }
     let mut bus = MmioBus::default();
-    let mut virtio = Vec::with_capacity(config.disks.len());
-    for (i, (path, read_only)) in config.disks.iter().enumerate() {
-        let block = Block::open(path, *read_only, &format!("shards-disk{i}"))?;
+    let mut virtio = Vec::with_capacity(slots);
+    // Each virtio device takes the next MMIO window and SPI, in the guest's probe order.
+    let mut add_virtio = |bus: &mut MmioBus, device: Box<dyn VirtioDevice>| -> Result<(), String> {
+        let i = virtio.len();
         let spi = layout::SPI_VIRTIO_MMIO + i as u32;
         let base = layout::VIRTIO_MMIO + i as u64 * layout::VIRTIO_MMIO_STRIDE;
         let line = Arc::new(GicLine {
             gic,
             intid: SPI_INTID_BASE + spi,
         });
-        let transport = virtio_mmio::MmioTransport::new(Box::new(block), memory.clone(), line);
+        let transport = virtio_mmio::MmioTransport::new(device, memory.clone(), line);
         bus.insert(base, virtio_mmio::WINDOW, Arc::new(transport))?;
         virtio.push(boot::MmioDevice {
             base,
             size: virtio_mmio::WINDOW,
             spi,
         });
+        Ok(())
+    };
+    for (i, (path, read_only)) in config.disks.iter().enumerate() {
+        let block = Block::open(path, *read_only, &format!("shards-disk{i}"))?;
+        add_virtio(&mut bus, Box::new(block))?;
+    }
+    if config.vsock {
+        let path = vsock.ok_or("the machine has a vsock device but no socket path for it")?;
+        add_virtio(&mut bus, Box::new(vsock::Vsock::new(path, vsock::GUEST_CID)?))?;
     }
     let out: Box<dyn Write + Send> = match console {
         Console::Stdout => Box::new(platform::stdout_file().map_err(|e| format!("console: {e}"))?),
@@ -240,8 +253,9 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         vcpus: cfg.vcpus,
         memory_mib: cfg.memory_mib,
         disks: cfg.disks.iter().map(|d| (d.path.clone(), d.read_only)).collect(),
+        vsock: cfg.vsock.is_some(),
     };
-    let a = assemble(&memory, &config, cfg.console)?;
+    let a = assemble(&memory, &config, cfg.console, cfg.vsock.as_deref())?;
     a.vmgenid.write_new_id()?;
 
     let fdt_addr = layout::DRAM_BASE + ram - boot::FDT_MAX;
@@ -295,7 +309,13 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
 }
 
 /// A machine that resumes `snap`, with guest RAM mapped copy-on-write from `memory_file`.
-pub fn restore(snap: &Snapshot, memory_file: &File, console: Console) -> Result<Machine, String> {
+pub fn restore(
+    snap: &Snapshot,
+    memory_file: &File,
+    console: Console,
+    vsock: Option<&Path>,
+) -> Result<Machine, String> {
+    super::check_vsock(snap, vsock)?;
     let state = decode_state(&snap.arch)?;
     if state.vcpus.len() != snap.config.vcpus as usize {
         return Err(format!(
@@ -309,7 +329,7 @@ pub fn restore(snap: &Snapshot, memory_file: &File, console: Console) -> Result<
         GuestMemory::from_file(&ram_ranges(ram)?, memory_file)
             .map_err(|e| format!("snapshot memory: {e}"))?,
     );
-    let a = assemble(&memory, &snap.config, console)?;
+    let a = assemble(&memory, &snap.config, console, vsock)?;
     Ok(Machine {
         vm: a.vm,
         memory,

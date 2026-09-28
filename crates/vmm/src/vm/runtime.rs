@@ -270,7 +270,7 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     check_host()?;
     let (snap, memory_file) = snapshot::read(&cfg.dir)?;
     check_vcpus(snap.config.vcpus)?;
-    let machine = machine::restore(&snap, &memory_file, cfg.console)?;
+    let machine = machine::restore(&snap, &memory_file, cfg.console, cfg.vsock.as_deref())?;
     info!(
         "restored a {} MiB guest from {}",
         snap.config.memory_mib,

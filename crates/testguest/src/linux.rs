@@ -17,6 +17,8 @@ pub fn main() {
             "snapshot" => snapshot(),
             "resume" => resume(),
             "idle" => idle(),
+            "vsock" => vsock(),
+            "vsock_snapshot" => vsock_snapshot(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -426,4 +428,124 @@ fn idle() -> Result<(), String> {
         // SAFETY: pause(2) takes no arguments; it returns only after a signal handler ran.
         unsafe { libc::pause() };
     }
+}
+
+/// The vsock port the guest serves an echo on.
+const ECHO_PORT: u32 = 1234;
+/// The host port the guest dials first.
+const HOST_PORT: u32 = 5000;
+
+fn vsock_addr(cid: u32, port: u32) -> libc::sockaddr_vm {
+    // SAFETY: an all-zero sockaddr_vm is a valid value.
+    let mut a: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
+    a.svm_family = libc::AF_VSOCK as libc::sa_family_t;
+    a.svm_cid = cid;
+    a.svm_port = port;
+    a
+}
+
+fn vsock_socket() -> Result<std::fs::File, String> {
+    // SAFETY: socket(2) with constant arguments.
+    let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(format!("vsock socket: {}", io::Error::last_os_error()));
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    Ok(unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) })
+}
+
+fn vsock_connect(cid: u32, port: u32) -> Result<std::fs::File, String> {
+    use std::os::fd::AsRawFd;
+    let s = vsock_socket()?;
+    let a = vsock_addr(cid, port);
+    let len = std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t;
+    // SAFETY: `a` is a valid sockaddr_vm of `len` bytes.
+    if unsafe { libc::connect(s.as_raw_fd(), (&raw const a).cast(), len) } != 0 {
+        return Err(format!(
+            "vsock connect {cid}:{port}: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    Ok(s)
+}
+
+fn vsock_listen(port: u32) -> Result<std::fs::File, String> {
+    use std::os::fd::AsRawFd;
+    let s = vsock_socket()?;
+    let a = vsock_addr(libc::VMADDR_CID_ANY, port);
+    let len = std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t;
+    // SAFETY: `a` is a valid sockaddr_vm of `len` bytes.
+    if unsafe { libc::bind(s.as_raw_fd(), (&raw const a).cast(), len) } != 0 {
+        return Err(format!("vsock bind {port}: {}", io::Error::last_os_error()));
+    }
+    // SAFETY: listen(2) on our own socket.
+    if unsafe { libc::listen(s.as_raw_fd(), 64) } != 0 {
+        return Err(format!("vsock listen: {}", io::Error::last_os_error()));
+    }
+    Ok(s)
+}
+
+/// Echoes each connection on `listener` until its EOF, then half-closes it, forever.
+fn serve_echo(listener: &std::fs::File) -> Result<(), String> {
+    use std::io::Read as _;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    loop {
+        // SAFETY: accept(2) on our listening socket, without the peer address.
+        let fd = unsafe {
+            libc::accept4(
+                listener.as_raw_fd(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                libc::SOCK_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(format!("vsock accept: {}", io::Error::last_os_error()));
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        let mut conn = unsafe { std::fs::File::from_raw_fd(fd) };
+        thread::spawn(move || {
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                match conn.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if conn.write_all(buf.get(..n).unwrap_or_default()).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+            // SAFETY: shutdown(2) on our own socket: the host reads EOF after the echo.
+            unsafe { libc::shutdown(conn.as_raw_fd(), libc::SHUT_WR) };
+        });
+    }
+}
+
+/// Dials the host, then serves the echo: host and guest each open a connection.
+fn vsock() -> Result<(), String> {
+    use std::io::Read as _;
+    let listener = vsock_listen(ECHO_PORT)?;
+    let mut host = vsock_connect(libc::VMADDR_CID_HOST, HOST_PORT)?;
+    host.write_all(b"hello from the guest\n")
+        .map_err(|e| format!("writing to the host: {e}"))?;
+    let mut reply = Vec::new();
+    host.read_to_end(&mut reply)
+        .map_err(|e| format!("reading from the host: {e}"))?;
+    if reply != b"hello from the host\n" {
+        return Err(format!("the host said {:?}", String::from_utf8_lossy(&reply)));
+    }
+    drop(host);
+    let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
+    serve_echo(&listener)
+}
+
+/// Listens, asks for a snapshot, and serves the echo in every restored copy: its
+/// listener outlives the transport reset.
+fn vsock_snapshot() -> Result<(), String> {
+    let listener = vsock_listen(ECHO_PORT)?;
+    let control = ControlPage::map()?;
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+    let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
+    serve_echo(&listener)
 }

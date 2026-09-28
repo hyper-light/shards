@@ -7,6 +7,8 @@
 pub mod block;
 pub mod mmio;
 pub mod queue;
+#[cfg(unix)]
+pub mod vsock;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -112,6 +114,8 @@ pub struct Activation {
     pub interrupt: Arc<DeviceInterrupt>,
     /// The feature set the driver accepted.
     pub features: u64,
+    /// The device is resuming from a snapshot, in a VM whose host side is new.
+    pub restored: bool,
 }
 
 /// A virtio device behind a transport.

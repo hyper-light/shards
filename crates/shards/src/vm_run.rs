@@ -13,13 +13,16 @@ use shards_vmm::vm::{
 
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards vm run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--disk PATH[:ro]]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards vm run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--disk PATH[:ro]]... [--vsock PATH] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+  --vsock: a vsock device. Host programs connect to the Unix socket PATH and send
+           `CONNECT <port>`; the guest's connections to host port P reach PATH_P.
   --snapshot-dir: where to write a snapshot when the guest asks for one (then stop, by default)
   Console escape: Ctrl-A x stops the VM.";
 
 const RESTORE_USAGE: &str =
-    "usage: shards vm restore DIR [--hold] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+    "usage: shards vm restore DIR [--hold] [--vsock PATH] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
   Resumes the VM in snapshot directory DIR.
+  --vsock: this VM's vsock socket, required when the snapshot has a vsock device.
   --hold: prepare the VM, print `shards-ready` on stderr, and start it when a line arrives
           on stdin: a warm VM whose start costs only the release.
   Console escape: Ctrl-A x stops the VM.";
@@ -32,31 +35,50 @@ fn utf8(args: impl Iterator<Item = OsString>) -> impl Iterator<Item = Result<Str
     })
 }
 
-/// Options `run` and `restore` share. Returns whether `arg` was one of them.
-fn common_option(
-    arg: &str,
-    value: &mut dyn FnMut(&str) -> Result<String, String>,
-    console: &mut Console,
-    snapshot_dir: &mut Option<PathBuf>,
-    then: &mut AfterSnapshot,
-) -> Result<bool, String> {
-    match arg {
-        "--no-console" => *console = Console::Discard,
-        "--snapshot-dir" => *snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
-        "--snapshot-then" => {
-            *then = match value("--snapshot-then")?.as_str() {
-                "stop" => AfterSnapshot::Stop,
-                "resume" => AfterSnapshot::Resume,
-                other => return Err(format!("--snapshot-then: {other:?} is not stop or resume")),
-            }
-        }
-        _ => return Ok(false),
-    }
-    Ok(true)
+/// Options `run` and `restore` share.
+struct Common {
+    console: Console,
+    snapshot_dir: Option<PathBuf>,
+    then: AfterSnapshot,
+    vsock: Option<PathBuf>,
 }
 
-fn policy(dir: Option<PathBuf>, then: AfterSnapshot) -> Option<SnapshotPolicy> {
-    dir.map(|dir| SnapshotPolicy { dir, then })
+impl Common {
+    fn new() -> Common {
+        Common {
+            console: Console::Stdout,
+            snapshot_dir: None,
+            then: AfterSnapshot::Stop,
+            vsock: None,
+        }
+    }
+
+    /// Takes `arg` if it is a shared option; returns whether it was.
+    fn option(
+        &mut self,
+        arg: &str,
+        value: &mut dyn FnMut(&str) -> Result<String, String>,
+    ) -> Result<bool, String> {
+        match arg {
+            "--no-console" => self.console = Console::Discard,
+            "--snapshot-dir" => self.snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
+            "--snapshot-then" => {
+                self.then = match value("--snapshot-then")?.as_str() {
+                    "stop" => AfterSnapshot::Stop,
+                    "resume" => AfterSnapshot::Resume,
+                    other => return Err(format!("--snapshot-then: {other:?} is not stop or resume")),
+                }
+            }
+            "--vsock" => self.vsock = Some(PathBuf::from(value("--vsock")?)),
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    fn policy(&mut self) -> Option<SnapshotPolicy> {
+        let then = self.then;
+        self.snapshot_dir.take().map(|dir| SnapshotPolicy { dir, then })
+    }
 }
 
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Config, String> {
@@ -71,12 +93,13 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Config, String> {
         console: Console::Stdout,
         disks: Vec::new(),
         snapshot: None,
+        vsock: None,
     };
-    let (mut kernel, mut snapshot_dir, mut then) = (None, None, AfterSnapshot::Stop);
+    let (mut kernel, mut common) = (None, Common::new());
     while let Some(arg) = args.next() {
         let arg = arg?;
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"))?;
-        if common_option(&arg, &mut value, &mut cfg.console, &mut snapshot_dir, &mut then)? {
+        if common.option(&arg, &mut value)? {
             continue;
         }
         match arg.as_str() {
@@ -104,19 +127,19 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Config, String> {
         }
     }
     cfg.kernel = kernel.ok_or("--kernel is required")?;
-    cfg.snapshot = policy(snapshot_dir, then);
+    cfg.snapshot = common.policy();
+    cfg.console = common.console;
+    cfg.vsock = common.vsock;
     Ok(cfg)
 }
 
 fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<RestoreConfig, String> {
     let mut args = utf8(args);
-    let (mut dir, mut console, mut snapshot_dir, mut then) =
-        (None, Console::Stdout, None, AfterSnapshot::Stop);
-    let mut hold = false;
+    let (mut dir, mut common, mut hold) = (None, Common::new(), false);
     while let Some(arg) = args.next() {
         let arg = arg?;
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"))?;
-        if common_option(&arg, &mut value, &mut console, &mut snapshot_dir, &mut then)? {
+        if common.option(&arg, &mut value)? {
             continue;
         }
         match arg.as_str() {
@@ -129,9 +152,10 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<RestoreConfig, 
     }
     Ok(RestoreConfig {
         dir: dir.ok_or("the snapshot directory is required")?,
-        console,
-        snapshot: policy(snapshot_dir, then),
+        console: common.console,
+        snapshot: common.policy(),
         hold,
+        vsock: common.vsock,
     })
 }
 

@@ -21,6 +21,18 @@ mod unsupported;
 #[cfg(not(hv))]
 pub use unsupported::{Handle, Running, check_host, max_vcpus, restore, start};
 
+/// A snapshot's vsock device and the restore's socket path come together or not at all.
+#[cfg(hv)]
+fn check_vsock(snap: &crate::snapshot::Snapshot, path: Option<&std::path::Path>) -> Result<(), String> {
+    match (snap.config.vsock, path) {
+        (true, None) => Err(
+            "the snapshot has a vsock device: give the restored VM its own socket with --vsock PATH".into(),
+        ),
+        (false, Some(_)) => Err("the snapshot has no vsock device for --vsock".into()),
+        _ => Ok(()),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub kernel: PathBuf,
@@ -38,6 +50,8 @@ pub struct Config {
     pub disks: Vec<Disk>,
     /// What to do when the guest asks for a snapshot; without it, requests are ignored.
     pub snapshot: Option<SnapshotPolicy>,
+    /// A virtio-vsock device whose host side listens at this Unix socket path.
+    pub vsock: Option<PathBuf>,
 }
 
 /// Starts a VM from a snapshot instead of booting one.
@@ -51,6 +65,9 @@ pub struct RestoreConfig {
     /// Prepare everything, then wait for [`Handle::release`]: a warm VM whose start
     /// request costs only the release.
     pub hold: bool,
+    /// Where this VM's vsock device listens. A snapshot with a vsock device needs one:
+    /// the original VM may still hold its own path.
+    pub vsock: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]

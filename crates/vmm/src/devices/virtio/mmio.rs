@@ -177,6 +177,7 @@ impl MmioTransport {
             queues,
             interrupt: self.interrupt.clone(),
             features: s.driver_features,
+            restored: !progress.is_empty(),
         })
     }
 

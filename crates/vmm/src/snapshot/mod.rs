@@ -20,7 +20,8 @@ use crate::memory::GuestMemory;
 pub const STATE: &str = "state";
 pub const MEMORY: &str = "memory";
 const MAGIC: [u8; 8] = *b"SHRDSNAP";
-const VERSION: u32 = 1;
+/// 2: MachineConfig records whether the machine has a vsock device.
+const VERSION: u32 = 2;
 /// A state file is kilobytes; anything past this is not one of ours.
 const MAX_STATE: u64 = 64 << 20;
 const MAX_DISKS: usize = 64;
@@ -34,6 +35,9 @@ pub struct MachineConfig {
     /// virtio-blk disks by path, in guest order. A restore reopens the same files, which
     /// must hold what the guest's page cache expects (as with Firecracker).
     pub disks: Vec<(PathBuf, bool)>,
+    /// Whether a vsock device follows the disks. Its host socket path is not recorded: a
+    /// restored VM needs a path of its own.
+    pub vsock: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +60,7 @@ fn encode(s: &Snapshot) -> Vec<u8> {
         w.bytes(path.to_string_lossy().as_bytes());
         w.bool(*ro);
     });
+    w.bool(s.config.vsock);
     w.bytes(&s.arch);
     w.bytes(&s.devices);
     w.into_bytes()
@@ -91,6 +96,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Snapshot> {
             .map_err(|_| DecodeError("disk path is not UTF-8".into()))?;
         Ok((PathBuf::from(path), r.bool()?))
     })?;
+    let vsock = r.bool()?;
     let arch_state = r.bytes(usize::MAX)?.to_vec();
     let devices = r.bytes(usize::MAX)?.to_vec();
     r.finish()?;
@@ -99,6 +105,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Snapshot> {
             vcpus,
             memory_mib,
             disks,
+            vsock,
         },
         arch: arch_state,
         devices,
@@ -174,6 +181,7 @@ mod tests {
                     (PathBuf::from("/data/a.img"), true),
                     (PathBuf::from("b.img"), false),
                 ],
+                vsock: true,
             },
             arch: vec![1, 2, 3],
             devices: vec![9; 100],
