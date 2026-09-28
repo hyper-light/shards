@@ -127,6 +127,37 @@ Code layers:
 - **Written once**: everything else — devices, virtio, the runtime, and guest software (built
   for every arch's musl target).
 
+### Images (D15)
+
+The host flattens an image's layers into one EROFS image, which guests mount from
+virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The code is
+`crates/image`.
+
+- **Reading layers.** Docker, containerd and BuildKit read and write layers with Go's
+  `archive/tar`, so our reader accepts what it accepts. That covers V7, ustar, star, GNU
+  and PAX headers and base-256 numbers. Global PAX headers are ignored, as containerd
+  ignores them. Sparse files are refused, since layers SHOULD NOT use them (image-spec
+  layer.md).
+  - Evidence: Go 1.27.1's own test archives, and what Go reads from each, are checked into
+    `crates/image/testdata/go-tar`. Our reader returns the same 50 entries and refuses the
+    6 sparse and dumpdir ones.
+- **Stacking layers.** Each layer applies at its own paths over the layers below. This is
+  how containerd v2.4.1 applies a layer for its default overlayfs snapshotter: into the
+  layer's own upper directory (`core/diff/apply/apply_linux.go`), with
+  `pkg/archive/tar.go`'s rules.
+  - Whiteouts apply first, and only to lower layers (layer.md). Directories merge.
+  - A lower layer's symlinks are not followed; the layer's own are.
+  - Missing parents are made 0755. Entries for the root are ignored.
+  - Attributes follow containerd's `createTarFile`: `trusted.*` xattrs are dropped, and
+    times outside Go's range become 0.
+  - Where appliers disagree, rootful containerd with overlayfs decides. Its naive and
+    rootless appliers follow lower symlinks instead.
+- **Differs from R1:** xattrs come only from `SCHILY.xattr` records, the ones containerd
+  applies. `LIBARCHIVE.xattr` records are ignored, as containerd ignores them.
+- **Tests:** unit tests cover each rule. An E2E test stacks three layers (whiteouts, an
+  opaque directory, hard links, a file capability). A guest mounts the image over pmem and
+  must find exactly the expected tree.
+
 ## 3. Components
 
 ```
@@ -190,7 +221,8 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
 3. **Guest stack v0.**
    - Scope: `shards-init`; tuned kernel built in a shards builder VM; OCI pull →
      rootfs image; `shards run IMAGE CMD`.
-   - Pending: image-storage, boot-latency research.
+   - Built: our kernel (CI releases); virtio-pmem; the EROFS writer; layers → one EROFS
+     image (D15). Next: registry pull, then boot into an image and run a command.
 4. **In-VM engine.**
    - Scope: Docker Engine API subset → full; the rootless runtime (compatible, not
      containers underneath); networks, volumes, build; compose.

@@ -1,5 +1,7 @@
+use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::io::{self, Write};
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -627,7 +629,8 @@ fn cstr(s: &str) -> Result<CString, String> {
 }
 
 /// Mounts /dev/pmem0 as EROFS with DAX and checks it against its own /MANIFEST: one line
-/// per entry, written by the host test (crates/shards/tests/erofs.rs).
+/// per entry, written by the host test (crates/shards/tests/erofs.rs and layers.rs). The
+/// image must hold exactly the manifest's entries and the manifest.
 fn erofs() -> Result<(), String> {
     std::fs::create_dir_all("/mnt").map_err(|e| format!("/mnt: {e}"))?;
     let (src, target, fs, opts) = (
@@ -656,11 +659,38 @@ fn erofs() -> Result<(), String> {
     }
     let manifest = std::fs::read_to_string("/mnt/MANIFEST").map_err(|e| format!("MANIFEST: {e}"))?;
     let mut checked = 0;
+    let mut want = BTreeSet::from(["/MANIFEST".to_string()]);
     for line in manifest.lines() {
         check_entry(line).map_err(|e| format!("{line:?}: {e}"))?;
         checked += 1;
+        let mut fields = line.split(' ');
+        if let (Some(kind), Some(path)) = (fields.next(), fields.next())
+            && kind != "x"
+        {
+            want.insert(path.to_string());
+        }
+    }
+    let mut found = BTreeSet::new();
+    walk(Path::new("/mnt"), "", &mut found)?;
+    if found != want {
+        let extra: Vec<_> = found.difference(&want).take(5).collect();
+        let missing: Vec<_> = want.difference(&found).take(5).collect();
+        return Err(format!("unexpected entries {extra:?}, missing {missing:?}"));
     }
     let _ = writeln!(io::stdout(), "SHARDS-TEST INFO checked {checked} entries");
+    Ok(())
+}
+
+/// Every path under `dir`, as `prefix/name`, without following symlinks.
+fn walk(dir: &Path, prefix: &str, found: &mut BTreeSet<String>) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = format!("{prefix}/{}", entry.file_name().to_string_lossy());
+        if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            walk(&entry.path(), &path, found)?;
+        }
+        found.insert(path);
+    }
     Ok(())
 }
 

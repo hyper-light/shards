@@ -10,8 +10,9 @@
 //! metadata, in inode order.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fmt;
 use std::io::{self, Write};
+
+use crate::{Error, bad as err};
 
 pub const BLOCK_BITS: u8 = 12;
 pub const BLOCK: u64 = 1 << BLOCK_BITS;
@@ -50,27 +51,6 @@ mod ifmt {
     pub const DIR: u16 = 0o040_000;
     pub const CHR: u16 = 0o020_000;
     pub const FIFO: u16 = 0o010_000;
-}
-
-#[derive(Debug)]
-pub struct Error(String);
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl From<io::Error> for Error {
-    fn from(e: io::Error) -> Error {
-        Error(e.to_string())
-    }
-}
-
-fn err<T>(msg: impl Into<String>) -> Result<T, Error> {
-    Err(Error(msg.into()))
 }
 
 pub type NodeId = usize;
@@ -204,6 +184,13 @@ impl Tree {
     /// Removes the entry `name` from `dir`, returning what it named.
     pub fn remove(&mut self, dir: NodeId, name: &[u8]) -> Option<NodeId> {
         self.entries_mut(dir).ok()?.remove(name)
+    }
+
+    /// Removes every entry of `dir`.
+    pub fn clear(&mut self, dir: NodeId) {
+        if let Ok(entries) = self.entries_mut(dir) {
+            entries.clear();
+        }
     }
 }
 
@@ -468,8 +455,8 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
             Kind::Dir(_) => (ifmt::DIR, 0),
             Kind::File { .. } => (ifmt::REG, 0),
             Kind::Symlink(_) => (ifmt::LNK, 0),
-            Kind::CharDevice { major, minor } => (ifmt::CHR, encode_dev(*major, *minor)),
-            Kind::BlockDevice { major, minor } => (ifmt::BLK, encode_dev(*major, *minor)),
+            Kind::CharDevice { major, minor } => (ifmt::CHR, encode_dev(*major, *minor)?),
+            Kind::BlockDevice { major, minor } => (ifmt::BLK, encode_dev(*major, *minor)?),
             Kind::Fifo => (ifmt::FIFO, 0),
             Kind::Socket => (ifmt::SOCK, 0),
         };
@@ -632,9 +619,13 @@ fn dir_block(entries: &[Entry], nid_of: &dyn Fn(NodeId) -> u64, tree: &Tree) -> 
     bytes
 }
 
-/// The kernel's new_encode_dev.
-fn encode_dev(major: u32, minor: u32) -> u32 {
-    (minor & 0xff) | (major << 8) | ((minor & !0xff) << 12)
+/// The kernel's new_encode_dev, for the 12-bit majors and 20-bit minors a dev_t holds
+/// (include/linux/kdev_t.h).
+fn encode_dev(major: u32, minor: u32) -> Result<u32, Error> {
+    if major > 0xfff || minor > 0xf_ffff {
+        return err(format!("device {major}:{minor} is out of Linux's range"));
+    }
+    Ok((minor & 0xff) | (major << 8) | ((minor & !0xff) << 12))
 }
 
 #[cfg(test)]
@@ -1020,7 +1011,10 @@ mod tests {
         assert_eq!(r.data(&r.lookup("short")), b"etc/f1");
         assert_eq!(r.data(&r.lookup("long")), vec![b'x'; 5000]);
         let tty = r.lookup("tty");
-        assert_eq!((tty.mode, tty.start), (ifmt::CHR | 0o620, encode_dev(5, 300)));
+        assert_eq!(
+            (tty.mode, tty.start),
+            (ifmt::CHR | 0o620, encode_dev(5, 300).unwrap())
+        );
         let hard = r.lookup("hardlink");
         assert_eq!(hard.nid, r.lookup("etc/f4097").nid);
         assert_eq!(hard.nlink, 2);
