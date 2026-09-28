@@ -12,19 +12,21 @@
 <p align="center"><em>MicroVMs for agents, designed for home or at scale.</em></p>
 
 Give an agent a shell and it will install packages, start servers, run builds and, sooner or
-later, break something. Shards gives your agents a microVM to do that in. It has its own Linux
-kernel, so nothing inside it reaches your computer.
+later, break something. Shards runs your agents in microVMs: small virtual machines with their
+own Linux kernel, so nothing inside one reaches your computer.
 
-One microVM runs many agents. They share its OS but are isolated like containers, each with
-its own networks, files, devices and permissions. Shards' own runtime sits where containerd
-would and speaks Docker and Compose, but runs no containers, so a microVM full of agents
-snapshots and restores in microseconds. You build microVMs like Docker images. Your agents
-can:
+You build a microVM like a Docker image, and it is the OS your agents run on. Many agents share
+one microVM, each isolated like a container, with its own networks, files, devices and
+permissions. Because they inherit the microVM's OS instead of bringing their own images,
+shards needs no container runtime. Its own runtime takes containerd's place and speaks Docker
+and Compose, and a whole microVM, agents and all, snapshots and restores in microseconds.
+Your agents can:
 
 - Boot in under 200 µs
-- Share a microVM, or each get their own
+- Share a microVM's OS, each isolated like a container
+- Get a microVM to themselves when they shouldn't share one
+- Reach only the networks, files and devices you give them
 - Use the Docker commands and Compose files you already have
-- Reach only the network, devices and files you allow
 - Use GPUs
 - Break anything without touching your computer
 
@@ -58,9 +60,9 @@ took 7 ms, most of it process start and exit. The saved machine runs the test pr
 
 > [!IMPORTANT]
 > Shards has no release yet. Today it boots Linux microVMs on Apple silicon Macs and x86_64
-> Linux, and snapshots and restores them on the Mac. The image builder, Docker-compatible
-> commands, in-VM runtime, isolation controls and GPU support are still being built. See
-> [Where things stand](#where-things-stand).
+> Linux, and snapshots and restores them on the Mac. Building microVMs like Docker images,
+> the runtime that runs agents inside them, per-agent isolation, the Docker-compatible commands
+> and GPU support are still being built. See [Where things stand](#where-things-stand).
 
 ## Install
 
@@ -164,10 +166,10 @@ SHARDS-TEST PASS
 | arm64 Linux, Intel Macs, Windows | Builds, but can't run machines yet |
 | Connect host programs to programs in a running machine (vsock) | Works |
 | Run commands in a running machine | Next |
-| Build machines like Docker images | Planned |
-| Docker's commands (`run`, `build`, `ps`, `exec` and the rest) | Planned. Today: `shards vm run` and `shards vm restore` |
-| Many agents per machine, with Docker and Compose | Planned |
-| Network, device and permission controls per agent and per machine | Planned |
+| Build microVMs like Docker images | Planned; our own kernel with EROFS is building in CI |
+| Run many agents on a microVM's OS, each isolated like a container | Planned |
+| Networks, files, devices and permissions per agent and per microVM | Planned |
+| Docker's commands (`run`, `build`, `ps`, `exec` and the rest) and Compose files | Planned. Today: `shards vm run` and `shards vm restore` |
 | GPUs | Planned |
 
 The target is a usable machine within 5 ms of the request, using less memory than
@@ -227,7 +229,11 @@ next.
 
 ## How it works
 
-- **Isolation.** Each machine is a VM with its own kernel, in its own process.
+- **Two walls.** Agents in one microVM are kept apart like containers. The microVM keeps
+  all of them away from your computer and from other microVMs: it has its own kernel and runs
+  in its own process.
+- **One OS per microVM.** Agents run on their microVM's OS instead of each bringing an image,
+  so a snapshot holds one OS however many agents run on it.
 - **Speed.** Shards boots once, snapshots, and restores copies. A preloaded copy only has to
   start running.
 - **Density.** Copies share snapshot memory until they write to it.
