@@ -150,6 +150,19 @@ GUEST(touch,
       "cbz x3, 3f\n"
       "1: str xzr, [x0]\n add x0, x0, x2\n subs x1, x1, #1\n b.ne 1b\n hvc #0\n2: b 2b\n"
       "3: ldr x4, [x0]\n add x0, x0, x2\n subs x1, x1, #1\n b.ne 3b\n hvc #0\n4: b 4b")
+// Per-touch latency: x0 = base, x1 = count, x2 = stride, x3 = 1 write / 0 read,
+// x4 = results (one u32 of CNTVCT ticks per touch, fault included). hvc #0 when done.
+GUEST(touch_timed,
+      "1: isb\n mrs x5, cntvct_el0\n cbz x3, 2f\n str xzr, [x0]\n b 3f\n"
+      "2: ldr x7, [x0]\n"
+      "3: dsb sy\n isb\n mrs x6, cntvct_el0\n sub x6, x6, x5\n str w6, [x4], #4\n"
+      "add x0, x0, x2\n subs x1, x1, #1\n b.ne 1b\n hvc #0\n4: b 4b")
+// Per-page first instruction fetch: branches into each page (which starts with RET).
+// x0 = base, x1 = count, x2 = stride, x4 = results as for touch_timed.
+GUEST(exec_timed,
+      "mov x9, x0\n"
+      "1: isb\n mrs x5, cntvct_el0\n blr x9\n isb\n mrs x6, cntvct_el0\n sub x6, x6, x5\n str w6, [x4], #4\n"
+      "add x9, x9, x2\n subs x1, x1, #1\n b.ne 1b\n hvc #0\n2: b 2b")
 // GICv3 bring-up. x0 = GICD, x1 = this CPU's GICR RD_base, x2 = SPI INTID (0: none),
 // x3 = vtimer period in ticks (0: none), x4 = idle mode: 0 busy-spin, 1 WFI, 2 hvc #4
 // (paravirt idle: the VMM sleeps until the armed vtimer deadline). hvc #1 = ready.
@@ -195,6 +208,7 @@ GUEST(sync_vec, "mrs x9, esr_el1\n mrs x10, elr_el1\n mrs x11, far_el1\n hvc #0x
 #define PT_OFF 0x4000            // L1 table, 4 KiB granule, 1 GiB blocks
 #define VEC_OFF 0x8000
 #define STACK_OFF 0x10000
+#define RES_OFF 0x100000          // faulttail results (u32 per touch) up to SYS_SIZE
 #define DATA_GPA 0x100000000ull  // region under test (and child-process RAM)
 #define MMIO_GPA 0x40000000ull   // unmapped: every access is a data-abort exit
 #define GICD_GPA 0x08000000ull
@@ -612,6 +626,112 @@ static void t_faults(void) {
         vm_create(&c.vm, g, false);
         pthread_t th;
         pthread_create(&th, NULL, faults_thread, &c);
+        pthread_join(th, NULL);
+        vm_destroy(&c.vm);
+    }
+    close(fd);
+}
+
+// First-touch latency distribution per backing: every stage-2 fault timed by the guest
+// (CNTVCT around each touch), over many fresh mappings, to expose rare stalls. The
+// "MAP_FIXED over anon" backing is how a VMM places a file inside guest RAM it reserved.
+enum { T_ANON, T_ANON_PREFAULT, T_FILE, T_FILE_FIXED, T_COUNT };
+static const char *const tail_name[T_COUNT] = {
+    "anon", "anon host-prefaulted", "file MAP_PRIVATE (cache hot)", "file MAP_FIXED over anon (cache hot)"};
+
+typedef struct {
+    vm_t vm;
+    int fd;
+    size_t size;
+    int rounds;
+    bool mmu_off;  // stage 1 off: data accesses are Device-nGnRnE, as in early kernel boot
+} tail_ctx;
+
+static void tail_report(const char *name, const char *op, double *v, size_t n) {
+    qsort(v, n, sizeof *v, cmpd);
+    size_t over50us = 0, over1ms = 0;
+    for (size_t i = 0; i < n; i++) {
+        over50us += v[i] > 50e3;
+        over1ms += v[i] > 1e6;
+    }
+#define Q(q) (v[(size_t)((q) * (double)(n - 1))] / 1e3)
+    printf("  %-48s %-5s n=%-7zu p50=%6.2f p90=%6.2f p99=%6.2f p99.9=%7.2f p99.99=%8.2f max=%9.2f us"
+           "  >50us=%zu >1ms=%zu\n",
+           name, op, n, Q(0.5), Q(0.9), Q(0.99), Q(0.999), Q(0.9999), Q(1.0), over50us, over1ms);
+#undef Q
+}
+
+static void *faulttail_thread(void *arg) {
+    tail_ctx *c = arg;
+    vm_t *vm = &c->vm;
+    vcpu_create(vm);
+    const size_t stride = 16384, pages = c->size / stride;
+    if (RES_OFF + pages * 4 > SYS_SIZE) DIE("faulttail: results do not fit");
+    uint32_t *res = (uint32_t *)(vm->sys + RES_OFF);
+    memset(res, 0, pages * 4);  // host-populate, so result stores never fault inside a sample
+    if (c->mmu_off) CHECK(hv_vcpu_set_sys_reg(vm->vcpu, HV_SYS_REG_SCTLR_EL1, 0x30d00800));  // RES1 only
+    uint64_t frq;
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frq));
+    double *v = malloc((size_t)c->rounds * pages * sizeof *v);
+    static const char *const op_name[] = {"read", "write", "exec"};
+    for (int op = 0; op <= 2; op++) {
+        for (int b = 0; b < T_COUNT; b++) {
+            if (op == 2 && b == T_ANON) continue;  // untouched anon holds no code
+            size_t n = 0;
+            for (int r = 0; r < c->rounds; r++) {
+                uint8_t *mem;
+                if (b == T_FILE) {
+                    mem = mmap(NULL, c->size, PROT_READ | PROT_WRITE, MAP_PRIVATE, c->fd, 0);
+                } else {
+                    mem = mmap(NULL, c->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+                    if (mem != MAP_FAILED && b == T_FILE_FIXED &&
+                        mmap(mem, c->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, c->fd, 0) != mem)
+                        DIE("mmap MAP_FIXED");
+                }
+                if (mem == MAP_FAILED) DIE("mmap backing");
+                if (b == T_ANON_PREFAULT) {
+                    memset(mem, 1, c->size);
+                    for (size_t o = 0; o < c->size; o += stride) memcpy(mem + o, &(uint32_t){0xd65f03c0}, 4);  // RET
+                }
+                CHECK(hv_vm_map(mem, DATA_GPA, c->size, HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC));
+                if (op == 2) load_code(vm, g_exec_timed, g_exec_timed_end);
+                else load_code(vm, g_touch_timed, g_touch_timed_end);
+                vcpu_reset(vm, DATA_GPA, pages, stride, (uint64_t)(op == 1), SYS_GPA + RES_OFF);
+                run_to_hvc(vm, "faulttail");
+                for (size_t i = 0; i < pages; i++) v[n++] = (double)res[i] * 1e9 / (double)frq;
+                CHECK(hv_vm_unmap(DATA_GPA, c->size));
+                munmap(mem, c->size);
+            }
+            char label[64];
+            snprintf(label, sizeof label, "%s%s", tail_name[b], c->mmu_off ? " [MMU off]" : "");
+            tail_report(label, op_name[op], v, n);
+        }
+    }
+    free(v);
+    CHECK(hv_vcpu_destroy(vm->vcpu));
+    return NULL;
+}
+
+static void t_faulttail(void) {
+    const size_t size = 256ull << 20;
+    const int rounds = 16;
+    printf("faulttail (per-touch first-touch latency, 16K granule, %zu MiB region x %d rounds)\n", size >> 20,
+           rounds);
+    char path[1024];
+    const char *tmp = getenv("TMPDIR");
+    snprintf(path, sizeof path, "%s/hvfbench-tail-XXXXXX", tmp ? tmp : "/tmp");
+    int fd = mkstemp(path);
+    if (fd < 0) DIE("mkstemp");
+    unlink(path);
+    if (ftruncate(fd, (off_t)size)) DIE("ftruncate");
+    uint8_t *w = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    for (size_t o = 0; o < size; o += 16384) memcpy(w + o, &(uint32_t){0xd65f03c0}, 4);  // RET; warms the cache
+    munmap(w, size);
+    for (int off = 0; off <= 1; off++) {
+        tail_ctx c = {.fd = fd, .size = size, .rounds = rounds, .mmu_off = off};
+        vm_create(&c.vm, false, false);
+        pthread_t th;
+        pthread_create(&th, NULL, faulttail_thread, &c);
         pthread_join(th, NULL);
         vm_destroy(&c.vm);
     }
@@ -1276,7 +1396,7 @@ int main(int argc, char **argv) {
 
     static const struct { const char *name; void (*fn)(void); } tests[] = {
         {"info", t_info}, {"guestinfo", t_guestinfo}, {"lifecycle", t_lifecycle}, {"map", t_map}, {"exits", t_exits},
-        {"faults", t_faults}, {"pfault", t_pfault}, {"restore", t_restore}, {"gicregs", t_gicregs}, {"wfi", t_wfi}, {"irq", t_irq}, {"kick", t_kick}, {"vtimer", t_vtimer}, {"sleep", t_sleep},
+        {"faults", t_faults}, {"faulttail", t_faulttail}, {"pfault", t_pfault}, {"restore", t_restore}, {"gicregs", t_gicregs}, {"wfi", t_wfi}, {"irq", t_irq}, {"kick", t_kick}, {"vtimer", t_vtimer}, {"sleep", t_sleep},
     };
     bool all = argc == first;
     for (size_t i = 0; i < sizeof tests / sizeof *tests; i++) {

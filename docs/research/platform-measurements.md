@@ -230,6 +230,58 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
 | full SPI distributor rewrite (IGROUPR, ICENABLER, ICPENDR, IPRIORITYR, ICFGR, IROUTER for INTID 32–1019; 1387 writes) | **19.6 µs** | 27.4 µs |
 | `hv_gic_reset` | 10.5 µs | 11.6 µs |
 
+### M15. First-touch latency per fault (`faulttail`)
+
+- **Method.** The guest reads CNTVCT (24 MHz, 41.7 ns) around every first touch and stores
+  each delta. The region is 256 MiB at 16 KiB stride, remapped fresh 16 times: 262 144 timed
+  faults per row, 6.3 M in total. Backings:
+  - anonymous
+  - anonymous, host-prefaulted
+  - file `MAP_PRIVATE`, cache-hot
+  - file `MAP_FIXED` over an anonymous reservation (how a VMM places a file inside guest
+    RAM it reserved)
+- **Ops.** Load, store, and instruction fetch (a `blr` into a page that starts with `ret`).
+  Each op runs with stage 1 on (Normal WB) and off (Device-nGnRnE, as in early kernel
+  boot).
+
+| Backing | load p50 / max | store p50 / max | exec p50 / max |
+|---|---|---|---|
+| anon | 1.08–1.12 / 46 µs | 1.08–1.12 / 44 µs | — |
+| anon, host-prefaulted | 1.12 / 111 µs | 1.12 / 108 µs | 1.12 / 50 µs |
+| file `MAP_PRIVATE`, cache-hot | 0.96–1.00 / 26 µs | **1.75–1.79** (CoW) / 80 µs | 0.92–0.96 / 45 µs |
+| file `MAP_FIXED` over anon | 0.96 / 38 µs | 1.75–1.79 / 65 µs | 0.96 / 72 µs |
+
+- **No fault took more than 111 µs** in 6.3 M, for any backing, op or MMU state.
+- p99.99 is 7–26 µs.
+- Cache-hot file pages are the cheapest to read or execute.
+- A copy-on-write store costs ~0.65 µs more than an anonymous first write.
+
+### M16. Booting with a file-mapped kernel image (E2E, `shards vm run`)
+
+- **Method.** Interleaved boots, alternating every boot: 200 copy the kernel image into
+  anonymous guest RAM, 200 map it `MAP_PRIVATE`/`MAP_FIXED` over guest RAM before
+  `hv_vm_map` (an experiment build).
+- **Results** (µs):
+
+| Mode | to_init p50 | p99 | max | > 30 ms |
+|---|---|---|---|---|
+| copy | 20 009 | 22 677 | 23 585 | 0 |
+| map | 20 595 | **1 028 028** | 1 060 093 | **5** |
+
+- **Where the time goes.** In a further 600 mapped boots with console output, one boot
+  stalled for 941 ms. The guest's own clocks did not see it: its last printk read 53.9 ms
+  and init's CLOCK_BOOTTIME 49.6 ms. The stall therefore happens before the guest's
+  timekeeping starts, early in boot.
+- **M15 doesn't reproduce it** in a long-lived process, with MMU on or off, for loads,
+  stores or instruction fetch. The stall must depend on the process lifecycle: a fresh
+  process maps a file object that the process just before it mapped and tore down. It
+  doesn't come from per-fault cost. **Cause UNVERIFIED.**
+- **Consequences.**
+  - Cold boot copies the kernel image (docs/benchmarks.md).
+  - For snapshot restore (D7): map snapshot memory in the warm-pool process before the
+    request arrives, never on the request path.
+  - Restore benchmarks must include fresh-process restores, so they can catch this.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**
@@ -297,4 +349,7 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
     set a Linux guest dirties.
 - End-to-end restore of a real Linux guest snapshot: working-set size after resume,
   and time to first userspace instruction.
+- The cause of M16's first-touch stalls (~1 s, ~1% of fresh processes mapping a file
+  that a just-exited process mapped). Reproduce it in hvfbench with sequential child
+  processes.
 - Linux/KVM counterparts of M4–M11 (to be measured on a KVM host and in an EL2 guest).

@@ -53,6 +53,7 @@ anonymous guest RAM that shards uses.
 Mapping moved more time into the guest's first touches than it saved on the host. Its
 to_init p50 was 0.1–0.9 ms worse. Two of 90 mapped boots stalled for 62 ms and 149 ms in
 the kernel phase; none of 90 copied boots did. It saved 18.5 MiB of RSS. **Decision:** copy.
-**Open risk for D7:** snapshot restore planned on lazily faulted file-backed memory.
-Characterize fault tails for file-backed guest RAM (and their cause) before building on
-it.
+An interleaved rerun (200 + 200 boots, platform-measurements.md M16) confirmed it. Mapped
+boots stalled up to 1.06 s (5 of 200); copied boots never did (max 23.6 ms). M15 found no
+such tail in 6.3 M in-process faults. The stall comes from fresh processes mapping the
+file, so D7 maps snapshot memory before the request arrives.
