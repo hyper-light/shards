@@ -16,6 +16,8 @@ use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::{Arc, Mutex, PoisonError};
 
 #[cfg(unix)]
 use shards_abi::run::kind;
@@ -146,24 +148,65 @@ impl Drop for Listener {
 }
 
 #[cfg(unix)]
-/// Listens where the VM's vsock device delivers guest connections to the run port.
-pub fn listen(vsock: &Path) -> io::Result<Listener> {
+/// Listens where the VM's vsock device delivers guest connections to host `port`.
+pub fn listen(vsock: &Path, port: u32) -> io::Result<Listener> {
     let mut path = vsock.as_os_str().to_owned();
-    path.push(format!("_{}", run::PORT));
+    path.push(format!("_{port}"));
     let path = PathBuf::from(path);
     let listener = UnixListener::bind(&path)?;
     Ok(Listener { listener, path })
 }
 
+/// Signals on their way to the workload: sent once the guest has dialed the signal port,
+/// queued while the workload runs before then, and, before the guest has connected at
+/// all, not forwarded.
 #[cfg(unix)]
+#[derive(Debug, Default)]
+pub struct Signals {
+    conn: Option<UnixStream>,
+    queued: Vec<u32>,
+    running: bool,
+}
+
+#[cfg(unix)]
+pub type ToGuest = Arc<Mutex<Signals>>;
+
+#[cfg(unix)]
+fn lock(to: &ToGuest) -> std::sync::MutexGuard<'_, Signals> {
+    to.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// When a request arrived and when it was answered, on the VMM's clock (for
+/// `SHARDS_TIMING`).
+#[cfg(unix)]
+#[derive(Debug, Default)]
+pub struct Timing {
+    pub request_us: std::sync::OnceLock<u128>,
+    pub answered_us: std::sync::OnceLock<u128>,
+}
+
 /// Serves the guest: sends `spec`, relays stdio, and returns the workload's exit status.
-pub fn serve(listener: &Listener, spec: &Spec, interactive: bool) -> Result<u8, String> {
+/// Signals go through `to`, on the connection the guest makes to `signals`. With a
+/// `gate`, the guest waits, connected, until the gate returns: the request to a warm VM.
+#[cfg(unix)]
+pub fn serve(
+    listener: &Listener,
+    signals: Listener,
+    spec: &Spec,
+    interactive: bool,
+    to: &ToGuest,
+    gate: Option<&dyn Fn()>,
+    timing: &Timing,
+) -> Result<u8, String> {
     let (mut conn, _) = listener
         .listener
         .accept()
         .map_err(|e| format!("waiting for the guest: {e}"))?;
-    let payload = spec.encode();
-    send(&mut conn, kind::SPEC, &payload).map_err(|e| format!("sending the command: {e}"))?;
+    if let Some(gate) = gate {
+        gate();
+    }
+    let _ = timing.request_us.set(shards_vmm::log::uptime_us());
+    send(&mut conn, kind::SPEC, &spec.encode()).map_err(|e| format!("sending the command: {e}"))?;
     if interactive {
         let mut input = conn.try_clone().map_err(|e| e.to_string())?;
         std::thread::Builder::new()
@@ -173,6 +216,43 @@ pub fn serve(listener: &Listener, spec: &Spec, interactive: bool) -> Result<u8, 
     } else {
         send(&mut conn, kind::STDIN, &[]).map_err(|e| format!("closing stdin: {e}"))?;
     }
+    lock(to).running = true;
+    let signal_path = signals.path.clone();
+    let accepting = to.clone();
+    std::thread::Builder::new()
+        .name("signal-conn".into())
+        .spawn(move || {
+            let Ok((mut c, _)) = signals.listener.accept() else {
+                return;
+            };
+            let mut state = lock(&accepting);
+            if !state.running {
+                return;
+            }
+            let queued = std::mem::take(&mut state.queued);
+            if queued
+                .iter()
+                .all(|sig| send(&mut c, kind::SIGNAL, &sig.to_be_bytes()).is_ok())
+            {
+                state.conn = Some(c);
+            }
+        })
+        .map_err(|e| format!("signal connection: {e}"))?;
+    let status = relay(&mut conn, timing);
+    {
+        let mut state = lock(to);
+        *state = Signals::default();
+    }
+    // A connection still being awaited is woken, so its listener goes. The guest powers
+    // off once the host closes the run connection: shutting it down closes every copy.
+    let _ = UnixStream::connect(&signal_path);
+    let _ = conn.shutdown(std::net::Shutdown::Both);
+    status
+}
+
+/// Copies the guest's frames to shards' stdout and stderr until the exit status.
+#[cfg(unix)]
+fn relay(conn: &mut UnixStream, timing: &Timing) -> Result<u8, String> {
     let mut payload = Vec::new();
     loop {
         let mut h = [0u8; run::HEADER];
@@ -196,6 +276,7 @@ pub fn serve(listener: &Listener, spec: &Spec, interactive: bool) -> Result<u8, 
                 let _ = writeln!(io::stderr(), "shards: {}", String::from_utf8_lossy(&payload));
             }
             kind::EXIT => {
+                let _ = timing.answered_us.set(shards_vmm::log::uptime_us());
                 let status: [u8; 4] = payload
                     .as_slice()
                     .try_into()
@@ -214,8 +295,8 @@ fn send(conn: &mut UnixStream, which: u8, payload: &[u8]) -> io::Result<()> {
     conn.write_all(payload)
 }
 
-#[cfg(unix)]
 /// Copies shards' stdin to the workload's, then closes it.
+#[cfg(unix)]
 fn forward_stdin(conn: &mut UnixStream) {
     let mut stdin = io::stdin().lock();
     let mut buf = vec![0u8; 64 * 1024];
@@ -230,6 +311,97 @@ fn forward_stdin(conn: &mut UnixStream) {
         }
     }
     let _ = send(conn, kind::STDIN, &[]);
+}
+
+/// The signals `docker run` forwards to the container with `--sig-proxy`, its default:
+/// every one but SIGCHLD, SIGPIPE, SIGURG and those the daemon cannot name (docker/cli
+/// cli/command/container/signals.go). These are the ones other processes send, each
+/// paired with its Linux number: the guest is Linux, and Docker forwards by name.
+#[cfg(unix)]
+const FORWARDED: [(libc::c_int, u32); 18] = [
+    (libc::SIGHUP, 1),
+    (libc::SIGINT, 2),
+    (libc::SIGQUIT, 3),
+    (libc::SIGABRT, 6),
+    (libc::SIGUSR1, 10),
+    (libc::SIGUSR2, 12),
+    (libc::SIGALRM, 14),
+    (libc::SIGTERM, 15),
+    (libc::SIGCONT, 18),
+    (libc::SIGTSTP, 20),
+    (libc::SIGTTIN, 21),
+    (libc::SIGTTOU, 22),
+    (libc::SIGXCPU, 24),
+    (libc::SIGXFSZ, 25),
+    (libc::SIGVTALRM, 26),
+    (libc::SIGPROF, 27),
+    (libc::SIGWINCH, 28),
+    (libc::SIGIO, 29),
+];
+
+/// Forwards the signals shards receives to the workload, through `to`. It blocks them in
+/// the calling thread, which every thread started later inherits, so call it before the
+/// VM starts: then only the forwarder's `sigwait` receives them. A signal that would end
+/// shards, arriving before the workload runs, ends shards as it would have.
+#[cfg(unix)]
+pub fn forward_signals(to: ToGuest) -> Result<(), String> {
+    // SAFETY: sigset operations on a local set, and pthread_sigmask on this thread.
+    let set = unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for (sig, _) in FORWARDED {
+            libc::sigaddset(&mut set, sig);
+        }
+        if libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) != 0 {
+            return Err(format!("blocking signals: {}", io::Error::last_os_error()));
+        }
+        set
+    };
+    std::thread::Builder::new()
+        .name("signals".into())
+        .spawn(move || {
+            loop {
+                let mut sig = 0;
+                // SAFETY: sigwait(3) on a valid set.
+                if unsafe { libc::sigwait(&set, &mut sig) } != 0 {
+                    return;
+                }
+                let Some(&(_, linux)) = FORWARDED.iter().find(|(s, _)| *s == sig) else {
+                    continue;
+                };
+                let forwarded = {
+                    let mut guard = lock(&to);
+                    let state = &mut *guard;
+                    match (&mut state.conn, state.running) {
+                        (Some(conn), _) => {
+                            if send(conn, kind::SIGNAL, &linux.to_be_bytes()).is_err() {
+                                state.conn = None;
+                            }
+                            true
+                        }
+                        (None, true) => {
+                            state.queued.push(linux);
+                            true
+                        }
+                        (None, false) => false,
+                    }
+                };
+                let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
+                if !forwarded && ends {
+                    // SAFETY: the default action of a terminating signal, on this process.
+                    unsafe {
+                        libc::signal(sig, libc::SIG_DFL);
+                        let mut only: libc::sigset_t = std::mem::zeroed();
+                        libc::sigemptyset(&mut only);
+                        libc::sigaddset(&mut only, sig);
+                        libc::pthread_sigmask(libc::SIG_UNBLOCK, &only, std::ptr::null_mut());
+                        libc::raise(sig);
+                    }
+                }
+            }
+        })
+        .map_err(|e| format!("signal thread: {e}"))?;
+    Ok(())
 }
 
 /// An environment value's bytes, as the OS holds them.

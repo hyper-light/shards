@@ -41,7 +41,9 @@ const RESTORE_USAGE: &str = "usage: shards vm restore DIR [--hold] [--vsock PATH
   --vsock: this VM's vsock socket; without a COMMAND, required when the snapshot has a
            vsock device.
   --hold: prepare the VM, print `shards-ready` on stderr, and start it when a line arrives
-          on stdin: a warm VM whose start costs only the release.
+          on stdin: a warm VM whose start costs only the release. With a COMMAND, the VM
+          resumes at once and connects, and the line runs the command: a warm VM whose
+          request costs only the command.
   Console escape: Ctrl-A x stops the VM.";
 
 /// Arguments as UTF-8 strings, with an error naming the first one that is not.
@@ -303,7 +305,10 @@ fn parsed<T>(parse: Result<T, String>, usage: &str) -> Result<T, ExitCode> {
 fn boot_into(cfg: &mut Config, rootfs: PathBuf, template: bool) {
     cfg.pmem.insert(0, rootfs);
     // A workload's output is shards' output, so the kernel need not print to the console.
-    cfg.cmdline.push_str(" quiet shards_root=/dev/pmem0");
+    // Without automatic task groups: in most templates, a restored guest's first setsid(2)
+    // stalled until the next tick (docs/benchmarks.md, "Run"). Docker's containers never
+    // get them anyway, since they live in cgroups (kernel/sched/autogroup.c).
+    cfg.cmdline.push_str(" quiet noautogroup shards_root=/dev/pmem0");
     if template {
         cfg.cmdline.push_str(" shards_template=1");
     }
@@ -346,7 +351,9 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
     };
     if !workload.argv.is_empty() {
         cfg.console = Console::Discard;
-        let hold = cfg.hold;
+        // A held run resumes now, and holds the command instead: whatever a restored guest
+        // does first (its reseed, its connection) is done before the request.
+        let hold = std::mem::take(&mut cfg.hold);
         return serve_workload(cfg.vsock.clone(), &workload, hold, move |vsock| {
             cfg.vsock = Some(vsock);
             vm::restore(&cfg)
@@ -410,30 +417,51 @@ fn serve_workload(
         Err(e) => return failed(e),
     };
     with_vsock(vsock, |vsock| {
-        let listener = match workload::listen(&vsock) {
+        let listeners = workload::listen(&vsock, shards_abi::run::PORT)
+            .and_then(|run| Ok((run, workload::listen(&vsock, shards_abi::run::SIGNAL_PORT)?)));
+        let (listener, signals) = match listeners {
             Ok(l) => l,
             Err(e) => return failed(format!("listening for the guest: {e}")),
         };
+        // Before the VM's threads start, so that they inherit the blocked signals.
+        let to_guest = workload::ToGuest::default();
+        if let Err(e) = workload::forward_signals(to_guest.clone()) {
+            return failed(e);
+        }
         let (handle, running) = match start(vsock) {
             Ok(started) => started,
             Err(e) => return failed(e),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let interactive = options.interactive;
+        let timing = std::sync::Arc::new(workload::Timing::default());
+        let served_timing = timing.clone();
         let served = std::thread::Builder::new()
             .name("workload".into())
             .spawn(move || {
-                let _ = tx.send(workload::serve(&listener, &spec, interactive));
+                // The guest is connected and waiting: the request is a line on stdin.
+                let gate = || {
+                    let _ = writeln!(std::io::stderr(), "shards-ready");
+                    let _ = std::io::stdin().read_line(&mut String::new());
+                };
+                let gate: Option<&dyn Fn()> = if hold { Some(&gate) } else { None };
+                let served = workload::serve(
+                    &listener,
+                    signals,
+                    &spec,
+                    interactive,
+                    &to_guest,
+                    gate,
+                    &served_timing,
+                );
+                let _ = tx.send(served);
             });
         if let Err(e) = served {
             handle.stop();
             return failed(format!("workload thread: {e}"));
         }
-        if hold {
-            wait_for_release(&handle);
-        }
         let reason = running.wait(handle.clone());
-        report_timing(&handle);
+        report_timing(&handle, Some(&timing));
         if let ExitReason::Error(e) = &reason {
             report(e);
         }
@@ -458,8 +486,14 @@ fn serve_workload(
     ExitCode::from(125)
 }
 
+/// The workload's request and answer times, where there is a workload.
+#[cfg(unix)]
+type WorkloadTiming = crate::workload::Timing;
+#[cfg(not(unix))]
+type WorkloadTiming = ();
+
 /// With `SHARDS_TIMING` set: one machine-readable line on stderr, for benchmark harnesses.
-fn report_timing(handle: &Handle) {
+fn report_timing(handle: &Handle, workload: Option<&WorkloadTiming>) {
     if std::env::var_os("SHARDS_TIMING").is_none() {
         return;
     }
@@ -468,9 +502,21 @@ fn report_timing(handle: &Handle) {
         .iter()
         .map(|(m, t)| format!("[{m},{t}]"))
         .collect();
+    #[cfg(unix)]
+    let (request, answered) = workload.map_or((0, 0), |t| {
+        (
+            t.request_us.get().copied().unwrap_or(0),
+            t.answered_us.get().copied().unwrap_or(0),
+        )
+    });
+    #[cfg(not(unix))]
+    let (request, answered) = {
+        let _ = workload;
+        (0, 0)
+    };
     let _ = writeln!(
         std::io::stderr(),
-        "shards-timing {{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"markers\":[{}]}}",
+        "shards-timing {{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"markers\":[{}]}}",
         handle.released_at_us().unwrap_or(0),
         handle.entered_at_us().unwrap_or(0),
         handle.exited_at_us().unwrap_or(0),
@@ -492,7 +538,7 @@ fn supervise(started: Result<(Handle, Running), String>, console: Console, templ
     forward_stdin(handle.clone());
     let reason = running.wait(handle.clone());
     drop(terminal);
-    report_timing(&handle);
+    report_timing(&handle, None);
     match reason {
         ExitReason::Snapshotted => ExitCode::SUCCESS,
         ExitReason::PowerOff | ExitReason::Stopped if template => {

@@ -6,17 +6,19 @@
 //!   every command.
 //!   - `cold_spawn_exit`: host wall clock around the whole process.
 //! - warm: a template, saved once the image is mounted (`vm run --rootfs --snapshot-dir`),
-//!   is restored with `--hold` for every command.
-//!   - `warm_request`: release → the VM stops, which it does once shards has read the
-//!     command's exit status (the VMM's clock): a start request to a warm VM, answered.
+//!   is restored with `--hold` for every command. The restored VM resumes and connects;
+//!   then the request (a line on stdin) sends it the command.
+//!   - `warm_request`: the request → shards has read the command's exit status (the VMM's
+//!     clock): a request to a warm VM, answered.
 //!   - `warm_spawn_exit`: host wall clock around the whole process.
 //!
 //! Phases, from shards-init's markers (the VMM's clock):
-//! - `*_resume` (warm): release → the guest runs again; `cold_boot`: first guest entry →
-//!   init starts.
+//! - `warm_resume`: release → the guest runs again; `cold_boot`: first guest entry → init
+//!   starts.
 //! - `*_connect`: init running → connected to the host (cold: the image mounted first).
-//! - `*_spawn`: connected → the command executing: the workload received, its user
-//!   resolved, fork and exec.
+//!   Warm VMs resume and connect before their request.
+//! - `*_spawn`: connected (warm: the request) → the command executing: the workload
+//!   received, its user resolved, fork and exec.
 //! - `*_command`: the command's own run.
 //! - `*_report`: the command exited → init powers off: output drained, the status sent
 //!   and read.
@@ -24,7 +26,10 @@
 //!
 //! Peak RSS includes the guest memory the process touched.
 //!
-//! `cargo bench -p shards --bench run [-- --runs N]`
+//! Guest state differs from template to template, and so can a restore's cost, so warm
+//! samples come from `--templates` templates (default 5), restored in turn.
+//!
+//! `cargo bench -p shards --bench run [-- --runs N --templates T]`
 
 #![allow(
     clippy::unwrap_used,
@@ -52,6 +57,7 @@ fn main() {
 
     const WARMUP: usize = 3;
     let runs: usize = support::option("--runs").map_or(50, |v| v.parse().expect("--runs N"));
+    let templates: usize = support::option("--templates").map_or(5, |v| v.parse().expect("--templates T"));
     if common::cannot_run_vms() {
         return;
     }
@@ -74,8 +80,9 @@ fn main() {
         .concat(),
     );
     let snapshots = !common::cannot_snapshot();
-    let template = dir.join("template").display().to_string();
-    if snapshots {
+    let mut warm_args = Vec::new();
+    for t in 0..if snapshots { templates.max(1) } else { 0 } {
+        let template = dir.join(format!("template-{t}")).display().to_string();
         run(
             &strings(&[
                 "vm",
@@ -92,21 +99,23 @@ fn main() {
             ]),
             false,
         );
+        warm_args.push(strings(
+            &[&["vm", "restore", &template, "--hold"][..], &command].concat(),
+        ));
     }
-    let warm_args = strings(&[&["vm", "restore", &template, "--hold"][..], &command].concat());
 
-    for _ in 0..WARMUP {
+    for i in 0..WARMUP {
         run(&cold_args, false);
-        if snapshots {
-            run(&warm_args, true);
+        if let Some(args) = warm_args.get(i % warm_args.len().max(1)) {
+            run(args, true);
         }
     }
     let mut cold = Vec::with_capacity(runs);
     let mut warm = Vec::with_capacity(runs);
-    for _ in 0..runs {
+    for i in 0..runs {
         cold.push(run(&cold_args, false));
-        if snapshots {
-            warm.push(run(&warm_args, true));
+        if let Some(args) = warm_args.get(i % warm_args.len().max(1)) {
+            warm.push(run(args, true));
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -122,25 +131,40 @@ fn main() {
             at(to)?.checked_sub(at(from)?)
         })
     };
-    let phases = |prefix: &str, samples: &[support::Sample], first: u32| {
-        [
-            (format!("{prefix}_connect"), Some(first), Some(CONNECTED)),
-            (format!("{prefix}_spawn"), Some(CONNECTED), Some(WORKLOAD_STARTED)),
-            (
-                format!("{prefix}_command"),
-                Some(WORKLOAD_STARTED),
-                Some(WORKLOAD_EXITED),
+    // Connect, spawn (from `spawn_from`), command, report and power-off rows.
+    let phases = |prefix: &str,
+                  samples: &[support::Sample],
+                  first: u32,
+                  spawn_from: &dyn Fn(&common::Run) -> Option<u128>| {
+        vec![
+            stats(
+                &format!("{prefix}_connect"),
+                "us",
+                between(samples, Some(first), Some(CONNECTED)),
             ),
-            (
-                format!("{prefix}_report"),
-                Some(WORKLOAD_EXITED),
-                Some(POWERING_OFF),
+            stats(
+                &format!("{prefix}_spawn"),
+                "us",
+                us(samples, |r| {
+                    r.marker_us(WORKLOAD_STARTED)?.checked_sub(spawn_from(r)?)
+                }),
             ),
-            (format!("{prefix}_power_off"), Some(POWERING_OFF), None),
+            stats(
+                &format!("{prefix}_command"),
+                "us",
+                between(samples, Some(WORKLOAD_STARTED), Some(WORKLOAD_EXITED)),
+            ),
+            stats(
+                &format!("{prefix}_report"),
+                "us",
+                between(samples, Some(WORKLOAD_EXITED), Some(POWERING_OFF)),
+            ),
+            stats(
+                &format!("{prefix}_power_off"),
+                "us",
+                between(samples, Some(POWERING_OFF), None),
+            ),
         ]
-        .into_iter()
-        .map(|(name, from, to)| stats(&name, "us", between(samples, from, to)))
-        .collect::<Vec<_>>()
     };
     let mut rows = vec![
         stats("cold_spawn_exit", "us", wall_us(&cold)),
@@ -150,13 +174,13 @@ fn main() {
             us(&cold, |r| r.marker_us(INIT_STARTED)?.checked_sub(r.entry_us()?)),
         ),
     ];
-    rows.extend(phases("cold", &cold, INIT_STARTED));
+    rows.extend(phases("cold", &cold, INIT_STARTED, &|r| r.marker_us(CONNECTED)));
     if snapshots {
         rows.extend([
             stats(
                 "warm_request",
                 "us",
-                us(&warm, |r| r.exit_us()?.checked_sub(r.released_us()?)),
+                us(&warm, |r| r.answered_us()?.checked_sub(r.request_us()?)),
             ),
             stats("warm_spawn_exit", "us", wall_us(&warm)),
             stats(
@@ -165,13 +189,14 @@ fn main() {
                 us(&warm, |r| r.marker_us(RESUMED)?.checked_sub(r.released_us()?)),
             ),
         ]);
-        rows.extend(phases("warm", &warm, RESUMED));
+        rows.extend(phases("warm", &warm, RESUMED, &|r| r.request_us()));
         rows.push(stats("warm_peak_rss", "MiB", rss_mib(&warm)));
     }
     report(
         "run",
         &[
             ("n", runs.to_string()),
+            ("templates", warm_args.len().to_string()),
             ("command", "/bin/testguest exit 0".into()),
             ("kernel", common::kernel_artifact().name.to_string()),
         ],

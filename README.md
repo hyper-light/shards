@@ -166,7 +166,7 @@ SHARDS-TEST PASS
 | Snapshot and restore | Works on macOS; Linux is next |
 | arm64 Linux, Intel Macs, Windows | Builds, but can't run machines yet |
 | Connect host programs to programs in a running machine (vsock) | Works |
-| Run a command in an image, as `docker run` does | Works (`--rootfs`): 2 ms in a warm microVM on the Mac. `shards run IMAGE` comes with pulling images, next |
+| Run a command in an image, as `docker run` does | Works (`--rootfs`): a warm microVM on the Mac answers in about 1 ms. `shards run IMAGE` comes with pulling images, next |
 | Build microVMs like Docker images | In progress: image layers become bootable images |
 | Run many agents on a microVM's OS, each isolated like a container | Planned |
 | Networks, files, devices and permissions per agent and per microVM | Planned |

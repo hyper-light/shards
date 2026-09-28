@@ -47,6 +47,14 @@ pub fn main() -> ! {
         }
         "bulk" => bulk(arg(1).parse().unwrap_or(0), arg(2).parse().unwrap_or(0)),
         "orphan" => orphan(),
+        "trap" => trap(arg(1)),
+        "sleep" => {
+            let _ = writeln!(io::stdout(), "ready");
+            loop {
+                // SAFETY: blocks until a signal arrives.
+                unsafe { libc::pause() };
+            }
+        }
         other => {
             let _ = writeln!(io::stderr(), "unknown mode {other:?}");
             2
@@ -171,5 +179,31 @@ fn orphan() -> i32 {
         }
     }
     let _ = io::stdout().write_all(b"parent done\n");
+    0
+}
+
+/// The signal `trap` caught, by its number.
+static CAUGHT: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn caught(sig: libc::c_int) {
+    CAUGHT.store(sig, Ordering::Relaxed);
+}
+
+/// Catches the named signal, says `ready`, and reports the number it arrives with.
+fn trap(name: &str) -> i32 {
+    let sig = match name {
+        "INT" => libc::SIGINT,
+        "TERM" => libc::SIGTERM,
+        "USR1" => libc::SIGUSR1,
+        _ => return 2,
+    };
+    // SAFETY: an async-signal-safe handler that only stores an atomic.
+    unsafe { libc::signal(sig, caught as extern "C" fn(libc::c_int) as libc::sighandler_t) };
+    let _ = writeln!(io::stdout(), "ready");
+    while CAUGHT.load(Ordering::Relaxed) == 0 {
+        // SAFETY: blocks until a signal arrives.
+        unsafe { libc::pause() };
+    }
+    let _ = writeln!(io::stdout(), "got {}", CAUGHT.load(Ordering::Relaxed));
     0
 }

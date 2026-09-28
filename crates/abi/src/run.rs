@@ -8,8 +8,12 @@
 
 use alloc::vec::Vec;
 
-/// The host port the guest dials.
+/// The host port the guest dials for its workload.
 pub const PORT: u32 = 1024;
+/// The host port the guest dials, once the workload runs, for [`kind::SIGNAL`] frames.
+/// They travel apart from the run connection, so that stdin a workload leaves unread
+/// cannot hold them up, as Docker sends them apart from its attach stream.
+pub const SIGNAL_PORT: u32 = 1025;
 pub const HEADER: usize = 8;
 /// The largest payload either side accepts.
 pub const MAX_PAYLOAD: u32 = 1 << 20;
@@ -29,6 +33,9 @@ pub mod kind {
     /// it: the workload's code, 128 plus a fatal signal's number, or 125 to 127 when the
     /// command never ran.
     pub const EXIT: u8 = 17;
+    /// Host to guest, on the [`SIGNAL_PORT`](super::SIGNAL_PORT) connection: a signal for
+    /// the workload's main process, as a big-endian u32 in Linux's numbering.
+    pub const SIGNAL: u8 = 18;
 }
 
 pub fn header(kind: u8, len: u32) -> [u8; HEADER] {

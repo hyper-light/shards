@@ -52,7 +52,7 @@ pub fn main(device: &str, template: bool) -> ! {
         // A restored VM continues here.
         let _ = crate::linux::control_write(control::MARKER, marker::RESUMED);
     }
-    let conn = match dial() {
+    let conn = match dial(run::PORT, true) {
         Ok(conn) => conn,
         Err(e) => {
             let _ = writeln!(io::stderr(), "shards-init: dialing the host: {e}");
@@ -66,7 +66,9 @@ pub fn main(device: &str, template: bool) -> ! {
     let status = match started {
         Ok(workload) => {
             let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_STARTED);
-            workload.relay(&conn)
+            // Without blocking: the relay finishes the connection while it runs.
+            let signals = dial(run::SIGNAL_PORT, false).ok();
+            workload.relay(&conn, signals)
         }
         Err(f) => {
             let _ = send(&conn, kind::SYSTEM_ERR, f.message.as_bytes());
@@ -181,10 +183,12 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Connects to the host's run port.
-fn dial() -> io::Result<File> {
+/// Connects to a host port. Without blocking, the connection may still be in progress:
+/// the socket turns writable when it completes.
+fn dial(port: u32, blocking: bool) -> io::Result<File> {
+    let flags = libc::SOCK_STREAM | libc::SOCK_CLOEXEC | if blocking { 0 } else { libc::SOCK_NONBLOCK };
     // SAFETY: socket(2) with constant arguments.
-    let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    let fd = unsafe { libc::socket(libc::AF_VSOCK, flags, 0) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -194,13 +198,37 @@ fn dial() -> io::Result<File> {
     let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
     addr.svm_family = libc::AF_VSOCK as libc::sa_family_t;
     addr.svm_cid = libc::VMADDR_CID_HOST;
-    addr.svm_port = run::PORT;
+    addr.svm_port = port;
     let len = std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t;
     // SAFETY: `addr` is a valid sockaddr_vm of `len` bytes.
     if unsafe { libc::connect(fd, (&raw const addr).cast(), len) } != 0 {
-        return Err(io::Error::last_os_error());
+        let e = io::Error::last_os_error();
+        if blocking || e.raw_os_error() != Some(libc::EINPROGRESS) {
+            return Err(e);
+        }
     }
     Ok(sock)
+}
+
+/// A nonblocking connect's result, once its socket is writable.
+fn connect_result(fd: RawFd) -> io::Result<()> {
+    let mut err: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: getsockopt(2) into a c_int of `len` bytes.
+    let rc = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_ERROR,
+            (&raw mut err).cast(),
+            &mut len,
+        )
+    };
+    match (rc, err) {
+        (0, 0) => Ok(()),
+        (0, e) => Err(io::Error::from_raw_os_error(e)),
+        _ => Err(io::Error::last_os_error()),
+    }
 }
 
 /// Writes one frame, blocking.
@@ -410,7 +438,7 @@ impl Workload {
 
     /// Relays stdio until the workload has exited and its output is drained, and returns
     /// its status.
-    fn relay(mut self, conn: &File) -> u32 {
+    fn relay(mut self, conn: &File, mut signals: Option<File>) -> u32 {
         let mut host = Some(conn.as_raw_fd());
         for fd in [host, self.stdin.as_ref().map(AsRawFd::as_raw_fd)]
             .into_iter()
@@ -420,6 +448,7 @@ impl Workload {
             set_nonblocking(fd, true);
         }
         let mut from_host: Vec<u8> = Vec::new();
+        let (mut signals_connected, mut from_signals) = (false, Vec::new());
         let mut to_stdin: Vec<u8> = Vec::new();
         let mut stdin_eof = false;
         let mut to_host: Vec<u8> = Vec::new();
@@ -459,6 +488,12 @@ impl Workload {
                 self.stdin.as_ref().map(AsRawFd::as_raw_fd),
                 stdin_events,
             );
+            let signal_events = if signals_connected {
+                libc::POLLIN
+            } else {
+                libc::POLLOUT
+            };
+            poll(&mut fds, signals.as_ref().map(AsRawFd::as_raw_fd), signal_events);
             let out_events = if to_host.len() < BUFFERED { libc::POLLIN } else { 0 };
             poll(&mut fds, self.stdout.as_ref().map(AsRawFd::as_raw_fd), out_events);
             poll(&mut fds, self.stderr.as_ref().map(AsRawFd::as_raw_fd), out_events);
@@ -492,7 +527,44 @@ impl Workload {
                             Ok(0) | Err(_) => stdin_eof = true,
                             Ok(n) => {
                                 from_host.extend_from_slice(buf.get(..n).unwrap_or_default());
-                                stdin_eof |= take_stdin(&mut from_host, &mut to_stdin);
+                                let mut closed = false;
+                                let whole = each_frame(&mut from_host, |which, payload| {
+                                    if which == kind::STDIN {
+                                        closed |= payload.is_empty();
+                                        to_stdin.extend_from_slice(payload);
+                                    }
+                                });
+                                stdin_eof |= closed || !whole;
+                            }
+                        }
+                    }
+                } else if Some(fd) == signals.as_ref().map(AsRawFd::as_raw_fd) {
+                    if !signals_connected {
+                        match connect_result(fd) {
+                            Ok(()) => signals_connected = true,
+                            Err(_) => signals = None,
+                        }
+                        continue;
+                    }
+                    match read(fd, &mut buf) {
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                        Ok(0) | Err(_) => signals = None,
+                        Ok(n) => {
+                            from_signals.extend_from_slice(buf.get(..n).unwrap_or_default());
+                            let pid = self.pid;
+                            let running = status.is_none();
+                            let whole = each_frame(&mut from_signals, |which, payload| {
+                                if let (kind::SIGNAL, Ok(sig)) =
+                                    (which, <[u8; 4]>::try_from(payload).map(u32::from_be_bytes))
+                                    && running
+                                    && (1..=64).contains(&sig)
+                                {
+                                    // SAFETY: kill(2) of our own child, not yet reaped.
+                                    unsafe { libc::kill(pid, sig as libc::c_int) };
+                                }
+                            });
+                            if !whole {
+                                signals = None;
                             }
                         }
                     }
@@ -557,30 +629,23 @@ impl Workload {
     }
 }
 
-/// Moves complete STDIN frames from `from_host` to `to_stdin`; returns whether one closed
-/// stdin. Other frames are the host's error and are skipped.
-fn take_stdin(from_host: &mut Vec<u8>, to_stdin: &mut Vec<u8>) -> bool {
-    let mut eof = false;
+/// Calls `f` with each complete frame in `buf`, removing them. Returns false if the
+/// stream is malformed, which cannot be resynchronized.
+fn each_frame(buf: &mut Vec<u8>, mut f: impl FnMut(u8, &[u8])) -> bool {
     loop {
-        let Some(h) = from_host.first_chunk::<{ run::HEADER }>() else {
-            return eof;
-        };
-        let Some((which, len)) = run::parse_header(*h) else {
-            // A malformed stream cannot be resynchronized: treat it as closed.
-            from_host.clear();
+        let Some(h) = buf.first_chunk::<{ run::HEADER }>() else {
             return true;
         };
-        let end = run::HEADER + len as usize;
-        let Some(payload) = from_host.get(run::HEADER..end) else {
-            return eof;
+        let Some((which, len)) = run::parse_header(*h) else {
+            buf.clear();
+            return false;
         };
-        if which == kind::STDIN {
-            if payload.is_empty() {
-                eof = true;
-            }
-            to_stdin.extend_from_slice(payload);
-        }
-        from_host.drain(..end);
+        let end = run::HEADER + len as usize;
+        let Some(payload) = buf.get(run::HEADER..end) else {
+            return true;
+        };
+        f(which, payload);
+        buf.drain(..end);
     }
 }
 

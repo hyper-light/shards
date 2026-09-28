@@ -1,8 +1,10 @@
 //! Commands run in images, end to end: `shards vm run --rootfs IMAGE -- COMMAND` boots a
 //! real VM into an EROFS image, shards-init runs the command as `docker run` would, and
 //! its output and exit status come back through shards. The command is the test guest,
-//! run as a workload (crates/testguest/src/workload.rs).
+//! run as a workload (crates/testguest/src/workload.rs). Runs need vsock, which shards has
+//! on Unix hosts.
 
+#![cfg(unix)]
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 mod common;
@@ -337,4 +339,70 @@ fn templates_restore_into_runs_of_their_own() {
         "each run has its own name"
     );
     assert_eq!(get(&second, "mount /"), "overlay");
+}
+
+/// Runs `command` in the image, sends `signal` to shards once the command says `ready`,
+/// and returns what shards returns.
+fn signaled(image: &Path, command: &[&str], signal: libc::c_int) -> Output {
+    use std::io::BufRead;
+    let mut child = Command::new(shards())
+        .args(["vm", "run", "--kernel"])
+        .arg(kernel())
+        .args([
+            "--init".as_ref(),
+            guest_init().as_os_str(),
+            "--rootfs".as_ref(),
+            image.as_os_str(),
+        ])
+        .arg("--")
+        .args(command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // A regression fails the test instead of hanging it.
+    let pid = child.id() as libc::pid_t;
+    let (done, watch) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if watch.recv_timeout(TIMEOUT).is_err() {
+            // SAFETY: kill(2) of our own child, which is only reaped after `done`.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    });
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut ready = String::new();
+    out.read_line(&mut ready).unwrap();
+    assert_eq!(ready, "ready\n");
+    // SAFETY: kill(2) of our own child.
+    unsafe { libc::kill(child.id() as libc::pid_t, signal) };
+    let mut rest = Vec::new();
+    out.read_to_end(&mut rest).unwrap();
+    let mut stderr = String::new();
+    child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    let status = child.wait().unwrap().code();
+    let _ = done.send(());
+    Output {
+        status,
+        stdout: rest,
+        stderr,
+    }
+}
+
+#[test]
+fn signals_reach_the_command_as_docker_run_forwards_them() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = TempDir::new("run-signals");
+    let image = workload_image(&dir);
+    // The command sees Linux's numbers, whatever the host's are (SIGUSR1 is 30 on macOS).
+    for (name, host, linux) in [("INT", libc::SIGINT, 2), ("USR1", libc::SIGUSR1, 10)] {
+        let out = signaled(&image, &["/bin/testguest", "trap", name], host);
+        assert_eq!(out.status, Some(0), "{name}: {out}");
+        assert_eq!(out.stdout, format!("got {linux}\n").into_bytes(), "{name}: {out}");
+    }
+    // A signal the command does not catch ends it, and `docker run`'s status says which.
+    let out = signaled(&image, &["/bin/testguest", "sleep"], libc::SIGTERM);
+    assert_eq!(out.status, Some(128 + 15), "{out}");
 }

@@ -228,6 +228,16 @@ impl Run {
         self.timing_field("exit_us")
     }
 
+    /// When shards sent a workload its command: the request, for a warm VM.
+    pub fn request_us(&self) -> Option<u128> {
+        self.timing_field("request_us")
+    }
+
+    /// When shards read a workload's exit status.
+    pub fn answered_us(&self) -> Option<u128> {
+        self.timing_field("answered_us")
+    }
+
     fn timing_field(&self, name: &str) -> Option<u128> {
         let t = self.timing()?;
         let v = t.split(&format!("\"{name}\":")).nth(1)?.split(',').next()?;

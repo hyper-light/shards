@@ -196,9 +196,20 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
 - **Warm runs.** `vm run --rootfs IMAGE --snapshot-dir DIR` saves a template: shards-init
   asks for the snapshot once the image is mounted, before it dials the host. Each
   `vm restore DIR -- COMMAND` resumes a copy that dials in for its own command (D2, D14).
-  Copies share the image and nothing they write. A command in a warm VM is answered in
-  2 ms (p50, n=30, benchmarks.md "Run").
-- **Not yet:** TTYs (`-t`), forwarding signals, detached runs.
+  Copies share the image and nothing they write.
+  - With `--hold`, the copy resumes at once, reseeds and connects. Its request is then only
+    the command. It is answered in 1.0 ms at p50 and 2.4 ms at p99, over six templates
+    (benchmarks.md, "Run").
+  - Guest state differs between templates, and a restored guest can stall for a tick
+    after its release. That now happens before the request.
+- **Kernel command line:** `noautogroup`, because otherwise most templates stalled a tick
+  in the first `setsid(2)` after a restore (benchmarks.md, "Run").
+- **Signals** reach the command as `docker run --sig-proxy` forwards them (docker/cli
+  `signals.go`): every one another process sends, by name, as Linux numbers them.
+  - They travel on a second vsock connection that the guest opens once the command runs,
+    so unread stdin cannot hold them up.
+  - A terminating signal that arrives before then ends shards.
+- **Not yet:** TTYs (`-t`), detached runs.
 - **Tests:** E2E runs a minimal image (no `/proc`, `/sys` or `/dev`). It covers users,
   groups, the environment, working directories, mounts and every exit status. It also
   sends 8 MiB through stdin and back, and reads 32 MiB of output.

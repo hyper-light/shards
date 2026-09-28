@@ -146,19 +146,21 @@ Method:
   (`workload_image` in tests/common).
 - **cold**: `shards vm run --rootfs IMAGE -- COMMAND` boots the kernel into the image for
   every command.
-- **warm**: a template is saved once, booted and with its image mounted (`vm run --rootfs
-  --snapshot-dir`, D16). Each sample restores it with `--hold` and then sends the start
-  request.
+- **warm**: templates are saved first, each booted with its image mounted (`vm run
+  --rootfs --snapshot-dir`, D16); `--templates T` of them, default 5. Guest state differs
+  between templates, and so can a restore's cost. Each sample restores the next template
+  with `--hold`. The copy resumes and connects at once, and the request (a line on stdin)
+  sends it the command.
 - Cold and warm samples alternate, after three warm-up pairs.
 
 | Phase | Measured from | Measured to |
 |---|---|---|
 | `cold_spawn_exit`, `warm_spawn_exit` | spawn | reap (host wall clock around the whole process) |
-| **`warm_request`** | the release (the start request) | the VM stops, which it does once shards has read the command's exit status |
+| **`warm_request`** | the request | shards has read the command's exit status |
 | `cold_boot` | first guest entry | shards-init running |
-| `warm_resume` | the release | the guest running again |
+| `warm_resume` | the release, when the VM starts | the guest running again (before the request) |
 | `*_connect` | init running | connected to the host (cold: the image mounted first) |
-| `*_spawn` | connected | the command executing: workload received, user resolved, fork, exec |
+| `*_spawn` | connected (warm: the request) | the command executing: workload received, user resolved, fork, exec |
 | `*_command` | the command executing | its exit |
 | `*_report` | its exit | init powering off: output drained, status sent and read |
 | `*_power_off` | init powering off | the VM stopped |
@@ -190,17 +192,52 @@ Phases come from markers shards-init writes to the control page (the VMM's clock
 | cold_report | 71 µs | 101 µs | 163 µs | 163 µs |
 | cold_power_off | 137 µs | 152 µs | 173 µs | 173 µs |
 
-A command in a warm VM is answered in 2 ms, including its restore, a vsock connection, a
-fork and exec, and the power-off. Preparing the warm VM (`warm_spawn_exit` minus the
-request) happens before the request, in the warm pool.
+That run restored one template, which turned out to be a fast one, and it counted from
+the release to the VM's stop. The run below restores six templates, as the harness now
+does.
 
-**Stalls of one guest tick.** The guest kernel runs at `CONFIG_HZ=100`, and several
-phases stall for about 10 ms, ending at a tick:
-- Warm, fixed. In the first version, shards-init opened, mapped and unmapped `/dev/mem`
-  for every marker. A restored guest then stalled twice per run, for 9.85 ms after the
-  release and 9.15 ms between fork and exec (two traced runs), so `warm_request` was
-  20.4 ms (p50, n=30). Mapping the control page once removed both stalls. The kernel
-  path that waited is not identified.
+**2026-09-28** · 229007d plus signals, `noautogroup` and warm pre-release (uncommitted) ·
+same host, OS and kernel · n=30 over 6 templates, 1 vCPU, 256 MiB
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| **warm_request** | **1040 µs** | **1422 µs** | **2363 µs** | **2363 µs** |
+| warm_spawn | 795 µs | 1057 µs | 2170 µs | 2170 µs |
+| warm_command | 172 µs | 193 µs | 1162 µs | 1162 µs |
+| warm_report | 115 µs | 148 µs | 196 µs | 196 µs |
+| warm_power_off | 281 µs | 309 µs | 336 µs | 336 µs |
+| warm_resume (before the request) | 9343 µs | 9424 µs | 9534 µs | 9534 µs |
+| warm_connect (before the request) | 472 µs | 527 µs | 551 µs | 551 µs |
+| warm_spawn_exit | 15614 µs | 16596 µs | 18435 µs | 18435 µs |
+| warm_peak_rss | 17.3 MiB | 17.8 MiB | 17.8 MiB | 17.8 MiB |
+| cold_spawn_exit | 32984 µs | 33632 µs | 34080 µs | 34080 µs |
+| cold_boot | 15823 µs | 25450 µs | 25614 µs | 25614 µs |
+| cold_connect | 9768 µs | 9829 µs | 9874 µs | 9874 µs |
+| cold_spawn | 145 µs | 253 µs | 272 µs | 272 µs |
+
+A request to a warm VM is answered in 1.0 ms at the median and 2.4 ms at p99: the
+command's delivery, a fork and exec, its run, and its exit status back. The VM resumed,
+reseeded and connected before the request, in the warm pool's time.
+
+**Stalls of one guest tick.** The guest kernel runs at `CONFIG_HZ=100`. Several phases
+stall for up to one tick, and whether they do depends on the template, since each
+restore of a template repeats its guest's state:
+- **setsid, fixed.** Markers inside the forked child placed a spawn stall of 7.6 to
+  7.9 ms in `setsid(2)`, in 8 of 11 templates. With `CONFIG_SCHED_AUTOGROUP`, setsid
+  creates a scheduler group and moves the caller into it. Booting with `noautogroup`, no
+  template stalled there (0 of 6). shards now boots images that way; Docker's
+  containers never get automatic groups either, as they live in cgroups
+  (`task_wants_autogroup`, kernel/sched/autogroup.c at v6.18).
+- **Resume, moved off the request path.** In most templates, the release is followed by
+  about 9.3 ms before init's next instruction. An early bisect blamed the signal
+  forwarder, but over 8 templates the stall came and went without it, and no signal
+  arrived. Letting the template go idle for 50 ms before its snapshot removed the stall
+  (0 of 8) but slowed spawns (2.6 ms p50). Warm VMs now resume before their request
+  instead, so the stall costs the warm pool, not the request. Its kernel mechanism is
+  not identified.
+- **Marker writes, fixed.** In the first version, shards-init mapped and unmapped
+  `/dev/mem` for every marker, and restored guests then stalled twice per run. Mapping
+  the control page once removed those stalls.
 - Cold, open. `cold_connect` (mounting the image) waits one tick at the median, and boot
   and spawn do at p90. With `rcupdate.rcu_expedited=1` on the kernel command line,
   `cold_connect` fell from 9758 to 651 µs (p50, n=10), so the mounts wait for an RCU
