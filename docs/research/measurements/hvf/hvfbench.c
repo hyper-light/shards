@@ -769,6 +769,199 @@ static void t_guestinfo(void) {
     }
 }
 
+// Restore-path costs: full vCPU architectural state through the HVF accessors, and the
+// in-kernel GIC state blob (save with vCPUs stopped; restore into a fresh VM before first run).
+static const hv_sys_reg_t restore_sysregs[] = {
+    HV_SYS_REG_SCTLR_EL1, HV_SYS_REG_CPACR_EL1, HV_SYS_REG_TTBR0_EL1, HV_SYS_REG_TTBR1_EL1, HV_SYS_REG_TCR_EL1,
+    HV_SYS_REG_SPSR_EL1, HV_SYS_REG_ELR_EL1, HV_SYS_REG_SP_EL0, HV_SYS_REG_SP_EL1, HV_SYS_REG_AFSR0_EL1,
+    HV_SYS_REG_AFSR1_EL1, HV_SYS_REG_ESR_EL1, HV_SYS_REG_FAR_EL1, HV_SYS_REG_PAR_EL1, HV_SYS_REG_MAIR_EL1,
+    HV_SYS_REG_AMAIR_EL1, HV_SYS_REG_VBAR_EL1, HV_SYS_REG_CONTEXTIDR_EL1, HV_SYS_REG_TPIDR_EL1,
+    HV_SYS_REG_CNTKCTL_EL1, HV_SYS_REG_CSSELR_EL1, HV_SYS_REG_TPIDR_EL0, HV_SYS_REG_TPIDRRO_EL0,
+    HV_SYS_REG_CNTV_CTL_EL0, HV_SYS_REG_CNTV_CVAL_EL0, HV_SYS_REG_MDSCR_EL1, HV_SYS_REG_MPIDR_EL1,
+    HV_SYS_REG_APIAKEYLO_EL1, HV_SYS_REG_APIAKEYHI_EL1, HV_SYS_REG_APIBKEYLO_EL1, HV_SYS_REG_APIBKEYHI_EL1,
+    HV_SYS_REG_APDAKEYLO_EL1, HV_SYS_REG_APDAKEYHI_EL1, HV_SYS_REG_APDBKEYLO_EL1, HV_SYS_REG_APDBKEYHI_EL1,
+    HV_SYS_REG_APGAKEYLO_EL1, HV_SYS_REG_APGAKEYHI_EL1,
+};
+#define N_SYSREGS (sizeof restore_sysregs / sizeof *restore_sysregs)
+static const hv_gic_icc_reg_t restore_icc[] = {
+    HV_GIC_ICC_REG_PMR_EL1, HV_GIC_ICC_REG_BPR0_EL1, HV_GIC_ICC_REG_AP0R0_EL1, HV_GIC_ICC_REG_AP1R0_EL1,
+    HV_GIC_ICC_REG_BPR1_EL1, HV_GIC_ICC_REG_CTLR_EL1, HV_GIC_ICC_REG_SRE_EL1, HV_GIC_ICC_REG_IGRPEN0_EL1,
+    HV_GIC_ICC_REG_IGRPEN1_EL1,
+};
+#define N_ICC (sizeof restore_icc / sizeof *restore_icc)
+
+typedef struct {
+    uint64_t gpr[35], sys[N_SYSREGS], icc[N_ICC], vt_off;
+    hv_simd_fp_uchar16_t q[32];
+} vcpu_state;
+
+static void vcpu_save(hv_vcpu_t v, vcpu_state *st) {
+    for (uint32_t r = 0; r <= HV_REG_CPSR; r++) CHECK(hv_vcpu_get_reg(v, (hv_reg_t)r, &st->gpr[r]));
+    for (int r = 0; r < 32; r++) CHECK(hv_vcpu_get_simd_fp_reg(v, (hv_simd_fp_reg_t)r, &st->q[r]));
+    for (size_t r = 0; r < N_SYSREGS; r++) CHECK(hv_vcpu_get_sys_reg(v, restore_sysregs[r], &st->sys[r]));
+    for (size_t r = 0; r < N_ICC; r++) CHECK(hv_gic_get_icc_reg(v, restore_icc[r], &st->icc[r]));
+    CHECK(hv_vcpu_get_vtimer_offset(v, &st->vt_off));
+}
+
+static void vcpu_load(hv_vcpu_t v, const vcpu_state *st) {
+    for (uint32_t r = 0; r <= HV_REG_CPSR; r++) CHECK(hv_vcpu_set_reg(v, (hv_reg_t)r, st->gpr[r]));
+    for (int r = 0; r < 32; r++) CHECK(hv_vcpu_set_simd_fp_reg(v, (hv_simd_fp_reg_t)r, st->q[r]));
+    for (size_t r = 0; r < N_SYSREGS; r++) CHECK(hv_vcpu_set_sys_reg(v, restore_sysregs[r], st->sys[r]));
+    for (size_t r = 0; r < N_ICC; r++) CHECK(hv_gic_set_icc_reg(v, restore_icc[r], st->icc[r]));
+    CHECK(hv_vcpu_set_vtimer_offset(v, st->vt_off));
+}
+
+static void *restore_thread(void *arg) {
+    vm_t *vm = arg;
+    vcpu_create(vm);
+    load_code(vm, g_hvc, g_hvc_end);
+    vcpu_reset(vm, 0, 0, 0, 0, 0);
+    run_to_hvc(vm, "restore");  // real, initialized state
+    vcpu_state st;
+    samples_t sv = {0}, ld = {0};
+    for (int i = 0; i < 2000; i++) {
+        uint64_t t0 = ticks();
+        vcpu_save(vm->vcpu, &st);
+        uint64_t t1 = ticks();
+        vcpu_load(vm->vcpu, &st);
+        push(&sv, tns(t1 - t0));
+        push(&ld, tns(ticks() - t1));
+    }
+    printf("  vCPU state: %d core + 32 SIMD + %zu sysregs + %zu ICC registers\n", HV_REG_CPSR + 1, N_SYSREGS, N_ICC);
+    report("vCPU state save (all get calls)", &sv, "us", 1e3);
+    report("vCPU state load (all set calls)", &ld, "us", 1e3);
+    run_to_hvc(vm, "restore after load");  // the loaded state must still run
+    CHECK(hv_vcpu_destroy(vm->vcpu));
+    return NULL;
+}
+
+typedef struct { _Atomic int created, turn, done; } seq_sync;
+typedef struct { seq_sync *s; int idx; } seq_arg;
+
+// Creates vCPU idx strictly after idx-1 (redistributor order, M13), then parks until done.
+static void *seq_vcpu_thread(void *p) {
+    seq_arg *a = p;
+    while (atomic_load(&a->s->turn) != a->idx) {}
+    hv_vcpu_t v;
+    hv_vcpu_exit_t *e;
+    CHECK(hv_vcpu_create(&v, &e, NULL));
+    CHECK(hv_vcpu_set_sys_reg(v, HV_SYS_REG_MPIDR_EL1, (uint64_t)a->idx));
+    atomic_fetch_add(&a->s->turn, 1);
+    atomic_fetch_add(&a->s->created, 1);
+    while (!atomic_load(&a->s->done)) {}
+    CHECK(hv_vcpu_destroy(v));
+    return NULL;
+}
+
+static void with_vcpus(int n, seq_sync *s, pthread_t *ths, seq_arg *args) {
+    memset(s, 0, sizeof *s);
+    for (int i = 0; i < n; i++) {
+        args[i] = (seq_arg){s, i};
+        pthread_create(&ths[i], NULL, seq_vcpu_thread, &args[i]);
+    }
+    while (atomic_load(&s->created) < n) {}
+}
+
+static void end_vcpus(int n, seq_sync *s, pthread_t *ths) {
+    atomic_store(&s->done, 1);
+    for (int i = 0; i < n; i++) pthread_join(ths[i], NULL);
+}
+
+static void t_restore(void) {
+    printf("restore (state transfer costs on the snapshot-restore path)\n");
+    vm_t vm;
+    vm_create(&vm, false, true);
+    pthread_t th;
+    pthread_create(&th, NULL, restore_thread, &vm);
+    pthread_join(th, NULL);
+    vm_destroy(&vm);
+
+    const int counts[] = {1, 4, 16};
+    for (size_t c = 0; c < 3; c++) {
+        int n = counts[c];
+        samples_t sv = {0}, ld = {0};
+        size_t blob_size = 0;
+        for (int it = 0; it < 50; it++) {
+            seq_sync s;
+            pthread_t ths[16];
+            seq_arg args[16];
+            vm_create(&vm, false, true);
+            with_vcpus(n, &s, ths, args);
+            uint64_t t0 = ticks();
+            hv_gic_state_t gs = hv_gic_state_create();
+            if (!gs) DIE("hv_gic_state_create returned NULL");
+            CHECK(hv_gic_state_get_size(gs, &blob_size));
+            void *blob = malloc(blob_size);
+            CHECK(hv_gic_state_get_data(gs, blob));
+            push(&sv, tns(ticks() - t0));
+            os_release(gs);
+            end_vcpus(n, &s, ths);
+            vm_destroy(&vm);
+
+            vm_create(&vm, false, true);
+            with_vcpus(n, &s, ths, args);
+            t0 = ticks();
+            CHECK(hv_gic_set_state(blob, blob_size));
+            push(&ld, tns(ticks() - t0));
+            end_vcpus(n, &s, ths);
+            vm_destroy(&vm);
+            free(blob);
+        }
+        char name[80];
+        snprintf(name, sizeof name, "GIC state save, %d vCPU(s) (%zu B)", n, blob_size);
+        report(name, &sv, "us", 1e3);
+        snprintf(name, sizeof name, "GIC state restore, %d vCPU(s)", n);
+        report(name, &ld, "us", 1e3);
+    }
+}
+
+// Register-level GIC restore: the cost of rewriting the distributor state a Linux guest
+// programs at boot (for every SPI: group, priority, config, route, enable) versus the blob.
+static void t_gicregs(void) {
+    printf("gicregs (register-level GIC state transfer)\n");
+    uint32_t spi_base, spi_count;
+    CHECK(hv_gic_get_spi_interrupt_range(&spi_base, &spi_count));
+    vm_t vm;
+    vm_create(&vm, false, true);
+    seq_sync s;
+    pthread_t ths[1];
+    seq_arg args[1];
+    with_vcpus(1, &s, ths, args);
+    uint32_t nint = spi_base + spi_count;  // INTIDs 0..nint-1
+    samples_t one = {0}, all = {0}, rst = {0};
+    for (int i = 0; i < 20000; i++) {
+        uint64_t t0 = ticks();
+        CHECK(hv_gic_set_distributor_reg(HV_GIC_DISTRIBUTOR_REG_GICD_IPRIORITYR8, 0xa0a0a0a0));
+        push(&one, tns(ticks() - t0));
+    }
+    for (int it = 0; it < 200; it++) {
+        uint64_t t0 = ticks();
+        size_t calls = 0;
+        for (uint32_t r = 1; r < nint / 32; r++, calls += 3) {       // SPIs only (INTID >= 32)
+            CHECK(hv_gic_set_distributor_reg((hv_gic_distributor_reg_t)(0x0080 + 4 * r), 0xffffffff));  // IGROUPR
+            CHECK(hv_gic_set_distributor_reg((hv_gic_distributor_reg_t)(0x0180 + 4 * r), 0xffffffff));  // ICENABLER
+            CHECK(hv_gic_set_distributor_reg((hv_gic_distributor_reg_t)(0x0280 + 4 * r), 0xffffffff));  // ICPENDR
+        }
+        for (uint32_t r = 8; r < nint / 4; r++, calls++)            // IPRIORITYR (4 INTIDs/reg)
+            CHECK(hv_gic_set_distributor_reg((hv_gic_distributor_reg_t)(0x0400 + 4 * r), 0xa0a0a0a0));
+        for (uint32_t r = 2; r < nint / 16; r++, calls++)           // ICFGR (16 INTIDs/reg)
+            CHECK(hv_gic_set_distributor_reg((hv_gic_distributor_reg_t)(0x0c00 + 4 * r), 0));
+        for (uint32_t id = 32; id < nint; id++, calls++)             // IROUTER (1 INTID/reg)
+            CHECK(hv_gic_set_distributor_reg((hv_gic_distributor_reg_t)(0x6000 + 8 * id), 0));
+        CHECK(hv_gic_set_distributor_reg(HV_GIC_DISTRIBUTOR_REG_GICD_CTLR, 0x13));
+        push(&all, tns(ticks() - t0));
+        if (it == 0) printf("  full SPI distributor rewrite = %zu register writes\n", calls + 1);
+        t0 = ticks();
+        CHECK(hv_gic_reset());
+        push(&rst, tns(ticks() - t0));
+    }
+    report("hv_gic_set_distributor_reg (one call)", &one, "ns", 1);
+    report("full SPI distributor rewrite", &all, "us", 1e3);
+    report("hv_gic_reset", &rst, "us", 1e3);
+    end_vcpus(1, &s, ths);
+    vm_destroy(&vm);
+}
+
 // ---- WFI, interrupts, kicks, vtimer ------------------------------------------------
 
 typedef struct {
@@ -1083,7 +1276,7 @@ int main(int argc, char **argv) {
 
     static const struct { const char *name; void (*fn)(void); } tests[] = {
         {"info", t_info}, {"guestinfo", t_guestinfo}, {"lifecycle", t_lifecycle}, {"map", t_map}, {"exits", t_exits},
-        {"faults", t_faults}, {"pfault", t_pfault}, {"wfi", t_wfi}, {"irq", t_irq}, {"kick", t_kick}, {"vtimer", t_vtimer}, {"sleep", t_sleep},
+        {"faults", t_faults}, {"pfault", t_pfault}, {"restore", t_restore}, {"gicregs", t_gicregs}, {"wfi", t_wfi}, {"irq", t_irq}, {"kick", t_kick}, {"vtimer", t_vtimer}, {"sleep", t_sleep},
     };
     bool all = argc == first;
     for (size_t i = 0; i < sizeof tests / sizeof *tests; i++) {

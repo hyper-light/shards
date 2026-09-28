@@ -178,6 +178,21 @@ with leeway of about 25% capped near 2.5 ms, which is macOS timer coalescing.
 | in child: `hv_vcpu_create` + sysreg setup | 51 µs | 97 µs |
 | in child: first `hv_vcpu_run` → `hvc` | 9.7 µs | 24 µs |
 
+### M11b. Where spawn time goes (100 spawns each; child writes one byte to fd 3 from `main`)
+
+| Child binary | p50 | p10 | p90 |
+|---|---|---|---|
+| trivial C, ad-hoc signed | 0.81–0.87 ms | 0.77 | 0.88–1.13 |
+| + `com.apple.security.hypervisor` entitlement | 0.93 ms | 0.85 | 1.07 |
+| + linked against `Hypervisor.framework` | **2.38 ms** | 2.24 | 2.63 |
+
+- The entitlement check adds ~0.06 ms. **Loading Hypervisor.framework at launch adds
+  ~1.5 ms.**
+- Freshly built binaries show rare first-exec outliers of ~100 ms (p99), consistent
+  with one-time code-signature validation.
+- Method: `posix_spawn` + pipe as in M11. This was a scratch program, not part of
+  `hvfbench`: `child.c` = `write(3, "\1", 1)` in `main`.
+
 ### M12. Default guest-visible registers (`guestinfo`, EL1 guest, `hv_vcpu_config` = NULL)
 
 | Register | Value | Decoded |
@@ -203,18 +218,36 @@ Example with 4 vCPUs created concurrently: index 2 (Aff0 = 2) was created last, 
 frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
 `GICR_TYPER.Affinity` does track MPIDR.
 
+### M14. Restore-path state transfer (`restore`, `gicregs`)
+
+| Operation | p50 | p99 |
+|---|---|---|
+| vCPU state save (35 core + 32 SIMD + 37 sysreg + 9 ICC via HVF getters) | 0.67 µs | 0.96 µs |
+| vCPU state load (same registers via setters) | 0.54 µs | 0.75 µs |
+| `hv_gic_state_create` + `get_data`, 1/4/16 vCPUs (blob **126 314 B**, size independent of vCPU count) | 1.84 / 1.97 / 1.87 ms | 1.9 / 2.1 / 3.4 ms |
+| `hv_gic_set_state` into a fresh VM, 1/4/16 vCPUs | **1.22 / 1.30 / 1.25 ms** | 1.26 / 1.36 / 1.62 ms |
+| `hv_gic_set_distributor_reg`, one call | ~37 ns (mean) | — |
+| full SPI distributor rewrite (IGROUPR, ICENABLER, ICPENDR, IPRIORITYR, ICFGR, IROUTER for INTID 32–1019; 1387 writes) | **19.6 µs** | 27.4 µs |
+| `hv_gic_reset` | 10.5 µs | 11.6 µs |
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**
    - Spawn alone is 3.7 ms p50 (M11), and HVF allows one VM per process.
+   - The irreducible floor is ~0.8 ms spawn + ~1.5 ms Hypervisor.framework load +
+     ~0.55 ms first `hv_vm_create` (M11b, M11).
    - Start must therefore be served by a **pool of pre-spawned VMM processes**. Each
      has already paid dyld, first-`hv_vm_create` (~0.55 ms, M11), GIC and vCPU-thread
      creation.
    - A start request then only maps snapshot memory and restores state.
-2. **Use the in-kernel GIC (`hv_gic`).**
+2. **Use the in-kernel GIC (`hv_gic`), but never its state blob on the restore path.**
    - Idle vCPUs stay in the kernel with zero userspace exits (M7).
    - SPI injection reaches a running guest in ~3.8 µs (M8).
-   - Its state APIs (`hv_gic_state_*`, `hv_gic_set_state`) are what snapshots need.
+   - `hv_gic_set_state` costs ~1.2 ms, a quarter of the 5 ms budget. Rewriting the
+     distributor at register level costs ~20 µs (M14).
+   - Snapshots therefore record GIC distributor, redistributor and ICC registers
+     individually, and restore them the same way.
+   - The opaque blob remains useful only as a cross-check in tests.
 3. **vCPU threads run under Mach time-constraint policy plus QoS user-interactive.**
    - Timer lateness drops from ~26% of the interval to 5–19 µs (M10).
    - Kick latency drops to 0.9 µs busy / 4.5 µs idle (M9).
@@ -257,8 +290,11 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
 
 - Behaviour of real-time vCPU threads under sustained CPU-bound guests:
   - demotion, throughput, and host responsiveness with N ≫ cores VMs.
-- Whether `hv_gic_state` save/restore plus vCPU register restore fits in <100 µs
-  inside a warm process.
+- ~~Whether GIC plus vCPU state restore fits in <100 µs~~.
+  - Answered by M14: the blob path does not fit (1.2 ms).
+  - The register-level path does: ~20 µs for the distributor plus ~0.5 µs per vCPU.
+  - Still to measure: per-vCPU redistributor and ICC restore, and the exact register
+    set a Linux guest dirties.
 - End-to-end restore of a real Linux guest snapshot: working-set size after resume,
   and time to first userspace instruction.
 - Linux/KVM counterparts of M4–M11 (to be measured on a KVM host and in an EL2 guest).
