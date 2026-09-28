@@ -15,9 +15,11 @@ Give an agent a shell and it will install packages, start servers, run builds an
 later, break something. Shards gives your agents a microVM to do that in. It has its own Linux
 kernel, so nothing inside it reaches your computer.
 
-One microVM runs many agents. Shards' own runtime sits where containerd would. It speaks
-Docker and Compose but runs no containers, so a microVM full of agents snapshots and restores
-in microseconds. You build microVMs like Docker images. Your agents can:
+One microVM runs many agents. They share its OS but are isolated like containers, each with
+its own networks, files, devices and permissions. Shards' own runtime sits where containerd
+would and speaks Docker and Compose, but runs no containers, so a microVM full of agents
+snapshots and restores in microseconds. You build microVMs like Docker images. Your agents
+can:
 
 - Boot in under 200 µs
 - Share a microVM, or each get their own
