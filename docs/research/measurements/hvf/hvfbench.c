@@ -141,6 +141,10 @@ GUEST(hvc, "1: hvc #0\n b 1b")
 GUEST(mmio_w, "1: str w2, [x1]\n b 1b")
 GUEST(mmio_r, "1: ldr w2, [x1]\n b 1b")
 GUEST(wfi, "1: wfi\n hvc #1\n b 1b")
+GUEST(idregs,
+      "mrs x0, cntfrq_el0\n mrs x1, midr_el1\n mrs x2, mpidr_el1\n mrs x3, id_aa64mmfr0_el1\n"
+      "mrs x4, id_aa64pfr0_el1\n mrs x5, id_aa64pfr1_el1\n mrs x6, ctr_el0\n mrs x7, id_aa64isar0_el1\n"
+      "mrs x8, id_aa64dfr0_el1\n mrs x9, cntvct_el0\n hvc #0\n1: b 1b")
 // x0 = base, x1 = count, x2 = stride, x3 = 1 write / 0 read; hvc #0 when done.
 GUEST(touch,
       "cbz x3, 3f\n"
@@ -684,6 +688,87 @@ static void t_pfault(void) {
     close(fd);
 }
 
+// What the guest sees by default (resolves UNVERIFIED items in the ground-truth doc), and
+// which redistributor HVF marks GICR_TYPER.Last (decides the DT redistributor extent).
+static void *idregs_thread(void *arg) {
+    vm_t *vm = arg;
+    vcpu_create(vm);
+    load_code(vm, g_idregs, g_idregs_end);
+    vcpu_reset(vm, 0, 0, 0, 0, 0);
+    uint64_t hv0 = ticks();
+    run_to_hvc(vm, "idregs");
+    static const char *const names[] = {"CNTFRQ_EL0", "MIDR_EL1", "MPIDR_EL1", "ID_AA64MMFR0_EL1", "ID_AA64PFR0_EL1",
+                                        "ID_AA64PFR1_EL1", "CTR_EL0", "ID_AA64ISAR0_EL1", "ID_AA64DFR0_EL1"};
+    for (int r = 0; r < 9; r++) {
+        uint64_t v;
+        CHECK(hv_vcpu_get_reg(vm->vcpu, (hv_reg_t)(HV_REG_X0 + r), &v));
+        printf("  guest %-18s = 0x%016llx\n", names[r], v);
+    }
+    uint64_t cnt, off;
+    CHECK(hv_vcpu_get_reg(vm->vcpu, HV_REG_X9, &cnt));
+    CHECK(hv_vcpu_get_vtimer_offset(vm->vcpu, &off));
+    printf("  guest CNTVCT_EL0 = host mach_absolute_time - 0x%llx (vtimer offset reads 0x%llx)\n", hv0 - cnt, off);
+    uint64_t exec;
+    CHECK(hv_vcpu_get_exec_time(vm->vcpu, &exec));
+    printf("  hv_vcpu_get_exec_time after one short run = %llu\n", exec);
+    CHECK(hv_vcpu_destroy(vm->vcpu));
+    return NULL;
+}
+
+// Every vCPU is created before any reads its redistributor, then they report in index order.
+typedef struct { _Atomic int created, go, turn, done; } gicr_sync;
+typedef struct { gicr_sync *sync; int idx; } gicr_arg;
+
+static void *gicr_thread(void *p) {
+    gicr_arg *a = p;
+    gicr_sync *s = a->sync;
+    hv_vcpu_t v;
+    hv_vcpu_exit_t *e;
+    CHECK(hv_vcpu_create(&v, &e, NULL));
+    CHECK(hv_vcpu_set_sys_reg(v, HV_SYS_REG_MPIDR_EL1, (uint64_t)a->idx));  // Aff0 = index
+    atomic_fetch_add(&s->created, 1);
+    while (!atomic_load(&s->go) || atomic_load(&s->turn) != a->idx) {}
+    hv_ipa_t base;
+    uint64_t typer;
+    CHECK(hv_gic_get_redistributor_base(v, &base));
+    CHECK(hv_gic_get_redistributor_reg(v, HV_GIC_REDISTRIBUTOR_REG_GICR_TYPER, &typer));
+    printf("    vcpu %d: GICR base=0x%llx TYPER=0x%016llx (aff=0x%llx proc=%llu Last=%llu)\n", a->idx, base, typer,
+           typer >> 32, (typer >> 8) & 0xffff, (typer >> 4) & 1);
+    atomic_fetch_add(&s->turn, 1);
+    while (!atomic_load(&s->done)) {}
+    CHECK(hv_vcpu_destroy(v));
+    return NULL;
+}
+
+static void t_guestinfo(void) {
+    printf("guestinfo (default guest-visible registers; GICR_TYPER.Last placement)\n");
+    vm_t vm;
+    vm_create(&vm, false, true);
+    pthread_t th;
+    pthread_create(&th, NULL, idregs_thread, &vm);
+    pthread_join(th, NULL);
+    vm_destroy(&vm);
+    const int counts[] = {1, 2, 4};
+    for (size_t c = 0; c < 3; c++) {
+        int n = counts[c];
+        printf("  %d vCPU(s):\n", n);
+        vm_create(&vm, false, true);
+        gicr_sync sync = {0};
+        pthread_t ths[4];
+        gicr_arg args[4];
+        for (int i = 0; i < n; i++) {
+            args[i] = (gicr_arg){&sync, i};
+            pthread_create(&ths[i], NULL, gicr_thread, &args[i]);
+        }
+        while (atomic_load(&sync.created) < n) {}
+        atomic_store(&sync.go, 1);
+        while (atomic_load(&sync.turn) < n) {}
+        atomic_store(&sync.done, 1);
+        for (int i = 0; i < n; i++) pthread_join(ths[i], NULL);
+        vm_destroy(&vm);
+    }
+}
+
 // ---- WFI, interrupts, kicks, vtimer ------------------------------------------------
 
 typedef struct {
@@ -997,7 +1082,7 @@ int main(int argc, char **argv) {
     apply_qos();
 
     static const struct { const char *name; void (*fn)(void); } tests[] = {
-        {"info", t_info}, {"lifecycle", t_lifecycle}, {"map", t_map}, {"exits", t_exits},
+        {"info", t_info}, {"guestinfo", t_guestinfo}, {"lifecycle", t_lifecycle}, {"map", t_map}, {"exits", t_exits},
         {"faults", t_faults}, {"pfault", t_pfault}, {"wfi", t_wfi}, {"irq", t_irq}, {"kick", t_kick}, {"vtimer", t_vtimer}, {"sleep", t_sleep},
     };
     bool all = argc == first;

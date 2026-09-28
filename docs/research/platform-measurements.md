@@ -178,6 +178,31 @@ with leeway of about 25% capped near 2.5 ms, which is macOS timer coalescing.
 | in child: `hv_vcpu_create` + sysreg setup | 51 µs | 97 µs |
 | in child: first `hv_vcpu_run` → `hvc` | 9.7 µs | 24 µs |
 
+### M12. Default guest-visible registers (`guestinfo`, EL1 guest, `hv_vcpu_config` = NULL)
+
+| Register | Value | Decoded |
+|---|---|---|
+| `CNTFRQ_EL0` | 0x016e3600 | 24 MHz; the guest `CNTVCT` equals host `mach_absolute_time` (offset 0) |
+| `MIDR_EL1` | 0x610f0000 | implementer 0x61 (Apple), part 0 |
+| `MPIDR_EL1` | 0x80000000 | bit 31 is forced on even though 0 was written |
+| `ID_AA64MMFR0_EL1` | 0x000010000f100022 | **PARange = 40 bits** (while the VM's default IPA is 36 bits); 16-bit ASIDs; 4K and 16K granules supported, 64K not |
+| `ID_AA64PFR0_EL1` | 0x1101000011110011 | EL0/EL1 AArch64 only, **no EL2 exposed**, FP/AdvSIMD, GIC sysregs, no SVE, CSV2/CSV3 = 1 |
+| `ID_AA64PFR1_EL1` | 0x0000000202000001 | BTI, **SME = 2 (SME2) exposed**, no MTE |
+| `ID_AA64DFR0_EL1` | 0x10305006 | no PMU (PMUVer = 0) |
+| `CTR_EL0` | 0x99444c004 | 64-byte I/D minimum lines |
+
+`hv_vcpu_get_exec_time` after a ~3 µs run returned 84, which is consistent with the
+header's mach-tick units (84 × 41.67 ns), not nanoseconds.
+
+### M13. Redistributor assignment (`guestinfo`, n vCPUs created concurrently)
+
+Redistributor frames (128 KiB each, contiguous from the configured base) and
+`GICR_TYPER.Processor_Number` follow **`hv_vcpu_create` call order**, not
+`MPIDR_EL1`. `GICR_TYPER.Last` is set on the frame of the **last-created** vCPU.
+Example with 4 vCPUs created concurrently: index 2 (Aff0 = 2) was created last, got
+frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
+`GICR_TYPER.Affinity` does track MPIDR.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**
@@ -218,6 +243,15 @@ with leeway of about 25% capped near 2.5 ms, which is macOS timer coalescing.
 7. **Dirty tracking is feasible but not free** (3.7 µs per dirtied 16 KiB page, M5).
    It's fine for diff snapshots taken from a quiesced template, not for continuous
    tracking.
+8. **Create vCPUs strictly sequentially in index order**, at boot and on restore (M13).
+   - This makes redistributor frames, processor numbers and MPIDRs coincide.
+   - The DT redistributor region is exactly `n × 128 KiB`, because Linux walks frames
+     until `Last`.
+9. **Pin the guest's view of the CPU explicitly** rather than inheriting defaults (M12):
+   - Clamp `ID_AA64MMFR0_EL1.PARange` to the configured IPA size, or configure the IPA
+     to match the advertised 40 bits.
+   - Decide SME exposure deliberately. SME2 is visible by default, and exposing it
+     means SME/ZA state must be part of every snapshot.
 
 ## Open questions (to measure)
 
