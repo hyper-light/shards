@@ -84,7 +84,7 @@ impl Vm {
         if VM_EXISTS.swap(true, Ordering::AcqRel) {
             return Err(Error {
                 op: "hv_vm_create (second VM in process)",
-                code: 0xfae9_4008u32 as i32,
+                code: ffi::HV_EXISTS,
             });
         }
         // SAFETY: config objects are created, configured and released on this thread.
@@ -94,10 +94,15 @@ impl Vm {
                 Granule::K4 => ffi::HV_IPA_GRANULE_4KB,
                 Granule::K16 => ffi::HV_IPA_GRANULE_16KB,
             };
-            let mut res = check(
-                "hv_vm_config_set_ipa_granule",
-                ffi::hv_vm_config_set_ipa_granule(cfg, granule),
-            );
+            let mut res = match (ffi::set_ipa_granule_fn(), config.granule) {
+                (Some(set), _) => check("hv_vm_config_set_ipa_granule", set(cfg, granule)),
+                // Before macOS 26 the granule is fixed at 16 KiB.
+                (None, Granule::K16) => Ok(()),
+                (None, Granule::K4) => Err(Error {
+                    op: "hv_vm_config_set_ipa_granule (4 KiB granule needs macOS 26)",
+                    code: ffi::HV_UNSUPPORTED,
+                }),
+            };
             if let (Ok(()), Some(bits)) = (res, config.ipa_bits) {
                 res = check(
                     "hv_vm_config_set_ipa_size",

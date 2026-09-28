@@ -1,3 +1,8 @@
+# macOS 15 is the floor: the in-kernel GIC (hv_gic_*) arrived in 15.0. Newer APIs are
+# looked up at run time (hv::hvf::ffi).
+[env]
+MACOSX_DEPLOYMENT_TARGET = "15.0"
+
 # Hypervisor.framework refuses unentitled processes, so every binary cargo runs on
 # macOS (including test harnesses) is ad-hoc signed with the entitlement first.
 [target.aarch64-apple-darwin]

@@ -19,6 +19,8 @@ pub type hv_sys_reg_t = u16;
 pub type hv_ipa_granule_t = u32;
 
 pub const HV_SUCCESS: hv_return_t = 0;
+pub const HV_EXISTS: hv_return_t = 0xfae9_4008_u32 as hv_return_t;
+pub const HV_UNSUPPORTED: hv_return_t = 0xfae9_400f_u32 as hv_return_t;
 
 pub const HV_MEMORY_READ: hv_memory_flags_t = 1 << 0;
 pub const HV_MEMORY_WRITE: hv_memory_flags_t = 1 << 1;
@@ -63,7 +65,6 @@ unsafe extern "C" {
     pub fn hv_vm_config_create() -> hv_vm_config_t;
     pub fn hv_vm_config_get_max_ipa_size(bits: *mut u32) -> hv_return_t;
     pub fn hv_vm_config_set_ipa_size(config: hv_vm_config_t, bits: u32) -> hv_return_t;
-    pub fn hv_vm_config_set_ipa_granule(config: hv_vm_config_t, granule: hv_ipa_granule_t) -> hv_return_t;
     pub fn hv_vm_create(config: hv_vm_config_t) -> hv_return_t;
     pub fn hv_vm_destroy() -> hv_return_t;
     pub fn hv_vm_map(addr: *mut c_void, ipa: hv_ipa_t, size: usize, flags: hv_memory_flags_t) -> hv_return_t;
@@ -110,4 +111,20 @@ unsafe extern "C" {
 unsafe extern "C" {
     /// libSystem; releases `OS_OBJECT_DECL` objects (configs) created above.
     pub fn os_release(object: *mut c_void);
+}
+
+/// `hv_vm_config_set_ipa_granule`, from macOS 26. Linking it directly would stop the binary
+/// from loading on macOS 15, our floor (the in-kernel GIC is 15.0), so it is looked up at
+/// run time.
+pub type SetIpaGranule = unsafe extern "C" fn(hv_vm_config_t, hv_ipa_granule_t) -> hv_return_t;
+
+pub fn set_ipa_granule_fn() -> Option<SetIpaGranule> {
+    // SAFETY: dlsym with RTLD_DEFAULT and a NUL-terminated name; Hypervisor.framework is
+    // linked, so it is loaded before main runs.
+    let f = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"hv_vm_config_set_ipa_granule".as_ptr()) };
+    if f.is_null() {
+        return None;
+    }
+    // SAFETY: the symbol is the function declared in hv_vm_config.h with this signature.
+    Some(unsafe { std::mem::transmute::<*mut c_void, SetIpaGranule>(f) })
 }
