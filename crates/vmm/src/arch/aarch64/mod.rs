@@ -31,6 +31,14 @@ pub mod layout {
     pub const SPI_VIRTIO_MMIO: u32 = 16;
 }
 
+/// Where a vCPU enters the guest: the kernel entry with X0 = DTB address for the boot
+/// vCPU (Linux booting.rst), or PSCI CPU_ON's entry point with X0 = its context ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Entry {
+    pub pc: u64,
+    pub x0: u64,
+}
+
 /// The MPIDR affinity of vCPU `index`: 16 CPUs per Aff0 cluster (as KVM does), so SGI
 /// target lists never need the GICv3.1 range selector.
 pub const fn mpidr(index: u32) -> u64 {

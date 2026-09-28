@@ -97,6 +97,25 @@ impl MmioBus {
     }
 }
 
+/// The guest's MMIO accesses. Accesses no device claims read as zero and are logged.
+impl crate::hv::Io for MmioBus {
+    fn mmio_read(&self, addr: u64, data: &mut [u8]) {
+        if !self.read(addr, data) {
+            crate::debug!("unclaimed MMIO read {addr:#x} ({} bytes)", data.len());
+        }
+    }
+
+    fn mmio_write(&self, addr: u64, data: &[u8]) {
+        if !self.write(addr, data) {
+            crate::debug!(
+                "unclaimed MMIO write {addr:#x} <- {:#x} ({} bytes)",
+                get_le(data),
+                data.len()
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {

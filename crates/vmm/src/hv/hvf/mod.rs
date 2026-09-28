@@ -1,518 +1,354 @@
-//! Safe wrappers over Hypervisor.framework (arm64).
+//! The Hypervisor.framework backend (macOS on arm64), presenting KVM's semantics
+//! (docs/research/hvf-arm64-kvm-ground-truth.md §5):
 //!
-//! HVF allows one VM per process and binds each vCPU to the thread that created it
-//! (docs/research/hvf-arm64-kvm-ground-truth.md §1.1). [`Vcpu`] is therefore `!Send`;
-//! the only cross-thread vCPU operation, forcing an exit, goes through [`VcpuKicker`].
+//! - MMIO completes inside [`Vcpu::run`]. The backend decodes the syndrome, performs the
+//!   access through [`Io`], writes Rt and advances PC, as `kvm_handle_mmio_return` does (row 6).
+//! - PSCI runs here, CPU_ON included. A powered-off vCPU parks inside `run` (row 4).
+//! - Trapped system registers read as zero and ignore writes.
 
 mod ffi;
+mod power;
+mod sys;
 
-use std::ffi::c_void;
 use std::fmt;
-use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
-pub use ffi::sys_reg;
+pub use sys::{Gic, GicLayout, GicParams, MsiFrame};
 
-/// A failed Hypervisor.framework call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Error {
-    pub op: &'static str,
-    pub code: i32,
+use super::{Exit, Io};
+use crate::arch::aarch64::{self, Entry, esr, psci, sysreg};
+use crate::debug;
+use crate::devices::get_le;
+use power::Wake;
+
+/// A failed Hypervisor.framework call, or guest behavior the VMM does not emulate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    Call(sys::Error),
+    Guest(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self.code as u32 {
-            0xfae9_4001 => "HV_ERROR",
-            0xfae9_4002 => "HV_BUSY",
-            0xfae9_4003 => "HV_BAD_ARGUMENT",
-            0xfae9_4004 => "HV_ILLEGAL_GUEST_STATE",
-            0xfae9_4005 => "HV_NO_RESOURCES",
-            0xfae9_4006 => "HV_NO_DEVICE",
-            0xfae9_4007 => "HV_DENIED (is the binary signed with com.apple.security.hypervisor?)",
-            0xfae9_4008 => "HV_EXISTS",
-            0xfae9_400f => "HV_UNSUPPORTED",
-            _ => "unknown",
-        };
-        write!(f, "{} failed: {name} ({:#x})", self.op, self.code as u32)
+        match self {
+            Error::Call(e) => e.fmt(f),
+            Error::Guest(msg) => f.write_str(msg),
+        }
     }
 }
 
 impl std::error::Error for Error {}
 
-pub type Result<T> = std::result::Result<T, Error>;
-
-fn check(op: &'static str, code: ffi::hv_return_t) -> Result<()> {
-    if code == ffi::HV_SUCCESS {
-        Ok(())
-    } else {
-        Err(Error { op, code })
+impl From<sys::Error> for Error {
+    fn from(e: sys::Error) -> Error {
+        Error::Call(e)
     }
 }
 
-/// Stage-2 permissions for a guest-physical mapping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Perms(u64);
+pub type Result<T> = std::result::Result<T, Error>;
 
-impl Perms {
-    pub const R: Perms = Perms(ffi::HV_MEMORY_READ);
-    pub const RX: Perms = Perms(ffi::HV_MEMORY_READ | ffi::HV_MEMORY_EXEC);
-    pub const RWX: Perms = Perms(ffi::HV_MEMORY_READ | ffi::HV_MEMORY_WRITE | ffi::HV_MEMORY_EXEC);
+/// Ok when this host can run VMs: `kern.hv_support` is 1, Apple's documented check.
+pub fn check_host() -> std::result::Result<(), String> {
+    if sys::supported() {
+        Ok(())
+    } else {
+        Err(
+            "Hypervisor.framework is unavailable on this host (sysctl kern.hv_support is not 1), \
+             as inside a VM without nested virtualization"
+                .into(),
+        )
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Granule {
-    K4,
-    K16,
+pub fn max_vcpus() -> Result<u32> {
+    Ok(sys::max_vcpus()?)
 }
 
-#[derive(Debug, Clone, Copy)]
+pub fn max_ipa_bits() -> Result<u32> {
+    Ok(sys::max_ipa_bits()?)
+}
+
+/// Host-imposed GIC geometry.
+pub fn gic_params() -> Result<GicParams> {
+    Ok(sys::gic_params()?)
+}
+
+#[derive(Debug, Clone)]
 pub struct VmConfig {
-    /// Guest physical address width; `None` keeps the framework default (36 bits).
-    pub ipa_bits: Option<u32>,
-    pub granule: Granule,
+    /// Guest physical address width.
+    pub ipa_bits: u32,
+    /// MPIDR of each vCPU, by index.
+    pub mpidrs: Vec<u64>,
 }
 
-static VM_EXISTS: AtomicBool = AtomicBool::new(false);
-
-/// The process's virtual machine. Destroying it requires every [`Vcpu`] to be gone.
+/// The process's VM. It must outlive every [`Vcpu`], and guest memory must outlive it.
 #[derive(Debug)]
-pub struct Vm(());
+pub struct Vm {
+    sys: sys::Vm,
+    power: Arc<power::Table>,
+    mpidrs: Vec<u64>,
+    ipa_bits: u32,
+    /// Base and per-vCPU size of the redistributor frames, once the GIC exists.
+    redist: OnceLock<(u64, u64)>,
+}
 
 impl Vm {
     pub fn new(config: VmConfig) -> Result<Vm> {
-        if VM_EXISTS.swap(true, Ordering::AcqRel) {
-            return Err(Error {
-                op: "hv_vm_create (second VM in process)",
-                code: ffi::HV_EXISTS,
-            });
-        }
-        // SAFETY: config objects are created, configured and released on this thread.
-        let res = unsafe {
-            let cfg = ffi::hv_vm_config_create();
-            let granule = match config.granule {
-                Granule::K4 => ffi::HV_IPA_GRANULE_4KB,
-                Granule::K16 => ffi::HV_IPA_GRANULE_16KB,
-            };
-            let mut res = match (ffi::set_ipa_granule_fn(), config.granule) {
-                (Some(set), _) => check("hv_vm_config_set_ipa_granule", set(cfg, granule)),
-                // Before macOS 26 the granule is fixed at 16 KiB.
-                (None, Granule::K16) => Ok(()),
-                (None, Granule::K4) => Err(Error {
-                    op: "hv_vm_config_set_ipa_granule (4 KiB granule needs macOS 26)",
-                    code: ffi::HV_UNSUPPORTED,
-                }),
-            };
-            if let (Ok(()), Some(bits)) = (res, config.ipa_bits) {
-                res = check(
-                    "hv_vm_config_set_ipa_size",
-                    ffi::hv_vm_config_set_ipa_size(cfg, bits),
-                );
-            }
-            if res.is_ok() {
-                res = check("hv_vm_create", ffi::hv_vm_create(cfg));
-            }
-            ffi::os_release(cfg);
-            res
-        };
-        match res {
-            Ok(()) => Ok(Vm(())),
-            Err(e) => {
-                VM_EXISTS.store(false, Ordering::Release);
-                Err(e)
-            }
-        }
+        let sys = sys::Vm::new(sys::VmConfig {
+            ipa_bits: (config.ipa_bits > 36).then_some(config.ipa_bits),
+        })?;
+        Ok(Vm {
+            sys,
+            power: Arc::new(power::Table::new(&config.mpidrs)),
+            mpidrs: config.mpidrs,
+            ipa_bits: config.ipa_bits,
+            redist: OnceLock::new(),
+        })
     }
 
-    /// Maps `size` bytes of host memory at `host` to guest-physical `gpa`.
+    /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`.
     ///
     /// # Safety
-    /// `host..host+size` must be a single host VM region (e.g. from `mmap`) that stays
-    /// mapped until it is unmapped here or the VM is destroyed.
-    pub unsafe fn map(&self, host: *mut u8, gpa: u64, size: usize, perms: Perms) -> Result<()> {
+    /// `host..host+len` must be one host allocation that stays mapped until the VM is
+    /// destroyed.
+    pub unsafe fn map_ram(&self, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
         // SAFETY: forwarded caller contract.
-        check("hv_vm_map", unsafe {
-            ffi::hv_vm_map(host as *mut c_void, gpa, size, perms.0)
-        })
+        unsafe { self.sys.map(host, gpa, len, sys::Perms::RWX) }?;
+        self.power.add_ram(gpa, gpa.saturating_add(len as u64));
+        Ok(())
     }
 
-    pub fn unmap(&self, gpa: u64, size: usize) -> Result<()> {
-        // SAFETY: unmapping only affects the guest's view of memory.
-        check("hv_vm_unmap", unsafe { ffi::hv_vm_unmap(gpa, size) })
-    }
-
-    pub fn protect(&self, gpa: u64, size: usize, perms: Perms) -> Result<()> {
-        // SAFETY: changes stage-2 permissions of an existing mapping only.
-        check("hv_vm_protect", unsafe { ffi::hv_vm_protect(gpa, size, perms.0) })
-    }
-
-    /// Creates the in-kernel GICv3. Must happen before any vCPU is created.
+    /// Creates the in-kernel GICv3. HVF requires it before any vCPU exists.
     pub fn create_gic(&self, layout: &GicLayout) -> Result<Gic> {
-        // SAFETY: the config object is created, used and released on this thread.
-        unsafe {
-            let cfg = ffi::hv_gic_config_create();
-            let mut res = check(
-                "hv_gic_config_set_distributor_base",
-                ffi::hv_gic_config_set_distributor_base(cfg, layout.dist_base),
-            );
-            if res.is_ok() {
-                res = check(
-                    "hv_gic_config_set_redistributor_base",
-                    ffi::hv_gic_config_set_redistributor_base(cfg, layout.redist_base),
+        let redist_size = sys::gic_params()?.redist_size;
+        let gic = self.sys.create_gic(layout)?;
+        let _ = self.redist.set((layout.redist_base, redist_size));
+        Ok(gic)
+    }
+
+    /// Creates vCPU `index` on the calling thread, which owns it from then on. vCPUs must
+    /// be created in index order: redistributor frames follow creation order (PM M13).
+    pub fn create_vcpu(&self, index: usize) -> Result<Vcpu> {
+        let guest = |msg: String| Error::Guest(msg);
+        let &mpidr = self
+            .mpidrs
+            .get(index)
+            .ok_or_else(|| guest(format!("no vCPU {index} in this VM")))?;
+        let &(redist_base, redist_size) = self
+            .redist
+            .get()
+            .ok_or_else(|| guest("vCPUs need the GIC first".into()))?;
+        let mut vcpu = sys::Vcpu::new()?;
+        vcpu.set_sys_reg(sysreg::MPIDR_EL1, mpidr)?;
+
+        // The redistributor must be the index-th frame, or GIC routing and the DT disagree.
+        let expected = (index as u64)
+            .checked_mul(redist_size)
+            .and_then(|off| off.checked_add(redist_base))
+            .ok_or_else(|| guest("redistributor offset overflows".into()))?;
+        let actual = vcpu.redistributor_base()?;
+        if actual != expected {
+            return Err(guest(format!(
+                "vCPU {index}: redistributor at {actual:#x}, expected {expected:#x} (creation order)"
+            )));
+        }
+
+        // Advertise the physical address width stage 2 actually covers (D10, PM M12).
+        let parange = aarch64::parange_for_bits(self.ipa_bits)
+            .ok_or_else(|| guest(format!("no PARange encoding for {} IPA bits", self.ipa_bits)))?;
+        let mmfr0 = vcpu.sys_reg(sysreg::ID_AA64MMFR0_EL1)?;
+        let want = (mmfr0 & !0xf) | parange;
+        if want != mmfr0 {
+            vcpu.set_sys_reg(sysreg::ID_AA64MMFR0_EL1, want)?;
+            let got = vcpu.sys_reg(sysreg::ID_AA64MMFR0_EL1)?;
+            if got != want && index == 0 {
+                crate::warn!(
+                    "ID_AA64MMFR0_EL1.PARange stays {:#x}; the guest may probe beyond {} IPA bits",
+                    got & 0xf,
+                    self.ipa_bits
                 );
             }
-            if let (Ok(()), Some(msi)) = (res, layout.msi) {
-                res = check(
-                    "hv_gic_config_set_msi_region_base",
-                    ffi::hv_gic_config_set_msi_region_base(cfg, msi.base),
-                );
-                if res.is_ok() {
-                    res = check(
-                        "hv_gic_config_set_msi_interrupt_range",
-                        ffi::hv_gic_config_set_msi_interrupt_range(cfg, msi.first_intid, msi.count),
-                    );
-                }
-            }
-            if res.is_ok() {
-                res = check("hv_gic_create", ffi::hv_gic_create(cfg));
-            }
-            ffi::os_release(cfg);
-            res.map(|()| Gic(()))
         }
-    }
-}
-
-impl Drop for Vm {
-    fn drop(&mut self) {
-        // SAFETY: all vCPUs borrow nothing from `Vm`, but HVF requires they be destroyed
-        // first; the VMM joins every vCPU thread before dropping the VM.
-        let code = unsafe { ffi::hv_vm_destroy() };
-        if code != ffi::HV_SUCCESS {
-            crate::warn!(
-                "{}",
-                Error {
-                    op: "hv_vm_destroy",
-                    code
-                }
-            );
-        }
-        VM_EXISTS.store(false, Ordering::Release);
-    }
-}
-
-/// Whether this Mac can run Hypervisor.framework VMs: `sysctl kern.hv_support`, the check
-/// Apple documents. It reads 0 inside VMs that lack nested virtualization.
-pub fn supported() -> bool {
-    let mut value: libc::c_int = 0;
-    let mut len = size_of::<libc::c_int>();
-    // SAFETY: sysctlbyname writes at most `len` bytes into `value`.
-    let rc = unsafe {
-        libc::sysctlbyname(
-            c"kern.hv_support".as_ptr(),
-            (&raw mut value).cast(),
-            &mut len,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    rc == 0 && value == 1
-}
-
-/// Maximum number of vCPUs a VM can have on this host.
-pub fn max_vcpus() -> Result<u32> {
-    let mut n = 0;
-    // SAFETY: writes one u32.
-    check("hv_vm_get_max_vcpu_count", unsafe {
-        ffi::hv_vm_get_max_vcpu_count(&mut n)
-    })?;
-    Ok(n)
-}
-
-/// Largest supported guest physical address width.
-pub fn max_ipa_bits() -> Result<u32> {
-    let mut n = 0;
-    // SAFETY: writes one u32.
-    check("hv_vm_config_get_max_ipa_size", unsafe {
-        ffi::hv_vm_config_get_max_ipa_size(&mut n)
-    })?;
-    Ok(n)
-}
-
-/// Host-imposed GIC geometry (runtime queries; they are not published constants).
-#[derive(Debug, Clone, Copy)]
-pub struct GicParams {
-    pub dist_size: u64,
-    pub dist_align: u64,
-    /// One redistributor (RD_base + SGI_base frames).
-    pub redist_size: u64,
-    pub redist_align: u64,
-    pub msi_size: u64,
-    pub msi_align: u64,
-    pub spi_base: u32,
-    pub spi_count: u32,
-}
-
-pub fn gic_params() -> Result<GicParams> {
-    let (mut ds, mut da, mut rs, mut ra, mut ms, mut ma) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
-    let (mut sb, mut sc) = (0u32, 0u32);
-    // SAFETY: each call writes one scalar.
-    unsafe {
-        check(
-            "hv_gic_get_distributor_size",
-            ffi::hv_gic_get_distributor_size(&mut ds),
-        )?;
-        check(
-            "hv_gic_get_distributor_base_alignment",
-            ffi::hv_gic_get_distributor_base_alignment(&mut da),
-        )?;
-        check(
-            "hv_gic_get_redistributor_size",
-            ffi::hv_gic_get_redistributor_size(&mut rs),
-        )?;
-        check(
-            "hv_gic_get_redistributor_base_alignment",
-            ffi::hv_gic_get_redistributor_base_alignment(&mut ra),
-        )?;
-        check(
-            "hv_gic_get_msi_region_size",
-            ffi::hv_gic_get_msi_region_size(&mut ms),
-        )?;
-        check(
-            "hv_gic_get_msi_region_base_alignment",
-            ffi::hv_gic_get_msi_region_base_alignment(&mut ma),
-        )?;
-        check(
-            "hv_gic_get_spi_interrupt_range",
-            ffi::hv_gic_get_spi_interrupt_range(&mut sb, &mut sc),
-        )?;
-    }
-    Ok(GicParams {
-        dist_size: ds as u64,
-        dist_align: da as u64,
-        redist_size: rs as u64,
-        redist_align: ra as u64,
-        msi_size: ms as u64,
-        msi_align: ma as u64,
-        spi_base: sb,
-        spi_count: sc,
-    })
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct MsiFrame {
-    pub base: u64,
-    pub first_intid: u32,
-    pub count: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct GicLayout {
-    pub dist_base: u64,
-    pub redist_base: u64,
-    pub msi: Option<MsiFrame>,
-}
-
-/// Handle to the in-kernel GIC. Interrupt injection is legal from any thread
-/// (no owning-thread rule on `hv_gic_set_spi`/`hv_gic_send_msi`).
-#[derive(Debug, Clone, Copy)]
-pub struct Gic(());
-
-impl Gic {
-    /// Drives an SPI line. For edge-configured INTIDs `true` produces one edge.
-    pub fn set_spi(&self, intid: u32, level: bool) -> Result<()> {
-        // SAFETY: no memory is passed; HVF validates the INTID.
-        check("hv_gic_set_spi", unsafe { ffi::hv_gic_set_spi(intid, level) })
-    }
-
-    /// Delivers an MSI written to `doorbell` (the frame's GICM_SET_SPI_NSR address).
-    pub fn send_msi(&self, doorbell: u64, intid: u32) -> Result<()> {
-        // SAFETY: no memory is passed; HVF validates address and INTID.
-        check("hv_gic_send_msi", unsafe {
-            ffi::hv_gic_send_msi(doorbell, intid)
+        Ok(Vcpu {
+            kicker: Kicker {
+                sys: vcpu.kicker(),
+                power: self.power.clone(),
+                index,
+            },
+            sys: vcpu,
+            power: self.power.clone(),
+            index,
+            on: false,
         })
     }
 }
 
-/// General-purpose and special registers (`hv_reg_t`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Reg(u32);
-
-impl Reg {
-    pub const PC: Reg = Reg(ffi::HV_REG_PC);
-    pub const FPCR: Reg = Reg(ffi::HV_REG_FPCR);
-    pub const FPSR: Reg = Reg(ffi::HV_REG_FPSR);
-    pub const CPSR: Reg = Reg(ffi::HV_REG_CPSR);
-
-    /// `Xn` for n in 0..=30. `None` for 31, which in MMIO and system-register syndromes
-    /// names XZR (reads as zero, writes discarded) and must never alias `hv_reg_t` 31 (PC).
-    pub const fn x(n: u8) -> Option<Reg> {
-        if n <= 30 {
-            Some(Reg(ffi::HV_REG_X0 + n as u32))
-        } else {
-            None
-        }
-    }
-}
-
-/// Why `hv_vcpu_run` returned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Exit {
-    /// Forced by [`VcpuKicker::kick`].
-    Canceled,
-    /// Synchronous exception to EL2; `syndrome` is ESR_EL2, `ipa` the faulting IPA.
-    Exception {
-        syndrome: u64,
-        va: u64,
-        ipa: u64,
-    },
-    /// Only without an in-kernel GIC.
-    VtimerActivated,
-    Unknown(u32),
-}
-
-/// A vCPU bound to the current thread.
+/// A vCPU, owned by the thread that created it.
 #[derive(Debug)]
 pub struct Vcpu {
-    id: ffi::hv_vcpu_t,
-    exit: *const ffi::hv_vcpu_exit_t,
-    _thread_bound: PhantomData<*const ()>,
+    sys: sys::Vcpu,
+    power: Arc<power::Table>,
+    kicker: Kicker,
+    index: usize,
+    /// Powered on. Only a powered-off vCPU consults the shared power table, so exits
+    /// in the running guest take no lock.
+    on: bool,
 }
 
 impl Vcpu {
-    /// Creates a vCPU owned by the calling thread. Redistributor frames are assigned
-    /// in creation order, so callers create vCPUs strictly by index.
-    pub fn new() -> Result<Vcpu> {
-        let mut id = 0;
-        let mut exit = std::ptr::null();
-        // SAFETY: out-parameters are valid; NULL config selects defaults.
-        check("hv_vcpu_create", unsafe {
-            ffi::hv_vcpu_create(&mut id, &mut exit, std::ptr::null_mut())
-        })?;
-        Ok(Vcpu {
-            id,
-            exit,
-            _thread_bound: PhantomData,
-        })
+    pub fn kicker(&self) -> Kicker {
+        self.kicker.clone()
     }
 
-    pub fn kicker(&self) -> VcpuKicker {
-        VcpuKicker(self.id)
+    /// Makes this the boot vCPU: it enters at `entry` on its first `run`. Others stay
+    /// off until PSCI CPU_ON.
+    pub fn boot(&mut self, entry: Entry) {
+        self.power.boot(self.index, entry);
     }
 
-    pub fn run(&mut self) -> Result<Exit> {
-        // SAFETY: owning thread (enforced by !Send); `exit` is valid for the vCPU's life
-        // and only written by hv_vcpu_run on this thread.
-        unsafe {
-            check("hv_vcpu_run", ffi::hv_vcpu_run(self.id))?;
-            let e = &*self.exit;
-            Ok(match e.reason {
-                ffi::HV_EXIT_REASON_CANCELED => Exit::Canceled,
-                ffi::HV_EXIT_REASON_EXCEPTION => Exit::Exception {
-                    syndrome: e.exception.syndrome,
-                    va: e.exception.virtual_address,
-                    ipa: e.exception.physical_address,
-                },
-                ffi::HV_EXIT_REASON_VTIMER_ACTIVATED => Exit::VtimerActivated,
-                other => Exit::Unknown(other),
-            })
-        }
-    }
-
-    pub fn reg(&self, reg: Reg) -> Result<u64> {
-        let mut v = 0;
-        // SAFETY: owning thread; writes one u64.
-        check("hv_vcpu_get_reg", unsafe {
-            ffi::hv_vcpu_get_reg(self.id, reg.0, &mut v)
-        })?;
-        Ok(v)
-    }
-
-    pub fn set_reg(&mut self, reg: Reg, value: u64) -> Result<()> {
-        // SAFETY: owning thread.
-        check("hv_vcpu_set_reg", unsafe {
-            ffi::hv_vcpu_set_reg(self.id, reg.0, value)
-        })
-    }
-
-    /// Reads general-purpose register `n` as an instruction would: 31 is XZR (zero).
-    pub fn x(&self, n: u8) -> Result<u64> {
-        Reg::x(n).map_or(Ok(0), |r| self.reg(r))
-    }
-
-    /// Writes general-purpose register `n` as an instruction would: writes to 31 (XZR)
-    /// are discarded.
-    pub fn set_x(&mut self, n: u8, value: u64) -> Result<()> {
-        Reg::x(n).map_or(Ok(()), |r| self.set_reg(r, value))
-    }
-
-    pub fn sys_reg(&self, reg: u16) -> Result<u64> {
-        let mut v = 0;
-        // SAFETY: owning thread; writes one u64.
-        check("hv_vcpu_get_sys_reg", unsafe {
-            ffi::hv_vcpu_get_sys_reg(self.id, reg, &mut v)
-        })?;
-        Ok(v)
-    }
-
-    pub fn set_sys_reg(&mut self, reg: u16, value: u64) -> Result<()> {
-        // SAFETY: owning thread.
-        check("hv_vcpu_set_sys_reg", unsafe {
-            ffi::hv_vcpu_set_sys_reg(self.id, reg, value)
-        })
-    }
-
-    /// `CNTVCT_EL0 = mach_absolute_time() - offset` for this vCPU.
-    pub fn vtimer_offset(&self) -> Result<u64> {
-        let mut v = 0;
-        // SAFETY: owning thread; writes one u64.
-        check("hv_vcpu_get_vtimer_offset", unsafe {
-            ffi::hv_vcpu_get_vtimer_offset(self.id, &mut v)
-        })?;
-        Ok(v)
-    }
-
-    pub fn set_vtimer_offset(&mut self, offset: u64) -> Result<()> {
-        // SAFETY: owning thread.
-        check("hv_vcpu_set_vtimer_offset", unsafe {
-            ffi::hv_vcpu_set_vtimer_offset(self.id, offset)
-        })
-    }
-
-    /// Guest-physical base of this vCPU's GIC redistributor (MPIDR must be set first).
-    pub fn redistributor_base(&self) -> Result<u64> {
-        let mut v = 0;
-        // SAFETY: writes one u64.
-        check("hv_gic_get_redistributor_base", unsafe {
-            ffi::hv_gic_get_redistributor_base(self.id, &mut v)
-        })?;
-        Ok(v)
-    }
-}
-
-impl Drop for Vcpu {
-    fn drop(&mut self) {
-        // SAFETY: owning thread (the value never left it).
-        let code = unsafe { ffi::hv_vcpu_destroy(self.id) };
-        if code != ffi::HV_SUCCESS {
-            crate::warn!(
-                "{}",
-                Error {
-                    op: "hv_vcpu_destroy",
-                    code
+    /// Runs the guest until it powers off, resets, or a kick arrives. Returns an error for
+    /// guest behavior the VMM cannot emulate.
+    pub fn run(&mut self, io: &dyn Io) -> Result<Exit> {
+        loop {
+            if !self.on {
+                match self.power.park(self.index) {
+                    Wake::Kicked => return Ok(Exit::Canceled),
+                    Wake::Start(entry) => self.enter(entry)?,
+                    Wake::Running => {}
                 }
-            );
+                self.on = true;
+            }
+            let (syndrome, ipa) = match self.sys.run()? {
+                sys::Exit::Canceled => {
+                    self.power.kick_delivered(self.index);
+                    return Ok(Exit::Canceled);
+                }
+                sys::Exit::Exception { syndrome, ipa, .. } => (syndrome, ipa),
+                sys::Exit::VtimerActivated => {
+                    debug!("vCPU {}: VTIMER_ACTIVATED despite the in-kernel GIC", self.index);
+                    continue;
+                }
+                sys::Exit::Unknown(reason) => {
+                    return Err(Error::Guest(format!("unknown exit reason {reason}")));
+                }
+            };
+            match esr::ec(syndrome) {
+                esr::EC_DABT_LOW => self.mmio(io, syndrome, ipa)?,
+                esr::EC_HVC64 | esr::EC_SMC64 => {
+                    // HVC exits with PC already past the instruction; a trapped SMC does not
+                    // (Arm ARM D1.4.1.5).
+                    if esr::ec(syndrome) == esr::EC_SMC64 {
+                        self.advance_pc(syndrome)?;
+                    }
+                    if let Some(exit) = self.firmware_call()? {
+                        return Ok(exit);
+                    }
+                }
+                esr::EC_SYS64 => self.sysreg_trap(syndrome)?,
+                esr::EC_WFX => self.advance_pc(syndrome)?,
+                ec => return Err(Error::Guest(self.describe_fault(ec, syndrome, ipa))),
+            }
         }
+    }
+
+    /// Architectural entry state for boot and CPU_ON: EL1h with DAIF masked, MMU and
+    /// caches off, X0 as given, other GPRs zero (Linux booting.rst; PSCI 1.1 §6.4).
+    fn enter(&mut self, entry: Entry) -> Result<()> {
+        self.sys.set_reg(sys::Reg::CPSR, sysreg::PSTATE_EL1H_DAIF)?;
+        self.sys.set_sys_reg(sysreg::SCTLR_EL1, sysreg::SCTLR_EL1_RESET)?;
+        self.sys.set_x(0, entry.x0)?;
+        for n in 1..=30 {
+            self.sys.set_x(n, 0)?;
+        }
+        Ok(self.sys.set_reg(sys::Reg::PC, entry.pc)?)
+    }
+
+    fn advance_pc(&mut self, syndrome: u64) -> Result<()> {
+        let pc = self.sys.reg(sys::Reg::PC)?;
+        Ok(self
+            .sys
+            .set_reg(sys::Reg::PC, pc.wrapping_add(esr::instr_len(syndrome)))?)
+    }
+
+    /// Completes a trapped device access as KVM's `kvm_handle_mmio_return` does
+    /// (arch/arm64/kvm/mmio.c): Rt = 31 is XZR, loads extend per SSE and SF.
+    fn mmio(&mut self, io: &dyn Io, syndrome: u64, ipa: u64) -> Result<()> {
+        let Some(da) = esr::data_abort(syndrome) else {
+            return Err(Error::Guest(self.describe_fault(esr::EC_DABT_LOW, syndrome, ipa)));
+        };
+        let bad_size = || Error::Guest(format!("MMIO access of {} bytes at {ipa:#x}", da.size));
+        if da.write {
+            let value = self.sys.x(da.reg)?;
+            let bytes = value.to_le_bytes();
+            io.mmio_write(ipa, bytes.get(..da.size).ok_or_else(bad_size)?);
+        } else {
+            let mut raw = [0u8; 8];
+            let data = raw.get_mut(..da.size).ok_or_else(bad_size)?;
+            io.mmio_read(ipa, data);
+            self.sys.set_x(da.reg, da.load_value(get_le(data)))?;
+        }
+        self.advance_pc(syndrome)
+    }
+
+    /// PSCI and SMCCC. Returns the exit when the guest powers off or resets.
+    fn firmware_call(&mut self) -> Result<Option<Exit>> {
+        let x = [self.sys.x(0)?, self.sys.x(1)?, self.sys.x(2)?, self.sys.x(3)?];
+        let ret = match psci::decode(x) {
+            psci::Call::Immediate(v) => v,
+            psci::Call::CpuSuspend => psci::SUCCESS,
+            // CPU_OFF does not return: the vCPU parks until the next CPU_ON.
+            psci::Call::CpuOff => {
+                self.power.off(self.index);
+                self.on = false;
+                return Ok(None);
+            }
+            psci::Call::CpuOn {
+                target,
+                entry,
+                context,
+            } => self.power.cpu_on(target, entry, context),
+            psci::Call::AffinityInfo { target } => self.power.affinity_info(target),
+            psci::Call::SystemOff => return Ok(Some(Exit::Shutdown)),
+            psci::Call::SystemReset => return Ok(Some(Exit::Reset)),
+        };
+        self.sys.set_x(0, ret as u64)?;
+        Ok(None)
+    }
+
+    /// Trapped system-register accesses read as zero and ignore writes. HVF traps only a
+    /// few debug/OS-lock registers here (e.g. OSLAR_EL1, MDCCINT_EL1 on macOS 26).
+    fn sysreg_trap(&mut self, syndrome: u64) -> Result<()> {
+        let a = esr::sysreg_access(syndrome);
+        debug!(
+            "trapped {} of sysreg {:#06x}",
+            if a.read { "read" } else { "write" },
+            a.encoding
+        );
+        if a.read {
+            self.sys.set_x(a.reg, 0)?;
+        }
+        self.advance_pc(syndrome)
+    }
+
+    fn describe_fault(&self, ec: u32, syndrome: u64, ipa: u64) -> String {
+        let pc = self.sys.reg(sys::Reg::PC).unwrap_or(0);
+        format!("unhandled guest exception: EC {ec:#04x}, ESR {syndrome:#x}, IPA {ipa:#x}, PC {pc:#x}")
     }
 }
 
-/// Forces a vCPU out of `hv_vcpu_run` from any thread. If the vCPU is not running, its
-/// next `run` returns [`Exit::Canceled`] immediately.
-#[derive(Debug, Clone, Copy)]
-pub struct VcpuKicker(ffi::hv_vcpu_t);
+/// Interrupts a vCPU's `run` from any thread, whether it is in the guest or parked.
+#[derive(Debug, Clone)]
+pub struct Kicker {
+    sys: sys::VcpuKicker,
+    power: Arc<power::Table>,
+    index: usize,
+}
 
-impl VcpuKicker {
-    pub fn kick(&self) -> Result<()> {
-        // SAFETY: hv_vcpus_exit is the documented cross-thread call; reads one id.
-        check("hv_vcpus_exit", unsafe { ffi::hv_vcpus_exit(&self.0, 1) })
+impl Kicker {
+    pub fn kick(&self) {
+        self.power.kick(self.index);
+        // A cancel is sticky for a vCPU outside the guest (hv_vcpu.h:371-381). It fails
+        // only once the vCPU is destroyed, when there is nothing left to interrupt.
+        let _ = self.sys.kick();
     }
 }

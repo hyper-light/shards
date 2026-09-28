@@ -3,14 +3,18 @@
 
 use std::path::PathBuf;
 
-#[cfg(hv = "hvf")]
-mod hvf;
-#[cfg(hv = "hvf")]
-pub use hvf::{Handle, Running, check_host, max_vcpus, start};
+#[cfg(all(hv, target_arch = "aarch64"))]
+mod aarch64;
+#[cfg(all(hv, target_arch = "aarch64"))]
+use aarch64 as machine;
+#[cfg(hv)]
+mod runtime;
+#[cfg(hv)]
+pub use runtime::{Handle, Running, check_host, max_vcpus, start};
 
-#[cfg(not(hv = "hvf"))]
+#[cfg(not(hv))]
 mod unsupported;
-#[cfg(not(hv = "hvf"))]
+#[cfg(not(hv))]
 pub use unsupported::{Handle, Running, check_host, max_vcpus, start};
 
 #[derive(Debug, Clone)]

@@ -20,13 +20,11 @@ pub type hv_ipa_granule_t = u32;
 
 pub const HV_SUCCESS: hv_return_t = 0;
 pub const HV_EXISTS: hv_return_t = 0xfae9_4008_u32 as hv_return_t;
-pub const HV_UNSUPPORTED: hv_return_t = 0xfae9_400f_u32 as hv_return_t;
 
 pub const HV_MEMORY_READ: hv_memory_flags_t = 1 << 0;
 pub const HV_MEMORY_WRITE: hv_memory_flags_t = 1 << 1;
 pub const HV_MEMORY_EXEC: hv_memory_flags_t = 1 << 2;
 
-pub const HV_IPA_GRANULE_4KB: hv_ipa_granule_t = 0;
 pub const HV_IPA_GRANULE_16KB: hv_ipa_granule_t = 1;
 
 pub const HV_EXIT_REASON_CANCELED: u32 = 0;
@@ -35,14 +33,7 @@ pub const HV_EXIT_REASON_VTIMER_ACTIVATED: u32 = 2;
 
 pub const HV_REG_X0: hv_reg_t = 0;
 pub const HV_REG_PC: hv_reg_t = 31;
-pub const HV_REG_FPCR: hv_reg_t = 32;
-pub const HV_REG_FPSR: hv_reg_t = 33;
 pub const HV_REG_CPSR: hv_reg_t = 34;
-
-/// `hv_sys_reg_t` values are the op0:op1:CRn:CRm:op2 packing (ground-truth doc §1.6).
-pub const fn sys_reg(op0: u16, op1: u16, crn: u16, crm: u16, op2: u16) -> hv_sys_reg_t {
-    (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -68,8 +59,6 @@ unsafe extern "C" {
     pub fn hv_vm_create(config: hv_vm_config_t) -> hv_return_t;
     pub fn hv_vm_destroy() -> hv_return_t;
     pub fn hv_vm_map(addr: *mut c_void, ipa: hv_ipa_t, size: usize, flags: hv_memory_flags_t) -> hv_return_t;
-    pub fn hv_vm_unmap(ipa: hv_ipa_t, size: usize) -> hv_return_t;
-    pub fn hv_vm_protect(ipa: hv_ipa_t, size: usize, flags: hv_memory_flags_t) -> hv_return_t;
 
     pub fn hv_vcpu_create(
         vcpu: *mut hv_vcpu_t,
@@ -83,8 +72,6 @@ unsafe extern "C" {
     pub fn hv_vcpu_set_reg(vcpu: hv_vcpu_t, reg: hv_reg_t, value: u64) -> hv_return_t;
     pub fn hv_vcpu_get_sys_reg(vcpu: hv_vcpu_t, reg: hv_sys_reg_t, value: *mut u64) -> hv_return_t;
     pub fn hv_vcpu_set_sys_reg(vcpu: hv_vcpu_t, reg: hv_sys_reg_t, value: u64) -> hv_return_t;
-    pub fn hv_vcpu_get_vtimer_offset(vcpu: hv_vcpu_t, offset: *mut u64) -> hv_return_t;
-    pub fn hv_vcpu_set_vtimer_offset(vcpu: hv_vcpu_t, offset: u64) -> hv_return_t;
 
     pub fn hv_gic_config_create() -> hv_gic_config_t;
     pub fn hv_gic_config_set_distributor_base(config: hv_gic_config_t, base: hv_ipa_t) -> hv_return_t;

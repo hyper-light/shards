@@ -71,19 +71,23 @@ virtualization, such as hosted CI runners without nested virtualization.
 Code layers:
 
 - **`hv`**: one backend per host platform. build.rs selects it at compile time as
-  `cfg(hv = "...")`. The backend-neutral vCPU interface is designed together with the second
-  backend (KVM), so that two real implementations shape it. Each backend completes an MMIO
-  access its own way:
-  - HVF: the VMM writes the register and advances PC
-  - KVM: the kernel does it on the next `KVM_RUN`
-  - WHP: the instruction emulator does it
+  `cfg(hv = "...")`. Every backend presents KVM's semantics, so the VM runtime is written once
+  (ground truth: [hvf-arm64-kvm-ground-truth.md](../research/hvf-arm64-kvm-ground-truth.md) §5):
+  - Device accesses complete inside `Vcpu::run` through the `Io` bus callback. On HVF the
+    backend writes Rt and advances PC; KVM completes on the next `KVM_RUN`; WHP's instruction
+    emulator completes them.
+  - Firmware power management stays in the backend. On HVF, PSCI (CPU_ON included) runs in
+    the backend, and a powered-off vCPU parks inside `run`, like a KVM vCPU created with
+    `KVM_ARM_VCPU_POWER_OFF`.
+  - `run` returns only `Canceled` (a kick), `Shutdown` or `Reset`.
 - **`arch`**: per guest architecture. Covers memory map, boot protocol (arm64 `Image` + FDT;
   x86_64 64-bit boot protocol/PVH), interrupt-controller description, firmware interface (PSCI
   on arm64) and vCPU reset state.
 - **`platform`**: per host OS. Covers memory reservation (mmap / VirtualAlloc), positional I/O,
   durable flush, entropy, thread scheduling policy, and the console.
-- **`vm`**: backend-neutral configuration and lifecycle types, with one implementation per
-  backend.
+- **`vm`**: the runtime (vCPU threads, lifecycle, exits) written once. There is one machine
+  per guest architecture (arm64: memory map, GICv3, devicetree, devices), which is also
+  backend-neutral.
 - **Written once**: everything else — devices, virtio, the runtime, and guest software (built
   for every arch's musl target).
 
