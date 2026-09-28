@@ -1,4 +1,4 @@
-//! Boot-path init: announce arrival to the VMM, report guest boot time, power off.
+//! Boot-path init: announce arrival to the VMM, report the guest's uptime, power off.
 
 use std::ffi::CStr;
 use std::io::{self, Write};
@@ -18,9 +18,11 @@ pub fn main() {
     };
     // SAFETY: writes one timespec.
     unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) };
+    // Uptime starts at the kernel's timekeeping init, after early boot; the VMM's marker
+    // timestamps cover everything from kernel entry.
     let _ = writeln!(
         io::stdout(),
-        "shards-init: pid {} running {}.{:06}s after kernel entry",
+        "shards-init: pid {} running at uptime {}.{:06}s",
         std::process::id(),
         ts.tv_sec,
         ts.tv_nsec / 1000
