@@ -210,6 +210,29 @@ pub fn max_ipa_bits() -> Result<u32> {
     Ok(n)
 }
 
+/// Distributor register by GICD offset; callable from any thread (hv_gic.h).
+pub fn dist_reg(offset: u16) -> Result<u64> {
+    let mut v = 0;
+    // SAFETY: writes one u64.
+    check("hv_gic_get_distributor_reg", unsafe {
+        ffi::hv_gic_get_distributor_reg(offset, &mut v)
+    })?;
+    Ok(v)
+}
+
+pub fn set_dist_reg(offset: u16, value: u64) -> Result<()> {
+    // SAFETY: no memory is passed.
+    check("hv_gic_set_distributor_reg", unsafe {
+        ffi::hv_gic_set_distributor_reg(offset, value)
+    })
+}
+
+/// The host counter guest virtual counters are offsets from (24 MHz on Apple silicon).
+pub fn host_counter() -> u64 {
+    // SAFETY: no arguments; reads the system counter.
+    unsafe { ffi::mach_absolute_time() }
+}
+
 /// Host-imposed GIC geometry (runtime queries; they are not published constants).
 #[derive(Debug, Clone, Copy)]
 pub struct GicParams {
@@ -311,6 +334,8 @@ pub struct Reg(u32);
 
 impl Reg {
     pub const PC: Reg = Reg(ffi::HV_REG_PC);
+    pub const FPCR: Reg = Reg(ffi::HV_REG_FPCR);
+    pub const FPSR: Reg = Reg(ffi::HV_REG_FPSR);
     pub const CPSR: Reg = Reg(ffi::HV_REG_CPSR);
 
     /// `Xn` for n in 0..=30. `None` for 31, which in MMIO and system-register syndromes
@@ -428,6 +453,75 @@ impl Vcpu {
         // SAFETY: owning thread.
         check("hv_vcpu_set_sys_reg", unsafe {
             ffi::hv_vcpu_set_sys_reg(self.id, reg, value)
+        })
+    }
+
+    /// SIMD/FP register Qn as a little-endian 128-bit value.
+    pub fn simd(&self, n: u32) -> Result<u128> {
+        let mut v = [0u8; 16];
+        // SAFETY: owning thread; writes 16 bytes into `v`.
+        check("hv_vcpu_get_simd_fp_reg", unsafe {
+            ffi::hv_vcpu_get_simd_fp_reg(self.id, n, v.as_mut_ptr())
+        })?;
+        Ok(u128::from_le_bytes(v))
+    }
+
+    pub fn set_simd(&mut self, n: u32, value: u128) -> Result<()> {
+        let v = value.to_le_bytes();
+        // SAFETY: owning thread; the shim reads 16 bytes from `v`.
+        check("hv_vcpu_set_simd_fp_reg", unsafe {
+            ffi::shards_hv_vcpu_set_simd_fp_reg(self.id, n, v.as_ptr())
+        })
+    }
+
+    /// `CNTVCT_EL0 = host_counter() - offset` for this vCPU.
+    pub fn vtimer_offset(&self) -> Result<u64> {
+        let mut v = 0;
+        // SAFETY: owning thread; writes one u64.
+        check("hv_vcpu_get_vtimer_offset", unsafe {
+            ffi::hv_vcpu_get_vtimer_offset(self.id, &mut v)
+        })?;
+        Ok(v)
+    }
+
+    pub fn set_vtimer_offset(&mut self, offset: u64) -> Result<()> {
+        // SAFETY: owning thread.
+        check("hv_vcpu_set_vtimer_offset", unsafe {
+            ffi::hv_vcpu_set_vtimer_offset(self.id, offset)
+        })
+    }
+
+    /// Redistributor register by GICR offset. Owning thread (hv_gic.h).
+    pub fn redist_reg(&self, offset: u32) -> Result<u64> {
+        let mut v = 0;
+        // SAFETY: owning thread; writes one u64.
+        check("hv_gic_get_redistributor_reg", unsafe {
+            ffi::hv_gic_get_redistributor_reg(self.id, offset, &mut v)
+        })?;
+        Ok(v)
+    }
+
+    pub fn set_redist_reg(&mut self, offset: u32, value: u64) -> Result<()> {
+        // SAFETY: owning thread.
+        check("hv_gic_set_redistributor_reg", unsafe {
+            ffi::hv_gic_set_redistributor_reg(self.id, offset, value)
+        })
+    }
+
+    /// GIC CPU interface register by encoding. Owning thread (hv_gic.h).
+    pub fn icc_reg(&self, reg: u16) -> Result<u64> {
+        let mut v = 0;
+        // SAFETY: owning thread; writes one u64.
+        check("hv_gic_get_icc_reg", unsafe {
+            ffi::hv_gic_get_icc_reg(self.id, reg, &mut v)
+        })?;
+        Ok(v)
+    }
+
+    pub fn set_icc_reg(&mut self, reg: u16, value: u64) -> Result<()> {
+        // SAFETY: owning thread.
+        check("hv_gic_set_icc_reg", unsafe {
+            ffi::hv_gic_set_icc_reg(self.id, reg, value)
         })
     }
 

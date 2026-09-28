@@ -13,5 +13,6 @@ pub mod initramfs;
 pub mod log;
 pub mod memory;
 pub mod platform;
+pub mod snapshot;
 pub mod sync;
 pub mod vm;

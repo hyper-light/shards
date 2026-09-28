@@ -16,5 +16,37 @@ fn main() {
     } {
         println!("cargo::rustc-cfg=hv");
         println!("cargo::rustc-cfg=hv=\"{backend}\"");
+        if backend == "hvf" {
+            compile_hvf_shim();
+        }
     }
+}
+
+/// Builds src/hv/hvf/simd.c into a static library with the host C compiler, the one
+/// rustc already links macOS binaries with.
+fn compile_hvf_shim() {
+    let src = "src/hv/hvf/simd.c";
+    println!("cargo::rerun-if-changed={src}");
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default());
+    let obj = out.join("simd.o");
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    let run = |cmd: &mut std::process::Command| match cmd.status() {
+        Ok(s) if s.success() => {}
+        other => {
+            println!("cargo::error=running {cmd:?}: {other:?}");
+            std::process::exit(1);
+        }
+    };
+    run(std::process::Command::new(&cc)
+        .args(["-c", "-O2", "-Wall", "-Wextra", "-Werror", "-arch", "arm64"])
+        .arg("-mmacosx-version-min=15.0")
+        .arg(src)
+        .arg("-o")
+        .arg(&obj));
+    run(std::process::Command::new("ar")
+        .arg("crs")
+        .arg(out.join("libshardshvf.a"))
+        .arg(&obj));
+    println!("cargo::rustc-link-search=native={}", out.display());
+    println!("cargo::rustc-link-lib=static=shardshvf");
 }

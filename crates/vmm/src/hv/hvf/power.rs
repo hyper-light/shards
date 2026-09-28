@@ -3,15 +3,9 @@
 
 use std::sync::{Condvar, Mutex};
 
+use crate::arch::aarch64::state::Power;
 use crate::arch::aarch64::{Entry, psci};
 use crate::sync::{lock, wait};
-
-#[derive(Debug, Clone, Copy)]
-enum Power {
-    Off,
-    Pending(Entry),
-    On,
-}
 
 #[derive(Debug)]
 struct State {
@@ -95,6 +89,18 @@ impl Table {
                 }
                 Power::Off => s = wait(&slot.wake, s),
             }
+        }
+    }
+
+    /// vCPU `index`'s power state, for a snapshot.
+    pub fn state(&self, index: usize) -> Option<Power> {
+        self.slots.get(index).map(|slot| lock(&slot.state).power)
+    }
+
+    /// Sets vCPU `index`'s power state, on restore.
+    pub fn set_state(&self, index: usize, power: Power) {
+        if let Some(slot) = self.slots.get(index) {
+            lock(&slot.state).power = power;
         }
     }
 

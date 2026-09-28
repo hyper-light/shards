@@ -3,6 +3,7 @@
 pub mod boot;
 pub mod esr;
 pub mod psci;
+pub mod state;
 
 /// Guest-physical memory map. Everything below `DRAM_BASE` is MMIO.
 pub mod layout {

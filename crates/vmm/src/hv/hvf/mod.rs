@@ -352,3 +352,276 @@ impl Kicker {
         let _ = self.sys.kick();
     }
 }
+
+// ---- snapshots ---------------------------------------------------------------------
+
+use crate::arch::aarch64::state::{Power, VcpuState};
+
+/// EL1/EL0 system registers a snapshot carries: all the guest-changeable state HVF
+/// exposes (hv_vcpu_types.h:257-420). SP_EL0/SP_EL1/ELR_EL1/SPSR_EL1 are system
+/// registers here. The guest sees no SVE/SME, TCR2, PIE, POE, GCS or MTE, whose state HVF
+/// could not save.
+const SYSREGS: &[u16] = &[
+    0xc080, 0xc082, 0xc100, 0xc101, 0xc102, // SCTLR, CPACR, TTBR0, TTBR1, TCR
+    0xc108, 0xc109, 0xc10a, 0xc10b, 0xc110, 0xc111, 0xc112, 0xc113, 0xc118, 0xc119, // PAC keys
+    0xc200, 0xc201, 0xc208, 0xe208, // SPSR_EL1, ELR_EL1, SP_EL0, SP_EL1
+    0xc288, 0xc289, 0xc290, 0xc300, 0xc3a0, // AFSR0, AFSR1, ESR, FAR, PAR
+    0xc510, 0xc518, 0xc600, 0xc681, 0xc684, // MAIR, AMAIR, VBAR, CONTEXTIDR, TPIDR_EL1
+    0xc708, 0xd000, 0xde82, 0xde83, // CNTKCTL, CSSELR, TPIDR_EL0, TPIDRRO_EL0
+    0xdf19, 0xdf1a, 0xdf11, 0xdf12, // CNTV_CTL, CNTV_CVAL, CNTP_CTL, CNTP_CVAL
+    0x8012, 0x8010, 0xc081, // MDSCR, MDCCINT, ACTLR
+];
+
+/// macOS 15.2 additions (SCXTNUM_EL1, SCXTNUM_EL0): saved where the host has them.
+const SYSREGS_15_2: &[u16] = &[0xc687, 0xde87];
+
+/// ID registers that define the guest's CPU. A restore on a CPU that reports different
+/// values is refused.
+const ID_REGS: &[u16] = &[
+    0xc000, 0xc020, 0xc021, 0xc028, 0xc029, 0xc030, 0xc031, 0xc038, 0xc039, 0xc03a,
+];
+const ID_AA64DFR0_EL1: u16 = 0xc028;
+
+/// Redistributor SGI/PPI state by GICR offset. The set-views carry the state; the
+/// clear-views (ICENABLER, ICPENDR, ICACTIVER) are the same bits.
+const REDIST_REGS: &[u32] = &[
+    0x1_0080, 0x1_0100, 0x1_0200, 0x1_0300, // IGROUPR0, ISENABLER0, ISPENDR0, ISACTIVER0
+    0x1_0400, 0x1_0404, 0x1_0408, 0x1_040c, 0x1_0410, 0x1_0414, 0x1_0418, 0x1_041c, // IPRIORITYR0-7
+    0x1_0c00, 0x1_0c04, // ICFGR0-1
+];
+
+/// GIC CPU interface registers, in restore order: SRE and CTLR before the priority
+/// state, group enables last. RPR is read-only.
+const ICC_REGS: &[u16] = &[
+    0xc665, 0xc664, 0xc230, 0xc643, 0xc663, 0xc644, 0xc648, 0xc666, 0xc667,
+];
+
+const HV_BAD_ARGUMENT: i32 = 0xfae9_4003_u32 as i32;
+const GICD_CTLR: u16 = 0x0000;
+/// GICD_CTLR.RWP is read-only; ARE_NS (bit 4) must be set before routing registers mean
+/// anything.
+const GICD_CTLR_RWP: u64 = 1 << 31;
+const GICD_CTLR_ARE: u64 = 1 << 4;
+
+/// The breakpoint and watchpoint registers ID_AA64DFR0_EL1 says exist.
+fn debug_regs(dfr0: u64) -> Vec<u16> {
+    let brps = ((dfr0 >> 12) & 0xf) + 1;
+    let wrps = ((dfr0 >> 20) & 0xf) + 1;
+    let mut regs = Vec::new();
+    for n in 0..16u16 {
+        let base = 0x8004 + (n << 3); // DBGBVRn_EL1; BCR +1, WVR +2, WCR +3
+        if u64::from(n) < brps {
+            regs.extend([base, base + 1]);
+        }
+        if u64::from(n) < wrps {
+            regs.extend([base + 2, base + 3]);
+        }
+    }
+    regs
+}
+
+/// Distributor registers covering INTIDs 32..`nint`: groups, enables, pending, active,
+/// priorities, configuration and routing.
+fn dist_regs(nint: u32) -> Vec<u16> {
+    let mut regs = vec![GICD_CTLR];
+    for base in [0x0080u32, 0x0100, 0x0200, 0x0300] {
+        regs.extend((1..nint.div_ceil(32)).map(|i| (base + 4 * i) as u16));
+    }
+    regs.extend((8..nint.div_ceil(4)).map(|i| (0x0400 + 4 * i) as u16));
+    regs.extend((2..nint.div_ceil(16)).map(|i| (0x0c00 + 4 * i) as u16));
+    regs.extend((32..nint).map(|id| (0x6000 + 8 * id) as u16));
+    regs
+}
+
+/// The guest counter value corresponding to a vtimer offset now.
+pub fn host_counter() -> u64 {
+    sys::host_counter()
+}
+
+impl Vm {
+    /// The CPU identity the guest sees, for a snapshot to record.
+    pub fn cpu_id(vcpu: &Vcpu) -> Result<Vec<(u16, u64)>> {
+        ID_REGS.iter().map(|&r| Ok((r, vcpu.sys.sys_reg(r)?))).collect()
+    }
+
+    /// Distributor state. Every vCPU must be stopped.
+    pub fn save_gic(&self) -> Result<Vec<(u32, u64)>> {
+        let p = sys::gic_params()?;
+        dist_regs(p.spi_base.saturating_add(p.spi_count).min(1020))
+            .into_iter()
+            .map(|r| Ok((u32::from(r), sys::dist_reg(r)?)))
+            .collect()
+    }
+
+    /// Restores distributor state into a fresh GIC: routing needs ARE first; the group
+    /// enables come last, so nothing is delivered from a half-restored distributor.
+    pub fn restore_gic(&self, regs: &[(u32, u64)]) -> Result<()> {
+        let reg = |r: u32| u16::try_from(r).map_err(|_| Error::Guest(format!("GICD offset {r:#x}")));
+        let ctlr = regs
+            .iter()
+            .find(|&&(r, _)| r == u32::from(GICD_CTLR))
+            .map_or(0, |&(_, v)| v & !GICD_CTLR_RWP);
+        sys::set_dist_reg(GICD_CTLR, ctlr & GICD_CTLR_ARE)?;
+        for &(r, v) in regs.iter().filter(|&&(r, _)| r != u32::from(GICD_CTLR)) {
+            sys::set_dist_reg(reg(r)?, v)?;
+        }
+        Ok(sys::set_dist_reg(GICD_CTLR, ctlr)?)
+    }
+}
+
+impl Vcpu {
+    /// The guest's virtual counter now.
+    pub fn guest_counter(&self) -> Result<u64> {
+        Ok(sys::host_counter().wrapping_sub(self.sys.vtimer_offset()?))
+    }
+
+    /// Captures the architectural state. Call on the owning thread, with the vCPU out of
+    /// the guest.
+    pub fn save_state(&self) -> Result<VcpuState> {
+        let s = &self.sys;
+        let mut x = [0u64; 31];
+        for (n, v) in (0u8..).zip(x.iter_mut()) {
+            *v = s.x(n)?;
+        }
+        let mut v = [0u128; 32];
+        for (n, q) in (0u32..).zip(v.iter_mut()) {
+            *q = s.simd(n)?;
+        }
+        let mut sys = Vec::with_capacity(SYSREGS.len() + 64);
+        for &r in SYSREGS.iter().chain(&debug_regs(s.sys_reg(ID_AA64DFR0_EL1)?)) {
+            sys.push((r, s.sys_reg(r)?));
+        }
+        for &r in SYSREGS_15_2 {
+            match s.sys_reg(r) {
+                Ok(val) => sys.push((r, val)),
+                Err(e) if e.code == HV_BAD_ARGUMENT => {} // before macOS 15.2
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(VcpuState {
+            x,
+            pc: s.reg(sys::Reg::PC)?,
+            pstate: s.reg(sys::Reg::CPSR)?,
+            v,
+            fpcr: s.reg(sys::Reg::FPCR)?,
+            fpsr: s.reg(sys::Reg::FPSR)?,
+            sys,
+            redist: REDIST_REGS
+                .iter()
+                .map(|&r| Ok((r, s.redist_reg(r)?)))
+                .collect::<Result<_>>()?,
+            icc: ICC_REGS
+                .iter()
+                .map(|&r| Ok((r, s.icc_reg(r)?)))
+                .collect::<Result<_>>()?,
+            power: self
+                .power
+                .state(self.index)
+                .ok_or_else(|| Error::Guest(format!("no power state for vCPU {}", self.index)))?,
+        })
+    }
+
+    /// Loads captured state into this freshly created vCPU. `counter_offset` makes the
+    /// guest counter continuous and must be the same for every vCPU of the VM.
+    pub fn restore_state(&mut self, st: &VcpuState, counter_offset: u64) -> Result<()> {
+        let s = &mut self.sys;
+        for (n, &v) in (0u8..).zip(st.x.iter()) {
+            s.set_x(n, v)?;
+        }
+        s.set_reg(sys::Reg::PC, st.pc)?;
+        s.set_reg(sys::Reg::CPSR, st.pstate)?;
+        for (n, &q) in (0u32..).zip(st.v.iter()) {
+            s.set_simd(n, q)?;
+        }
+        s.set_reg(sys::Reg::FPCR, st.fpcr)?;
+        s.set_reg(sys::Reg::FPSR, st.fpsr)?;
+        for &(r, v) in &st.sys {
+            s.set_sys_reg(r, v)?;
+        }
+        for &(r, v) in &st.redist {
+            s.set_redist_reg(r, v)?;
+        }
+        for &(r, v) in &st.icc {
+            s.set_icc_reg(r, v)?;
+        }
+        s.set_vtimer_offset(counter_offset)?;
+        self.power.set_state(self.index, st.power);
+        // A running vCPU resumes where it stopped; others park until their CPU_ON.
+        self.on = st.power == Power::On;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// Real HVF, one VM (the per-process limit): this is the crate's only test that
+    /// creates one.
+    #[test]
+    fn vcpu_and_gic_state_round_trip_through_a_fresh_vcpu() {
+        if check_host().is_err() {
+            return;
+        }
+        let vm = Vm::new(VmConfig {
+            ipa_bits: 36,
+            mpidrs: vec![0, 1],
+        })
+        .unwrap();
+        vm.create_gic(&GicLayout {
+            dist_base: 0x0800_0000,
+            redist_base: 0x080a_0000,
+            msi: None,
+        })
+        .unwrap();
+
+        // Distributor: perturb through the clear-views, restore, compare.
+        sys::set_dist_reg(0x0104, 0b1010).unwrap(); // ISENABLER1: SPIs 33, 35
+        sys::set_dist_reg(0x0420, 0xa0b0_c0d0).unwrap(); // IPRIORITYR8
+        sys::set_dist_reg(0x0c08, 0x8).unwrap(); // ICFGR2: SPI 33 edge
+        let saved = vm.save_gic().unwrap();
+        sys::set_dist_reg(0x0184, u64::from(u32::MAX)).unwrap(); // ICENABLER1
+        sys::set_dist_reg(0x0420, 0).unwrap();
+        sys::set_dist_reg(0x0c08, 0).unwrap();
+        vm.restore_gic(&saved).unwrap();
+        assert_eq!(vm.save_gic().unwrap(), saved);
+
+        // vCPU 0 gets distinctive state and is captured; vCPU 1 (the next redistributor
+        // frame, so vCPU 0 stays alive meanwhile) restores it and must capture the same.
+        let (to_b, from_a) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let vm = &vm;
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                let mut a = vm.create_vcpu(0).unwrap();
+                for n in 0..31u8 {
+                    a.sys.set_x(n, 0x1111_0000 + u64::from(n)).unwrap();
+                }
+                a.sys.set_reg(sys::Reg::PC, 0x8000_1234).unwrap();
+                a.sys.set_reg(sys::Reg::CPSR, 0x3c5).unwrap();
+                for n in 0..32u32 {
+                    a.sys.set_simd(n, (u128::from(n) << 64) | 0xdead_beef).unwrap();
+                }
+                a.sys.set_sys_reg(0xde82, 0x7777).unwrap(); // TPIDR_EL0
+                a.sys.set_sys_reg(0xc684, 0x8888).unwrap(); // TPIDR_EL1
+                a.sys.set_sys_reg(0xc510, 0x04ff).unwrap(); // MAIR_EL1
+                a.sys.set_icc_reg(0xc230, 0xf0).unwrap(); // ICC_PMR_EL1
+                a.sys.set_redist_reg(0x1_0400, 0x8080_8080).unwrap(); // GICR_IPRIORITYR0
+                let st = a.save_state().unwrap();
+                assert_eq!(st.x[5], 0x1111_0005);
+                assert_eq!(st.v[31], (31u128 << 64) | 0xdead_beef);
+                to_b.send(st).unwrap();
+                done_rx.recv().unwrap();
+            });
+            s.spawn(move || {
+                let st = from_a.recv().unwrap();
+                let mut b = vm.create_vcpu(1).unwrap();
+                b.restore_state(&st, 0).unwrap();
+                assert_eq!(b.save_state().unwrap(), st);
+                done_tx.send(()).unwrap();
+            });
+        });
+    }
+}
