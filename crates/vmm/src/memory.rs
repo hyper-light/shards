@@ -89,7 +89,7 @@ impl GuestMemory {
                 return Err(invalid("overlapping guest RAM regions".into()));
             }
             // Ownership moves into `mem`, whose Drop releases it.
-            let host = platform::reserve(len)?;
+            let host = platform::reserve_ram(len)?;
             mem.regions.push(Region { gpa, len, host });
         }
         mem.regions.sort_by_key(|r| r.gpa);

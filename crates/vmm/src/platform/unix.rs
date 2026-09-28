@@ -32,8 +32,61 @@ pub fn reserve(len: usize) -> io::Result<NonNull<u8>> {
     NonNull::new(p.cast()).ok_or_else(|| io::Error::other("mmap returned NULL"))
 }
 
+/// Reserves `len` bytes of guest RAM, like `reserve`. On Linux the mapping is aligned to
+/// the transparent huge page size and advised `MADV_HUGEPAGE`, so the guest's first touch
+/// of each huge page is one fault and KVM maps it with one stage-2 entry instead of 512.
+/// Huge pages are the standard remedy for the cost of nested paging's two-dimensional
+/// page walks (Bhargava et al., ASPLOS 2008; Gandhi et al., MICRO 2014).
+pub fn reserve_ram(len: usize) -> io::Result<NonNull<u8>> {
+    #[cfg(target_os = "linux")]
+    if let Some(huge) = huge_page_size()
+        && len >= huge
+    {
+        return reserve_huge(len, huge);
+    }
+    reserve(len)
+}
+
+/// The kernel's transparent huge page size, if it has transparent huge pages.
+#[cfg(target_os = "linux")]
+fn huge_page_size() -> Option<usize> {
+    std::fs::read_to_string("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size")
+        .ok()?
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|size| size.is_power_of_two())
+}
+
+#[cfg(target_os = "linux")]
+fn reserve_huge(len: usize, huge: usize) -> io::Result<NonNull<u8>> {
+    let span = len
+        .checked_add(huge)
+        .ok_or_else(|| io::Error::other(format!("{len} bytes of guest RAM")))?;
+    let base = reserve(span)?.as_ptr() as usize;
+    let aligned = base.next_multiple_of(huge);
+    let (head, tail) = (aligned - base, span - (aligned - base) - len);
+    // SAFETY: both ranges lie inside the fresh `span` mapping and outside the aligned
+    // `len` bytes this function returns.
+    unsafe {
+        if head > 0 {
+            libc::munmap(base as *mut libc::c_void, head);
+        }
+        if tail > 0 {
+            libc::munmap((aligned + len) as *mut libc::c_void, tail);
+        }
+    }
+    // Advice only: without it (or with THP disabled) the memory is ordinary pages.
+    // SAFETY: `aligned..aligned+len` is our own mapping.
+    if unsafe { libc::madvise(aligned as *mut libc::c_void, len, libc::MADV_HUGEPAGE) } != 0 {
+        crate::debug!("MADV_HUGEPAGE: {}", io::Error::last_os_error());
+    }
+    NonNull::new(aligned as *mut u8).ok_or_else(|| io::Error::other("mmap returned NULL"))
+}
+
 /// # Safety
-/// `ptr..ptr+len` must be a mapping returned by `reserve` and not used afterwards.
+/// `ptr..ptr+len` must be a mapping returned by `reserve` or `reserve_ram` and not used
+/// afterwards.
 pub unsafe fn release(ptr: NonNull<u8>, len: usize) {
     // SAFETY: forwarded caller contract.
     unsafe { libc::munmap(ptr.as_ptr().cast(), len) };

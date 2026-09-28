@@ -32,8 +32,14 @@ pub fn reserve(len: usize) -> io::Result<NonNull<u8>> {
     NonNull::new(p.cast()).ok_or_else(io::Error::last_os_error)
 }
 
+/// Reserves guest RAM. Windows backs large pages only for callers holding
+/// SeLockMemoryPrivilege, which shards does not ask for, so this is `reserve`.
+pub fn reserve_ram(len: usize) -> io::Result<NonNull<u8>> {
+    reserve(len)
+}
+
 /// # Safety
-/// `ptr` must come from `reserve` and not be used afterwards.
+/// `ptr` must come from `reserve` or `reserve_ram` and not be used afterwards.
 pub unsafe fn release(ptr: NonNull<u8>, _len: usize) {
     // SAFETY: forwarded caller contract; MEM_RELEASE requires size 0.
     unsafe { VirtualFree(ptr.as_ptr().cast(), 0, MEM_RELEASE) };

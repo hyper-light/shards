@@ -136,3 +136,38 @@ background load as the boot run above
 | cold_spawn_exit | 4201 µs | 4765 µs | 6450 µs | 7920 µs |
 | **warm_request** | **149 µs** | **169 µs** | **197 µs** | **201 µs** |
 | warm_peak_rss | 12.5 MiB | 12.5 MiB | 12.5 MiB | 12.5 MiB |
+
+## Firecracker (`crates/shards/benches/firecracker.rs`)
+
+`cargo bench -p shards --bench firecracker [-- --runs N --cpus N --memory MIB]` (Linux, KVM)
+
+Method:
+- shards and Firecracker boot the pinned kernel with one initrd (the test guest in `idle`
+  mode as `/init`) and one kernel command line, interleaved, alternating which goes first.
+  Three warm-up pairs are discarded.
+- Firecracker is the pinned release binary, run with `--no-api --config-file` and its
+  default seccomp filters.
+
+| Phase | Measured |
+|---|---|
+| `to_ready` | host clock, spawn → the guest's ready line on the VMM's stdout |
+| `overhead` | RSS outside guest memory by Firecracker's rule (tests/host_tools/memory.py); max of 20 readings 10 ms apart while the guest idles |
+| `peak_rss` | `ru_maxrss` from wait4(2), guest memory included |
+
+### Runs
+
+**2026-09-28** · 9ef57c2 · GitHub `ubuntu-24.04` runner: AMD EPYC 9V74, 4 vCPUs, 16 GB,
+Linux 6.17.0-1022-azure, nested under Hyper-V · Firecracker v1.17.0 · kernel
+vmlinux-6.18.48-x86_64 · n=30, 1 vCPU, 128 MiB
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| shards to_ready | 146131 µs | 149549 µs | 223079 µs | 223079 µs |
+| Firecracker to_ready | 145085 µs | 151869 µs | 221177 µs | 221177 µs |
+| **shards overhead** | **2.4 MiB** | **2.4 MiB** | **2.5 MiB** | **2.5 MiB** |
+| Firecracker overhead | 4.5 MiB | 4.5 MiB | 4.5 MiB | 4.5 MiB |
+| shards peak_rss | 64.4 MiB | 66.3 MiB | 66.4 MiB | 66.4 MiB |
+| Firecracker peak_rss | 64.4 MiB | 66.4 MiB | 66.5 MiB | 66.5 MiB |
+
+Boot latency is a tie: nearly all of it is the guest kernel, the same for both. The VMM
+overhead is 47% lower.
