@@ -167,9 +167,10 @@ impl Warm {
         }
     }
 
-    /// The warm VM tells the daemon its command's `status`, then ends, leaving the
-    /// daemon's socket.
+    /// The warm VM tells the daemon that its command started, if it did, and its
+    /// `status`, then ends, leaving the daemon's socket.
     fn ends(mut self, status: u8) {
+        let started = status != 127;
         let (tx, rx) = mpsc::channel();
         let pid = self.child.id() as libc::pid_t;
         std::thread::spawn(move || {
@@ -181,9 +182,16 @@ impl Warm {
         let exited = self.child.wait().unwrap();
         let _ = tx.send(());
         assert!(exited.success(), "the warm VM exited with {exited}");
-        let done = shards_ipc::recv(&self.daemon).unwrap().expect("DONE");
-        assert_eq!((done.kind, done.payload), (kind::DONE, vec![status]));
-        assert!(shards_ipc::recv(&self.daemon).unwrap().is_none());
+        let mut said = Vec::new();
+        while let Some(m) = shards_ipc::recv(&self.daemon).unwrap() {
+            said.push((m.kind, m.payload));
+        }
+        let mut expected = Vec::new();
+        if started {
+            expected.push((kind::STARTED, Vec::new()));
+        }
+        expected.push((kind::DONE, vec![status]));
+        assert_eq!(said, expected);
     }
 }
 

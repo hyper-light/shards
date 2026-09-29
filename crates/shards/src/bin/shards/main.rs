@@ -26,7 +26,38 @@ fn main() -> ExitCode {
             Ok(home) => client::stop(&home),
             Err(e) => failed(&e),
         },
+        #[cfg(unix)]
+        (Some("ps" | "wait" | "rm" | "stop" | "kill" | "logs"), _, _) => container(&args),
         _ => shardsd_instead(&args),
+    }
+}
+
+/// A container command, for the daemon to run.
+#[cfg(unix)]
+fn container(args: &[OsString]) -> ExitCode {
+    let argv: Result<Vec<String>, String> = args
+        .iter()
+        .map(|a| {
+            a.to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("argument {a:?} is not valid UTF-8"))
+        })
+        .collect();
+    let resolved = argv.and_then(|argv| {
+        let daemon = shardsd()?;
+        let identity = shards_ipc::Identity::of(&daemon).map_err(|e| format!("{}: {e}", daemon.display()))?;
+        Ok((argv, daemon, identity, shards_ipc::home()?))
+    });
+    match resolved {
+        Ok((argv, daemon, identity, home)) => client::container(
+            &home,
+            &daemon,
+            &shards_ipc::Command {
+                argv,
+                daemon: identity,
+            },
+        ),
+        Err(e) => failed(&e),
     }
 }
 

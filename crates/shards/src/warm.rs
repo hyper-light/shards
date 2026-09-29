@@ -15,7 +15,7 @@
 
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 
 use shards_abi::run::Spec;
@@ -63,12 +63,15 @@ fn daemon_socket(fd: RawFd) -> Result<UnixStream, String> {
 
 /// A request, as the daemon hands it over.
 pub struct Request {
-    pub client: UnixStream,
+    /// None for a detached run.
+    pub client: Option<UnixStream>,
     pub spec: Spec,
     /// The command reads the client's stdin.
     pub interactive: bool,
     /// The client asked for the timing line.
     pub timing: bool,
+    /// The container's log, if its output is kept.
+    pub log: Option<File>,
 }
 
 /// Tells the daemon this VM is ready, then waits for its request. Makes the client's stdio
@@ -84,36 +87,66 @@ pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
     if request.kind != kind::RUN {
         return Err(format!("expected a request, got message kind {}", request.kind));
     }
-    let count = request.fds.len();
-    let [client, stdin, stdout, stderr]: [OwnedFd; 4] = request
-        .fds
-        .try_into()
-        .map_err(|_| format!("a request brings 4 descriptors, not {count}"))?;
     let (flags, spec) = request.payload.split_first().ok_or("an empty request")?;
     let spec = Spec::decode(spec).ok_or("a malformed command")?;
-    for (fd, target) in [(&stdin, 0), (&stdout, 1), (&stderr, 2)] {
+    let (detached, logged) = (
+        flags & shards_ipc::RUN_DETACHED != 0,
+        flags & shards_ipc::RUN_LOG != 0,
+    );
+    let count = request.fds.len();
+    let mut fds = request.fds.into_iter();
+    let mut next = || {
+        fds.next()
+            .ok_or(format!("a request brings more than {count} descriptors"))
+    };
+    let client = if detached {
+        None
+    } else {
+        Some(UnixStream::from(next()?))
+    };
+    let stdin = next()?;
+    // A detached run's output goes only to its log.
+    let (stdout, stderr) = if detached {
+        let null = || link.null.try_clone().map_err(|e| format!("/dev/null: {e}"));
+        (null()?, null()?)
+    } else {
+        (File::from(next()?), File::from(next()?))
+    };
+    let log = if detached || logged {
+        Some(File::from(next()?))
+    } else {
+        None
+    };
+    if fds.next().is_some() {
+        return Err(format!("a request brings {count} descriptors, too many"));
+    }
+    for (fd, target) in [
+        (stdin.as_raw_fd(), 0),
+        (stdout.as_raw_fd(), 1),
+        (stderr.as_raw_fd(), 2),
+    ] {
         // SAFETY: dup2(2) onto this process's standard descriptors, which nothing else in
         // this process holds open as its own.
-        if unsafe { libc::dup2(fd.as_raw_fd(), target) } < 0 {
+        if unsafe { libc::dup2(fd, target) } < 0 {
             return Err(format!(
                 "taking the client's stdio: {}",
                 io::Error::last_os_error()
             ));
         }
     }
-    let client = UnixStream::from(client);
-    let signals = client
-        .try_clone()
-        .map_err(|e| format!("the client's connection: {e}"))?;
     // The command will run: a signal from here on waits for it rather than being lost.
     workload::will_run(to);
     let from_daemon = daemon
         .try_clone()
         .map_err(|e| format!("the daemon's connection: {e}"))?;
-    for (name, conn, client) in [
-        ("client-signals", signals, true),
-        ("daemon-signals", from_daemon, false),
-    ] {
+    let mut relays = vec![("daemon-signals", from_daemon, false)];
+    if let Some(client) = &client {
+        let signals = client
+            .try_clone()
+            .map_err(|e| format!("the client's connection: {e}"))?;
+        relays.push(("client-signals", signals, true));
+    }
+    for (name, conn, client) in relays {
         let to = to.clone();
         std::thread::Builder::new()
             .name(name.into())
@@ -127,6 +160,7 @@ pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
         spec,
         interactive: flags & shards_ipc::RUN_INTERACTIVE != 0,
         timing: flags & shards_ipc::RUN_TIMING != 0,
+        log,
     })
 }
 
@@ -147,11 +181,16 @@ fn relay_signals(conn: &UnixStream, to: &ToGuest, client: bool) {
     }
 }
 
+/// Tells the daemon the command runs.
+pub fn started(link: &Link) {
+    let _ = shards_ipc::send(&link.daemon, kind::STARTED, &[], &[]);
+}
+
 /// Tells the client how its command ended, then the daemon. An error goes to the client's
 /// stderr first, and the VM lets go of the client's stdio before the status goes, so that
 /// both arrive before the client exits. With `timing`, the status carries the VM's timing
 /// line for the client to print.
-pub fn finish(link: &Link, client: &UnixStream, served: &Result<u8, String>, timing: Option<&str>) {
+pub fn finish(link: &Link, client: Option<&UnixStream>, served: &Result<u8, String>, timing: Option<&str>) {
     let status = match served {
         Ok(status) => *status,
         Err(e) => {
@@ -160,9 +199,11 @@ pub fn finish(link: &Link, client: &UnixStream, served: &Result<u8, String>, tim
         }
     };
     let_go(&link.null);
-    let mut payload = vec![status];
-    payload.extend_from_slice(timing.unwrap_or_default().as_bytes());
-    let _ = shards_ipc::send(client, kind::EXIT, &payload, &[]);
+    if let Some(client) = client {
+        let mut payload = vec![status];
+        payload.extend_from_slice(timing.unwrap_or_default().as_bytes());
+        let _ = shards_ipc::send(client, kind::EXIT, &payload, &[]);
+    }
     // Then the daemon, which keeps the run's record.
     let _ = shards_ipc::send(&link.daemon, kind::DONE, &[status], &[]);
 }

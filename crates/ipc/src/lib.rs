@@ -38,7 +38,9 @@ pub mod kind {
     pub const READY: u8 = 1;
     /// Daemon → warm VM: [`RUN_INTERACTIVE`](super::RUN_INTERACTIVE) flags, then the
     /// command (`shards_abi::run::Spec`). Descriptors: the client's connection, then its
-    /// stdin, stdout and stderr.
+    /// stdin, stdout and stderr, then with [`RUN_LOG`](super::RUN_LOG) the container's
+    /// log. With [`RUN_DETACHED`](super::RUN_DETACHED), only the command's stdin and the
+    /// log.
     pub const RUN: u8 = 2;
     /// Warm VM → client: the command's exit status, one byte, then, if the client asked
     /// for `SHARDS_TIMING`, the VM's timing line for the client to print.
@@ -59,6 +61,51 @@ pub mod kind {
     /// Warm VM → daemon: the command ended with this status (one byte), which its client
     /// already has.
     pub const DONE: u8 = 9;
+    /// Warm VM → daemon: the command is executing: it started, where `DONE` without this
+    /// means it never did.
+    pub const STARTED: u8 = 10;
+    /// Client → daemon: a container command (`ps`, `wait`, `rm`, ...) and its arguments,
+    /// as a list of strings, for the daemon to run and answer with `OUT`, `ERR` and `END`.
+    pub const CONTAINER: u8 = 11;
+    /// Daemon → client: bytes for the client's stdout.
+    pub const OUT: u8 = 12;
+    /// Daemon → client: bytes for the client's stderr.
+    pub const ERR: u8 = 13;
+    /// Daemon → client: the command's exit status, one byte, last.
+    pub const END: u8 = 14;
+}
+
+/// A container command as the client asks for it (`kind::CONTAINER`): its words, and the
+/// daemon binary the client would start, as in [`Run`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Command {
+    pub argv: Vec<String>,
+    pub daemon: Identity,
+}
+
+impl Command {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Vec::new();
+        put_list(&mut w, &self.argv);
+        put_identity(&mut w, &self.daemon);
+        w
+    }
+
+    /// `None` for anything but a whole command.
+    pub fn decode(bytes: &[u8]) -> Option<Command> {
+        let mut r = Reader(bytes);
+        let command = Command {
+            argv: r.list()?,
+            daemon: r.identity()?,
+        };
+        r.0.is_empty().then_some(command)
+    }
+}
+
+fn put_identity(w: &mut Vec<u8>, d: &Identity) {
+    for v in [d.dev, d.ino, d.size, d.mtime_s as u64, u64::from(d.mtime_ns)] {
+        w.extend_from_slice(&v.to_be_bytes());
+    }
 }
 
 /// A binary, as the daemon and its clients tell builds apart: its file's identity.
@@ -100,6 +147,12 @@ pub struct Run {
     pub init: Option<String>,
     /// SHARDS_TIMING: the VMM's timing line goes to the client's stderr.
     pub timing: bool,
+    /// `--name`.
+    pub name: Option<String>,
+    /// `-d`: the client gets the container's ID, and the run goes on without it.
+    pub detach: bool,
+    /// `--rm`: the container goes once it ends.
+    pub remove: bool,
     /// The daemon binary this client would start.
     pub daemon: Identity,
 }
@@ -129,10 +182,10 @@ impl Run {
         put_opt(&mut w, self.kernel.as_deref());
         put_opt(&mut w, self.init.as_deref());
         w.push(u8::from(self.timing));
-        let d = &self.daemon;
-        for v in [d.dev, d.ino, d.size, d.mtime_s as u64, u64::from(d.mtime_ns)] {
-            w.extend_from_slice(&v.to_be_bytes());
-        }
+        put_opt(&mut w, self.name.as_deref());
+        w.push(u8::from(self.detach));
+        w.push(u8::from(self.remove));
+        put_identity(&mut w, &self.daemon);
         w
     }
 
@@ -157,13 +210,10 @@ impl Run {
             kernel: r.opt()?,
             init: r.opt()?,
             timing: r.flag()?,
-            daemon: Identity {
-                dev: r.u64()?,
-                ino: r.u64()?,
-                size: r.u64()?,
-                mtime_s: r.u64()? as i64,
-                mtime_ns: u32::try_from(r.u64()?).ok()?,
-            },
+            name: r.opt()?,
+            detach: r.flag()?,
+            remove: r.flag()?,
+            daemon: r.identity()?,
         };
         r.0.is_empty().then_some(run)
     }
@@ -235,6 +285,16 @@ impl Reader<'_> {
         (0..n).map(|_| self.str()).collect()
     }
 
+    fn identity(&mut self) -> Option<Identity> {
+        Some(Identity {
+            dev: self.u64()?,
+            ino: self.u64()?,
+            size: self.u64()?,
+            mtime_s: self.u64()? as i64,
+            mtime_ns: u32::try_from(self.u64()?).ok()?,
+        })
+    }
+
     fn opt(&mut self) -> Option<Option<String>> {
         if self.flag()? {
             Some(Some(self.str()?))
@@ -249,6 +309,11 @@ pub const RUN_INTERACTIVE: u8 = 1;
 /// A `kind::RUN` flag: the warm VM writes its timing line to the client's stderr, as
 /// `SHARDS_TIMING` asks.
 pub const RUN_TIMING: u8 = 2;
+/// A `kind::RUN` flag: the command's output also goes to the container's log.
+pub const RUN_LOG: u8 = 4;
+/// A `kind::RUN` flag: no client: the command's output goes only to the container's log
+/// (`-d`).
+pub const RUN_DETACHED: u8 = 8;
 
 /// The largest payload a message may carry.
 pub const MAX_PAYLOAD: usize = 1 << 20;
@@ -280,6 +345,9 @@ mod tests {
             kernel: Some("/k".into()),
             init: None,
             timing: true,
+            name: Some("web".into()),
+            detach: true,
+            remove: true,
             daemon: Identity {
                 dev: 1,
                 ino: 2,
@@ -289,6 +357,7 @@ mod tests {
             },
         };
         let bytes = run.encode();
+        let identity = run.daemon;
         assert_eq!(Run::decode(&bytes), Some(run));
         for n in 0..bytes.len() {
             assert_eq!(Run::decode(&bytes[..n]), None, "a request cut at {n} decoded");
@@ -297,6 +366,15 @@ mod tests {
         longer.push(0);
         assert_eq!(Run::decode(&longer), None);
         assert_eq!(Run::decode(&Run::default().encode()), Some(Run::default()));
+        let command = Command {
+            argv: vec!["ps".into(), "-a".into(), String::new()],
+            daemon: identity,
+        };
+        let bytes = command.encode();
+        assert_eq!(Command::decode(&bytes), Some(command));
+        for n in 0..bytes.len() {
+            assert_eq!(Command::decode(&bytes[..n]), None, "a command cut at {n} decoded");
+        }
         // A list that claims more entries than bytes remain is refused, not allocated.
         let mut lying = Vec::new();
         put_str(&mut lying, "i");

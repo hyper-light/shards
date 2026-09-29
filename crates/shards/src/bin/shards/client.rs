@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use shards_ipc::{Run, SOCKET, kind, log};
+use shards_ipc::{Command, Run, SOCKET, kind, log};
 
 use crate::NOT_RUN;
 
@@ -77,6 +77,48 @@ pub fn run(home: &Path, daemon: &Path, request: &Run) -> ExitCode {
                 Ok(None) | Err(_) => {
                     return failed(&format!(
                         "the command's microVM stopped before the command ended; see {}",
+                        log(home).display()
+                    ));
+                }
+            }
+        }
+    }
+    failed("the daemon kept asking for a restart")
+}
+
+/// Runs a container command (`ps`, `wait`, `rm`, ...) in the daemon of `home`, whose
+/// binary is `daemon`, printing what the daemon answers as it comes, and exits with the
+/// command's status.
+pub fn container(home: &Path, daemon: &Path, command: &Command) -> ExitCode {
+    let mut started = match enter(home, daemon) {
+        Ok(started) => started,
+        Err(e) => return failed(&e),
+    };
+    // A daemon from another build answers RESTART once it has stepped aside.
+    for _ in 0..2 {
+        let conn = match connect(home, daemon, &mut started) {
+            Ok(conn) => conn,
+            Err(e) => return failed(&e),
+        };
+        if let Err(e) = shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), &[]) {
+            return failed(&format!("asking the daemon: {e}"));
+        }
+        loop {
+            match shards_ipc::recv(&conn) {
+                Ok(Some(m)) if m.kind == kind::OUT => {
+                    let _ = io::stdout().write_all(&m.payload);
+                }
+                Ok(Some(m)) if m.kind == kind::ERR => {
+                    let _ = io::stderr().write_all(&m.payload);
+                }
+                Ok(Some(m)) if m.kind == kind::END => {
+                    return ExitCode::from(m.payload.first().copied().unwrap_or(1));
+                }
+                Ok(Some(m)) if m.kind == kind::RESTART => break,
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => {
+                    return failed(&format!(
+                        "the daemon hung up before it answered; see {}",
                         log(home).display()
                     ));
                 }

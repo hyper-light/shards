@@ -28,6 +28,9 @@ use std::time::{Duration, Instant};
 use shards_ipc::{Identity, Run, kind};
 use shards_vmm::vm::Config;
 
+use crate::containers::{self, Container, Registry, State as Life};
+
+mod commands;
 use crate::run::{Boot, Prepared};
 use crate::workload::NOT_RUN;
 
@@ -155,10 +158,16 @@ struct Daemon {
     /// The connections of `shards daemon stop`, held open until this process exits, which
     /// is how they learn it has.
     stoppers: Mutex<Vec<UnixStream>>,
-    /// The runs in progress, by their VM's pid.
-    runs: Mutex<HashMap<u32, Tracked>>,
+    /// The runs in progress, by their container's ID.
+    runs: Mutex<HashMap<String, Tracked>>,
     /// `shards daemon stop` asked this daemon to end its runs.
     ending: AtomicBool,
+    /// Every run's container.
+    containers: Mutex<Registry>,
+    /// Notified when a container ends, for `shards wait`.
+    ended: Condvar,
+    /// A container's ID, directory and log, made ahead of the run that takes them.
+    spare: Mutex<Option<(String, File)>>,
     /// Numbers the templates a run saves before they become the template.
     saved: AtomicU64,
     /// The home's lock, held while this daemon lives.
@@ -201,6 +210,8 @@ fn serve(detached: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     let identity = Identity::of(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
     let setting = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
+    let containers =
+        Registry::open(&home).map_err(|e| format!("{}: {e}", home.join("containers").display()))?;
     let daemon = Arc::new(Daemon {
         home,
         exe,
@@ -217,9 +228,13 @@ fn serve(detached: bool) -> Result<(), String> {
         stoppers: Mutex::default(),
         runs: Mutex::default(),
         ending: AtomicBool::new(false),
+        containers: Mutex::new(containers),
+        ended: Condvar::new(),
+        spare: Mutex::default(),
         saved: AtomicU64::new(0),
         _lock: home_lock,
     });
+    daemon.make_spare();
     log(format!(
         "serving {} on {}",
         daemon.home.display(),
@@ -367,8 +382,8 @@ impl Daemon {
                 daemon.handle(conn)
             };
             // The client's descriptors are closed by now: its run goes on in the VM.
-            if let Some(ready) = handed {
-                daemon.track(ready);
+            if let Some((ready, id)) = handed {
+                daemon.track(ready, &id);
             }
         });
         if let Err(e) = spawned {
@@ -389,9 +404,10 @@ impl Daemon {
         std::process::exit(0)
     }
 
-    /// Serves one client's request. A run it hands to a warm VM comes back, for the caller
-    /// to follow once the client's descriptors here are closed.
-    fn handle(self: &Arc<Self>, conn: UnixStream) -> Option<Ready> {
+    /// Serves one client's request. A run it hands to a warm VM comes back with its
+    /// container's ID, for the caller to follow once the client's descriptors here are
+    /// closed.
+    fn handle(self: &Arc<Self>, conn: UnixStream) -> Option<(Ready, String)> {
         let conn = &conn;
         let message = match shards_ipc::recv(conn) {
             Ok(Some(m)) => m,
@@ -411,6 +427,21 @@ impl Daemon {
                     Err(e) => log(format!("holding a stopper's connection: {e}")),
                 }
                 self.stop_runs();
+                return None;
+            }
+            kind::CONTAINER => {
+                let Some(command) = shards_ipc::Command::decode(&message.payload) else {
+                    log("a malformed container command");
+                    return None;
+                };
+                if command.daemon != self.identity {
+                    self.close();
+                    self.stopping.store(true, Ordering::SeqCst);
+                    let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
+                    return None;
+                }
+                let status = self.command(&command.argv, &commands::Reply(conn));
+                let _ = shards_ipc::send(conn, kind::END, &[status], &[]);
                 return None;
             }
             other => {
@@ -452,6 +483,14 @@ impl Daemon {
                 return None;
             }
         };
+        // The run's container, before anything starts: its name must be free.
+        let (id, container_log) = match self.create(&run, &prepared) {
+            Ok(created) => created,
+            Err(e) => {
+                refuse(&e);
+                return None;
+            }
+        };
         let mut flags = 0;
         if prepared.interactive {
             flags |= shards_ipc::RUN_INTERACTIVE;
@@ -459,13 +498,18 @@ impl Daemon {
         if run.timing {
             flags |= shards_ipc::RUN_TIMING;
         }
+        if container_log.is_some() {
+            flags |= shards_ipc::RUN_LOG;
+        }
         let mut payload = vec![flags];
         payload.extend(prepared.spec.encode());
-        let fds = [conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
+        let mut fds = vec![conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
+        fds.extend(container_log.as_ref().map(AsFd::as_fd));
         for _ in 0..HANDOFF_TRIES {
             let ready = match self.warm_for(&prepared, &say) {
                 Ok(ready) => ready,
                 Err(e) => {
+                    self.forget(&id);
                     refuse(&e);
                     return None;
                 }
@@ -475,21 +519,107 @@ impl Daemon {
             if let Some(dir) = &ready.pool {
                 self.refill(&mut lock(&self.state), dir);
             }
+            self.make_spare();
             match handed {
                 // The warm VM serves the client from here, and ours close.
-                Ok(()) => return Some(ready),
+                Ok(()) => return Some((ready, id)),
                 Err(e) => {
                     log(format!("warm VM {} did not take a run: {e}", ready.vm.id()));
                     let _ = ready.vm.kill(libc::SIGKILL);
                 }
             }
         }
+        self.forget(&id);
         refuse("no warm VM took the run");
         None
     }
 
-    /// Follows a run to its end: the VM's DONE, or the VM's end if it dies first.
-    fn track(self: &Arc<Self>, ready: Ready) {
+    /// The container of `run`: a new ID, and the name the run gave, or one made for it, as
+    /// dockerd names containers (moby daemon/names.go). Reserved in memory only: the run's
+    /// path writes nothing but the log it opens, unless `--rm` keeps none.
+    fn create(&self, run: &Run, prepared: &Prepared) -> Result<(String, Option<File>), String> {
+        let spare = lock(&self.spare).take();
+        let (id, spare_log) = match spare {
+            Some((id, log)) => (id, Some(log)),
+            None => (
+                containers::new_id().map_err(|e| format!("a container ID: {e}"))?,
+                None,
+            ),
+        };
+        let mut registry = lock(&self.containers);
+        let name = match &run.name {
+            Some(given) => {
+                if !containers::valid_name(given) {
+                    return Err(format!(
+                        "Invalid container name ({given}), only [a-zA-Z0-9][a-zA-Z0-9_.-] are allowed"
+                    ));
+                }
+                let name = given.strip_prefix('/').unwrap_or(given);
+                if let Some(holder) = registry.name_taken(name) {
+                    return Err(format!(
+                        "Conflict. The container name \"/{name}\" is already in use by container \"{}\". You have to remove (or rename) that container to be able to reuse that name.",
+                        holder.id
+                    ));
+                }
+                name.to_string()
+            }
+            None => crate::names::generate(&id, |name| registry.name_taken(name).is_some())
+                .map_err(|e| format!("a container name: {e}"))?,
+        };
+        let log = match (run.remove, spare_log) {
+            (true, _) => None,
+            (false, Some(log)) => Some(log),
+            (false, None) => {
+                let dir = registry.dir(&id);
+                Some(new_log(&dir).map_err(|e| format!("{}: {e}", dir.display()))?)
+            }
+        };
+        registry.reserve(Container {
+            id: id.clone(),
+            name,
+            image: run.image.clone(),
+            command: prepared
+                .spec
+                .argv
+                .iter()
+                .map(|a| String::from_utf8_lossy(a).into_owned())
+                .collect(),
+            created: containers::now(),
+            state: Life::Created,
+            started: None,
+            finished: None,
+            exit_code: None,
+            auto_remove: run.remove,
+        });
+        Ok((id, log))
+    }
+
+    /// Makes a spare container, if there is none, for the next run to take: making it
+    /// costs a directory and a file that no run should wait for.
+    fn make_spare(&self) {
+        if lock(&self.spare).is_some() {
+            return;
+        }
+        let made = containers::new_id().and_then(|id| {
+            let log = new_log(&lock(&self.containers).dir(&id))?;
+            Ok((id, log))
+        });
+        match made {
+            Ok(spare) => *lock(&self.spare) = Some(spare),
+            Err(e) => log(format!("a spare container: {e}")),
+        }
+    }
+
+    /// Drops the container with `id`, which never ran.
+    fn forget(&self, id: &str) {
+        if let Err(e) = lock(&self.containers).remove(id) {
+            log(format!("container {id}: {e}"));
+        }
+    }
+
+    /// Follows a run to its end, and keeps its container's record: running once the VM
+    /// says STARTED, exited at its DONE, or at the VM's end if the VM dies first.
+    fn track(self: &Arc<Self>, ready: Ready, id: &str) {
         let pid = ready.vm.id();
         // Runs last as long as their commands.
         let _ = ready.socket.set_read_timeout(None);
@@ -503,21 +633,48 @@ impl Daemon {
                 if self.ending.load(Ordering::SeqCst) {
                     let _ = shards_ipc::send(&tracked.socket, kind::SIGNAL, &15u32.to_be_bytes(), &[]);
                 }
-                lock(&self.runs).insert(pid, tracked);
+                lock(&self.runs).insert(id.to_string(), tracked);
             }
             Err(e) => log(format!("VM {pid}'s socket: {e}")),
         }
         let done = loop {
             match shards_ipc::recv(&ready.socket) {
+                Ok(Some(m)) if m.kind == kind::STARTED => {
+                    self.record(id, |c| {
+                        c.state = Life::Running;
+                        c.started = Some(containers::now());
+                    });
+                }
                 Ok(Some(m)) if m.kind == kind::DONE => break m.payload.first().copied(),
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => break None,
             }
         };
-        lock(&self.runs).remove(&pid);
-        *lock(&self.last) = Instant::now();
+        lock(&self.runs).remove(id);
         if done.is_none() {
             log(format!("VM {pid} ended before its command did"));
+        }
+        // A VM that ended without a word leaves its command's status unknown: 255, as
+        // dockerd reports a container whose process it lost.
+        let status = done.unwrap_or(255);
+        let removing = lock(&self.containers).get(id).is_some_and(|c| c.auto_remove);
+        if removing {
+            self.forget(id);
+        } else {
+            self.record(id, |c| {
+                c.state = Life::Exited;
+                c.exit_code = Some(status);
+                c.finished = Some(containers::now());
+            });
+        }
+        *lock(&self.last) = Instant::now();
+        self.ended.notify_all();
+    }
+
+    /// Changes the record of the container with `id` by `f`, and writes it.
+    fn record(&self, id: &str, f: impl FnOnce(&mut Container)) {
+        if let Err(e) = lock(&self.containers).update(id, f) {
+            log(format!("container {id}: {e}"));
         }
     }
 
@@ -526,7 +683,7 @@ impl Daemon {
     /// if its command outlives even that (moby daemon/stop.go).
     fn stop_runs(self: &Arc<Self>) {
         self.ending.store(true, Ordering::SeqCst);
-        let signal = |runs: &HashMap<u32, Tracked>, linux: u32| {
+        let signal = |runs: &HashMap<String, Tracked>, linux: u32| {
             for t in runs.values() {
                 let _ = shards_ipc::send(&t.socket, kind::SIGNAL, &linux.to_be_bytes(), &[]);
             }
@@ -779,6 +936,18 @@ fn hand_over(vm: &UnixStream, payload: &[u8], fds: &[BorrowedFd<'_>]) -> Result<
         Ok(None) => Err("it ended first".into()),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// A new container's directory `dir`, and its log there, for this user alone and written
+/// by appends.
+fn new_log(dir: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    shards_vmm::platform::create_private_dir(dir)?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(dir.join("log"))
 }
 
 /// Waits for a starting VM to say it is ready.

@@ -606,7 +606,12 @@ fn serve_workload(
                         let gate = || {
                             let _ = writeln!(std::io::stderr(), "shards-ready");
                             let _ = std::io::stdin().read_line(&mut String::new());
-                            Ok((spec.clone(), interactive))
+                            Ok(workload::Asked {
+                                spec: spec.clone(),
+                                interactive,
+                                log: None,
+                                started: None,
+                            })
                         };
                         let request = if hold {
                             Request::Later(&gate)
@@ -623,13 +628,19 @@ fn serve_workload(
                     }
                     Command::Warm(link) => {
                         let client = std::sync::OnceLock::new();
+                        let started = || crate::warm::started(&link);
                         let ask = || {
                             let request = crate::warm::receive(&link, &to_guest)?;
                             served_timing
                                 .asked
                                 .store(request.timing, std::sync::atomic::Ordering::Relaxed);
                             let _ = client.set(request.client);
-                            Ok((request.spec, request.interactive))
+                            Ok(workload::Asked {
+                                spec: request.spec,
+                                interactive: request.interactive,
+                                log: request.log,
+                                started: Some(&started),
+                            })
                         };
                         let served = workload::serve(
                             &listener,
@@ -638,13 +649,14 @@ fn serve_workload(
                             &to_guest,
                             &served_timing,
                         );
+                        // Some once the request came: its client, if it has one.
                         match client.get() {
                             Some(connection) => {
                                 let timing = served_timing
                                     .asked
                                     .load(std::sync::atomic::Ordering::Relaxed)
                                     .then(|| timing_json(&stopper, Some(&served_timing)));
-                                crate::warm::finish(&link, connection, &served, timing.as_deref());
+                                crate::warm::finish(&link, connection.as_ref(), &served, timing.as_deref());
                                 (served, true)
                             }
                             // The daemon went without a request: nobody will ever send one.

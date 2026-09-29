@@ -217,7 +217,7 @@ The Firecracker paper claims <5 MB overhead, <125 ms to application code, and up
   | from pre-created VM shells | constant 1.3 ms |
 
 - **Virtines:** pooled VM shells bring provisioning to within 4% of a bare `vmrun` [Wanninger22 §5.2, Fig. 8].
-- **Lambda:** keeps a small pool of pre-booted microVMs. By Little's law, at 125 ms per creation that is one pooled VM per 8 creations/s [Agache20 §4.1.1].
+- **Lambda:** keeps a small pool of pre-booted microVMs. By Little's law, at 125 ms per creation that is one pooled VM per 8 creations/s [Agache20 §4.1.2].
 - **RunD:** pools pre-created cgroups and renames them on use [Li22 §4.4].
 
 **HVF (no published timings)**

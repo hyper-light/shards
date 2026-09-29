@@ -19,7 +19,7 @@ const USAGE: &str = "usage: shards run [OPTIONS] IMAGE [COMMAND] [ARG...]
   container. The image's entrypoint, command, environment, working directory and user
   apply unless given here. IMAGE is pulled first if it is not here.
   Options, as for `docker run`: -e NAME[=VALUE], -w DIR, -u USER[:GROUP], --hostname NAME,
-  -i, --entrypoint COMMAND, --pull missing|always|never, --rm (nothing outlives a run).
+  -i, --entrypoint COMMAND, --pull missing|always|never, --name NAME, --rm.
   --kernel FILE, --init FILE: boot these, instead of the guest `shards guest use` recorded;
   or SHARDS_KERNEL and SHARDS_INIT. Only the recorded guest's runs are kept as templates.";
 
@@ -140,7 +140,8 @@ fn parse(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                     other => return Err(format!("--pull: {other:?} is not missing, always or never")),
                 }
             }
-            "--rm" => {}
+            "--rm" => asked.remove = true,
+            "--name" => asked.name = Some(value("--name")?),
             "--kernel" => asked.kernel = Some(value("--kernel")?),
             "--init" => asked.init = Some(value("--init")?),
             "-h" | "--help" => return Err(String::new()),

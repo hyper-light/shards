@@ -73,6 +73,7 @@ pub fn main(device: &str, template: bool) -> ! {
     let status = match started {
         Ok(workload) => {
             let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_STARTED);
+            let _ = send(&conn, kind::STARTED, &[]);
             // Without blocking: the relay finishes the connection while it runs.
             let signals = dial(run::SIGNAL_PORT, false).ok();
             workload.relay(&conn, signals)

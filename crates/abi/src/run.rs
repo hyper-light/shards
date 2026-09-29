@@ -36,6 +36,9 @@ pub mod kind {
     /// Host to guest, on the [`SIGNAL_PORT`](super::SIGNAL_PORT) connection: a signal for
     /// the workload's main process, as a big-endian u32 in Linux's numbering.
     pub const SIGNAL: u8 = 18;
+    /// Guest to host: the command is executing. It comes before any of its output; a
+    /// command that could not start sends [`SYSTEM_ERR`] instead.
+    pub const STARTED: u8 = 19;
 }
 
 pub fn header(kind: u8, len: u32) -> [u8; HEADER] {

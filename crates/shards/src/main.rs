@@ -6,8 +6,12 @@ use std::io::Write;
 use std::process::ExitCode;
 
 #[cfg(unix)]
+mod containers;
+#[cfg(unix)]
 mod daemon;
 mod guest;
+#[cfg(unix)]
+mod names;
 mod pull;
 mod run;
 mod terminal;

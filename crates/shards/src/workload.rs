@@ -200,7 +200,17 @@ pub enum Request<'a> {
     /// Known before the guest connects.
     Now { spec: Spec, interactive: bool },
     /// Asked for once the guest is connected and waiting: a warm VM's request.
-    Later(&'a dyn Fn() -> Result<(Spec, bool), String>),
+    Later(&'a dyn Fn() -> Result<Asked<'a>, String>),
+}
+
+/// A request, as served: the command, whether it reads stdin, the container's log if its
+/// output is kept, and what to call once the command runs.
+#[cfg(unix)]
+pub struct Asked<'a> {
+    pub spec: Spec,
+    pub interactive: bool,
+    pub log: Option<fs::File>,
+    pub started: Option<&'a (dyn Fn() + Sync)>,
 }
 
 /// Serves the guest: sends the command, relays stdio, and returns the workload's exit
@@ -217,8 +227,18 @@ pub fn serve(
         .listener
         .accept()
         .map_err(|e| format!("waiting for the guest: {e}"))?;
-    let (spec, interactive) = match request {
-        Request::Now { spec, interactive } => (spec, interactive),
+    let Asked {
+        spec,
+        interactive,
+        log,
+        started,
+    } = match request {
+        Request::Now { spec, interactive } => Asked {
+            spec,
+            interactive,
+            log: None,
+            started: None,
+        },
         Request::Later(ask) => ask()?,
     };
     let _ = timing.request_us.set(shards_vmm::log::uptime_us());
@@ -254,7 +274,7 @@ pub fn serve(
             }
         })
         .map_err(|e| format!("signal connection: {e}"))?;
-    let status = relay(&mut conn, timing);
+    let status = relay(&mut conn, timing, log.as_ref(), started);
     {
         let mut state = lock(to);
         *state = Signals::default();
@@ -266,10 +286,22 @@ pub fn serve(
     status
 }
 
-/// Copies the guest's frames to shards' stdout and stderr until the exit status.
+/// Copies the guest's frames to shards' stdout and stderr until the exit status, and to
+/// `log` if the container's output is kept.
 #[cfg(unix)]
-fn relay(conn: &mut UnixStream, timing: &Timing) -> Result<u8, String> {
+fn relay(
+    conn: &mut UnixStream,
+    timing: &Timing,
+    log: Option<&fs::File>,
+    started: Option<&(dyn Fn() + Sync)>,
+) -> Result<u8, String> {
     let mut payload = Vec::new();
+    // A full disk or a removed log costs the log, not the run.
+    let keep = |stream: u8, bytes: &[u8]| {
+        if let Some(mut file) = log {
+            let _ = file.write_all(&log_record(stream, bytes));
+        }
+    };
     loop {
         let mut h = [0u8; run::HEADER];
         conn.read_exact(&mut h)
@@ -283,13 +315,22 @@ fn relay(conn: &mut UnixStream, timing: &Timing) -> Result<u8, String> {
                 let mut out = io::stdout().lock();
                 // A closed stdout drops output, as a closed pipe does for `docker run`.
                 let _ = out.write_all(&payload).and_then(|()| out.flush());
+                keep(LOG_STDOUT, &payload);
             }
             kind::STDERR => {
                 let mut err = io::stderr().lock();
                 let _ = err.write_all(&payload).and_then(|()| err.flush());
+                keep(LOG_STDERR, &payload);
+            }
+            kind::STARTED => {
+                if let Some(started) = started {
+                    started();
+                }
             }
             kind::SYSTEM_ERR => {
-                let _ = writeln!(io::stderr(), "shards: {}", String::from_utf8_lossy(&payload));
+                let line = format!("shards: {}\n", String::from_utf8_lossy(&payload));
+                let _ = io::stderr().write_all(line.as_bytes());
+                keep(LOG_STDERR, line.as_bytes());
             }
             kind::EXIT => {
                 let _ = timing.answered_us.set(shards_vmm::log::uptime_us());
@@ -302,6 +343,26 @@ fn relay(conn: &mut UnixStream, timing: &Timing) -> Result<u8, String> {
             _ => return Err(format!("the guest sent an unknown frame kind {which}")),
         }
     }
+}
+
+/// A container's log is a sequence of records, each a stream byte ([`LOG_STDOUT`] or
+/// [`LOG_STDERR`]), the time the output arrived in nanoseconds since the Unix epoch
+/// (big-endian u64), the output's length (big-endian u32), then the output. Appends keep
+/// the streams in the order they arrived, as `docker logs` shows them.
+pub const LOG_STDOUT: u8 = 1;
+pub const LOG_STDERR: u8 = 2;
+
+/// One log record for `bytes` on `stream`, stamped now.
+#[cfg(unix)]
+fn log_record(stream: u8, bytes: &[u8]) -> Vec<u8> {
+    let at = u64::try_from(crate::containers::now()).unwrap_or(u64::MAX);
+    let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+    let mut record = Vec::with_capacity(13 + bytes.len());
+    record.push(stream);
+    record.extend_from_slice(&at.to_be_bytes());
+    record.extend_from_slice(&len.to_be_bytes());
+    record.extend_from_slice(bytes);
+    record
 }
 
 #[cfg(unix)]
