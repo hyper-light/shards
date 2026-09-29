@@ -20,7 +20,7 @@ jobs:
       matrix:
         runner: [1, 2, 3, 4, 5]
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
@@ -58,7 +58,9 @@ jobs:
           # The same template and working set in both homes; the arms differ by what a
           # restore does with it.
           cp -a $home $ab/old/home
-          for old in none copy; do
-            echo "=== old: SHARDS_KVM_PREFETCH=$old, new: full"
-            ENV_OLD="SHARDS_KVM_PREFETCH=$old" python3 docs/research/measurements/build-ab/ab.py $ab/old $ab/new alpine 150 true
+          for pause in 0.01 0.5; do
+            for old in none copy; do
+              echo "=== pause $pause; old: SHARDS_KVM_PREFETCH=$old, new: full"
+              AB_PAUSE=$pause ENV_OLD="SHARDS_KVM_PREFETCH=$old" python3 docs/research/measurements/build-ab/ab.py $ab/old $ab/new alpine 100 true
+            done
           done
