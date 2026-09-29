@@ -371,6 +371,39 @@ pub fn log(home: &Path) -> PathBuf {
     home.join("daemon.log")
 }
 
+/// This process's peak resident set so far, in KiB; 0 where unknown. On Linux it is the
+/// address space's own high-water mark (`VmHWM`, proc(5)): `getrusage`'s `ru_maxrss`
+/// starts from the spawner's, since exec keeps the peak of the address space it
+/// replaces, which under `posix_spawn` is the parent's (fs/exec.c `exec_mmap`). macOS's
+/// `posix_spawn` starts a new task, and `ru_maxrss` is its own (in bytes there).
+pub fn peak_rss_kib() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                let line = status.lines().find_map(|l| l.strip_prefix("VmHWM:"))?;
+                line.trim().strip_suffix("kB")?.trim().parse().ok()
+            })
+            .unwrap_or(0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // SAFETY: getrusage(2) into a zeroed rusage, a valid out-parameter.
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
+            return 0;
+        }
+        let rss = u64::try_from(usage.ru_maxrss).unwrap_or(0);
+        if cfg!(target_vendor = "apple") {
+            rss / 1024
+        } else {
+            rss
+        }
+    }
+}
+
 /// The effective user ID of the process at the other end of `sock`, as it connected:
 /// `SO_PEERCRED` on Linux (unix(7)), `getpeereid(3)` elsewhere.
 pub fn peer_uid(sock: &UnixStream) -> io::Result<u32> {

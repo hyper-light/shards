@@ -39,7 +39,7 @@ fn main() {
 #[cfg(unix)]
 fn main() {
     use shards_abi::marker;
-    use support::{report, rss_mib, run, stats, us, wall_us};
+    use support::{peak_rss_mib, report, run, stats, us, wall_us};
 
     const WARMUP: usize = 3;
     let runs: usize = support::option("--runs").map_or(50, |v| v.parse().expect("--runs N"));
@@ -89,7 +89,7 @@ fn main() {
             stats("to_init", "us", us(&samples, init)),
             stats("to_exit", "us", us(&samples, |r| r.exit_us())),
             stats("spawn_to_exit", "us", wall_us(&samples)),
-            stats("peak_rss", "MiB", rss_mib(&samples)),
+            stats("peak_rss", "MiB", peak_rss_mib(&samples)),
         ],
     );
 }

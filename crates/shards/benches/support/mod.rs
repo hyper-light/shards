@@ -13,12 +13,10 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct Sample {
     pub run: common::Run,
-    pub max_rss_bytes: u64,
 }
 
 /// Runs `shardsd <args>`, the VMM's own process without the `shards` command in front, to
-/// completion, reaping it with wait4(2) for its own resource usage. With `hold`, waits for
-/// `shards-ready` on stderr, then sends the start line.
+/// completion. With `hold`, waits for `shards-ready` on stderr, then sends the start line.
 pub fn run(args: &[String], hold: bool) -> Sample {
     measure(common::shardsd(), args, hold, &[])
 }
@@ -69,14 +67,12 @@ fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &st
         }
     });
     let mut status = 0;
-    // SAFETY: zeroed rusage is a valid out-parameter.
-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-    // SAFETY: waits for our own child; both out-parameters are valid.
-    let reaped = unsafe { libc::wait4(pid, &mut status, 0, &mut usage) };
+    // SAFETY: waits for our own child; `status` is a valid out-parameter.
+    let reaped = unsafe { libc::waitpid(pid, &mut status, 0) };
     let elapsed = start.elapsed();
     let _ = done_tx.send(());
     watchdog.join().unwrap();
-    assert_eq!(reaped, pid, "wait4: {}", std::io::Error::last_os_error());
+    assert_eq!(reaped, pid, "waitpid: {}", std::io::Error::last_os_error());
     let run = common::Run {
         status: libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status)),
         stdout: String::new(),
@@ -84,12 +80,7 @@ fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &st
         elapsed,
     };
     assert_eq!(run.status, Some(0), "shards failed: {run}");
-    // ru_maxrss is bytes on macOS and KiB on Linux (getrusage(2) on each).
-    let rss_unit = if cfg!(target_os = "macos") { 1 } else { 1024 };
-    Sample {
-        run,
-        max_rss_bytes: usage.ru_maxrss as u64 * rss_unit,
-    }
+    Sample { run }
 }
 
 /// Nearest-rank percentile of sorted `v`.
@@ -220,10 +211,14 @@ pub fn us(samples: &[Sample], f: impl Fn(&common::Run) -> Option<u128>) -> Vec<f
         .collect()
 }
 
-pub fn rss_mib(samples: &[Sample]) -> Vec<f64> {
-    samples
-        .iter()
-        .map(|s| s.max_rss_bytes as f64 / (1024.0 * 1024.0))
+/// Each run's own peak resident set, in MiB, as its process reports it on its timing line
+/// (`rss_kib`: `VmHWM` on Linux, `ru_maxrss` on macOS). Not `wait4`'s `ru_maxrss`, which
+/// on Linux starts from this harness's own peak: exec keeps the peak of the address space
+/// it replaces, the spawner's under `posix_spawn` (fs/exec.c `exec_mmap`).
+pub fn peak_rss_mib(samples: &[Sample]) -> Vec<f64> {
+    us(samples, |r| r.rss_kib())
+        .into_iter()
+        .map(|kib| kib / 1024.0)
         .collect()
 }
 

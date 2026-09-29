@@ -104,6 +104,7 @@ fn serve(home: &Path, daemon: &Path, request: &Run, detach_keys: &[u8]) -> ExitC
                     };
                     if !timing.is_empty() {
                         let _ = writeln!(io::stderr(), "shards-timing {}", String::from_utf8_lossy(timing));
+                        let _ = writeln!(io::stderr(), "shards-client-rss {}", shards_ipc::peak_rss_kib());
                     }
                     return ExitCode::from(status);
                 }

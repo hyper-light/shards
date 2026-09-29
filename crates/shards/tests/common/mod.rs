@@ -285,6 +285,14 @@ impl Run {
     }
 
     /// The VMM process's peak RSS when it reported, in KiB.
+    /// The client's own peak RSS, which it reports beside the timing line.
+    pub fn client_rss_kib(&self) -> Option<u64> {
+        self.stderr
+            .lines()
+            .find_map(|l| l.strip_prefix("shards-client-rss "))
+            .and_then(|v| v.trim().parse().ok())
+    }
+
     pub fn rss_kib(&self) -> Option<u128> {
         self.timing_field("rss_kib")
     }

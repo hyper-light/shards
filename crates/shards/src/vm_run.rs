@@ -825,19 +825,7 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
 fn max_rss_kib() -> u64 {
     #[cfg(unix)]
     {
-        // SAFETY: getrusage(2) into a zeroed rusage, a valid out-parameter.
-        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-        // SAFETY: as above.
-        if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
-            return 0;
-        }
-        // ru_maxrss is bytes on macOS and KiB on Linux (getrusage(2) on each).
-        let rss = u64::try_from(usage.ru_maxrss).unwrap_or(0);
-        if cfg!(target_vendor = "apple") {
-            rss / 1024
-        } else {
-            rss
-        }
+        shards_ipc::peak_rss_kib()
     }
     #[cfg(not(unix))]
     0

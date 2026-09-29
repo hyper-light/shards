@@ -48,7 +48,7 @@ fn main() {
 
 #[cfg(unix)]
 fn main() {
-    use support::{report, rss_mib, run_env, stats, us, wall_us};
+    use support::{peak_rss_mib, report, run_env, stats, us, wall_us};
 
     const WARMUP: usize = 3;
     // A template's runs whose VMs its pool restored before the working set existed: the
@@ -112,15 +112,9 @@ fn main() {
     }
     run_env(&stop, false, &env);
     let _ = std::fs::remove_dir_all(&home);
-    let vm_rss_mib = |samples: &[support::Sample]| -> Vec<f64> {
-        us(samples, |r| r.rss_kib())
-            .into_iter()
-            .map(|kib| kib / 1024.0)
-            .collect()
-    };
     let mut rows = vec![
         stats("run_cold", "us", wall_us(&cold)),
-        stats("run_cold_rss", "MiB", vm_rss_mib(&cold)),
+        stats("run_cold_rss", "MiB", peak_rss_mib(&cold)),
     ];
     if templated {
         let command = |r: &common::Run| r.answered_us()?.checked_sub(r.request_us()?);
@@ -132,11 +126,21 @@ fn main() {
             stats("run_template", "us", wall_us(&template)),
             stats("template_command", "us", us(&template, command)),
             stats("template_outside", "us", outside),
-            stats("run_template_rss", "MiB", vm_rss_mib(&template)),
+            stats("run_template_rss", "MiB", peak_rss_mib(&template)),
         ]);
     }
     let clients: Vec<support::Sample> = cold.into_iter().chain(template).collect();
-    rows.push(stats("client_rss", "MiB", rss_mib(&clients)));
+    // The client's own peak, which it reports beside the VM's timing line.
+    let client_mib = clients
+        .iter()
+        .map(|s| {
+            s.run
+                .client_rss_kib()
+                .expect("the client's shards-client-rss line") as f64
+                / 1024.0
+        })
+        .collect();
+    rows.push(stats("client_rss", "MiB", client_mib));
     report(
         "image",
         &[("runs", runs.to_string()), ("templates", templates.to_string())],

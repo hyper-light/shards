@@ -11,7 +11,10 @@
 //! - `overhead`: the VMM's resident memory outside guest memory, by Firecracker's own rule
 //!   (tests/host_tools/memory.py): every mapping in /proc/PID/smaps counts except those
 //!   sized like guest memory. The highest of 20 readings, 10 ms apart, once the guest idles.
-//! - `peak_rss`: `ru_maxrss` from wait4(2), guest memory included.
+//! - `peak_rss`: the VMM's peak resident set, guest memory included: `VmHWM` in
+//!   /proc/PID/status, read once the readings are done. Not wait4(2)'s `ru_maxrss`, which
+//!   starts from this harness's own peak: exec keeps the peak of the address space it
+//!   replaces, the spawner's under `posix_spawn` (fs/exec.c `exec_mmap`).
 //!
 //! Firecracker is its pinned release binary, run without the jailer as its getting-started
 //! guide runs it: `--no-api --config-file`, default seccomp filters. Each iteration
@@ -270,14 +273,14 @@ mod compare {
                 .max()
                 .unwrap_or(0)
         });
+        // The guest has idled through the readings: its peak so far is its peak.
+        let peak = peak_bytes(pid);
         // SAFETY: the child is not yet reaped, so `pid` still names it.
         unsafe { libc::kill(pid, libc::SIGKILL) };
         let mut status = 0;
-        // SAFETY: zeroed rusage is a valid out-parameter.
-        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-        // SAFETY: waits for our own child; both out-parameters are valid.
-        let reaped = unsafe { libc::wait4(pid, &mut status, 0, &mut usage) };
-        assert_eq!(reaped, pid, "wait4: {}", std::io::Error::last_os_error());
+        // SAFETY: waits for our own child; `status` is a valid out-parameter.
+        let reaped = unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert_eq!(reaped, pid, "waitpid: {}", std::io::Error::last_os_error());
         let (out, err) = (out.join().unwrap(), err.join().unwrap());
         let (Ok(ready), Some(overhead_bytes)) = (ready, overhead) else {
             panic!("the guest never reported ready\n--- stdout\n{out}\n--- stderr\n{err}");
@@ -285,9 +288,22 @@ mod compare {
         Sample {
             to_ready_us: ready.duration_since(start).as_secs_f64() * 1e6,
             overhead_bytes,
-            // ru_maxrss is KiB on Linux (getrusage(2)).
-            peak_rss_bytes: usage.ru_maxrss as u64 * 1024,
+            peak_rss_bytes: peak.expect("the VMM's VmHWM"),
         }
+    }
+
+    /// `pid`'s peak resident set so far: `VmHWM` in /proc/PID/status (proc(5)).
+    fn peak_bytes(pid: libc::pid_t) -> Option<u64> {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        let kib: u64 = status
+            .lines()
+            .find_map(|l| l.strip_prefix("VmHWM:"))?
+            .trim()
+            .strip_suffix("kB")?
+            .trim()
+            .parse()
+            .ok()?;
+        Some(kib * 1024)
     }
 
     /// Resident bytes of `pid` outside guest memory, by Firecracker's rule

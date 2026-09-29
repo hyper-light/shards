@@ -19,10 +19,14 @@ Method:
 | `to_init` | VMM `main` | PID 1 starts |
 | `to_exit` | VMM `main` | the guest powers off |
 | `spawn_to_exit` | host wall clock, process spawn | process reaped (includes exec, dyld, teardown) |
-| `peak_rss` | — | `ru_maxrss` from wait4(2) |
+| `peak_rss` | — | the process's own peak RSS, which it reports: `VmHWM` (proc(5)) on Linux, `ru_maxrss` on macOS |
 
 `peak_rss` includes the guest memory the VMM process touched. It is not the VMM's own
-overhead.
+overhead. Up to 2026-09-29 (3aaa777) the benchmarks read `ru_maxrss` from wait4(2)
+instead, which on Linux starts from the harness's own peak: exec keeps the peak of the
+address space it replaces, and under `posix_spawn` that is the spawner's (fs/exec.c
+`exec_mmap`). Linux entries up to then are at least that: 33 MiB in the Restore and
+Image entries, whose `warm_peak_rss` and `client_rss` were the harness's, not shards'.
 
 ### Runs
 
@@ -89,7 +93,7 @@ Method:
 | `cold_restore` | VMM `main` | the RESUMED marker (guest running again) |
 | `cold_spawn_exit` | spawn | reap (host wall clock around the whole process) |
 | `warm_request` | the release (the start request) | the RESUMED marker |
-| `warm_peak_rss` | — | `ru_maxrss`, including touched guest memory |
+| `warm_peak_rss` | — | the VM process's own peak RSS, including touched guest memory (see Boot) |
 
 A warm VMM has already mapped snapshot memory, created the VM, GIC and vCPUs, loaded
 vCPU state, and restored the distributor and devices (D2, D14). A start request only
@@ -321,7 +325,7 @@ Method:
 | `template_command` | the command sent to the guest | its exit status read (the VM's clock) |
 | `template_outside` | — | the rest of the wall clock: the client launched, the request handed to a warm VM, the status back, the client gone |
 | `*_rss` | — | the VM process's peak RSS when it answered, guest memory included |
-| `client_rss` | — | the client process's `ru_maxrss`, from wait4(2) |
+| `client_rss` | — | the client process's own peak RSS, which it reports (see Boot) |
 
 Runs before the daemon (up to 2026-09-29, 05f92d6) timed `shards run` as the VMM
 process itself: `template_restore` ran from its `main` to the restored vCPUs,
@@ -469,7 +473,7 @@ ubuntu-24.04 runner as in Restore (AMD EPYC 9V45, KVM nested) · n=100 over 5 te
 Pooled runs from templates, on Linux for the first time: three times faster than a boot,
 but the command's 81 ms in a restored guest is the whole of it, as in Restore. Outside
 the guest a run costs 1.8 ms. The client's peak RSS, 33.6 MiB against 1.7 on the Mac, is
-not explained yet.
+not explained yet. (It was this harness's own: see Boot, `peak_rss`.)
 
 **2026-09-29, x86_64 Linux on KVM** · e5d4b3c (branch kvm-working-sets) · GitHub's
 ubuntu-24.04 runner: AMD EPYC 9V45, KVM nested · Linux 6.17.0-1022-azure · n=100 over 5
@@ -508,7 +512,7 @@ Method:
 |---|---|
 | `to_ready` | host clock, spawn → the guest's ready line on the VMM's stdout |
 | `overhead` | RSS outside guest memory by Firecracker's rule (tests/host_tools/memory.py); max of 20 readings 10 ms apart while the guest idles |
-| `peak_rss` | `ru_maxrss` from wait4(2), guest memory included |
+| `peak_rss` | `VmHWM` in /proc/PID/status once the readings are done, guest memory included (see Boot) |
 
 ### Runs
 
