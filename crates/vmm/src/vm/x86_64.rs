@@ -391,6 +391,9 @@ pub fn restore(
     let memory =
         Arc::new(GuestMemory::from_file(&ranges, memory_file).map_err(|e| format!("snapshot memory: {e}"))?);
     let a = assemble(&memory, &snap.config, console, vsock)?;
+    // Diagnostic (branch kvm-ws-ab): SHARDS_KVM_PREFETCH=none|copy|full (default full).
+    let mode = std::env::var("SHARDS_KVM_PREFETCH").unwrap_or_default();
+    let working_set = if mode == "none" { Vec::new() } else { working_set };
     if let Err(e) = copy_written(&memory, &working_set) {
         warn!("{e}; the guest copies the pages it writes as it writes them");
     }
@@ -543,7 +546,10 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu, 
                 .ok_or_else(|| format!("the snapshot has no vCPU {index}"))?;
             vcpu.restore_state(state).map_err(|e| e.to_string())?;
             // After the state, which sets the paging mode KVM maps for.
-            if index == 0 && !r.working_set.is_empty() {
+            if index == 0
+                && !r.working_set.is_empty()
+                && std::env::var("SHARDS_KVM_PREFETCH").as_deref() != Ok("copy")
+            {
                 let t0 = crate::log::uptime_us();
                 let n = pre_fault(&vcpu, &r.working_set);
                 debug!(

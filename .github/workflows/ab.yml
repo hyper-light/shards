@@ -55,8 +55,10 @@ jobs:
           for i in $(seq 100); do ls $home/templates/*/working-set >/dev/null 2>&1 && break; sleep 0.1; done
           SHARDS_HOME=$home $ab/new/shards daemon stop
           ls -l $home/templates/*/
-          # The same template, without its working set.
+          # The same template and working set in both homes; the arms differ by what a
+          # restore does with it.
           cp -a $home $ab/old/home
-          rm $ab/old/home/templates/*/working-set
-          # Each run's pool refilled before the next: the request's path alone.
-          AB_PAUSE=0.5 python3 docs/research/measurements/build-ab/ab.py $ab/old $ab/new alpine 100 true
+          for old in none copy; do
+            echo "=== old: SHARDS_KVM_PREFETCH=$old, new: full"
+            ENV_OLD="SHARDS_KVM_PREFETCH=$old" python3 docs/research/measurements/build-ab/ab.py $ab/old $ab/new alpine 150 true
+          done
