@@ -44,8 +44,8 @@ pub struct Restored {
     pub counter: u64,
     /// The CPU the snapshot was taken on; a restore on a different one is refused.
     pub cpu_id: Vec<(u16, u64)>,
-    /// GIC distributor registers, applied once every vCPU exists (see [`finish`]).
-    pub dist: Vec<(u32, u64)>,
+    /// The GIC device's state, applied once every vCPU exists (see [`finish`]).
+    pub gic: Vec<u8>,
     /// The device bus's saved state, applied by [`finish`].
     pub devices: Vec<u8>,
     /// The snapshot's working set, to prefetch before the guest runs; empty for none.
@@ -416,7 +416,7 @@ pub fn restore(
             vcpus: state.vcpus,
             counter: state.counter,
             cpu_id: state.cpu_id,
-            dist: state.dist,
+            gic: state.gic,
             devices: snap.devices.clone(),
             working_set,
             prefetched: std::sync::OnceLock::new(),
@@ -426,16 +426,19 @@ pub fn restore(
 }
 
 /// Completes the machine once every vCPU exists and before any runs. A restore applies
-/// the GIC distributor only now: HVF routes an SPI when its IROUTER is written, and
-/// routing to a CPU that does not exist yet loses the SPI for good. Found by the snapshot
-/// E2E test; SPIs were pending but never delivered. Devices go after the GIC, because
-/// they re-raise their interrupt lines as they restore. Last, the restored guest gets a
-/// new generation ID, so it reseeds its RNG before it runs anything that uses it.
+/// the GIC's state only now, as Hypervisor.framework requires (hv_gic.h): HVF routes an
+/// SPI to its vCPU, and routing to a CPU that does not exist yet loses the SPI for good.
+/// Found by the snapshot E2E test; SPIs were pending but never delivered. The state is
+/// HVF's own serialization, not the distributor's registers, which lose an interrupt HVF
+/// has passed on toward a vCPU that has yet to take it (found by the storm E2E test: a
+/// request completed, the guest never told). Devices go after the GIC, because they
+/// re-raise their interrupt lines as they restore. Last, the restored guest gets a new
+/// generation ID, so it reseeds its RNG before it runs anything that uses it.
 pub fn finish(vm: &hv::Vm, bus: &MmioBus, vmgenid: &VmGenId, start: &Start) -> Result<(), String> {
     let Start::Restore(r) = start else {
         return Ok(());
     };
-    vm.restore_gic(&r.dist).map_err(|e| e.to_string())?;
+    vm.restore_gic(&r.gic).map_err(|e| e.to_string())?;
     let mut devices = Reader::new(&r.devices);
     bus.restore(&mut devices)
         .and_then(|()| devices.finish())
@@ -518,8 +521,8 @@ pub fn capture(vcpu: &hv::Vcpu, index: usize) -> Result<Captured, String> {
     })
 }
 
-/// The architecture state a snapshot records: every vCPU's, in index order, and the
-/// distributor. The VM's counter is the latest any vCPU saw.
+/// The architecture state a snapshot records: every vCPU's, in index order, and the GIC
+/// device's. The VM's counter is the latest any vCPU saw.
 pub fn encode_state(vm: &hv::Vm, captured: Vec<Captured>) -> Result<Vec<u8>, String> {
     let counter = captured.iter().map(|c| c.counter).max().unwrap_or(0);
     let cpu_id = captured
@@ -529,7 +532,7 @@ pub fn encode_state(vm: &hv::Vm, captured: Vec<Captured>) -> Result<Vec<u8>, Str
     let state = MachineState {
         counter,
         cpu_id,
-        dist: vm.save_gic().map_err(|e| e.to_string())?,
+        gic: vm.save_gic().map_err(|e| e.to_string())?,
         vcpus: captured.into_iter().map(|c| c.state).collect(),
     };
     let mut w = Writer::default();

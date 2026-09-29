@@ -189,3 +189,205 @@ fn restores_elsewhere_read_the_disks_the_snapshot_was_taken_with() {
         "{replaced}"
     );
 }
+
+/// Storms: machines busy in every way at once when they are snapshotted (audit A02). They
+/// stream through vsock, which the host reaches through Unix sockets.
+#[cfg(unix)]
+mod storm {
+    use std::io::Write as _;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use super::common::{self, Vm, echo};
+    use super::{RO_BYTES, Scratch, TIMEOUT, cannot_run_vms, cannot_snapshot, kernel, test_guest};
+
+    /// The writable disk of a storm: 256 records of 4 KiB.
+    const RW_BYTES: usize = 1 << 20;
+    const ECHO_PORT: u32 = 1234;
+    /// Where the host tells a storm it has stopped streaming.
+    const DONE_PORT: u32 = 1235;
+
+    /// A storm (the test guest's `storm` mode) on `cpus` vCPUs, with both disks and a vsock
+    /// device at `sock`, whose snapshot goes to `s.snapshot()`, then `then`.
+    fn storm_args(s: &Scratch, cpus: u32, sock: &Path, then: &str) -> Vec<std::ffi::OsString> {
+        let rw = s.0.join("rw.img");
+        [
+            "vm".into(),
+            "run".into(),
+            "--kernel".into(),
+            kernel().as_os_str().to_owned(),
+            "--init".into(),
+            test_guest().as_os_str().to_owned(),
+            "--cpus".into(),
+            cpus.to_string().into(),
+            "--memory".into(),
+            "256".into(),
+            "--disk".into(),
+            s.disk().into(),
+            "--disk".into(),
+            rw.into_os_string(),
+            "--vsock".into(),
+            sock.as_os_str().to_owned(),
+            "--cmdline".into(),
+            format!(
+                "console=ttyS0 quiet panic=-1 shards_test=storm shards_vda_bytes={RO_BYTES} shards_vdb_bytes={RW_BYTES} shards_storm_ms={}",
+                std::env::var("SHARDS_STORM_MS").unwrap_or_else(|_| "0".into())
+            )
+            .into(),
+            "--snapshot-dir".into(),
+            s.snapshot().into_os_string(),
+            "--snapshot-then".into(),
+            then.into(),
+        ]
+        .into()
+    }
+
+    type Rounds = Vec<Result<(), String>>;
+
+    /// Streams rounds of 4 MiB through the echo of the VM at `sock` until `stop`, from when
+    /// it answers; returns each round's result.
+    fn stream(sock: PathBuf, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<Rounds> {
+        std::thread::spawn(move || {
+            let mut rounds = Vec::new();
+            let mut salt = 0;
+            while !stop.load(Ordering::Relaxed) {
+                if !sock.exists() {
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                salt += 1;
+                let round = echo(&sock, ECHO_PORT, salt, 4 << 20);
+                if round.is_err() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                rounds.push(round);
+            }
+            rounds
+        })
+    }
+
+    /// Lets a storm that has done its checks (`storm checked`) give its verdict once the host
+    /// has stopped streaming through it, so every round ends with the guest alive. Returns
+    /// the rounds.
+    fn storm_done(
+        vm: &mut Vm,
+        sock: &Path,
+        stop: &AtomicBool,
+        streamer: std::thread::JoinHandle<Rounds>,
+    ) -> Rounds {
+        let line = vm.wait_for_any(&["storm checked", "SHARDS-TEST FAIL"], TIMEOUT);
+        stop.store(true, Ordering::Relaxed);
+        let rounds = streamer.join().unwrap();
+        assert!(line.contains("storm checked"), "{}", vm.seen.join("\n"));
+        // Connected, then a byte: the guest waits for it, so it lives until the host has
+        // read its OK.
+        let told = common::vsock_connect(sock, DONE_PORT, TIMEOUT)
+            .and_then(|mut s| s.write_all(b"\n").map_err(|e| e.to_string()));
+        if let Err(e) = told {
+            vm.wait_exit_within(TIMEOUT);
+            panic!("telling the guest it may finish: {e}\n{}", vm.seen.join("\n"));
+        }
+        rounds
+    }
+
+    /// Every round came back whole, but for connections refused before the guest listened,
+    /// and at least `least` did.
+    fn all_whole(rounds: &[Result<(), String>], least: usize, what: &str) {
+        for e in rounds.iter().filter_map(|r| r.as_ref().err()) {
+            assert!(e.contains("refused"), "{what}: {e}");
+        }
+        let whole = rounds.iter().filter(|r| r.is_ok()).count();
+        assert!(whole >= least, "{what}: {whole} whole rounds");
+    }
+
+    /// vCPU counts from two to as many as this host and the kernel take, or
+    /// `SHARDS_STORM_CPUS` alone. `SHARDS_STORM_MS` runs the storm that long before its
+    /// snapshot, for its report of the workers' longest gaps (platform-measurements M45).
+    fn storm_cpus() -> Vec<u32> {
+        let max = shards_vmm::vm::max_vcpus().unwrap().min(common::KERNEL_NR_CPUS);
+        if let Ok(only) = std::env::var("SHARDS_STORM_CPUS") {
+            return vec![only.parse().unwrap()];
+        }
+        let mut cpus: Vec<u32> = [2, 8, max].into_iter().filter(|&n| n <= max).collect();
+        cpus.dedup();
+        cpus
+    }
+
+    /// A snapshot of a machine busy in every way at once, its CPUs waking one another, its
+    /// timers ticking, both disks mid-request and a vsock stream in both directions, restores
+    /// whole (audit A02): each restore finds every activity going on, no interrupt lost, every
+    /// record on the writable disk written exactly once, and the host's stream whole.
+    #[test]
+    fn restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write() {
+        if cannot_run_vms() || cannot_snapshot() {
+            return;
+        }
+        for cpus in storm_cpus() {
+            let s = Scratch::new(&format!("storm-{cpus}"));
+            let rw = s.0.join("rw.img");
+            std::fs::write(&rw, vec![0u8; RW_BYTES]).unwrap();
+            let sock = s.0.join("v.sock");
+            let stop = Arc::new(AtomicBool::new(false));
+            let streamer = stream(sock.clone(), stop.clone());
+            let mut original = Vm::spawn(&storm_args(&s, cpus, &sock, "stop"));
+            let code = original.wait_exit_within(TIMEOUT);
+            // Its stream breaks where it stopped, at the snapshot.
+            stop.store(true, Ordering::Relaxed);
+            drop(streamer.join().unwrap());
+            let said = original.seen.join("\n");
+            assert_eq!(code, Some(0), "{cpus} vCPUs: {said}");
+            assert!(!said.contains("SHARDS-TEST FAIL"), "{cpus} vCPUs: {said}");
+
+            // The writable disk as the snapshot left it, in the same file, for each restore.
+            let taken = std::fs::read(&rw).unwrap();
+            for i in 0..3 {
+                std::fs::write(&rw, &taken).unwrap();
+                let sock = s.0.join(format!("r{i}.sock"));
+                let stop = Arc::new(AtomicBool::new(false));
+                let streamer = stream(sock.clone(), stop.clone());
+                let mut copy = Vm::spawn(&[
+                    "vm".as_ref(),
+                    "restore".as_ref(),
+                    s.snapshot().as_os_str(),
+                    "--vsock".as_ref(),
+                    sock.as_os_str(),
+                ]);
+                let rounds = storm_done(&mut copy, &sock, &stop, streamer);
+                let code = copy.wait_exit_within(TIMEOUT);
+                let what = format!("{cpus} vCPUs, restore {i}");
+                let said = copy.seen.join("\n");
+                assert_eq!(code, Some(0), "{what}: {said}");
+                assert!(said.contains("SHARDS-TEST PASS"), "{what}: {said}");
+                assert!(said.contains("generation=1"), "{what}: {said}");
+                all_whole(&rounds, 1, &what);
+            }
+        }
+    }
+
+    /// A machine busy in every way at once that resumes after its snapshot goes on whole
+    /// (audit A02): every activity continues, and the host's vsock stream, running through
+    /// the snapshot, loses and repeats nothing.
+    #[test]
+    fn a_busy_machine_goes_on_whole_past_its_snapshot() {
+        if cannot_run_vms() || cannot_snapshot() {
+            return;
+        }
+        for cpus in storm_cpus() {
+            let s = Scratch::new(&format!("storm-resume-{cpus}"));
+            std::fs::write(s.0.join("rw.img"), vec![0u8; RW_BYTES]).unwrap();
+            let sock = s.0.join("v.sock");
+            let stop = Arc::new(AtomicBool::new(false));
+            let streamer = stream(sock.clone(), stop.clone());
+            let mut vm = Vm::spawn(&storm_args(&s, cpus, &sock, "resume"));
+            let rounds = storm_done(&mut vm, &sock, &stop, streamer);
+            let code = vm.wait_exit_within(TIMEOUT);
+            let said = vm.seen.join("\n");
+            assert_eq!(code, Some(0), "{cpus} vCPUs: {said}");
+            assert!(said.contains("SHARDS-TEST PASS"), "{cpus} vCPUs: {said}");
+            assert!(said.contains("generation=0"), "{cpus} vCPUs: {said}");
+            all_whole(&rounds, 2, &format!("{cpus} vCPUs"));
+        }
+    }
+}

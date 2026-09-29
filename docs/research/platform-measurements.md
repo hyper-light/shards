@@ -1590,3 +1590,56 @@ revision before comparing a changed API/implementation.
     untouched page (audit D01).
 - **Consequence.** D29 stands: no host thread races another, at no measured cost to
   runs, and saves take a third to a fifth of the time. CI runs `check.sh`.
+
+### M45. A snapshot of a machine busy in every way at once
+
+- **Question.** Does a snapshot taken while every vCPU, timer, disk and vsock stream is
+  busy come back whole (audit A02)?
+- **Method.** The test guest's `storm` mode, driven by `crates/shards/tests/snapshot.rs`
+  (`storm`):
+  - Pairs of threads pinned to neighbouring CPUs wake each other in turn through
+    condition variables, a thread sleeps in 200 µs ticks, one reads the read-only disk
+    (`O_DIRECT`, 64 KiB, checked), and one writes 4 KiB records to the writable disk,
+    reading each slot first to find it empty. The host streams 4 MiB rounds, checked,
+    through a vsock echo.
+  - The guest asks for the snapshot once the storm is up and the echo has carried a MiB.
+    Every restore (the writable disk put back as the snapshot left it) and the resumed
+    original must see every worker progress within 1 s. A restore must also lose no
+    wakeup: no wait may time out to find its turn had come.
+  - Each worker's longest gap between rounds and the lost wakeups are reported.
+    `SHARDS_STORM_MS` runs the storm that long before the snapshot, reporting that window
+    on its own.
+  - 2, 8 and 64 vCPUs on an Apple M5 Max (Mac17,6, 18 cores), macOS 26.4.1.
+- **Results.**
+  - **Interrupts on their way.** With HVF's GIC saved and restored as distributor and
+    redistributor registers, every restore of a snapshot taken with a disk request in
+    flight stalled. The request's completion never reached the guest: its `used_event`
+    still waited on an entry the device had added and signalled. An SPI edge raised in
+    isolation, with no vCPU running, did survive the registers (`GICD_ISPENDR1` read back
+    `0x2`), which is why the register tests had passed. With `hv_gic_state`, no restore
+    stalled in 180 (20 runs of both tests).
+  - **A lost kick.** In about one run in fifteen, the barrier waited forever. `sample`
+    showed the coordinator waiting, one vCPU parked, and the other inside `hv_vcpu_run` in
+    HVF's `VcpuStateManager::wait_for_interrupt`, its kick lost; the guest reported RCU
+    stalls on the parked CPUs. Once every entry checked for a pending kick, no run hung,
+    in the 20 runs of the final tests and some 70 of earlier versions.
+  - **Steady state** (11 windows of 1–3 s per vCPU count). The median of the workers'
+    longest gaps was 0.59–0.82 ms at 2 vCPUs, 0.23–0.37 ms at 8 and 3.7–4.6 ms at 64
+    (64 vCPUs sharing 18 cores). The longest of all, 69 ms, was the disk reader's. No
+    wakeup was lost in the 12 windows that counted them.
+  - **Restores:** no lost wakeup in 45 at 8 vCPUs.
+  - **Resumed originals** counted lost wakeups in 10 of 30 runs at 8 vCPUs (11 in all),
+    and in 5 of 30 (6) with no GIC state taken, the same within noise (Fisher's exact
+    p ≈ 0.23). An original's clock runs on through its pause, so a wait that times out
+    during the pause counts. The pause was 60–75 ms at 2 and 8 vCPUs and 81–131 ms at 64
+    when the snapshot came at once. After a 1 s storm it was 0.24–0.44 s at 2 vCPUs,
+    0.35–0.61 s at 8 and 0.59–1.49 s at 64.
+- **Consequence.** D14's phased barrier, `hv_gic_state`, and the kick check before every
+  entry. The tests require restores to lose no wakeup, and let the original only report
+  them.
+- **Open.**
+  - A busy guest's 256 MiB took up to 1.5 s to save at 64 vCPUs: the scan of every page
+    (audit D01) and the durable flush.
+  - A resumed original sees its snapshot's pause as time gone by, where a restore's clock
+    continues. Whether to hide it, and how the guest's wall clock would then be kept
+    right, is open.

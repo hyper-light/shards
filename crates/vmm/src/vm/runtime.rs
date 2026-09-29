@@ -3,9 +3,10 @@
 
 use std::fs::File;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, mpsc};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 use std::thread::JoinHandle;
 
+use super::barrier::Barrier;
 use super::machine::{self, Machine, Start};
 use super::{AfterSnapshot, Config, ExitReason, RestoreConfig, SnapshotPolicy};
 use crate::devices::control::Control;
@@ -101,16 +102,6 @@ impl Handle {
     }
 }
 
-/// A snapshot in progress: vCPUs park here with their state captured.
-#[derive(Debug, Default)]
-struct Pause {
-    requested: bool,
-    /// Per vCPU, while parked: its state and its guest counter when it stopped.
-    captured: Vec<Option<machine::Captured>>,
-    /// Bumped to release parked vCPUs.
-    epoch: u64,
-}
-
 #[derive(Debug)]
 struct Shared {
     kickers: Vec<OnceLock<hv::Kicker>>,
@@ -120,8 +111,8 @@ struct Shared {
     exited: Condvar,
     /// When the boot vCPU first entered the guest (µs since VMM start).
     entered_at_us: OnceLock<u128>,
-    pause: Mutex<Pause>,
-    paused: Condvar,
+    /// Where vCPUs park, one phase at a time, while a snapshot is taken.
+    snapshot: Barrier<machine::Captured>,
     /// vCPUs wait here after creation until the machine is complete (and, for a held
     /// restore, until the request arrives).
     released: Mutex<Release>,
@@ -152,11 +143,7 @@ impl Shared {
             exited_at_us: Mutex::new(None),
             exited: Condvar::new(),
             entered_at_us: OnceLock::new(),
-            pause: Mutex::new(Pause {
-                captured: (0..vcpus).map(|_| None).collect(),
-                ..Pause::default()
-            }),
-            paused: Condvar::new(),
+            snapshot: Barrier::new(vcpus as usize),
             released: Mutex::new(Release::default()),
             release: Condvar::new(),
             start,
@@ -206,8 +193,7 @@ impl Shared {
         }
         self.exited.notify_all();
         // Taking each lock orders the wakeup after any waiter's check of `exiting`.
-        drop(lock(&self.pause));
-        self.paused.notify_all();
+        self.snapshot.wake();
         drop(lock(&self.released));
         self.release.notify_all();
         self.kick_all();
@@ -230,33 +216,17 @@ impl Shared {
     /// The guest asked for a snapshot (on a vCPU thread, inside its MMIO write): every
     /// vCPU is kicked out of the guest, this one right after its store completes.
     fn request_snapshot(&self) {
-        let mut p = lock(&self.pause);
-        if p.requested {
-            return;
+        if self.snapshot.request() {
+            self.kick_all();
         }
-        p.requested = true;
-        drop(p);
-        self.paused.notify_all();
-        self.kick_all();
     }
 
-    /// After a kick: if a snapshot is pending, capture this vCPU's state on its own
-    /// thread (HVF requires it) and park until the snapshot is written.
-    fn park_for_snapshot(&self, index: usize, vcpu: &hv::Vcpu) -> Result<(), String> {
-        if !lock(&self.pause).requested {
-            return Ok(());
-        }
-        let captured = machine::capture(vcpu, index)?;
-        let mut p = lock(&self.pause);
-        if let Some(slot) = p.captured.get_mut(index) {
-            *slot = Some(captured);
-        }
-        let epoch = p.epoch;
-        self.paused.notify_all();
-        while p.epoch == epoch && !self.exiting() {
-            p = wait(&self.paused, p);
-        }
-        Ok(())
+    /// After a kick: if a snapshot is pending, park, capture this vCPU's state on its own
+    /// thread (HVF requires it) once every vCPU is out and the devices are quiet, and wait
+    /// until the snapshot is written (the barrier module).
+    fn park_for_snapshot(&self, index: usize, vcpu: &hv::Vcpu) {
+        self.snapshot
+            .park(index, &|| self.exiting(), || machine::capture(vcpu, index));
     }
 }
 
@@ -501,11 +471,7 @@ fn vcpu_thread(
             return;
         }
         match vcpu.run(io) {
-            Ok(hv::Exit::Canceled) => {
-                if let Err(e) = sh.park_for_snapshot(index, &vcpu) {
-                    return sh.stop(ExitReason::Error(format!("vCPU {index} snapshot: {e}")));
-                }
-            }
+            Ok(hv::Exit::Canceled) => sh.park_for_snapshot(index, &vcpu),
             Ok(hv::Exit::Shutdown) => return sh.stop(ExitReason::PowerOff),
             Ok(hv::Exit::Reset) => return sh.stop(ExitReason::Reset),
             Err(e) => return sh.stop(ExitReason::Error(format!("vCPU {index}: {e}"))),
@@ -525,18 +491,21 @@ struct Coordinator {
 
 impl Coordinator {
     fn run(self) {
+        let stopping = || self.sh.exiting();
         loop {
-            let Some(mut p) = self.wait_until_parked() else {
+            if !self.sh.snapshot.wait_parked(&stopping) {
                 return;
-            };
-            let captured: Option<Vec<machine::Captured>> = p.captured.iter_mut().map(Option::take).collect();
-            drop(p);
+            }
             let t0 = crate::log::uptime_us();
-            let written = match captured {
-                Some(captured) => self.write(captured),
-                None => Err("a vCPU parked without its state".into()),
+            // Every vCPU is out of the guest: the devices go quiet, and only then does each
+            // vCPU capture its state.
+            self.bus.pause();
+            let captured = match self.sh.snapshot.capture(&stopping) {
+                None => return,
+                Some(Err(e)) => return self.sh.stop(ExitReason::Error(format!("snapshot: {e}"))),
+                Some(Ok(captured)) => captured,
             };
-            let generation = match written {
+            let generation = match self.write(captured) {
                 Ok(generation) => generation,
                 Err(e) => return self.sh.stop(ExitReason::Error(format!("snapshot: {e}"))),
             };
@@ -554,11 +523,7 @@ impl Coordinator {
                     if let Err(e) = self.bus.resume() {
                         return self.sh.stop(ExitReason::Error(format!("resuming devices: {e}")));
                     }
-                    let mut p = lock(&self.sh.pause);
-                    p.requested = false;
-                    p.epoch = p.epoch.wrapping_add(1);
-                    drop(p);
-                    self.sh.paused.notify_all();
+                    self.sh.snapshot.release();
                 }
             }
         }
@@ -578,24 +543,10 @@ impl Coordinator {
         }
     }
 
-    /// Waits for a request and for every vCPU to park; `None` once the VM is exiting.
-    fn wait_until_parked(&self) -> Option<MutexGuard<'_, Pause>> {
-        let mut p = lock(&self.sh.pause);
-        loop {
-            if self.sh.exiting() {
-                return None;
-            }
-            if p.requested && p.captured.iter().all(Option::is_some) {
-                return Some(p);
-            }
-            p = wait(&self.sh.paused, p);
-        }
-    }
-
-    /// Quiesces devices, then saves interrupt controller, devices and memory. Returns the
-    /// new generation's directory, held open.
+    /// Saves the interrupt controller, the devices and memory, of a machine whose vCPUs
+    /// have parked with their state captured and whose devices are quiet. Returns the new
+    /// generation's directory, held open.
     fn write(&self, captured: Vec<machine::Captured>) -> Result<File, String> {
-        self.bus.pause();
         let arch = machine::encode_state(&self.vm, captured)?;
         let mut w = Writer::default();
         self.bus.save(&mut w);

@@ -50,7 +50,8 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 5: the control page's state records the identity the guest's init announced.
 /// 6: generations, each named in its state; backing files by absolute path in the OS's
 ///    own bytes, with their identities.
-const VERSION: u32 = 6;
+/// 7: arm64's GIC as the backend's own serialization of the device, not its registers.
+const VERSION: u32 = 7;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;

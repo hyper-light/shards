@@ -1,7 +1,7 @@
-//! arm64 machine state for snapshots, in backend-neutral terms. System registers are keyed
-//! by their op0:op1:CRn:CRm:op2 encoding and GIC registers by their GICv3 offset. HVF's
-//! `hv_sys_reg_t`/`hv_gic_*_reg_t` and KVM's `ARM64_SYS_REG`/vGIC attributes use the same keys
-//! (ground-truth doc §5 row 16).
+//! arm64 machine state for snapshots. System registers are keyed by their
+//! op0:op1:CRn:CRm:op2 encoding, which HVF's `hv_sys_reg_t` and `hv_gic_icc_reg_t` and
+//! KVM's `ARM64_SYS_REG` share (ground-truth doc §5 row 16). The GIC device is the
+//! backend's own serialization: a snapshot restores only on the backend that took it.
 
 use super::Entry;
 use crate::snapshot::codec::{DecodeError, Reader, Result, Writer};
@@ -25,8 +25,6 @@ pub struct VcpuState {
     pub fpsr: u64,
     /// System registers, SP_EL0/SP_EL1/ELR_EL1/SPSR_EL1 and the EL1 timers included.
     pub sys: Vec<(u16, u64)>,
-    /// GIC redistributor registers (SGI/PPI state) by GICR offset.
-    pub redist: Vec<(u32, u64)>,
     /// GIC CPU interface registers by encoding.
     pub icc: Vec<(u16, u64)>,
     pub power: Power,
@@ -40,8 +38,9 @@ pub struct MachineState {
     /// ID registers of the CPU the snapshot was taken on. Restore refuses a CPU that
     /// reports anything different (ground-truth doc §5 row 21).
     pub cpu_id: Vec<(u16, u64)>,
-    /// GIC distributor registers by GICD offset.
-    pub dist: Vec<(u32, u64)>,
+    /// The GIC device: distributor, redistributors and what the backend holds besides,
+    /// in the backend's own serialization (HVF: hv_gic_state).
+    pub gic: Vec<u8>,
     pub vcpus: Vec<VcpuState>,
 }
 
@@ -49,9 +48,9 @@ pub struct MachineState {
 // distributor registers).
 const MAX_VCPUS: usize = 1024;
 const MAX_SYS: usize = 512;
-const MAX_REDIST: usize = 64;
 const MAX_ICC: usize = 32;
-const MAX_DIST: usize = 8192;
+/// HVF's GIC state is tens of KiB for 64 vCPUs.
+const MAX_GIC: usize = 16 << 20;
 const MAX_ID: usize = 64;
 
 fn put_pairs16(w: &mut Writer, v: &[(u16, u64)]) {
@@ -61,19 +60,8 @@ fn put_pairs16(w: &mut Writer, v: &[(u16, u64)]) {
     });
 }
 
-fn put_pairs32(w: &mut Writer, v: &[(u32, u64)]) {
-    w.seq(v, |w, &(k, x)| {
-        w.u32(k);
-        w.u64(x);
-    });
-}
-
 fn get_pairs16(r: &mut Reader<'_>, max: usize) -> Result<Vec<(u16, u64)>> {
     r.seq(max, 10, |r| Ok((r.u16()?, r.u64()?)))
-}
-
-fn get_pairs32(r: &mut Reader<'_>, max: usize) -> Result<Vec<(u32, u64)>> {
-    r.seq(max, 12, |r| Ok((r.u32()?, r.u64()?)))
 }
 
 impl VcpuState {
@@ -85,7 +73,6 @@ impl VcpuState {
         w.u64(self.fpcr);
         w.u64(self.fpsr);
         put_pairs16(w, &self.sys);
-        put_pairs32(w, &self.redist);
         put_pairs16(w, &self.icc);
         match self.power {
             Power::Off => w.u8(0),
@@ -110,7 +97,6 @@ impl VcpuState {
         }
         let (fpcr, fpsr) = (r.u64()?, r.u64()?);
         let sys = get_pairs16(r, MAX_SYS)?;
-        let redist = get_pairs32(r, MAX_REDIST)?;
         let icc = get_pairs16(r, MAX_ICC)?;
         let power = match r.u8()? {
             0 => Power::Off,
@@ -129,7 +115,6 @@ impl VcpuState {
             fpcr,
             fpsr,
             sys,
-            redist,
             icc,
             power,
         })
@@ -140,7 +125,7 @@ impl MachineState {
     pub fn encode(&self, w: &mut Writer) {
         w.u64(self.counter);
         put_pairs16(w, &self.cpu_id);
-        put_pairs32(w, &self.dist);
+        w.bytes(&self.gic);
         w.seq(&self.vcpus, |w, v| v.encode(w));
     }
 
@@ -148,7 +133,7 @@ impl MachineState {
         Ok(MachineState {
             counter: r.u64()?,
             cpu_id: get_pairs16(r, MAX_ID)?,
-            dist: get_pairs32(r, MAX_DIST)?,
+            gic: r.bytes(MAX_GIC)?.to_vec(),
             vcpus: r.seq(MAX_VCPUS, 1, VcpuState::decode)?,
         })
     }
@@ -168,14 +153,13 @@ mod tests {
             fpcr: 1,
             fpsr: 2,
             sys: vec![(0xc080, 0x30d0_1805), (0xdf1a, 12345)],
-            redist: vec![(0x1_0100, 0xffff)],
             icc: vec![(0xc230, 0xf0)],
             power,
         };
         MachineState {
             counter: 0x1234_5678_9abc,
             cpu_id: vec![(0xc000, 0x610f_0000)],
-            dist: vec![(0x0, 0x13), (0x6100, 0)],
+            gic: vec![0x13, 0, 0x61, 7],
             vcpus: vec![
                 vcpu(0, Power::On),
                 vcpu(1, Power::Off),

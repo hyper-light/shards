@@ -17,6 +17,7 @@ pub fn main() {
             "blk" => blk(),
             "blk_stress" => blk_stress(),
             "snapshot" => snapshot(),
+            "storm" => storm(),
             "resume" => resume(),
             "idle" => idle(),
             "kmsg" => kmsg(),
@@ -99,6 +100,9 @@ impl Aligned {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, len.min(self.len)) }
     }
 }
+
+// SAFETY: the mapping belongs to this value alone, so it may move to another thread.
+unsafe impl Send for Aligned {}
 
 impl Drop for Aligned {
     fn drop(&mut self) {
@@ -417,6 +421,419 @@ fn snapshot() -> Result<(), String> {
     Ok(())
 }
 
+/// What a storm's threads share.
+struct Storm {
+    stop: std::sync::atomic::AtomicBool,
+    failure: std::sync::Mutex<Option<String>>,
+    /// Per worker, the rounds it has finished.
+    progress: Vec<std::sync::atomic::AtomicU64>,
+    /// Per worker, the longest time between two of its rounds, in µs.
+    longest: Vec<std::sync::atomic::AtomicU64>,
+    /// Waits of the paired workers that timed out to find their turn had come: a wakeup
+    /// that never arrived.
+    missed: std::sync::atomic::AtomicU64,
+    /// Records the writer has written, each completed.
+    written: std::sync::atomic::AtomicU64,
+    /// Where the writer is: 1 reading slot `written`, 2 writing it, 0 between.
+    writer_at: std::sync::atomic::AtomicU64,
+}
+
+impl Storm {
+    fn fail(&self, what: String) {
+        let mut f = self
+            .failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if f.is_none() {
+            *f = Some(what);
+        }
+    }
+
+    fn stopping(&self) -> bool {
+        self.stop.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// One round of a storm's worker; an error stops the storm.
+type Round = Box<dyn FnMut(&Storm) -> Result<(), String> + Send>;
+
+const RECORD: usize = 4096;
+
+/// The workers' longest gaps between rounds: the median and the three longest, with their
+/// workers, in µs. `reset` starts them over.
+fn gaps(storm: &Storm, reset: bool) -> String {
+    use std::sync::atomic::Ordering;
+    let mut all: Vec<(u64, usize)> = storm
+        .longest
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            (
+                if reset {
+                    l.swap(0, Ordering::Relaxed)
+                } else {
+                    l.load(Ordering::Relaxed)
+                },
+                i,
+            )
+        })
+        .collect();
+    all.sort_unstable();
+    let median = all.get(all.len() / 2).map_or(0, |g| g.0);
+    let top: Vec<String> = all
+        .iter()
+        .rev()
+        .take(3)
+        .map(|(g, i)| format!("{g} (worker {i})"))
+        .collect();
+    format!("median {median}, longest {}", top.join(", "))
+}
+
+/// The record the writer puts in slot `k`: its number, then the writable disk's pattern.
+fn record(k: u64, buf: &mut [u8]) {
+    fill(RW_SALT, k * RECORD as u64, buf);
+    for (b, n) in buf.iter_mut().zip(k.to_le_bytes()) {
+        *b = n;
+    }
+}
+
+fn pin(cpu: usize) -> Result<(), String> {
+    // SAFETY: a zeroed cpu_set_t is the empty set.
+    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    // SAFETY: CPU_SET ignores a CPU past the set's end.
+    unsafe { libc::CPU_SET(cpu, &mut set) };
+    // SAFETY: sched_setaffinity(2) for this thread, with a set of its size.
+    if unsafe { libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) } != 0 {
+        return Err(format!("pinning to CPU {cpu}: {}", io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// A machine busy in every way at once when it asks for a snapshot (audit A02): pairs of
+/// threads on neighbouring CPUs wake each other in turn (interrupts between CPUs), one
+/// thread sleeps in short timer ticks, one reads the read-only disk and checks it, one
+/// numbers 4 KiB records onto the writable disk, and the vsock echo serves the host, which
+/// streams through it. The guest asks for the snapshot once the storm is up and the echo
+/// has carried a MiB.
+///
+/// Whatever continues past the snapshot, the original or a restore, must see every worker
+/// keep going: a lost interrupt stalls one. The writer reads each slot before it writes
+/// it, and finds it empty unless some request of its own was carried out without its
+/// completion reaching the guest: every record is written exactly once.
+///
+/// Its checks done, it says `storm checked`, and gives its verdict once the host has
+/// connected to port 1235 and sent a byte: the host stops streaming first, so every round
+/// ends with the guest alive.
+fn storm() -> Result<(), String> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let ro_bytes = env_u64("shards_vda_bytes")?;
+    let rw_bytes = env_u64("shards_vdb_bytes")?;
+    // SAFETY: sysconf(3) takes no pointers.
+    let cpus = usize::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).unwrap_or(1);
+    if cpus < 2 {
+        return Err(format!("a storm needs two CPUs; this guest has {cpus}"));
+    }
+    let pairs: Vec<(usize, usize)> = (0..cpus).step_by(2).map(|a| (a, (a + 1) % cpus)).collect();
+    // Workers: both threads of each pair, then the timer, the reader and the writer.
+    let workers = 2 * pairs.len() + 3;
+    let storm = Arc::new(Storm {
+        stop: AtomicBool::new(false),
+        failure: std::sync::Mutex::new(None),
+        progress: (0..workers).map(|_| AtomicU64::new(0)).collect(),
+        longest: (0..workers).map(|_| AtomicU64::new(0)).collect(),
+        missed: AtomicU64::new(0),
+        written: AtomicU64::new(0),
+        writer_at: AtomicU64::new(0),
+    });
+    let mut threads = Vec::new();
+    let mut spawn = |slot: usize, cpu: Option<usize>, name: String, mut round: Round| {
+        let storm = storm.clone();
+        threads.push(thread::spawn(move || {
+            if let Some(cpu) = cpu
+                && let Err(e) = pin(cpu)
+            {
+                return storm.fail(e);
+            }
+            let mut last = monotonic_ns();
+            while !storm.stopping() {
+                match round(&storm) {
+                    Ok(()) => {
+                        let now = monotonic_ns();
+                        let gap = u64::try_from(now.saturating_sub(last) / 1000).unwrap_or(u64::MAX);
+                        last = now;
+                        if let Some(l) = storm.longest.get(slot) {
+                            l.fetch_max(gap, Ordering::Relaxed);
+                        }
+                        if let Some(p) = storm.progress.get(slot) {
+                            p.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    Err(e) => return storm.fail(format!("{name}: {e}")),
+                }
+            }
+        }));
+    };
+
+    for (i, &(a, b)) in pairs.iter().enumerate() {
+        let ball = Arc::new((std::sync::Mutex::new(0u8), std::sync::Condvar::new()));
+        for (side, cpu, other) in [(0u8, a, b), (1u8, b, a)] {
+            let ball = ball.clone();
+            spawn(
+                2 * i + usize::from(side),
+                Some(cpu),
+                format!("CPU {cpu}'s turn with CPU {other}"),
+                Box::new(move |storm| {
+                    let (turn, cv) = &*ball;
+                    let mut t = turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let since = Instant::now();
+                    while *t != side {
+                        if storm.stopping() {
+                            return Ok(());
+                        }
+                        if since.elapsed() > Duration::from_secs(2) {
+                            return Err(format!("no wakeup from CPU {other} in 2 s"));
+                        }
+                        let (next, waited) = cv
+                            .wait_timeout(t, Duration::from_millis(100))
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        t = next;
+                        if waited.timed_out() && *t == side {
+                            storm.missed.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    *t = 1 - side;
+                    cv.notify_all();
+                    Ok(())
+                }),
+            );
+        }
+    }
+    let timer = 2 * pairs.len();
+    let mut last = monotonic_ns();
+    spawn(
+        timer,
+        None,
+        "the timer".into(),
+        Box::new(move |_| {
+            thread::sleep(Duration::from_micros(200));
+            let now = monotonic_ns();
+            if now < last {
+                return Err(format!("CLOCK_MONOTONIC went backwards: {last} -> {now}"));
+            }
+            last = now;
+            Ok(())
+        }),
+    );
+    let ro = open("/dev/vda", libc::O_RDONLY | libc::O_DIRECT)?;
+    let mut read_buf = Aligned::new(64 << 10)?;
+    let mut seed = 0x5eed_u64;
+    spawn(
+        timer + 1,
+        None,
+        "the reader".into(),
+        Box::new(move |_| {
+            let blocks = (ro_bytes / 4096).saturating_sub(16).max(1);
+            let offset = next(&mut seed) % blocks * 4096;
+            verify(ro, RO_SALT, offset, 64 << 10, &mut read_buf)
+        }),
+    );
+    let rw = open("/dev/vdb", libc::O_RDWR | libc::O_DIRECT)?;
+    let mut write_buf = Aligned::new(RECORD)?;
+    let slots = rw_bytes / RECORD as u64;
+    spawn(
+        timer + 2,
+        None,
+        "the writer".into(),
+        Box::new(move |storm| {
+            let k = storm.written.load(Ordering::Relaxed);
+            if k >= slots {
+                // The disk is full: rest, still counting.
+                thread::sleep(Duration::from_millis(1));
+                return Ok(());
+            }
+            let b = write_buf.slice(RECORD);
+            storm.writer_at.store(1, Ordering::Relaxed);
+            pread_exact(rw, b, k * RECORD as u64)?;
+            if b.iter().any(|&x| x != 0) {
+                return Err(format!(
+                    "slot {k} was written already, by a request whose completion never reached the guest"
+                ));
+            }
+            record(k, b);
+            storm.writer_at.store(2, Ordering::Relaxed);
+            pwrite_exact(rw, b, k * RECORD as u64)?;
+            storm.written.store(k + 1, Ordering::Relaxed);
+            storm.writer_at.store(0, Ordering::Relaxed);
+            Ok(())
+        }),
+    );
+    let listener = vsock_listen(ECHO_PORT)?;
+    thread::spawn(move || serve_echo(&listener));
+    let done = vsock_listen(DONE_PORT)?;
+    let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
+
+    // The snapshot lands in the thick of it: after the storm is up and the host's stream is.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    thread::sleep(Duration::from_millis(50));
+    while ECHOED.load(Ordering::Relaxed) < 1 << 20 {
+        if Instant::now() > deadline {
+            return Err("the host never streamed through the echo".into());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    // The storm in its steady state, for `shards_storm_ms`, with nothing paused.
+    gaps(&storm, true);
+    thread::sleep(Duration::from_millis(env_u64("shards_storm_ms").unwrap_or(0)));
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST INFO longest gaps steady: {}; missed wakeups {}",
+        gaps(&storm, true),
+        storm.missed.swap(0, Ordering::Relaxed)
+    );
+    let control = ControlPage::map()?;
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+    // A restored copy continues here, as does the original, if it resumed.
+    let generation = control.read(shards_abi::control::GENERATION);
+    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO generation={generation}");
+
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST INFO longest gaps before: {}",
+        gaps(&storm, true)
+    );
+    let seen: Vec<u64> = storm.progress.iter().map(|p| p.load(Ordering::Relaxed)).collect();
+    // Long enough for 64 vCPUs sharing a smaller host's cores, short of what a lost
+    // completion or timer would cost: those never end.
+    thread::sleep(Duration::from_secs(1));
+    if let Some(e) = storm
+        .failure
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
+        return Err(e);
+    }
+    for (i, (p, before)) in storm.progress.iter().zip(&seen).enumerate() {
+        if p.load(Ordering::Relaxed) == *before {
+            let at = match storm.writer_at.load(Ordering::Relaxed) {
+                1 => "reading",
+                2 => "writing",
+                _ => "between requests",
+            };
+            let interrupts = std::fs::read_to_string("/proc/interrupts").unwrap_or_default();
+            let virtio: Vec<&str> = interrupts.lines().filter(|l| l.contains("virtio")).collect();
+            return Err(format!(
+                "worker {i} of {workers} made no progress in 1 s after the snapshot; longest gaps since: {}; the writer is {at} slot {}; in flight (reads writes): vda {}, vdb {}; {}",
+                gaps(&storm, false),
+                storm.written.load(Ordering::Relaxed),
+                sysfs("/sys/block/vda/inflight").unwrap_or_default(),
+                sysfs("/sys/block/vdb/inflight").unwrap_or_default(),
+                virtio.join(" | ")
+            ));
+        }
+    }
+    // A restore's clock continues from the snapshot, so no wait there times out for the
+    // pause: one that timed out to find its turn had come lost a wakeup between CPUs. The
+    // original's clock ran on through the pause, so it only reports them.
+    let missed = storm.missed.load(Ordering::Relaxed);
+    if generation > 0 && missed > 0 {
+        return Err(format!(
+            "{missed} wakeups between CPUs never arrived after the restore"
+        ));
+    }
+    storm.stop.store(true, Ordering::Relaxed);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while threads.iter().any(|t| !t.is_finished()) {
+        if Instant::now() > deadline {
+            return Err("a worker never finished its round".into());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    if let Some(e) = storm
+        .failure
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
+        return Err(e);
+    }
+    // Exactly the records the writer completed, each whole, and nothing after them.
+    let written = storm.written.load(Ordering::Relaxed);
+    let mut got = Aligned::new(RECORD)?;
+    let mut want = vec![0u8; RECORD];
+    for k in 0..written.saturating_add(1).min(slots) {
+        let b = got.slice(RECORD);
+        pread_exact(rw, b, k * RECORD as u64)?;
+        if k < written {
+            record(k, &mut want);
+            if b != want.as_slice() {
+                return Err(format!("record {k} of {written} is not what the writer wrote"));
+            }
+        } else if b.iter().any(|&x| x != 0) {
+            return Err(format!("slot {k}, after the {written} written, holds data"));
+        }
+    }
+    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO records={written}");
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST INFO longest gaps after: {}; missed wakeups {}",
+        gaps(&storm, false),
+        storm.missed.load(Ordering::Relaxed)
+    );
+    // The verdict waits for the host to say it has stopped streaming, so every round the
+    // host streamed ended with the guest alive.
+    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO storm checked");
+    // The host's side of the connection is up only once it has read its OK, after this
+    // side's accept: its byte, or its close, says so.
+    let mut host = accept_within(&done, Duration::from_secs(60))?;
+    let mut byte = [0u8; 1];
+    std::io::Read::read(&mut host, &mut byte)
+        .map(drop)
+        .map_err(|e| format!("waiting for the host's word: {e}"))
+}
+
+/// The next connection to `listener`, or an error once `limit` passes without one.
+fn accept_within(listener: &std::fs::File, limit: Duration) -> Result<std::fs::File, String> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let wait = libc::timeval {
+        tv_sec: limit.as_secs().try_into().unwrap_or(60),
+        tv_usec: 0,
+    };
+    // SAFETY: setsockopt(2) on our own socket, with a timeval of its size: accept(2) gives
+    // up after it.
+    let set = unsafe {
+        libc::setsockopt(
+            listener.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            (&raw const wait).cast(),
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    if set != 0 {
+        return Err(format!("SO_RCVTIMEO: {}", io::Error::last_os_error()));
+    }
+    // SAFETY: accept(2) on our listening socket, without the peer address.
+    let fd = unsafe {
+        libc::accept4(
+            listener.as_raw_fd(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            libc::SOCK_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(format!(
+            "no host connection in {limit:?}: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
 /// The benchmark guest: asks for a snapshot; a restored clone marks that it runs again
 /// and powers off at once, so restore timings contain no guest work.
 fn resume() -> Result<(), String> {
@@ -519,6 +936,10 @@ fn await_crypto_selftests() -> Result<(), String> {
 
 /// The vsock port the guest serves an echo on.
 const ECHO_PORT: u32 = 1234;
+/// Where the host tells a storm it has stopped streaming.
+const DONE_PORT: u32 = 1235;
+/// Bytes the echo has sent back, over every connection.
+static ECHOED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// The host port the guest dials first.
 const HOST_PORT: u32 = 5000;
 
@@ -600,6 +1021,7 @@ fn serve_echo(listener: &std::fs::File) -> Result<(), String> {
                         if conn.write_all(buf.get(..n).unwrap_or_default()).is_err() {
                             return;
                         }
+                        ECHOED.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }

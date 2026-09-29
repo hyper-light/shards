@@ -23,6 +23,8 @@ pub const WORKING_SETS: bool = cfg!(hv);
 /// where the saving run's they barely do (PM M33).
 pub const RESTORES_RECORD: bool = cfg!(hv = "kvm");
 
+#[cfg(any(hv, test))]
+mod barrier;
 #[cfg(hv)]
 mod runtime;
 #[cfg(hv)]

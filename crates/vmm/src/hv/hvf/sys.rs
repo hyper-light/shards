@@ -232,7 +232,9 @@ pub fn max_ipa_bits() -> Result<u32> {
     Ok(n)
 }
 
-/// Distributor register by GICD offset; callable from any thread (hv_gic.h).
+/// Distributor register by GICD offset; callable from any thread (hv_gic.h). Tests read
+/// the GIC's state through it.
+#[cfg(test)]
 pub fn dist_reg(offset: u16) -> Result<u64> {
     let mut v = 0;
     // SAFETY: writes one u64.
@@ -242,10 +244,56 @@ pub fn dist_reg(offset: u16) -> Result<u64> {
     Ok(v)
 }
 
+#[cfg(test)]
 pub fn set_dist_reg(offset: u16, value: u64) -> Result<()> {
     // SAFETY: no memory is passed.
     check("hv_gic_set_distributor_reg", unsafe {
         ffi::hv_gic_set_distributor_reg(offset, value)
+    })
+}
+
+/// The GIC device's state, as Hypervisor.framework serializes it: "the complete serialized
+/// state of the device, except for the GIC cpu registers", stable and versioned
+/// (hv_gic_state.h). It holds what the distributor and redistributor registers do not, such
+/// as interrupts on their way to a vCPU. The VM must be stopped.
+pub fn gic_state() -> Result<Vec<u8>> {
+    // SAFETY: returns a retained object, released below, or NULL.
+    let state = unsafe { ffi::hv_gic_state_create() };
+    if state.is_null() {
+        return Err(Error {
+            op: "hv_gic_state_create",
+            code: ffi::HV_ERROR,
+        });
+    }
+    let data = (|| {
+        let mut size = 0usize;
+        // SAFETY: a live state object; writes one usize.
+        check("hv_gic_state_get_size", unsafe {
+            ffi::hv_gic_state_get_size(state, &mut size)
+        })?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(size).map_err(|_| Error {
+            op: "hv_gic_state_get_data",
+            code: ffi::HV_NO_RESOURCES,
+        })?;
+        data.resize(size, 0u8);
+        // SAFETY: a live state object, and a buffer of the size it asked for.
+        check("hv_gic_state_get_data", unsafe {
+            ffi::hv_gic_state_get_data(state, data.as_mut_ptr().cast())
+        })?;
+        Ok(data)
+    })();
+    // SAFETY: the object hv_gic_state_create returned, released once.
+    unsafe { ffi::os_release(state) };
+    data
+}
+
+/// Restores [`gic_state`]'s data into this VM's GIC: after the GIC and every vCPU exist,
+/// before any runs (hv_gic.h).
+pub fn set_gic_state(data: &[u8]) -> Result<()> {
+    // SAFETY: a buffer of `data.len()` bytes, only read.
+    check("hv_gic_set_state", unsafe {
+        ffi::hv_gic_set_state(data.as_ptr().cast(), data.len())
     })
 }
 
@@ -510,23 +558,6 @@ impl Vcpu {
         // SAFETY: owning thread.
         check("hv_vcpu_set_vtimer_offset", unsafe {
             ffi::hv_vcpu_set_vtimer_offset(self.id, offset)
-        })
-    }
-
-    /// Redistributor register by GICR offset. Owning thread (hv_gic.h).
-    pub fn redist_reg(&self, offset: u32) -> Result<u64> {
-        let mut v = 0;
-        // SAFETY: owning thread; writes one u64.
-        check("hv_gic_get_redistributor_reg", unsafe {
-            ffi::hv_gic_get_redistributor_reg(self.id, offset, &mut v)
-        })?;
-        Ok(v)
-    }
-
-    pub fn set_redist_reg(&mut self, offset: u32, value: u64) -> Result<()> {
-        // SAFETY: owning thread.
-        check("hv_gic_set_redistributor_reg", unsafe {
-            ffi::hv_gic_set_redistributor_reg(self.id, offset, value)
         })
     }
 

@@ -362,6 +362,13 @@ impl Vcpu {
                 }
                 self.on = true;
             }
+            // A kick may arrive as the vCPU leaves the guest for another exit, which HVF
+            // then reports in its place, dropping the cancel: a snapshot's barrier waited
+            // on a vCPU idle in the guest forever (the storm E2E test). Every entry
+            // checks for one first, as KVM checks a vCPU's requests before entering.
+            if self.power.take_kick(self.index) {
+                return Ok(Exit::Canceled);
+            }
             let (syndrome, ipa) = match self.sys.run()? {
                 sys::Exit::Canceled => {
                     self.power.kick_delivered(self.index);
@@ -562,25 +569,11 @@ const ID_REGS: &[u16] = &[
 ];
 const ID_AA64DFR0_EL1: u16 = 0xc028;
 
-/// Redistributor SGI/PPI state by GICR offset. The set-views carry the state; the
-/// clear-views (ICENABLER, ICPENDR, ICACTIVER) are the same bits.
-const REDIST_REGS: &[u32] = &[
-    0x1_0080, 0x1_0100, 0x1_0200, 0x1_0300, // IGROUPR0, ISENABLER0, ISPENDR0, ISACTIVER0
-    0x1_0400, 0x1_0404, 0x1_0408, 0x1_040c, 0x1_0410, 0x1_0414, 0x1_0418, 0x1_041c, // IPRIORITYR0-7
-    0x1_0c00, 0x1_0c04, // ICFGR0-1
-];
-
 /// GIC CPU interface registers, in restore order: SRE and CTLR before the priority
 /// state, group enables last. RPR is read-only.
 const ICC_REGS: &[u16] = &[
     0xc665, 0xc664, 0xc230, 0xc643, 0xc663, 0xc644, 0xc648, 0xc666, 0xc667,
 ];
-
-const GICD_CTLR: u16 = 0x0000;
-/// GICD_CTLR.RWP is read-only; ARE_NS (bit 4) must be set before routing registers mean
-/// anything.
-const GICD_CTLR_RWP: u64 = 1 << 31;
-const GICD_CTLR_ARE: u64 = 1 << 4;
 
 /// The breakpoint and watchpoint registers ID_AA64DFR0_EL1 says exist.
 fn debug_regs(dfr0: u64) -> Vec<u16> {
@@ -599,47 +592,23 @@ fn debug_regs(dfr0: u64) -> Vec<u16> {
     regs
 }
 
-/// Distributor registers covering INTIDs 32..`nint`: groups, enables, pending, active,
-/// priorities, configuration and routing.
-fn dist_regs(nint: u32) -> Vec<u16> {
-    let mut regs = vec![GICD_CTLR];
-    for base in [0x0080u32, 0x0100, 0x0200, 0x0300] {
-        regs.extend((1..nint.div_ceil(32)).map(|i| (base + 4 * i) as u16));
-    }
-    regs.extend((8..nint.div_ceil(4)).map(|i| (0x0400 + 4 * i) as u16));
-    regs.extend((2..nint.div_ceil(16)).map(|i| (0x0c00 + 4 * i) as u16));
-    regs.extend((32..nint).map(|id| (0x6000 + 8 * id) as u16));
-    regs
-}
-
 /// The host counter guest counters are offset from, now.
 pub fn host_counter() -> u64 {
     sys::host_counter()
 }
 
 impl Vm {
-    /// Distributor state. Every vCPU must be stopped.
-    pub fn save_gic(&self) -> Result<Vec<(u32, u64)>> {
-        let p = sys::gic_params()?;
-        dist_regs(p.spi_base.saturating_add(p.spi_count).min(1020))
-            .into_iter()
-            .map(|r| Ok((u32::from(r), sys::dist_reg(r)?)))
-            .collect()
+    /// The GIC device's state, distributor, redistributors and the interrupts HVF holds
+    /// on their way to a vCPU, which no register shows: Hypervisor.framework's own
+    /// serialization (hv_gic_state.h). Every vCPU must be stopped.
+    pub fn save_gic(&self) -> Result<Vec<u8>> {
+        Ok(sys::gic_state()?)
     }
 
-    /// Restores distributor state into a fresh GIC: routing needs ARE first; the group
-    /// enables come last, so nothing is delivered from a half-restored distributor.
-    pub fn restore_gic(&self, regs: &[(u32, u64)]) -> Result<()> {
-        let reg = |r: u32| u16::try_from(r).map_err(|_| Error::Guest(format!("GICD offset {r:#x}")));
-        let ctlr = regs
-            .iter()
-            .find(|&&(r, _)| r == u32::from(GICD_CTLR))
-            .map_or(0, |&(_, v)| v & !GICD_CTLR_RWP);
-        sys::set_dist_reg(GICD_CTLR, ctlr & GICD_CTLR_ARE)?;
-        for &(r, v) in regs.iter().filter(|&&(r, _)| r != u32::from(GICD_CTLR)) {
-            sys::set_dist_reg(reg(r)?, v)?;
-        }
-        Ok(sys::set_dist_reg(GICD_CTLR, ctlr)?)
+    /// Restores [`save_gic`](Self::save_gic)'s state into this VM's GIC, once every vCPU
+    /// exists and before any runs (hv_gic.h).
+    pub fn restore_gic(&self, state: &[u8]) -> Result<()> {
+        Ok(sys::set_gic_state(state)?)
     }
 }
 
@@ -691,10 +660,6 @@ impl Vcpu {
             fpcr: s.reg(sys::Reg::FPCR)?,
             fpsr: s.reg(sys::Reg::FPSR)?,
             sys,
-            redist: REDIST_REGS
-                .iter()
-                .map(|&r| Ok((r, s.redist_reg(r)?)))
-                .collect::<Result<_>>()?,
             icc: ICC_REGS
                 .iter()
                 .map(|&r| Ok((r, s.icc_reg(r)?)))
@@ -722,9 +687,6 @@ impl Vcpu {
         s.set_reg(sys::Reg::FPSR, st.fpsr)?;
         for &(r, v) in &st.sys {
             s.set_sys_reg(r, v)?;
-        }
-        for &(r, v) in &st.redist {
-            s.set_redist_reg(r, v)?;
         }
         for &(r, v) in &st.icc {
             s.set_icc_reg(r, v)?;
@@ -952,23 +914,32 @@ mod tests {
         .unwrap();
         // SAFETY: the reservation is never unmapped.
         unsafe { vm.map_ram(ram, RAM, ram_len) }.unwrap();
-        vm.create_gic(&GicLayout {
-            dist_base: 0x0800_0000,
-            redist_base: 0x080a_0000,
-            msi: None,
-        })
-        .unwrap();
+        let gic = vm
+            .create_gic(&GicLayout {
+                dist_base: 0x0800_0000,
+                redist_base: 0x080a_0000,
+                msi: None,
+            })
+            .unwrap();
 
-        // Distributor: perturb through the clear-views, restore, compare.
+        // The GIC's state, a pending edge on an SPI among it: perturb it all through the
+        // clear-views, restore the state, and read it all back.
         sys::set_dist_reg(0x0104, 0b1010).unwrap(); // ISENABLER1: SPIs 33, 35
         sys::set_dist_reg(0x0420, 0xa0b0_c0d0).unwrap(); // IPRIORITYR8
         sys::set_dist_reg(0x0c08, 0x8).unwrap(); // ICFGR2: SPI 33 edge
+        gic.set_spi(33, true).unwrap();
+        // ISENABLER1, IPRIORITYR8, ICFGR2, ISPENDR1.
+        let regs = || [0x0104, 0x0420, 0x0c08, 0x0204].map(|r| sys::dist_reg(r).unwrap());
+        let before = regs();
+        assert_eq!(before, [0b1010, 0xa0b0_c0d0, 0x8, 0b10]);
         let saved = vm.save_gic().unwrap();
         sys::set_dist_reg(0x0184, u64::from(u32::MAX)).unwrap(); // ICENABLER1
         sys::set_dist_reg(0x0420, 0).unwrap();
         sys::set_dist_reg(0x0c08, 0).unwrap();
+        sys::set_dist_reg(0x0284, u64::from(u32::MAX)).unwrap(); // ICPENDR1
+        assert_eq!(regs(), [0; 4]);
         vm.restore_gic(&saved).unwrap();
-        assert_eq!(vm.save_gic().unwrap(), saved);
+        assert_eq!(regs(), before);
 
         // vCPU 0 gets distinctive state and is captured; vCPU 1 (the next redistributor
         // frame, so vCPU 0 stays alive meanwhile) restores it and must capture the same.
@@ -1018,7 +989,6 @@ mod tests {
                 a.sys.set_sys_reg(0xc684, 0x8888).unwrap(); // TPIDR_EL1
                 a.sys.set_sys_reg(0xc510, 0x04ff).unwrap(); // MAIR_EL1
                 a.sys.set_icc_reg(0xc230, 0xf0).unwrap(); // ICC_PMR_EL1
-                a.sys.set_redist_reg(0x1_0400, 0x8080_8080).unwrap(); // GICR_IPRIORITYR0
                 let st = a.save_state().unwrap();
                 assert_eq!(st.x[5], 0x1111_0005);
                 assert_eq!(st.v[31], (31u128 << 64) | 0xdead_beef);

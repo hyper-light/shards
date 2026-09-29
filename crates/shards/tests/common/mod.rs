@@ -738,3 +738,167 @@ pub fn served() -> (String, Arc<AtomicUsize>) {
     let (port, served) = registry(manifest, blobs);
     (format!("127.0.0.1:{port}/test/image:v1"), served)
 }
+
+/// A running `shards` whose output lines arrive on a channel, killed when dropped.
+#[cfg(unix)]
+pub struct Vm {
+    child: std::process::Child,
+    lines: std::sync::mpsc::Receiver<String>,
+    pub seen: Vec<String>,
+}
+
+#[cfg(unix)]
+impl Vm {
+    pub fn spawn<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Vm {
+        let mut child = Command::new(shards())
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (tx, lines) = std::sync::mpsc::channel();
+        let (out, err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+        for stream in [Box::new(out) as Box<dyn Read + Send>, Box::new(err)] {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    let _ = tx.send(line);
+                }
+            });
+        }
+        Vm {
+            child,
+            lines,
+            seen: Vec::new(),
+        }
+    }
+
+    /// Waits up to `timeout` for an output line containing `text`.
+    pub fn wait_for(&mut self, text: &str, timeout: Duration) {
+        self.wait_for_any(&[text], timeout);
+    }
+
+    /// Waits up to `timeout` for an output line containing any of `texts`; returns it.
+    pub fn wait_for_any(&mut self, texts: &[&str], timeout: Duration) -> String {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(line) => {
+                    let found = texts.iter().any(|t| line.contains(t));
+                    self.seen.push(line.clone());
+                    if found {
+                        return line;
+                    }
+                }
+                Err(_) => panic!("no {texts:?} from the VM; it said:\n{}", self.seen.join("\n")),
+            }
+        }
+    }
+
+    /// Waits for the process to exit, keeping everything it printed.
+    pub fn wait_exit(&mut self) -> Option<i32> {
+        let code = self.child.wait().unwrap().code();
+        // Its pipes are closed now, so the readers end and the channel with them.
+        self.seen.extend(self.lines.iter());
+        code
+    }
+
+    /// [`wait_exit`](Self::wait_exit), failing, with what it printed, if the process runs
+    /// past `timeout`.
+    pub fn wait_exit_within(&mut self, timeout: Duration) -> Option<i32> {
+        let deadline = Instant::now() + timeout;
+        while self.child.try_wait().unwrap().is_none() {
+            if Instant::now() > deadline {
+                let _ = self.child.kill();
+                self.wait_exit();
+                panic!(
+                    "still running after {timeout:?}; it said:\n{}",
+                    self.seen.join("\n")
+                );
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.wait_exit()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Vm {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Opens a stream to guest vsock port `port` through the VM's socket `sock`: `Ok` once
+/// the guest accepted (the `OK` line was read), `Err` with what came back otherwise.
+#[cfg(unix)]
+pub fn vsock_connect(
+    sock: &Path,
+    port: u32,
+    timeout: Duration,
+) -> Result<std::os::unix::net::UnixStream, String> {
+    let mut s =
+        std::os::unix::net::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
+    s.set_read_timeout(Some(timeout)).map_err(|e| e.to_string())?;
+    s.write_all(format!("CONNECT {port}\n").as_bytes())
+        .map_err(|e| format!("CONNECT: {e}"))?;
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while line.last() != Some(&b'\n') {
+        match s.read(&mut byte) {
+            Ok(1) => line.push(byte[0]),
+            _ => return Err(format!("refused after {:?}", String::from_utf8_lossy(&line))),
+        }
+    }
+    let text = String::from_utf8_lossy(&line);
+    let host: u32 = text
+        .strip_prefix("OK ")
+        .and_then(|p| p.trim().parse().ok())
+        .ok_or_else(|| format!("handshake answered {text:?}"))?;
+    if host < 1 << 30 {
+        return Err(format!("host port {host} outside [2^30, 2^31)"));
+    }
+    Ok(s)
+}
+
+/// Streams `len` bytes of pattern `salt` through the guest's echo on `port` and checks
+/// what comes back, byte for byte, after the half-close.
+#[cfg(unix)]
+pub fn echo(sock: &Path, port: u32, salt: u64, len: usize) -> Result<(), String> {
+    let s = vsock_connect(sock, port, Duration::from_secs(60))?;
+    let mut w = s.try_clone().map_err(|e| e.to_string())?;
+    let writer = std::thread::spawn(move || -> Result<(), String> {
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut sent = 0;
+        while sent < len {
+            let n = buf.len().min(len - sent);
+            shards_testguest::fill(salt, sent as u64, &mut buf[..n]);
+            w.write_all(&buf[..n]).map_err(|e| format!("sending: {e}"))?;
+            sent += n;
+        }
+        w.shutdown(std::net::Shutdown::Write).map_err(|e| e.to_string())
+    });
+    let mut r = s;
+    let mut got = 0usize;
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = r
+            .read(&mut buf)
+            .map_err(|e| format!("stream {salt}: after {got} bytes: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        if let Some(i) = shards_testguest::first_mismatch(salt, got as u64, &buf[..n]) {
+            return Err(format!("stream {salt}: byte {} came back wrong", got + i));
+        }
+        got += n;
+    }
+    writer.join().map_err(|_| "the writer panicked".to_string())??;
+    if got != len {
+        return Err(format!("stream {salt}: echoed {got} of {len} bytes"));
+    }
+    Ok(())
+}

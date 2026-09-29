@@ -68,12 +68,29 @@ template is thus a guest that has finished initializing and says so; restores ne
 re-run that work. That includes the kernel's own background work: shards-init waits for
 the crypto self-tests first, since every clone would replay the rest (PM M21).
 
-- **Pause.** The request kicks every vCPU. Each captures its own state on its own thread
-  (HVF's owning-thread rule), including redistributor, ICC and PSCI power state, and parks.
-  A coordinator then pauses devices at a request boundary (the virtio-blk worker stops and
-  hands back its queue), and saves the GIC distributor, the devices and guest memory.
-- **Format.** The state is backend-neutral: system registers are keyed by op0..op2
-  encoding and GIC registers by GICv3 offset (ground-truth doc §5 row 16). It records one
+- **Pause, in phases** (audit A02; `vm/barrier.rs`). A snapshot is a cut of the whole
+  machine:
+  - The request kicks every vCPU, and each parks out of the guest, capturing nothing yet.
+  - Once all have, the coordinator pauses the devices at a request boundary (the
+    virtio-blk worker finishes its drain and hands back its queue): no device completes
+    a request or raises an interrupt after that.
+  - Only then does each vCPU capture its own state, on its own thread (HVF's
+    owning-thread rule): registers, the GIC CPU interface and PSCI power state.
+  - The coordinator saves the GIC device, the devices and guest memory, then releases
+    the vCPUs or stops. A stop or an error at any phase releases every thread.
+- **Kicks survive exits.** A kick can arrive as a vCPU leaves the guest for another exit.
+  HVF then reports that exit and drops the cancel, and the vCPU went back into the guest
+  to idle there while the barrier waited for it forever: a hang in about one storm run in
+  fifteen [PM M45]. Every entry checks for a pending kick first, as KVM checks a vCPU's
+  requests before entering it.
+- **Format.** System registers are keyed by op0..op2 encoding (ground-truth doc §5 row
+  16). The GIC device is the backend's own serialization: HVF's `hv_gic_state`, "the
+  complete serialized state of the device, except for the GIC cpu registers"
+  (hv_gic_state.h). It holds interrupts HVF has passed on toward a vCPU that has yet to
+  take them, which no distributor or redistributor register shows; saved as registers,
+  they were lost, and every restore of a guest with a disk request in flight waited on it
+  forever [PM M45]. The blob is versioned: a host update that changes it fails the
+  restore, and the run boots and saves the template again (D25). The state records one
   guest counter for the whole VM and the CPU ID registers; a restore on another CPU is
   refused. Memory is sparse (zero pages are holes). Each run of pages the guest used is one
   write: on ext4 a write's length sets the order of the page-cache folios a restore maps,
