@@ -1163,6 +1163,49 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   must name the musl linker itself, and fail with a clear error when the musl standard
   library is missing. An install from source runs inside the checkout.
 
+### M37. How a snapshot's memory is written, and how fast it restores
+
+- **Question.** shards wrote a snapshot's memory one 4 KiB page per `pwrite`, where
+  Firecracker writes its memory file in large writes. On Linux 6.17's ext4, a write's
+  length sets the order of the page-cache folios it fills (fs/ext4/inode.c:1318,
+  `write_begin_get_folio`; include/linux/pagemap.h:766-778), and a restore maps the file
+  those folios hold. Does the write pattern change how fast a restored guest runs?
+- **Method.**
+  - `docs/research/measurements/snapshot-write-ab/per-page.patch` adds a third variant to
+    the Firecracker comparison's restores (crates/shards/benches/firecracker.rs): shards'
+    snapshot, copied with its memory rewritten one page per `pwrite` of each page that is
+    not all zero, as `GuestMemory::save` wrote it before e9ed44d.
+  - Each iteration restores the batched snapshot, the copy and Firecracker's, in a fresh
+    process each, with the copy first or last in turn. Each sample is the time from
+    spawn until the guest's first beat after the restore reaches the VMM's stdout. There
+    were 3 warm-ups, then n = 20 per variant.
+  - The hosts were GitHub's ubuntu-24.04 runners on 2026-09-29, with Linux
+    6.17.0-1022-azure nested under Hyper-V: AMD EPYC 7763, AMD EPYC 9V45 and Intel Xeon
+    Platinum 8370C.
+  - Revision cd99f57 is 21772e3 plus diagnostics that read KVM's tracepoints and debugfs
+    through sudo around each sample. The guest had 1 vCPU and 128 MiB, and the kernel
+    was vmlinux-6.18.48-x86_64-1bff175d35cb.
+- **Results** (ms, p50 / p90 / p99, where p99 is the maximum at n = 20).
+
+| Host | Batched | Per page | Firecracker |
+|---|---|---|---|
+| AMD EPYC 7763 | 17.4 / 18.2 / 20.6 | 22.4 / 22.6 / 22.8 | 12.0 / 12.7 / 15.9 |
+| AMD EPYC 9V45 | 8.5 / 9.2 / 10.2 | 11.3 / 12.0 / 12.1 | 9.3 / 9.8 / 10.0 |
+| Intel Xeon 8370C | 7.6 / 8.2 / 17.7 | 9.2 / 18.1 / 22.0 | 8.6 / 9.6 / 10.3 |
+
+  - The batched snapshot restored 17–25% sooner at p50 on every host.
+  - Before its first beat it took fewer nested page faults, by KVM's `kvm_exit`
+    tracepoint (medians): 472 NPT faults against 756 on the 7763, 440 against 689 on the
+    9V45, and 361 EPT violations against 570 on the Xeon.
+- **Consequence.** `GuestMemory::save` writes each run of used pages with one call
+  (e9ed44d).
+- **Open.**
+  - Where in the kernel's fault path the fewer faults come from.
+  - The Xeon's outliers, which took more EPT violations and more time in the guest than
+    that host's other samples.
+  - The 7763's gap to Firecracker. In the untraced comparison of 21772e3, on another
+    7763 runner, the medians were 17.2 ms for shards and 19.0 for Firecracker.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

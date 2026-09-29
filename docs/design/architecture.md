@@ -75,7 +75,10 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
 - **Format.** The state is backend-neutral: system registers are keyed by op0..op2
   encoding and GIC registers by GICv3 offset (ground-truth doc §5 row 16). It records one
   guest counter for the whole VM and the CPU ID registers; a restore on another CPU is
-  refused. Memory is sparse (zero pages are holes). Files are written, synced and renamed.
+  refused. Memory is sparse (zero pages are holes). Each run of pages the guest used is one
+  write: on ext4 a write's length sets the order of the page-cache folios a restore maps,
+  and restores of a snapshot written that way reached their first beat 17–25% sooner than
+  of one written a page per write [PM M37]. Files are written, synced and renamed.
   Decoding treats the files as untrusted.
 - **Restore.** Memory is mapped copy-on-write from the snapshot file; clones share every
   page none of them writes. vCPUs are created in order and loaded with one counter offset,
