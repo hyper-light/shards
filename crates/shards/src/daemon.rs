@@ -707,12 +707,18 @@ impl Daemon {
             match shards_ipc::recv(&ready.socket) {
                 Ok(Some(m)) if m.kind == kind::STARTED => {
                     started = true;
-                    self.record(id, |c| {
+                    let mut registry = lock(&self.containers);
+                    registry.change(id, |c| {
                         c.state = Life::Running;
                         c.started = Some(containers::now());
                     });
                     if let Some(client) = detached.take() {
                         let _ = shards_ipc::send(&client, kind::END, &[0], &[]);
+                    }
+                    // Before the disk: `ps` reads the record in memory.
+                    let _ = shards_ipc::send(&ready.socket, kind::RECORDED, &[], &[]);
+                    if let Err(e) = registry.save(id) {
+                        log(format!("container {id}: {e}"));
                     }
                 }
                 Ok(Some(m)) if m.kind == kind::DONE => break Some(m.payload),
@@ -744,23 +750,30 @@ impl Daemon {
         {
             let mut registry = lock(&self.containers);
             let removing = registry.get(id).is_some_and(|c| c.auto_remove);
-            let kept = if removing {
-                registry.remove(id).map(drop)
+            if removing {
+                registry.forget(id);
             } else {
-                registry.update(id, |c| {
+                registry.change(id, |c| {
                     c.exit_code = Some(status);
                     if started {
                         c.state = Life::Exited;
                         c.finished = Some(containers::now());
                     }
-                })
-            };
-            if let Err(e) = kept {
-                log(format!("container {id}: {e}"));
+                });
             }
             lock(&self.runs).remove(id);
             for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
                 let _ = waiter.send(status);
+            }
+            // The VM tells the client now; the disk can follow.
+            let _ = shards_ipc::send(&ready.socket, kind::RECORDED, &[], &[]);
+            let kept = if removing {
+                registry.delete_files(id)
+            } else {
+                registry.save(id)
+            };
+            if let Err(e) = kept {
+                log(format!("container {id}: {e}"));
             }
         }
         // A detached command that never started: why, as `docker run -d` says it.
@@ -792,12 +805,6 @@ impl Daemon {
     }
 
     /// Changes the record of the container with `id` by `f`, and writes it.
-    fn record(&self, id: &str, f: impl FnOnce(&mut Container)) {
-        if let Err(e) = lock(&self.containers).update(id, f) {
-            log(format!("container {id}: {e}"));
-        }
-    }
-
     /// Stops serving: removes the socket, ends the runs in progress, and exits once they
     /// have ended, as dockerd shuts down (`shards daemon stop`, or a client of another
     /// build, whose own daemon then takes the home).

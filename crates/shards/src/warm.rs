@@ -17,17 +17,21 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use shards_abi::run::Spec;
 use shards_ipc::kind;
 
 use crate::workload::{self, NOT_RUN, ToGuest};
 
-/// A warm VM's side of the daemon: the socket its request arrives on, and /dev/null, to
-/// replace the client's stdio when the VM lets go of the client.
+/// A warm VM's side of the daemon: the socket its request arrives on, /dev/null, to
+/// replace the client's stdio when the VM lets go of the client, and what the daemon has
+/// recorded.
 pub struct Link {
     daemon: UnixStream,
     null: File,
+    recorded: Arc<Recorded>,
 }
 
 impl Link {
@@ -35,8 +39,46 @@ impl Link {
     pub fn new(fd: RawFd) -> Result<Link, String> {
         let daemon = daemon_socket(fd)?;
         let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
-        Ok(Link { daemon, null })
+        Ok(Link {
+            daemon,
+            null,
+            recorded: Arc::default(),
+        })
     }
+
+    /// Sends the daemon `STARTED` or `DONE` and waits until it has `RECORDED` it, or is
+    /// gone, or `RECORD_TIMEOUT` has passed: the record is then late, not wrong.
+    fn tell_and_wait(&self, which: u8, payload: &[u8]) {
+        let r = &self.recorded;
+        let lock = || r.acks.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = lock().0;
+        if shards_ipc::send(&self.daemon, which, payload, &[]).is_err() {
+            return;
+        }
+        let deadline = Instant::now() + RECORD_TIMEOUT;
+        let mut acks = lock();
+        while acks.0 == before && !acks.1 {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return;
+            };
+            acks = r
+                .changed
+                .wait_timeout(acks, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+}
+
+/// How long a VM waits for the daemon to record a run's start or end, at most: it does so
+/// as soon as it hears of it.
+const RECORD_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The daemon's `RECORDED`s so far, and whether its connection has closed.
+#[derive(Default)]
+struct Recorded {
+    acks: Mutex<(u64, bool)>,
+    changed: Condvar,
 }
 
 fn daemon_socket(fd: RawFd) -> Result<UnixStream, String> {
@@ -148,9 +190,11 @@ pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
     }
     for (name, conn, client) in relays {
         let to = to.clone();
+        // The daemon's connection brings its RECORDEDs too.
+        let recorded = (!client).then(|| link.recorded.clone());
         std::thread::Builder::new()
             .name(name.into())
-            .spawn(move || relay_signals(&conn, &to, client))
+            .spawn(move || relay_signals(&conn, &to, recorded.as_deref()))
             .map_err(|e| format!("{name} thread: {e}"))?;
     }
     // A daemon gone by now has no copies left to close.
@@ -165,10 +209,22 @@ pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
 }
 
 /// Passes the signals that arrive on `conn` to the workload until it closes: the client's,
-/// or the daemon's (`shards stop`, `kill`), and the client's terminal sizes. When the
-/// client hangs up, the VM lets go of its stdio. A workload outlives its client, as a
-/// container outlives `docker run`'s.
-fn relay_signals(conn: &UnixStream, to: &ToGuest, client: bool) {
+/// or the daemon's (`shards stop`, `kill`), with the daemon's `RECORDED`s (`recorded`),
+/// and the client's terminal sizes. When the client hangs up, the VM lets go of its stdio.
+/// A workload outlives its client, as a container outlives `docker run`'s.
+fn relay_signals(conn: &UnixStream, to: &ToGuest, recorded: Option<&Recorded>) {
+    let client = recorded.is_none();
+    let note = |gone: bool| {
+        if let Some(r) = recorded {
+            let mut acks = r.acks.lock().unwrap_or_else(PoisonError::into_inner);
+            if gone {
+                acks.1 = true;
+            } else {
+                acks.0 += 1;
+            }
+            r.changed.notify_all();
+        }
+    };
     while let Ok(Some(message)) = shards_ipc::recv(conn) {
         match message.kind {
             kind::SIGNAL => {
@@ -181,20 +237,25 @@ fn relay_signals(conn: &UnixStream, to: &ToGuest, client: bool) {
                     workload::resize_guest(to, size);
                 }
             }
+            kind::RECORDED => note(false),
             _ => {}
         }
     }
+    note(true);
     if client && let Ok(null) = File::open("/dev/null") {
         let_go(&null);
     }
 }
 
-/// Tells the daemon the command runs.
+/// Tells the daemon the command runs, and waits until it has recorded that: nothing the
+/// command writes reaches the client before `ps` shows it running.
 pub fn started(link: &Link) {
-    let _ = shards_ipc::send(&link.daemon, kind::STARTED, &[], &[]);
+    link.tell_and_wait(kind::STARTED, &[]);
 }
 
-/// Tells the client how its command ended, then the daemon. What kept the command from
+/// Tells the daemon how the command ended, then, once it has recorded that, the client:
+/// `ps` then shows the container exited, or gone for `--rm`, when `run` returns, as with
+/// `docker run` (docker/cli run.go waitExitOrRemoved). What kept the command from
 /// running goes to the client's stderr first, as `docker run` reports it, and the VM lets
 /// go of the client's stdio before the status goes, so that both arrive before the client
 /// exits. A detached run's client is the daemon's to tell: `DONE` carries the reason.
@@ -225,17 +286,16 @@ pub fn finish(
         status = *kept;
     }
     let_go(&link.null);
+    let mut done = vec![status];
+    if let Some((said, _)) = &failed {
+        done.extend_from_slice(said.as_bytes());
+    }
+    link.tell_and_wait(kind::DONE, &done);
     if let Some(client) = client {
         let mut payload = vec![said_status];
         payload.extend_from_slice(timing.unwrap_or_default().as_bytes());
         let _ = shards_ipc::send(client, kind::EXIT, &payload, &[]);
     }
-    // Then the daemon, which keeps the run's record.
-    let mut done = vec![status];
-    if let Some((said, _)) = &failed {
-        done.extend_from_slice(said.as_bytes());
-    }
-    let _ = shards_ipc::send(&link.daemon, kind::DONE, &done, &[]);
 }
 
 /// Stops using the client's stdio: this process's standard descriptors become `null`.
