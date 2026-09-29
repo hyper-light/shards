@@ -30,7 +30,7 @@ jobs:
           grep -H . /sys/module/kvm_amd/parameters/npt /sys/module/kvm_intel/parameters/ept 2>/dev/null || true
       - name: Image, with KVM statistics
         env:
-          SHARDS_KVM_STATS: "1"
+          SHARDS_KVM_STATS: /tmp/kvm-stats.log
         run: cargo bench --locked -p shards --bench image -- --runs 8 --templates 2
       - name: The daemon's log
         run: |
@@ -38,3 +38,5 @@ jobs:
             grep -E 'kvm-stats|working set|error' "$log" | sed 's/^/  /'
           done
           ls -l target/bench/image-*/templates/*/ || true
+      - name: KVM statistics, by process
+        run: sort -s -n -k1,1 /tmp/kvm-stats.log

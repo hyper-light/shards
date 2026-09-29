@@ -83,11 +83,11 @@ impl Handle {
             return Ok(0);
         };
         let pages = machine::recorded(&recorder)?;
-        warn!(
+        crate::diag(&format!(
             "kvm-stats recorded {} pages, {} written",
             pages.len(),
             pages.iter().filter(|t| t.written).count()
-        );
+        ));
         if !pages.is_empty() {
             snapshot::write_working_set(&dir, &pages, machine::PAGE)?;
         }
@@ -289,7 +289,7 @@ impl Running {
                     written += pages.iter().filter(|(_, w)| *w).count();
                 }
             }
-            warn!("kvm-stats ram mapped={mapped} written={written}");
+            crate::diag(&format!("kvm-stats ram mapped={mapped} written={written}"));
         }
         reason
     }

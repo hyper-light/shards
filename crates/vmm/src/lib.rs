@@ -16,3 +16,14 @@ pub mod platform;
 pub mod snapshot;
 pub mod sync;
 pub mod vm;
+
+/// Diagnostic (branch kvm-ws-diag): appends `line` to the file SHARDS_KVM_STATS names,
+/// with this process's id and uptime, whatever its stderr has become.
+pub fn diag(line: &str) {
+    use std::io::Write;
+    if let Some(path) = std::env::var_os("SHARDS_KVM_STATS")
+        && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path)
+    {
+        let _ = writeln!(f, "{} {}us {line}", std::process::id(), crate::log::uptime_us());
+    }
+}

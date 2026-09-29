@@ -396,11 +396,11 @@ pub fn restore(
         warn!("{e}; the guest copies the pages it writes as it writes them");
     }
     if !working_set.is_empty() {
-        warn!(
+        crate::diag(&format!(
             "kvm-stats copied {} written pages in {} us",
             working_set.iter().filter(|t| t.written).count(),
             crate::log::uptime_us().saturating_sub(t0)
-        );
+        ));
     }
     Ok(Machine {
         vm: a.vm,
@@ -566,11 +566,11 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu, 
             if index == 0 && !r.working_set.is_empty() {
                 let t0 = crate::log::uptime_us();
                 let n = pre_fault(&vcpu, &r.working_set);
-                warn!(
+                crate::diag(&format!(
                     "kvm-stats mapped {n} of {} working-set pages ahead in {} us",
                     r.working_set.len(),
                     crate::log::uptime_us().saturating_sub(t0)
-                );
+                ));
                 let _ = r.prefetched.set(n);
             }
         }

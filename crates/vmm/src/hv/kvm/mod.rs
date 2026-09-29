@@ -620,9 +620,9 @@ impl Drop for Vcpu {
                         .filter(|(_, v)| *v != 0)
                         .map(|(k, v)| format!("{k}={v}"))
                         .collect();
-                    crate::warn!("kvm-stats {what} {}", line.join(" "));
+                    crate::diag(&format!("kvm-stats {what} {}", line.join(" ")));
                 }
-                Err(e) => crate::warn!("kvm-stats {what}: {e}"),
+                Err(e) => crate::diag(&format!("kvm-stats {what}: {e}")),
             };
             show("vcpu", sys::read_stats(self.fd.raw()));
             if let Some(vm) = &self.vm_fd {
