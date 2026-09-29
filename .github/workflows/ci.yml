@@ -139,6 +139,18 @@ jobs:
           cargo bench --locked -p shards --bench restore -- --runs 20
           stats | sort > r1
           echo "== restore: 1 boot, then 46 restores (3 warm-up pairs, 20 pairs)"; delta b1 r1 46
+      - name: KVM statistics of one boot and three restores
+        run: |
+          kernel=$(ls target/artifacts/vmlinux-6.18.48-x86_64* | head -1)
+          guest=target/x86_64-unknown-linux-musl/guest/shards-testguest
+          shards=target/release/shards
+          ls -l $kernel $guest $shards
+          export SHARDS_KVM_STATS=1
+          $shards vm run --kernel $kernel --init $guest --snapshot-dir snap --no-console \
+            --cmdline "console=ttyS0 quiet shards_test=resume" 2>&1 | grep -E 'kvm-stats|error' || true
+          for i in 1 2 3; do
+            SHARDS_TIMING=1 $shards vm restore snap --no-console 2>&1 | grep -E 'kvm-stats|shards-timing|error' || true
+          done
 
   musl:
     name: ${{ matrix.target }}

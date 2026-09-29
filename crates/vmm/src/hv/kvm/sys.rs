@@ -55,6 +55,8 @@ pub const KVM_GET_XCRS: u64 = 0x8188_AEA6;
 pub const KVM_SET_XCRS: u64 = 0x4188_AEA7;
 pub const KVM_KVMCLOCK_CTRL: u64 = 0xAEAD;
 pub const KVM_GET_XSAVE2: u64 = 0x9000_AECF;
+/// Diagnostic (branch kvm-restore-perf): KVM's binary statistics (api.rst 4.133).
+pub const KVM_GET_STATS_FD: u64 = 0xAECE;
 
 /// The sizes of the state structures above, which a snapshot keeps as their bytes.
 pub const LAPIC_SIZE: usize = 1024;
@@ -240,6 +242,53 @@ struct Cpuid2 {
     nent: u32,
     padding: u32,
     entries: [kvm_cpuid_entry2; MAX_CPUID_ENTRIES],
+}
+
+/// Diagnostic: every statistic behind a stats fd, by name (api.rst 4.133: a header, then
+/// descriptors of 16 bytes plus the name each, then the data).
+pub fn read_stats(owner: RawFd) -> io::Result<Vec<(String, u64)>> {
+    use std::os::unix::fs::FileExt;
+    // SAFETY: no argument; the result is a new fd we own.
+    let fd = unsafe { ioctl(owner, KVM_GET_STATS_FD, 0) }?;
+    // SAFETY: a fresh descriptor.
+    let file = unsafe { File::from_raw_fd(fd) };
+    let mut header = [0u8; 24];
+    file.read_exact_at(&mut header, 0)?;
+    let word = |b: &[u8], i: usize| {
+        b.get(i..i + 4)
+            .and_then(|w| w.try_into().ok())
+            .map_or(0, |w: [u8; 4]| u32::from_ne_bytes(w) as usize)
+    };
+    let (name_size, num, desc_off, data_off) = (
+        word(&header, 4),
+        word(&header, 8),
+        word(&header, 16),
+        word(&header, 20),
+    );
+    let desc_len = 16 + name_size;
+    let mut descs = vec![0u8; desc_len * num];
+    file.read_exact_at(&mut descs, desc_off as u64)?;
+    let mut out = Vec::new();
+    for d in descs.chunks_exact(desc_len) {
+        let size = d
+            .get(6..8)
+            .and_then(|s| s.try_into().ok())
+            .map_or(0, |s: [u8; 2]| u16::from_ne_bytes(s) as usize);
+        let offset = word(d, 8);
+        let name: String = d
+            .get(16..)
+            .unwrap_or_default()
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| c as char)
+            .collect();
+        let mut v = [0u8; 8];
+        if size >= 1 {
+            file.read_exact_at(&mut v, (data_off + offset) as u64)?;
+        }
+        out.push((name, u64::from_ne_bytes(v)));
+    }
+    Ok(out)
 }
 
 /// Calls `request`, which fills a structure of `len` bytes, and returns the bytes: state a
@@ -430,6 +479,10 @@ impl VmFd {
             )
         }
         .map(drop)
+    }
+
+    pub fn raw(&self) -> RawFd {
+        self.fd()
     }
 
     /// As `Kvm::check_extension`, for capabilities that depend on the VM.
@@ -630,6 +683,10 @@ impl VcpuFd {
     pub fn set_regs(&self, r: &kvm_regs) -> io::Result<()> {
         // SAFETY: a pointer to a live struct.
         unsafe { ioctl(self.fd(), KVM_SET_REGS, r as *const _ as libc::c_ulong) }.map(drop)
+    }
+
+    pub fn raw(&self) -> RawFd {
+        self.fd()
     }
 
     /// A state structure `request` fills, of `len` bytes.
