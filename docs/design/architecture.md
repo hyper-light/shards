@@ -206,6 +206,13 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
   - Before init waited for the self-tests, most templates stalled a restored guest for a
     tick after its release: it replayed their remaining RSA work, and this kernel is
     `PREEMPT_NONE` (PM M21). Now `warm_resume` is 163 µs at p50.
+- **A standby.** Once the image is mounted, and before any snapshot, shards-init reads the
+  image's user database and forks the workload's process. That process waits on a pipe
+  for its orders: the command, environment, user and working directory init resolved
+  from the request. So no run waits for a fork, and every copy of a template has its
+  standby. A standby that has ended is replaced when the request comes. The run saves
+  about 45 µs at the median and 90 µs at p99. The rest of the fork's cost reappears as
+  the standby's first touches of memory after a restore [PM M27].
 - **Kernel command line:** `noautogroup`, because otherwise most templates stalled a tick
   in the first `setsid(2)` after a restore (benchmarks.md, "Run").
 - **Wall clock.** shards-init sets `CLOCK_REALTIME` to the host's time at boot and after

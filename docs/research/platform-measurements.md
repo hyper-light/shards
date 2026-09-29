@@ -660,6 +660,51 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
     1.1 ms each. The guest's command is the next target: a warm VM could fault in its
     working set while it waits.
 
+### M27. The guest's spawn path in a restored VM
+
+- **Question.** In a pooled run, the guest takes about 1.06 ms from receiving its command
+  to answering with its status (M26), and `warm_spawn` is 0.8 ms of it (benchmarks.md,
+  Run). Where does that go, and what shortens it?
+- **Method.**
+  - Temporary markers in shards-init around each step of starting the workload, in a
+    template of the E2E test image. `vm restore TEMPLATE --hold -- /bin/testguest exit
+    0`, released on stdin, n = 100 each, with the VMM's clock (`SHARDS_TIMING`).
+  - A variant init read `/etc/passwd`, `/etc/group` and `/bin/testguest` before the
+    template's snapshot.
+  - The standby init (below) against the old one, from two templates restored in
+    alternation, n = 150 each.
+  - 2026-09-29, this machine.
+- **Results** (µs, p50):
+
+| Step | Init as it was | Files read before the snapshot |
+|---|---|---|
+| request → command received | 56–64 | 65 |
+| read `/etc/passwd` and `/etc/group` | 200–212 | 109 |
+| pipes, signalfd | 60–67 | 57 |
+| fork | 143–161 | 186 |
+| exec, until it succeeded | 303–337 | 255 |
+| **total** | **766–846** | **675** |
+
+  - Every step touches memory that a restored VM has not mapped yet, and pays a stage-2
+    fault per 16 KiB page (M5), kernel memory included. Reading two small files still
+    took 109 µs from the page cache.
+  - Standby against old (µs):
+
+| Init | request → exec p50 | p90 | p99 | request → status p50 | p90 | p99 |
+|---|---|---|---|---|---|---|
+| old | 813 | 945 | 1225 | 917 | 1212 | 1370 |
+| standby | 747 | 860 | 1129 | 875 | 1008 | 1281 |
+
+- **Consequence.**
+  - shards-init forks the workload's process, a standby, before any snapshot. It also
+    reads the image's user database then. A run only sends the standby its orders
+    (D16).
+  - The fork's own cost mostly reappears as the standby's first touches after a restore:
+    the run saves about 45 µs at the median and 90 µs at p99.
+  - What remains is first-touch faults across the whole path. A warm VM waits idle
+    before its request, so it could fault in the path's working set then, from inside
+    the guest (M6). That is the next measurement.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

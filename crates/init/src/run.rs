@@ -47,8 +47,9 @@ fn setup_failed(message: impl Into<String>) -> Failure {
 /// template (`template`), it asks for a snapshot once the image is mounted: every VM
 /// restored from it continues from there, and dials the host for its own workload.
 pub fn main(device: &str, template: bool) -> ! {
-    let mounted = mount_root(device);
-    if template && mounted.is_ok() {
+    // Before any snapshot, so that every copy of a template has one.
+    let standby = mount_root(device).and_then(|()| Standby::fork());
+    if template && standby.is_ok() {
         await_crypto_selftests();
         if let Err(e) = crate::linux::control_write(control::SNAPSHOT, control::SNAPSHOT_NOW) {
             let _ = writeln!(io::stderr(), "shards-init: requesting a snapshot: {e}");
@@ -68,9 +69,7 @@ pub fn main(device: &str, template: bool) -> ! {
         }
     };
     let _ = crate::linux::control_write(control::MARKER, marker::CONNECTED);
-    let started = mounted
-        .and_then(|()| receive(&conn))
-        .and_then(|spec| Workload::start(&spec));
+    let started = standby.and_then(|standby| standby.start(&receive(&conn)?));
     let status = match started {
         Ok(workload) => {
             let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_STARTED);
@@ -337,10 +336,6 @@ fn pipe() -> Result<(OwnedFd, OwnedFd), Failure> {
     Ok(unsafe { (OwnedFd::from_raw_fd(r), OwnedFd::from_raw_fd(w)) })
 }
 
-fn cstring(bytes: &[u8], what: &str) -> Result<CString, Failure> {
-    CString::new(bytes).map_err(|_| setup_failed(format!("{what} contains a NUL byte")))
-}
-
 /// What the child reports through its error pipe when it cannot exec: the step that
 /// failed and errno.
 mod step {
@@ -360,74 +355,41 @@ struct Workload {
     sigchld: OwnedFd,
 }
 
-impl Workload {
-    /// Resolves the spec as Docker and runc do, then forks and execs the workload.
-    fn start(spec: &Spec) -> Result<Workload, Failure> {
-        let argv0 = spec
-            .argv
-            .first()
-            .ok_or_else(|| setup_failed("no command given"))?;
-        if !spec.hostname.is_empty() {
-            // SAFETY: a buffer of the given length.
-            if unsafe { libc::sethostname(spec.hostname.as_ptr().cast(), spec.hostname.len()) } != 0 {
-                return Err(setup_failed(format!(
-                    "sethostname: {}",
-                    io::Error::last_os_error()
-                )));
-            }
-        }
+/// A process forked ahead of its workload's request, waiting to exec it, with the pipes
+/// that become its stdio. init forks it before the template's snapshot, so that no run
+/// waits for a fork (docs/research/platform-measurements.md M27).
+struct Standby {
+    pid: libc::pid_t,
+    /// Where init writes the standby's orders: what to exec, and as whom.
+    orders: OwnedFd,
+    /// Closes when the standby execs: bytes on it mean it could not.
+    err: OwnedFd,
+    stdin: OwnedFd,
+    stdout: OwnedFd,
+    stderr: OwnedFd,
+    sigchld: OwnedFd,
+    /// The image's user database, read once: a template's image cannot change.
+    passwd: Option<Vec<u8>>,
+    group: Option<Vec<u8>>,
+}
+
+/// The standby's ends of its pipes, and init's, which it closes.
+struct Ends {
+    orders: OwnedFd,
+    stdio: [OwnedFd; 3],
+    err: OwnedFd,
+    inits: [OwnedFd; 6],
+}
+
+impl Standby {
+    fn fork() -> Result<Standby, Failure> {
         let passwd = std::fs::read("/etc/passwd").ok();
         let group = std::fs::read("/etc/group").ok();
-        let ExecUser { uid, gid, groups } =
-            user::resolve(&spec.user, passwd.as_deref(), group.as_deref()).map_err(setup_failed)?;
-        let env = user::prepare_env(&spec.env, uid, passwd.as_deref()).map_err(setup_failed)?;
-        let cwd = workdir(&spec.cwd)?;
-
-        // Everything the child needs, built before fork.
-        let path_env = env
-            .iter()
-            .rev()
-            .find_map(|kv| kv.strip_prefix(b"PATH="))
-            .unwrap_or_default();
-        let candidates: Vec<CString> = if argv0.contains(&b'/') {
-            vec![cstring(argv0, "the command")?]
-        } else {
-            path_env
-                .split(|&b| b == b':')
-                .map(|dir| {
-                    // An empty PATH entry is the working directory.
-                    let dir: &[u8] = if dir.is_empty() { b"." } else { dir };
-                    cstring(&[dir, b"/", argv0].concat(), "PATH")
-                })
-                .collect::<Result<_, _>>()?
-        };
-        let explicit = argv0.contains(&b'/');
-        let argv: Vec<CString> = spec
-            .argv
-            .iter()
-            .map(|a| cstring(a, "an argument"))
-            .collect::<Result<_, _>>()?;
-        let envp: Vec<CString> = env
-            .iter()
-            .map(|e| cstring(e, "the environment"))
-            .collect::<Result<_, _>>()?;
-        let mut argv_ptrs: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
-        argv_ptrs.push(std::ptr::null());
-        let mut envp_ptrs: Vec<*const libc::c_char> = envp.iter().map(|e| e.as_ptr()).collect();
-        envp_ptrs.push(std::ptr::null());
-        let cwd = cstring(&cwd, "the working directory")?;
-
         let (stdin_r, stdin_w) = pipe()?;
         let (stdout_r, stdout_w) = pipe()?;
         let (stderr_r, stderr_w) = pipe()?;
         let (err_r, err_w) = pipe()?;
-        // The workload owns its stdio, so it can reopen it through /proc/self/fd, as runc's
-        // fixStdioPermissions arranges (libcontainer/init_linux.go).
-        for fd in [&stdin_r, &stdout_w, &stderr_w] {
-            // SAFETY: fchown(2) on our own pipe; gid -1 leaves the group.
-            unsafe { libc::fchown(fd.as_raw_fd(), uid, u32::MAX) };
-        }
-
+        let (orders_r, orders_w) = pipe()?;
         // SIGCHLD arrives through a signalfd, so the relay can poll for it.
         // SAFETY: plain sigset operations on a local set.
         let sigchld = unsafe {
@@ -442,37 +404,123 @@ impl Workload {
         }
         // SAFETY: a fresh descriptor nothing else owns.
         let sigchld = unsafe { OwnedFd::from_raw_fd(sigchld) };
-
-        // SAFETY: init is single-threaded, and the child calls only async-signal-safe
-        // functions on data built above.
+        // SAFETY: init is single-threaded, so its child may run anything until it execs.
         let pid = unsafe { libc::fork() };
         if pid < 0 {
             return Err(setup_failed(format!("fork: {}", io::Error::last_os_error())));
         }
         if pid == 0 {
-            // SAFETY: the child of the fork above, with its arguments prepared.
-            unsafe {
-                child(&Child {
-                    stdio: [stdin_r.as_raw_fd(), stdout_w.as_raw_fd(), stderr_w.as_raw_fd()],
-                    err: err_w.as_raw_fd(),
-                    cwd: &cwd,
-                    uid,
-                    gid,
-                    groups: &groups,
-                    candidates: &candidates,
-                    explicit,
-                    argv: argv_ptrs.as_ptr(),
-                    envp: envp_ptrs.as_ptr(),
-                })
+            standby(Ends {
+                orders: orders_r,
+                stdio: [stdin_r, stdout_w, stderr_w],
+                err: err_w,
+                inits: [stdin_w, stdout_r, stderr_r, err_r, orders_w, sigchld],
+            })
+        }
+        drop((stdin_r, stdout_w, stderr_w, err_w, orders_r));
+        Ok(Standby {
+            pid,
+            orders: orders_w,
+            err: err_r,
+            stdin: stdin_w,
+            stdout: stdout_r,
+            stderr: stderr_r,
+            sigchld,
+            passwd,
+            group,
+        })
+    }
+
+    /// Resolves the spec as Docker and runc do, then has the standby exec the workload. A
+    /// standby that has ended is replaced first.
+    fn start(self, spec: &Spec) -> Result<Workload, Failure> {
+        let mut status = 0;
+        // SAFETY: waitpid(2) for our own child, without blocking.
+        let ended = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) } == self.pid;
+        let standby = if ended { Standby::fork()? } else { self };
+        let argv0 = spec
+            .argv
+            .first()
+            .ok_or_else(|| setup_failed("no command given"))?;
+        if !spec.hostname.is_empty() {
+            // SAFETY: a buffer of the given length.
+            if unsafe { libc::sethostname(spec.hostname.as_ptr().cast(), spec.hostname.len()) } != 0 {
+                return Err(setup_failed(format!(
+                    "sethostname: {}",
+                    io::Error::last_os_error()
+                )));
             }
         }
-        drop((stdin_r, stdout_w, stderr_w, err_w));
-
+        let (passwd, group) = (standby.passwd.as_deref(), standby.group.as_deref());
+        let ExecUser { uid, gid, groups } = user::resolve(&spec.user, passwd, group).map_err(setup_failed)?;
+        let env = user::prepare_env(&spec.env, uid, passwd).map_err(setup_failed)?;
+        let cwd = workdir(&spec.cwd)?;
+        let path_env = env
+            .iter()
+            .rev()
+            .find_map(|kv| kv.strip_prefix(b"PATH="))
+            .unwrap_or_default();
+        let explicit = argv0.contains(&b'/');
+        let candidates: Vec<Vec<u8>> = if explicit {
+            vec![argv0.clone()]
+        } else {
+            path_env
+                .split(|&b| b == b':')
+                .map(|dir| {
+                    // An empty PATH entry is the working directory.
+                    let dir: &[u8] = if dir.is_empty() { b"." } else { dir };
+                    [dir, b"/", argv0].concat()
+                })
+                .collect()
+        };
+        for (list, what) in [
+            (&candidates, "PATH"),
+            (&spec.argv, "an argument"),
+            (&env, "the environment"),
+        ] {
+            if list.iter().any(|b| b.contains(&0)) {
+                return Err(setup_failed(format!("{what} contains a NUL byte")));
+            }
+        }
+        if cwd.contains(&0) {
+            return Err(setup_failed("the working directory contains a NUL byte"));
+        }
+        // The workload owns its stdio, so it can reopen it through /proc/self/fd, as runc's
+        // fixStdioPermissions arranges (libcontainer/init_linux.go). A pipe's two ends are
+        // one inode.
+        for fd in [&standby.stdin, &standby.stdout, &standby.stderr] {
+            // SAFETY: fchown(2) on our own pipe; gid -1 leaves the group.
+            unsafe { libc::fchown(fd.as_raw_fd(), uid, u32::MAX) };
+        }
+        let orders = Orders {
+            uid,
+            gid,
+            groups,
+            cwd,
+            explicit,
+            candidates,
+            argv: spec.argv.clone(),
+            env,
+        }
+        .encode();
+        let Standby {
+            pid,
+            orders: to_standby,
+            err,
+            stdin,
+            stdout,
+            stderr,
+            sigchld,
+            ..
+        } = standby;
+        File::from(to_standby)
+            .write_all(&orders)
+            .map_err(|e| setup_failed(format!("starting the workload: {e}")))?;
         // The error pipe closes on exec: bytes on it mean the workload never started.
         let mut report = Vec::new();
-        let _ = File::from(err_r).read_to_end(&mut report);
+        let _ = File::from(err).read_to_end(&mut report);
         if let [which, e0, e1, e2, e3] = report[..] {
-            // The child exits right after reporting.
+            // The standby exits right after reporting.
             // SAFETY: waits for our own child.
             unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
             let errno = i32::from_be_bytes([e0, e1, e2, e3]);
@@ -480,13 +528,151 @@ impl Workload {
         }
         Ok(Workload {
             pid,
-            stdin: Some(stdin_w),
-            stdout: Some(stdout_r),
-            stderr: Some(stderr_r),
+            stdin: Some(stdin),
+            stdout: Some(stdout),
+            stderr: Some(stderr),
             sigchld,
         })
     }
+}
 
+/// What the standby execs, and as whom: built by init, which reports any error in it.
+struct Orders {
+    uid: u32,
+    gid: u32,
+    groups: Vec<u32>,
+    cwd: Vec<u8>,
+    explicit: bool,
+    candidates: Vec<Vec<u8>>,
+    argv: Vec<Vec<u8>>,
+    env: Vec<Vec<u8>>,
+}
+
+impl Orders {
+    fn encode(&self) -> Vec<u8> {
+        fn list(w: &mut Vec<u8>, items: &[Vec<u8>]) {
+            w.extend_from_slice(&u32::try_from(items.len()).unwrap_or(u32::MAX).to_be_bytes());
+            for item in items {
+                w.extend_from_slice(&u32::try_from(item.len()).unwrap_or(u32::MAX).to_be_bytes());
+                w.extend_from_slice(item);
+            }
+        }
+        let mut w = Vec::new();
+        w.extend_from_slice(&self.uid.to_be_bytes());
+        w.extend_from_slice(&self.gid.to_be_bytes());
+        w.extend_from_slice(&u32::try_from(self.groups.len()).unwrap_or(u32::MAX).to_be_bytes());
+        for g in &self.groups {
+            w.extend_from_slice(&g.to_be_bytes());
+        }
+        list(&mut w, std::slice::from_ref(&self.cwd));
+        w.push(u8::from(self.explicit));
+        list(&mut w, &self.candidates);
+        list(&mut w, &self.argv);
+        list(&mut w, &self.env);
+        w
+    }
+
+    /// `None` for anything but a whole message `encode` wrote.
+    fn decode(mut r: &[u8]) -> Option<Orders> {
+        fn u32(r: &mut &[u8]) -> Option<u32> {
+            let (head, rest) = r.split_first_chunk::<4>()?;
+            *r = rest;
+            Some(u32::from_be_bytes(*head))
+        }
+        fn list(r: &mut &[u8]) -> Option<Vec<Vec<u8>>> {
+            let n = u32(r)? as usize;
+            // Each item takes at least its 4-byte length.
+            if n > r.len() / 4 {
+                return None;
+            }
+            (0..n)
+                .map(|_| {
+                    let len = u32(r)? as usize;
+                    let (item, rest) = (r.get(..len)?, r.get(len..)?);
+                    *r = rest;
+                    Some(item.to_vec())
+                })
+                .collect()
+        }
+        let uid = u32(&mut r)?;
+        let gid = u32(&mut r)?;
+        let n = u32(&mut r)? as usize;
+        if n > r.len() / 4 {
+            return None;
+        }
+        let groups = (0..n).map(|_| u32(&mut r)).collect::<Option<Vec<u32>>>()?;
+        let cwd = list(&mut r)?.pop()?;
+        let (&explicit, rest) = r.split_first()?;
+        r = rest;
+        let orders = Orders {
+            uid,
+            gid,
+            groups,
+            cwd,
+            explicit: explicit != 0,
+            candidates: list(&mut r)?,
+            argv: list(&mut r)?,
+            env: list(&mut r)?,
+        };
+        r.is_empty().then_some(orders)
+    }
+}
+
+/// The standby's side of the fork: it closes init's ends, waits for its orders, and runs
+/// them as `child` does. The standby is single-threaded, as init was when it forked, so
+/// it may allocate.
+fn standby(ends: Ends) -> ! {
+    let Ends {
+        orders,
+        stdio,
+        err,
+        inits,
+    } = ends;
+    drop(inits);
+    let mut bytes = Vec::new();
+    let got = File::from(orders).read_to_end(&mut bytes);
+    let decoded = got.ok().and_then(|_| Orders::decode(&bytes));
+    let built = decoded.and_then(|o| {
+        let cstrings = |items: &[Vec<u8>]| -> Option<Vec<CString>> {
+            items.iter().map(|b| CString::new(b.clone()).ok()).collect()
+        };
+        Some((
+            cstrings(&o.candidates)?,
+            cstrings(&o.argv)?,
+            cstrings(&o.env)?,
+            CString::new(o.cwd.clone()).ok()?,
+            o,
+        ))
+    });
+    let Some((candidates, argv, envp, cwd, o)) = built else {
+        // No orders: init has gone, or the VM is powering off. Nothing to run.
+        // SAFETY: ends this process without running atexit handlers inherited from init.
+        unsafe { libc::_exit(NOT_RUN as libc::c_int) }
+    };
+    let mut argv_ptrs: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
+    argv_ptrs.push(std::ptr::null());
+    let mut envp_ptrs: Vec<*const libc::c_char> = envp.iter().map(|e| e.as_ptr()).collect();
+    envp_ptrs.push(std::ptr::null());
+    let [stdin, stdout, stderr] = &stdio;
+    // SAFETY: this process is the child of a fork of single-threaded init, and `child`
+    // runs on data built above.
+    unsafe {
+        child(&Child {
+            stdio: [stdin.as_raw_fd(), stdout.as_raw_fd(), stderr.as_raw_fd()],
+            err: err.as_raw_fd(),
+            cwd: &cwd,
+            uid: o.uid,
+            gid: o.gid,
+            groups: &o.groups,
+            candidates: &candidates,
+            explicit: o.explicit,
+            argv: argv_ptrs.as_ptr(),
+            envp: envp_ptrs.as_ptr(),
+        })
+    }
+}
+
+impl Workload {
     /// Relays stdio until the workload has exited and its output is drained, and returns
     /// its status.
     fn relay(mut self, conn: &File, mut signals: Option<File>) -> u32 {
