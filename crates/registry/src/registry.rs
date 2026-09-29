@@ -55,13 +55,18 @@ impl fmt::Debug for Registry {
     }
 }
 
+/// The host a reference's registry is reached at: Docker Hub's for `docker.io`.
+pub fn host(reference: &Reference) -> &str {
+    if reference.domain == DOCKER_HUB {
+        "registry-1.docker.io"
+    } else {
+        &reference.domain
+    }
+}
+
 impl Registry {
     pub fn new(http: Client, reference: &Reference, credentials: Credentials) -> Result<Registry, Error> {
-        let host = if reference.domain == DOCKER_HUB {
-            "registry-1.docker.io"
-        } else {
-            reference.domain.as_str()
-        };
+        let host = host(reference);
         let mut base = Url::parse(&format!("https://{host}/v2/{}/", reference.path))?;
         if loopback(&base) {
             base = Url::parse(&format!("http://{host}/v2/{}/", reference.path))?;
@@ -373,6 +378,12 @@ fn refused(mut response: Response, what: &dyn fmt::Display) -> Error {
     }
     if status == 429 {
         return Error::new(format!("{what}: {}", rate_limited(&response)));
+    }
+    // What Docker says when its token did not open the repository.
+    if status == 401 {
+        return Error::new(format!(
+            "pull access denied for {what}, repository does not exist or may require 'docker login'"
+        ));
     }
     let mut body = Vec::new();
     let _ = (&mut response).take(MAX_ERROR_BODY).read_to_end(&mut body);

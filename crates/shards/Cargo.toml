@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 shards-abi = { path = "../abi" }
+shards-image = { path = "../image" }
+shards-registry = { path = "../registry" }
 shards-vmm = { path = "../vmm" }
 
 [target.'cfg(unix)'.dependencies]
@@ -22,7 +24,6 @@ windows-sys = { workspace = true }
 
 [dev-dependencies]
 sha2 = "0.10"
-shards-image = { path = "../image" }
 shards-testguest = { path = "../testguest" }
 
 [[bench]]

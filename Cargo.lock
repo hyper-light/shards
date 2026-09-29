@@ -885,6 +885,7 @@ dependencies = [
  "sha2 0.10.9",
  "shards-abi",
  "shards-image",
+ "shards-registry",
  "shards-testguest",
  "shards-vmm",
  "windows-sys 0.61.2",

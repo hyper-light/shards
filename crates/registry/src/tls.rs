@@ -11,18 +11,26 @@ use rustls::pki_types::CertificateDer;
 use rustls_platform_verifier::Verifier;
 
 use crate::Error;
+use crate::certs::ClientCertificate;
 
-/// A client configuration that trusts the platform's roots and `extra_roots`.
+/// A client configuration that trusts the platform's roots and `extra_roots`, and
+/// presents `client`'s certificate when a server asks for one.
 /// - TLS 1.2 stays on: a Docker-operated CDN host still refuses TLS 1.3 (§6.2).
 /// - Key exchange prefers X25519MLKEM768, which Docker Hub's token host and CDN offer.
-pub fn client_config(extra_roots: Vec<CertificateDer<'static>>) -> Result<Arc<ClientConfig>, Error> {
+pub fn client_config(
+    extra_roots: Vec<CertificateDer<'static>>,
+    client: Option<ClientCertificate>,
+) -> Result<Arc<ClientConfig>, Error> {
     let provider = Arc::new(aws_lc_rs::default_provider());
     let verifier = Verifier::new_with_extra_roots(extra_roots, provider.clone())?;
-    let config = ClientConfig::builder_with_provider(provider)
+    let builder = ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(verifier))
-        .with_no_client_auth();
+        .with_custom_certificate_verifier(Arc::new(verifier));
+    let config = match client {
+        Some((chain, key)) => builder.with_client_auth_cert(chain, key)?,
+        None => builder.with_no_client_auth(),
+    };
     Ok(Arc::new(config))
 }
 
@@ -75,11 +83,11 @@ mod tests {
     fn registries_are_trusted_through_their_certs_d_root_only() {
         let (ca, server) = registry(&[&rustls::version::TLS13]);
         // A host with no system roots at all cannot even build the configuration.
-        if let Ok(config) = client_config(Vec::new()) {
+        if let Ok(config) = client_config(Vec::new(), None) {
             let refused = talk(config, serve_once(server.clone()));
             assert!(refused.is_err(), "an unknown CA must be refused");
         }
-        let (tls, reply) = talk(client_config(vec![ca]).unwrap(), serve_once(server)).unwrap();
+        let (tls, reply) = talk(client_config(vec![ca], None).unwrap(), serve_once(server)).unwrap();
         assert_eq!(&reply, b"world");
         assert_eq!(tls.conn.protocol_version(), Some(ProtocolVersion::TLSv1_3));
         assert_eq!(
@@ -91,7 +99,7 @@ mod tests {
     #[test]
     fn tls_1_2_only_hosts_are_still_reached() {
         let (ca, server) = registry(&[&rustls::version::TLS12]);
-        let (tls, reply) = talk(client_config(vec![ca]).unwrap(), serve_once(server)).unwrap();
+        let (tls, reply) = talk(client_config(vec![ca], None).unwrap(), serve_once(server)).unwrap();
         assert_eq!(&reply, b"world");
         assert_eq!(tls.conn.protocol_version(), Some(ProtocolVersion::TLSv1_2));
     }

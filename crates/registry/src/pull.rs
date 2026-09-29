@@ -32,6 +32,8 @@ const CONFIGS: [&str; 2] = [
 /// A pulled image.
 #[derive(Debug)]
 pub struct Pulled {
+    /// What the reference resolved to: an index, or the manifest itself.
+    pub resolved: Digest,
     /// The manifest for our guests' platform.
     pub manifest: Digest,
     pub config: ImageConfig,
@@ -44,6 +46,8 @@ pub struct Pulled {
 pub enum Event<'a> {
     /// The manifest for our guests' platform, and its layers.
     Manifest(&'a Digest, &'a [Descriptor]),
+    /// A layer already stored.
+    Present(&'a Digest),
     /// Bytes of a layer arrived.
     Progress(&'a Digest, u64),
     /// A layer is stored and verified.
@@ -64,6 +68,7 @@ pub fn pull(
 ) -> Result<Pulled, Error> {
     let name = reference.familiar();
     let top = registry.resolve(store, reference)?;
+    let resolved = top.digest()?;
     let (manifest_desc, manifest) = match document(registry, store, &top)? {
         Document::Manifest(m) => (top, m),
         Document::Index(index) => {
@@ -146,6 +151,7 @@ pub fn pull(
     let rootfs = store.rootfs(&layers, max_layer)?;
     store.tag(&reference.to_string(), &manifest_digest)?;
     Ok(Pulled {
+        resolved,
         manifest: manifest_digest,
         config,
         rootfs,
@@ -174,6 +180,10 @@ fn fetch_layers(
                 return;
             };
             let fetched = layer.digest().map_err(Error::from).and_then(|digest| {
+                if store.has(&digest) {
+                    report(Event::Present(&digest));
+                    return Ok(());
+                }
                 registry.fetch_blob(store, layer, &|n| report(Event::Progress(&digest, n)))?;
                 report(Event::Layer(&digest));
                 Ok(())

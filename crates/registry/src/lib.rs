@@ -5,6 +5,8 @@ use std::fmt;
 use std::io;
 
 pub mod auth;
+pub mod certs;
+pub mod credentials;
 pub mod http;
 pub mod pull;
 pub mod registry;

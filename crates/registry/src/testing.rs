@@ -54,6 +54,47 @@ pub(crate) fn registry(
     (ca.der().clone(), Arc::new(server))
 }
 
+/// A CA, a client certificate it issued (chain and key, as PEM), and the configuration
+/// of a `localhost` server that demands a certificate from that CA.
+pub(crate) fn demanding_registry() -> (CertificateDer<'static>, String, String, Arc<ServerConfig>) {
+    let mut ca = params(Vec::new());
+    ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::DigitalSignature];
+    ca.distinguished_name.push(DnType::CommonName, "shards test CA");
+    let ca = CertifiedIssuer::self_signed(ca, KeyPair::generate().unwrap()).unwrap();
+    let issue = |sans: Vec<String>, usage: ExtendedKeyUsagePurpose| {
+        let mut leaf = params(sans);
+        leaf.extended_key_usages = vec![usage];
+        leaf.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        let key = KeyPair::generate().unwrap();
+        (leaf.signed_by(&key, &ca).unwrap(), key)
+    };
+    let (server_cert, server_key) = issue(vec!["localhost".into()], ExtendedKeyUsagePurpose::ServerAuth);
+    let (client_cert, client_key) = issue(Vec::new(), ExtendedKeyUsagePurpose::ClientAuth);
+    let provider = Arc::new(aws_lc_rs::default_provider());
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca.der().clone()).unwrap();
+    let verifier =
+        rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+            .build()
+            .unwrap();
+    let server = ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(
+            vec![server_cert.der().clone()],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(server_key.serialize_der())),
+        )
+        .unwrap();
+    (
+        ca.der().clone(),
+        client_cert.pem(),
+        client_key.serialize_pem(),
+        Arc::new(server),
+    )
+}
+
 /// What the server does with a connection after a scripted response.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum After {

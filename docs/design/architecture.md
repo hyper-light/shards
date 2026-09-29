@@ -441,6 +441,47 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   - platforms our guests can't run, DiffID mismatches and tampered bytes, all refused;
   - rate limits reported, not retried.
 
+### Credentials, certificates and `shards pull` (D23)
+
+`docker login` state and Docker's certificates work unchanged
+([registry-pull](../research/registry-pull.md) §3.3, §6.3, R5). The code is
+`crates/registry/src/credentials.rs`, `certs.rs`, and `crates/shards/src/pull.rs`.
+
+- **Credentials** are found as the Docker CLI v29.8.1 finds them:
+  - `config.json` from `$DOCKER_CONFIG` or `~/.docker`;
+  - Docker Hub's key `https://index.docker.io/v1/`, or else the host;
+  - `DOCKER_AUTH_CONFIG` first; then the host's `credHelpers` entry, `credsStore`, or
+    `auths`;
+  - the platform's default helper when the config holds no credentials at all;
+  - helpers spoken to over their protocol, with `<token>` marking an identity token.
+  - dockerd's precedence: a registry token, then an identity token, then a password.
+  - Nothing is written: `shards login` comes later.
+- **`certs.d`** is read as dockerd reads it:
+  - `*.crt` files hold CAs, beside the platform's roots;
+  - a `*.cert` with its `*.key` is a client certificate. dockerd offers all of them;
+    rustls takes one, so we use the first by name.
+  - The directories are Docker Desktop's `~/.docker/certs.d`, the rootless engine's
+    `$XDG_CONFIG_HOME/docker/certs.d`, and the native engine's `/etc/docker/certs.d` or
+    `%PROGRAMDATA%\docker\certs.d` (docker/docs `engine/security/certificates.md`).
+  - One TLS configuration serves every host of a pull (registry, token realm, CDN),
+    as dockerd's per-registry client does.
+- **The store** lives in `$SHARDS_HOME/images`, else in the platform's data directory:
+  - `~/Library/Application Support` on macOS, per Apple's guidance;
+  - `$XDG_DATA_HOME` or `~/.local/share` elsewhere on Unix;
+  - `%LOCALAPPDATA%` on Windows.
+  - It is created 0700, as containerd creates its root.
+- **`shards pull`** prints `docker pull`'s lines: the default tag, `Already exists` or
+  `Download complete` per layer, `Digest:` and `Status:`.
+- **Checked against real registries** (2026-09-28, from the M5 Max):
+  - Docker Hub (`alpine`, and by digest), GHCR (`ghcr.io/containerd/busybox:1.36`) and
+    Quay (`quay.io/prometheus/busybox`).
+  - `alpine` took 1.5 s the first time and 0.33 s once stored.
+  - Its EROFS image booted in a shards microVM and ran `/bin/sh` in Alpine 3.24.2.
+- **Tests:**
+  - fake credential helpers that answer, mark an identity token, have nothing, or fail;
+  - `DOCKER_AUTH_CONFIG` and its fallback;
+  - `certs.d` CAs, and a mutual-TLS handshake with and without its client certificate.
+
 ## 3. Components
 
 ```
@@ -506,7 +547,7 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
      rootfs image; `shards run IMAGE CMD`.
    - Built: our kernel (CI releases); virtio-pmem; the EROFS writer; layers → one EROFS
      image (D15); booting into an image to run a command (D16); the image store (D18);
-     registry TLS, HTTP and auth (D19–D21); pulls (D22). Next: `shards pull`, and
+     registry TLS, HTTP and auth (D19–D21); pulls (D22); `shards pull` (D23). Next:
      `shards run IMAGE`.
 4. **In-VM engine.**
    - Scope: Docker Engine API subset → full; the rootless runtime (compatible, not

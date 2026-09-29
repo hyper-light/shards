@@ -12,6 +12,12 @@ use windows_sys::Win32::System::Memory::{
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 
+/// Makes `dir` and its missing parents. Under `%LOCALAPPDATA%`, they inherit ACLs that
+/// admit this user alone.
+pub fn create_private_dir(dir: &std::path::Path) -> io::Result<()> {
+    std::fs::create_dir_all(dir)
+}
+
 pub fn page_size() -> io::Result<usize> {
     let mut info = SYSTEM_INFO::default();
     // SAFETY: GetSystemInfo fills the provided struct.

@@ -1047,7 +1047,10 @@ mod tests {
         let (ca, server) = registry(&[&rustls::version::TLS13]);
         let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
         let listening = serve(Some(server), vec![(ok.clone(), After::Keep), (ok, After::Keep)]);
-        let client = Client::new(Box::new(move |_| client_config(vec![ca.clone()])), "shards-test");
+        let client = Client::new(
+            Box::new(move |_| client_config(vec![ca.clone()], None)),
+            "shards-test",
+        );
         // localhost may resolve to ::1 first, where nothing listens: the race moves on.
         let url = at("https", "localhost", listening.port);
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));

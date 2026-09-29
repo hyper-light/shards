@@ -3,6 +3,17 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::ptr::NonNull;
 
+/// Makes `dir`, and its missing parents, readable by this user alone (0700). An existing
+/// `dir` is made 0700 too, as containerd makes its root.
+pub fn create_private_dir(dir: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
 pub fn page_size() -> io::Result<usize> {
     // SAFETY: sysconf has no preconditions.
     let n = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
