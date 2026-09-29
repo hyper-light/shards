@@ -394,7 +394,7 @@ mod compare {
             .stderr(Stdio::piped());
         // Diagnostic (branch restore-diag): KVM's exits and entries, traced from the spawn.
         let _ = Command::new("sudo")
-            .args(["sh", "-c", "cd /sys/kernel/tracing && echo 0 > tracing_on && echo > trace && echo 8192 > buffer_size_kb && echo 1 > events/kvm/kvm_exit/enable && echo 1 > events/kvm/kvm_entry/enable && echo 1 > events/kvm/kvm_userspace_exit/enable && echo 1 > tracing_on"])
+            .args(["sh", "-c", "cd /sys/kernel/tracing && echo 0 > tracing_on && echo > trace && echo mono > trace_clock && echo 8192 > buffer_size_kb && echo 1 > events/kvm/kvm_exit/enable && echo 1 > events/kvm/kvm_entry/enable && echo 1 > events/kvm/kvm_userspace_exit/enable && echo 1 > tracing_on"])
             .status();
         let start = Instant::now();
         let mut child = command.spawn().expect("spawning the VMM");
@@ -416,18 +416,29 @@ mod compare {
         let beat = beat.recv_timeout(TIMEOUT);
         // Diagnostic (branch restore-diag): the time from each exit to the next entry, by
         // reason, until the first beat; and what the guest printed before it.
-        if beat.is_ok() {
+        if let Ok(at) = beat {
+            // The first beat on the trace's clock (CLOCK_MONOTONIC, as Instant's): only what
+            // came before it counts.
+            let mut now = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: clock_gettime writes the timespec it is given.
+            unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) };
+            let cut = now.tv_sec as f64 + now.tv_nsec as f64 * 1e-9 - at.elapsed().as_secs_f64();
+            const SUMMARY: &str = r#"function ts(  i) { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+:$/) return substr($i, 1, length($i) - 1); return 0 }
+function after(w,  i) { for (i = 1; i < NF; i++) if ($i == w) return $(i + 1); return "?" }
+/kvm_exit:/ { t = ts(); if (t > cut) next; if ($1 in ran) { guest += (t - ran[$1]) * 1e6; runs++; delete ran[$1] } last[$1] = t; why[$1] = after("reason"); rips[why[$1] " " after("rip")]++; next }
+/kvm_userspace_exit:/ { if (ts() > cut) next; if ($1 in why) why[$1] = why[$1] "/user:" after("reason"); next }
+/kvm_entry:/ { t = ts(); if (t > cut) next; if ($1 in last) { r = why[$1]; n[r]++; us[r] += (t - last[$1]) * 1e6; delete last[$1] } ran[$1] = t }
+END { printf "guest n=%d us=%.0f\n", runs, guest; for (r in n) printf "%s n=%d us=%.0f\n", r, n[r], us[r]; for (k in rips) printf "rip %s %d\n", k, rips[k] }"#;
             let summary = Command::new("sudo")
                 .args(["sh", "-c"])
-                .arg(concat!(
-                    "cd /sys/kernel/tracing && echo 0 > tracing_on && cat trace | awk '",
-                    r#"function ts(  i) { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+:$/) return substr($i, 1, length($i) - 1); return 0 }
-function after(w,  i) { for (i = 1; i < NF; i++) if ($i == w) return $(i + 1); return "?" }
-/kvm_exit:/ { t = ts(); if ($1 in ran) { guest += (t - ran[$1]) * 1e6; runs++; delete ran[$1] } last[$1] = t; why[$1] = after("reason"); next }
-/kvm_userspace_exit:/ { if ($1 in why) why[$1] = why[$1] "/user:" after("reason"); next }
-/kvm_entry:/ { t = ts(); if ($1 in last) { r = why[$1]; n[r]++; us[r] += (t - last[$1]) * 1e6; delete last[$1] } ran[$1] = t }
-END { printf "guest n=%d us=%.0f\n", runs, guest; for (r in n) printf "%s n=%d us=%.0f\n", r, n[r], us[r] }"#,
-                    "' | sort -t= -k3 -n -r | head -25; echo 0 > events/kvm/enable 2>/dev/null; echo > trace"
+                .arg(format!(
+                    "cd /sys/kernel/tracing && echo 0 > tracing_on && cat trace | awk -v cut={cut:.6} '{SUMMARY}' > /tmp/kvm-summary; \
+                     grep -v '^rip ' /tmp/kvm-summary | sort -t= -k3 -n -r | head -25; \
+                     grep '^rip ' /tmp/kvm-summary | sort -k4 -n -r | head -80; \
+                     echo 0 > events/kvm/enable 2>/dev/null; echo > trace"
                 ))
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
