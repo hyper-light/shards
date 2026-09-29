@@ -113,6 +113,14 @@ fn daemon_pid(home: &Path) -> Option<i32> {
         .ok()
 }
 
+/// Whether no daemon holds `home`'s lock.
+fn home_is_free(home: &Path) -> bool {
+    use std::os::fd::AsRawFd;
+    let lock = std::fs::File::open(home.join("daemon.lock")).unwrap();
+    // SAFETY: flock(2) on a descriptor we own, released as it closes.
+    unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+}
+
 fn alive(pid: i32) -> bool {
     // SAFETY: kill(2) with signal 0 only asks whether the process exists.
     unsafe { libc::kill(pid, 0) == 0 }
@@ -226,7 +234,10 @@ fn stop_ends_runs_and_waiting_vms() {
     let env = [("SHARDS_HOME", home.as_os_str())];
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
-    assert!(!alive(daemon), "stop returned before the daemon exited");
+    // It has let go of its home; the process ends as the kernel finishes its exit, and
+    // init, which adopted it, reaps it (kill(2) finds a zombie too).
+    assert!(home_is_free(&home), "stop returned before the daemon exited");
+    eventually("the daemon outlived its stop", || !alive(daemon));
     assert_eq!(
         wait(&mut sleeper),
         Some(128 + 15),

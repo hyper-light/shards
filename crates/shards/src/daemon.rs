@@ -37,7 +37,8 @@ use crate::workload::NOT_RUN;
 const USAGE: &str = "usage: shards daemon [--detached | stop]
   Serves `shards run` from warm microVMs; `shards run` starts one when none is running.
   It exits after SHARDS_DAEMON_IDLE seconds (default 900) without a run.
-  --detached: write messages to daemon.log in SHARDS_HOME, as when `shards run` starts it.
+  --detached: run it in the background, writing messages to daemon.log in SHARDS_HOME, as
+    `shards run` starts it.
   stop: have the running daemon end its runs, as dockerd ends containers, and exit.
   SHARDS_POOL: warm microVMs kept for each image (default 2).";
 
@@ -71,8 +72,8 @@ pub fn daemon(args: impl Iterator<Item = OsString>) -> ExitCode {
     let args: Vec<OsString> = args.collect();
     let arg = |i: usize| args.get(i).and_then(|a| a.to_str());
     let result = match (args.len(), arg(0)) {
-        (0, _) => serve(false),
-        (1, Some("--detached")) => serve(true),
+        (0, _) => serve(),
+        (1, Some("--detached")) => detach(),
         (1, Some("-h" | "--help")) => {
             let _ = writeln!(io::stdout(), "{USAGE}");
             return ExitCode::SUCCESS;
@@ -158,8 +159,8 @@ struct Daemon {
     stopping: AtomicBool,
     /// The socket is gone: no client arrives from here on.
     closed: AtomicBool,
-    /// The connections of `shards daemon stop`, held open until this process exits, which
-    /// is how they learn it has.
+    /// The connections of `shards daemon stop`, held open until this daemon has let go
+    /// of its home, which is how they learn it has exited.
     stoppers: Mutex<Vec<UnixStream>>,
     /// The runs in progress, by their container's ID.
     runs: Mutex<HashMap<String, Tracked>>,
@@ -177,7 +178,7 @@ struct Daemon {
     /// Numbers the templates a run saves before they become the template.
     saved: AtomicU64,
     /// The home's lock, held while this daemon lives.
-    _lock: File,
+    home_lock: File,
 }
 
 /// A client in hand: counted until its run is handed over or refused.
@@ -190,12 +191,38 @@ impl Drop for Busy<'_> {
     }
 }
 
-fn serve(detached: bool) -> Result<(), String> {
+/// Starts the daemon in the background: in a session of its own, writing to the log in
+/// its home, and orphaned as this process exits, so that init adopts it (or the nearest
+/// subreaper) and reaps it when it exits. A daemon left the child of the `shards run` that
+/// started it would stay a zombie after it exits, for as long as that client lives
+/// (APUE 13.3; XNU proc_exit reparents orphans to launchd).
+fn detach() -> Result<(), String> {
+    use std::os::fd::AsFd;
+    use std::os::unix::fs::OpenOptionsExt;
     let home = shards_ipc::home()?;
     shards_vmm::platform::create_private_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
-    if detached {
-        log_to(&shards_ipc::log(&home))?;
-    }
+    let path = shards_ipc::log(&home);
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
+    shards_ipc::spawn(
+        &exe,
+        &["daemon".as_ref()],
+        &[(null.as_fd(), 0), (log.as_fd(), 1), (log.as_fd(), 2)],
+        true,
+    )
+    .map(drop)
+    .map_err(|e| format!("starting the daemon {}: {e}", exe.display()))
+}
+
+fn serve() -> Result<(), String> {
+    let home = shards_ipc::home()?;
+    shards_vmm::platform::create_private_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
     // The socket's name is relative to the home (shards_ipc::SOCKET). The home is the
     // daemon's own, so this holds no client's directory busy.
     std::env::set_current_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
@@ -239,7 +266,7 @@ fn serve(detached: bool) -> Result<(), String> {
         removing: Mutex::default(),
         spare: Mutex::default(),
         saved: AtomicU64::new(0),
-        _lock: home_lock,
+        home_lock,
     });
     daemon.make_spare();
     log(format!(
@@ -248,24 +275,6 @@ fn serve(detached: bool) -> Result<(), String> {
         daemon.home.join(daemon.socket).display()
     ));
     daemon.listen(listener);
-    Ok(())
-}
-
-/// Makes `path` this process's stdout and stderr.
-fn log_to(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    for target in [1, 2] {
-        // SAFETY: dup2(2) onto this process's own standard descriptors.
-        if unsafe { libc::dup2(file.as_raw_fd(), target) } < 0 {
-            return Err(format!("{}: {}", path.display(), io::Error::last_os_error()));
-        }
-    }
     Ok(())
 }
 
@@ -399,7 +408,10 @@ impl Daemon {
         }
     }
 
-    /// Ends the VMs still waiting, and exits.
+    /// Ends the VMs still waiting, lets go of the home, and exits. `shards daemon stop`
+    /// learns of it from its connection closing, which is done here, after the rest: the
+    /// kernel would close it on exit, but in no order this could rely on (XNU closes a
+    /// process's descriptors from the highest down, kern_descrip.c fdt_invalidate).
     fn exit(&self) -> ! {
         let _ = std::fs::remove_file(self.home.join("daemon.pid"));
         let state = lock(&self.state);
@@ -408,6 +420,9 @@ impl Daemon {
             let _ = vm.kill(libc::SIGTERM);
         }
         log("exiting");
+        // SAFETY: flock(2) on the lock's own descriptor.
+        unsafe { libc::flock(self.home_lock.as_raw_fd(), libc::LOCK_UN) };
+        lock(&self.stoppers).clear();
         std::process::exit(0)
     }
 

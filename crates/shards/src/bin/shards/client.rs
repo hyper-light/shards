@@ -272,20 +272,27 @@ fn connect(home: &Path, daemon: &Path, started: &mut bool) -> Result<UnixStream,
     }
 }
 
-/// Starts `daemon daemon --detached` in a session of its own; the daemon creates its home
-/// and writes its messages to the log there. Of daemons started at once, one takes the
-/// home's lock and the rest exit.
+/// Runs `daemon daemon --detached`, which starts the daemon in the background and exits;
+/// the daemon creates its home and writes its messages to the log there. Of daemons
+/// started at once, one takes the home's lock and the rest exit.
 fn start(daemon: &Path) -> Result<(), String> {
     use std::os::fd::AsFd;
     let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
-    shards_ipc::spawn(
+    let starting = |e: io::Error| format!("starting the daemon {}: {e}", daemon.display());
+    let starter = shards_ipc::spawn(
         daemon,
         &["daemon".as_ref(), "--detached".as_ref()],
         &[(null.as_fd(), 0), (null.as_fd(), 1), (null.as_fd(), 2)],
         true,
     )
-    .map(drop)
-    .map_err(|e| format!("starting the daemon {}: {e}", daemon.display()))
+    .map_err(starting)?;
+    match starter.wait().map_err(starting)? {
+        0 => Ok(()),
+        status => Err(format!(
+            "starting the daemon {}: exit status {status}",
+            daemon.display()
+        )),
+    }
 }
 
 /// The command's stdin: /dev/null, or with `interactive` a pipe a thread fills from this
