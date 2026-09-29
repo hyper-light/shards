@@ -1080,6 +1080,37 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
 - **After** (da483ac, AMD EPYC 9V74; fd7628d, 7763; n = 30 each): the overhead was
   2.7 MiB at p50 and at max in both runs, against Firecracker's 4.5.
 
+### M35. How many bytes one read or write may ask for
+
+- **Question.** `GuestMemory::save` writes each run of pages the guest used with one call,
+  and a run can be as long as guest memory. Does every host take a call that long?
+- **Method.**
+  - `docs/research/measurements/rw-limit/probe.c`: for INT_MAX and INT_MAX + 1 bytes of
+    memory mapped and never touched, `pwrite` to /dev/null, which takes any count without
+    reading it, and `pread` from an empty file, which has nothing to give.
+  - 2026-09-29, this machine: macOS 26.4.1 (Darwin 25.4.0, xnu-12377.101.15); the same
+    probe built with `zig cc -target aarch64-linux-musl`, in Docker Desktop's VM, Linux
+    6.12.76-linuxkit.
+  - XNU's source (apple-oss-distributions/xnu xnu-12377.121.6) and Linux's (v6.17).
+- **Results.**
+
+| Call | XNU, INT_MAX | XNU, INT_MAX + 1 | Linux, INT_MAX | Linux, INT_MAX + 1 |
+|---|---|---|---|---|
+| `pwrite` to /dev/null | 2,147,483,647 | EINVAL | 2,147,479,552 | 2,147,479,552 |
+| `pread` from an empty file | 0 | EINVAL | 0 | 0 |
+
+  - XNU refuses a count over INT_MAX before it looks at the file: `dofileread`,
+    `read_internal`, `dofilewrite` and `write_internal` return EINVAL
+    (bsd/kern/sys_generic.c:309, 356, 637, 684).
+  - Linux cuts a count over `MAX_RW_COUNT`, INT_MAX rounded down to a page
+    (include/linux/fs.h:2829), to it and returns what it moved (fs/read_write.c:566-567
+    in `vfs_read`, 680-681 in `vfs_write`).
+- **Consequence.** `platform::read_at` and `write_at` ask for at most INT_MAX bytes on
+  Apple hosts, as Rust's std caps its own reads and writes (1.100.0-nightly 2026-09-04,
+  library/std/src/sys/fd/unix.rs:69-81), and their callers loop until done. Without the
+  cap, a snapshot whose guest used more than 2 GiB in one run would fail on the Mac, as
+  would a guest's block request over 2 GiB (a descriptor's length has 32 bits).
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

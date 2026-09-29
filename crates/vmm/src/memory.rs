@@ -127,7 +127,10 @@ impl GuestMemory {
     }
 
     /// Writes every region in turn to `file`, leaving all-zero pages as holes so the file
-    /// stays as small as the memory the guest used. Every vCPU and device must be paused.
+    /// stays as small as the memory the guest used. Each run of pages the guest used is
+    /// one write: a write's length sets the order of the page-cache folios it fills (Linux
+    /// 6.17, ext4 `write_begin_get_folio`), and a restore maps those folios. Every vCPU and
+    /// device must be paused.
     pub fn save(&self, file: &std::fs::File) -> io::Result<()> {
         let page = platform::page_size()?;
         let mut offset = 0u64;
@@ -135,20 +138,21 @@ impl GuestMemory {
             // SAFETY: the VM is paused (caller contract), so nothing writes this region
             // while the slice lives.
             let region = unsafe { std::slice::from_raw_parts(r.host.as_ptr(), r.len) };
+            // Where the run of used pages being gathered starts.
+            let mut run = None;
             for (i, chunk) in region.chunks(page).enumerate() {
-                if chunk.iter().all(|&b| b == 0) {
-                    continue;
-                }
-                let at = offset + (i * page) as u64;
-                let mut done = 0;
-                while let Some(rest) = chunk.get(done..).filter(|c| !c.is_empty()) {
-                    // SAFETY: `rest` is a live slice of `rest.len()` bytes.
-                    let n = unsafe { platform::write_at(file, rest.as_ptr(), rest.len(), at + done as u64)? };
-                    if n == 0 {
-                        return Err(io::ErrorKind::WriteZero.into());
+                let used = chunk.iter().any(|&b| b != 0);
+                match (run, used) {
+                    (None, true) => run = Some(i * page),
+                    (Some(start), false) => {
+                        write_run(file, region, start..i * page, offset)?;
+                        run = None;
                     }
-                    done += n;
+                    _ => {}
                 }
+            }
+            if let Some(start) = run {
+                write_run(file, region, start..region.len(), offset)?;
             }
             offset += r.len as u64;
         }
@@ -221,6 +225,27 @@ impl Drop for GuestMemory {
     }
 }
 
+/// Writes `region[run]` to `file`, which holds `region` from `offset` on.
+fn write_run(
+    file: &std::fs::File,
+    region: &[u8],
+    run: std::ops::Range<usize>,
+    offset: u64,
+) -> io::Result<()> {
+    let at = offset + run.start as u64;
+    let bytes = region.get(run).ok_or(io::ErrorKind::InvalidInput)?;
+    let mut done = 0;
+    while let Some(rest) = bytes.get(done..).filter(|b| !b.is_empty()) {
+        // SAFETY: `rest` is a live slice of `rest.len()` bytes.
+        let n = unsafe { platform::write_at(file, rest.as_ptr(), rest.len(), at + done as u64)? };
+        if n == 0 {
+            return Err(io::ErrorKind::WriteZero.into());
+        }
+        done += n;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
@@ -289,6 +314,70 @@ mod tests {
         c.read(0x8000_0000 + p as u64 + 5, &mut buf).unwrap();
         assert_eq!(&buf, b"hello");
         drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Runs of used pages are written whole, across their edges and to their regions' ends,
+    /// and the pages between them stay holes.
+    #[cfg(unix)]
+    #[test]
+    fn saves_runs_of_used_pages_and_holes_between() {
+        use std::os::fd::AsRawFd;
+        let p = page_size().unwrap();
+        let ranges = [(0x8000_0000u64, 16 * p), (0x1_0000_0000, 3 * p)];
+        let gpa = |page: usize| match page {
+            0..16 => 0x8000_0000 + (page * p) as u64,
+            _ => 0x1_0000_0000 + ((page - 16) * p) as u64,
+        };
+        let used = |page: usize| matches!(page, 0..=2 | 4 | 11..=16 | 18);
+        // Each used page's first and last bytes, so a run cut short or moved shows.
+        let marks = |page: usize| match used(page) {
+            true => (page as u8 + 1, page as u8 + 0x81),
+            false => (0, 0),
+        };
+        let m = GuestMemory::anonymous(&ranges).unwrap();
+        for page in (0..19).filter(|&page| used(page)) {
+            let (first, last) = marks(page);
+            m.write(gpa(page), &[first]).unwrap();
+            m.write(gpa(page) + p as u64 - 1, &[last]).unwrap();
+        }
+        let path = std::env::temp_dir().join(format!("shards-runs-{}", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        m.save(&file).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 19 * p as u64);
+
+        let r = GuestMemory::from_file(&ranges, &file).unwrap();
+        for page in 0..19 {
+            let first = r.read_obj::<u8>(gpa(page)).unwrap();
+            let last = r.read_obj::<u8>(gpa(page) + p as u64 - 1).unwrap();
+            assert_eq!((first, last), marks(page), "page {page}");
+        }
+
+        // The file holds data exactly where pages were used (lseek(2) SEEK_DATA, SEEK_HOLE).
+        let mut data = Vec::new();
+        let mut at = 0;
+        loop {
+            // SAFETY: lseek on an open descriptor this test owns.
+            let start = unsafe { libc::lseek(file.as_raw_fd(), at, libc::SEEK_DATA) };
+            if start < 0 {
+                // ENXIO: no data from `at` on.
+                assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ENXIO));
+                break;
+            }
+            // SAFETY: as above.
+            let end = unsafe { libc::lseek(file.as_raw_fd(), start, libc::SEEK_HOLE) };
+            assert!(end > start, "SEEK_HOLE from {start}: {end}");
+            data.extend(start as usize / p..(end as usize).div_ceil(p));
+            at = end;
+        }
+        assert_eq!(data, (0..19).filter(|&page| used(page)).collect::<Vec<_>>());
+        drop((m, r, file));
         let _ = std::fs::remove_file(path);
     }
 

@@ -273,6 +273,14 @@ pub fn fill_random(buf: &mut [u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// The most one `read_at` or `write_at` asks for. XNU fails a read or write of more than
+/// `INT_MAX` bytes with EINVAL (PM M35); Linux moves at most `MAX_RW_COUNT` and says so.
+const RW_MAX: usize = if cfg!(target_vendor = "apple") {
+    libc::c_int::MAX as usize
+} else {
+    isize::MAX as usize
+};
+
 fn file_offset(offset: u64) -> io::Result<libc::off_t> {
     libc::off_t::try_from(offset)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, format!("file offset {offset:#x}")))
@@ -286,7 +294,7 @@ pub unsafe fn read_at(file: &File, dst: *mut u8, len: usize, offset: u64) -> io:
     let offset = file_offset(offset)?;
     loop {
         // SAFETY: forwarded caller contract; the kernel writes into `dst`.
-        let n = unsafe { libc::pread(file.as_raw_fd(), dst.cast(), len, offset) };
+        let n = unsafe { libc::pread(file.as_raw_fd(), dst.cast(), len.min(RW_MAX), offset) };
         if n >= 0 {
             return Ok(n.unsigned_abs());
         }
@@ -305,7 +313,7 @@ pub unsafe fn write_at(file: &File, src: *const u8, len: usize, offset: u64) -> 
     let offset = file_offset(offset)?;
     loop {
         // SAFETY: forwarded caller contract; the kernel reads from `src`.
-        let n = unsafe { libc::pwrite(file.as_raw_fd(), src.cast(), len, offset) };
+        let n = unsafe { libc::pwrite(file.as_raw_fd(), src.cast(), len.min(RW_MAX), offset) };
         if n >= 0 {
             return Ok(n.unsigned_abs());
         }
