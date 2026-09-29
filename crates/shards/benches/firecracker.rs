@@ -19,6 +19,17 @@
 //! Firecracker is its pinned release binary, run without the jailer as its getting-started
 //! guide runs it: `--no-api --config-file`, default seccomp filters. Each iteration
 //! alternates which VMM goes first.
+//!
+//! Then restores. Each VMM snapshots the test guest in `beat` mode, which prints a `.`
+//! every millisecond: shards when the guest asks (`shards_snapshot=N`, as init asks for a
+//! template's), Firecracker through its API (`PATCH /vm` Paused, `PUT /snapshot/create`,
+//! Full). Every sample is a fresh VMM process restoring it, as each does it: `shards-vm
+//! restore DIR`, and `firecracker --api-sock` then `PUT /snapshot/load` with its memory
+//! file mapped (`File`) and `resume_vm`.
+//!
+//! - `to_beat`: the host's clock from spawn until the guest's first beat after the restore
+//!   reaches the VMM's stdout: the guest running again, what a user waits for.
+//! - `overhead` and `peak_rss`, as above, while the guest beats.
 
 #![allow(
     clippy::unwrap_used,
@@ -50,7 +61,8 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod compare {
-    use std::io::{BufRead, BufReader, Read};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
     use std::sync::mpsc;
@@ -69,6 +81,10 @@ mod compare {
     const READINGS: usize = 20;
     const READING_PERIOD: Duration = Duration::from_millis(10);
     const MIB: f64 = 1024.0 * 1024.0;
+    /// The restore comparison's guest: the test guest beating.
+    const BEAT_CMDLINE: &str = "console=ttyS0 quiet panic=-1 shards_test=beat";
+    /// The beats shards' guest runs before it asks for its snapshot.
+    const SNAPSHOT_AFTER: u32 = 20;
 
     #[derive(Clone, Copy)]
     enum Vmm {
@@ -93,7 +109,7 @@ mod compare {
         let firecracker = firecracker();
         let kernel = common::kernel();
         let initrd = idle_initrd();
-        let config = firecracker_config(kernel, &initrd, &cpus, &memory);
+        let config = firecracker_config(kernel, &initrd, &cpus, &memory, CMDLINE, "firecracker-idle.json");
 
         let command = |vmm: Vmm| match vmm {
             Vmm::Shards => {
@@ -153,6 +169,242 @@ mod compare {
                 support::stats("fc_peak_rss", "MiB", mib(&fc, |s| s.peak_rss_bytes)),
             ],
         );
+        restores(&firecracker, kernel, &initrd, &cpus, &memory, runs);
+    }
+
+    /// The restore comparison (above): each VMM's snapshot of the beating guest, restored
+    /// by fresh processes, interleaved.
+    fn restores(firecracker: &Path, kernel: &Path, initrd: &Path, cpus: &str, memory: &str, runs: usize) {
+        let guest_bytes = memory.parse::<u64>().expect("--memory MIB") << 20;
+        let dir = common::workspace().join(format!("target/bench/fc-restore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // shards: the guest asks for its snapshot, and the VM stops once it is written.
+        let snapshot = dir.join("shards");
+        let saved = Command::new(common::shards_vm())
+            .args(["run", "--kernel"])
+            .arg(kernel)
+            .arg("--initrd")
+            .arg(initrd)
+            .args(["--cpus", cpus, "--memory", memory, "--no-console", "--cmdline"])
+            .arg(format!("{BEAT_CMDLINE} shards_snapshot={SNAPSHOT_AFTER}"))
+            .arg("--snapshot-dir")
+            .arg(&snapshot)
+            .output()
+            .unwrap();
+        assert!(
+            saved.status.success() && snapshot.join("state").exists(),
+            "shards' snapshot: {}",
+            String::from_utf8_lossy(&saved.stderr)
+        );
+
+        // Firecracker: booted from its config, paused and snapshotted through its API.
+        let (fc_state, fc_memory) = (dir.join("fc.state"), dir.join("fc.memory"));
+        let config = firecracker_config(
+            kernel,
+            initrd,
+            cpus,
+            memory,
+            BEAT_CMDLINE,
+            "firecracker-beat.json",
+        );
+        let socket = dir.join("fc-save.sock");
+        let mut booted = Command::new(firecracker)
+            .arg("--api-sock")
+            .arg(&socket)
+            .arg("--config-file")
+            .arg(&config)
+            .args(["--level", "error"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let (beating, _) = first_beat(booted.stdout.take().unwrap());
+        beating
+            .recv_timeout(TIMEOUT)
+            .expect("Firecracker's guest never beat");
+        api(&socket, "PATCH", "/vm", r#"{"state":"Paused"}"#);
+        api(
+            &socket,
+            "PUT",
+            "/snapshot/create",
+            &format!(
+                "{{\"snapshot_type\":\"Full\",\"snapshot_path\":{},\"mem_file_path\":{}}}",
+                json_string(&fc_state.to_string_lossy()),
+                json_string(&fc_memory.to_string_lossy())
+            ),
+        );
+        booted.kill().unwrap();
+        booted.wait().unwrap();
+
+        let load = format!(
+            "{{\"snapshot_path\":{},\"mem_backend\":{{\"backend_type\":\"File\",\"backend_path\":{}}},\"resume_vm\":true}}",
+            json_string(&fc_state.to_string_lossy()),
+            json_string(&fc_memory.to_string_lossy())
+        );
+        let (mut shards, mut fc) = (Vec::with_capacity(runs), Vec::with_capacity(runs));
+        for i in 0..WARMUP + runs {
+            let order = if i % 2 == 0 {
+                [Vmm::Shards, Vmm::Firecracker]
+            } else {
+                [Vmm::Firecracker, Vmm::Shards]
+            };
+            for vmm in order {
+                let s = match vmm {
+                    Vmm::Shards => {
+                        let mut c = Command::new(common::shards_vm());
+                        c.arg("restore").arg(&snapshot);
+                        restore_sample(&mut c, guest_bytes, || {})
+                    }
+                    Vmm::Firecracker => {
+                        let socket = dir.join(format!("fc-{i}.sock"));
+                        let mut c = Command::new(firecracker);
+                        c.arg("--api-sock").arg(&socket).args(["--level", "error"]);
+                        restore_sample(&mut c, guest_bytes, || {
+                            api(&socket, "PUT", "/snapshot/load", &load);
+                        })
+                    }
+                };
+                if i >= WARMUP {
+                    match vmm {
+                        Vmm::Shards => shards.push(s),
+                        Vmm::Firecracker => fc.push(s),
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let to_beat = |v: &[Sample]| v.iter().map(|s| s.to_ready_us).collect::<Vec<_>>();
+        let mib =
+            |v: &[Sample], f: fn(&Sample) -> u64| v.iter().map(|s| f(s) as f64 / MIB).collect::<Vec<_>>();
+        support::report(
+            "firecracker_restore",
+            &[
+                ("n", runs.to_string()),
+                ("cpus", cpus.to_string()),
+                ("memory_mib", memory.to_string()),
+                ("kernel", common::kernel_artifact().name.to_string()),
+                ("firecracker", FIRECRACKER.to_string()),
+            ],
+            &[
+                support::stats("shards_to_beat", "us", to_beat(&shards)),
+                support::stats("fc_to_beat", "us", to_beat(&fc)),
+                support::stats("shards_overhead", "MiB", mib(&shards, |s| s.overhead_bytes)),
+                support::stats("fc_overhead", "MiB", mib(&fc, |s| s.overhead_bytes)),
+                support::stats("shards_peak_rss", "MiB", mib(&shards, |s| s.peak_rss_bytes)),
+                support::stats("fc_peak_rss", "MiB", mib(&fc, |s| s.peak_rss_bytes)),
+            ],
+        );
+    }
+
+    /// Watches `stdout` for the guest's first beat, two `.` in a row (a log line may hold
+    /// one): the channel gets the time the first of them arrived, and the thread returns
+    /// everything read, for errors.
+    fn first_beat(
+        mut stdout: impl Read + Send + 'static,
+    ) -> (mpsc::Receiver<Instant>, thread::JoinHandle<Vec<u8>>) {
+        let (tx, rx) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            let (mut all, mut buf) = (Vec::new(), [0u8; 4096]);
+            let (mut tx, mut last_dot) = (Some(tx), None::<Instant>);
+            while let Ok(n) = stdout.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let now = Instant::now();
+                for &b in &buf[..n] {
+                    if b == b'.' {
+                        if let (Some(at), Some(sender)) = (last_dot, tx.as_ref()) {
+                            let _ = sender.send(at);
+                            tx = None;
+                        }
+                        last_dot = last_dot.or(Some(now));
+                    } else {
+                        last_dot = None;
+                    }
+                }
+                all.extend_from_slice(&buf[..n]);
+            }
+            all
+        });
+        (rx, reader)
+    }
+
+    /// One restore: `command` spawned, then `after_spawn` (Firecracker's load), then the
+    /// time to the guest's first beat, the overhead readings, and the peak.
+    fn restore_sample(command: &mut Command, guest_bytes: u64, after_spawn: impl FnOnce()) -> Sample {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let start = Instant::now();
+        let mut child = command.spawn().expect("spawning the VMM");
+        let pid = child.id() as libc::pid_t;
+        let (beat, out) = first_beat(child.stdout.take().unwrap());
+        let mut stderr = child.stderr.take().unwrap();
+        let err = thread::spawn(move || {
+            let mut all = String::new();
+            let _ = stderr.read_to_string(&mut all);
+            all
+        });
+        after_spawn();
+        let beat = beat.recv_timeout(TIMEOUT);
+        let overhead = beat.is_ok().then(|| {
+            (0..READINGS)
+                .map(|_| {
+                    thread::sleep(READING_PERIOD);
+                    overhead_bytes(pid, guest_bytes)
+                })
+                .max()
+                .unwrap_or(0)
+        });
+        let peak = peak_bytes(pid);
+        // SAFETY: the child is not yet reaped, so `pid` still names it.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        child.wait().unwrap();
+        let (out, err) = (out.join().unwrap(), err.join().unwrap());
+        let (Ok(beat), Some(overhead_bytes)) = (beat, overhead) else {
+            panic!(
+                "the restored guest never beat\n--- stdout\n{}\n--- stderr\n{err}",
+                String::from_utf8_lossy(&out)
+            );
+        };
+        Sample {
+            to_ready_us: beat.duration_since(start).as_secs_f64() * 1e6,
+            overhead_bytes,
+            peak_rss_bytes: peak.expect("the VMM's VmHWM"),
+        }
+    }
+
+    /// Firecracker's API over its socket: `method path` with a JSON `body`, which must
+    /// succeed (204). A load's socket appears only once Firecracker has started, so the
+    /// connection is retried until then.
+    fn api(socket: &Path, method: &str, path: &str, body: &str) {
+        let deadline = Instant::now() + TIMEOUT;
+        let mut conn = loop {
+            match UnixStream::connect(socket) {
+                Ok(c) => break c,
+                Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_micros(100)),
+                Err(e) => panic!("{}: {e}", socket.display()),
+            }
+        };
+        write!(
+            conn,
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut response = Vec::new();
+        let mut buf = [0u8; 4096];
+        while !response.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = conn.read(&mut buf).unwrap();
+            assert!(n > 0, "Firecracker closed its API connection");
+            response.extend_from_slice(&buf[..n]);
+        }
+        let head = String::from_utf8_lossy(&response);
+        assert!(head.starts_with("HTTP/1.1 204"), "{method} {path}: {head}");
     }
 
     /// The pinned Firecracker release binary, downloaded, verified and unpacked once.
@@ -198,11 +450,20 @@ mod compare {
         path
     }
 
-    fn firecracker_config(kernel: &Path, initrd: &Path, cpus: &str, memory: &str) -> PathBuf {
+    /// Firecracker's configuration for the guest with `cmdline`, written to `name`.
+    fn firecracker_config(
+        kernel: &Path,
+        initrd: &Path,
+        cpus: &str,
+        memory: &str,
+        cmdline: &str,
+        name: &str,
+    ) -> PathBuf {
+        // shards' x86_64 machine appends these (vm/x86_64.rs, MACHINE_CMDLINE).
         let cmdline = if common::ARCH == "x86_64" {
-            format!("{CMDLINE} reboot=k pci=off")
+            format!("{cmdline} reboot=k pci=off")
         } else {
-            CMDLINE.to_string()
+            cmdline.to_string()
         };
         let json = format!(
             "{{\"boot-source\":{{\"kernel_image_path\":{},\"initrd_path\":{},\"boot_args\":{}}},\
@@ -211,7 +472,7 @@ mod compare {
             json_string(&initrd.to_string_lossy()),
             json_string(&cmdline),
         );
-        let path = common::workspace().join("target/artifacts/firecracker-idle.json");
+        let path = common::workspace().join("target/artifacts").join(name);
         std::fs::write(&path, json).unwrap();
         path
     }

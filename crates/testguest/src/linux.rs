@@ -19,6 +19,7 @@ pub fn main() {
             "snapshot" => snapshot(),
             "resume" => resume(),
             "idle" => idle(),
+            "beat" => beat(),
             "vsock" => vsock(),
             "vsock_snapshot" => vsock_snapshot(),
             "vsock_snapshot_held" => vsock_snapshot_held(),
@@ -432,6 +433,33 @@ fn idle() -> Result<(), String> {
     loop {
         // SAFETY: pause(2) takes no arguments; it returns only after a signal handler ran.
         unsafe { libc::pause() };
+    }
+}
+
+/// A running guest, for measuring any VMM that restores it (the Firecracker comparison):
+/// prints `SHARDS-TEST READY`, then a `.` every millisecond, so the first `.` a restore
+/// prints is the guest running again. It uses nothing shards-specific but, with
+/// `shards_snapshot=N`, the control page, to ask shards for a snapshot after N beats, as
+/// init asks for a template's; other VMMs snapshot it from the host.
+fn beat() -> Result<(), String> {
+    let snapshot_after: Option<u64> = std::env::var("shards_snapshot")
+        .ok()
+        .map(|n| n.parse())
+        .transpose()
+        .map_err(|e| format!("shards_snapshot: {e}"))?;
+    let control = snapshot_after.map(|_| ControlPage::map()).transpose()?;
+    let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
+    let mut beats = 0u64;
+    loop {
+        thread::sleep(Duration::from_millis(1));
+        let mut out = io::stdout().lock();
+        let _ = out.write_all(b".").and_then(|()| out.flush());
+        beats += 1;
+        if let (Some(control), Some(after)) = (&control, snapshot_after)
+            && beats == after
+        {
+            control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+        }
     }
 }
 
