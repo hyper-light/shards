@@ -104,7 +104,18 @@ fn main() {
         }
     }
     run_env(&stop, false, &env);
-    // Diagnostic (branch kvm-ws-diag): the home stays, for its daemon.log.
+    // Diagnostic (branch kvm-ws-diag): the home stays, for its daemon.log, and each
+    // templated run's statistics, which its VM wrote to the client's stderr.
+    for (i, s) in template.iter().enumerate() {
+        for line in s
+            .run
+            .stderr
+            .lines()
+            .filter(|l| l.contains("kvm-stats") || l.contains("shards-timing"))
+        {
+            println!("run {i}: {line}");
+        }
+    }
     let vm_rss_mib = |samples: &[support::Sample]| -> Vec<f64> {
         us(samples, |r| r.rss_kib())
             .into_iter()
