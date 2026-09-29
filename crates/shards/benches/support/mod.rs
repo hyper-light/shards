@@ -15,10 +15,11 @@ pub struct Sample {
     pub run: common::Run,
 }
 
-/// Runs `shardsd <args>`, the VMM's own process without the `shards` command in front, to
-/// completion. With `hold`, waits for `shards-ready` on stderr, then sends the start line.
+/// Runs `shards-vm <args>`, the VMM's own process without the `shards` command in front,
+/// to completion. With `hold`, waits for `shards-ready` on stderr, then sends the start
+/// line.
 pub fn run(args: &[String], hold: bool) -> Sample {
-    measure(common::shardsd(), args, hold, &[])
+    measure(common::shards_vm(), args, hold, &[])
 }
 
 /// Runs the `shards` command as a user runs it, with `env` added to its environment.

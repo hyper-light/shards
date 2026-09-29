@@ -71,14 +71,15 @@ Build from source with Rust 1.98 (pinned by the toolchain file):
 ```sh
 git clone https://github.com/hyper-light/shards && cd shards
 cargo build --release -p shards
-codesign -s - -f --entitlements resources/hvf.entitlements target/release/shardsd   # macOS only
-cp target/release/shards target/release/shardsd ~/.local/bin/
+codesign -s - -f --entitlements resources/hvf.entitlements target/release/shards-vm   # macOS only
+cp target/release/shards target/release/shardsd target/release/shards-vm ~/.local/bin/
 ```
 
-shards is two programs: `shards`, the command you type, and `shardsd`, which runs the
-machines. Keep them in the same directory.
+shards is three programs: `shards`, the command you type; `shardsd`, which pulls your
+images and keeps machines ready in the background; and `shards-vm`, which runs each
+machine. Keep them in the same directory.
 
-- **macOS**: 15 or later, on Apple silicon. The `codesign` line lets `shardsd` use
+- **macOS**: 15 or later, on Apple silicon. The `codesign` line lets `shards-vm` use
   Hypervisor.framework. It is an ad-hoc signature, so you need no developer account. Without
   it, machines fail to start with `HV_DENIED`.
 - **Linux**: x86_64, with access to `/dev/kvm` (usually the `kvm` group). Add

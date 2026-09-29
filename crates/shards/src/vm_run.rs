@@ -14,8 +14,8 @@ use shards_vmm::vm::{
     self, AfterSnapshot, Config, Console, Disk, ExitReason, Handle, RestoreConfig, Running, SnapshotPolicy,
 };
 
+use crate::spec::Options;
 use crate::terminal::RawTerminal;
-use crate::workload::Options;
 
 const RUN_USAGE: &str = "usage: shards vm run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards vm run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
@@ -152,7 +152,7 @@ struct Run {
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut args = utf8(args);
     let mut rootfs = None;
-    let mut cfg = config(PathBuf::new(), None);
+    let mut cfg = Config::new(PathBuf::new(), None);
     let (mut kernel, mut common, mut warm) = (None, Common::new(), None);
     while let Some(arg) = args.next() {
         let arg = arg?;
@@ -348,23 +348,6 @@ fn parsed<T>(parse: Result<T, String>, usage: &str) -> Result<T, ExitCode> {
     }
 }
 
-/// A VM with shards' defaults: 1 CPU, 256 MiB, and a console on stdout.
-pub fn config(kernel: PathBuf, init: Option<PathBuf>) -> Config {
-    Config {
-        kernel,
-        initrd: None,
-        init,
-        cmdline: "console=ttyS0 earlycon panic=-1".into(),
-        vcpus: 1,
-        memory_mib: 256,
-        console: Console::Stdout,
-        disks: Vec::new(),
-        snapshot: None,
-        pmem: Vec::new(),
-        vsock: None,
-    }
-}
-
 /// Boots `cfg` into the image `rootfs` and runs `workload` there, as `vm run --rootfs`
 /// does. Exits as the workload does.
 pub fn run_in(mut cfg: Config, rootfs: PathBuf, workload: &Options) -> ExitCode {
@@ -550,7 +533,8 @@ fn serve_workload(
     source: Source<'_>,
     start: impl FnOnce(PathBuf) -> Result<(Handle, Running), String>,
 ) -> ExitCode {
-    use crate::workload::{self, NOT_RUN, Request};
+    use crate::spec::NOT_RUN;
+    use crate::workload::{self, Request};
     let failed = |e: String| {
         report(e);
         ExitCode::from(NOT_RUN)
@@ -565,7 +549,7 @@ fn serve_workload(
         Warm(crate::warm::Link),
     }
     let command = match source {
-        Source::Given { options, hold } => match workload::spec(options) {
+        Source::Given { options, hold } => match crate::spec::spec(options, |name| std::env::var_os(name)) {
             Ok(spec) => Command::Given {
                 spec,
                 interactive: options.interactive,
@@ -705,7 +689,7 @@ fn serve_workload(
                 // As `docker run` would say it, and exit.
                 Some(why) => {
                     let (said, _) = shards_cmdline::commands::start_failed(why);
-                    let (text, status) = crate::workload::not_run(&said);
+                    let (text, status) = crate::spec::not_run(&said);
                     let _ = writeln!(std::io::stderr(), "{text}");
                     ExitCode::from(status)
                 }

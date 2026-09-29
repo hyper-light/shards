@@ -14,10 +14,17 @@ autobins = false
 name = "shards"
 path = "src/bin/shards/main.rs"
 
-# Everything that runs microVMs: the daemon, the VMM, pulls and the guest.
+# The daemon, pulls and the guest: every command but `run`, the container commands and
+# `vm`.
 [[bin]]
 name = "shardsd"
 path = "src/main.rs"
+
+# One microVM per process, booted or restored: `shards vm`, and the daemon's VMs. It
+# links the VMM and what a VM process runs, and nothing of shardsd's.
+[[bin]]
+name = "shards-vm"
+path = "src/bin/shards-vm/main.rs"
 
 [lints]
 workspace = true

@@ -742,8 +742,8 @@ for the exit status.
     anything, because its frameworks load at every launch. Only a thin client leaves room
     for the 5 ms target at p99.
 - **Built: the thin client.** `shards` links the standard library and `shards_ipc`
-  alone. It serves `run` and `daemon stop` itself and runs `shardsd`, found beside it,
-  in its own place for every other command.
+  alone. It serves `run` and `daemon stop` itself, and runs `shards-vm` for `vm` and
+  `shardsd` for every other command, found beside it, in its own place.
   - Its launch no longer loads Hypervisor, Security and CoreFoundation, nor runs
     AWS-LC's constructor [PM M23].
   - A pooled run fell from 5.15 to 3.4 ms at p50 and from 5.6 to 3.9 ms at p99. The
@@ -953,7 +953,7 @@ shards (host CLI, docker-compatible) ──unix socket──▶ shardsd (daemon)
                                                      │  volumes · templates/snapshots
                                                      │  warm VMM pool · policy
                                                      ▼
-                                       VMM process (one per microVM)
+                                       shards-vm (one process per microVM)
                                        hv backend (HVF | KVM) · memory · boot/FDT
                                        vCPU threads · GIC · virtio devices · snapshot
                                                      │ virtio (blk/net/vsock/console/rng/pmem/fs/gpu)
@@ -963,8 +963,11 @@ shards (host CLI, docker-compatible) ──unix socket──▶ shardsd (daemon)
                                        agents and compose services, many per microVM
 ```
 
-- **VMM** (the `shards-vmm` library, run by the `shards` binary): one process per microVM. That is forced on macOS
-  [GT §1.1] and chosen on Linux for fault isolation, as Firecracker does. The hot
+- **VMM** (the `shards-vmm` library, run by the `shards-vm` binary): one process per
+  microVM. That is forced on macOS [GT §1.1] and chosen on Linux for fault isolation, as
+  Firecracker does. The binary links the VMM and what a VM process runs, and nothing of
+  the daemon's: every process relocates its whole binary as it starts, and the daemon's
+  registry, TLS and image code cost each VM about 1 MiB [PM M34]. The hot
   path is kept free of allocation and locks; device threads communicate with vCPU
   threads through lock-free rings.
 - **Daemon** (`shardsd`): serves a Docker-compatible API with extensions for VM

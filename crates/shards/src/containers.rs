@@ -6,7 +6,6 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -38,12 +37,7 @@ pub struct Container {
     pub auto_remove: bool,
 }
 
-/// Nanoseconds since the Unix epoch, now.
-pub fn now() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos())
-}
+pub use crate::spec::now;
 
 /// A new container ID: 32 random bytes in hex, as moby's `stringid.GenerateRandomID`
 /// makes them, drawn again while the first 12 digits are all decimal: the short ID names

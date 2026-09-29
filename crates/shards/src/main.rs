@@ -1,6 +1,7 @@
-//! shardsd: the part of shards that runs microVMs: the daemon, the VMM, pulls and the
-//! guest. The `shards` command runs it for every command but `run`, which it serves
-//! through the daemon (src/bin/shards).
+//! shardsd: the daemon, pulls and the guest. The `shards` command runs it for every
+//! command but `run` and the container commands, which it serves through the daemon, and
+//! `vm`, which is shards-vm's (src/bin/shards-vm): the daemon starts shards-vm for each
+//! microVM too.
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -14,11 +15,7 @@ mod guest;
 mod names;
 mod pull;
 mod run;
-mod terminal;
-mod vm_run;
-#[cfg(unix)]
-mod warm;
-mod workload;
+mod spec;
 
 const USAGE: &str = "usage: shards <command> [args...]
 
@@ -45,11 +42,7 @@ fn main() -> ExitCode {
         Some("guest") => guest::guest(args),
         Some("pull") => pull::pull(args),
         Some("run") => usage_error("run: the `shards` command runs commands, through the daemon"),
-        Some("vm") => match args.next().as_ref().and_then(|c| c.to_str()) {
-            Some("run") => vm_run::run(args),
-            Some("restore") => vm_run::restore(args),
-            other => usage_error(&format!("unknown vm command {other:?}")),
-        },
+        Some("vm") => usage_error("vm: the `shards` command runs microVMs, through shards-vm"),
         Some("version" | "--version") => {
             let _ = writeln!(std::io::stdout(), "shards {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

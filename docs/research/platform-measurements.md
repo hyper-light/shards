@@ -1040,6 +1040,44 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   - These are nested hosts only. On bare metal a fault costs less, and so does waking a
     vCPU; neither is measured.
 
+### M34. What a VM process's binary costs it
+
+- **Question.** The Firecracker comparison (benchmarks.md) measures each VMM's resident
+  memory outside guest memory, by Firecracker's rule, while its guest idles. shards'
+  was 2.4 MiB when last recorded (9ef57c2), against Firecracker's 4.5. On 2026-09-29 CI
+  measured 3.8 MiB. What grew, and when?
+- **Method.**
+  - *History.* The `shards_overhead` and `fc_overhead` medians of every CI run's
+    Firecracker comparison (n = 30 each), read from 49 runs' logs, 2026-09-29, AMD EPYC
+    7763, 9V74 and 9V45 and Intel Xeon 8370C and 8573C runners, Linux 6.17.0-1022-azure.
+  - *The binary.* The VM process's binary built for x86_64-unknown-linux-musl, static
+    and position-independent, before and after the growth: `llvm-readelf -S -r`, the
+    sections a process touches as it starts, and its relative relocations, each of
+    which writes a pointer into its data as the process starts.
+- **Results.**
+  - Through df8f91c the overhead was 2.6–2.7 MiB. At 93cc1b7 it was 3.7, and from there
+    3.6–4.0. Firecracker's was 4.5 in every run. The step came with 93cc1b7: the binary
+    that runs each VM, `shardsd`, began to link the registry client (rustls, AWS-LC), to
+    serve `shards pull`, and later the daemon and containers.
+
+| x86_64 musl | VM binary at df8f91c | `shardsd` at 593fdee | `shards-vm` |
+|---|---|---|---|
+| `.text` | 614 KB | 5,264 KB | 756 KB |
+| `.rodata` | 55 KB | 811 KB | 63 KB |
+| `.data.rel.ro` | 10.7 KB | 231.8 KB | 12.0 KB |
+| `.rela.dyn` | 17.6 KB | 316.2 KB | 19.7 KB |
+| relative relocations | 735 | 13,177 | 821 |
+
+  - A VM process runs one of `shardsd`'s commands, but maps and relocates all of it: every
+    page of `.data.rel.ro` that holds a pointer becomes a private copy as the relocations
+    are applied, all of `.rela.dyn` is read, and the code it runs is spread across a text
+    8.6 times the size.
+  - On the Mac, `shardsd` also loads Security and CoreFoundation for TLS, which a VM
+    process never uses.
+- **Consequence.** VM processes run a binary of their own, `shards-vm`, which links the
+  VMM and what a VM process runs, and nothing of `shardsd`'s: on the Mac it loads
+  Hypervisor.framework alone.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

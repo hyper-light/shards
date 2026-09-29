@@ -32,7 +32,7 @@ use crate::containers::{self, Container, Registry, State as Life};
 
 mod commands;
 use crate::run::{Boot, Prepared};
-use crate::workload::NOT_RUN;
+use crate::spec::NOT_RUN;
 
 const USAGE: &str = "usage: shards daemon [--detached | stop]
   Serves `shards run` from warm microVMs; `shards run` starts one when none is running.
@@ -160,7 +160,8 @@ enum Claim {
 
 struct Daemon {
     home: PathBuf,
-    exe: PathBuf,
+    /// shards-vm, beside this binary: each VM runs in a process of its own.
+    vm: PathBuf,
     identity: Identity,
     /// The socket, relative to the working directory, the home.
     socket: &'static Path,
@@ -256,13 +257,14 @@ fn serve() -> Result<(), String> {
         .set_nonblocking(true)
         .map_err(|e| format!("{}: {e}", home.join(socket).display()))?;
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
-    let identity = Identity::of(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
+    let identity = Identity::of_build(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
+    let vm = shards_ipc::vm_binary(&exe);
     let setting = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
     let containers =
         Registry::open(&home).map_err(|e| format!("{}: {e}", home.join("containers").display()))?;
     let daemon = Arc::new(Daemon {
         home,
-        exe,
+        vm,
         identity,
         socket,
         target: setting("SHARDS_POOL").map_or(DEFAULT_POOL, |n| usize::try_from(n).unwrap_or(DEFAULT_POOL)),
@@ -509,9 +511,9 @@ impl Daemon {
         let say = |line: &str| {
             let _ = writeln!(&err, "{line}");
         };
-        // As `docker run` reports what its daemon refused (workload::not_run).
+        // As `docker run` reports what its daemon refused (spec::not_run).
         let refuse = |said: &str| {
-            let (text, status) = crate::workload::not_run(said);
+            let (text, status) = crate::spec::not_run(said);
             say(&text);
             let _ = shards_ipc::send(conn, kind::EXIT, &[status], &[]);
         };
@@ -859,7 +861,7 @@ impl Daemon {
         }
         // A detached command that never started: why, as `docker run -d` says it.
         if let Some(client) = inbox.detached.take() {
-            let (text, exits) = crate::workload::not_run(said.as_deref().unwrap_or_default());
+            let (text, exits) = crate::spec::not_run(said.as_deref().unwrap_or_default());
             let _ = shards_ipc::send(&client, kind::ERR, format!("{text}\n").as_bytes(), &[]);
             let _ = shards_ipc::send(&client, kind::END, &[exits], &[]);
         }
@@ -935,7 +937,7 @@ impl Daemon {
             Boot::Given(cfg) => return self.cold(cfg, &prepared.rootfs, None),
             Boot::Recorded(guest) => guest,
         };
-        let cfg = crate::vm_run::config(guest.kernel.clone(), Some(guest.init.clone()));
+        let cfg = Config::new(guest.kernel.clone(), Some(guest.init.clone()));
         if !shards_vmm::vm::SNAPSHOTS {
             return self.cold(&cfg, &prepared.rootfs, None);
         }
@@ -1003,13 +1005,7 @@ impl Daemon {
         if pool.failures >= MAX_FAILURES {
             return;
         }
-        let args: Vec<OsString> = vec![
-            "vm".into(),
-            "restore".into(),
-            dir.into(),
-            "--warm".into(),
-            "3".into(),
-        ];
+        let args: Vec<OsString> = vec!["restore".into(), dir.into(), "--warm".into(), "3".into()];
         for _ in 0..want {
             match self.start(&args, For::Pool(dir.to_path_buf())) {
                 Ok(vm) => {
@@ -1029,7 +1025,6 @@ impl Daemon {
     /// the way.
     fn cold(self: &Arc<Self>, cfg: &Config, rootfs: &Path, save: Option<&Path>) -> Result<Ready, String> {
         let mut args: Vec<OsString> = vec![
-            "vm".into(),
             "run".into(),
             "--kernel".into(),
             cfg.kernel.clone().into(),
@@ -1055,15 +1050,15 @@ impl Daemon {
             .map_err(|_| "the VM's watcher ended without a word".to_string())?
     }
 
-    /// Starts `exe args` as a warm VM whose daemon socket is its descriptor 3, and watches
-    /// it.
+    /// Starts shards-vm with `args` as a warm VM whose daemon socket is its descriptor 3,
+    /// and watches it.
     fn start(self: &Arc<Self>, args: &[OsString], dest: For) -> Result<Arc<shards_ipc::Child>, String> {
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a VM's socket: {e}"))?;
         let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
         let err = io::stderr();
         let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
         let child = shards_ipc::spawn(
-            &self.exe,
+            &self.vm,
             &args,
             &[
                 (null.as_fd(), 0),
@@ -1073,7 +1068,7 @@ impl Daemon {
             ],
             false,
         )
-        .map_err(|e| format!("starting {}: {e}", self.exe.display()))?;
+        .map_err(|e| format!("starting {}: {e}", self.vm.display()))?;
         let vm = Arc::new(child);
         let (daemon, watched) = (self.clone(), vm.clone());
         let watching = std::thread::Builder::new()

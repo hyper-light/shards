@@ -68,6 +68,25 @@ pub struct Config {
     pub vsock: Option<PathBuf>,
 }
 
+impl Config {
+    /// A VM with shards' defaults: 1 CPU, 256 MiB, and a console on stdout.
+    pub fn new(kernel: PathBuf, init: Option<PathBuf>) -> Config {
+        Config {
+            kernel,
+            initrd: None,
+            init,
+            cmdline: "console=ttyS0 earlycon panic=-1".into(),
+            vcpus: 1,
+            memory_mib: 256,
+            console: Console::Stdout,
+            disks: Vec::new(),
+            snapshot: None,
+            pmem: Vec::new(),
+            vsock: None,
+        }
+    }
+}
+
 /// Starts a VM from a snapshot instead of booting one.
 #[derive(Debug, Clone)]
 pub struct RestoreConfig {

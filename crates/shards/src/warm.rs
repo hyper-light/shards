@@ -21,7 +21,8 @@ use std::os::unix::net::UnixStream;
 use shards_abi::run::Spec;
 use shards_ipc::kind;
 
-use crate::workload::{self, NOT_RUN, ToGuest};
+use crate::spec::NOT_RUN;
+use crate::workload::{self, ToGuest};
 
 /// A warm VM's side of the daemon: the socket its request arrives on, and /dev/null, to
 /// replace the client's stdio when the VM lets go of the client.
@@ -220,7 +221,7 @@ pub fn finish(
     let failed = not_run.map(shards_cmdline::commands::start_failed);
     let mut said_status = status;
     if let Some((said, kept)) = &failed {
-        let (text, exits) = workload::not_run(said);
+        let (text, exits) = crate::spec::not_run(said);
         if client.is_some() {
             let _ = writeln!(io::stderr(), "{text}");
         }

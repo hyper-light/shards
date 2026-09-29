@@ -16,7 +16,7 @@ use shards_ipc::kind;
 
 use super::{Daemon, STOP_GRACE, lock};
 use crate::containers::{Container, State as Life, now};
-use crate::workload::{LOG_STDERR, LOG_STDOUT};
+use crate::spec::{LOG_STDERR, LOG_STDOUT};
 
 /// How long a command may take to end after SIGKILL before its VM goes too, and how long
 /// the VM may take then (moby daemon/kill.go, kill).

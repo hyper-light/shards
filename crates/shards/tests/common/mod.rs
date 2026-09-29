@@ -184,19 +184,26 @@ pub fn shards() -> &'static Path {
     V.get_or_init(|| binaries().join(format!("shards{}", std::env::consts::EXE_SUFFIX)))
 }
 
-/// The `shardsd` beside [`shards`], for what runs microVMs without the command in front.
+/// The `shardsd` beside [`shards`]: the daemon, pulls and the guest.
 pub fn shardsd() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
     V.get_or_init(|| binaries().join(format!("shardsd{}", std::env::consts::EXE_SUFFIX)))
 }
 
-/// The directory holding this build's `shards` and `shardsd`.
+/// The `shards-vm` beside [`shards`], for what runs microVMs without the command in front.
+pub fn shards_vm() -> &'static Path {
+    static V: OnceLock<PathBuf> = OnceLock::new();
+    V.get_or_init(|| binaries().join(format!("shards-vm{}", std::env::consts::EXE_SUFFIX)))
+}
+
+/// The directory holding this build's `shards`, `shardsd` and `shards-vm`.
 fn binaries() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
     V.get_or_init(|| {
         let built = [
             ("shards", Path::new(env!("CARGO_BIN_EXE_shards"))),
             ("shardsd", Path::new(env!("CARGO_BIN_EXE_shardsd"))),
+            ("shards-vm", Path::new(env!("CARGO_BIN_EXE_shards-vm"))),
         ];
         let digest: String = {
             use sha2::Digest;
@@ -218,7 +225,7 @@ fn binaries() -> &'static Path {
         for (bin, path) in built {
             let copy = temp.join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
             std::fs::copy(path, &copy).unwrap();
-            if cfg!(target_os = "macos") && bin == "shardsd" {
+            if cfg!(target_os = "macos") && bin == "shards-vm" {
                 let st = Command::new("codesign")
                     .arg("--entitlements")
                     .arg(workspace().join("resources/hvf.entitlements"))

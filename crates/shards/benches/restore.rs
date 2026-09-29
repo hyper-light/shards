@@ -48,7 +48,6 @@ fn main() {
     let _ = std::fs::remove_dir_all(&dir);
     let snapshot = dir.join("snapshot").display().to_string();
     let boot: Vec<String> = [
-        "vm",
         "run",
         "--kernel",
         common::kernel().to_str().unwrap(),
@@ -70,7 +69,7 @@ fn main() {
     run(&boot, false);
 
     let resumed = |r: &common::Run| r.marker_us(marker::RESUMED);
-    let cold_args: Vec<String> = ["vm", "restore", &snapshot, "--no-console"]
+    let cold_args: Vec<String> = ["restore", &snapshot, "--no-console"]
         .iter()
         .map(|s| s.to_string())
         .collect();

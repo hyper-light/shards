@@ -179,7 +179,7 @@ fn resolve(request: &mut Run) -> Result<(PathBuf, PathBuf), String> {
     // Only Unix has the daemon, so far.
     #[cfg(unix)]
     {
-        request.daemon = Identity::of(&daemon).map_err(|e| format!("{}: {e}", daemon.display()))?;
+        request.daemon = Identity::of_build(&daemon).map_err(|e| format!("{}: {e}", daemon.display()))?;
     }
     Ok((shards_ipc::home()?, daemon))
 }

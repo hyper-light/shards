@@ -117,7 +117,26 @@ pub fn take_forwarded(reads_terminal: bool) -> io::Result<(libc::sigset_t, Vec<l
     }
 }
 
+/// The binary that runs each microVM, beside the daemon's (`shards-vm`).
+pub fn vm_binary(daemon: &Path) -> PathBuf {
+    daemon.with_file_name(format!("shards-vm{}", std::env::consts::EXE_SUFFIX))
+}
+
 impl Identity {
+    /// The build a daemon binary belongs to, as clients and the daemon tell builds apart:
+    /// its file's identity folded with that of the VM binary beside it, which runs the
+    /// daemon's VMs, so that either rebuilt is another build.
+    pub fn of_build(daemon: &Path) -> io::Result<Identity> {
+        let (d, v) = (Identity::of(daemon)?, Identity::of(&vm_binary(daemon))?);
+        Ok(Identity {
+            dev: d.dev ^ v.dev.rotate_left(17),
+            ino: d.ino ^ v.ino.rotate_left(29),
+            size: d.size ^ v.size.rotate_left(37),
+            mtime_s: d.mtime_s ^ v.mtime_s.rotate_left(41),
+            mtime_ns: d.mtime_ns ^ v.mtime_ns.rotate_left(13),
+        })
+    }
+
     pub fn of(path: &Path) -> io::Result<Identity> {
         use std::os::unix::fs::MetadataExt;
         let m = std::fs::metadata(path)?;
