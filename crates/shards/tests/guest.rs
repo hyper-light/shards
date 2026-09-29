@@ -43,8 +43,7 @@ fn runs_boot_the_default_guest_fetched_and_checked_on_first_need() {
     );
     assert!(first.stdout.lines().any(|l| l == "uid 1000"), "{shown}");
 
-    // The store holds the kernel, and the init this build carries: the same bytes as a
-    // build of shards-init in another target directory.
+    // The store holds the kernel, and the init this build carries.
     let stored = |digest: &str| home.join("guest").join(format!("sha256-{digest}"));
     assert_eq!(
         std::fs::read(stored(pinned)).unwrap(),

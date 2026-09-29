@@ -140,9 +140,16 @@ fn guest_binary(name: &str) -> PathBuf {
     // Go through the rustup proxy on PATH (not $CARGO, the bare cargo binary) and drop
     // the dyld paths cargo injects into test processes: the proxy's environment is
     // what lets rust-lld find the toolchain's libLLVM.
+    // Linked as build.rs links the init shardsd carries, whatever linker the environment
+    // names for the host's own musl builds.
+    let linker = format!(
+        "CARGO_TARGET_{}_LINKER",
+        guest_target.to_ascii_uppercase().replace('-', "_")
+    );
     let st = Command::new("cargo")
         .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
         .env_remove("DYLD_LIBRARY_PATH")
+        .env(linker, "rust-lld")
         .current_dir(workspace())
         .args([
             "build",
@@ -161,10 +168,9 @@ fn guest_binary(name: &str) -> PathBuf {
     target_dir.join(guest_target).join("guest").join(name)
 }
 
-/// The production guest init (PID 1).
+/// The production guest init (PID 1): the one `shardsd` carries, as build.rs made it.
 pub fn guest_init() -> &'static Path {
-    static I: OnceLock<PathBuf> = OnceLock::new();
-    I.get_or_init(|| guest_binary("shards-init"))
+    Path::new(concat!(env!("OUT_DIR"), "/shards-init"))
 }
 
 /// The E2E test agent (PID 1 of test VMs).

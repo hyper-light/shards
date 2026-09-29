@@ -1004,8 +1004,8 @@ docs/research/shipping-the-guest.md; the code is `crates/shards/build.rs`,
   - signed release binaries (§3.8).
 - **Tests** (E2E, crates/shards/tests/guest.rs, a real VM):
   - A first run fetches the kernel from a loopback server behind a redirect, stores it
-    and the embedded init, and boots. The init is byte for byte a separate build of
-    shards-init. The next run fetches nothing.
+    and the embedded init, and boots. The next run fetches nothing. Every E2E test boots
+    the init `shardsd` carries, from build.rs's output.
   - A kernel with one byte changed, one byte more or less, or a 404 is refused before
     the image is pulled, and nothing is kept.
 
