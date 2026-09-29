@@ -51,7 +51,7 @@ performance and resource usage.
 | D4 | vCPU threads run with Mach time-constraint policy plus QoS user-interactive. Pending: fail-safe behaviour under CPU-bound guests. | Timer lateness 258 µs → 8.7 µs at 1 ms; idle IRQ p99 315 → 11 µs [PM M8, M10] |
 | D5 | Create vCPUs strictly sequentially in index order, both at boot and on restore. | Redistributor frames and processor numbers follow creation order [PM M13] |
 | D6 | Guest RAM uses the 16 KiB IPA granule (default); the guest's own page size stays 4 KiB. | First-touch cost per byte is 4× lower than with a 4 KiB granule [PM M5] |
-| D7 | Snapshot memory is file-backed `MAP_PRIVATE`, mapped lazily. The working set can be prefetched from helper vCPUs, not from host reads. Map it in the warm process before the request: in-process faults on file-backed memory have no tail beyond 111 µs in 6.3 M, but fresh processes mapping a just-unmapped file stalled ~1 s in ~1% of boots [PM M15, M16]. | Cheapest first-touch backing, 1.07 µs per 16 KiB page; host pre-read doesn't help; 4 vCPUs fault 2.2× faster [PM M5, M6] |
+| D7 | Snapshot memory is file-backed `MAP_PRIVATE`, mapped lazily. On HVF the working set can be prefetched from helper vCPUs, not from host reads; on KVM the VMM maps it ahead (`KVM_PRE_FAULT_MEMORY`) [PM M33]. Map it in the warm process before the request: in-process faults on file-backed memory have no tail beyond 111 µs in 6.3 M, but fresh processes mapping a just-unmapped file stalled ~1 s in ~1% of boots [PM M15, M16]. | Cheapest first-touch backing, 1.07 µs per 16 KiB page; host pre-read doesn't help; 4 vCPUs fault 2.2× faster [PM M5, M6] |
 | D8 | Every HVF exit is a userspace exit: negotiate EVENT_IDX, batch, and keep notify handlers to a hand-off. Adaptive polling only above a rate threshold. | No ioeventfd on HVF [GT §1.2]; ELVIS [VIO §2.3] |
 | D9 | Implement **both** virtio-mmio and virtio-pci (modern, per-queue MSI-X). Choose the default transport by measuring the restore path and runtime. | MMIO costs 2 exits per interrupt; PCI is needed for VFIO [VIO §2.4, R3]; GPU-free default VMs must stay pin-free [GPU R1] |
 | D10 | Pin the guest's CPU view explicitly: MPIDR, PARange clamped to the IPA, SME exposure decided per image. Don't inherit defaults. | Defaults show PARange 40 on a 36-bit IPA and expose SME2 [PM M12] |
@@ -598,21 +598,32 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
   - If another run's template got there first, the other copy is removed.
 - **Later runs restore it.** A template that does not restore is removed; the run boots
   instead and says so on stderr, and the next run saves the template again.
-- **The first run records the working set.** From the snapshot on, the boot that saves
-  the template records each guest page it touches, until its command answers (50 ms
-  after the request at most), and saves them with the template as `working-set` [PM
-  M30]. Its guest memory is taken away at stage 2 (`hv_vm_protect`), and each page goes
-  back on its first fault, read-only if read, so a later write is seen too. Recording
-  slows that run's command about sixfold, on a run that is a boot anyway.
-  - A restored copy touches nearly the same pages on the same path: the boot's set
-    covered 99.7–100% of what warm VMs touched while serving a run [PM M30]. REAP found
-    the same of serverless functions' snapshots (Ustiugov et al., ASPLOS 2021).
-  - It is written through the directory held open since the snapshot, since the daemon
-    renames it into place meanwhile. A damaged one is ignored.
+- **A run records the working set**: each guest page it touches until its command
+  answers, or a while after the command starts, saved with the template as
+  `working-set`. REAP found that restored copies of a serverless function's snapshot
+  touch nearly the same pages (Ustiugov et al., ASPLOS 2021).
+  - **HVF: the first run**, from the snapshot on, for up to 50 ms past its command's
+    start [PM M30]. Its guest memory is taken away at stage 2 (`hv_vm_protect`), and
+    each page goes back on its first fault, read-only if read, so a later write is seen
+    too. Recording slows that run's command about sixfold, on a run that is a boot
+    anyway. The boot's set covered 99.7–100% of what warm VMs touched while serving a
+    run.
+  - **KVM: the first warm restore without one** (`vm::RESTORES_RECORD`), from its restore
+    on, for up to 1 s past its command's start [PM M33]. A restore's memory is mapped
+    from files, copy-on-write, afresh, so the pages its host maps when the recording ends
+    are the ones touched, and a private copy is one written (`/proc/self/pagemap`: the
+    present and file-page bits, which need no privilege). Recording costs it nothing.
+    The saving run's pages are not a restore's: only 5–16% of a restore's request pages
+    were among them, while one restore's were 99.7–100% of the next's [PM M33].
+  - The whole way from the request to the command's start is recorded, however long a
+    host takes over it; the cap only ends a long command's recording.
+  - It is written through the directory held open since the snapshot (or the restore),
+    since the daemon renames a new template into place meanwhile. A damaged one is
+    ignored, and on KVM recorded again.
 - **Where it applies.** Builds that can snapshot (HVF on arm64, KVM on x86_64,
-  `vm::SNAPSHOTS`); elsewhere every run boots. Working sets are HVF's only
-  (`vm::WORKING_SETS`): on KVM, nothing records one yet. `--kernel` and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`,
-  name files by path, so those runs always boot.
+  `vm::SNAPSHOTS`, and so `vm::WORKING_SETS`); elsewhere every run boots. `--kernel`
+  and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`, name files by path, so those runs
+  always boot.
 - **Saved quiescent.** The kernel is still running its crypto self-tests after init
   mounts the image, for about 20 ms. The template waits for them (D16), or every restored
   run would replay the rest: most stalled for a tick (PM M21).
@@ -622,7 +633,8 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
 - **Not yet:** removing templates and guests nothing uses. A working set is recorded
   once, from its template's first command; later commands' own pages still fault.
 - **Tests** (E2E, a real VM):
-  - the first run boots and saves one template, and then its working set;
+  - the first run boots and saves one template, and then (HVF) its working set, or (KVM)
+    the second run, the first restore, records it;
   - a later restore prefetches it, and a damaged one only costs the prefetch;
   - the second restores it, with no `INIT_STARTED` marker, the image's settings and the
     host's clock;
@@ -738,15 +750,15 @@ for the exit status.
     client's peak RSS fell from 6.3 to 1.6 MiB [PM M26].
   - Raising the request path's service threads to user-interactive QoS changed nothing,
     on a busy host or a saturated one [PM M22, M26].
-- **Built: working-set prefetch.** A warm VM, and a held restore, touches its template's
-  working set (D25) before the guest runs, so HVF fills stage 2 before the request
-  instead of on it: HVF maps guest memory only as the guest touches it, and a touch
-  from the host does not count [PM M5].
-  - vCPU 0 does it, before its state is restored: a loop the VMM maps below RAM for the
-    purpose (`layout::PREFETCH`), with its MMU on over an identity map of write-back
-    1 GiB blocks. It reads each page and adds zero atomically to each page the guest
-    wrote, a write that copies the page now and changes no byte. It ends with
-    `tlbi vmalle1is`, and the restore then sets every register it used.
+- **Built: working-set prefetch.** A warm VM, and a held restore, maps its template's
+  working set (D25) before the guest runs, so stage 2 is filled before the request
+  instead of on it.
+  - **HVF** maps guest memory only as the guest touches it, and a touch from the host
+    does not count [PM M5]. vCPU 0 touches it, before its state is restored: a loop the
+    VMM maps below RAM for the purpose (`layout::PREFETCH`), with its MMU on over an
+    identity map of write-back 1 GiB blocks. It reads each page and adds zero atomically
+    to each page the guest wrote, a write that copies the page now and changes no byte.
+    It ends with `tlbi vmalle1is`, and the restore then sets every register it used.
   - The alternatives cost more. Reads alone left the writes' faults on the path. Copies
     by the host counted twice their size in the VM's footprint, once the guest mapped
     them [PM M30]. With the MMU off, the loop's accesses would be uncached, and whether
@@ -756,7 +768,19 @@ for the exit status.
     p50, and the whole run by 857 µs (95% [834, 891]) [PM M30]. A waiting warm VM holds
     the pages its run will write, 2.9 MiB for that run, at no cost to the run's peak.
   - A template's first two pooled VMs are restored before its working set exists, and
-    do not prefetch.
+    do not prefetch; on KVM, neither does the third, restored as the recording run took
+    its VM.
+  - **KVM**: the restore copies the pages the guest wrote while recorded, as its writes
+    would (`MADV_POPULATE_WRITE`, Linux 5.14), then vCPU 0, its state restored, maps
+    every page into the stage-2 tables (`KVM_PRE_FAULT_MEMORY`, Linux 6.10, with
+    two-dimensional paging): writable where copied, since KVM maps a read fault
+    writable when the host page is (kvm_main.c `hva_to_pfn_fast`). A write to a page
+    mapped read-only would have faulted, copied, flushed and faulted again. Where KVM
+    cannot map ahead, the copies alone are made.
+  - Measured on nested KVM (GitHub's AMD runners, paired, n = 100 each on 5 runners):
+    a pooled `alpine true` took 26–39 ms less than without the working set, of
+    191–226 ms, and 9–14 ms less than with the copies alone [PM M33]. On one Intel
+    runner mapping ahead cost 1.4 ms against the copies alone, of 13 ms.
   - The pool still refills at the handover. Its restore and prefetch now overlap the
     run's tail, which costs the run about 45 µs. Refilling at the run's end instead
     saved 49 µs at the median, but lands on the start of a run that follows at once

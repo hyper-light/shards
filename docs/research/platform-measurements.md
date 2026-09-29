@@ -958,6 +958,88 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   p99. The path is two vsock crossings, two guest wakeups (M8) and the guest's pty; what
   of it is worth shortening is not measured.
 
+### M33. Working sets on nested KVM, and where a restored guest's time goes
+
+- **Question.** On GitHub's x86_64 runners KVM runs nested, under Microsoft's
+  hypervisor. There a restored guest took 20 ms from its release to run again, against
+  17 µs on the Mac, and a pooled `true` 81 ms (benchmarks.md, Restore and Image). What
+  takes the time? Do working sets (M30) help KVM as they help HVF, and which run should
+  record them?
+- **Method.**
+  - *Counters.* KVM's binary statistics (api.rst 4.133, `KVM_GET_STATS_FD`) of each vCPU
+    and VM, read at teardown and at a pooled run's request, its command's start and its
+    answer. With them, the guest RAM pages each VM's host had mapped at the request and at
+    the answer (`/proc/self/pagemap`: present and file-page bits). These were temporary
+    diagnostics on branches `kvm-restore-perf` and `kvm-ws-diag`, not merged.
+  - *Pooled runs* of `shards run --pull never alpine true` from one template, 40 per arm,
+    alternating on one runner, with the working set and without it; 3 runners per
+    experiment.
+  - *Paired A/B* (`build-ab/ab.py`, n = 100–200 pairs, 3–5 runners per experiment).
+    - The template's working set against none, its file removed from one arm's copy.
+    - Later, two homes with the same template and working set, on one build, whose arms
+      differ only in what a restore does with the set: nothing, copying the pages written
+      (`MADV_POPULATE_WRITE`), or that and mapping every page ahead
+      (`KVM_PRE_FAULT_MEMORY`). This was a temporary switch, on branch `kvm-ws-ab`.
+    - `AB_PAUSE` 10 ms or 500 ms between runs.
+  - GitHub `ubuntu-24.04` runners on 2026-09-29: AMD EPYC 7763, 9V74 and 9V45, and Intel
+    Xeon 8370C, 8573C and 6973P-C, all on Linux 6.17.0-1022-azure. The guest was
+    vmlinux-6.18.48, 1 vCPU, 256 MiB.
+- **Results.**
+  - A restored guest's memory is file-backed, so KVM maps it 4 KiB at a time. Up to the
+    guest's first act after its release it took 1,488 stage-2 faults and 986 4 KiB pages.
+    A boot's anonymous, THP-backed memory took 35 faults and 31 2 MiB pages. 227 of the
+    restore's pages were first mapped read-only from the file, then written. Each of
+    those took a fault, a copy, a remote TLB flush and a second fault.
+  - *A working set from the run that saves the template.* At the snapshot, that run's RAM
+    was mapped afresh from the snapshot's file and its pmem from the image. It cut a pooled
+    VM's faults from 2,480 to 410, but in the resume, before the request.
+    - While serving the request, a restored VM first mapped 295–381 pages. Only 18–63 of
+      them (5–16%) were in that working set, and 1–2 of the 121–168 it wrote were
+      recorded as written.
+    - Paired, it changed the command's time by +92 µs (95% [−109, +245]) of 4.5 ms (Intel
+      6973P-C), +598 µs ([+345, +848]) of 6.0 ms (8573C), and −930 µs ([−1462, −173]) of
+      194 ms (AMD 9V74).
+  - *Restores touch the same pages as each other.* A median of 99.7–100% of one VM's
+    request pages were in the next VM's. A restored guest's own resume (a new generation
+    ID, vsock's reset and reconnection) moves its allocations away from the saving run's
+    before the request.
+  - *A working set from the first warm restore.* It was recorded to the answer, up to 1 s
+    after the command's start. Paired, on 5 AMD runners (µs, command p50 without the
+    working set in brackets):
+
+| Arms | 10 ms between runs | 500 ms between runs |
+|---|---|---|
+| none → copy and map ahead | −26,440 to −39,043 (190,769–225,668) | −26,579 to −38,926 |
+| copy only → copy and map ahead | −9,828 to −13,592 | −9,232 to −12,867 |
+
+  - Every 95% interval there excluded zero, by at least 7.9 ms. An earlier run recorded
+    only 50 ms past the command's start: none against both was −25.4 ms ([−25.8, −25.0])
+    of 39.5 ms on the Intel 8573C, and −23.4 to −27.9 ms on 4 AMD runners. Mapping ahead
+    beyond the copies gained 6.2–7.3 ms on AMD, but cost 1.4 ms ([+1.1, +1.9]) on that
+    Intel host.
+  - *The prefetch's own time, before the release.* Copying 341–476 written pages took
+    0.7–1.4 ms. Mapping 3,472–3,867 pages ahead took 2.5–4.4 ms (Intel 8370C) and
+    3.8–8.9 ms (AMD).
+  - *The rest of a run's path is mostly waiting.* From the request to the command's start
+    took 5 ms on the Intel 8370C, with 6 faults and 21 exits (medians). On the AMD 7763s
+    it took 28 ms, with 12 faults and 62 exits. `true` then took 125 ms to answer there,
+    with 375 faults and 580 exits.
+  - The same guest's `true` took 4.5–40 ms on the Intel runners, 150–225 ms on the AMD
+    ones, and 0.5 ms on the Mac (M30). The host's hypervisor, not the guest, sets the
+    scale.
+- **Consequence.**
+  - On KVM the first warm restore without a working set records one (`vm::RESTORES_RECORD`),
+    up to 1 s past its command's start. Recording costs it nothing: its mappings start
+    empty, and `pagemap` is read once, after the answer.
+  - A restore copies the pages written, then maps every page ahead before the guest
+    runs.
+  - HVF keeps recording in the run that saves the template, where recording slows the
+    guest sixfold and the set covers 99.7–100% (M30).
+  - Nested KVM's runs are bound by waiting for vCPUs and threads to wake, through the
+    outer hypervisor. Working sets cannot remove that, and it is not measured here.
+  - These are nested hosts only. On bare metal a fault costs less, and so does waking a
+    vCPU; neither is measured.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

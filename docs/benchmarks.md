@@ -471,6 +471,28 @@ but the command's 81 ms in a restored guest is the whole of it, as in Restore. O
 the guest a run costs 1.8 ms. The client's peak RSS, 33.6 MiB against 1.7 on the Mac, is
 not explained yet.
 
+**2026-09-29, x86_64 Linux on KVM** · e5d4b3c (branch kvm-working-sets) · GitHub's
+ubuntu-24.04 runner: AMD EPYC 9V45, KVM nested · Linux 6.17.0-1022-azure · n=100 over 5
+templates, 1 vCPU, 256 MiB · load 1.20 0.97 0.42
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| run_cold | 245090 µs | 251425 µs | 256796 µs | 258343 µs |
+| **run_template** | **57830 µs** | **59972 µs** | **61405 µs** | **61470 µs** |
+| template_command | 55888 µs | 57839 µs | 58868 µs | 59432 µs |
+| template_outside | 1863 µs | 2515 µs | 4326 µs | 4511 µs |
+| run_cold_rss | 66.6 MiB | 68.6 MiB | 68.7 MiB | 70.5 MiB |
+| run_template_rss | 20.3 MiB | 20.5 MiB | 20.6 MiB | 20.7 MiB |
+| client_rss | 33.6 MiB | 33.6 MiB | 33.6 MiB | 33.6 MiB |
+
+Working sets on KVM: the first warm restore records one, and later restores copy the
+pages it wrote and map every page ahead before the guest runs (architecture.md D25,
+D26). On a runner with the same CPU as the entry above, the command fell from 81 to
+56 ms. These runners' speed varies from one to the next (an Intel runner ran `true` in
+4.5 ms where AMD ones took 150–225 ms), so the change's own measure is paired on one
+runner: 26–39 ms less for a pooled `alpine true` on 5 AMD runners (PM M33). The rest is
+mostly waiting on the outer hypervisor.
+
 ## Firecracker (`crates/shards/benches/firecracker.rs`)
 
 `cargo bench -p shards --bench firecracker [-- --runs N --cpus N --memory MIB]` (Linux, KVM)
