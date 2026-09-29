@@ -16,6 +16,8 @@ env:
 
 jobs:
   format:
+    # Diagnostic (branch restore-diag): only the Firecracker comparison runs.
+    if: github.ref_name != 'restore-diag'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -24,6 +26,8 @@ jobs:
 
   # The vendored crates are what crates.io publishes, file for file (vendor/README.md).
   vendor:
+    # Diagnostic (branch restore-diag): only the Firecracker comparison runs.
+    if: github.ref_name != 'restore-diag'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -34,6 +38,8 @@ jobs:
   # no backend yet or no hardware virtualization.
   native:
     name: ${{ matrix.target }}
+    # Diagnostic (branch restore-diag): only the Firecracker comparison runs.
+    if: github.ref_name != 'restore-diag'
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -119,6 +125,8 @@ jobs:
 
   musl:
     name: ${{ matrix.target }}
+    # Diagnostic (branch restore-diag): only the Firecracker comparison runs.
+    if: github.ref_name != 'restore-diag'
     timeout-minutes: 60
     strategy:
       fail-fast: false
