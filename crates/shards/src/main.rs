@@ -11,6 +11,7 @@ mod containers;
 #[cfg(unix)]
 mod daemon;
 mod guest;
+mod kernel;
 #[cfg(unix)]
 mod names;
 mod pull;

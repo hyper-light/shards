@@ -68,21 +68,20 @@ pub fn cannot_snapshot() -> bool {
     true
 }
 
+/// The kernel shards pins for its guests (src/kernel.rs), which the tests boot too.
+#[path = "../../src/kernel.rs"]
+pub mod pinned;
+
 /// shards' guest kernel for the host architecture: Linux 6.18.48 with Firecracker's
 /// microVM config and ours (resources/kernel), built reproducibly by CI.
 pub fn kernel_artifact() -> Artifact {
-    match ARCH {
-        "aarch64" => Artifact {
-            name: "Image-6.18.48-aarch64-1bff175d35cb",
-            url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-1bff175d35cb/Image-6.18.48-aarch64",
-            sha256: "ed7fb50d27b59e29e9e6c9f57f02c4bb82f8c3f5ecd51bd8083741f77597913b",
-        },
-        "x86_64" => Artifact {
-            name: "vmlinux-6.18.48-x86_64-1bff175d35cb",
-            url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-1bff175d35cb/vmlinux-6.18.48-x86_64",
-            sha256: "136a182b7013fa32d852a7f227b91f6c113d9ad9dbe7a9b9d4baac7153ddd59c",
-        },
-        other => panic!("no pinned guest kernel for {other} yet"),
+    let Some(k) = pinned::KERNEL else {
+        panic!("no pinned guest kernel for {ARCH} yet")
+    };
+    Artifact {
+        name: k.name,
+        url: k.url,
+        sha256: k.sha256,
     }
 }
 
@@ -591,6 +590,53 @@ pub fn registry(manifest: Vec<u8>, blobs: Vec<Vec<u8>>) -> (u16, Arc<AtomicUsize
         }
     });
     (port, served)
+}
+
+/// Serves `body` over plain HTTP on loopback at `/file`, and a redirect to it at
+/// `/moved`, as GitHub serves release assets; any other path is a 404. Counts requests.
+pub fn serve_file(body: Vec<u8>) -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let served = Arc::new(AtomicUsize::new(0));
+    let count = served.clone();
+    let body = Arc::new(body);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let (body, count) = (body.clone(), count.clone());
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut out = stream;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut header = String::new();
+                    while reader.read_line(&mut header).unwrap_or(0) > 2 {
+                        header.clear();
+                    }
+                    count.fetch_add(1, Ordering::SeqCst);
+                    let response = match line.split(' ').nth(1).unwrap_or("") {
+                        "/file" => {
+                            let mut r = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len())
+                                .into_bytes();
+                            r.extend_from_slice(&body);
+                            r
+                        }
+                        "/moved" => {
+                            b"HTTP/1.1 302 Found\r\nLocation: /file\r\nContent-Length: 0\r\n\r\n".to_vec()
+                        }
+                        _ => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+                    };
+                    if out.write_all(&response).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (format!("http://127.0.0.1:{port}"), served)
 }
 
 /// The test image: the test guest as its entrypoint, with `report` as its command, run as

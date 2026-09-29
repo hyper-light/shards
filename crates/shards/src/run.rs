@@ -23,10 +23,11 @@ use shards_vmm::vm::Config;
 use crate::guest::Guest;
 use crate::spec::Options;
 
-/// What a run boots: the kernel and init the request named, or the recorded guest.
+/// What a run boots: the kernel and init the request named, or a guest from the store:
+/// the recorded one, else the default (D28).
 pub enum Boot {
     Given(Config),
-    Recorded(Guest),
+    Stored(Guest),
 }
 
 /// A request made ready to run.
@@ -46,9 +47,10 @@ pub fn prepare(request: &Run, home: &Path, say: &(dyn Fn(&str) + Sync)) -> Resul
         (Some(kernel), Some(init)) => {
             Boot::Given(Config::new(PathBuf::from(kernel), Some(PathBuf::from(init))))
         }
-        (None, None) => Boot::Recorded(crate::guest::current(home)?.ok_or(
-            "no guest to boot: `shards guest use --kernel FILE --init FILE`, or --kernel and --init",
-        )?),
+        (None, None) => Boot::Stored(match crate::guest::current(home)? {
+            Some(recorded) => recorded,
+            None => crate::guest::default(home, say)?,
+        }),
         _ => return Err("--kernel and --init (or SHARDS_KERNEL and SHARDS_INIT) go together".into()),
     };
     let asked = request;

@@ -565,9 +565,8 @@ into an image, as `docker run` runs one in a new container. The code is
     not given, and D16 lays that over Docker's `PATH` and `HOSTNAME`;
   - the image's command applies only when neither an entrypoint nor a command is given;
   - its entrypoint applies unless one is given, and `--entrypoint ""` clears it.
-- **Not yet:** a kernel and shards-init that ship with shards. Until then, `--kernel`
-  and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`. Also ports and volumes; terminals
-  and detached runs came later (D16, D27).
+- **Not yet:** ports and volumes. A kernel and shards-init that ship with shards came
+  later (D28), as did terminals and detached runs (D16, D27).
 - **Checked against Docker Hub** (2026-09-28): `alpine`, `busybox:1.36` pulled on
   demand then run (1.0 s in all), and `hello-world` from its own `Cmd`.
 - **Tests:**
@@ -591,7 +590,7 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
   - the CPU count, memory and kernel command line.
 
   A change to any of these names another template. Nothing is compared by time.
-- **The first run saves it.** The first run of an image on the recorded guest boots. Once
+- **The first run saves it.** The first run of an image on the guest in use boots. Once
   the image is mounted it saves the template, then resumes and runs the command
   (`AfterSnapshot::Resume`, D16).
   - It saves into a directory of its own, renamed into place only when complete.
@@ -945,6 +944,68 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   after, typed input is echoed and read, a resize reaches the command, ^C interrupts
   it (130), and both detach keys leave it running.
 
+### Shipping the guest (D28)
+
+`shards run IMAGE` works on first use: with no guest recorded and none named, a run boots
+shards' pinned kernel and the shards-init that `shardsd` carries. The evidence is in
+docs/research/shipping-the-guest.md; the code is `crates/shards/build.rs`,
+`src/kernel.rs` and `src/guest.rs`.
+
+- **shards-init is inside `shardsd`.** `shards-abi` has no version field, so a host and
+  an init from different builds could misread each other's frames. Every runtime surveyed
+  keeps its host and guest halves together by shipping them in one release, and none
+  negotiates versions [shipping-the-guest.md §3.1]. libkrun embeds its init the same way,
+  with `include_bytes!` [libkrun v1.19.6 `src/init_blob`].
+  - The package's build script builds shards-init for `<arch>-unknown-linux-musl` with
+    the `guest` profile, through a nested cargo with a target directory of its own. It
+    names `rust-lld` as the linker itself: `cargo install` from outside the checkout
+    reads neither the toolchain file nor `.cargo/config.toml` [PM M36].
+  - A missing musl standard library fails the build with the `rustup target add` that
+    fixes it. `SHARDS_INIT_BINARY` names a prebuilt init instead.
+  - The binary is copied into `OUT_DIR` for `include_bytes!`. No environment variable
+    names it: cargo sets a build script's `rustc-env` for the package's tests and
+    `cargo run` too, where `SHARDS_INIT` means the user's init.
+  - Only `shardsd` holds it, 428,912 bytes on aarch64 (7.7% of it) [PM M36]. The client
+    stays thin [PM M23], and VM processes lean [PM M34].
+  - The daemon writes it into the store under its SHA-256 the first time a run needs it.
+    Boots take it from there, as they take a recorded init.
+- **The kernel is pinned, and fetched once.** `src/kernel.rs` pins the release asset for
+  the host's architecture by URL, size and SHA-256. The tests pin theirs there too.
+  - Embedding it would make `shardsd` 3.4 to 5 times larger: 18.9–27.7 MB against
+    5.5 MB [PM M36]. Apple's `container`, Lima and Colima also compile a download's
+    digest into their binaries and fetch on first need [shipping-the-guest.md §2.2, §2.4].
+  - The first run that needs it downloads it through the registry client's HTTP and TLS
+    (D19, D20), hashing as it arrives. Only a file of the pinned size and SHA-256 is
+    renamed into the store. Anything else is refused before anything boots, and nothing
+    of it is kept. Lima and Apple's `container` also verify before the rename
+    [shipping-the-guest.md §3.2].
+  - `SHARDS_KERNEL_URL` fetches it from elsewhere, a mirror or a machine off the
+    Internet. The digest is still the pin.
+  - Once stored it is trusted by its name, as Lima, Colima and Podman trust theirs
+    [shipping-the-guest.md §3.2]. Restores read no kernel at all (D25).
+- **The store comes before the network.** A run on the default guest checks the store
+  first and fetches only what is missing, so runs after the first need no network. A
+  daemon stores one file at a time, and removes temporary files that a daemon which
+  ended left.
+- **`shards guest use` overrides it.** A recorded guest wins over the default, and
+  `shards guest` says which is in use.
+- **Upgrades.** An upgrade that changes the init's bytes changes its digest, and so the
+  templates it names (D25). A template never restores against an init it was not made
+  with.
+- **Not yet:**
+  - a benchmark of the first run, which is mostly the kernel's download
+    [shipping-the-guest.md E1];
+  - a compressed kernel asset, which would move about a third of the bytes (E7);
+  - fetching the kernel while the image is pulled;
+  - an ABI check for inits the user gives (§3.6);
+  - signed release binaries (§3.8).
+- **Tests** (E2E, crates/shards/tests/guest.rs, a real VM):
+  - A first run fetches the kernel from a loopback server behind a redirect, stores it
+    and the embedded init, and boots. The init is byte for byte a separate build of
+    shards-init. The next run fetches nothing.
+  - A kernel with one byte changed, one byte more or less, or a 404 is refused before
+    the image is pulled, and nothing is kept.
+
 ## 3. Components
 
 ```
@@ -971,7 +1032,8 @@ shards (host CLI, docker-compatible) ──unix socket──▶ shardsd (daemon)
   path is kept free of allocation and locks; device threads communicate with vCPU
   threads through lock-free rings.
 - **Daemon** (`shardsd`): serves a Docker-compatible API with extensions for VM
-  specs and isolation policy. It owns the warm pool and the template snapshots.
+  specs and isolation policy. It owns the warm pool and the template snapshots, and
+  carries the shards-init its guests run (D28).
 - **Guest**:
   - a tuned Linux kernel built from source inside a shards builder VM
   - `shards-init`, a minimal static PID 1 that sets up and then drops privilege
@@ -1014,7 +1076,8 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
    - Built: our kernel (CI releases); virtio-pmem; the EROFS writer; layers → one EROFS
      image (D15); booting into an image to run a command (D16); the image store (D18);
      registry TLS, HTTP and auth (D19–D21); pulls (D22); `shards pull` (D23); `shards run
-     IMAGE` (D24); terminals (D16, D27). Next: shipping the kernel and shards-init.
+     IMAGE` (D24); terminals (D16, D27); the kernel and shards-init shipped with shards
+     (D28).
 4. **In-VM engine.**
    - Scope: Docker Engine API subset → full; the rootless runtime (compatible, not
      containers underneath); networks, volumes, build; compose.

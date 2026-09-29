@@ -30,7 +30,7 @@ Your agents can:
 - Use GPUs
 - Break anything without touching your computer
 
-Shards is one binary. It never needs root.
+Shards never needs root.
 
 ```console
 $ time shards vm run --kernel vmlinux --init shards-init --cmdline "console=ttyS0 quiet"
@@ -87,6 +87,27 @@ machine. Keep them in the same directory.
 - **Elsewhere** (arm64 Linux, Intel Macs, Windows): shards builds, but can't run machines yet.
 
 ## Quickstart
+
+Run a command in an image, as `docker run` does:
+
+```console
+$ shards run alpine echo hello
+Downloading the guest kernel Image-6.18.48-aarch64-1bff175d35cb from https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-1bff175d35cb/Image-6.18.48-aarch64
+Guest kernel: sha256:ed7fb50d27b59e29e9e6c9f57f02c4bb82f8c3f5ecd51bd8083741f77597913b
+Unable to find image 'alpine:latest' locally
+latest: Pulling from library/alpine
+a9986cd6f37d: Download complete
+Digest: sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+Status: Downloaded newer image for alpine:latest
+hello
+```
+
+The first run downloads shards' Linux kernel (19 MB on arm64, 28 MB on x86_64), checks it
+against the SHA-256 built into shards, and keeps it. Later runs don't need the network for it.
+To download it from somewhere else, such as a mirror, set `SHARDS_KERNEL_URL`; the checksum
+still applies. The program each microVM runs first, `shards-init`, is part of shards.
+
+### Boot a kernel yourself
 
 You need a kernel and a program to run as PID 1. Download shards' kernel, built
 reproducibly by CI ([resources/kernel](resources/kernel/README.md)):
@@ -187,7 +208,7 @@ Firecracker. The plan and its evidence are in
 | Command | What it does |
 |---|---|
 | `shards pull [-q] IMAGE` | Pull `IMAGE` as `docker pull` does, for this machine's architecture. Every layer is checked against its digests before it is kept |
-| `shards run [OPTIONS] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container, with `-d`, `-e`, `-h`, `-i`, `-t`, `-u`, `-w`, `--detach-keys`, `--entrypoint`, `--name`, `--pull` and `--rm`. `IMAGE` is pulled first if it isn't here. With `-it`, your terminal is the command's: ctrl-p ctrl-q leaves it running. It boots the guest `shards guest use` chose, or `SHARDS_KERNEL` and `SHARDS_INIT` |
+| `shards run [OPTIONS] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container, with `-d`, `-e`, `-h`, `-i`, `-t`, `-u`, `-w`, `--detach-keys`, `--entrypoint`, `--name`, `--pull` and `--rm`. `IMAGE` is pulled first if it isn't here. With `-it`, your terminal is the command's: ctrl-p ctrl-q leaves it running. It boots shards' own kernel and `shards-init`, or the ones `shards guest use` chose, or `SHARDS_KERNEL` and `SHARDS_INIT` |
 | `shards ps [-a] [-q] [-n N] [-l] [--no-trunc]` | List containers, as `docker ps` does: each run is one, until `shards rm` or `--rm` removes it |
 | `shards wait CONTAINER...` | Wait for containers to stop, and print their exit codes |
 | `shards logs [-f] [-t] [-n N] [--since T] [--until T] CONTAINER` | Print what a container wrote, stdout to stdout and stderr to stderr |
@@ -195,7 +216,7 @@ Firecracker. The plan and its evidence are in
 | `shards kill [-s SIGNAL] CONTAINER...` | Send containers a signal (SIGKILL) |
 | `shards rm [-f] CONTAINER...` | Remove stopped containers; with `-f`, running ones too |
 | `shards daemon stop` | Stop the background service (`shardsd daemon`) that `shards run` starts on its own. It keeps `SHARDS_POOL` microVMs ready for each image you run (default 2), and exits after `SHARDS_DAEMON_IDLE` seconds without a run (default 900). Stopping it stops the containers running, as Docker's does |
-| `shards guest use --kernel FILE --init FILE` | Choose the kernel and shards-init that `shards run` boots. With them chosen, the first run of an image saves a copy of its booted microVM, and later runs start from that copy. `shards guest` shows the choice |
+| `shards guest use --kernel FILE --init FILE` | Choose the kernel and shards-init that `shards run` boots instead of shards' own. The first run of an image saves a copy of its booted microVM, and later runs start from that copy. `shards guest` shows the ones in use |
 | `shards vm run --kernel FILE [options]` | Boot a new machine |
 | `shards vm restore DIR [--hold]` | Start a copy of the machine saved in `DIR`. `--hold` preloads it and waits for a line on stdin |
 | `shards vm restore DIR [--hold] [-e …] [-w …] [-u …] -- COMMAND [ARG...]` | Run `COMMAND` in a copy of a template saved by `--rootfs` with `--snapshot-dir` |
@@ -218,7 +239,7 @@ Firecracker. The plan and its evidence are in
 Exit codes: 0 for shutdown or snapshot, 1 for an error, 2 for bad usage, 3 when the guest
 reboots. With `--rootfs`, the command's own, or 125–127 as for `docker run`. `SHARDS_LOG=debug` shows what shards is doing.
 
-Pulled images, the chosen guest and saved microVMs are kept in `SHARDS_HOME`, if you set it;
+Pulled images, the guest's kernel and shards-init, and saved microVMs are kept in `SHARDS_HOME`, if you set it;
 otherwise in `shards` in your data directory (`~/Library/Application Support` on macOS, `~/.local/share` on Linux,
 `%LOCALAPPDATA%` on Windows).
 

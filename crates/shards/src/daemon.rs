@@ -935,7 +935,7 @@ impl Daemon {
     fn warm_for(self: &Arc<Self>, prepared: &Prepared, say: &dyn Fn(&str)) -> Result<Ready, String> {
         let guest = match &prepared.boot {
             Boot::Given(cfg) => return self.cold(cfg, &prepared.rootfs, None),
-            Boot::Recorded(guest) => guest,
+            Boot::Stored(guest) => guest,
         };
         let cfg = Config::new(guest.kernel.clone(), Some(guest.init.clone()));
         if !shards_vmm::vm::SNAPSHOTS {

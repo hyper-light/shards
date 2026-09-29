@@ -1,23 +1,34 @@
-//! The guest kernel and shards-init that `shards run` boots, kept by content:
-//! `shards guest use --kernel FILE --init FILE` copies both into `$SHARDS_HOME/guest`, named
-//! by their SHA-256, and records them as this host's guest. A run then knows what it boots
-//! by digest without reading either file, and templates are kept by those digests
+//! The guest kernel and shards-init that `shards run` boots, kept by content in
+//! `$SHARDS_HOME/guest`, named by their SHA-256. A run then knows what it boots by digest
+//! without reading either file, and templates are kept by those digests
 //! (docs/design/architecture.md D25).
+//!
+//! The default guest is shards' pinned kernel (kernel.rs), downloaded on first need, and
+//! the shards-init this build carries (D28). `shards guest use --kernel FILE --init FILE`
+//! records a guest of the user's own instead.
 
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use sha2::{Digest as _, Sha256};
+
+use crate::kernel::{KERNEL, Pinned};
 
 const USAGE: &str = "usage: shards guest use --kernel FILE --init FILE
        shards guest
   use: keep FILE's kernel and shards-init as the guest `shards run` boots, by content.
-  With no command: show the guest in use.";
+  With no command: show the guest in use.
+  SHARDS_KERNEL_URL: where to download the default kernel, whose SHA-256 is still checked.";
 
-/// A recorded guest: its files in the store, and their digests.
+/// The shards-init this build carries, built for this host's guests by build.rs.
+#[cfg(unix)]
+const INIT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shards-init"));
+
+/// A guest: its files in the store, and their digests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Guest {
     pub kernel: PathBuf,
@@ -35,22 +46,18 @@ pub fn guest(args: impl Iterator<Item = OsString>) -> ExitCode {
         match args.next().transpose()?.as_deref() {
             None => {
                 let home = shards_ipc::home()?;
-                match current(&home)? {
-                    Some(g) => {
-                        let _ = writeln!(
-                            io::stdout(),
-                            "kernel {}\ninit   {}",
-                            g.kernel_digest,
-                            g.init_digest
-                        );
-                    }
+                let (kernel, init, whose) = match current(&home)? {
+                    Some(g) => (g.kernel_digest, g.init_digest, ""),
                     None => {
-                        let _ = writeln!(
-                            io::stdout(),
-                            "no guest: shards guest use --kernel FILE --init FILE"
-                        );
+                        let pinned = KERNEL.ok_or(NO_KERNEL)?;
+                        (
+                            format!("sha256:{}", pinned.sha256),
+                            init_digest()?.to_string(),
+                            " (default)",
+                        )
                     }
-                }
+                };
+                let _ = writeln!(io::stdout(), "kernel {kernel}{whose}\ninit   {init}{whose}");
                 Ok(())
             }
             Some("use") => {
@@ -94,6 +101,163 @@ pub fn guest(args: impl Iterator<Item = OsString>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+const NO_KERNEL: &str =
+    "shards pins no guest kernel for this architecture: shards guest use --kernel FILE --init FILE";
+
+/// The default guest in `home`'s store: the pinned kernel, downloaded if it is not there
+/// yet, with what the download does said through `say`; and this build's init.
+pub fn default(home: &Path, say: &dyn Fn(&str)) -> Result<Guest, String> {
+    let pinned = KERNEL.ok_or(NO_KERNEL)?;
+    let dir = home.join("guest");
+    let init_digest = init_digest()?;
+    let guest = Guest {
+        kernel: dir.join(format!("sha256-{}", pinned.sha256)),
+        init: dir.join(init_digest.replacen(':', "-", 1)),
+        kernel_digest: format!("sha256:{}", pinned.sha256),
+        init_digest: init_digest.to_string(),
+    };
+    if guest.kernel.is_file() && guest.init.is_file() {
+        return Ok(guest);
+    }
+    // One daemon serves a home, and it stores one file at a time: a run that waited finds
+    // the kernel stored, and a temporary file here is one a process that ended left.
+    static STORING: Mutex<()> = Mutex::new(());
+    let _one = STORING.lock().unwrap_or_else(PoisonError::into_inner);
+    shards_vmm::platform::create_private_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("kernel.") || name.starts_with("storing.") {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    if !guest.init.is_file() {
+        store(&dir, &guest.init, init_bytes()?)?;
+    }
+    if !guest.kernel.is_file() {
+        download(&dir, &guest.kernel, &pinned, say)?;
+    }
+    Ok(guest)
+}
+
+#[cfg(unix)]
+fn init_bytes() -> Result<&'static [u8], String> {
+    Ok(INIT)
+}
+
+#[cfg(not(unix))]
+fn init_bytes() -> Result<&'static [u8], String> {
+    Err("shards runs no guests on this platform yet".into())
+}
+
+/// The digest of this build's init, hashed once.
+fn init_digest() -> Result<&'static str, String> {
+    static DIGEST: OnceLock<String> = OnceLock::new();
+    let bytes = init_bytes()?;
+    Ok(DIGEST.get_or_init(|| format!("sha256:{}", hex(&Sha256::digest(bytes)))))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Writes `bytes` to `path` in `dir` whole: into a temporary file, synced, then renamed.
+fn store(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let temp = dir.join(format!("storing.{}", std::process::id()));
+    let written = File::create(&temp)
+        .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()))
+        .and_then(|()| fs::rename(&temp, path));
+    written.map_err(|e| {
+        let _ = fs::remove_file(&temp);
+        format!("{}: {e}", path.display())
+    })
+}
+
+/// Downloads `pinned` to `path` in `dir`, from `SHARDS_KERNEL_URL` if set. The body is
+/// hashed as it arrives and kept only if it is the pinned kernel: its size and SHA-256.
+fn download(dir: &Path, path: &Path, pinned: &Pinned, say: &dyn Fn(&str)) -> Result<(), String> {
+    use shards_registry::http::{Client, Request};
+    use shards_registry::{tls, url::Url};
+
+    let from = std::env::var("SHARDS_KERNEL_URL")
+        .ok()
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| pinned.url.to_string());
+    let failed = |e: &dyn std::fmt::Display| {
+        format!(
+            "downloading the guest kernel from {from}: {e}\n\
+             `shards guest use --kernel FILE --init FILE` boots a kernel of your own"
+        )
+    };
+    say(&format!(
+        "Downloading the guest kernel {} from {from}",
+        pinned.name
+    ));
+    let url = Url::parse(&from).map_err(|e| failed(&e))?;
+    let config = tls::client_config(Vec::new(), None).map_err(|e| failed(&e))?;
+    let http = Client::new(
+        Box::new(move |_| Ok(config.clone())),
+        &format!("shards/{}", env!("CARGO_PKG_VERSION")),
+    );
+    let request = Request {
+        method: "GET",
+        url: &url,
+        headers: &[],
+        body: &[],
+    };
+    let mut response = http.follow(&request, &|_| Ok(None)).map_err(|e| failed(&e))?;
+    if response.status != 200 {
+        return Err(failed(&format!("HTTP {}", response.status)));
+    }
+    let temp = dir.join(format!("kernel.{}", std::process::id()));
+    let got = (|| -> io::Result<(u64, String)> {
+        let mut to = File::create(&temp)?;
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; 1 << 20];
+        let mut size = 0u64;
+        loop {
+            let n = match response.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            };
+            let chunk = buf.get(..n).unwrap_or_default();
+            size = size.saturating_add(n as u64);
+            // More than the pinned kernel is not it: stop reading.
+            if size > pinned.size {
+                break;
+            }
+            hasher.update(chunk);
+            to.write_all(chunk)?;
+        }
+        to.sync_all()?;
+        Ok((size, hex(&hasher.finalize())))
+    })();
+    let kept = match got {
+        Ok((size, digest)) if size == pinned.size && digest == pinned.sha256 => {
+            fs::rename(&temp, path).map_err(|e| failed(&e))
+        }
+        Ok((size, _)) if size > pinned.size => Err(failed(&format!(
+            "more than the pinned kernel's {} bytes",
+            pinned.size
+        ))),
+        Ok((size, digest)) => Err(failed(&format!(
+            "got {size} bytes with SHA-256 {digest}, not the pinned kernel's {} bytes with {}",
+            pinned.size, pinned.sha256
+        ))),
+        Err(e) => Err(failed(&e)),
+    };
+    if kept.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    kept?;
+    say(&format!("Guest kernel: sha256:{}", pinned.sha256));
+    Ok(())
 }
 
 /// The guest recorded under `home`, if any.
@@ -165,7 +329,7 @@ fn keep(dir: &Path, source: &Path) -> Result<String, String> {
         }
         to.sync_all()?;
         drop(to);
-        let hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        let hex = hex(&hasher.finalize());
         let target = dir.join(format!("sha256-{hex}"));
         if target.is_file() {
             fs::remove_file(&temp)?;
