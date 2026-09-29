@@ -356,9 +356,7 @@ fn a_warm_vm_lets_go_of_its_clients_stdio() {
     warm.ready();
     let mut client = warm.run(&["/bin/testguest", "sleep"], false);
     assert_eq!(client.line(), "ready\n");
-    let Client {
-        conn, mut stdout, ..
-    } = client;
+    let Client { conn, mut stdout, .. } = client;
     drop(conn);
     assert!(
         ends(&mut stdout),

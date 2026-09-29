@@ -61,7 +61,13 @@ fn runtime_dir() -> Result<PathBuf, String> {
     use std::os::unix::ffi::OsStringExt;
     let mut buf = vec![0u8; 1024];
     // SAFETY: confstr(3) writes at most buf.len() bytes, its NUL included.
-    let n = unsafe { libc::confstr(libc::_CS_DARWIN_USER_CACHE_DIR, buf.as_mut_ptr().cast(), buf.len()) };
+    let n = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_CACHE_DIR,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
     if n == 0 || n > buf.len() {
         return Err(format!(
             "this user's cache directory: {}",
@@ -153,11 +159,7 @@ pub fn run(home: &Path, daemon: &Path, request: &Run) -> ExitCode {
                         return failed("the command's microVM sent no status");
                     };
                     if !timing.is_empty() {
-                        let _ = writeln!(
-                            io::stderr(),
-                            "shards-timing {}",
-                            String::from_utf8_lossy(timing)
-                        );
+                        let _ = writeln!(io::stderr(), "shards-timing {}", String::from_utf8_lossy(timing));
                     }
                     return ExitCode::from(status);
                 }

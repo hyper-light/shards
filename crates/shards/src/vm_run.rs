@@ -752,7 +752,11 @@ fn max_rss_kib() -> u64 {
         }
         // ru_maxrss is bytes on macOS and KiB on Linux (getrusage(2) on each).
         let rss = u64::try_from(usage.ru_maxrss).unwrap_or(0);
-        if cfg!(target_vendor = "apple") { rss / 1024 } else { rss }
+        if cfg!(target_vendor = "apple") {
+            rss / 1024
+        } else {
+            rss
+        }
     }
     #[cfg(not(unix))]
     0

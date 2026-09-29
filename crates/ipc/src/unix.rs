@@ -361,14 +361,7 @@ impl Child {
             // SAFETY: an all-zero siginfo_t is valid; waitid(2) fills it for our child.
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
             // SAFETY: as above.
-            let r = unsafe {
-                libc::waitid(
-                    libc::P_PID,
-                    self.id(),
-                    &mut info,
-                    libc::WEXITED | libc::WNOWAIT,
-                )
-            };
+            let r = unsafe { libc::waitid(libc::P_PID, self.id(), &mut info, libc::WEXITED | libc::WNOWAIT) };
             if r == 0 {
                 break;
             }

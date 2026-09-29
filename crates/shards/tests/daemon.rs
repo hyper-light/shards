@@ -305,7 +305,9 @@ fn interactive_stdin_ends_with_its_client() {
     out.read_line(&mut line).unwrap();
     assert_eq!(line, "through the client\n");
     // The pool refills while the run goes on: two waiting, one serving.
-    eventually("the pool did not refill", || processes_with(&templates).len() == 3);
+    eventually("the pool did not refill", || {
+        processes_with(&templates).len() == 3
+    });
     client.kill().unwrap();
     client.wait().unwrap();
     eventually("the run outlived its client's stdin", || {
@@ -321,10 +323,7 @@ fn timing_reaches_the_client() {
     }
     let (image, _) = served();
     let home = home("daemon-timing", &image);
-    let env: [(&str, &OsStr); 2] = [
-        ("SHARDS_HOME", home.as_os_str()),
-        ("SHARDS_TIMING", "1".as_ref()),
-    ];
+    let env: [(&str, &OsStr); 2] = [("SHARDS_HOME", home.as_os_str()), ("SHARDS_TIMING", "1".as_ref())];
     let run = run_shards_env(&["run"], &["--pull", "never", &image, "exit", "0"], &env, TIMEOUT);
     assert_eq!(run.status, Some(0), "{}", run.stderr);
     let (request, answered) = (run.request_us(), run.answered_us());
