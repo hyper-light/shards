@@ -3,6 +3,10 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+#[cfg(unix)]
+mod client;
+#[cfg(unix)]
+mod daemon;
 mod guest;
 mod pull;
 mod run;
@@ -15,6 +19,7 @@ mod workload;
 const USAGE: &str = "usage: shards <command> [args...]
 
 Commands:
+  daemon      Serve `run` from warm microVMs (`run` starts it when needed)
   guest       Choose the kernel and shards-init that `run` boots
   pull        Pull an image from a registry
   run         Run a command in a new microVM booted into an image
@@ -27,6 +32,12 @@ fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     let command = args.next();
     match command.as_ref().and_then(|c| c.to_str()) {
+        #[cfg(unix)]
+        Some("daemon") => daemon::daemon(args),
+        #[cfg(not(unix))]
+        Some("daemon") => {
+            usage_error("the daemon needs Unix sockets, which shards does not support on this platform yet")
+        }
         Some("guest") => guest::guest(args),
         Some("pull") => pull::pull(args),
         Some("run") => run::run(args),

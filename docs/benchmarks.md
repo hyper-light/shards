@@ -281,23 +281,31 @@ VM's whole process takes 6.9 ms, where it took 15.6 ms. One request of 50 still 
 Method:
 - The command is `exit 0`, in the image the E2E tests pull (`test_image` in tests/common),
   pulled once from a loopback registry into a fresh `SHARDS_HOME`.
-- **cold**: `shards run --kernel K --init I --pull never IMAGE exit 0` boots every time.
+- Every run goes through the daemon (architecture.md D26), which the first run starts.
+- **cold**: `shards run --kernel K --init I --pull never IMAGE exit 0`: the daemon boots a
+  VM for every run.
 - **template**: with the guest recorded (`shards guest use`), `shards run --pull never
-  IMAGE exit 0` restores the image's template (architecture.md D25).
+  IMAGE exit 0` is served from the daemon's pool of warm VMs of the image's template
+  (D25, D26).
   - Restores cost more for some templates than others, so samples come from
-    `--templates T` templates (default 5), each saved afresh.
-  - A template's save and its first restore are not samples. The first process to map
-    a just-written template's memory is slower.
-- Cold and templated samples alternate, after three cold warm-up runs.
+    `--templates T` templates (default 5), each saved afresh under a new daemon.
+  - A template's save and its first run are not samples.
+- Cold and templated samples alternate, after three cold warm-up runs. Between runs the
+  daemon refills its pool.
 - Each run records the host's load averages as it ends.
 
 | Phase | Measured from | Measured to |
 |---|---|---|
-| `run_cold`, `run_template` | spawn | reap (host wall clock around the whole process) |
-| `template_restore` | shards' `main` | the restored vCPUs released: the image looked up, the template named and restored |
-| `template_command` | the release | the VM stopped: resumed, connected, the command sent, run and answered |
-| `template_process` | — | the rest of the wall clock, outside `main`: exec, dyld and frameworks, then teardown |
-| `*_rss` | — | `ru_maxrss` from wait4(2), guest memory included |
+| `run_cold`, `run_template` | the client's spawn | its reap (host wall clock around the client process) |
+| `template_command` | the command sent to the guest | its exit status read (the VM's clock) |
+| `template_outside` | — | the rest of the wall clock: the client launched, the request handed to a warm VM, the status back, the client gone |
+| `*_rss` | — | the VM process's peak RSS when it answered, guest memory included |
+| `client_rss` | — | the client process's `ru_maxrss`, from wait4(2) |
+
+Runs before the daemon (up to 2026-09-29, 05f92d6) timed `shards run` as the VMM
+process itself: `template_restore` ran from its `main` to the restored vCPUs,
+`template_command` from there to the VM stopped, `template_process` was the rest of the
+wall clock, and `*_rss` came from wait4(2).
 
 ### Runs
 
@@ -340,6 +348,26 @@ The guest's part fell from 10.8 to 1.9 ms at the median (platform-measurements.m
 and the median templated run from 16.5 to 7.5 ms: 4.5 times faster than a boot. The tail
 is now outside the guest. On this busy host, restoring and launching the process each
 reach about 7.7 ms at p90.
+
+**2026-09-29, through the daemon** · 6c84ec7 plus the daemon (uncommitted) · same host,
+OS and kernel · n=300 over 10 templates, 1 vCPU, 256 MiB · load 6.04 6.43 5.88 (other
+VMs and builds on the host)
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| run_cold | 34824 µs | 35633 µs | 36229 µs | 36668 µs |
+| **run_template** | **5149 µs** | **5416 µs** | **5630 µs** | **5766 µs** |
+| template_command | 1063 µs | 1159 µs | 1282 µs | 1336 µs |
+| template_outside | 4073 µs | 4278 µs | 4550 µs | 4606 µs |
+| run_cold_rss | 59.8 MiB | 59.8 MiB | 59.9 MiB | 60.0 MiB |
+| run_template_rss | 16.4 MiB | 16.7 MiB | 16.8 MiB | 16.8 MiB |
+| client_rss | 6.3 MiB | 6.3 MiB | 6.3 MiB | 6.3 MiB |
+
+A pooled run's restore happens before its request, so its variance left the tail: p99
+fell from 29.8 to 5.6 ms, and the median from 7.5 to 5.1 ms. The rest is mostly outside
+the guest. `template_outside` is 4.1 ms at the median, and launching the `shards`
+binary alone costs 3.5 ms (platform-measurements.md M23). A thin client, at 1.4 ms, is
+the next step toward 5 ms at p99.
 
 ## Firecracker (`crates/shards/benches/firecracker.rs`)
 

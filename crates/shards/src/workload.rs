@@ -49,6 +49,12 @@ pub fn spec(o: &Options) -> Result<Spec, String> {
     spec_in(o, |name| std::env::var_os(name))
 }
 
+/// [`spec`] for a request whose client already gave `-e NAME` its value (run.rs): a name
+/// without a value stays unset, whatever this process's environment holds.
+pub fn spec_given(o: &Options) -> Result<Spec, String> {
+    spec_in(o, |_| None)
+}
+
 /// [`spec`], with `lookup` for shards' own environment.
 fn spec_in(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<Spec, String> {
     let hostname = match &o.hostname {
@@ -158,13 +164,14 @@ pub fn listen(vsock: &Path, port: u32) -> io::Result<Listener> {
 }
 
 /// Signals on their way to the workload: sent once the guest has dialed the signal port,
-/// queued while the workload runs before then, and, before the guest has connected at
-/// all, not forwarded.
+/// queued before then while the workload runs or is sure to, and otherwise not
+/// forwarded.
 #[cfg(unix)]
 #[derive(Debug, Default)]
 pub struct Signals {
     conn: Option<UnixStream>,
     queued: Vec<u32>,
+    /// The workload runs, or is sure to.
     running: bool,
 }
 
@@ -183,6 +190,8 @@ fn lock(to: &ToGuest) -> std::sync::MutexGuard<'_, Signals> {
 pub struct Timing {
     pub request_us: std::sync::OnceLock<u128>,
     pub answered_us: std::sync::OnceLock<u128>,
+    /// The request asked for the timing line (a warm VM's client set `SHARDS_TIMING`).
+    pub asked: std::sync::atomic::AtomicBool,
 }
 
 /// The command a served VM runs.
@@ -320,43 +329,18 @@ fn forward_stdin(conn: &mut UnixStream) {
     let _ = send(conn, kind::STDIN, &[]);
 }
 
-/// The signals `docker run` forwards to the container with `--sig-proxy`, its default:
-/// every one but SIGCHLD, SIGPIPE, SIGURG and those the daemon cannot name (docker/cli
-/// cli/command/container/signals.go). These are the ones other processes send, each
-/// paired with its Linux number: the guest is Linux, and Docker forwards by name.
-#[cfg(unix)]
-const FORWARDED: [(libc::c_int, u32); 18] = [
-    (libc::SIGHUP, 1),
-    (libc::SIGINT, 2),
-    (libc::SIGQUIT, 3),
-    (libc::SIGABRT, 6),
-    (libc::SIGUSR1, 10),
-    (libc::SIGUSR2, 12),
-    (libc::SIGALRM, 14),
-    (libc::SIGTERM, 15),
-    (libc::SIGCONT, 18),
-    (libc::SIGTSTP, 20),
-    (libc::SIGTTIN, 21),
-    (libc::SIGTTOU, 22),
-    (libc::SIGXCPU, 24),
-    (libc::SIGXFSZ, 25),
-    (libc::SIGVTALRM, 26),
-    (libc::SIGPROF, 27),
-    (libc::SIGWINCH, 28),
-    (libc::SIGIO, 29),
-];
-
 /// Forwards the signals shards receives to the workload, through `to`. It blocks them in
 /// the calling thread, which every thread started later inherits, so call it before the
 /// VM starts: then only the forwarder's `sigwait` receives them. A signal that would end
-/// shards, arriving before the workload runs, ends shards as it would have.
+/// shards, arriving before the workload runs, ends shards as it would have. With
+/// `reads_terminal`, the terminal's job control applies to shards (shards_ipc::forwarded).
 #[cfg(unix)]
-pub fn forward_signals(to: ToGuest) -> Result<(), String> {
+pub fn forward_signals(to: ToGuest, reads_terminal: bool) -> Result<(), String> {
     // SAFETY: sigset operations on a local set, and pthread_sigmask on this thread.
     let set = unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut set);
-        for (sig, _) in FORWARDED {
+        for (sig, _) in shards_ipc::forwarded(reads_terminal) {
             libc::sigaddset(&mut set, sig);
         }
         if libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) != 0 {
@@ -373,7 +357,7 @@ pub fn forward_signals(to: ToGuest) -> Result<(), String> {
                 if unsafe { libc::sigwait(&set, &mut sig) } != 0 {
                     return;
                 }
-                let Some(&(_, linux)) = FORWARDED.iter().find(|(s, _)| *s == sig) else {
+                let Some(&(_, linux)) = shards_ipc::FORWARDED.iter().find(|(s, _)| *s == sig) else {
                     continue;
                 };
                 let forwarded = signal_guest(&to, linux);
@@ -393,6 +377,13 @@ pub fn forward_signals(to: ToGuest) -> Result<(), String> {
         })
         .map_err(|e| format!("signal thread: {e}"))?;
     Ok(())
+}
+
+/// From here on the workload will run, so signals queue for it until the guest dials the
+/// signal port rather than being refused: a warm VM calls it once it has taken a request.
+#[cfg(unix)]
+pub fn will_run(to: &ToGuest) {
+    lock(to).running = true;
 }
 
 /// Sends Linux signal `linux` to the workload through `to`, or queues it until the guest

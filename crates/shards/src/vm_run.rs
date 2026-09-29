@@ -134,6 +134,9 @@ enum Mode {
     Workload(PathBuf),
     /// Into an image, to save it as a template.
     Template(PathBuf),
+    /// Into an image, as a warm VM that takes one command from the daemon on `fd`;
+    /// with a snapshot policy, it saves a template on the way.
+    Warm { rootfs: PathBuf, fd: i32 },
 }
 
 struct Run {
@@ -146,7 +149,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut args = utf8(args);
     let mut rootfs = None;
     let mut cfg = config(PathBuf::new(), None);
-    let (mut kernel, mut common) = (None, Common::new());
+    let (mut kernel, mut common, mut warm) = (None, Common::new(), None);
     while let Some(arg) = args.next() {
         let arg = arg?;
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"))?;
@@ -175,6 +178,13 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             }
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
+            "--warm" => {
+                let fd = value("--warm")?;
+                warm = Some(
+                    fd.parse::<i32>()
+                        .map_err(|_| format!("--warm: {fd:?} is not a descriptor"))?,
+                );
+            }
             "--" => {
                 common.workload.argv = args.by_ref().collect::<Result<_, _>>()?;
                 break;
@@ -189,6 +199,23 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     cfg.console = common.console;
     cfg.vsock = common.vsock;
     let command = !common.workload.argv.is_empty();
+    if let Some(fd) = warm {
+        let rootfs = rootfs.ok_or("--warm needs --rootfs")?;
+        if command || common.workload_options || cfg.vsock.is_some() {
+            return Err(
+                "--warm takes its command from the daemon: no --vsock, workload options or command".into(),
+            );
+        }
+        // A template saved on the way resumes to serve its request.
+        if let Some(policy) = cfg.snapshot.as_mut() {
+            policy.then = AfterSnapshot::Resume;
+        }
+        return Ok(Run {
+            cfg,
+            mode: Mode::Warm { rootfs, fd },
+            workload: common.workload,
+        });
+    }
     let mode = match rootfs {
         Some(rootfs) if command => Mode::Workload(rootfs),
         Some(rootfs) if cfg.snapshot.is_some() => Mode::Template(rootfs),
@@ -343,51 +370,6 @@ pub fn run_in(mut cfg: Config, rootfs: PathBuf, workload: &Options) -> ExitCode 
     })
 }
 
-/// Boots `cfg` into the image `rootfs` as a template: the VM saves itself to `dir` once
-/// the image is mounted, then runs `workload` itself, as copies restored from `dir` will.
-pub fn run_saving(mut cfg: Config, rootfs: PathBuf, dir: PathBuf, workload: &Options) -> ExitCode {
-    boot_into(&mut cfg, rootfs, true);
-    cfg.snapshot = Some(SnapshotPolicy {
-        dir,
-        then: AfterSnapshot::Resume,
-    });
-    cfg.console = Console::Discard;
-    let source = Source::Given {
-        options: workload,
-        hold: false,
-    };
-    serve_workload(cfg.vsock.clone(), source, move |vsock| {
-        cfg.vsock = Some(vsock);
-        vm::start(&cfg)
-    })
-}
-
-/// Runs `workload` in a copy of the template in `dir`. A template that cannot be restored
-/// is removed, and the workload boots `cold` into `rootfs` instead.
-pub fn restore_or_boot(dir: PathBuf, mut cold: Config, rootfs: PathBuf, workload: &Options) -> ExitCode {
-    boot_into(&mut cold, rootfs, false);
-    cold.console = Console::Discard;
-    let source = Source::Given {
-        options: workload,
-        hold: false,
-    };
-    serve_workload(None, source, move |vsock| {
-        let restore = RestoreConfig {
-            dir: dir.clone(),
-            console: Console::Discard,
-            snapshot: None,
-            hold: false,
-            vsock: Some(vsock.clone()),
-        };
-        vm::restore(&restore).or_else(|e| {
-            report(format!("template {}: {e}; booting instead", dir.display()));
-            let _ = std::fs::remove_dir_all(&dir);
-            cold.vsock = Some(vsock);
-            vm::start(&cold)
-        })
-    })
-}
-
 /// Boots into the image `rootfs`: /dev/pmem0, which shards-init mounts as the root.
 fn boot_into(cfg: &mut Config, rootfs: PathBuf, template: bool) {
     cfg.pmem.insert(0, rootfs);
@@ -421,6 +403,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
             })
         }
         Mode::Workload(rootfs) => run_in(cfg, rootfs, &workload),
+        Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd),
     }
 }
 
@@ -496,16 +479,16 @@ enum Source<'a> {
     /// The command line's: sent once the guest connects or, with `hold`, once a line then
     /// arrives on stdin.
     Given { options: &'a Options, hold: bool },
-    /// A warm VM's: one request from the daemon on this socket (warm.rs).
+    /// A warm VM's: one request from the daemon (warm.rs).
     #[cfg(unix)]
-    Warm(std::os::unix::net::UnixStream),
+    Warm(crate::warm::Link),
 }
 
 /// A warm VM's restore: `vm restore DIR --warm FD`.
 #[cfg(unix)]
 fn warm_restore(mut cfg: RestoreConfig, fd: i32) -> ExitCode {
-    let daemon = match crate::warm::daemon_socket(fd) {
-        Ok(socket) => socket,
+    let daemon = match crate::warm::Link::new(fd) {
+        Ok(link) => link,
         Err(e) => {
             report(e);
             return ExitCode::FAILURE;
@@ -520,6 +503,31 @@ fn warm_restore(mut cfg: RestoreConfig, fd: i32) -> ExitCode {
 
 #[cfg(not(unix))]
 fn warm_restore(_: RestoreConfig, _: i32) -> ExitCode {
+    report("warm VMs need Unix sockets, which shards does not support on this platform yet");
+    ExitCode::from(125)
+}
+
+/// A warm VM's boot: `vm run --rootfs IMAGE [--snapshot-dir DIR] --warm FD`.
+#[cfg(unix)]
+fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: i32) -> ExitCode {
+    let daemon = match crate::warm::Link::new(fd) {
+        Ok(link) => link,
+        Err(e) => {
+            report(e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let template = cfg.snapshot.is_some();
+    boot_into(&mut cfg, rootfs, template);
+    cfg.console = Console::Discard;
+    serve_workload(None, Source::Warm(daemon), move |vsock| {
+        cfg.vsock = Some(vsock);
+        vm::start(&cfg)
+    })
+}
+
+#[cfg(not(unix))]
+fn warm_boot(_: Config, _: PathBuf, _: i32) -> ExitCode {
     report("warm VMs need Unix sockets, which shards does not support on this platform yet");
     ExitCode::from(125)
 }
@@ -544,7 +552,7 @@ fn serve_workload(
             interactive: bool,
             hold: bool,
         },
-        Warm(std::os::unix::net::UnixStream),
+        Warm(crate::warm::Link),
     }
     let command = match source {
         Source::Given { options, hold } => match workload::spec(options) {
@@ -567,10 +575,13 @@ fn serve_workload(
         // A warm VM's signals come from its client. The command line's are this process's:
         // blocked before the VM's threads start, so that they inherit the mask.
         let to_guest = workload::ToGuest::default();
-        if matches!(command, Command::Given { .. })
-            && let Err(e) = workload::forward_signals(to_guest.clone())
-        {
-            return failed(e);
+        let warm = matches!(command, Command::Warm(_));
+        if let Command::Given { interactive, .. } = &command {
+            // SAFETY: isatty(3) on this process's stdin.
+            let reads_terminal = *interactive && unsafe { libc::isatty(0) } == 1;
+            if let Err(e) = workload::forward_signals(to_guest.clone(), reads_terminal) {
+                return failed(e);
+            }
         }
         let (handle, running) = match start(vsock) {
             Ok(started) => started,
@@ -579,6 +590,7 @@ fn serve_workload(
         let (tx, rx) = std::sync::mpsc::channel();
         let timing = std::sync::Arc::new(workload::Timing::default());
         let served_timing = timing.clone();
+        let stopper = handle.clone();
         let served = std::thread::Builder::new()
             .name("workload".into())
             .spawn(move || {
@@ -609,12 +621,15 @@ fn serve_workload(
                             false,
                         )
                     }
-                    Command::Warm(daemon) => {
+                    Command::Warm(link) => {
                         let client = std::sync::OnceLock::new();
                         let ask = || {
-                            let (connection, spec, interactive) = crate::warm::receive(&daemon, &to_guest)?;
-                            let _ = client.set(connection);
-                            Ok((spec, interactive))
+                            let request = crate::warm::receive(&link, &to_guest)?;
+                            served_timing
+                                .asked
+                                .store(request.timing, std::sync::atomic::Ordering::Relaxed);
+                            let _ = client.set(request.client);
+                            Ok((request.spec, request.interactive))
                         };
                         let served = workload::serve(
                             &listener,
@@ -625,10 +640,18 @@ fn serve_workload(
                         );
                         match client.get() {
                             Some(connection) => {
-                                crate::warm::finish(connection, &served);
+                                let timing = served_timing
+                                    .asked
+                                    .load(std::sync::atomic::Ordering::Relaxed)
+                                    .then(|| timing_json(&stopper, Some(&served_timing)));
+                                crate::warm::finish(&link, connection, &served, timing.as_deref());
                                 (served, true)
                             }
-                            None => (served, false),
+                            // The daemon went without a request: nobody will ever send one.
+                            None => {
+                                stopper.stop();
+                                (served, false)
+                            }
                         }
                     }
                 };
@@ -639,7 +662,10 @@ fn serve_workload(
             return failed(format!("workload thread: {e}"));
         }
         let reason = running.wait(handle.clone());
-        report_timing(&handle, Some(&timing));
+        // A warm VM's client printed its timing line from the exit status.
+        if !warm {
+            report_timing(&handle, Some(&timing));
+        }
         if let ExitReason::Error(e) = &reason {
             report(e);
         }
@@ -677,6 +703,16 @@ fn report_timing(handle: &Handle, workload: Option<&WorkloadTiming>) {
     if std::env::var_os("SHARDS_TIMING").is_none() {
         return;
     }
+    let _ = writeln!(
+        std::io::stderr(),
+        "shards-timing {}",
+        timing_json(handle, workload)
+    );
+}
+
+/// The timing line's fields, as JSON: the VM's clock readings in microseconds since the
+/// process started, 0 for any not yet taken, and the process's peak RSS so far in KiB.
+fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
     let markers: Vec<String> = handle
         .markers()
         .iter()
@@ -694,14 +730,32 @@ fn report_timing(handle: &Handle, workload: Option<&WorkloadTiming>) {
         let _ = workload;
         (0, 0)
     };
-    let _ = writeln!(
-        std::io::stderr(),
-        "shards-timing {{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"markers\":[{}]}}",
+    format!(
+        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"rss_kib\":{},\"markers\":[{}]}}",
         handle.released_at_us().unwrap_or(0),
         handle.entered_at_us().unwrap_or(0),
         handle.exited_at_us().unwrap_or(0),
+        max_rss_kib(),
         markers.join(",")
-    );
+    )
+}
+
+/// This process's peak resident set so far, in KiB; 0 where unknown.
+fn max_rss_kib() -> u64 {
+    #[cfg(unix)]
+    {
+        // SAFETY: getrusage(2) into a zeroed rusage, a valid out-parameter.
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
+            return 0;
+        }
+        // ru_maxrss is bytes on macOS and KiB on Linux (getrusage(2) on each).
+        let rss = u64::try_from(usage.ru_maxrss).unwrap_or(0);
+        if cfg!(target_vendor = "apple") { rss / 1024 } else { rss }
+    }
+    #[cfg(not(unix))]
+    0
 }
 
 /// Runs a started VM to its end: console, timing report, exit code. A template must end

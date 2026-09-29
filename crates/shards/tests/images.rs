@@ -1,8 +1,9 @@
 //! Images from a registry, end to end: `shards run IMAGE` pulls the image from a registry
 //! (a loopback one here, which containerd's rules reach over plain HTTP), builds its root
 //! filesystem, boots a real VM into it, and runs the image's command as `docker run`
-//! would. The image's program is the test guest (crates/testguest/src/workload.rs).
-//! Runs need vsock, which shards has on Unix hosts.
+//! would, through the daemon each test's first run starts. The image's program is the
+//! test guest (crates/testguest/src/workload.rs). Runs need vsock, which shards has on
+//! Unix hosts.
 
 #![cfg(unix)]
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
@@ -146,19 +147,30 @@ fn repeat_runs_restore_a_template_of_the_image() {
     );
     assert_eq!(templates(), saved, "the template was reused");
 
-    // A template that no longer restores is removed, and the run boots instead; the next
-    // run saves a new one.
+    // A template that no longer restores is removed, and the run boots instead, saving it
+    // again. The daemon's pool holds VMs restored before the damage, so a new daemon, with
+    // none, has to find out.
     std::fs::write(
         home.join("templates").join(&saved[0]).join("state"),
         b"not a snapshot",
     )
     .unwrap();
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
     let third = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
     assert_eq!(third.status, Some(0), "{}", third.stderr);
     assert!(booted(&third), "{}", third.stderr);
-    assert!(third.stderr.contains("booting instead"), "{}", third.stderr);
-    assert!(templates().is_empty(), "{:?}", templates());
+    assert!(
+        third.stderr.contains("does not restore; booting instead"),
+        "{}",
+        third.stderr
+    );
+    assert_eq!(templates(), saved, "saved again under the same key");
     let fourth = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
     assert_eq!(fourth.status, Some(0), "{}", fourth.stderr);
-    assert_eq!(templates(), saved, "saved again under the same key");
+    assert!(
+        !booted(&fourth),
+        "restored from the template saved again: {}",
+        fourth.stderr
+    );
 }

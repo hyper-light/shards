@@ -509,6 +509,97 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   spare. A pooled VM costs 12 MiB and no CPU. The client must be a binary that links
   none of those frameworks.
 
+### M24. A socket in flight whose sender has closed it
+
+- **Question.** Between 1 in 13 and 1 in 53 runs through the daemon never ended after
+  their client's SIGINT. The warm VM's thread that relays the client's signals had
+  already exited: its first read of the client's connection returned end of stream,
+  0.9 µs after it started, while the client was alive and connected. The client's
+  SIGNAL bytes then vanished (receive queue 0, `netstat -f unix`). Why?
+- **Mechanism** (xnu-12377.101.15, the kernel of this host).
+  - Freeing any Unix socket schedules the collector of in-flight descriptors
+    (`thread_call_enter(unp_gc_tcall)`, bsd/kern/uipc_usrreq.c:2912).
+  - `unp_gc` walks only descriptors that are themselves in flight (`unp_msghead`,
+    uipc_usrreq.c:2572-2576). It marks one reachable when a process holds it
+    (`fg_count > fg_msgcount`, :2603-2612) or when it sits in the receive buffer of a
+    reachable socket that is also in flight.
+  - The daemon passes the client's connection to a warm VM, then closes its own copy.
+    The connection then has no holder but the message, which sits in the buffer of the
+    warm VM's socket. That socket was never in flight, so the walk never reaches it.
+  - The collector takes the connection for garbage (:2724) and calls `sorflush` on it
+    (:2746). That marks it unable to receive, so reads return end of stream
+    (`socantrcvmore`), and sets `SB_DROP`, "a barrier to prevent further appends"
+    (bsd/kern/uipc_socket.c:4452-4533). The warm VM then installs the flushed socket as
+    usual (`unp_externalize`, uipc_usrreq.c:2385-2461).
+  - The daemon freed its own end of the handoff socket right after the send, which
+    started a collection just as the VM was about to receive: hence the hangs.
+- **Method.** Harness: `docs/research/measurements/unp-gc-flush/run.sh 1000`.
+  - Each trial passes one end of a socket pair over another pair, as the daemon does.
+    The sender closes its copy before the receive ("closed") or after it ("held").
+    Optionally ("trigger") it frees an unrelated Unix socket, then waits 0, 100 or
+    1000 µs before the receive.
+  - A trial counts as flushed when the received socket reads end of stream while its
+    peer is open and has just written a byte.
+  - 2026-09-29, this machine (macOS 26.4, xnu-12377.101.15). Linux: the same program,
+    built with `zig cc -target aarch64-linux-musl`, in a Linux 6.12.76 VM.
+- **Results** (trials flushed, of 1000):
+
+| sender | trigger | delay | macOS | Linux 6.12 |
+|---|---|---|---|---|
+| closed | no | 0 | 0 | 0 |
+| closed | no | 100 µs | 704–754 | 0 |
+| closed | no | 1 ms | 362–937 | 0 |
+| closed | yes | 0 | 0 | 0 |
+| closed | yes | 100 µs | 997 | 0 |
+| closed | yes | 1 ms | 1000 | 0 |
+| held | any | any | 0 | 0 |
+
+  - Without a trigger of its own, the probe's previous trial frees sockets, and the rest
+    of the system frees others, so flushes still happen whenever the receive waits.
+  - Linux never flushed: its collector counts references from sockets not in flight.
+  - A sender that keeps its copy until the receiver has the socket never saw a flush
+    in 6 000 trials.
+- **Consequence.** D26: the daemon holds its copies of the client's connection and
+  stdio until the warm VM answers `TAKEN`, and a VM that ends first is replaced. In
+  shards: 0 hangs in 600 pooled runs and 200 cold ones, then 300 pooled runs with all
+  18 CPUs busy. Before, the same loop hung at run 30 and at run 53.
+  `daemon::tests::a_handed_over_connection_survives_until_taken` fails every time
+  without the wait.
+
+### M25. Descriptors over Unix sockets, macOS against Linux
+
+- **Question.** What exactly does each kernel do when descriptors pass by `SCM_RIGHTS`:
+  the limits, a receiver with too little room, close-on-exec, what may pass, `MSG_PEEK`,
+  and peer credentials? shards' daemon hands every run's stdio across processes (D26).
+- **Method.** Harness: `docs/research/measurements/fdpass/run.sh`, one C program of
+  ten probes, run as an ordinary user.
+  - 2026-09-29: this machine (macOS 26.4, xnu-12377.101.15); Linux 6.12.76 (aarch64,
+    in a VM) built with musl and with glibc 2.41, which agree except where noted.
+  - docs/research/warm-pool-daemon.md §2.6 cites each probe next to the kernel source
+    that explains it.
+- **Results.**
+
+| Probe | macOS | Linux 6.12 |
+|---|---|---|
+| Most descriptors in one message | 254 (255: EINVAL) | 253 (254: EINVAL) |
+| Two SCM_RIGHTS headers in one message | EINVAL | accepted, delivered as one |
+| Room for 2 of 10 sent | MSG_CTRUNC; all 10 installed, 2 reported; the header claims 52 bytes in a 20-byte buffer | MSG_CTRUNC; 2 installed, the rest closed |
+| No control buffer, or `read(2)` | all installed, none reported | none installed (MSG_CTRUNC) |
+| Receiver with 2 free slots, 5 sent | EMFILE; the data arrives later without them | 2 installed, MSG_CTRUNC, data consumed |
+| `MSG_CMSG_CLOEXEC` | absent: received descriptors are inheritable | honoured |
+| `MSG_PEEK` | installs none | installs duplicates |
+| Refused kinds | kqueue | io_uring (not creatable here) |
+| One descriptor, zero data bytes, stream | delivered | dropped |
+| Status flags (`O_NONBLOCK`), offsets | shared with the sender | shared with the sender |
+| Peer credentials | `getpeereid`, `LOCAL_PEERCRED`, `LOCAL_PEERPID` | `SO_PEERCRED`, `SO_PEERPIDFD` |
+
+- **Consequence.** `shards_ipc` receives only with `recvmsg`, with room for 254
+  descriptors, reads only within `msg_controllen`, and takes descriptors from every part
+  of a message. Its messages always carry data, and it never peeks. On macOS it marks
+  received descriptors close-on-exec and spawns children with
+  `POSIX_SPAWN_CLOEXEC_DEFAULT`. It never changes a received descriptor's status flags.
+  The daemon admits only clients of its own user, by `getpeereid` or `SO_PEERCRED`.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

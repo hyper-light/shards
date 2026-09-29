@@ -257,6 +257,11 @@ impl Run {
         self.timing_field("answered_us")
     }
 
+    /// The VMM process's peak RSS when it reported, in KiB.
+    pub fn rss_kib(&self) -> Option<u128> {
+        self.timing_field("rss_kib")
+    }
+
     fn timing_field(&self, name: &str) -> Option<u128> {
         let t = self.timing()?;
         let v = t.split(&format!("\"{name}\":")).nth(1)?.split(',').next()?;

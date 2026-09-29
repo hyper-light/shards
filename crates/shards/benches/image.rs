@@ -1,24 +1,24 @@
 //! Image benchmark: `shards run IMAGE COMMAND` as a user runs it, the host's wall clock
-//! around the whole process. The image is the E2E tests' registry image (tests/common,
-//! `test_image`), pulled once from a loopback registry; the command is `exit 0`, so the
-//! test guest exits at once.
+//! around the client process, from its spawn to its exit. The image is the E2E tests'
+//! registry image (tests/common, `served`), pulled once from a loopback registry; the
+//! command is `exit 0`, so the test guest exits at once. Every run goes through the
+//! daemon (docs/design/architecture.md D26), which the first run starts.
 //!
-//! - `run_cold`: with `--kernel` and `--init` named, every run boots the image.
-//! - `run_template`: with the guest recorded (`shards guest use`), the first run saves a
-//!   template of the booted, mounted image, and each later run restores it
-//!   (docs/design/architecture.md D25). Only where this build can snapshot. Restores cost
-//!   more for some templates than others, so samples come from `--templates T` of them
-//!   (default 5), each saved afresh. A template's save and its first restore, the first
-//!   process to map its just-written memory, are not samples. Its phases:
-//!   - `template_restore`: shards' `main` → the restored vCPUs released (the VMM's clock):
-//!     the image looked up in the store, the template named and restored.
-//!   - `template_command`: → the VM stopped: the command sent, run and answered.
-//!   - `template_process`: the rest of the wall clock, outside `main`: the process
-//!     launched (exec, dyld, frameworks) and torn down.
+//! - `run_cold`: with `--kernel` and `--init` named, the daemon boots a VM for every run.
+//! - `run_template`: with the guest recorded (`shards guest use`), the daemon serves each
+//!   run from its pool of warm VMs of the image's template (D25, D26). Only where this
+//!   build can snapshot. Restores cost more for some templates than others, so samples
+//!   come from `--templates T` of them (default 5), each saved afresh under a new daemon.
+//!   A template's save and its first run are not samples. Its phases:
+//!   - `template_command`: the command sent → its exit status read (the VM's clock): the
+//!     command's run in the guest.
+//!   - `template_outside`: the rest of the wall clock: the client launched, the request
+//!     handed to a warm VM, the status back, the client gone.
+//! - `*_rss`: the VM process's peak RSS when it answered, including the guest memory it
+//!   touched. `client_rss`: the client process's.
 //!
-//! Peak RSS includes the guest memory the process touched.
-//!
-//! Cold and templated samples alternate, after three cold warm-up runs.
+//! Cold and templated samples alternate, after three cold warm-up runs. Between runs the
+//! daemon refills its pool, as it would between a user's runs.
 //!
 //! `cargo bench -p shards --bench image [-- --runs N --templates T]`
 
@@ -79,12 +79,15 @@ fn main() {
         run_env(&cold_args, false, &env);
     }
     let templated = shards_vmm::vm::SNAPSHOTS;
+    let stop = strings(&["daemon", "stop"]);
     let (mut cold, mut template) = (Vec::with_capacity(runs), Vec::with_capacity(runs));
     for t in 0..templates {
         if templated {
+            // A new daemon: its pool holds no VM of the last template.
+            run_env(&stop, false, &env);
             let _ = std::fs::remove_dir_all(home.join("templates"));
             run_env(&template_args, false, &env); // saves the template
-            run_env(&template_args, false, &env); // its first restore
+            run_env(&template_args, false, &env); // its first run from the pool
         }
         for _ in 0..runs / templates + usize::from(t < runs % templates) {
             cold.push(run_env(&cold_args, false, &env));
@@ -93,28 +96,33 @@ fn main() {
             }
         }
     }
+    run_env(&stop, false, &env);
     let _ = std::fs::remove_dir_all(&home);
+    let vm_rss_mib = |samples: &[support::Sample]| -> Vec<f64> {
+        us(samples, |r| r.rss_kib())
+            .into_iter()
+            .map(|kib| kib / 1024.0)
+            .collect()
+    };
     let mut rows = vec![
         stats("run_cold", "us", wall_us(&cold)),
-        stats("run_cold_rss", "MiB", rss_mib(&cold)),
+        stats("run_cold_rss", "MiB", vm_rss_mib(&cold)),
     ];
     if templated {
+        let command = |r: &common::Run| r.answered_us()?.checked_sub(r.request_us()?);
+        let outside: Vec<f64> = template
+            .iter()
+            .map(|s| s.run.elapsed.as_secs_f64() * 1e6 - command(&s.run).expect("timing field") as f64)
+            .collect();
         rows.extend([
             stats("run_template", "us", wall_us(&template)),
-            stats("template_restore", "us", us(&template, |r| r.released_us())),
-            stats(
-                "template_command",
-                "us",
-                us(&template, |r| r.exit_us()?.checked_sub(r.released_us()?)),
-            ),
-            stats(
-                "template_process",
-                "us",
-                us(&template, |r| r.elapsed.as_micros().checked_sub(r.exit_us()?)),
-            ),
-            stats("run_template_rss", "MiB", rss_mib(&template)),
+            stats("template_command", "us", us(&template, command)),
+            stats("template_outside", "us", outside),
+            stats("run_template_rss", "MiB", vm_rss_mib(&template)),
         ]);
     }
+    let clients: Vec<support::Sample> = cold.into_iter().chain(template).collect();
+    rows.push(stats("client_rss", "MiB", rss_mib(&clients)));
     report(
         "image",
         &[("runs", runs.to_string()), ("templates", templates.to_string())],

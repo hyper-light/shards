@@ -159,7 +159,7 @@ SHARDS-TEST PASS
 
 ## Where things stand
 
-| Feature | Today (2026-09-28) |
+| Feature | Today (2026-09-29) |
 |---|---|
 | Boot Linux on Apple silicon Macs | Works |
 | Boot Linux on x86_64 Linux | Works, tested in CI on every push |
@@ -167,7 +167,7 @@ SHARDS-TEST PASS
 | arm64 Linux, Intel Macs, Windows | Builds, but can't run machines yet |
 | Connect host programs to programs in a running machine (vsock) | Works |
 | Pull images from Docker Hub and other registries, as `docker pull` does | Works: `shards pull`. Your `docker login` credentials and `certs.d` certificates work as they are |
-| Run a command in an image, as `docker run` does | Works: `shards run IMAGE`, with the image's entrypoint, command, environment, directory and user. On the Mac, repeated runs of an image start from a saved copy of its booted microVM, and a warm microVM answers in about 1 ms (`vm restore`) |
+| Run a command in an image, as `docker run` does | Works: `shards run IMAGE`, with the image's entrypoint, command, environment, directory, user and stdin (`-i`). On the Mac, repeated runs of an image are served from copies of its booted microVM that a background service restores ahead of time: about 5 ms from start to exit |
 | Build microVMs like Docker images | In progress: image layers become bootable images |
 | Run many agents on a microVM's OS, each isolated like a container | Planned |
 | Networks, files, devices and permissions per agent and per microVM | Planned |
@@ -183,7 +183,8 @@ Firecracker. The plan and its evidence are in
 | Command | What it does |
 |---|---|
 | `shards pull [-q] IMAGE` | Pull `IMAGE` as `docker pull` does, for this machine's architecture. Every layer is checked against its digests before it is kept |
-| `shards run [-e …] [-w …] [-u …] [--entrypoint …] [--pull …] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container. `IMAGE` is pulled first if it isn't here. It boots the guest `shards guest use` chose, or `--kernel` and `--init` (also `SHARDS_KERNEL` and `SHARDS_INIT`) |
+| `shards run [-e …] [-w …] [-u …] [-i] [--entrypoint …] [--pull …] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container. `IMAGE` is pulled first if it isn't here. It boots the guest `shards guest use` chose, or `--kernel` and `--init` (also `SHARDS_KERNEL` and `SHARDS_INIT`) |
+| `shards daemon stop` | Stop the background service that `shards run` starts on its own. It keeps `SHARDS_POOL` microVMs ready for each image you run (default 2), and exits after `SHARDS_DAEMON_IDLE` seconds without a run (default 900). Runs in progress go on |
 | `shards guest use --kernel FILE --init FILE` | Choose the kernel and shards-init that `shards run` boots. With them chosen, the first run of an image saves a copy of its booted microVM, and later runs start from that copy. `shards guest` shows the choice |
 | `shards vm run --kernel FILE [options]` | Boot a new machine |
 | `shards vm restore DIR [--hold]` | Start a copy of the machine saved in `DIR`. `--hold` preloads it and waits for a line on stdin |
@@ -222,15 +223,16 @@ Details are in [docs/benchmarks.md](docs/benchmarks.md).
 | Restore, in a new process | 794 µs | 1.7 ms |
 | Cold boot, to PID 1 | 21.2 ms | 22.2 ms |
 
-Running a command in an image you have run before takes **7.5 ms** at p50, start to exit
-(`shards run IMAGE exit 0`), where a boot takes 34.2 ms. That is 300 runs over 10 saved
-copies, on a Mac busy with other VMs.
+Running a command in an image you have run before takes **5.1 ms** at p50 and 5.6 ms at
+p99, start to exit (`shards run IMAGE exit 0`), where a boot takes 34.8 ms. That is 300
+runs over 10 saved copies, on a Mac busy with other VMs. Most of it is starting the
+`shards` process itself, which a smaller client for `shards run` will cut.
 
 Linux itself takes 18.6 ms of a cold boot. That is why shards restores snapshots, and why a
 leaner kernel is coming.
 
-Peak memory is 12.5 MiB for a restored machine and 59.3 MiB for a booted one, guest memory
-included.
+Peak memory is 12.5 MiB for a restored machine, 16.4 MiB once it has run a command, and
+59.8 MiB for a booted one, guest memory included.
 
 Against Firecracker v1.17.0 on one host (GitHub's x86_64 runner), with the same kernel and
 guest, 1 CPU and 128 MiB, 30 interleaved runs each:

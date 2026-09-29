@@ -4,10 +4,16 @@
 //!
 //! It tells the daemon `READY` once the guest waits for its command. The daemon answers
 //! with `RUN`: the command, the client's connection, and the client's stdin, stdout and
-//! stderr, which become this process's, so the workload's stdio is the client's. The
-//! client's signals arrive on its connection as `SIGNAL`, and `EXIT` tells it the command's
-//! status as soon as the command ends (shards_ipc::kind).
+//! stderr, which become this process's, so the workload's stdio is the client's. `TAKEN`
+//! then lets the daemon close its copies. The client's signals arrive on its connection
+//! as `SIGNAL`, and `EXIT` tells it the command's status as soon as the command ends
+//! (shards_ipc::kind).
+//!
+//! The VM lets go of the client's stdio before `EXIT`, so that a pipeline reading it ends
+//! with the client, and when the client hangs up, so that a command outliving its client
+//! writes nowhere, as a container's output stops reaching a `docker run` that has gone.
 
+use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
@@ -17,8 +23,23 @@ use shards_ipc::kind;
 
 use crate::workload::{self, NOT_RUN, ToGuest};
 
-/// The daemon's socket at `fd`, which must be an open Unix socket other than stdio.
-pub fn daemon_socket(fd: RawFd) -> Result<UnixStream, String> {
+/// A warm VM's side of the daemon: the socket its request arrives on, and /dev/null, to
+/// replace the client's stdio when the VM lets go of the client.
+pub struct Link {
+    daemon: UnixStream,
+    null: File,
+}
+
+impl Link {
+    /// The daemon's socket at `fd`, which must be an open Unix socket other than stdio.
+    pub fn new(fd: RawFd) -> Result<Link, String> {
+        let daemon = daemon_socket(fd)?;
+        let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+        Ok(Link { daemon, null })
+    }
+}
+
+fn daemon_socket(fd: RawFd) -> Result<UnixStream, String> {
     if fd < 3 {
         return Err(format!("--warm {fd}: not a descriptor of its own"));
     }
@@ -40,10 +61,22 @@ pub fn daemon_socket(fd: RawFd) -> Result<UnixStream, String> {
     Ok(socket)
 }
 
+/// A request, as the daemon hands it over.
+pub struct Request {
+    pub client: UnixStream,
+    pub spec: Spec,
+    /// The command reads the client's stdin.
+    pub interactive: bool,
+    /// The client asked for the timing line.
+    pub timing: bool,
+}
+
 /// Tells the daemon this VM is ready, then waits for its request. Makes the client's stdio
 /// this process's, starts passing the client's signals to the workload through `to`, and
-/// returns the client's connection, the command, and whether the command reads stdin.
-pub fn receive(daemon: &UnixStream, to: &ToGuest) -> Result<(UnixStream, Spec, bool), String> {
+/// tells the daemon it has taken the request. Until then the daemon holds its own copies
+/// of the client's descriptors, and gives the request to another VM if this one fails.
+pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
+    let daemon = &link.daemon;
     shards_ipc::send(daemon, kind::READY, &[], &[]).map_err(|e| format!("telling the daemon: {e}"))?;
     let request = shards_ipc::recv(daemon)
         .map_err(|e| format!("waiting for a request: {e}"))?
@@ -72,16 +105,25 @@ pub fn receive(daemon: &UnixStream, to: &ToGuest) -> Result<(UnixStream, Spec, b
     let signals = client
         .try_clone()
         .map_err(|e| format!("the client's connection: {e}"))?;
+    // The command will run: a signal from here on waits for it rather than being lost.
+    workload::will_run(to);
     let to = to.clone();
     std::thread::Builder::new()
         .name("client-signals".into())
         .spawn(move || relay_signals(&signals, &to))
         .map_err(|e| format!("client signal thread: {e}"))?;
-    Ok((client, spec, flags & shards_ipc::RUN_INTERACTIVE != 0))
+    // A daemon gone by now has no copies left to close.
+    let _ = shards_ipc::send(daemon, kind::TAKEN, &[], &[]);
+    Ok(Request {
+        client,
+        spec,
+        interactive: flags & shards_ipc::RUN_INTERACTIVE != 0,
+        timing: flags & shards_ipc::RUN_TIMING != 0,
+    })
 }
 
-/// Passes the client's signals to the workload until the client hangs up. A workload
-/// outlives its client, as a container outlives `docker run`'s.
+/// Passes the client's signals to the workload until the client hangs up, then lets go of
+/// its stdio. A workload outlives its client, as a container outlives `docker run`'s.
 fn relay_signals(client: &UnixStream, to: &ToGuest) {
     while let Ok(Some(message)) = shards_ipc::recv(client) {
         if message.kind != kind::SIGNAL {
@@ -91,11 +133,16 @@ fn relay_signals(client: &UnixStream, to: &ToGuest) {
             workload::signal_guest(to, u32::from_be_bytes(signal));
         }
     }
+    if let Ok(null) = File::open("/dev/null") {
+        let_go(&null);
+    }
 }
 
-/// Tells the client how its command ended. An error goes to its stderr first, so that it
-/// arrives before the client exits.
-pub fn finish(client: &UnixStream, served: &Result<u8, String>) {
+/// Tells the client how its command ended. An error goes to its stderr first, and the VM
+/// lets go of the client's stdio before the status goes, so that both arrive before the
+/// client exits. With `timing`, the status carries the VM's timing line for the client to
+/// print.
+pub fn finish(link: &Link, client: &UnixStream, served: &Result<u8, String>, timing: Option<&str>) {
     let status = match served {
         Ok(status) => *status,
         Err(e) => {
@@ -103,5 +150,17 @@ pub fn finish(client: &UnixStream, served: &Result<u8, String>) {
             NOT_RUN
         }
     };
-    let _ = shards_ipc::send(client, kind::EXIT, &[status], &[]);
+    let_go(&link.null);
+    let mut payload = vec![status];
+    payload.extend_from_slice(timing.unwrap_or_default().as_bytes());
+    let _ = shards_ipc::send(client, kind::EXIT, &payload, &[]);
+}
+
+/// Stops using the client's stdio: this process's standard descriptors become `null`.
+fn let_go(null: &File) {
+    for target in [0, 1, 2] {
+        // SAFETY: dup2(2) onto this process's own standard descriptors. Should it fail,
+        // the descriptor stays the client's until this process exits.
+        unsafe { libc::dup2(null.as_raw_fd(), target) };
+    }
 }

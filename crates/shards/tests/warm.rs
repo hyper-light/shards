@@ -153,6 +153,10 @@ impl Warm {
             ],
         )
         .unwrap();
+        // Ours stay open until the warm VM has taken them, as the daemon's do.
+        let taken = shards_ipc::recv(&self.daemon).unwrap().expect("TAKEN");
+        assert_eq!(taken.kind, kind::TAKEN);
+        drop(theirs);
         conn.set_read_timeout(Some(TIMEOUT)).unwrap();
         Client {
             conn,
@@ -200,6 +204,27 @@ impl Client {
 
     fn signal(&self, linux: u32) {
         shards_ipc::send(&self.conn, kind::SIGNAL, &linux.to_be_bytes(), &[]).unwrap();
+    }
+
+    fn stdout_ends(&mut self) -> bool {
+        ends(&mut self.stdout)
+    }
+}
+
+/// Whether `stdout` reads end of file within a second: the warm VM holds no copy of it.
+/// The client's copies went once the VM took them.
+fn ends(stdout: &mut BufReader<File>) -> bool {
+    let fd = stdout.get_ref().as_raw_fd();
+    // SAFETY: fcntl(2) on a descriptor this test owns.
+    unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) };
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let mut sink = Vec::new();
+    loop {
+        match stdout.read_to_end(&mut sink) {
+            Ok(_) => return true,
+            Err(_) if std::time::Instant::now() >= deadline => return false,
+            Err(_) => std::thread::sleep(Duration::from_millis(1)),
+        }
     }
 }
 
@@ -300,4 +325,49 @@ fn warm_needs_a_socket_of_its_own() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+}
+
+/// A warm VM lets go of its client's stdio before it sends the exit status, so a pipeline
+/// reading the client's output ends with the client; and when the client hangs up, so a
+/// command that outlives it writes nowhere.
+#[test]
+fn a_warm_vm_lets_go_of_its_clients_stdio() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let dir = TempDir::new("warm-letgo");
+    let template = template(&dir);
+
+    let mut warm = Warm::spawn(&template);
+    warm.ready();
+    let mut client = warm.run(&["/bin/testguest", "exit", "0"], false);
+    assert_eq!(client.exit(), 0);
+    // Frozen before it can tear down: whatever it still held, it would hold now.
+    let pid = warm.child.id() as libc::pid_t;
+    // SAFETY: kill(2) of our own child, reaped only in `ends`.
+    unsafe { libc::kill(pid, libc::SIGSTOP) };
+    let ended = client.stdout_ends();
+    // SAFETY: as above.
+    unsafe { libc::kill(pid, libc::SIGCONT) };
+    assert!(ended, "the warm VM held the client's stdout past its exit status");
+    warm.ends();
+
+    let mut warm = Warm::spawn(&template);
+    warm.ready();
+    let mut client = warm.run(&["/bin/testguest", "sleep"], false);
+    assert_eq!(client.line(), "ready\n");
+    let Client {
+        conn, mut stdout, ..
+    } = client;
+    drop(conn);
+    assert!(
+        ends(&mut stdout),
+        "the warm VM kept writing to a client that hung up"
+    );
+    assert!(
+        warm.child.try_wait().unwrap().is_none(),
+        "the command outlives its client"
+    );
+    warm.child.kill().unwrap();
+    warm.child.wait().unwrap();
 }
