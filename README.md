@@ -238,6 +238,9 @@ runs over 10 saved copies, on a Mac running other VMs. Over a third of it is sta
 `shards` process. The command itself takes 0.4 ms inside the microVM: the microVM
 waiting for your run has already touched the memory the first run of the image used.
 
+With `shards run -it`, a key you type is echoed in 0.27 ms at p50 and 0.39 ms at p99,
+where Docker Desktop on the same Mac takes 0.45 and 1.2 ms.
+
 Linux itself takes 18.6 ms of a cold boot. That is why shards restores snapshots, and why a
 leaner kernel is coming.
 

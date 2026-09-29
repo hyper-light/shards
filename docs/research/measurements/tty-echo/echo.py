@@ -6,7 +6,9 @@ Each arm is a session on its own pty, led by a shell, as a terminal window runs 
 
 - shards: `shards run --rm --pull never -it alpine sh -c 'echo ready; sleep 3600'`, the
   echo made by the guest's pty and carried back through the VM;
-- docker: `docker run --rm -it alpine sh -c 'echo ready; sleep 3600'`, through dockerd;
+- docker: `docker run --rm -it --init alpine sh -c 'echo ready; sleep 3600'`, through
+  Docker Desktop's dockerd; `--init`, so that ^C ends it, as it ends shards' command,
+  which is never PID 1 (a PID-1 `sh` ignores it);
 - local: `sh -c 'echo ready; sleep 3600'` on the pty itself, the floor this harness
   measures with: the host kernel echoes.
 
@@ -22,7 +24,7 @@ N = int(sys.argv[1])
 READY = b"echo ready; sleep 3600"
 ARMS = {
     "shards": [os.environ["SHARDS"], "run", "--rm", "--pull", "never", "-it", "alpine", "sh", "-c", READY.decode()],
-    "docker": ["docker", "run", "--rm", "-it", "alpine", "sh", "-c", READY.decode()],
+    "docker": ["docker", "run", "--rm", "-it", "--init", "alpine", "sh", "-c", READY.decode()],
     "local": ["sh", "-c", READY.decode()],
 }
 
@@ -66,9 +68,6 @@ for i in range(N + 20):
         if i >= 20:
             samples[name].append(took)
         time.sleep(0.005)
-for master, shell in sessions.values():
-    os.write(master, b"\x03")
-    shell.wait(timeout=30)
 
 
 def q(v, f):
@@ -79,3 +78,15 @@ def q(v, f):
 print("load %.2f %.2f %.2f" % os.getloadavg())
 for name, v in samples.items():
     print(f"{name:7} n {len(v)} p50 {q(v, .5):.0f} p90 {q(v, .9):.0f} p99 {q(v, .99):.0f} max {max(v):.0f} us")
+# A session leader's exit waits for its terminal's output to drain (XNU, proc_exit), so
+# each master is read until its shell is gone.
+for master, shell in sessions.values():
+    os.write(master, b"\x03")
+    deadline = time.monotonic() + 30
+    while shell.poll() is None and time.monotonic() < deadline:
+        if select.select([master], [], [], 0.05)[0]:
+            try:
+                os.read(master, 4096)
+            except OSError:
+                break
+    shell.wait(timeout=5)

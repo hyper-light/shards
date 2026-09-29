@@ -928,6 +928,36 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   signal it is notified of. Before, neither the client nor `vm run` forwarded them on the
   Mac.
 
+### M32. A keystroke's echo through `run -it`
+
+- **Question.** Under `run -it` a key's echo crosses the VM twice: the client reads it,
+  the warm VM sends it into the guest over vsock, the guest's pty echoes it, and init
+  sends the echo back out (tty-and-interactive-runs.md E1). How long does a user wait
+  for it, against Docker's own path on this Mac?
+- **Method.** `docs/research/measurements/tty-echo/echo.py`: three sessions, each on a
+  pty led by a shell, as a terminal window runs one, stay open together and take turns,
+  one keystroke per round in rotating order, 5 ms apart:
+  - `shards run --rm --pull never -it alpine sh -c 'echo ready; sleep 3600'`, a pooled
+    run of 1b429f3;
+  - `docker run --rm -it --init alpine sh -c '…'`, Docker Desktop's engine 29.3.1, its
+    Linux VM on this Mac; `--init`, so ^C ends it as it ends shards' command;
+  - `sh -c '…'` on the pty itself: the host kernel echoes, the harness's floor.
+
+  A sample is the time from writing `a` to the master to reading its echo back, n = 1000
+  per arm after 20 unrecorded. 2026-09-29, this machine, load 7.8–14.2.
+- **Results** (µs):
+
+| Session | n | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|
+| `shards run -it` | 1000 | 265 | 339 | 387 | 530 |
+| `docker run -it` (Docker Desktop) | 1000 | 447 | 627 | 1182 | 1949 |
+| local pty | 1000 | 22 | 33 | 47 | 59 |
+
+- **Consequence.** A key's echo takes a quarter of a millisecond, about 240 µs past the
+  host's own; Docker Desktop's takes 1.7 times as long at the median and 3 times at
+  p99. The path is two vsock crossings, two guest wakeups (M8) and the guest's pty; what
+  of it is worth shortening is not measured.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**
