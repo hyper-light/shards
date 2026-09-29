@@ -1,4 +1,4 @@
-//! What the benchmarks share: running `shards` with per-process resource usage, order
+//! What the benchmarks share: running `shards` or `shardsd` with per-process resource usage, order
 //! statistics, and the host/OS/revision stamp every result carries (CLAUDE.md).
 #![allow(dead_code)]
 
@@ -16,17 +16,22 @@ pub struct Sample {
     pub max_rss_bytes: u64,
 }
 
-/// Runs `shards <args>` to completion, reaping it with wait4(2) for its own resource
-/// usage. With `hold`, waits for `shards-ready` on stderr, then sends the start line.
+/// Runs `shardsd <args>`, the VMM's own process without the `shards` command in front, to
+/// completion, reaping it with wait4(2) for its own resource usage. With `hold`, waits for
+/// `shards-ready` on stderr, then sends the start line.
 pub fn run(args: &[String], hold: bool) -> Sample {
-    run_env(args, hold, &[])
+    measure(common::shardsd(), args, hold, &[])
 }
 
-/// [`run`], with `env` added to shards' environment.
-#[allow(clippy::zombie_processes)] // reaped by wait4, not Child::wait
+/// Runs the `shards` command as a user runs it, with `env` added to its environment.
 pub fn run_env(args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
+    measure(common::shards(), args, hold, env)
+}
+
+#[allow(clippy::zombie_processes)] // reaped by wait4, not Child::wait
+fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
     let start = Instant::now();
-    let mut child = Command::new(common::shards())
+    let mut child = Command::new(bin)
         .args(args)
         .envs(env.iter().copied())
         .env("SHARDS_TIMING", "1")

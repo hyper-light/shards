@@ -3,7 +3,6 @@
 
 use std::ffi::OsString;
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use shards_image::platform;
@@ -51,20 +50,9 @@ fn usage(message: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
-/// Where shards keeps this user's images, guest and templates: `$SHARDS_HOME`, else
-/// `shards` in the platform's data directory.
-pub fn home() -> Result<PathBuf, String> {
-    match std::env::var_os("SHARDS_HOME").filter(|h| !h.is_empty()) {
-        Some(home) => Ok(PathBuf::from(home)),
-        None => Ok(shards_vmm::platform::data_dir()
-            .ok_or("no data directory: set SHARDS_HOME")?
-            .join("shards")),
-    }
-}
-
 /// This user's image store, `images` in [`home`], readable by this user alone.
 pub fn store() -> Result<Store, String> {
-    let root = home()?.join("images");
+    let root = shards_ipc::home()?.join("images");
     shards_vmm::platform::create_private_dir(&root).map_err(|e| format!("{}: {e}", root.display()))?;
     Store::open(&root).map_err(|e| e.to_string())
 }

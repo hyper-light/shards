@@ -1,7 +1,36 @@
 //! How shards' processes talk: the CLI, the daemon and warm VMM processes hand each other
 //! requests, stdio and connections as messages (`kind`), the run a client asks for
-//! ([`Run`]), and, on Unix, the transport that carries them with open descriptors
-//! (`unix.rs`).
+//! ([`Run`]), and, on Unix, the transport that carries them with open descriptors, and the
+//! socket where they meet, in their shared [`home`] (`unix.rs`).
+//!
+//! The `shards` command links this crate and the standard library alone, so that it
+//! starts fast (docs/research/platform-measurements.md M23).
+
+use std::path::PathBuf;
+
+/// shards' home: `SHARDS_HOME`, or `shards` in this user's data directory:
+/// `~/Library/Application Support` on macOS (Apple's File System Programming Guide),
+/// `$XDG_DATA_HOME` or else `~/.local/share` on other Unix systems (XDG Base Directory
+/// Specification), `%LOCALAPPDATA%` on Windows (`FOLDERID_LocalAppData`).
+pub fn home() -> Result<PathBuf, String> {
+    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
+    if let Some(home) = var("SHARDS_HOME") {
+        return Ok(PathBuf::from(home));
+    }
+    let data = if cfg!(windows) {
+        var("LOCALAPPDATA").map(PathBuf::from)
+    } else {
+        let home = var("HOME").map(PathBuf::from);
+        if cfg!(target_os = "macos") {
+            home.map(|h| h.join("Library").join("Application Support"))
+        } else {
+            var("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .or_else(|| home.map(|h| h.join(".local").join("share")))
+        }
+    };
+    Ok(data.ok_or("no data directory: set SHARDS_HOME")?.join("shards"))
+}
 
 /// Message kinds between the daemon, warm VMs and clients.
 pub mod kind {

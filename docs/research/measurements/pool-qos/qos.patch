@@ -1,0 +1,88 @@
+diff --git a/crates/shards/src/bin/shards/main.rs b/crates/shards/src/bin/shards/main.rs
+index e0e32d0..c1d6576 100644
+--- a/crates/shards/src/bin/shards/main.rs
++++ b/crates/shards/src/bin/shards/main.rs
+@@ -17,6 +17,13 @@ mod request;
+ const NOT_RUN: u8 = 125;
+ 
+ fn main() -> ExitCode {
++    #[cfg(target_os = "macos")]
++    if std::env::var_os("SHARDS_QOS").is_some_and(|v| v == "interactive") {
++        // SAFETY: sets the calling thread's QoS class.
++        unsafe {
++            libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
++        }
++    }
+     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+     let word = |i: usize| args.get(i).and_then(|a| a.to_str());
+     match (word(0), word(1), args.len()) {
+diff --git a/crates/shards/src/daemon.rs b/crates/shards/src/daemon.rs
+index a652b5b..0edb20e 100644
+--- a/crates/shards/src/daemon.rs
++++ b/crates/shards/src/daemon.rs
+@@ -268,6 +268,7 @@ impl Daemon {
+     /// removes the socket, so no client arrives after, serves any that already did, and
+     /// exits.
+     fn listen(self: &Arc<Self>, mut listener: UnixListener) {
++        shards_vmm::platform::interactive();
+         loop {
+             let closing = self.closed.load(Ordering::SeqCst);
+             // A daemon whose home is gone has nothing left to serve.
+@@ -342,6 +343,7 @@ impl Daemon {
+         self.busy.fetch_add(1, Ordering::SeqCst);
+         let daemon = self.clone();
+         let spawned = std::thread::Builder::new().name("run".into()).spawn(move || {
++            shards_vmm::platform::interactive();
+             let _busy = Busy(&daemon);
+             daemon.handle(&conn);
+         });
+diff --git a/crates/shards/src/vm_run.rs b/crates/shards/src/vm_run.rs
+index ccec54d..f5151b0 100644
+--- a/crates/shards/src/vm_run.rs
++++ b/crates/shards/src/vm_run.rs
+@@ -594,6 +594,7 @@ fn serve_workload(
+         let served = std::thread::Builder::new()
+             .name("workload".into())
+             .spawn(move || {
++                shards_vmm::platform::interactive();
+                 // How the workload ended, and whether its client has been told.
+                 let outcome = match command {
+                     Command::Given {
+diff --git a/crates/vmm/src/devices/virtio/vsock/mod.rs b/crates/vmm/src/devices/virtio/vsock/mod.rs
+index 090c3c9..af3ac24 100644
+--- a/crates/vmm/src/devices/virtio/vsock/mod.rs
++++ b/crates/vmm/src/devices/virtio/vsock/mod.rs
+@@ -200,7 +200,10 @@ impl Vsock {
+         let (flag, waker) = (stop.clone(), self.waker.clone());
+         let thread = thread::Builder::new()
+             .name("virtio-vsock".into())
+-            .spawn(move || run(session, &memory, &interrupt, &waker, &flag))
++            .spawn(move || {
++                crate::platform::interactive();
++                run(session, &memory, &interrupt, &waker, &flag)
++            })
+             .map_err(|e| format!("spawning virtio-vsock worker: {e}"))?;
+         self.worker = Some(Worker { thread, stop });
+         Ok(())
+diff --git a/crates/vmm/src/platform/mod.rs b/crates/vmm/src/platform/mod.rs
+index 3e1d01f..4015d54 100644
+--- a/crates/vmm/src/platform/mod.rs
++++ b/crates/vmm/src/platform/mod.rs
+@@ -45,6 +45,17 @@ pub fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()>
+     Ok(())
+ }
+ 
++/// M26: with SHARDS_QOS=interactive, raises the calling thread to user-interactive QoS.
++pub fn interactive() {
++    #[cfg(target_os = "macos")]
++    if std::env::var_os("SHARDS_QOS").is_some_and(|v| v == "interactive") {
++        // SAFETY: sets the calling thread's QoS class.
++        unsafe {
++            libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
++        }
++    }
++}
++
+ /// An unbuffered handle to this process's standard output, independent of `std::io::stdout`'s
+ /// lock and line buffering.
+ pub fn stdout_file() -> io::Result<File> {

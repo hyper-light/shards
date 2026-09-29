@@ -6,124 +6,33 @@
 //! only the client reads its terminal. The client forwards the signals it gets, as
 //! `docker run` does, and exits with the command's status.
 //!
-//! It needs only `shards_ipc` and the OS, so it can move into a binary of its own.
+//! It needs only `shards_ipc` and the OS: it is the thin `shards` binary's (main.rs).
 
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use shards_ipc::{Run, kind};
+use shards_ipc::{Run, SOCKET, kind, log};
 
-/// `docker run`'s status when it could not run the command at all.
-const NOT_RUN: u8 = 125;
+use crate::NOT_RUN;
+
 /// How long a started daemon may take to listen.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The daemon's socket for `home`: `daemon.sock` there, or, when that path is too long
-/// for a Unix socket's address (`sun_path`: 104 bytes on macOS, 108 on Linux, NUL
-/// included), `shards-HASH.sock` in this user's runtime directory, HASH naming the home.
-pub fn socket(home: &Path) -> Result<PathBuf, String> {
-    use sha2::{Digest as _, Sha256};
-    // SAFETY: an all-zero sockaddr_un is valid; only its field's size is read.
-    let room = unsafe { std::mem::zeroed::<libc::sockaddr_un>() }.sun_path.len() - 1;
-    let inside = home.join("daemon.sock");
-    if inside.as_os_str().len() <= room {
-        return Ok(inside);
-    }
-    let hash: String = Sha256::digest(home.as_os_str().as_bytes())
-        .iter()
-        .take(8)
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    let outside = runtime_dir()?.join(format!("shards-{hash}.sock"));
-    if outside.as_os_str().len() > room {
-        return Err(format!(
-            "no socket path short enough for {}; set a shorter SHARDS_HOME",
-            home.display()
-        ));
-    }
-    Ok(outside)
-}
-
-/// This user's private directory for sockets: the per-user cache directory macOS makes
-/// (confstr(3), `_CS_DARWIN_USER_CACHE_DIR`). The per-user temporary directory is cleaned
-/// of files not accessed for 3 days, and connecting to a socket does not count as access
-/// (docs/research/warm-pool-daemon.md §2.6). confstr falls back to shared directories when
-/// the per-user one cannot be made, so this one must prove to be private.
-#[cfg(target_vendor = "apple")]
-fn runtime_dir() -> Result<PathBuf, String> {
-    use std::os::unix::ffi::OsStringExt;
-    let mut buf = vec![0u8; 1024];
-    // SAFETY: confstr(3) writes at most buf.len() bytes, its NUL included.
-    let n = unsafe {
-        libc::confstr(
-            libc::_CS_DARWIN_USER_CACHE_DIR,
-            buf.as_mut_ptr().cast(),
-            buf.len(),
-        )
-    };
-    if n == 0 || n > buf.len() {
-        return Err(format!(
-            "this user's cache directory: {}",
-            io::Error::last_os_error()
-        ));
-    }
-    buf.truncate(n - 1);
-    let dir = PathBuf::from(std::ffi::OsString::from_vec(buf));
-    private(&dir)?;
-    Ok(dir)
-}
-
-/// This user's private directory for sockets: $XDG_RUNTIME_DIR, which the XDG Base
-/// Directory Specification gives each user for sockets, owned by the user and mode 0700.
-/// Without it, a directory in /tmp that must be this user's own and private, since anyone
-/// may take a name in /tmp first.
-#[cfg(not(target_vendor = "apple"))]
-fn runtime_dir() -> Result<PathBuf, String> {
-    use std::os::unix::fs::DirBuilderExt;
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|d| d.is_absolute())
-    {
-        return Ok(dir);
-    }
-    // SAFETY: getuid(2) cannot fail.
-    let uid = unsafe { libc::getuid() };
-    let dir = PathBuf::from(format!("/tmp/shards-{uid}"));
-    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(format!("{}: {e}", dir.display())),
-    }
-    private(&dir)?;
-    Ok(dir)
-}
-
-/// Whether `dir` is a directory of this user's that no one else may enter.
-fn private(dir: &Path) -> Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
-    // SAFETY: getuid(2) cannot fail.
-    let uid = unsafe { libc::getuid() };
-    let meta = std::fs::symlink_metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
-        return Err(format!("{} is not this user's private directory", dir.display()));
-    }
-    Ok(())
-}
-
-/// Where a daemon the client starts writes its messages.
-pub fn log(home: &Path) -> PathBuf {
-    home.join("daemon.log")
-}
-
-/// Runs `request` through the daemon of `home`, whose binary is `daemon`.
+/// Runs `request` through the daemon of `home`, whose binary is `daemon`. Every path the
+/// request holds is absolute by now (request.rs), since this process makes the home its
+/// working directory, where the daemon's socket is (`shards_ipc::SOCKET`).
 pub fn run(home: &Path, daemon: &Path, request: &Run) -> ExitCode {
+    // Before any thread starts, none of which may use a relative path meanwhile.
+    let mut started = match enter(home, daemon) {
+        Ok(started) => started,
+        Err(e) => return failed(&e),
+    };
     // SAFETY: isatty(3) on this process's stdin.
     let reads_terminal = request.interactive && unsafe { libc::isatty(0) } == 1;
     let current: Arc<Mutex<Option<UnixStream>>> = Arc::default();
@@ -136,7 +45,7 @@ pub fn run(home: &Path, daemon: &Path, request: &Run) -> ExitCode {
     };
     // A daemon from another build answers RESTART once it has stepped aside.
     for _ in 0..2 {
-        let conn = match connect(home, daemon) {
+        let conn = match connect(home, daemon, &mut started) {
             Ok(conn) => conn,
             Err(e) => return failed(&e),
         };
@@ -183,11 +92,13 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(60);
 /// Asks the daemon of `home` to exit once the runs in hand are handed over, and waits
 /// until it has: the daemon holds this connection open until it exits.
 pub fn stop(home: &Path) -> ExitCode {
-    let path = match socket(home) {
-        Ok(path) => path,
-        Err(e) => return failed(&e),
-    };
-    match UnixStream::connect(&path) {
+    match std::env::set_current_dir(home) {
+        Ok(()) => {}
+        // No home: no daemon to stop.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return ExitCode::SUCCESS,
+        Err(e) => return failed(&format!("{}: {e}", home.display())),
+    }
+    match UnixStream::connect(SOCKET) {
         Ok(conn) => {
             if let Err(e) = shards_ipc::send(&conn, kind::STOP, &[], &[]) {
                 return failed(&format!("asking the daemon to stop: {e}"));
@@ -212,7 +123,7 @@ pub fn stop(home: &Path) -> ExitCode {
         {
             ExitCode::SUCCESS
         }
-        Err(e) => failed(&format!("{}: {e}", path.display())),
+        Err(e) => failed(&format!("{}: {e}", home.join(SOCKET).display())),
     }
 }
 
@@ -221,22 +132,47 @@ fn failed(message: &str) -> ExitCode {
     ExitCode::from(NOT_RUN)
 }
 
-/// The daemon's connection, starting the daemon if none listens.
-fn connect(home: &Path, daemon: &Path) -> Result<UnixStream, String> {
-    let path = socket(home)?;
-    match UnixStream::connect(&path) {
+/// Makes `home` this process's working directory. A home that does not exist yet is the
+/// daemon's to make: then this starts the daemon and waits for it. Returns whether it
+/// started one.
+fn enter(home: &Path, daemon: &Path) -> Result<bool, String> {
+    match std::env::set_current_dir(home) {
+        Ok(()) => return Ok(false),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{}: {e}", home.display())),
+    }
+    start(daemon)?;
+    let deadline = Instant::now() + START_TIMEOUT;
+    loop {
+        match std::env::set_current_dir(home) {
+            Ok(()) => return Ok(true),
+            Err(e) if Instant::now() >= deadline => {
+                return Err(format!("the daemon did not make {} ({e})", home.display()));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(1)),
+        }
+    }
+}
+
+/// The daemon's connection, starting the daemon if none listens and `started` says this
+/// process has not started one yet.
+fn connect(home: &Path, daemon: &Path, started: &mut bool) -> Result<UnixStream, String> {
+    match UnixStream::connect(SOCKET) {
         Ok(conn) => return Ok(conn),
         Err(e)
             if matches!(
                 e.kind(),
                 io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
             ) => {}
-        Err(e) => return Err(format!("{}: {e}", path.display())),
+        Err(e) => return Err(format!("{}: {e}", home.join(SOCKET).display())),
     }
-    start(daemon)?;
+    if !*started {
+        start(daemon)?;
+        *started = true;
+    }
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
-        match UnixStream::connect(&path) {
+        match UnixStream::connect(SOCKET) {
             Ok(conn) => return Ok(conn),
             Err(e) if Instant::now() >= deadline => {
                 return Err(format!(

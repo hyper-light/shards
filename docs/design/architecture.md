@@ -57,7 +57,7 @@ performance and resource usage.
 | D10 | Pin the guest's CPU view explicitly: MPIDR, PARange clamped to the IPA, SME exposure decided per image. Don't inherit defaults. | Defaults show PARange 40 on a 36-bit IPA and expose SME2 [PM M12] |
 | D11 | GPUs are zero-cost when unused. GPU VMs are a separate class assigned from a warm pool (VFIO via iommufd on Linux; virtio-gpu/Venus plus a remoting broker on macOS). | Assigned devices pin all RAM and break CoW; FLR ≥ 100 ms; CUDA init takes seconds [GPU §2.3, R1–R6] |
 | D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). Built (a7b32ab): guest ports map to host Unix sockets as in Firecracker (`CONNECT <port>`; the guest reaches `<path>_P`). Unlike Firecracker, host EOF is a half-close, so a guest can answer after stdin ends. Each restored copy binds its own socket. A snapshot keeps the streams the device held. The restored device resets each of them with an RST on its RX queue, ahead of every other packet, and continues host port allocation past the snapshot's, never reusing a held port. It posts no TRANSPORT_RESET: Linux handles that event in a work item apart from RX, and on one interrupt it visits RX first. So a connection made right after the restore could be established and then reset (13 of 350 restores under CPU load). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7]; macOS poll reports POLLHUP on a half-close, so the device waits with kqueue there; restores [PM M20]: Linux 7.2 net/vmw_vsock/virtio_transport.c (`event_work`, `rx_work` handles RX in order), drivers/virtio/virtio_mmio.c `vm_interrupt` over queues in setup order (virtio_ring.c `list_add_tail`); a REQUEST matching a closing socket is dropped (virtio_transport_common.c `virtio_transport_recv_disconnecting`) |
-| D26 | `shards run` is served by a per-user daemon that hands each request to a warm VM process of the image's template: resumed, connected, waiting for its command. The client's stdio and connection pass by `SCM_RIGHTS`, and the daemon keeps its copies until the warm VM has taken them. The CLI is a thin binary. | Handoff 31 µs p50; warm VM 12.3 MiB, no CPU; a thin client costs 1.4 ms against 3.5 ms for a binary linking the VMM's frameworks [PM M23]; XNU flushes a socket in flight that no process holds [PM M24]; pre-created VM shells [Manco17 §5.2; Wanninger22 §5.2] |
+| D26 | `shards run` is served by a per-user daemon that hands each request to a warm VM process of the image's template: resumed, connected, waiting for its command. The client's stdio and connection pass by `SCM_RIGHTS`, and the daemon keeps its copies until the warm VM has taken them. The CLI is a thin binary. | Handoff 31 µs p50; warm VM 12.3 MiB, no CPU; a thin client costs 1.4 ms against 3.5 ms for a binary linking the VMM's frameworks [PM M23]; XNU flushes a socket in flight that no process holds [PM M24]; a pooled run takes 3.4 ms at p50 and 3.9 ms at p99 with the thin client [PM M26]; pre-created VM shells [Manco17 §5.2; Wanninger22 §5.2] |
 
 ### Snapshots (D14)
 
@@ -588,14 +588,16 @@ for the exit status.
 - **Built: the daemon** (`crates/shards/src/daemon.rs`), with `shards run` as its client
   (`client.rs`).
   - One serves each SHARDS_HOME, holding its `daemon.lock`. `shards run` starts it when
-    nothing listens on its socket: `daemon.sock` in the home or, when that path is too
-    long for `sun_path`, a name hashed from the home in a directory private to the user.
-    That is the per-user cache directory on macOS, which unlike the temporary one is
-    never swept, or `$XDG_RUNTIME_DIR` on Linux.
+    nothing listens on its socket, `daemon.sock` in the home.
+  - Every process that uses the socket first makes the home its working directory, and
+    names the socket relative to it. That name fits a socket address whatever the
+    home's path. The per-user directories macOS offers for sockets cost each new process
+    0.4–1.3 ms to look up [PM M26].
   - It admits only clients of its own user (`getpeereid`, `SO_PEERCRED`): a home in a
     shared directory must not let another user run commands as this one [PM M25].
-  - It keeps SHARDS_POOL warm VMs (default 2) of each template it has served, refilled
-    as each is taken. A run with no template boots a VM that saves one on the way, and a
+  - It keeps SHARDS_POOL warm VMs (default 2) of each template it has served. A pool
+    refills once its VM has taken its run, since starting the next VM on the request's
+    path cost 200–600 µs [PM M26]. A run with no template boots a VM that saves one on the way, and a
     run with its own kernel and init boots every time. A template whose warm VMs fail
     three times in a row is removed and saved again.
   - **It keeps its copies of the client's descriptors until the VM says `TAKEN`.**
@@ -634,7 +636,17 @@ for the exit status.
   - A thin client's process costs 1.4 ms at p50. `shards` costs 3.5 ms before doing
     anything, because its frameworks load at every launch. Only a thin client leaves room
     for the 5 ms target at p99.
-- **Next:** the CLI as a binary of its own that links none of the VMM's frameworks (M23).
+- **Built: the thin client.** `shards` links the standard library and `shards_ipc`
+  alone. It serves `run` and `daemon stop` itself and runs `shardsd`, found beside it,
+  in its own place for every other command.
+  - Its launch no longer loads Hypervisor, Security and CoreFoundation, nor runs
+    AWS-LC's constructor [PM M23].
+  - A pooled run fell from 5.15 to 3.4 ms at p50 and from 5.6 to 3.9 ms at p99. The
+    client's peak RSS fell from 6.3 to 1.6 MiB [PM M26].
+  - Raising the request path's service threads to user-interactive QoS changed nothing,
+    on a busy host or a saturated one [PM M22, M26].
+- **Next:** the guest's command, 1.1 ms of a run: a warm VM could fault in the command's
+  working set while it waits.
 - **Tests:**
   - the IPC crate: descriptors that work on arrival, are close-on-exec, and respect the
     limits; descriptors past the limit, or on any part of a message, are closed; children

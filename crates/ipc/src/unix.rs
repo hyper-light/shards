@@ -19,7 +19,7 @@ use std::mem::{MaybeUninit, size_of};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use crate::{Identity, MAX_FDS, MAX_PAYLOAD};
@@ -301,6 +301,18 @@ fn take_fds(msg: &libc::msghdr, fds: &mut Vec<OwnedFd>) -> io::Result<()> {
     Ok(())
 }
 
+/// The daemon's socket: `daemon.sock` in shards' home, named relative to the working
+/// directory, which each process that uses it makes the home first. A relative name fits
+/// a socket address (`sun_path`: 104 bytes on macOS, 108 on Linux, NUL included) whatever
+/// the home's path. The per-user directories macOS offers instead cost each new process a
+/// lookup of 0.4–1.3 ms (docs/research/platform-measurements.md M26).
+pub const SOCKET: &str = "daemon.sock";
+
+/// Where a daemon the client starts writes its messages.
+pub fn log(home: &Path) -> PathBuf {
+    home.join("daemon.log")
+}
+
 /// The effective user ID of the process at the other end of `sock`, as it connected:
 /// `SO_PEERCRED` on Linux (unix(7)), `getpeereid(3)` elsewhere.
 pub fn peer_uid(sock: &UnixStream) -> io::Result<u32> {
@@ -516,12 +528,11 @@ mod tests {
 
     use super::*;
 
+    /// A pipe whose ends are close-on-exec, as every descriptor shards holds is: on Linux
+    /// `spawn` relies on that to give a child nothing it was not given.
     fn pipe() -> (File, File) {
-        let mut fds = [0; 2];
-        // SAFETY: pipe(2) fills both descriptors.
-        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-        // SAFETY: fresh descriptors nothing else owns.
-        unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) }
+        let (r, w) = io::pipe().unwrap();
+        (File::from(OwnedFd::from(r)), File::from(OwnedFd::from(w)))
     }
 
     #[test]
@@ -653,30 +664,36 @@ mod tests {
 
     #[test]
     fn detached_children_lead_their_own_session() {
-        // setsid(2) also makes the child the leader of a new process group, the unit a
-        // terminal's signals reach. macOS's ps shows no session ids, but it shows groups.
-        // SAFETY: getpgrp(2) of this process.
-        let ours = i64::from(unsafe { libc::getpgrp() });
-        let script = "echo $(ps -o pgid= -p $$) $$ >&3";
+        // The test asks the kernel while the child waits for the pipe to close: `ps`
+        // differs between systems, and BusyBox's has no `-p`.
+        // SAFETY: getpgrp(2) and getsid(2) of this process.
+        let (group, session) = unsafe { (libc::getpgrp(), libc::getsid(0)) };
         for detach in [false, true] {
-            let (mut r, w) = pipe();
+            let (r, w) = pipe();
             let child = spawn(
                 Path::new("/bin/sh"),
-                &["-c".as_ref(), script.as_ref()],
-                &[(w.as_fd(), 3)],
+                &["-c".as_ref(), "read line <&3; exit 0".as_ref()],
+                &[(r.as_fd(), 3)],
                 detach,
             )
             .unwrap();
+            let pid = child.pid;
+            // SAFETY: getpgid(2) and getsid(2) of our own child, not yet reaped.
+            let (its_group, its_session) = unsafe { (libc::getpgid(pid), libc::getsid(pid)) };
             drop(w);
             assert_eq!(child.wait().unwrap(), 0);
-            let mut got = String::new();
-            r.read_to_string(&mut got).unwrap();
-            let fields: Vec<i64> = got.split_whitespace().map(|f| f.parse().unwrap()).collect();
-            let (group, pid) = (fields[0], fields[1]);
             if detach {
-                assert_eq!(group, pid, "a detached child leads a group of its own");
+                assert_eq!(
+                    (its_group, its_session),
+                    (pid, pid),
+                    "a detached child leads a session and a group of its own"
+                );
             } else {
-                assert_eq!(group, ours, "an attached child stays in ours");
+                assert_eq!(
+                    (its_group, its_session),
+                    (group, session),
+                    "an attached child stays in ours"
+                );
             }
         }
     }

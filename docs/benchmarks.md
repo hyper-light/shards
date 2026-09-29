@@ -369,6 +369,28 @@ the guest. `template_outside` is 4.1 ms at the median, and launching the `shards
 binary alone costs 3.5 ms (platform-measurements.md M23). A thin client, at 1.4 ms, is
 the next step toward 5 ms at p99.
 
+**2026-09-29, the thin client** · 27e60c0 plus the thin `shards` (uncommitted) · same
+host, OS and kernel · n=300 over 10 templates, 1 vCPU, 256 MiB · load 3.15 3.67 4.64
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| run_cold | 33529 µs | 34196 µs | 35193 µs | 37982 µs |
+| **run_template** | **3375 µs** | **3682 µs** | **3880 µs** | **3981 µs** |
+| template_command | 1011 µs | 1162 µs | 1396 µs | 1433 µs |
+| template_outside | 2352 µs | 2632 µs | 2762 µs | 2799 µs |
+| run_cold_rss | 59.8 MiB | 59.8 MiB | 59.9 MiB | 59.9 MiB |
+| run_template_rss | 16.5 MiB | 16.7 MiB | 16.8 MiB | 16.8 MiB |
+| client_rss | 1.6 MiB | 1.6 MiB | 1.6 MiB | 1.6 MiB |
+
+`shards` now links only the standard library and `shards_ipc`, and runs `shardsd` for
+everything but `run`. The daemon's socket is named relative to its home, and a pool
+refills after its VM takes a run (platform-measurements.md M26). A repeat at load 2.53
+gave 3374, 3560, 3752 and 4218 µs.
+
+With every CPU busy (`yes` on all 18, load 17.23), run_template took 4844, 16570, 31501
+and 46617 µs, and run_cold 36663, 58335, 80146 and 89872 µs. User-interactive QoS on
+the request path's service threads made no difference (M26).
+
 ## Firecracker (`crates/shards/benches/firecracker.rs`)
 
 `cargo bench -p shards --bench firecracker [-- --runs N --cpus N --memory MIB]` (Linux, KVM)

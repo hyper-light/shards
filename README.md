@@ -71,11 +71,14 @@ Build from source with Rust 1.98 (pinned by the toolchain file):
 ```sh
 git clone https://github.com/hyper-light/shards && cd shards
 cargo build --release -p shards
-codesign -s - -f --entitlements resources/hvf.entitlements target/release/shards   # macOS only
-cp target/release/shards ~/.local/bin/
+codesign -s - -f --entitlements resources/hvf.entitlements target/release/shardsd   # macOS only
+cp target/release/shards target/release/shardsd ~/.local/bin/
 ```
 
-- **macOS**: 15 or later, on Apple silicon. The `codesign` line lets shards use
+shards is two programs: `shards`, the command you type, and `shardsd`, which runs the
+machines. Keep them in the same directory.
+
+- **macOS**: 15 or later, on Apple silicon. The `codesign` line lets `shardsd` use
   Hypervisor.framework. It is an ad-hoc signature, so you need no developer account. Without
   it, machines fail to start with `HV_DENIED`.
 - **Linux**: x86_64, with access to `/dev/kvm` (usually the `kvm` group). Add
@@ -184,7 +187,7 @@ Firecracker. The plan and its evidence are in
 |---|---|
 | `shards pull [-q] IMAGE` | Pull `IMAGE` as `docker pull` does, for this machine's architecture. Every layer is checked against its digests before it is kept |
 | `shards run [-e …] [-w …] [-u …] [-i] [--entrypoint …] [--pull …] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container. `IMAGE` is pulled first if it isn't here. It boots the guest `shards guest use` chose, or `--kernel` and `--init` (also `SHARDS_KERNEL` and `SHARDS_INIT`) |
-| `shards daemon stop` | Stop the background service that `shards run` starts on its own. It keeps `SHARDS_POOL` microVMs ready for each image you run (default 2), and exits after `SHARDS_DAEMON_IDLE` seconds without a run (default 900). Runs in progress go on |
+| `shards daemon stop` | Stop the background service (`shardsd daemon`) that `shards run` starts on its own. It keeps `SHARDS_POOL` microVMs ready for each image you run (default 2), and exits after `SHARDS_DAEMON_IDLE` seconds without a run (default 900). Runs in progress go on |
 | `shards guest use --kernel FILE --init FILE` | Choose the kernel and shards-init that `shards run` boots. With them chosen, the first run of an image saves a copy of its booted microVM, and later runs start from that copy. `shards guest` shows the choice |
 | `shards vm run --kernel FILE [options]` | Boot a new machine |
 | `shards vm restore DIR [--hold]` | Start a copy of the machine saved in `DIR`. `--hold` preloads it and waits for a line on stdin |
@@ -223,10 +226,10 @@ Details are in [docs/benchmarks.md](docs/benchmarks.md).
 | Restore, in a new process | 794 µs | 1.7 ms |
 | Cold boot, to PID 1 | 21.2 ms | 22.2 ms |
 
-Running a command in an image you have run before takes **5.1 ms** at p50 and 5.6 ms at
-p99, start to exit (`shards run IMAGE exit 0`), where a boot takes 34.8 ms. That is 300
-runs over 10 saved copies, on a Mac busy with other VMs. Most of it is starting the
-`shards` process itself, which a smaller client for `shards run` will cut.
+Running a command in an image you have run before takes **3.4 ms** at p50 and 3.9 ms at
+p99, start to exit (`shards run IMAGE exit 0`), where a boot takes 33.5 ms. That is 300
+runs over 10 saved copies, on a Mac running other VMs. About a third of it is starting
+the `shards` process, and another third is the command itself, inside the microVM.
 
 Linux itself takes 18.6 ms of a cold boot. That is why shards restores snapshots, and why a
 leaner kernel is coming.

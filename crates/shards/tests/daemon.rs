@@ -19,7 +19,9 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards_env, served, shards};
+use common::{
+    TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards_env, served, shards, shardsd,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -220,7 +222,7 @@ fn a_dead_daemons_waiting_vms_end() {
 }
 
 /// A client from another build replaces the daemon, and its run is served. Another file
-/// is another build: the daemon knows its binary by its file's identity.
+/// is another build: the daemon knows `shardsd` by its file's identity.
 #[test]
 fn a_rebuilt_binary_replaces_the_daemon() {
     if cannot_run_vms() || cannot_snapshot() {
@@ -232,6 +234,7 @@ fn a_rebuilt_binary_replaces_the_daemon() {
     let bin = TempDir::new("daemon-rebuilt-bin");
     let other = bin.join("shards");
     std::fs::copy(shards(), &other).unwrap();
+    std::fs::copy(shardsd(), bin.join("shardsd")).unwrap();
     let out = Command::new(&other)
         .args(["run", "--pull", "never", &image, "exit", "0"])
         .env("SHARDS_HOME", &*home)

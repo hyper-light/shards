@@ -31,10 +31,10 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 
 ## Commands and gotchas
 
-- One binary, `shards`, with subcommands. Today: `shards vm run --kernel … [--init …] [--disk PATH[:ro]]… [--vsock PATH] [--snapshot-dir DIR]` and `shards vm restore DIR [--hold] [--vsock PATH]`. With `--rootfs IMAGE` (and `--init` = shards-init), `vm run … -- CMD` runs a command in an image as `docker run` does, and `--snapshot-dir` saves a template that `vm restore DIR -- CMD` runs commands from. `shards pull` and `shards run IMAGE` work as Docker's do; after `shards guest use --kernel … --init …`, repeated runs of an image restore its template (D25).
-- `shards run` is a client of a per-`SHARDS_HOME` daemon that the first run starts and that serves runs from pools of warm VMs (D26). `shards daemon stop` ends it; a daemon of another build steps aside for the client that finds it. Its log is `daemon.log` in the home.
+- Two binaries. `shards` is the command: it links only std and `shards_ipc`, serves `run` and `daemon stop` itself, and execs `shardsd` (found beside it) for everything else. `shardsd` runs microVMs; on macOS it is the one that needs the hypervisor entitlement. Subcommands today: `shards vm run --kernel … [--init …] [--disk PATH[:ro]]… [--vsock PATH] [--snapshot-dir DIR]` and `shards vm restore DIR [--hold] [--vsock PATH]`. With `--rootfs IMAGE` (and `--init` = shards-init), `vm run … -- CMD` runs a command in an image as `docker run` does, and `--snapshot-dir` saves a template that `vm restore DIR -- CMD` runs commands from. `shards pull` and `shards run IMAGE` work as Docker's do; after `shards guest use --kernel … --init …`, repeated runs of an image restore its template (D25).
+- `shards run` is a client of a per-`SHARDS_HOME` daemon that the first run starts and that serves runs from pools of warm VMs (D26). `shards daemon stop` ends it; a daemon of another build steps aside for the client that finds it. Its log is `daemon.log` in the home, and its socket `daemon.sock`, which processes reach relative to the home as their working directory.
 - `cargo test --workspace --release` runs unit and E2E tests. E2E downloads a pinned kernel into `target/artifacts`.
-  - On macOS, `scripts/hvf-run` (the cargo runner) ad-hoc signs each binary with `resources/hvf.entitlements`. Unsigned binaries fail with `HV_DENIED`.
+  - On macOS, `scripts/hvf-run` (the cargo runner) ad-hoc signs each binary with `resources/hvf.entitlements`. Unsigned binaries fail with `HV_DENIED`. E2E tests run the copies `common::shards()` and `common::shardsd()` place side by side in `target/e2e/`.
 - Guest binaries are static musl, linked by `rust-lld`, so no cross toolchain is needed:
   `cargo build -p shards-init --profile guest --target <arch>-unknown-linux-musl`
   - The guest arch is the host arch.
@@ -51,7 +51,7 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 
 - `docs/design/architecture.md`: decisions D1–Dn with evidence, the start-path budget, and the phased plan.
 - `docs/research/`: literature reviews, plus `platform-measurements.md` for Hypervisor.framework ground truth.
-- `crates/shards`: the CLI, and the real-VM E2E tests.
+- `crates/shards`: `shardsd` (`src/main.rs`), the thin `shards` command (`src/bin/shards`), and the real-VM E2E tests.
 - `crates/vmm`: the VMM library.
 - `crates/image`: layers, EROFS images, OCI documents and the image store.
 - `crates/registry`: pulling from registries. It is the only crate with C (AWS-LC, vendored in `vendor/`, see `vendor/README.md`).

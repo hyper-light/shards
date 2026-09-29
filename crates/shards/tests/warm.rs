@@ -24,7 +24,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use common::{TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, shards, workload_image};
+use common::{TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, shards, shardsd, workload_image};
 use shards_abi::run::Spec;
 use shards_ipc::kind;
 
@@ -81,7 +81,8 @@ impl Warm {
     fn spawn(template: &Path) -> Warm {
         let (daemon, theirs) = UnixStream::pair().unwrap();
         let fd = theirs.as_raw_fd();
-        let mut command = Command::new(shards());
+        // What the daemon runs.
+        let mut command = Command::new(shardsd());
         command
             .args(["vm", "restore"])
             .arg(template)

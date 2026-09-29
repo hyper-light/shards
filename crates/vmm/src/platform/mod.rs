@@ -45,23 +45,6 @@ pub fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()>
     Ok(())
 }
 
-/// Where this user's application data lives: `$XDG_DATA_HOME`, else `~/.local/share`
-/// (XDG Base Directory Specification); `~/Library/Application Support` on macOS (Apple's
-/// File System Programming Guide); `%LOCALAPPDATA%` on Windows (`FOLDERID_LocalAppData`).
-pub fn data_dir() -> Option<std::path::PathBuf> {
-    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
-    if cfg!(windows) {
-        return var("LOCALAPPDATA").map(Into::into);
-    }
-    let home = var("HOME").map(std::path::PathBuf::from);
-    if cfg!(target_os = "macos") {
-        return home.map(|h| h.join("Library").join("Application Support"));
-    }
-    var("XDG_DATA_HOME")
-        .map(Into::into)
-        .or_else(|| home.map(|h| h.join(".local").join("share")))
-}
-
 /// An unbuffered handle to this process's standard output, independent of `std::io::stdout`'s
 /// lock and line buffering.
 pub fn stdout_file() -> io::Result<File> {

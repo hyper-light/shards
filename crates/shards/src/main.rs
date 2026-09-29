@@ -1,10 +1,10 @@
-//! shards: microVMs for agents, designed for home or at scale.
+//! shardsd: the part of shards that runs microVMs: the daemon, the VMM, pulls and the
+//! guest. The `shards` command runs it for every command but `run`, which it serves
+//! through the daemon (src/bin/shards).
 
 use std::io::Write;
 use std::process::ExitCode;
 
-#[cfg(unix)]
-mod client;
 #[cfg(unix)]
 mod daemon;
 mod guest;
@@ -40,7 +40,7 @@ fn main() -> ExitCode {
         }
         Some("guest") => guest::guest(args),
         Some("pull") => pull::pull(args),
-        Some("run") => run::run(args),
+        Some("run") => usage_error("run: the `shards` command runs commands, through the daemon"),
         Some("vm") => match args.next().as_ref().and_then(|c| c.to_str()) {
             Some("run") => vm_run::run(args),
             Some("restore") => vm_run::restore(args),

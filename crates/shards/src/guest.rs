@@ -34,7 +34,7 @@ pub fn guest(args: impl Iterator<Item = OsString>) -> ExitCode {
     let result = (|| -> Result<(), String> {
         match args.next().transpose()?.as_deref() {
             None => {
-                let home = crate::pull::home()?;
+                let home = shards_ipc::home()?;
                 match current(&home)? {
                     Some(g) => {
                         let _ = writeln!(
@@ -71,7 +71,7 @@ pub fn guest(args: impl Iterator<Item = OsString>) -> ExitCode {
                     kernel.ok_or("--kernel is required")?,
                     init.ok_or("--init is required")?,
                 );
-                let g = record(&crate::pull::home()?, &kernel, &init)?;
+                let g = record(&shards_ipc::home()?, &kernel, &init)?;
                 let _ = writeln!(
                     io::stdout(),
                     "kernel {}\ninit   {}",

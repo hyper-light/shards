@@ -526,6 +526,7 @@ Ranked by how much of every run's ≤5 ms path and `docker run` parity each one 
      - The auto-start code must stay in the thin client without pulling in the VMM's frameworks: 3.5 ms against 1.4 ms per launch [PM M23].
 
 6. **One socket directory per user and per build, verified private, checked by peer credentials, and self-fencing.**
+   - *As built (D26):* the socket stayed in the home, named relative to it: on macOS the per-user directories cost each new process 0.4–1.3 ms to look up (platform-measurements.md M26). The peer check was adopted.
    - *Where.*
      - Linux: `$XDG_RUNTIME_DIR/shards/<build>/`.
      - Linux without `$XDG_RUNTIME_DIR`: a directory the daemon creates 0700, then verifies (owner, mode, not a symlink), with a warning, as the spec asks [XDG basedir 0.81, §3].

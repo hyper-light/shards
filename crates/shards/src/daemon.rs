@@ -59,12 +59,6 @@ pub fn daemon(args: impl Iterator<Item = OsString>) -> ExitCode {
     let result = match (args.len(), arg(0)) {
         (0, _) => serve(false),
         (1, Some("--detached")) => serve(true),
-        (1, Some("stop")) => {
-            return match crate::pull::home() {
-                Ok(home) => crate::client::stop(&home),
-                Err(e) => fail(&e),
-            };
-        }
         (1, Some("-h" | "--help")) => {
             let _ = writeln!(io::stdout(), "{USAGE}");
             return ExitCode::SUCCESS;
@@ -95,6 +89,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 struct Ready {
     vm: Arc<shards_ipc::Child>,
     socket: UnixStream,
+    /// The template whose pool it came from.
+    pool: Option<PathBuf>,
 }
 
 /// The warm VMs of one template.
@@ -130,7 +126,8 @@ struct Daemon {
     home: PathBuf,
     exe: PathBuf,
     identity: Identity,
-    socket: PathBuf,
+    /// The socket, relative to the working directory, the home.
+    socket: &'static Path,
     target: usize,
     idle: Duration,
     state: Mutex<State>,
@@ -161,27 +158,28 @@ impl Drop for Busy<'_> {
 }
 
 fn serve(detached: bool) -> Result<(), String> {
-    let home = crate::pull::home()?;
+    let home = shards_ipc::home()?;
     shards_vmm::platform::create_private_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
     if detached {
-        log_to(&crate::client::log(&home))?;
+        log_to(&shards_ipc::log(&home))?;
     }
-    let socket = crate::client::socket(&home)?;
-    let Some(home_lock) = take_lock(&home, &socket)? else {
+    // The socket's name is relative to the home (shards_ipc::SOCKET). The home is the
+    // daemon's own, so this holds no client's directory busy.
+    std::env::set_current_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
+    let socket = Path::new(shards_ipc::SOCKET);
+    let Some(home_lock) = take_lock(&home, socket)? else {
         // Another daemon serves this home.
         return Ok(());
     };
     let pid_file = home.join("daemon.pid");
     std::fs::write(&pid_file, format!("{}\n", std::process::id()))
         .map_err(|e| format!("{}: {e}", pid_file.display()))?;
-    // Holding no client's directory busy.
-    std::env::set_current_dir("/").map_err(|e| format!("/: {e}"))?;
     // Its daemon is gone, since this one holds the lock.
-    let _ = std::fs::remove_file(&socket);
-    let listener = UnixListener::bind(&socket).map_err(|e| format!("{}: {e}", socket.display()))?;
+    let _ = std::fs::remove_file(socket);
+    let listener = UnixListener::bind(socket).map_err(|e| format!("{}: {e}", home.join(socket).display()))?;
     listener
         .set_nonblocking(true)
-        .map_err(|e| format!("{}: {e}", socket.display()))?;
+        .map_err(|e| format!("{}: {e}", home.join(socket).display()))?;
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     let identity = Identity::of(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
     let setting = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
@@ -205,7 +203,7 @@ fn serve(detached: bool) -> Result<(), String> {
     log(format!(
         "serving {} on {}",
         daemon.home.display(),
-        daemon.socket.display()
+        daemon.home.join(daemon.socket).display()
     ));
     daemon.listen(listener);
     Ok(())
@@ -262,7 +260,7 @@ impl Daemon {
     /// Removes the socket, once: no client arrives from here on.
     fn close(&self) {
         if !self.closed.swap(true, Ordering::SeqCst) {
-            let _ = std::fs::remove_file(&self.socket);
+            let _ = std::fs::remove_file(self.socket);
         }
     }
 
@@ -277,17 +275,17 @@ impl Daemon {
                 log(format!("{} is gone", self.home.display()));
                 self.stopping.store(true, Ordering::SeqCst);
             }
-            // A socket in a temporary directory can be swept away while the daemon runs.
-            if !closing && std::fs::symlink_metadata(&self.socket).is_err() {
-                match UnixListener::bind(&self.socket).and_then(|l| l.set_nonblocking(true).map(|()| l)) {
+            // Someone may remove the socket while the daemon runs.
+            if !closing && std::fs::symlink_metadata(self.socket).is_err() {
+                match UnixListener::bind(self.socket).and_then(|l| l.set_nonblocking(true).map(|()| l)) {
                     Ok(l) => {
                         log(format!(
                             "{} was removed; listening there again",
-                            self.socket.display()
+                            self.home.join(self.socket).display()
                         ));
                         listener = l;
                     }
-                    Err(e) => log(format!("{}: {e}", self.socket.display())),
+                    Err(e) => log(format!("{}: {e}", self.home.join(self.socket).display())),
                 }
             }
             loop {
@@ -434,7 +432,12 @@ impl Daemon {
                 Ok(ready) => ready,
                 Err(e) => return refuse(&e),
             };
-            match hand_over(&ready.socket, &payload, &fds) {
+            let handed = hand_over(&ready.socket, &payload, &fds);
+            // Only now, so that starting its successor delays no run.
+            if let Some(dir) = &ready.pool {
+                self.refill(&mut lock(&self.state), dir);
+            }
+            match handed {
                 // The warm VM serves the client from here, and ours close.
                 Ok(()) => return,
                 Err(e) => {
@@ -493,8 +496,8 @@ impl Daemon {
                 state.pools.remove(dir);
                 return Err(Claim::Broken);
             }
+            // Its pool refills once it has its run (handle).
             if let Some(ready) = pool.ready.pop_front() {
-                self.refill(&mut state, dir);
                 return Ok(ready);
             }
             self.refill(&mut state, dir);
@@ -621,6 +624,7 @@ impl Daemon {
                         pool.ready.push_back(Ready {
                             vm: child.clone(),
                             socket,
+                            pool: Some(dir.clone()),
                         });
                     }
                     Err(e) => {
@@ -636,6 +640,7 @@ impl Daemon {
                     let _ = tx.send(Ok(Ready {
                         vm: child.clone(),
                         socket,
+                        pool: None,
                     }));
                 }
                 Err(e) => {

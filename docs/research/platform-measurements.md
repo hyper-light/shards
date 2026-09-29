@@ -600,6 +600,66 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   `POSIX_SPAWN_CLOEXEC_DEFAULT`. It never changes a received descriptor's status flags.
   The daemon admits only clients of its own user, by `getpeereid` or `SO_PEERCRED`.
 
+### M26. A pooled run's request path, and a client that links nothing
+
+- **Question.** With restores off the request path (D26), what remains of a pooled
+  `shards run`, and what makes its tail? And what does a client that links only the
+  standard library save (M23)?
+- **Method.**
+  - *Phases.* Temporary timestamps in the client, the daemon and the warm VM: wall
+    clock across processes, the workload thread's CPU time, and the process's page
+    faults and context switches. 400 runs of `shards run IMAGE exit 0` with 30 ms between
+    them, correlated by time. The home's path was too long for a socket address.
+  - *`confstr`.* A C probe timed the first and the second
+    `confstr(_CS_DARWIN_USER_CACHE_DIR)` in each of 5 new processes.
+  - *QoS.* `docs/research/measurements/pool-qos/ab.py`: two homes with a daemon each.
+    In arm B the client, the daemon's threads, the warm VM's workload thread and its
+    virtio-vsock worker run at user-interactive QoS (`qos.patch`). The arms alternate,
+    n = 300 each, first under the host's own load, then with all 18 CPUs busy (`yes`).
+  - *End to end.* The image benchmark (benchmarks.md), n = 300 over 10 templates.
+  - 2026-09-29, this machine, with other VMs and builds running.
+- **Results.**
+  - A pooled run at the median (µs): the client's launch (M23); its connection reaching
+    the daemon's handler, 1 200 when the socket's path needed `confstr`; the daemon's
+    receive 7, preparation 170, claim 200–240 and handover 40; in the warm VM, 70 from
+    `TAKEN` to the command sent, 1 100 in the guest, and 80 from its status to `EXIT`.
+  - The claim included starting the pool's next VM (`posix_spawn`), 200–600 µs of it.
+  - In the slowest runs, one of the warm VM's two host-side stretches took 3–12 ms for
+    work that takes 70 µs. A repeat at a lower host load had no such stall: its slowest
+    run took 1.7 ms, all of it on CPU.
+  - `confstr(_CS_DARWIN_USER_CACHE_DIR)`: 395–1 264 µs on a process's first call, then
+    2–5 µs. macOS answers the first call through another process (inference).
+  - QoS (ms):
+
+| Load | QoS | n | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|
+| the host's own (5.3) | default | 300 | 3.56 | 5.30 | 6.19 | 6.52 |
+| | user-interactive | 300 | 3.56 | 5.25 | 6.12 | 7.37 |
+| every CPU busy | default | 300 | 7.89 | 19.51 | 87.23 | 131.43 |
+| | user-interactive | 300 | 7.86 | 20.08 | 108.71 | 114.81 |
+
+  - End to end (`run_template`, ms; loads are the 1-minute average):
+
+| Client | Load | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|
+| `shards`, VMM frameworks linked | 6.0 | 5.15 | 5.42 | 5.63 | 5.77 |
+| thin | 4.6–6.0 (3 runs) | 3.85–3.90 | 4.79–5.24 | 7.82–12.46 | 8.88–13.58 |
+| thin, socket in the home, refill after handover | 2.5–3.2 (2 runs) | 3.37–3.38 | 3.56–3.68 | 3.75–3.88 | 3.98–4.22 |
+| the same, every CPU busy | 17.2 | 4.84 | 16.57 | 31.50 | 46.62 |
+
+  - The thin client's peak RSS is 1.6 MiB, against 6.3 MiB.
+- **Consequence.** D26:
+  - `shards` is a thin binary that runs `shardsd` for everything but `run` and
+    `daemon stop`.
+  - The daemon's socket is `daemon.sock`, named relative to the home, which each process
+    that uses it makes its working directory.
+  - A pool refills after its VM has taken its run.
+  - The service threads keep the default QoS, as in M22. With every CPU busy, the tail
+    is the CPU queue itself, which QoS does not shorten.
+  - A run's remaining median is the client's launch and the guest's command, about
+    1.1 ms each. The guest's command is the next target: a warm VM could fault in its
+    working set while it waits.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

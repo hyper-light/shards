@@ -94,7 +94,7 @@ mod compare {
 
         let command = |vmm: Vmm| match vmm {
             Vmm::Shards => {
-                let mut c = Command::new(common::shards());
+                let mut c = Command::new(common::shardsd());
                 c.args(["vm", "run", "--kernel"])
                     .arg(kernel)
                     .arg("--initrd")

@@ -6,6 +6,17 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+autobins = false
+
+# The command, which links only the standard library and shards-ipc, so it starts fast.
+[[bin]]
+name = "shards"
+path = "src/bin/shards/main.rs"
+
+# Everything that runs microVMs: the daemon, the VMM, pulls and the guest.
+[[bin]]
+name = "shardsd"
+path = "src/main.rs"
 
 [lints]
 workspace = true

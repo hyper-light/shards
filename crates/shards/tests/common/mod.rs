@@ -172,43 +172,69 @@ pub fn test_guest() -> &'static Path {
     T.get_or_init(|| guest_binary("shards-testguest"))
 }
 
-/// A private copy of the `shards` binary; on macOS, ad-hoc signed with the hypervisor
-/// entitlement, without which Hypervisor.framework refuses the process.
-/// The shards binary, signed on macOS with the hypervisor entitlement. The signed copy is
-/// named by the built binary's SHA-256, so the test processes of one build share it: macOS
-/// assesses each new signed binary when it first runs, which would otherwise delay every
-/// process's first VM and load the host while tests and benchmarks run.
+/// The `shards` command, beside the `shardsd` it runs (src/bin/shards). Copies of this
+/// build's two binaries share a directory named by their SHA-256, so the test processes of
+/// one build share them; on macOS `shardsd` is signed with the hypervisor entitlement,
+/// without which Hypervisor.framework refuses the process. macOS assesses each new signed
+/// binary when it first runs, which would otherwise delay every process's first VM and
+/// load the host while tests and benchmarks run.
 pub fn shards() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
+    V.get_or_init(|| binaries().join(format!("shards{}", std::env::consts::EXE_SUFFIX)))
+}
+
+/// The `shardsd` beside [`shards`], for what runs microVMs without the command in front.
+pub fn shardsd() -> &'static Path {
+    static V: OnceLock<PathBuf> = OnceLock::new();
+    V.get_or_init(|| binaries().join(format!("shardsd{}", std::env::consts::EXE_SUFFIX)))
+}
+
+/// The directory holding this build's `shards` and `shardsd`.
+fn binaries() -> &'static Path {
+    static V: OnceLock<PathBuf> = OnceLock::new();
     V.get_or_init(|| {
-        let built = Path::new(env!("CARGO_BIN_EXE_shards"));
-        let digest = sha256(built);
+        let built = [
+            ("shards", Path::new(env!("CARGO_BIN_EXE_shards"))),
+            ("shardsd", Path::new(env!("CARGO_BIN_EXE_shardsd"))),
+        ];
+        let digest: String = {
+            use sha2::Digest;
+            let mut hash = sha2::Sha256::new();
+            for (_, path) in &built {
+                hash.update(std::fs::read(path).unwrap());
+            }
+            hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+        };
         let name = format!("shards-{}", digest.get(..16).unwrap());
-        let dir = workspace().join("target/e2e");
-        let signed = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
-        if signed.exists() {
-            return signed;
+        let root = workspace().join("target/e2e");
+        let dir = root.join(&name);
+        if dir.exists() {
+            return dir;
         }
-        std::fs::create_dir_all(&dir).unwrap();
-        let temp = dir.join(format!("{name}.{}.tmp", std::process::id()));
-        std::fs::copy(built, &temp).unwrap();
-        if cfg!(target_os = "macos") {
-            let st = Command::new("codesign")
-                .arg("--entitlements")
-                .arg(workspace().join("resources/hvf.entitlements"))
-                .args(["--force", "-s", "-"])
-                .arg(&temp)
-                .stderr(Stdio::null())
-                .status()
-                .unwrap();
-            assert!(st.success(), "codesign");
+        let temp = root.join(format!("{name}.{}.tmp", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+        for (bin, path) in built {
+            let copy = temp.join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
+            std::fs::copy(path, &copy).unwrap();
+            if cfg!(target_os = "macos") && bin == "shardsd" {
+                let st = Command::new("codesign")
+                    .arg("--entitlements")
+                    .arg(workspace().join("resources/hvf.entitlements"))
+                    .args(["--force", "-s", "-"])
+                    .arg(&copy)
+                    .stderr(Stdio::null())
+                    .status()
+                    .unwrap();
+                assert!(st.success(), "codesign");
+            }
         }
-        // Another process may have signed the same build meanwhile: either copy serves.
-        if std::fs::rename(&temp, &signed).is_err() {
-            assert!(signed.exists(), "{} could not be placed", signed.display());
-            let _ = std::fs::remove_file(&temp);
+        // Another process may have placed the same build meanwhile: either copy serves.
+        if std::fs::rename(&temp, &dir).is_err() {
+            assert!(dir.exists(), "{} could not be placed", dir.display());
+            let _ = std::fs::remove_dir_all(&temp);
         }
-        signed
+        dir
     })
 }
 
