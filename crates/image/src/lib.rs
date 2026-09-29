@@ -10,6 +10,7 @@ pub mod layer;
 pub mod oci;
 pub mod platform;
 pub mod reference;
+pub mod store;
 pub mod tar;
 
 /// Why an image could not be read or built.

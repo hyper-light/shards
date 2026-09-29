@@ -238,6 +238,57 @@ workloads it is not for. Built with the in-VM runtime (phase 4).
   (`mntns_install` refuses it). So attaching runs in a dedicated thread that has
   unshared `CLONE_FS`.
 
+### Image store (D18)
+
+The store keeps what a pull fetches and what guests boot from. The code is
+`crates/image/src/store.rs`.
+
+- **Blobs as served.** Each blob is kept under its digest, as the registry served it,
+  compressed layers included. A later push or save then reproduces the registry's digests,
+  as with containerd's content store and the OCI image layout
+  ([registry-pull](../research/registry-pull.md) Q1).
+- **Nothing unverified.** A blob is hashed as it arrives under `ingest/`.
+  - It is committed only when exactly its descriptor's size arrived and it hashes to its
+    digest. containerd v2.4.1 checks in that order (`plugins/content/local/writer.go`;
+    registry-pull §5, row 4).
+  - Commit is fsync, then rename, so a crash never leaves a torn file under a verified
+    name. A name that exists already holds the same bytes, so it is kept; it may be
+    mapped by a running VM.
+- **Layers unpack as containerd unpacks them** (registry-pull §5, rows 6 and "Layer media
+  types"):
+  - **Media type.** It decides whether compression is sniffed (`DiffCompression`,
+    `core/images/mediatypes.go`).
+    - Docker's layer types, and OCI's with a last suffix of `gzip` or `zstd`, are
+      sniffed. OCI's plain tar is read as it is.
+    - Anything else is refused, and so are encrypted layers.
+  - **Sniffing** reads the first 8 bytes, as `DetectCompression` does
+    (`pkg/archive/compression/compression.go`): gzip, a zstd frame, a zstd skippable
+    frame with its whole header, or none.
+  - **gzip** streams may have many members (flate2). flate2 refuses reserved header
+    flags, as RFC 1952 §2.3.1.2 requires. Go's reader ignores them.
+  - **zstd** streams may have many frames, and skippable ones (ruzstd). Checksums are
+    verified, and windows are capped at 512 MiB, as klauspost/compress v1.20.0 decodes
+    for containerd.
+    - klauspost lets single-segment frames reach 64 GiB and buffers them whole. We cap
+      those at 512 MiB too.
+  - The whole decompressed stream must hash to the layer's DiffID, including bytes after
+    the tar's end (`core/diff/apply/apply.go` reads those too). It must also stay under a
+    size cap.
+- **Root filesystems by ChainID.** An image's EROFS (D15) is built once and kept by
+  ChainID, so images with the same layer stack share one.
+  - The unpacked tars exist only while it is built.
+  - Its directory is versioned, and the version is bumped whenever the EROFS writer's
+    output changes.
+- **Private.** Blobs can come from private registries, so the store's root is private to
+  its user, as containerd makes its root 0700 (`cmd/containerd/server/server.go`). The
+  store opens a root its caller has made.
+- **Tests** cover:
+  - blobs committed only on a match;
+  - two-member gzip, and plain tar labelled gzip;
+  - two zstd frames around a skippable one, and a bad zstd checksum;
+  - the sniffing edges and every media-type rule;
+  - one rootfs build per chain.
+
 ## 3. Components
 
 ```

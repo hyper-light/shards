@@ -17,6 +17,13 @@ pub mod media {
     /// Schema 1, which Docker itself no longer pulls.
     pub const DOCKER_SCHEMA1: &str = "application/vnd.docker.distribution.manifest.v1+json";
     pub const DOCKER_SCHEMA1_SIGNED: &str = "application/vnd.docker.distribution.manifest.v1+prettyjws";
+    pub const OCI_LAYER: &str = "application/vnd.oci.image.layer.v1.tar";
+    pub const OCI_LAYER_NONDISTRIBUTABLE: &str = "application/vnd.oci.image.layer.nondistributable.v1.tar";
+    pub const DOCKER_LAYER: &str = "application/vnd.docker.image.rootfs.diff.tar";
+    pub const DOCKER_LAYER_GZIP: &str = "application/vnd.docker.image.rootfs.diff.tar.gzip";
+    pub const DOCKER_LAYER_ZSTD: &str = "application/vnd.docker.image.rootfs.diff.tar.zstd";
+    pub const DOCKER_LAYER_FOREIGN: &str = "application/vnd.docker.image.rootfs.foreign.diff.tar";
+    pub const DOCKER_LAYER_FOREIGN_GZIP: &str = "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip";
 }
 
 /// The largest manifest or index read: containerd's `MaxManifestSize`.
@@ -185,6 +192,51 @@ pub fn parse_config(bytes: &[u8]) -> Result<ImageConfig, Error> {
     Ok(config)
 }
 
+/// How a layer's blob is read to get its tar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerCompression {
+    /// As it is.
+    None,
+    /// As gzip, zstd or plain tar, whichever its first bytes say.
+    Sniffed,
+}
+
+/// How a layer of `media_type` is read, as containerd v2.4.1 decides (`DiffCompression`
+/// in `core/images/mediatypes.go`, `compressedHandler` in `core/diff/stream.go`):
+/// - Docker's layer types are sniffed, since writers mislabel them. With a `+` suffix
+///   they are wrapped, and read as they are.
+/// - OCI's layer types are sniffed when their last suffix, sorted, is `gzip` or `zstd`,
+///   and read as they are otherwise.
+/// - Anything else is not a layer. Encrypted layers are refused too: containerd needs
+///   ocicrypt for them, and we cannot decrypt them.
+pub fn layer_compression(media_type: &str) -> Result<LayerCompression, Error> {
+    let (base, ext) = match media_type.split_once('+') {
+        Some((base, ext)) => (base, Some(ext)),
+        None => (media_type, None),
+    };
+    // containerd's parseMediaTypes: at most 50 suffixes, sorted.
+    let suffixes: Vec<&str> = ext.map(|e| e.splitn(50, '+').collect()).unwrap_or_default();
+    if suffixes.contains(&"encrypted") {
+        return bad(format!("{media_type}: encrypted layers are not supported"));
+    }
+    match base {
+        media::DOCKER_LAYER
+        | media::DOCKER_LAYER_GZIP
+        | media::DOCKER_LAYER_ZSTD
+        | media::DOCKER_LAYER_FOREIGN
+        | media::DOCKER_LAYER_FOREIGN_GZIP => Ok(if suffixes.is_empty() {
+            LayerCompression::Sniffed
+        } else {
+            LayerCompression::None
+        }),
+        media::OCI_LAYER | media::OCI_LAYER_NONDISTRIBUTABLE => Ok(match suffixes.iter().max() {
+            Some(&("gzip" | "zstd")) => LayerCompression::Sniffed,
+            _ => LayerCompression::None,
+        }),
+        _ => bad(format!("{media_type}: not a layer")),
+    }
+}
+
 /// A layer stack's ChainID (image-spec config.md): the first DiffID, then the SHA-256 of
 /// the previous ChainID and the next DiffID, as text, joined by a space.
 pub fn chain_id(diff_ids: &[Digest]) -> Option<Digest> {
@@ -270,6 +322,38 @@ mod tests {
         assert_eq!(run.cmd, Some(vec!["-c".to_string(), "true".to_string()]));
         assert_eq!(run.working_dir.as_deref(), Some("/srv"));
         assert!(parse_config(json.replace("\"layers\"", "\"other\"").as_bytes()).is_err());
+    }
+
+    #[test]
+    fn layers_are_read_as_containerd_reads_their_media_types() {
+        use LayerCompression::{None as Raw, Sniffed};
+        for (media_type, want) in [
+            ("application/vnd.oci.image.layer.v1.tar", Some(Raw)),
+            ("application/vnd.oci.image.layer.v1.tar+gzip", Some(Sniffed)),
+            ("application/vnd.oci.image.layer.v1.tar+zstd", Some(Sniffed)),
+            ("application/vnd.oci.image.layer.v1.tar+other", Some(Raw)),
+            ("application/vnd.oci.image.layer.v1.tar+gzip+zz", Some(Raw)),
+            (
+                "application/vnd.oci.image.layer.nondistributable.v1.tar+gzip",
+                Some(Sniffed),
+            ),
+            ("application/vnd.docker.image.rootfs.diff.tar", Some(Sniffed)),
+            ("application/vnd.docker.image.rootfs.diff.tar.gzip", Some(Sniffed)),
+            ("application/vnd.docker.image.rootfs.diff.tar.zstd", Some(Sniffed)),
+            (
+                "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip",
+                Some(Sniffed),
+            ),
+            (
+                "application/vnd.docker.image.rootfs.diff.tar.gzip+wrapped",
+                Some(Raw),
+            ),
+            ("application/vnd.oci.image.layer.v1.tar+gzip+encrypted", None),
+            ("application/vnd.oci.image.config.v1+json", None),
+            ("", None),
+        ] {
+            assert_eq!(layer_compression(media_type).ok(), want, "{media_type}");
+        }
     }
 
     /// Known answers, computed with `printf '%s %s' ... | shasum -a 256`.
