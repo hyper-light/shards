@@ -323,7 +323,17 @@ mod tests {
         let mut trailing = good.clone();
         trailing.push(0);
         assert!(decode_working_set(&trailing, 16384).is_err());
+    }
 
+    /// Where snapshots are written (unix): through the directory held open, wherever the
+    /// directory has gone.
+    #[cfg(unix)]
+    #[test]
+    fn working_sets_land_where_their_snapshot_went() {
+        let pages = [Touch {
+            gpa: 0x8000_4000,
+            written: true,
+        }];
         let dir = std::env::temp_dir().join(format!("shards-wset-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(read_working_set(&dir, 16384).unwrap(), None, "none saved");
