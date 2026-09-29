@@ -222,6 +222,10 @@ Details are in [docs/benchmarks.md](docs/benchmarks.md).
 | Restore, in a new process | 794 µs | 1.7 ms |
 | Cold boot, to PID 1 | 21.2 ms | 22.2 ms |
 
+Running a command in an image you have run before takes **7.5 ms** at p50, start to exit
+(`shards run IMAGE exit 0`), where a boot takes 34.2 ms. That is 300 runs over 10 saved
+copies, on a Mac busy with other VMs.
+
 Linux itself takes 18.6 ms of a cold boot. That is why shards restores snapshots, and why a
 leaner kernel is coming.
 

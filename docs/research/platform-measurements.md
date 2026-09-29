@@ -394,6 +394,50 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   RX. `rx_work` handles RX strictly in order, so the resets land before anything newer.
   The event queue is never used.
 
+### M21. Kernel work a template hands to every copy
+
+- **Question.** In most templates, a restored guest lost about one tick (10 ms at
+  `CONFIG_HZ=100`) before its command ran. In the rest it did not, and each template
+  always behaved the same way. Where did the time go?
+- **Method.**
+  - Markers in a diagnostic shards-init placed the stall in the first vsock connect,
+    after the host accepted the connection: 9.1–9.2 ms in slow templates, 50–330 µs in
+    the rest.
+  - A diagnostic VMM kicked the vCPU during and after the stall and read its PC. Every
+    sample was kernel code: `mpihelp_submul_1`, `mpihelp_addmul_1`, `mpihelp_divrem`,
+    the multi-precision arithmetic under RSA. PCs were resolved against the guest's
+    `/proc/kallsyms`; the kernel has no KASLR.
+  - In a restored copy of alpine, `ps` showed `cryptomgr_test` running, and
+    `/proc/crypto` listed an algorithm not yet tested.
+  - Harness: `docs/research/measurements/template-quiescence/run.sh`. Templates saved by
+    two shards-init builds alternate, and each is restored twice.
+  - 2026-09-29, this machine, with other VMs running.
+- **Cause.** After boot, the kernel runs its crypto self-tests in `cryptomgr_test`
+  threads (crypto/algapi.c `crypto_start_tests`; `CONFIG_CRYPTO_SELFTESTS=y`). They were
+  still running when init saved the template, so every copy replayed the rest. The
+  kernel is `PREEMPT_NONE`, so a copy's one vCPU stayed with that thread until a tick.
+- **Results** (12 rounds, 24 restores per build):
+
+| Templates saved by shards-init that | release → VM stopped p50 | p90 | max | restores with a step > 5 ms |
+|---|---|---|---|---|
+| snapshots once the image is mounted | 10 636 µs | 12 170 µs | 12 522 µs | 14 of 24 |
+| also waits for the self-tests | 2 981 µs | 4 233 µs | 4 563 µs | 0 of 24 |
+
+  - Waiting costs about 20 ms, once per template: the tests finished 39–40 ms into boot
+    in each of 8 saves, about 20 ms after init mounted the image.
+  - Restored copies of templates that waited had no `cryptomgr_test` running and no
+    untested algorithm.
+  - The warm path (`vm restore --hold`) had the same stall: 9.3 ms after the release in
+    most templates (benchmarks.md, "Run"). With the new init, `warm_resume` is 163 µs
+    at p50 and 192 µs at most.
+  - A template's first restore is slower than later ones: its spawn took 1.9–2.4 ms
+    instead of 0.8–1.0 ms. It is the first process to map the just-written memory. The
+    image benchmark leaves it out.
+- **Consequence.** D14, D16 and D25. shards-init saves a template only once
+  `/proc/crypto` lists no larval and no untested algorithm, waiting at most 2 s. The
+  self-tests stay on: turning them off (`cryptomgr.notests`) would drop the kernel's check
+  of its own crypto.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

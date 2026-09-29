@@ -228,13 +228,17 @@ restore of a template repeats its guest's state:
   template stalled there (0 of 6). shards now boots images that way; Docker's
   containers never get automatic groups either, as they live in cgroups
   (`task_wants_autogroup`, kernel/sched/autogroup.c at v6.18).
-- **Resume, moved off the request path.** In most templates, the release is followed by
-  about 9.3 ms before init's next instruction. An early bisect blamed the signal
-  forwarder, but over 8 templates the stall came and went without it, and no signal
-  arrived. Letting the template go idle for 50 ms before its snapshot removed the stall
-  (0 of 8) but slowed spawns (2.6 ms p50). Warm VMs now resume before their request
-  instead, so the stall costs the warm pool, not the request. Its kernel mechanism is
-  not identified.
+- **Resume, fixed.** In most templates, the release was followed by about 9.3 ms before
+  init's next instruction. Warm VMs resumed before their request, so the stall cost the
+  warm pool, not the request.
+  - An early bisect blamed the signal forwarder, but over 8 templates the stall came and
+    went without it.
+  - Letting the template idle for 50 ms before its snapshot removed the stall (0 of 8).
+  - The cause: the kernel's crypto self-tests were still running when the template was
+    saved. Every copy replayed the rest, and this `PREEMPT_NONE` kernel gave them the CPU
+    until a tick (platform-measurements.md M21).
+  - shards-init now waits for the self-tests before the snapshot. The run after this list
+    has no resume stall.
 - **Marker writes, fixed.** In the first version, shards-init mapped and unmapped
   `/dev/mem` for every marker, and restored guests then stalled twice per run. Mapping
   the control page once removed those stalls.
@@ -243,6 +247,32 @@ restore of a template repeats its guest's state:
   `cold_connect` fell from 9758 to 651 µs (p50, n=10), so the mounts wait for an RCU
   grace period, which a 100 Hz kernel completes on its tick. The p90 stalls remained.
   Tuning the tick rate and RCU for our kernel is still to be measured.
+
+**2026-09-29** · 7966873 plus shards-init waiting for the crypto self-tests (uncommitted) ·
+same host, OS and kernel · n=50 over 5 templates, 1 vCPU, 256 MiB · load 4.65 5.30 7.04
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| **warm_request** | **974 µs** | **1058 µs** | **8001 µs** | **8001 µs** |
+| warm_spawn | 865 µs | 927 µs | 7871 µs | 7871 µs |
+| warm_command | 19 µs | 21 µs | 25 µs | 25 µs |
+| warm_report | 127 µs | 155 µs | 4142 µs | 4142 µs |
+| warm_power_off | 297 µs | 323 µs | 338 µs | 338 µs |
+| warm_resume (before the request) | 163 µs | 179 µs | 192 µs | 192 µs |
+| warm_connect (before the request) | 342 µs | 375 µs | 633 µs | 633 µs |
+| warm_spawn_exit | 6854 µs | 10401 µs | 13918 µs | 13918 µs |
+| warm_peak_rss | 17.1 MiB | 17.1 MiB | 17.2 MiB | 17.2 MiB |
+| cold_spawn_exit | 33159 µs | 35709 µs | 42331 µs | 42331 µs |
+| cold_boot | 15732 µs | 25413 µs | 25976 µs | 25976 µs |
+| cold_connect | 9780 µs | 9824 µs | 9842 µs | 9842 µs |
+| cold_spawn | 138 µs | 274 µs | 419 µs | 419 µs |
+| cold_command | 126 µs | 152 µs | 245 µs | 245 µs |
+| cold_report | 69 µs | 107 µs | 6320 µs | 6320 µs |
+| cold_power_off | 114 µs | 125 µs | 149 µs | 149 µs |
+
+The resume stall is gone: `warm_resume` is 163 µs at p50, where it was 9343 µs. A warm
+VM's whole process takes 6.9 ms, where it took 15.6 ms. One request of 50 still spent
+7.0 ms in spawn and 4.0 ms in report, which is the p99 row.
 
 ## Image (`crates/shards/benches/image.rs`)
 
@@ -291,6 +321,25 @@ the guest: in most templates, the command waits about one guest tick (10 ms at
 `CONFIG_HZ=100`) after the restore. Outside the guest, launching and tearing down the
 process takes about 4 ms at the median and restoring 1.7 ms, both with long tails on this
 busy host.
+
+**2026-09-29, templates saved after the kernel's crypto self-tests** · 7966873 plus
+shards-init waiting for them (uncommitted) · same host, OS and kernel · n=300 over 10
+templates, 1 vCPU, 256 MiB · load 3.79 5.50 7.63
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| run_cold | 34178 µs | 42790 µs | 52938 µs | 59774 µs |
+| **run_template** | **7517 µs** | **19187 µs** | **29838 µs** | **34695 µs** |
+| template_restore | 1723 µs | 7833 µs | 14967 µs | 19452 µs |
+| template_command | 1904 µs | 4544 µs | 6564 µs | 7516 µs |
+| template_process | 3886 µs | 7646 µs | 12122 µs | 15762 µs |
+| run_cold_rss | 61.0 MiB | 61.0 MiB | 61.1 MiB | 61.2 MiB |
+| run_template_rss | 18.5 MiB | 18.5 MiB | 18.5 MiB | 18.6 MiB |
+
+The guest's part fell from 10.8 to 1.9 ms at the median (platform-measurements.md M21),
+and the median templated run from 16.5 to 7.5 ms: 4.5 times faster than a boot. The tail
+is now outside the guest. On this busy host, restoring and launching the process each
+reach about 7.7 ms at p90.
 
 ## Firecracker (`crates/shards/benches/firecracker.rs`)
 

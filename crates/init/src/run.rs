@@ -8,6 +8,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
+use std::time::{Duration, Instant};
 
 use shards_abi::run::{self, Spec, kind};
 use shards_abi::{control, marker};
@@ -25,6 +26,9 @@ const NOT_FOUND: u32 = 127;
 /// reaches the writer.
 const BUFFERED: usize = 256 * 1024;
 const CHUNK: usize = 64 * 1024;
+/// How long a template waits for the kernel's crypto self-tests. One snapshotted while
+/// they run is still correct, only slower to restore.
+const SELFTESTS_WAIT: Duration = Duration::from_secs(2);
 
 /// Why the workload did not run, and the status to report.
 struct Failure {
@@ -45,6 +49,7 @@ fn setup_failed(message: impl Into<String>) -> Failure {
 pub fn main(device: &str, template: bool) -> ! {
     let mounted = mount_root(device);
     if template && mounted.is_ok() {
+        await_crypto_selftests();
         if let Err(e) = crate::linux::control_write(control::SNAPSHOT, control::SNAPSHOT_NOW) {
             let _ = writeln!(io::stderr(), "shards-init: requesting a snapshot: {e}");
             power_off()
@@ -84,6 +89,49 @@ pub fn main(device: &str, template: bool) -> ! {
     let _ = shutdown_and_wait(&conn);
     let _ = crate::linux::control_write(control::MARKER, marker::POWERING_OFF);
     power_off()
+}
+
+/// Waits for the crypto self-tests the kernel starts at boot (crypto/algapi.c,
+/// `crypto_start_tests`), which run in `cryptomgr_test` threads alongside init. Every copy
+/// of a template replays what its guest still had running, and this `PREEMPT_NONE` kernel
+/// gives such a thread the CPU for up to a tick at a time (docs/research/
+/// platform-measurements.md M21).
+fn await_crypto_selftests() {
+    let deadline = Instant::now() + SELFTESTS_WAIT;
+    loop {
+        match crypto_selftests_running() {
+            Ok(false) => return,
+            Ok(true) if Instant::now() >= deadline => {
+                let _ = writeln!(
+                    io::stderr(),
+                    "shards-init: crypto self-tests still running after {SELFTESTS_WAIT:?}; saving the template anyway"
+                );
+                return;
+            }
+            Ok(true) => std::thread::sleep(Duration::from_millis(1)),
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "shards-init: /proc/crypto: {e}");
+                return;
+            }
+        }
+    }
+}
+
+/// Whether /proc/crypto lists an algorithm under test (a larval) or not yet tested
+/// (crypto/proc.c, `c_show`). A kernel without it runs no tests.
+fn crypto_selftests_running() -> io::Result<bool> {
+    let text = match std::fs::read_to_string("/proc/crypto") {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    Ok(text.lines().any(|line| {
+        let mut field = line.splitn(2, ':').map(str::trim);
+        matches!(
+            (field.next(), field.next()),
+            (Some("selftest"), Some("unknown")) | (Some("type"), Some("larval"))
+        )
+    }))
 }
 
 fn c(s: &str) -> Result<CString, Failure> {

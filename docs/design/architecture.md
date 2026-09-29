@@ -63,7 +63,8 @@ performance and resource usage.
 A snapshot is taken at a point the guest chooses. The guest writes the control page's
 `SNAPSHOT` register, and every clone resumes at the instruction after that store. A
 template is thus a guest that has finished initializing and says so; restores never
-re-run that work.
+re-run that work. That includes the kernel's own background work: shards-init waits for
+the crypto self-tests first, since every clone would replay the rest (PM M21).
 
 - **Pause.** The request kicks every vCPU. Each captures its own state on its own thread
   (HVF's owning-thread rule), including redistributor, ICC and PSCI power state, and parks.
@@ -194,14 +195,16 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
   - The run ends with the main process. Everything left is killed, as when a container's
     PID namespace ends.
 - **Warm runs.** `vm run --rootfs IMAGE --snapshot-dir DIR` saves a template: shards-init
-  asks for the snapshot once the image is mounted, before it dials the host. Each
+  asks for the snapshot once the image is mounted and the kernel's crypto self-tests have
+  finished (at most 2 s), before it dials the host. Each
   `vm restore DIR -- COMMAND` resumes a copy that dials in for its own command (D2, D14).
   Copies share the image and nothing they write.
   - With `--hold`, the copy resumes at once, reseeds and connects. Its request is then only
     the command. It is answered in 1.0 ms at p50 and 2.4 ms at p99, over six templates
     (benchmarks.md, "Run").
-  - Guest state differs between templates, and a restored guest can stall for a tick
-    after its release. That now happens before the request.
+  - Before init waited for the self-tests, most templates stalled a restored guest for a
+    tick after its release: it replayed their remaining RSA work, and this kernel is
+    `PREEMPT_NONE` (PM M21). Now `warm_resume` is 163 µs at p50.
 - **Kernel command line:** `noautogroup`, because otherwise most templates stalled a tick
   in the first `setsid(2)` after a restore (benchmarks.md, "Run").
 - **Wall clock.** shards-init sets `CLOCK_REALTIME` to the host's time at boot and after
@@ -543,8 +546,12 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
 - **Where it applies.** Builds that can snapshot (HVF on arm64 today, `vm::SNAPSHOTS`);
   elsewhere every run boots. `--kernel` and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`,
   name files by path, so those runs always boot.
-- **Measured** (docs/benchmarks.md, "Image"): 16.5 ms p50 against 34.2 ms for a boot,
-  over 10 templates. In most templates, a restored run stalls for about a guest tick.
+- **Saved quiescent.** The kernel is still running its crypto self-tests after init
+  mounts the image, for about 20 ms. The template waits for them (D16), or every restored
+  run would replay the rest: most stalled for a tick (PM M21).
+- **Measured** (docs/benchmarks.md, "Image"), over 10 templates on a busy host: 7.5 ms at
+  p50 against 34.2 ms for a boot. It was 16.5 ms before templates waited for the
+  self-tests.
 - **Not yet:** removing templates and guests nothing uses.
 - **Tests** (E2E, a real VM):
   - the first run boots and saves one template;
