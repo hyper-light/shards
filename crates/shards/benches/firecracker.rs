@@ -419,10 +419,13 @@ END { printf "guest n=%d us=%.0f\n", runs, guest; for (r in n) printf "%s n=%d u
         child.wait().unwrap();
         let (out, err) = (out.join().unwrap(), err.join().unwrap());
         if let Ok(at) = beat {
+            let shown = String::from_utf8_lossy(&out);
+            let before = shown.split("..").next().unwrap_or_default();
             println!(
-                "restore-timeline {:?} first beat at +{:.0} us\n{err}",
+                "restore-timeline {:?} first beat at +{:.0} us, after {:?}\n{err}",
                 command.get_program(),
-                at.duration_since(start).as_secs_f64() * 1e6
+                at.duration_since(start).as_secs_f64() * 1e6,
+                before.get(before.len().saturating_sub(300)..).unwrap_or(before)
             );
         }
         let (Ok(beat), Some(overhead_bytes)) = (beat, overhead) else {

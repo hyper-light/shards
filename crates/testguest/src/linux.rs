@@ -466,8 +466,17 @@ fn beat() -> Result<(), String> {
     }
     let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
     let mut beats = 0u64;
+    // Diagnostic (branch restore-diag): the jump each clock makes across a pause.
+    let (mut mono, mut real) = (Instant::now(), std::time::SystemTime::now());
     loop {
         thread::sleep(Duration::from_millis(1));
+        let (m, r) = (Instant::now(), std::time::SystemTime::now());
+        let dm = m.duration_since(mono);
+        if dm > Duration::from_millis(20) {
+            let dr = r.duration_since(real).map_or(-1, |d| d.as_micros() as i64);
+            let _ = writeln!(io::stdout(), "gap mono={}us real={dr}us", dm.as_micros());
+        }
+        (mono, real) = (m, r);
         let mut out = io::stdout().lock();
         let _ = out.write_all(b".").and_then(|()| out.flush());
         beats += 1;
