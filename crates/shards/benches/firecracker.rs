@@ -20,10 +20,11 @@
 //! guide runs it: `--no-api --config-file`, default seccomp filters. Each iteration
 //! alternates which VMM goes first.
 //!
-//! Then restores. Each VMM snapshots the test guest in `beat` mode, which prints a `.`
-//! every millisecond: shards when the guest asks (`shards_snapshot=N`, as init asks for a
-//! template's), Firecracker through its API (`PATCH /vm` Paused, `PUT /snapshot/create`,
-//! Full). Every sample is a fresh VMM process restoring it, as each does it: `shards-vm
+//! Then restores. Each VMM snapshots the test guest in `beat` mode, which waits for the
+//! kernel's crypto self-tests to end, as shards-init does before a template (PM M38),
+//! then prints a `.` every millisecond: shards when the guest asks (`shards_snapshot=N`,
+//! as init asks for a template's), Firecracker through its API (`PATCH /vm` Paused,
+//! `PUT /snapshot/create`, Full). Every sample is a fresh VMM process restoring it, as each does it: `shards-vm
 //! restore DIR`, and `firecracker --api-sock` then `PUT /snapshot/load` with its memory
 //! file mapped (`File`) and `resume_vm`.
 //!

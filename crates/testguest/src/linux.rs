@@ -448,6 +448,10 @@ fn beat() -> Result<(), String> {
         .transpose()
         .map_err(|e| format!("shards_snapshot: {e}"))?;
     let control = snapshot_after.map(|_| ControlPage::map()).transpose()?;
+    // A quiet guest, as shards-init leaves a template: the kernel's crypto self-tests run
+    // in threads after boot, and a snapshot taken before they end hands the rest to every
+    // restore (docs/research/platform-measurements.md M21, M38).
+    await_crypto_selftests()?;
     let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
     let mut beats = 0u64;
     loop {
@@ -460,6 +464,29 @@ fn beat() -> Result<(), String> {
         {
             control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
         }
+    }
+}
+
+/// Waits, for up to 2 s, until /proc/crypto lists no algorithm under test (a larval) or not
+/// yet tested (crypto/proc.c, `c_show`), as shards-init's `await_crypto_selftests` does.
+fn await_crypto_selftests() -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let text = std::fs::read_to_string("/proc/crypto").map_err(|e| format!("/proc/crypto: {e}"))?;
+        let running = text.lines().any(|line| {
+            let mut field = line.splitn(2, ':').map(str::trim);
+            matches!(
+                (field.next(), field.next()),
+                (Some("selftest"), Some("unknown")) | (Some("type"), Some("larval"))
+            )
+        });
+        if !running {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("crypto self-tests still running after 2 s".into());
+        }
+        thread::sleep(Duration::from_millis(1));
     }
 }
 

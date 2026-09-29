@@ -575,3 +575,8 @@ the median, and about as soon at p90 and p99. Each VM process now runs `shards-v
 whose overhead is back to 2.7 MiB from the 3.8 its predecessor, `shardsd`, cost (PM M34).
 `peak_rss` is each process's own `VmHWM` from here on: `ru_maxrss` counted the harness's
 peak on Linux (see Boot).
+
+These restores, like every restore comparison before the `beat` guest waited for the
+kernel's crypto self-tests, include the self-tests' remaining work in each guest, in
+amounts that depend on when each VMM took its snapshot (PM M38). They do not compare the
+VMMs' restores fairly.

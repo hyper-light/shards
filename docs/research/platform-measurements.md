@@ -1206,6 +1206,44 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   - The 7763's gap to Firecracker. In the untraced comparison of 21772e3, on another
     7763 runner, the medians were 17.2 ms for shards and 19.0 for Firecracker.
 
+### M38. The comparison's guests replayed their crypto self-tests
+
+- **Question.** In the restore comparison (crates/shards/benches/firecracker.rs), how
+  soon each VMM's guest beat again varied by host and by VMM more than any counter
+  explained. shards led on some runners and trailed by 5 ms on others [M37]. What did
+  the guests do between their restore and their first beat?
+- **Method.**
+  - `docs/research/measurements/restore-profile/diagnostics.patch` traces KVM's
+    `kvm_exit`, `kvm_entry` and `kvm_userspace_exit` around each restore, on the trace
+    clock CLOCK_MONOTONIC, and keeps only the events before the first beat. It counts
+    each exit's guest RIP by reason and reports each restore's 80 most frequent RIPs.
+  - `profile.py` resolves them against the kernel's symbols (`llvm-nm` of
+    vmlinux-6.18.48-x86_64-1bff175d35cb, which runs at its link addresses [M21]).
+  - GitHub runners, 2026-09-29, Linux 6.17.0-1022-azure: AMD EPYC 9V74 and 7763.
+    Revision 1610645 (aaef171 plus diagnostics). n = 20 per variant.
+- **Results.**
+  - Before its first beat, every restore under both VMMs ran the kernel's crypto
+    self-tests: exits whose RIPs were in the multi-precision arithmetic under RSA
+    (`mpihelp_mul_1`, `mpihelp_addmul_1`, `mpih_sqr_n_basecase`) and in
+    `crypto_alg_tested`. This held in 20 of 20 restores of each variant.
+  - How much each did depended on its snapshot, and the VMM whose guest had more left
+    beat later:
+
+| Host | shards: crypto exits, first beat p50 | Firecracker: crypto exits, first beat p50 |
+|---|---|---|
+| AMD EPYC 9V74 | 26.0 per restore, 14.8 ms | 16.0 per restore, 9.9 ms |
+| AMD EPYC 7763 | 11.8 per restore, 14.1 ms | 24.6 per restore, 16.8 ms |
+
+  - The test guest's `beat` mode printed READY as soon as it started. shards'
+    snapshot came 20 beats later; Firecracker's came after the first beat and two API
+    calls. Both fell inside the ~40 ms the self-tests take after boot [M21], each at a
+    different point, and every restore replayed the rest.
+- **Consequence.**
+  - The `beat` guest now waits for the self-tests before READY, as shards-init does
+    before it saves a template [M21], so both VMMs snapshot a quiet guest.
+  - Restore comparisons made before then measured the self-tests' tails as much as the
+    VMMs.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**
