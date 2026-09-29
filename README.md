@@ -167,7 +167,7 @@ SHARDS-TEST PASS
 | arm64 Linux, Intel Macs, Windows | Builds, but can't run machines yet |
 | Connect host programs to programs in a running machine (vsock) | Works |
 | Pull images from Docker Hub and other registries, as `docker pull` does | Works: `shards pull`. Your `docker login` credentials and `certs.d` certificates work as they are |
-| Run a command in an image, as `docker run` does | Works: `shards run IMAGE`, with the image's entrypoint, command, environment, directory and user. A warm microVM on the Mac answers in about 1 ms (`vm restore`) |
+| Run a command in an image, as `docker run` does | Works: `shards run IMAGE`, with the image's entrypoint, command, environment, directory and user. On the Mac, repeated runs of an image start from a saved copy of its booted microVM, and a warm microVM answers in about 1 ms (`vm restore`) |
 | Build microVMs like Docker images | In progress: image layers become bootable images |
 | Run many agents on a microVM's OS, each isolated like a container | Planned |
 | Networks, files, devices and permissions per agent and per microVM | Planned |
@@ -183,7 +183,8 @@ Firecracker. The plan and its evidence are in
 | Command | What it does |
 |---|---|
 | `shards pull [-q] IMAGE` | Pull `IMAGE` as `docker pull` does, for this machine's architecture. Every layer is checked against its digests before it is kept |
-| `shards run [-e …] [-w …] [-u …] [--entrypoint …] [--pull …] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container. `IMAGE` is pulled first if it isn't here. Needs a guest kernel and shards-init: `--kernel` and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT` |
+| `shards run [-e …] [-w …] [-u …] [--entrypoint …] [--pull …] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container. `IMAGE` is pulled first if it isn't here. It boots the guest `shards guest use` chose, or `--kernel` and `--init` (also `SHARDS_KERNEL` and `SHARDS_INIT`) |
+| `shards guest use --kernel FILE --init FILE` | Choose the kernel and shards-init that `shards run` boots. With them chosen, the first run of an image saves a copy of its booted microVM, and later runs start from that copy. `shards guest` shows the choice |
 | `shards vm run --kernel FILE [options]` | Boot a new machine |
 | `shards vm restore DIR [--hold]` | Start a copy of the machine saved in `DIR`. `--hold` preloads it and waits for a line on stdin |
 | `shards vm restore DIR [--hold] [-e …] [-w …] [-u …] -- COMMAND [ARG...]` | Run `COMMAND` in a copy of a template saved by `--rootfs` with `--snapshot-dir` |
@@ -206,8 +207,8 @@ Firecracker. The plan and its evidence are in
 Exit codes: 0 for shutdown or snapshot, 1 for an error, 2 for bad usage, 3 when the guest
 reboots. With `--rootfs`, the command's own, or 125–127 as for `docker run`. `SHARDS_LOG=debug` shows what shards is doing.
 
-Pulled images are kept in `SHARDS_HOME`, if you set it; otherwise in `shards` in your data
-directory (`~/Library/Application Support` on macOS, `~/.local/share` on Linux,
+Pulled images, the chosen guest and saved microVMs are kept in `SHARDS_HOME`, if you set it;
+otherwise in `shards` in your data directory (`~/Library/Application Support` on macOS, `~/.local/share` on Linux,
 `%LOCALAPPDATA%` on Windows).
 
 ## Performance

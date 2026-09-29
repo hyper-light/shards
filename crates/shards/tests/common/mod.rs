@@ -10,12 +10,17 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use std::net::TcpListener;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use sha2::Digest as _;
 use shards_image::erofs::{self, DataRef, Kind, Meta, Node, NodeId, Source, Tree};
 
 pub fn workspace() -> PathBuf {
@@ -169,27 +174,41 @@ pub fn test_guest() -> &'static Path {
 
 /// A private copy of the `shards` binary; on macOS, ad-hoc signed with the hypervisor
 /// entitlement, without which Hypervisor.framework refuses the process.
+/// The shards binary, signed on macOS with the hypervisor entitlement. The signed copy is
+/// named by the built binary's SHA-256, so the test processes of one build share it: macOS
+/// assesses each new signed binary when it first runs, which would otherwise delay every
+/// process's first VM and load the host while tests and benchmarks run.
 pub fn shards() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
     V.get_or_init(|| {
+        let built = Path::new(env!("CARGO_BIN_EXE_shards"));
+        let digest = sha256(built);
+        let name = format!("shards-{}", digest.get(..16).unwrap());
         let dir = workspace().join("target/e2e");
+        let signed = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        if signed.exists() {
+            return signed;
+        }
         std::fs::create_dir_all(&dir).unwrap();
-        let copy = dir
-            .join(format!("shards-{}", std::process::id()))
-            .with_extension(std::env::consts::EXE_EXTENSION);
-        std::fs::copy(env!("CARGO_BIN_EXE_shards"), &copy).unwrap();
+        let temp = dir.join(format!("{name}.{}.tmp", std::process::id()));
+        std::fs::copy(built, &temp).unwrap();
         if cfg!(target_os = "macos") {
             let st = Command::new("codesign")
                 .arg("--entitlements")
                 .arg(workspace().join("resources/hvf.entitlements"))
                 .args(["--force", "-s", "-"])
-                .arg(&copy)
+                .arg(&temp)
                 .stderr(Stdio::null())
                 .status()
                 .unwrap();
             assert!(st.success(), "codesign");
         }
-        copy
+        // Another process may have signed the same build meanwhile: either copy serves.
+        if std::fs::rename(&temp, &signed).is_err() {
+            assert!(signed.exists(), "{} could not be placed", signed.display());
+            let _ = std::fs::remove_file(&temp);
+        }
+        signed
     })
 }
 
@@ -418,4 +437,153 @@ pub fn workload_image(dir: &Path) -> PathBuf {
     erofs::write(&tree, &mut files, &mut out).unwrap();
     out.flush().unwrap();
     path
+}
+
+// A registry image for `shards run`: the test guest, served over loopback HTTP.
+
+/// `sha256:<hex>` of `bytes`.
+pub fn sha256_digest(bytes: &[u8]) -> String {
+    let hex: String = sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("sha256:{hex}")
+}
+
+/// A ustar archive of `(path, mode, uid, contents)`, where no contents means a directory.
+pub fn tar(entries: &[(&str, u32, u32, Option<&[u8]>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (path, mode, uid, contents) in entries {
+        let mut h = [0u8; 512];
+        let name = if contents.is_none() {
+            format!("{path}/")
+        } else {
+            path.to_string()
+        };
+        h[..name.len()].copy_from_slice(name.as_bytes());
+        h[100..108].copy_from_slice(format!("{mode:07o}\0").as_bytes());
+        h[108..116].copy_from_slice(format!("{uid:07o}\0").as_bytes());
+        h[116..124].copy_from_slice(format!("{uid:07o}\0").as_bytes());
+        let size = contents.map_or(0, <[u8]>::len);
+        h[124..136].copy_from_slice(format!("{size:011o}\0").as_bytes());
+        h[136..148].copy_from_slice(b"14500000000\0");
+        h[148..156].copy_from_slice(b"        ");
+        h[156] = if contents.is_none() { b'5' } else { b'0' };
+        h[257..263].copy_from_slice(b"ustar\0");
+        h[263..265].copy_from_slice(b"00");
+        let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+        h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        out.extend_from_slice(&h);
+        if let Some(data) = contents {
+            out.extend_from_slice(data);
+            out.resize(out.len().div_ceil(512) * 512, 0);
+        }
+    }
+    out.resize(out.len() + 1024, 0);
+    out
+}
+
+/// A registry that serves `test/image:v1` (manifest, config, layer) over plain HTTP, and
+/// counts the requests it answers.
+pub fn registry(manifest: Vec<u8>, blobs: Vec<Vec<u8>>) -> (u16, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let served = Arc::new(AtomicUsize::new(0));
+    let count = served.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let (manifest, blobs, count) = (manifest.clone(), blobs.clone(), count.clone());
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut out = stream;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut header = String::new();
+                    while reader.read_line(&mut header).unwrap_or(0) > 2 {
+                        header.clear();
+                    }
+                    count.fetch_add(1, Ordering::SeqCst);
+                    let mut parts = line.split(' ');
+                    let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                    let body = if path == "/v2/test/image/manifests/v1"
+                        || path == format!("/v2/test/image/manifests/{}", sha256_digest(&manifest))
+                    {
+                        Some((manifest.clone(), "application/vnd.oci.image.manifest.v1+json"))
+                    } else {
+                        path.strip_prefix("/v2/test/image/blobs/")
+                            .and_then(|d| blobs.iter().find(|b| sha256_digest(b) == d))
+                            .map(|b| (b.clone(), "application/octet-stream"))
+                    };
+                    let response = match body {
+                        Some((bytes, kind)) => {
+                            let mut r = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nDocker-Content-Digest: {}\r\nContent-Length: {}\r\n\r\n",
+                                sha256_digest(&bytes),
+                                bytes.len()
+                            )
+                            .into_bytes();
+                            if method != "HEAD" {
+                                r.extend(bytes);
+                            }
+                            r
+                        }
+                        None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+                    };
+                    if out.write_all(&response).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (port, served)
+}
+
+/// The test image: the test guest as its entrypoint, with `report` as its command, run as
+/// `app` in `/work`, with its own environment. Returns its manifest and blobs.
+pub fn test_image() -> (Vec<u8>, Vec<Vec<u8>>) {
+    let guest = std::fs::read(test_guest()).unwrap();
+    let passwd = b"root:x:0:0:root:/root:/bin/sh\napp:x:1000:1000:app:/home/app:/bin/sh\n";
+    let group = b"root:x:0:\napp:x:1000:\nstaff:x:50:app\n";
+    let layer = tar(&[
+        ("bin", 0o755, 0, None),
+        ("bin/testguest", 0o755, 0, Some(&guest)),
+        ("etc", 0o755, 0, None),
+        ("etc/passwd", 0o644, 0, Some(passwd)),
+        ("etc/group", 0o644, 0, Some(group)),
+        ("home", 0o755, 0, None),
+        ("home/app", 0o755, 1000, None),
+        ("tmp", 0o1777, 0, None),
+        ("work", 0o755, 1000, None),
+    ]);
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    };
+    let config = format!(
+        r#"{{"architecture":"{arch}","os":"linux","config":{{"User":"app","Env":["FROM_IMAGE=yes","PATH=/bin"],"Entrypoint":["/bin/testguest"],"Cmd":["report"],"WorkingDir":"/work"}},"rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+        sha256_digest(&layer)
+    )
+    .into_bytes();
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+        sha256_digest(&config),
+        config.len(),
+        sha256_digest(&layer),
+        layer.len()
+    )
+    .into_bytes();
+    (manifest, vec![config, layer])
+}
+
+/// Serves the test image at `127.0.0.1:<port>/test/image:v1`.
+pub fn served() -> (String, Arc<AtomicUsize>) {
+    let (manifest, blobs) = test_image();
+    let (port, served) = registry(manifest, blobs);
+    (format!("127.0.0.1:{port}/test/image:v1"), served)
 }

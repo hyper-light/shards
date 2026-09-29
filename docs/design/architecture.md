@@ -518,6 +518,41 @@ into an image, as `docker run` runs one in a new container. The code is
     environment apply. A second run uses the stored image, fetches nothing, and the
     command line wins.
 
+### Templates for `shards run` (D25)
+
+Repeated runs of an image restore a template of it instead of booting (D2, D14). The code
+is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
+
+- **The guest, by content.** `shards guest use --kernel FILE --init FILE` copies both
+  files into `$SHARDS_HOME/guest`, named by their SHA-256, and records them as the guest.
+  A run then knows what it boots by digest, without reading either file.
+- **Templates, by content.** A template's name is the SHA-256 of what goes into it:
+  - the snapshot format;
+  - the kernel's and init's digests;
+  - the image's root filesystem, whose EROFS file is named by ChainID (D18);
+  - the CPU count, memory and kernel command line.
+
+  A change to any of these names another template. Nothing is compared by time.
+- **The first run saves it.** The first run of an image on the recorded guest boots. Once
+  the image is mounted it saves the template, then resumes and runs the command
+  (`AfterSnapshot::Resume`, D16).
+  - It saves into a directory of its own, renamed into place only when complete.
+  - If another run's template got there first, the other copy is removed.
+- **Later runs restore it.** A template that does not restore is removed; the run boots
+  instead and says so on stderr, and the next run saves the template again.
+- **Where it applies.** Builds that can snapshot (HVF on arm64 today, `vm::SNAPSHOTS`);
+  elsewhere every run boots. `--kernel` and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`,
+  name files by path, so those runs always boot.
+- **Measured** (docs/benchmarks.md, "Image"): 16.5 ms p50 against 34.2 ms for a boot,
+  over 10 templates. In most templates, a restored run stalls for about a guest tick.
+- **Not yet:** removing templates and guests nothing uses.
+- **Tests** (E2E, a real VM):
+  - the first run boots and saves one template;
+  - the second restores it, with no `INIT_STARTED` marker, the image's settings and the
+    host's clock;
+  - a corrupted template is removed and that run boots;
+  - the next run saves the template again, under the same name.
+
 ## 3. Components
 
 ```

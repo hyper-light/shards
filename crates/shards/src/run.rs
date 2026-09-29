@@ -1,17 +1,25 @@
 //! `shards run IMAGE [COMMAND] [ARG...]`: runs a command in a new microVM booted into an
 //! image, as `docker run` runs one in a new container (docs/design/architecture.md D16,
-//! D24). The image's entrypoint, command, environment, working directory and user apply
-//! unless the command line gives its own, merged as dockerd merges them.
+//! D24, D25). The image's entrypoint, command, environment, working directory and user
+//! apply unless the command line gives its own, merged as dockerd merges them.
+//!
+//! With the recorded guest (guest.rs), the first run of an image saves a template of it,
+//! booted and mounted, and later runs restore that template. A template is kept by
+//! content: the guest's digests, the image's root filesystem, and the VM's shape.
 
 use std::ffi::OsString;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+use sha2::{Digest as _, Sha256};
+use shards_vmm::vm::Config;
 
 use shards_image::oci::RunConfig;
 use shards_image::reference::Reference;
 use shards_registry::pull::{Event, local};
 
+use crate::guest::Guest;
 use crate::workload::{NOT_RUN, Options};
 
 const USAGE: &str = "usage: shards run [OPTIONS] IMAGE [COMMAND] [ARG...]
@@ -20,8 +28,8 @@ const USAGE: &str = "usage: shards run [OPTIONS] IMAGE [COMMAND] [ARG...]
   apply unless given here. IMAGE is pulled first if it is not here.
   Options, as for `docker run`: -e NAME[=VALUE], -w DIR, -u USER[:GROUP], --hostname NAME,
   -i, --entrypoint COMMAND, --pull missing|always|never, --rm (nothing outlives a run).
-  --kernel FILE, --init FILE: the guest's kernel and shards-init; else SHARDS_KERNEL and
-  SHARDS_INIT.";
+  --kernel FILE, --init FILE: boot these, instead of the guest `shards guest use` recorded;
+  or SHARDS_KERNEL and SHARDS_INIT. Only the recorded guest's runs are kept as templates.";
 
 /// What the command line asks of a run.
 #[derive(Debug, Default)]
@@ -60,13 +68,70 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
             return ExitCode::from(NOT_RUN);
         }
     };
-    match prepare(&asked) {
-        Ok((cfg, rootfs, workload)) => crate::vm_run::run_in(cfg, rootfs, &workload),
+    let (boot, rootfs, workload) = match prepare(&asked) {
+        Ok(prepared) => prepared,
         Err(e) => {
             let _ = writeln!(std::io::stderr(), "shards: {e}");
-            ExitCode::from(NOT_RUN)
+            return ExitCode::from(NOT_RUN);
+        }
+    };
+    match boot {
+        Boot::Given(cfg) => crate::vm_run::run_in(cfg, rootfs, &workload),
+        Boot::Recorded { home, guest } => {
+            let cfg = crate::vm_run::config(guest.kernel.clone(), Some(guest.init.clone()));
+            if !shards_vmm::vm::SNAPSHOTS {
+                return crate::vm_run::run_in(cfg, rootfs, &workload);
+            }
+            let dir = template(&home, &guest, &rootfs, &cfg);
+            if dir.join(shards_vmm::snapshot::STATE).is_file() {
+                return crate::vm_run::restore_or_boot(dir, cfg, rootfs, &workload);
+            }
+            // The first run saves the template as it goes, into a directory of its own that
+            // becomes the template only once complete.
+            let fresh = dir.with_extension(format!("new-{}", std::process::id()));
+            let code = crate::vm_run::run_saving(cfg, rootfs, fresh.clone(), &workload);
+            settle(&fresh, &dir);
+            code
         }
     }
+}
+
+/// What a run boots: the kernel and init the command line named, or the recorded guest.
+enum Boot {
+    Given(Config),
+    Recorded { home: PathBuf, guest: Guest },
+}
+
+/// The template a run of `rootfs` on `guest` with `cfg`'s shape restores: named by the
+/// SHA-256 of everything that goes into it, the snapshot format included.
+fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> PathBuf {
+    let key = format!(
+        "snapshot format {}\nkernel {}\ninit {}\nrootfs {}\ncpus {}\nmemory {}\ncmdline {}\n",
+        shards_vmm::snapshot::FORMAT,
+        guest.kernel_digest,
+        guest.init_digest,
+        rootfs.display(),
+        cfg.vcpus,
+        cfg.memory_mib,
+        cfg.cmdline
+    );
+    let hex: String = Sha256::digest(key.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    home.join("templates").join(hex)
+}
+
+/// Makes a freshly saved template the template, unless another run's got there first; a
+/// save that did not complete is removed.
+fn settle(fresh: &Path, dir: &Path) {
+    if fresh.join(shards_vmm::snapshot::STATE).is_file()
+        && !dir.exists()
+        && std::fs::rename(fresh, dir).is_ok()
+    {
+        return;
+    }
+    let _ = std::fs::remove_dir_all(fresh);
 }
 
 /// Options come before the image, as `docker run` takes them; what follows the image is
@@ -114,23 +179,29 @@ fn parse(args: impl Iterator<Item = OsString>) -> Result<Asked, String> {
     Err("an image is required".into())
 }
 
-/// The VM, its root filesystem, and the workload a run asks for.
-fn prepare(asked: &Asked) -> Result<(shards_vmm::vm::Config, PathBuf, Options), String> {
+/// What to boot, the image's root filesystem, and the workload a run asks for.
+fn prepare(asked: &Asked) -> Result<(Boot, PathBuf, Options), String> {
     let from_env = |name: &str| {
         std::env::var_os(name)
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
     };
-    let kernel = asked
-        .kernel
-        .clone()
-        .or_else(|| from_env("SHARDS_KERNEL"))
-        .ok_or("a guest kernel is required: --kernel or SHARDS_KERNEL")?;
-    let init = asked
-        .init
-        .clone()
-        .or_else(|| from_env("SHARDS_INIT"))
-        .ok_or("shards-init is required: --init or SHARDS_INIT")?;
+    let kernel = asked.kernel.clone().or_else(|| from_env("SHARDS_KERNEL"));
+    let init = asked.init.clone().or_else(|| from_env("SHARDS_INIT"));
+    let home = crate::pull::home()?;
+    let boot = match (kernel, init) {
+        (Some(kernel), Some(init)) => Boot::Given(crate::vm_run::config(kernel, Some(init))),
+        (None, None) => match crate::guest::current(&home)? {
+            Some(guest) => Boot::Recorded { home, guest },
+            None => {
+                return Err(
+                    "no guest to boot: `shards guest use --kernel FILE --init FILE`, or --kernel and --init"
+                        .into(),
+                );
+            }
+        },
+        _ => return Err("--kernel and --init (or SHARDS_KERNEL and SHARDS_INIT) go together".into()),
+    };
     let reference = Reference::parse(&asked.image).map_err(|e| e.to_string())?;
     let store = crate::pull::store()?;
     let found = match asked.pull {
@@ -168,7 +239,7 @@ fn prepare(asked: &Asked) -> Result<(shards_vmm::vm::Config, PathBuf, Options), 
         }
     };
     let workload = compose(image.config.config.as_ref(), asked)?;
-    Ok((crate::vm_run::config(kernel, Some(init)), image.rootfs, workload))
+    Ok((boot, image.rootfs, workload))
 }
 
 /// The workload: the command line's settings merged over the image's, as dockerd merges

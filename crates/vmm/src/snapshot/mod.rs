@@ -24,6 +24,9 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 3: and its virtio-pmem files.
 /// 4: virtio devices' own state follows their queues' (vsock: the streams a restore resets).
 const VERSION: u32 = 4;
+/// The snapshot format this build writes and reads: what a snapshot kept for reuse is
+/// keyed by.
+pub const FORMAT: u32 = VERSION;
 /// A state file is kilobytes; anything past this is not one of ours.
 const MAX_STATE: u64 = 64 << 20;
 const MAX_DISKS: usize = 64;

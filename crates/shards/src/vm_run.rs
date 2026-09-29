@@ -317,6 +317,43 @@ pub fn run_in(mut cfg: Config, rootfs: PathBuf, workload: &Options) -> ExitCode 
     })
 }
 
+/// Boots `cfg` into the image `rootfs` as a template: the VM saves itself to `dir` once
+/// the image is mounted, then runs `workload` itself, as copies restored from `dir` will.
+pub fn run_saving(mut cfg: Config, rootfs: PathBuf, dir: PathBuf, workload: &Options) -> ExitCode {
+    boot_into(&mut cfg, rootfs, true);
+    cfg.snapshot = Some(SnapshotPolicy {
+        dir,
+        then: AfterSnapshot::Resume,
+    });
+    cfg.console = Console::Discard;
+    serve_workload(cfg.vsock.clone(), workload, false, move |vsock| {
+        cfg.vsock = Some(vsock);
+        vm::start(&cfg)
+    })
+}
+
+/// Runs `workload` in a copy of the template in `dir`. A template that cannot be restored
+/// is removed, and the workload boots `cold` into `rootfs` instead.
+pub fn restore_or_boot(dir: PathBuf, mut cold: Config, rootfs: PathBuf, workload: &Options) -> ExitCode {
+    boot_into(&mut cold, rootfs, false);
+    cold.console = Console::Discard;
+    serve_workload(None, workload, false, move |vsock| {
+        let restore = RestoreConfig {
+            dir: dir.clone(),
+            console: Console::Discard,
+            snapshot: None,
+            hold: false,
+            vsock: Some(vsock.clone()),
+        };
+        vm::restore(&restore).or_else(|e| {
+            report(format!("template {}: {e}; booting instead", dir.display()));
+            let _ = std::fs::remove_dir_all(&dir);
+            cold.vsock = Some(vsock);
+            vm::start(&cold)
+        })
+    })
+}
+
 /// Boots into the image `rootfs`: /dev/pmem0, which shards-init mounts as the root.
 fn boot_into(cfg: &mut Config, rootfs: PathBuf, template: bool) {
     cfg.pmem.insert(0, rootfs);

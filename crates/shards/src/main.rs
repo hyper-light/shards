@@ -3,6 +3,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+mod guest;
 mod pull;
 mod run;
 mod terminal;
@@ -12,6 +13,7 @@ mod workload;
 const USAGE: &str = "usage: shards <command> [args...]
 
 Commands:
+  guest       Choose the kernel and shards-init that `run` boots
   pull        Pull an image from a registry
   run         Run a command in a new microVM booted into an image
   vm run      Boot a kernel directly in a microVM
@@ -23,6 +25,7 @@ fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     let command = args.next();
     match command.as_ref().and_then(|c| c.to_str()) {
+        Some("guest") => guest::guest(args),
         Some("pull") => pull::pull(args),
         Some("run") => run::run(args),
         Some("vm") => match args.next().as_ref().and_then(|c| c.to_str()) {

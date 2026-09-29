@@ -18,11 +18,17 @@ pub struct Sample {
 
 /// Runs `shards <args>` to completion, reaping it with wait4(2) for its own resource
 /// usage. With `hold`, waits for `shards-ready` on stderr, then sends the start line.
-#[allow(clippy::zombie_processes)] // reaped by wait4, not Child::wait
 pub fn run(args: &[String], hold: bool) -> Sample {
+    run_env(args, hold, &[])
+}
+
+/// [`run`], with `env` added to shards' environment.
+#[allow(clippy::zombie_processes)] // reaped by wait4, not Child::wait
+pub fn run_env(args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
     let start = Instant::now();
     let mut child = Command::new(common::shards())
         .args(args)
+        .envs(env.iter().copied())
         .env("SHARDS_TIMING", "1")
         .stdin(if hold { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::null())
@@ -150,6 +156,20 @@ fn os() -> String {
     }
 }
 
+/// The host's 1, 5 and 15 minute load averages: how busy it was with other work.
+fn load() -> String {
+    if cfg!(target_os = "macos") {
+        command_output("sysctl", &["-n", "vm.loadavg"])
+            .trim_matches(|c: char| c == '{' || c == '}' || c.is_whitespace())
+            .to_string()
+    } else {
+        std::fs::read_to_string("/proc/loadavg")
+            .ok()
+            .map(|l| l.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
+            .unwrap_or_else(|| "unknown".into())
+    }
+}
+
 fn revision() -> String {
     let dir = env!("CARGO_MANIFEST_DIR");
     let rev = command_output("git", &["-C", dir, "rev-parse", "--short", "HEAD"]);
@@ -162,12 +182,13 @@ fn revision() -> String {
     }
 }
 
-/// Prints the results: a readable table, then one `shards-bench` JSON line.
+/// Prints the results: a readable table, then one `shards-bench` JSON line. The load is
+/// the host's as the run ends.
 pub fn report(bench: &str, params: &[(&str, String)], rows: &[(String, String)]) {
-    let (host, os, rev) = (host(), os(), revision());
+    let (host, os, rev, load) = (host(), os(), revision(), load());
     let described: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
     println!(
-        "{bench}: {}\nhost: {host}\nos: {os}\nrevision: {rev}\n",
+        "{bench}: {}\nhost: {host}\nos: {os}\nrevision: {rev}\nload (1, 5, 15 min): {load}\n",
         described.join(" ")
     );
     println!(
@@ -180,7 +201,7 @@ pub fn report(bench: &str, params: &[(&str, String)], rows: &[(String, String)])
     let json_params: Vec<String> = params.iter().map(|(k, v)| format!("\"{k}\":\"{v}\"")).collect();
     let json_rows: Vec<&str> = rows.iter().map(|(_, j)| j.as_str()).collect();
     println!(
-        "\nshards-bench {{\"bench\":\"{bench}\",{},\"host\":\"{host}\",\"os\":\"{os}\",\"revision\":\"{rev}\",{}}}",
+        "\nshards-bench {{\"bench\":\"{bench}\",{},\"host\":\"{host}\",\"os\":\"{os}\",\"revision\":\"{rev}\",\"load\":\"{load}\",{}}}",
         json_params.join(","),
         json_rows.join(",")
     );

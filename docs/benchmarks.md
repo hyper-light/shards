@@ -244,6 +244,54 @@ restore of a template repeats its guest's state:
   grace period, which a 100 Hz kernel completes on its tick. The p90 stalls remained.
   Tuning the tick rate and RCU for our kernel is still to be measured.
 
+## Image (`crates/shards/benches/image.rs`)
+
+`cargo bench -p shards --bench image [-- --runs N --templates T]`
+
+Method:
+- The command is `exit 0`, in the image the E2E tests pull (`test_image` in tests/common),
+  pulled once from a loopback registry into a fresh `SHARDS_HOME`.
+- **cold**: `shards run --kernel K --init I --pull never IMAGE exit 0` boots every time.
+- **template**: with the guest recorded (`shards guest use`), `shards run --pull never
+  IMAGE exit 0` restores the image's template (architecture.md D25).
+  - Restores cost more for some templates than others, so samples come from
+    `--templates T` templates (default 5), each saved afresh.
+  - A template's save and its first restore are not samples. The first process to map
+    a just-written template's memory is slower.
+- Cold and templated samples alternate, after three cold warm-up runs.
+- Each run records the host's load averages as it ends.
+
+| Phase | Measured from | Measured to |
+|---|---|---|
+| `run_cold`, `run_template` | spawn | reap (host wall clock around the whole process) |
+| `template_restore` | shards' `main` | the restored vCPUs released: the image looked up, the template named and restored |
+| `template_command` | the release | the VM stopped: resumed, connected, the command sent, run and answered |
+| `template_process` | — | the rest of the wall clock, outside `main`: exec, dyld and frameworks, then teardown |
+| `*_rss` | — | `ru_maxrss` from wait4(2), guest memory included |
+
+### Runs
+
+**2026-09-29** · 10d4b29 plus `shards run` templates (uncommitted) · Apple M5 Max
+(Mac17,6) · macOS 26.4.1 (25E253) · kernel Image-6.18.48-aarch64-1bff175d35cb · n=300
+over 10 templates, 1 vCPU, 256 MiB · load 3.45 5.66 7.77 (other VMs and builds on the
+host)
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| run_cold | 34208 µs | 42328 µs | 53740 µs | 104750 µs |
+| **run_template** | **16511 µs** | **24646 µs** | **38477 µs** | **203897 µs** |
+| template_restore | 1710 µs | 5344 µs | 17202 µs | 174800 µs |
+| template_command | 10840 µs | 12828 µs | 13967 µs | 15280 µs |
+| template_process | 3951 µs | 7686 µs | 11997 µs | 16535 µs |
+| run_cold_rss | 60.9 MiB | 61.0 MiB | 61.1 MiB | 61.2 MiB |
+| run_template_rss | 19.5 MiB | 19.6 MiB | 19.7 MiB | 19.7 MiB |
+
+A templated run takes half as long as a boot at the median. Most of what remains is in
+the guest: in most templates, the command waits about one guest tick (10 ms at
+`CONFIG_HZ=100`) after the restore. Outside the guest, launching and tearing down the
+process takes about 4 ms at the median and restoring 1.7 ms, both with long tails on this
+busy host.
+
 ## Firecracker (`crates/shards/benches/firecracker.rs`)
 
 `cargo bench -p shards --bench firecracker [-- --runs N --cpus N --memory MIB]` (Linux, KVM)
