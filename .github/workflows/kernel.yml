@@ -1,7 +1,9 @@
 name: Kernel
 
-# Builds the shards guest kernel on each architecture's native runner and publishes it as a
-# prerelease named after a hash of its inputs. Tests pin a release asset by URL and SHA-256
+# Builds the shards guest kernel in the pinned builder (resources/kernel/builder.env), twice
+# per architecture on separate runners, and publishes it as a prerelease named after a hash
+# of every input once both builds agree byte for byte. A tag published before must hold
+# the same bytes this build makes. Tests pin a release asset by URL and SHA-256
 # (resources/kernel/README.md).
 on:
   push:
@@ -9,6 +11,7 @@ on:
     paths:
       - resources/kernel/**
       - scripts/build-kernel.sh
+      - scripts/build-kernel-in-builder.sh
       - .github/workflows/kernel.yml
   workflow_dispatch:
 
@@ -17,30 +20,24 @@ permissions:
 
 jobs:
   build:
-    name: build (${{ matrix.arch }})
-    timeout-minutes: 60
+    name: build (${{ matrix.arch }}, ${{ matrix.copy }})
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
+        arch: [x86_64, aarch64]
+        copy: [a, b]
         include:
           - { arch: x86_64, runner: ubuntu-24.04 }
           - { arch: aarch64, runner: ubuntu-24.04-arm }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7.0.1
-      - name: Toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential bc bison flex libelf-dev libssl-dev
-          gcc --version | head -1 | tee out-toolchain.txt
-          ld --version | head -1 | tee -a out-toolchain.txt
-      - name: Build
-        run: scripts/build-kernel.sh ${{ matrix.arch }} out
-      - name: Record the toolchain
-        run: mv out-toolchain.txt out/toolchain-${{ matrix.arch }}.txt
+      - name: Build in the pinned builder
+        run: scripts/build-kernel-in-builder.sh ${{ matrix.arch }} out
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: kernel-${{ matrix.arch }}
+          name: kernel-${{ matrix.arch }}-${{ matrix.copy }}
           path: out/
           if-no-files-found: error
 
@@ -53,19 +50,32 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - uses: actions/download-artifact@v8.0.1
         with:
-          path: out
-          merge-multiple: true
+          path: builds
+      - name: Both builds of each architecture made the same bytes
+        run: |
+          for arch in x86_64 aarch64; do
+            diff -r "builds/kernel-$arch-a" "builds/kernel-$arch-b"
+          done
+          mkdir out
+          cp builds/kernel-x86_64-a/* builds/kernel-aarch64-a/* out/
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(sed -n 's/^version=//p' scripts/build-kernel.sh)
-          inputs=$(cat scripts/build-kernel.sh resources/kernel/*.config | sha256sum | cut -c1-12)
+          inputs=$(cat scripts/build-kernel.sh scripts/build-kernel-in-builder.sh \
+            resources/kernel/builder.env resources/kernel/*.config resources/kernel/patches/*.patch \
+            | sha256sum | cut -c1-12)
           tag="kernel-$version-$inputs"
           (cd out && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "$tag is already published; its assets stay as they are"
+            gh release download "$tag" --pattern SHA256SUMS --output published.sha256
+            if ! diff published.sha256 out/SHA256SUMS; then
+              echo "$tag was published with other bytes than its inputs build now" >&2
+              exit 1
+            fi
+            echo "$tag is published, and its inputs built the same bytes again"
             exit 0
           fi
           gh release create "$tag" out/* --prerelease --target "$GITHUB_SHA" --title "$tag" --notes \
-            "Linux $version for shards guests: Firecracker's 6.18 microVM configs with resources/kernel/shards.config, built by scripts/build-kernel.sh at $GITHUB_SHA. Toolchains are in toolchain-*.txt; checksums in SHA256SUMS."
+            "Linux $version for shards guests: Firecracker's 6.18 microVM configs with resources/kernel/shards.config and the patches in resources/kernel/patches, built at $GITHUB_SHA by scripts/build-kernel-in-builder.sh in the builder resources/kernel/builder.env pins, twice on separate runners with the same result. Toolchains are in toolchain-*.txt; checksums in SHA256SUMS."

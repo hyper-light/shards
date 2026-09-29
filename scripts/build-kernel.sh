@@ -3,7 +3,8 @@
 #   scripts/build-kernel.sh x86_64|aarch64 OUT_DIR
 # Output: OUT_DIR/vmlinux-<version>-x86_64 (ELF) or OUT_DIR/Image-<version>-aarch64, and
 # OUT_DIR/config-<version>-<arch>. Needs a Linux host with gcc, make, bc, bison, flex,
-# libelf and libssl headers. resources/kernel/README.md explains the inputs.
+# patch, libelf and libssl headers; scripts/build-kernel-in-builder.sh runs it in the
+# pinned builder, which releases use. resources/kernel/README.md explains the inputs.
 set -euo pipefail
 
 arch=${1:?usage: build-kernel.sh x86_64|aarch64 OUT_DIR}
@@ -38,6 +39,13 @@ curl -fsSL --retry 3 -o "$work/linux.tar.xz" \
 echo "$tarball_sha256  $work/linux.tar.xz" | sha256sum -c --quiet -
 tar -xJf "$work/linux.tar.xz" -C "$work"
 src=$work/linux-$version
+
+# shards' fixes to the kernel, in order (resources/kernel/patches). Each must apply
+# exactly, with no fuzz.
+for p in "$repo"/resources/kernel/patches/*.patch; do
+    [ -e "$p" ] || continue
+    patch -d "$src" -p1 --forward --batch --fuzz=0 --no-backup-if-mismatch <"$p"
+done
 
 fragment=$repo/resources/kernel/shards.config
 cp "$repo/resources/kernel/firecracker-$arch-6.18.config" "$src/.config"
