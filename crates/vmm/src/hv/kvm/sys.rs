@@ -262,11 +262,21 @@ struct Cpuid2 {
 /// Diagnostic: every statistic behind a stats fd, by name (api.rst 4.133: a header, then
 /// descriptors of 16 bytes plus the name each, then the data).
 pub fn read_stats(owner: RawFd) -> io::Result<Vec<(String, u64)>> {
-    use std::os::unix::fs::FileExt;
+    read_stats_file(&open_stats(owner)?)
+}
+
+/// Diagnostic: a stats fd for `owner`. A vCPU's must be opened before it runs: its ioctls
+/// wait for KVM_RUN to return, but reading the fd does not.
+pub fn open_stats(owner: RawFd) -> io::Result<File> {
     // SAFETY: no argument; the result is a new fd we own.
     let fd = unsafe { ioctl(owner, KVM_GET_STATS_FD, 0) }?;
     // SAFETY: a fresh descriptor.
-    let file = unsafe { File::from_raw_fd(fd) };
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+/// Diagnostic: every statistic behind an open stats fd, by name.
+pub fn read_stats_file(file: &File) -> io::Result<Vec<(String, u64)>> {
+    use std::os::unix::fs::FileExt;
     let mut header = [0u8; 24];
     file.read_exact_at(&mut header, 0)?;
     let word = |b: &[u8], i: usize| {

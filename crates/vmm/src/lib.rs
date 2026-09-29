@@ -27,3 +27,11 @@ pub fn diag(line: &str) {
         let _ = writeln!(f, "{} {}us {line}", std::process::id(), crate::log::uptime_us());
     }
 }
+
+/// Diagnostic (branch kvm-ws-diag): KVM's counters now, labeled, where the backend is KVM.
+pub fn diag_phase(label: &str) {
+    #[cfg(hv = "kvm")]
+    hv::kvm::diag_phase(label);
+    #[cfg(not(hv = "kvm"))]
+    let _ = label;
+}

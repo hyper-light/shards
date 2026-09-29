@@ -10,6 +10,7 @@ mod sys;
 pub use state::{VcpuState, VmState};
 
 use std::fmt;
+use std::fs::File;
 use std::io;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -295,6 +296,18 @@ impl Vm {
                 })
                 .collect();
         fd.set_cpuid(&leaves).map_err(call("KVM_SET_CPUID2"))?;
+        // Diagnostic (branch kvm-ws-diag): this vCPU's and the VM's stats fds, for phases.
+        if std::env::var_os("SHARDS_KVM_STATS").is_some() {
+            let mut open = lock(&PHASE_STATS);
+            if let Ok(f) = sys::open_stats(fd.raw()) {
+                open.push(f);
+            }
+            if index == 0
+                && let Ok(f) = sys::open_stats(self.fd.raw())
+            {
+                open.push(f);
+            }
+        }
         // SAFETY: pthread_self has no preconditions.
         let thread = Arc::new(Mutex::new(Some(Thread(unsafe { libc::pthread_self() }))));
         Ok(Vcpu {
@@ -606,6 +619,28 @@ impl Vcpu {
             }
         }
     }
+}
+
+/// Diagnostic (branch kvm-ws-diag): the stats fds of this process's vCPUs and VM.
+static PHASE_STATS: Mutex<Vec<File>> = Mutex::new(Vec::new());
+
+/// Diagnostic: one line of every counter, summed over this process's vCPUs and VM, with
+/// `label`, for the differences between phases of a run.
+pub fn diag_phase(label: &str) {
+    let open = lock(&PHASE_STATS);
+    let mut sums: Vec<(String, u64)> = Vec::new();
+    for f in open.iter() {
+        if let Ok(stats) = sys::read_stats_file(f) {
+            for (k, v) in stats {
+                match sums.iter_mut().find(|(n, _)| *n == k) {
+                    Some((_, s)) => *s = s.saturating_add(v),
+                    None => sums.push((k, v)),
+                }
+            }
+        }
+    }
+    let line: Vec<String> = sums.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    crate::diag(&format!("kvm-phase {label} {}", line.join(" ")));
 }
 
 impl Drop for Vcpu {

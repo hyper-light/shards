@@ -1,5 +1,5 @@
-# Diagnostic (branch kvm-ws-diag, temporary): KVM statistics of pooled runs from templates
-# with working sets, to see where a restored guest's time goes.
+# Diagnostic (branch kvm-ws-diag, temporary): KVM's counters between the phases of pooled
+# runs, with and without the template's working set, alternating on one host.
 name: diag
 
 on:
@@ -14,9 +14,13 @@ env:
   TOOLCHAIN: 1.98.0
 
 jobs:
-  image:
+  phases:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [1, 2, 3]
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
@@ -24,19 +28,56 @@ jobs:
       - name: KVM access
         run: sudo chmod 666 /dev/kvm
       - name: Host
+        run: lscpu | grep -E 'Model name|Hypervisor'
+      - name: The build, and the kernel and guest init the tests use
         run: |
-          nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
-          grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag,hpage_pmd_size}
-          grep -H . /sys/module/kvm_amd/parameters/npt /sys/module/kvm_intel/parameters/ept 2>/dev/null || true
-      - name: Image, with KVM statistics
-        env:
-          SHARDS_KVM_STATS: /tmp/kvm-stats.log
-        run: cargo bench --locked -p shards --bench image -- --runs 8 --templates 2
-      - name: The daemon's log
+          cargo build --locked --release -p shards
+          cargo bench --locked -p shards --bench image -- --runs 1 --templates 1
+      - name: Phases, with and without the working set
         run: |
-          for log in target/bench/image-*/daemon.log; do
-            grep -E 'kvm-stats|working set|error' "$log" | sed 's/^/  /'
+          set -eu
+          kernel=$(ls target/artifacts/vmlinux-6.18.48-x86_64* | head -1)
+          init=target/guest/x86_64-unknown-linux-musl/guest/shards-init
+          shards=$PWD/target/release/shards
+          ab=$RUNNER_TEMP/ab
+          mkdir -p $ab
+          new=$ab/new old=$ab/old
+          SHARDS_HOME=$new $shards pull -q alpine
+          SHARDS_HOME=$new $shards guest use --kernel $kernel --init $init
+          SHARDS_HOME=$new $shards run --pull never alpine true
+          for i in $(seq 100); do ls $new/templates/*/working-set >/dev/null 2>&1 && break; sleep 0.1; done
+          SHARDS_HOME=$new $shards daemon stop
+          cp -a $new $old
+          rm $old/templates/*/working-set
+          for i in $(seq 40); do
+            for arm in new old; do
+              SHARDS_HOME=$ab/$arm SHARDS_KVM_STATS=$ab/$arm.log $shards run --pull never alpine true
+              sleep 0.02
+            done
           done
-          ls -l target/bench/image-*/templates/*/ || true
-      - name: KVM statistics, by process
-        run: sort -s -n -k1,1 /tmp/kvm-stats.log
+          for arm in new old; do SHARDS_HOME=$ab/$arm $shards daemon stop; done
+          python3 - $ab/old.log $ab/new.log <<'PY'
+          import re, sys, statistics
+          keys = ["pf_taken", "pf_fixed", "exits", "io_exits", "mmio_exits", "halt_exits",
+                  "irq_exits", "irq_window_exits", "insn_emulation", "irq_injections",
+                  "remote_tlb_flush", "tlb_flush", "halt_wait_ns", "signal_exits",
+                  "request_irq_exits", "nmi_window_exits", "pages_4k", "preemption_reported"]
+          for path in sys.argv[1:]:
+              runs = {}
+              for line in open(path):
+                  m = re.match(r"(\d+) (\d+)us kvm-phase (\w+) (.*)", line)
+                  if not m:
+                      continue
+                  pid, us, label, rest = m.groups()
+                  stats = dict(kv.split("=") for kv in rest.split())
+                  stats = {k: int(v) for k, v in stats.items()}
+                  stats["us"] = int(us)
+                  runs.setdefault(pid, {})[label] = stats
+              print(f"== {path}: {len(runs)} runs")
+              for a, b in (("request", "started"), ("started", "answered"), ("request", "answered")):
+                  print(f"  {a} -> {b}:")
+                  for k in ["us"] + keys:
+                      d = [r[b].get(k, 0) - r[a].get(k, 0) for r in runs.values() if a in r and b in r]
+                      if d and any(d):
+                          print(f"    {k:20} median {statistics.median(d):>10.0f}  max {max(d):>10}")
+          PY

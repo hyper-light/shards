@@ -637,11 +637,13 @@ fn serve_workload(
                     Command::Warm(link) => {
                         let client = std::sync::OnceLock::new();
                         let started = || {
+                            shards_vmm::diag_phase("started");
                             crate::warm::started(&link);
                             end_recording_in(&stopper, RECORD_FOR);
                         };
                         let ask = || {
                             let request = crate::warm::receive(&link, &to_guest)?;
+                            shards_vmm::diag_phase("request");
                             served_timing
                                 .asked
                                 .store(request.timing, std::sync::atomic::Ordering::Relaxed);
@@ -667,6 +669,7 @@ fn serve_workload(
                                     .asked
                                     .load(std::sync::atomic::Ordering::Relaxed)
                                     .then(|| timing_json(&stopper, Some(&served_timing)));
+                                shards_vmm::diag_phase("answered");
                                 crate::warm::finish(&link, connection.as_ref(), &served, timing.as_deref());
                                 save_working_set(&stopper);
                                 (served, true)
