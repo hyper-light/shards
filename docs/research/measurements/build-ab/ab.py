@@ -8,6 +8,9 @@ resources/hvf.entitlements) and a `home` with IMAGE pulled and the guest recorde
 some templates than others, so copy one arm's template over the other's before
 comparing: both then restore the same snapshot.
 
+ENV_OLD and ENV_NEW add `K=V` pairs to one arm's environment, and so to the daemon its
+first run starts: one build can be compared with itself under a setting.
+
 Samples are the client's wall clock, spawn to reap, of `shards run --pull never IMAGE
 COMMAND...`, split by the timing line SHARDS_TIMING adds into the command's time in the
 guest (request to status, the VM's clock) and the rest. Each iteration runs both arms
@@ -23,6 +26,7 @@ command = sys.argv[5:] or ["true"]
 arms = {}
 for name, d in (("old", old), ("new", new)):
     env = dict(os.environ, SHARDS_HOME=os.path.join(d, "home"), SHARDS_TIMING="1")
+    env.update(kv.split("=", 1) for kv in os.environ.get("ENV_" + name.upper(), "").split())
     arms[name] = (os.path.join(d, "shards"), env)
 
 

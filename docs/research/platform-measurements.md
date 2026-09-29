@@ -876,8 +876,13 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
 | outside | working sets | 1000 | 3703 | 4738 | 6488 | 13542 |
 
   - Paired, working sets − a0f7926: wall −857 µs (95% [−891, −834]), guest −905
-    (95% [−912, −898]), outside +45 (95% [16, 64]). The outside's cost is not explained
-    yet.
+    (95% [−912, −898]), outside +45 (95% [16, 64]).
+  - Most of the outside's 45 µs is the pool's refill. It starts at the handover, and its
+    restore and prefetch now overlap the run's tail rather than its longer guest part. The same
+    build refilling at the run's end instead (`build-ab/ab.py` with `ENV_NEW`, n = 1000,
+    load 6.7–7.8) saved 49 µs of wall time at the median (95% [23, 75]): outside 30,
+    guest 15. Its p99 was 6336 µs against 5794, as a refill at the end lands on the start
+    of a run that follows at once; this n does not settle that difference.
 - **Consequence.** D25, D26:
   - The boot that saves a template records the working set from its snapshot to its
     first answer, 50 ms after the request at most, and saves it with the template.
@@ -885,6 +890,8 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   - A waiting warm VM holds the pages its run will write, about 2.9 MiB for `true`.
     Arm 2's host copies count twice their size, and arm 1 leaves the writes' faults on
     the request's path.
+  - The pool keeps refilling at the handover: refilling at the run's end is worth 49 µs
+    at the median, at a risk to the tail of back-to-back runs.
 
 ## Implications for shards (macOS/HVF backend)
 

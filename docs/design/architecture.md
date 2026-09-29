@@ -703,8 +703,10 @@ for the exit status.
     the pages its run will write, 2.9 MiB for that run, at no cost to the run's peak.
   - A template's first two pooled VMs are restored before its working set exists, and
     do not prefetch.
-- **Next:** the pool refills at the handover, and the refill's restore now overlaps the
-  rest of the run: whether that is the 45 µs the run's outside part gained [PM M30].
+  - The pool still refills at the handover. Its restore and prefetch now overlap the
+    run's tail, which costs the run about 45 µs. Refilling at the run's end instead
+    saved 49 µs at the median, but lands on the start of a run that follows at once
+    [PM M30].
 - **Tests:**
   - the IPC crate: descriptors that work on arrival, are close-on-exec, and respect the
     limits; descriptors past the limit, or on any part of a message, are closed; children
