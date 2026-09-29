@@ -17,6 +17,9 @@ guest (request to status, the VM's clock) and the rest. Each iteration runs both
 back to back, in alternating order, so their difference cancels what the host was doing
 then: the median of those differences is reported with a bootstrap 95% interval.
 
+AB_PAUSE (seconds, default 0.01) is the pause after each run, in which its daemon refills
+its pool: long enough, and no arm's refill overlaps the next run.
+
     python3 ab.py OLD_DIR NEW_DIR IMAGE N [COMMAND...]
 """
 import json, os, random, subprocess, sys, time
@@ -55,7 +58,7 @@ for i in range(n):
     for name in order:
         samples[name].append(run(*arms[name]))
         # The pool refills between a user's runs.
-        time.sleep(0.01)
+        time.sleep(float(os.environ.get("AB_PAUSE", "0.01")))
 
 
 def q(v, f):
