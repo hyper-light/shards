@@ -464,6 +464,32 @@ fn beat() -> Result<(), String> {
         lines.sort();
         let _ = writeln!(io::stdout(), "{}", lines.join("\n"));
     }
+    // Diagnostic (branch restore-diag): the CPUID leaves that steer a guest's paths.
+    #[cfg(target_arch = "x86_64")]
+    for (leaf, sub) in [
+        (0x1, 0),
+        (0x6, 0),
+        (0x7, 0),
+        (0xd, 0),
+        (0xd, 1),
+        (0x4000_0000, 0),
+        (0x4000_0001, 0),
+        (0x8000_0001, 0),
+        (0x8000_0007, 0),
+        (0x8000_0008, 0),
+        (0x8000_000a, 0),
+        (0x8000_0021, 0),
+    ] {
+        let r = std::arch::x86_64::__cpuid_count(leaf, sub);
+        let _ = writeln!(
+            io::stdout(),
+            "vuln cpuid {leaf:#010x}.{sub}: eax={:08x} ebx={:08x} ecx={:08x} edx={:08x}",
+            r.eax,
+            r.ebx,
+            r.ecx,
+            r.edx
+        );
+    }
     let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
     let mut beats = 0u64;
     // Diagnostic (branch restore-diag): the jump each clock makes across a pause.
