@@ -452,6 +452,18 @@ fn beat() -> Result<(), String> {
     // in threads after boot, and a snapshot taken before they end hands the rest to every
     // restore (docs/research/platform-measurements.md M21, M38).
     await_crypto_selftests()?;
+    // Diagnostic (branch restore-diag): the mitigations this guest chose.
+    if let Ok(dir) = std::fs::read_dir("/sys/devices/system/cpu/vulnerabilities") {
+        let mut lines: Vec<String> = dir
+            .filter_map(Result::ok)
+            .map(|e| {
+                let v = std::fs::read_to_string(e.path()).unwrap_or_default();
+                format!("vuln {}: {}", e.file_name().to_string_lossy(), v.trim())
+            })
+            .collect();
+        lines.sort();
+        let _ = writeln!(io::stdout(), "{}", lines.join("\n"));
+    }
     let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
     let mut beats = 0u64;
     loop {
