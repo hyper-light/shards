@@ -275,7 +275,9 @@ impl Authorizer {
                         ("", "")
                     };
                     if username.is_empty() || secret.is_empty() {
-                        return Err(Error(format!("{host} asks for credentials, and there are none")));
+                        return Err(Error::new(format!(
+                            "{host} asks for credentials, and there are none"
+                        )));
                     }
                     let basic = format!("Basic {}", BASE64.encode(format!("{username}:{secret}")));
                     hosts.insert(host, Arc::new(Handler::Basic(basic)));
@@ -295,12 +297,12 @@ impl Bearer {
         let realm = c
             .params
             .get("realm")
-            .ok_or_else(|| Error(format!("{registry}: a bearer challenge without a realm")))?;
-        let realm = Url::parse(realm).map_err(|e| Error(format!("{registry}: the token realm: {e}")))?;
+            .ok_or_else(|| Error::new(format!("{registry}: a bearer challenge without a realm")))?;
+        let realm = Url::parse(realm).map_err(|e| Error::new(format!("{registry}: the token realm: {e}")))?;
         if realm.scheme() == UrlScheme::Http
             && !(loopback(&realm) && registry.scheme() == UrlScheme::Http && loopback(registry))
         {
-            return Err(Error(format!(
+            return Err(Error::new(format!(
                 "{registry} names the token realm {realm}, which is not https"
             )));
         }
@@ -342,7 +344,7 @@ impl Bearer {
     /// containerd's `doBearerAuth`: OAuth2 when there is a secret, falling back to GET
     /// where the server has no OAuth2 endpoint; else an anonymous GET.
     fn fetch(&self, http: &Client, scopes: &[String]) -> Result<Token, Error> {
-        let context = |e: Error| Error(format!("fetching a token from {}: {e}", self.realm));
+        let context = |e: Error| Error::new(format!("fetching a token from {}: {e}", self.realm));
         if self.secret.is_empty() {
             return self.get(http, scopes).map_err(context);
         }
@@ -442,33 +444,33 @@ struct TokenResponse {
 /// carries `token` or `access_token`, and `access_token` wins, as containerd has it.
 fn read_token(response: &mut Response, oauth: bool) -> Result<Token, Error> {
     if !(200..400).contains(&response.status) {
-        return Err(Error(format!("unexpected status {}", response.status)));
+        return Err(Error::new(format!("unexpected status {}", response.status)));
     }
     let received = SystemTime::now();
     let mut body = Vec::new();
     response
         .take(MAX_TOKEN_RESPONSE + 1)
         .read_to_end(&mut body)
-        .map_err(|e| Error(format!("reading the token: {e}")))?;
+        .map_err(|e| Error::new(format!("reading the token: {e}")))?;
     if body.len() as u64 > MAX_TOKEN_RESPONSE {
-        return Err(Error("the token response passes 1 MiB".into()));
+        return Err(Error::new("the token response passes 1 MiB"));
     }
     // Go's json.Decoder reads the first value and ignores what follows.
     let parsed: TokenResponse = serde_json::Deserializer::from_slice(&body)
         .into_iter()
         .next()
-        .ok_or_else(|| Error("an empty token response".into()))?
-        .map_err(|e| Error(format!("unable to decode the token response: {e}")))?;
+        .ok_or_else(|| Error::new("an empty token response"))?
+        .map_err(|e| Error::new(format!("unable to decode the token response: {e}")))?;
     let value = match (parsed.access_token, parsed.token) {
         (Some(t), _) if !t.is_empty() => t,
         (_, Some(t)) if !t.is_empty() && !oauth => t,
-        _ => return Err(Error("the token server did not include a token".into())),
+        _ => return Err(Error::new("the token server did not include a token")),
     };
     let issued = match parsed.issued_at {
         None => received,
         Some(at) => {
             let at = time::OffsetDateTime::parse(&at, &time::format_description::well_known::Rfc3339)
-                .map_err(|e| Error(format!("a bad issued_at {at:?}: {e}")))?;
+                .map_err(|e| Error::new(format!("a bad issued_at {at:?}: {e}")))?;
             SystemTime::from(at)
         }
     };
@@ -484,7 +486,7 @@ fn read_token(response: &mut Response, oauth: bool) -> Result<Token, Error> {
 
 /// Hosts containerd serves over plain HTTP by default: `localhost`, 127.0.0.0/8 and ::1
 /// (`core/remotes/docker/registry.go`).
-fn loopback(url: &Url) -> bool {
+pub(crate) fn loopback(url: &Url) -> bool {
     let host = url.host().trim_start_matches('[').trim_end_matches(']');
     host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
@@ -497,7 +499,7 @@ mod tests {
 
     fn plain() -> Client {
         Client::new(
-            Box::new(|url| Err(Error(format!("{url}: no TLS here")))),
+            Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
             "shards-test",
         )
     }

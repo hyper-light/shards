@@ -31,27 +31,27 @@ pub struct Url {
 impl Url {
     pub fn parse(s: &str) -> Result<Url, Error> {
         let shown = redact(s);
-        let uri =
-            UriAbsoluteStr::new(s).map_err(|e| Error(format!("{shown:?} is not an absolute URL: {e}")))?;
+        let uri = UriAbsoluteStr::new(s)
+            .map_err(|e| Error::new(format!("{shown:?} is not an absolute URL: {e}")))?;
         let scheme = match uri.scheme_str().to_ascii_lowercase().as_str() {
             "http" => Scheme::Http,
             "https" => Scheme::Https,
-            other => return Err(Error(format!("{shown:?}: unsupported scheme {other:?}"))),
+            other => return Err(Error::new(format!("{shown:?}: unsupported scheme {other:?}"))),
         };
         let authority = uri
             .authority_components()
-            .ok_or_else(|| Error(format!("{shown:?} has no host")))?;
+            .ok_or_else(|| Error::new(format!("{shown:?} has no host")))?;
         if authority.userinfo().is_some() {
-            return Err(Error(format!("{shown:?} carries credentials")));
+            return Err(Error::new(format!("{shown:?} carries credentials")));
         }
         let host = authority.host().to_ascii_lowercase();
         if host.is_empty() || host.contains('%') {
-            return Err(Error(format!("{shown:?} has no usable host")));
+            return Err(Error::new(format!("{shown:?} has no usable host")));
         }
         let (port, explicit_port) = match authority.port().filter(|p| !p.is_empty()) {
             Some(p) => (
                 p.parse()
-                    .map_err(|_| Error(format!("{shown:?} has a bad port")))?,
+                    .map_err(|_| Error::new(format!("{shown:?} has a bad port")))?,
                 true,
             ),
             None => (scheme.default_port(), false),
@@ -81,13 +81,13 @@ impl Url {
     pub fn join(&self, reference: &str) -> Result<Url, Error> {
         let shown = redact(reference);
         let reference = UriReferenceStr::new(reference)
-            .map_err(|e| Error(format!("{shown:?} is not a URL reference: {e}")))?;
+            .map_err(|e| Error::new(format!("{shown:?} is not a URL reference: {e}")))?;
         let base = UriAbsoluteStr::new(self.text.split('#').next().unwrap_or_default())
-            .map_err(|e| Error(format!("{self}: {e}")))?;
+            .map_err(|e| Error::new(format!("{self}: {e}")))?;
         let resolved = reference.resolve_against(base);
         resolved
             .ensure_rfc3986_normalizable()
-            .map_err(|e| Error(format!("{shown:?} cannot be resolved against {self}: {e}")))?;
+            .map_err(|e| Error::new(format!("{shown:?} cannot be resolved against {self}: {e}")))?;
         let text = resolved.to_string();
         Url::parse(text.split('#').next().unwrap_or_default())
     }

@@ -184,8 +184,14 @@ pub fn parse_document(bytes: &[u8], content_type: &str) -> Result<Document, Erro
 
 /// Parses an image config, which must describe layers (config.md).
 pub fn parse_config(bytes: &[u8]) -> Result<ImageConfig, Error> {
-    let config: ImageConfig =
-        serde_json::from_slice(bytes).map_err(|e| Error(format!("image config: {e}")))?;
+    read_config(bytes)
+}
+
+/// Parses an image config as it streams from `reader`: fields shards does not use, such
+/// as a long `history`, pass by without being held.
+pub fn read_config(reader: impl std::io::Read) -> Result<ImageConfig, Error> {
+    let config: ImageConfig = serde_json::from_reader(std::io::BufReader::new(reader))
+        .map_err(|e| Error(format!("image config: {e}")))?;
     if config.rootfs.kind != "layers" {
         return bad(format!("rootfs type {:?} is not \"layers\"", config.rootfs.kind));
     }

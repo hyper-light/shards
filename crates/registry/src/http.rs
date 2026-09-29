@@ -25,8 +25,8 @@ use std::time::{Duration, Instant};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, StreamOwned};
 
-use crate::Error;
 use crate::url::{Scheme, Url};
+use crate::{Error, ErrorKind};
 
 const CONNECT: Duration = Duration::from_secs(30);
 const RACE: Duration = Duration::from_millis(300);
@@ -80,11 +80,17 @@ impl std::fmt::Debug for Request<'_> {
 #[derive(Debug)]
 pub struct Response {
     pub status: u16,
+    url: Url,
     headers: Vec<(String, String)>,
     body: Body,
 }
 
 impl Response {
+    /// The URL that answered: after redirects, the last one.
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
     /// The first value of the field `name`, which is matched without regard to case.
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
@@ -178,7 +184,7 @@ impl Client {
             }
             url = url.join(&location)?;
         }
-        Err(Error(format!("{}: stopped after 10 redirects", req.url)))
+        Err(Error::new(format!("{}: stopped after 10 redirects", req.url)))
     }
 
     /// The request line and fields, refusing any value that could split them.
@@ -194,7 +200,7 @@ impl Client {
         }
         for (name, value) in fields {
             if !valid_name(name) || value.bytes().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
-                return Err(Error(format!("an invalid {name:?} field")));
+                return Err(Error::new(format!("an invalid {name:?} field")));
             }
             head.push_str(name);
             head.push_str(": ");
@@ -214,7 +220,7 @@ impl Client {
             .write_all(head)
             .and_then(|()| conn.io.get_mut().flush());
         if let Err(e) = written {
-            return Err(Failure::BeforeResponse(Error(format!(
+            return Err(Failure::BeforeResponse(Error::new(format!(
                 "{}: sending: {e}",
                 req.url
             ))));
@@ -248,6 +254,7 @@ impl Client {
         body.finish_if_done();
         Ok(Response {
             status,
+            url: req.url.clone(),
             headers,
             body,
         })
@@ -262,7 +269,7 @@ impl Client {
                 let config = (self.tls)(url)?;
                 let host = url.host().trim_start_matches('[').trim_end_matches(']');
                 let name =
-                    ServerName::try_from(host.to_string()).map_err(|e| Error(format!("{url}: {e}")))?;
+                    ServerName::try_from(host.to_string()).map_err(|e| Error::new(format!("{url}: {e}")))?;
                 let mut tls = ClientConnection::new(config, name)?;
                 let mut tcp = tcp;
                 let deadline = Instant::now() + HANDSHAKE;
@@ -270,11 +277,16 @@ impl Client {
                     let left = deadline
                         .checked_duration_since(Instant::now())
                         .filter(|d| !d.is_zero())
-                        .ok_or_else(|| Error(format!("{url}: the TLS handshake timed out")))?;
+                        .ok_or_else(|| {
+                            Error::of(
+                                ErrorKind::Transient,
+                                format!("{url}: the TLS handshake timed out"),
+                            )
+                        })?;
                     tcp.set_read_timeout(Some(left))?;
                     tcp.set_write_timeout(Some(left))?;
                     tls.complete_io(&mut tcp)
-                        .map_err(|e| Error(format!("{url}: TLS handshake: {e}")))?;
+                        .map_err(|e| Error::from(e).context(format!("{url}: TLS handshake")))?;
                 }
                 Stream::Tls(Box::new(StreamOwned::new(tls, tcp)))
             }
@@ -306,7 +318,7 @@ fn dial(url: &Url) -> Result<TcpStream, Error> {
     let host = url.host().trim_start_matches('[').trim_end_matches(']');
     let found: Vec<SocketAddr> = (host, url.port())
         .to_socket_addrs()
-        .map_err(|e| Error(format!("{}: resolving: {e}", url.host())))?
+        .map_err(|e| Error::new(format!("{}: resolving: {e}", url.host())))?
         .collect();
     let addrs = interleave(found);
     let deadline = Instant::now() + CONNECT;
@@ -361,8 +373,11 @@ fn dial(url: &Url) -> Result<TcpStream, Error> {
         }
     }
     Err(match last {
-        Some(e) => Error(format!("{}: connecting: {e}", url.authority())),
-        None => Error(format!("{}: connecting timed out", url.authority())),
+        Some(e) => Error::from(e).context(format!("{}: connecting", url.authority())),
+        None => Error::of(
+            ErrorKind::Transient,
+            format!("{}: connecting timed out", url.authority()),
+        ),
     })
 }
 
@@ -400,18 +415,30 @@ fn read_head(conn: &mut Conn, url: &Url) -> Result<Head, Failure> {
             let left = deadline
                 .checked_duration_since(Instant::now())
                 .filter(|d| !d.is_zero())
-                .ok_or_else(|| Failure::Other(Error(format!("{url}: no response within 30 s"))))?;
+                .ok_or_else(|| {
+                    Failure::Other(Error::of(
+                        ErrorKind::Transient,
+                        format!("{url}: no response within 30 s"),
+                    ))
+                })?;
             conn.set_timeout(left).map_err(|e| Failure::Other(e.into()))?;
             let available = match conn.io.fill_buf() {
                 Ok(bytes) => bytes,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) if first && buf.is_empty() => {
-                    return Err(Failure::BeforeResponse(Error(format!("{url}: {e}"))));
+                    return Err(Failure::BeforeResponse(Error::from(e).context(url)));
                 }
-                Err(e) => return Err(Failure::Other(Error(format!("{url}: reading the response: {e}")))),
+                Err(e) => {
+                    return Err(Failure::Other(
+                        Error::from(e).context(format!("{url}: reading the response")),
+                    ));
+                }
             };
             if available.is_empty() {
-                let e = Error(format!("{url}: the connection closed before a response"));
+                let e = Error::of(
+                    ErrorKind::Transient,
+                    format!("{url}: the connection closed before a response"),
+                );
                 return Err(if first && buf.is_empty() {
                     Failure::BeforeResponse(e)
                 } else {
@@ -444,13 +471,13 @@ fn read_head(conn: &mut Conn, url: &Url) -> Result<Head, Failure> {
                 Ok(httparse::Status::Partial) => {
                     conn.io.consume(take);
                     if buf.len() > budget {
-                        return Err(Failure::Other(Error(format!(
+                        return Err(Failure::Other(Error::new(format!(
                             "{url}: the response head passes 10 MiB"
                         ))));
                     }
                 }
                 Err(e) => {
-                    return Err(Failure::Other(Error(format!(
+                    return Err(Failure::Other(Error::new(format!(
                         "{url}: a malformed response head: {e}"
                     ))));
                 }
@@ -459,7 +486,7 @@ fn read_head(conn: &mut Conn, url: &Url) -> Result<Head, Failure> {
         first = false;
         match parsed.status {
             101 => {
-                return Err(Failure::Other(Error(format!(
+                return Err(Failure::Other(Error::new(format!(
                     "{url}: an unexpected protocol switch"
                 ))));
             }
@@ -488,20 +515,22 @@ fn framing(method: &str, status: u16, version: u8, headers: &[(String, String)])
     let chunked = match codings.as_slice() {
         [] => false,
         [only] if only.eq_ignore_ascii_case("chunked") => true,
-        _ => return Err(Error(format!("unsupported transfer encoding {codings:?}"))),
+        _ => return Err(Error::new(format!("unsupported transfer encoding {codings:?}"))),
     };
     let lengths = values("content-length");
     let length = match lengths.split_first() {
         None => None,
         Some((first, rest)) => {
             if rest.iter().any(|l| l != first) {
-                return Err(Error(format!("conflicting Content-Length fields {lengths:?}")));
+                return Err(Error::new(format!(
+                    "conflicting Content-Length fields {lengths:?}"
+                )));
             }
             // strconv.ParseUint(s, 10, 63): ASCII digits only, below 2^63.
             let valid = !first.is_empty() && first.bytes().all(|b| b.is_ascii_digit());
             match first.parse::<u64>().ok().filter(|n| valid && *n < 1 << 63) {
                 Some(n) => Some(n),
-                None => return Err(Error(format!("a bad Content-Length {first:?}"))),
+                None => return Err(Error::new(format!("a bad Content-Length {first:?}"))),
             }
         }
     };
@@ -849,7 +878,7 @@ mod tests {
 
     fn plain() -> Client {
         Client::new(
-            Box::new(|url| Err(Error(format!("{url}: no TLS here")))),
+            Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
             "shards-test",
         )
     }
@@ -864,7 +893,7 @@ mod tests {
         let mut body = Vec::new();
         response
             .read_to_end(&mut body)
-            .map_err(|e| Error(e.to_string()))?;
+            .map_err(|e| Error::new(e.to_string()))?;
         Ok((response.status, body))
     }
 

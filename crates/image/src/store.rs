@@ -117,6 +117,117 @@ impl Partial {
     }
 }
 
+impl Partial {
+    /// Flushes and syncs the file, then moves it to `to`, replacing what is there.
+    fn replace(mut self, to: &Path) -> Result<(), Error> {
+        let Some(f) = self.file.take() else {
+            return Ok(());
+        };
+        let moved = f
+            .into_inner()
+            .map_err(|e| Error(e.to_string()))
+            .and_then(|file| Ok(file.sync_all()?))
+            .and_then(|()| Ok(fs::rename(&self.path, to)?));
+        if moved.is_err() {
+            let _ = fs::remove_file(&self.path);
+        }
+        moved
+    }
+}
+
+/// What `refs/` records for a reference.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Tag {
+    reference: String,
+    manifest: String,
+}
+
+/// A blob being downloaded (`Store::download`). Its file under `ingest/` stays locked for
+/// the download's life and outlives a failed attempt, so the next one resumes, as
+/// containerd keeps ingests (docs/research/registry-pull.md §2).
+pub struct Download {
+    path: PathBuf,
+    file: BufWriter<File>,
+    hasher: Hasher,
+    offset: u64,
+    digest: Digest,
+    size: u64,
+    target: PathBuf,
+}
+
+impl std::fmt::Debug for Download {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Download({}, {} of {} bytes)",
+            self.digest, self.offset, self.size
+        )
+    }
+}
+
+impl Download {
+    /// How many bytes are already here: where the next request should start.
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// Appends bytes that arrived; more than the blob's size is refused.
+    pub fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let offset = self.offset.saturating_add(bytes.len() as u64);
+        if offset > self.size {
+            return bad(format!("{}: more than its {} bytes", self.digest, self.size));
+        }
+        self.file.write_all(bytes)?;
+        self.hasher.update(bytes);
+        self.offset = offset;
+        Ok(())
+    }
+
+    /// Starts again from the first byte, for a server that ignored a range.
+    pub fn restart(&mut self) -> Result<(), Error> {
+        self.file.flush()?;
+        let file = self.file.get_mut();
+        file.set_len(0)?;
+        file.seek(io::SeekFrom::Start(0))?;
+        self.hasher = Hasher::new(self.digest.algorithm());
+        self.offset = 0;
+        Ok(())
+    }
+
+    /// Checks the size and then the digest, and moves the blob into place (fsync, then
+    /// rename). A download that fails the check is thrown away, so the next starts clean.
+    pub fn commit(self) -> Result<PathBuf, Error> {
+        let Download {
+            path,
+            file,
+            hasher,
+            offset,
+            digest,
+            size,
+            target,
+        } = self;
+        if offset != size {
+            return bad(format!("{digest}: {offset} of its {size} bytes"));
+        }
+        let actual = hasher.finish();
+        let file = file.into_inner().map_err(|e| Error(e.to_string()))?;
+        if actual != digest {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            return bad(format!("{digest}: the content hashes to {actual}"));
+        }
+        file.sync_all()?;
+        // Moved while still locked: a download waiting on the lock must find the blob.
+        if target.is_file() {
+            let _ = fs::remove_file(&path);
+        } else {
+            fs::rename(&path, &target)?;
+        }
+        drop(file);
+        Ok(target)
+    }
+}
+
 impl Write for Partial {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self.file.as_mut() {
@@ -149,7 +260,7 @@ impl Store {
         if !root.is_dir() {
             return bad(format!("{}: not a directory", root.display()));
         }
-        for dir in ["blobs/sha256", "blobs/sha384", "blobs/sha512", "ingest"] {
+        for dir in ["blobs/sha256", "blobs/sha384", "blobs/sha512", "ingest", "refs"] {
             fs::create_dir_all(root.join(dir))?;
         }
         fs::create_dir_all(root.join(format!("rootfs/v{ROOTFS_VERSION}")))?;
@@ -202,6 +313,90 @@ impl Store {
         let path = self.blob_path(digest);
         partial.commit(&path)?;
         Ok(path)
+    }
+
+    /// Starts or resumes downloading the `size`-byte blob `digest`. The bytes an earlier
+    /// attempt left are hashed again, so the blob is verified whole when it is committed.
+    /// Waits while another process downloads the same blob, and gives `None` if that left
+    /// it stored.
+    pub fn download(&self, digest: &Digest, size: u64) -> Result<Option<Download>, Error> {
+        let path =
+            self.root
+                .join("ingest")
+                .join(format!("{}-{}.partial", digest.algorithm().name(), digest.hex()));
+        let mut file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        file.lock()?;
+        // The lock may have been released by a download that finished. Its file has moved,
+        // and what is at `path` now is an empty file this call made.
+        if self.has(digest) {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            return Ok(None);
+        }
+        let mut hasher = Hasher::new(digest.algorithm());
+        let mut offset: u64 = 0;
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            let n = match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            };
+            hasher.update(buf.get(..n).unwrap_or_default());
+            offset = offset.saturating_add(n as u64);
+        }
+        let mut download = Download {
+            path,
+            file: BufWriter::with_capacity(CHUNK, file),
+            hasher,
+            offset,
+            digest: digest.clone(),
+            size,
+            target: self.blob_path(digest),
+        };
+        // More than the blob holds can only be wrong.
+        if offset > size {
+            download.restart()?;
+        }
+        Ok(Some(download))
+    }
+
+    /// Records that `reference` names the manifest `manifest`, replacing what it named.
+    pub fn tag(&self, reference: &str, manifest: &Digest) -> Result<(), Error> {
+        let record = serde_json::to_vec(&Tag {
+            reference: reference.to_string(),
+            manifest: manifest.to_string(),
+        })
+        .map_err(|e| Error(e.to_string()))?;
+        let mut partial = Partial::create(&self.root.join("ingest"))?;
+        partial.write_all(&record)?;
+        partial.replace(&self.tag_path(reference))
+    }
+
+    /// The manifest `reference` names, if it has been pulled.
+    pub fn tagged(&self, reference: &str) -> Result<Option<Digest>, Error> {
+        let bytes = match fs::read(self.tag_path(reference)) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let tag: Tag = serde_json::from_slice(&bytes).map_err(|e| Error(format!("{reference}: {e}")))?;
+        if tag.reference != reference {
+            return bad(format!("{reference}: its record names {}", tag.reference));
+        }
+        Digest::parse(&tag.manifest).map(Some)
+    }
+
+    /// References can be long and hold `/` and `:`, so records are named by their hash.
+    fn tag_path(&self, reference: &str) -> PathBuf {
+        let name = Digest::from_hash(Algorithm::Sha256, &Sha256::digest(reference.as_bytes()));
+        self.root.join("refs").join(name.hex())
     }
 
     /// A small blob's bytes, at most `max`, checked against its digest again.
@@ -470,6 +665,81 @@ mod tests {
         assert!(store.unpack(&raw(diff_id.clone()), 1 << 20).is_err());
         let out = store.unpack(&raw(sha256(&gz)), 1 << 20).unwrap();
         assert_eq!(fs::read(&out.path).unwrap(), gz);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn downloads_resume_where_they_stopped_and_are_verified_whole() {
+        let root = temp("download");
+        let store = Store::open(&root).unwrap();
+        let blob: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        let d = sha256(&blob);
+        let size = blob.len() as u64;
+        let mut first = store.download(&d, size).unwrap().unwrap();
+        first.write(&blob[..40_000]).unwrap();
+        drop(first);
+        let mut second = store.download(&d, size).unwrap().unwrap();
+        assert_eq!(second.offset(), 40_000, "the first attempt's bytes are kept");
+        assert!(
+            second.write(&vec![0u8; 60_001]).is_err(),
+            "more than the blob holds"
+        );
+        second.write(&blob[40_000..]).unwrap();
+        let path = second.commit().unwrap();
+        assert_eq!(fs::read(path).unwrap(), blob);
+        assert!(store.download(&d, size).unwrap().is_none(), "already stored");
+        // Wrong bytes are thrown away, so the next attempt starts clean.
+        let other = sha256(b"other");
+        let mut wrong = store.download(&other, 5).unwrap().unwrap();
+        wrong.write(b"wrong").unwrap();
+        assert!(wrong.commit().is_err());
+        assert_eq!(store.download(&other, 5).unwrap().unwrap().offset(), 0);
+        let mut again = store.download(&other, 5).unwrap().unwrap();
+        again.write(b"wro").unwrap();
+        again.restart().unwrap();
+        assert_eq!(again.offset(), 0);
+        drop(again);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn one_process_at_a_time_downloads_a_blob() {
+        let root = temp("download-lock");
+        let store = Store::open(&root).unwrap();
+        let blob = b"shared blob".to_vec();
+        let d = sha256(&blob);
+        let mut holder = store.download(&d, blob.len() as u64).unwrap().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (store2, d2, n) = (Store::open(&root).unwrap(), d.clone(), blob.len() as u64);
+        let waiter = std::thread::spawn(move || {
+            let _ = tx.send(store2.download(&d2, n).map(|d| d.is_none()));
+        });
+        // While the holder has the blob's lock, the other download waits.
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err());
+        holder.write(&blob).unwrap();
+        holder.commit().unwrap();
+        let stored = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert!(stored, "it finds the blob stored");
+        waiter.join().unwrap();
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn references_record_their_manifest() {
+        let root = temp("tags");
+        let store = Store::open(&root).unwrap();
+        let (a, b) = (sha256(b"a"), sha256(b"b"));
+        let name = "docker.io/library/alpine:latest";
+        assert_eq!(store.tagged(name).unwrap(), None);
+        store.tag(name, &a).unwrap();
+        assert_eq!(store.tagged(name).unwrap(), Some(a));
+        store.tag(name, &b).unwrap();
+        assert_eq!(store.tagged(name).unwrap(), Some(b));
+        assert_eq!(store.tagged("docker.io/library/alpine:3").unwrap(), None);
         let _ = fs::remove_dir_all(&root);
     }
 

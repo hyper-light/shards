@@ -82,48 +82,90 @@ impl Server {
     }
 }
 
+/// A request as a test server read it.
+#[derive(Debug, Clone)]
+pub(crate) struct Seen {
+    pub method: String,
+    pub target: String,
+    pub headers: Vec<(String, String)>,
+}
+
+impl Seen {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+}
+
 /// A loopback server answering each request with the next scripted response.
 pub(crate) fn serve(tls: Option<Arc<ServerConfig>>, script: Vec<(Vec<u8>, After)>) -> Server {
+    let script = Mutex::new(script.into_iter());
+    route(tls, move |_| script.lock().unwrap().next())
+}
+
+/// A loopback server answering each request with what `answer` makes of it, each
+/// connection on its own thread. `None` closes the connection unanswered.
+pub(crate) fn route(
+    tls: Option<Arc<ServerConfig>>,
+    answer: impl Fn(&Seen) -> Option<(Vec<u8>, After)> + Send + Sync + 'static,
+) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let accepted = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let (count, seen) = (accepted.clone(), requests.clone());
+    let answer = Arc::new(answer);
     std::thread::spawn(move || {
-        let mut script = script.into_iter();
-        'accept: for tcp in listener.incoming() {
+        for tcp in listener.incoming() {
             let Ok(tcp) = tcp else { return };
             count.fetch_add(1, Ordering::SeqCst);
-            let _ = tcp.set_read_timeout(Some(Duration::from_secs(10)));
-            let mut io: Box<dyn Io> = match &tls {
-                Some(config) => Box::new(StreamOwned::new(
-                    ServerConnection::new(config.clone()).unwrap(),
-                    tcp,
-                )),
-                None => Box::new(tcp),
-            };
-            loop {
-                match read_request(&mut io) {
-                    Ok(request) => seen
-                        .lock()
-                        .unwrap()
-                        .push(String::from_utf8_lossy(&request).into_owned()),
-                    Err(_) => continue 'accept,
-                }
-                let Some((response, after)) = script.next() else {
-                    return;
+            let (tls, seen, answer) = (tls.clone(), seen.clone(), answer.clone());
+            std::thread::spawn(move || {
+                let _ = tcp.set_read_timeout(Some(Duration::from_secs(10)));
+                let mut io: Box<dyn Io> = match &tls {
+                    Some(config) => Box::new(StreamOwned::new(
+                        ServerConnection::new(config.clone()).unwrap(),
+                        tcp,
+                    )),
+                    None => Box::new(tcp),
                 };
-                let _ = io.write_all(&response).and_then(|()| io.flush());
-                if let After::Close = after {
-                    continue 'accept;
+                while let Ok(request) = read_request(&mut io) {
+                    let text = String::from_utf8_lossy(&request).into_owned();
+                    seen.lock().unwrap().push(text.clone());
+                    let Some((response, after)) = answer(&parse(&text)) else {
+                        return;
+                    };
+                    let _ = io.write_all(&response).and_then(|()| io.flush());
+                    if let After::Close = after {
+                        return;
+                    }
                 }
-            }
+            });
         }
     });
     Server {
         port,
         accepted,
         requests,
+    }
+}
+
+fn parse(text: &str) -> Seen {
+    let head = text.split("\r\n\r\n").next().unwrap_or_default();
+    let mut lines = head.split("\r\n");
+    let mut first = lines.next().unwrap_or_default().split(' ');
+    let method = first.next().unwrap_or_default().to_string();
+    let target = first.next().unwrap_or_default().to_string();
+    let headers = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(n, v)| (n.to_string(), v.trim().to_string()))
+        .collect();
+    Seen {
+        method,
+        target,
+        headers,
     }
 }
 

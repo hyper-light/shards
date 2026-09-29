@@ -396,6 +396,51 @@ Pulls authorize as containerd v2.4.1 authorizes ([registry-pull](../research/reg
   - caching, and expiry from `issued_at`;
   - malformed answers, the realm rules, registry tokens and Basic challenges.
 
+### Pulls (D22)
+
+A pull resolves, fetches and checks as containerd v2.4.1 does
+([registry-pull](../research/registry-pull.md) R1, R6, R8). The code is
+`crates/registry/src/registry.rs` and `pull.rs`.
+
+- **Hosts** are reached as containerd's defaults reach them: Docker Hub at
+  `registry-1.docker.io`, loopback hosts over plain HTTP, all others over https.
+- **Requests** retry as `doWithRetries` does, at most 5 times:
+  - a timeout or cut connection is tried again after 50 ms;
+  - a 401 is answered (D21), then the request is sent again;
+  - a manifest HEAD refused with 405 becomes a GET;
+  - 408 is tried again, and a 500, 503 or 504 once.
+  - Unlike containerd, a 429 is never retried. Docker Hub counts pulls over hours, so
+    the error reports its `ratelimit-*` fields and `Retry-After`.
+- **Resolve** follows containerd's `Resolve`:
+  - a HEAD of the tag or digest with its `Accept` list;
+  - the digest comes from the reference, else from `Docker-Content-Digest` with a
+    `Content-Length`;
+  - a digest reference falls back to `blobs/` only after a 404.
+  - When a GET was needed, the manifest is verified and kept, so it is never fetched
+    twice.
+- **A pull:**
+  - chooses the platform manifest (D15's platform rules) and checks an unlabelled
+    one by its config;
+  - refuses anything but an image config, and any layer type it cannot read, before
+    downloading;
+  - requires one DiffID per layer.
+  - Layers download 3 at a time, dockerd's default. Every size, digest and DiffID is
+    checked before the EROFS image is built and the reference recorded.
+- **Resuming.** A blob downloads into `ingest/`, one file per digest.
+  - The file is locked (`File::lock`) while in use, so one process at a time downloads
+    a blob. Its commit renames it before the lock is released.
+  - A cut download resumes with `Range: bytes=<offset>-`, after the bytes already there
+    are hashed again.
+  - A server that ignores the range sends the whole blob, and the download starts
+    over. Three stops without progress fail it, as containerd's `httpReadSeeker` gives
+    up.
+- **Tests:** a fake registry answers behind a bearer token, and redirects blobs to a
+  CDN on another origin that must never see the token. One layer's first download is
+  cut in half. They check:
+  - the whole pull, and that a second pull costs one HEAD;
+  - platforms our guests can't run, DiffID mismatches and tampered bytes, all refused;
+  - rate limits reported, not retried.
+
 ## 3. Components
 
 ```
@@ -461,7 +506,8 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
      rootfs image; `shards run IMAGE CMD`.
    - Built: our kernel (CI releases); virtio-pmem; the EROFS writer; layers → one EROFS
      image (D15); booting into an image to run a command (D16); the image store (D18);
-     registry TLS, HTTP and auth (D19–D21). Next: pulls, and `shards run IMAGE`.
+     registry TLS, HTTP and auth (D19–D21); pulls (D22). Next: `shards pull`, and
+     `shards run IMAGE`.
 4. **In-VM engine.**
    - Scope: Docker Engine API subset → full; the rootless runtime (compatible, not
      containers underneath); networks, volumes, build; compose.
