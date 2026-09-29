@@ -352,6 +352,16 @@ mod compare {
         });
         after_spawn();
         let beat = beat.recv_timeout(TIMEOUT);
+        // Diagnostic (branch restore-diag): the VM's KVM counters at its first beat.
+        if beat.is_ok() {
+            let dump = Command::new("sudo")
+                .args(["sh", "-c"])
+                .arg(format!("cd /sys/kernel/debug/kvm && for f in {pid}-*/* {pid}-*/vcpu0/*; do [ -f \"$f\" ] && v=$(cat \"$f\" 2>/dev/null) && [ \"$v\" != 0 ] && echo \"${{f##*/}}=$v\"; done | tr '\\n' ' '"))
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default();
+            println!("kvm-debugfs {:?} {dump}", command.get_program());
+        }
         let overhead = beat.is_ok().then(|| {
             (0..READINGS)
                 .map(|_| {
