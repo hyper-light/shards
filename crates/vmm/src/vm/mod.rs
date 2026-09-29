@@ -21,7 +21,7 @@ pub const WORKING_SETS: bool = cfg!(hv);
 #[cfg(hv)]
 mod runtime;
 #[cfg(hv)]
-pub use runtime::{Handle, Running, check_host, max_vcpus, restore, start};
+pub use runtime::{Handle, Running, check_host, diag_pages, max_vcpus, restore, start};
 
 #[cfg(not(hv))]
 mod unsupported;

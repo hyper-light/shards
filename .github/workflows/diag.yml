@@ -56,6 +56,38 @@ jobs:
             done
           done
           for arm in new old; do SHARDS_HOME=$ab/$arm $shards daemon stop; done
+          # Where the request's pages were: in the working set the template recorded?
+          python3 - $new/templates/*/working-set $ab/old.log $ab/new.log <<'PY'
+          import glob, struct, sys, statistics
+          raw = open(sys.argv[1], "rb").read()
+          at = 12
+          (alen,) = struct.unpack_from("<I", raw, at); at += 4 + alen + 8
+          (n,) = struct.unpack_from("<I", raw, at); at += 4
+          ws = {}
+          for i in range(n):
+              (v,) = struct.unpack_from("<Q", raw, at + 8 * i)
+              ws[v & ~0xfff] = bool(v & 1)
+          print(f"working set: {len(ws)} pages, {sum(ws.values())} written")
+          for log in sys.argv[2:]:
+              stats = {"request": [], "in_ws": [], "written": [], "written_in_ws_as_written": []}
+              for req in glob.glob(log + ".*.request"):
+                  ans = req[: -len("request")] + "answered"
+                  try:
+                      before = {int(l.split()[0], 16) for l in open(req)}
+                      after = {int(l.split()[0], 16): l.strip().endswith(" w") for l in open(ans)}
+                  except OSError:
+                      continue
+                  new_pages = {p: w for p, w in after.items() if p not in before}
+                  written = [p for p, w in new_pages.items() if w]
+                  stats["request"].append(len(new_pages))
+                  stats["in_ws"].append(sum(p in ws for p in new_pages))
+                  stats["written"].append(len(written))
+                  stats["written_in_ws_as_written"].append(sum(ws.get(p, False) for p in written))
+              print(f"== {log}: {len(stats['request'])} VMs")
+              for k, v in stats.items():
+                  if v:
+                      print(f"  {k:26} median {statistics.median(v):>6.0f}  min {min(v):>6}  max {max(v):>6}")
+          PY
           python3 - $ab/old.log $ab/new.log <<'PY'
           import re, sys, statistics
           keys = ["pf_taken", "pf_fixed", "exits", "io_exits", "mmio_exits", "halt_exits",

@@ -341,6 +341,31 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     launch(machine, cfg.snapshot.clone(), cfg.hold)
 }
 
+/// Diagnostic (branch kvm-ws-diag): this process's guest RAM.
+static DIAG_MEMORY: std::sync::OnceLock<Arc<GuestMemory>> = std::sync::OnceLock::new();
+
+/// Diagnostic: writes the guest addresses of the RAM pages mapped now, one per line with
+/// a `w` where written, to `$SHARDS_KVM_STATS.<pid>.<label>`.
+pub fn diag_pages(label: &str) {
+    #[cfg(target_os = "linux")]
+    if let (Some(path), Some(memory)) = (std::env::var_os("SHARDS_KVM_STATS"), DIAG_MEMORY.get()) {
+        let mut out = String::new();
+        for (gpa, host, len) in memory.regions() {
+            if let Ok(pages) = crate::platform::mapped_pages(host, len) {
+                for (i, written) in pages {
+                    let at = gpa + i as u64 * 4096;
+                    out.push_str(&format!("{at:x}{}\n", if written { " w" } else { "" }));
+                }
+            }
+        }
+        let mut path = std::path::PathBuf::from(path).into_os_string();
+        path.push(format!(".{}.{label}", std::process::id()));
+        let _ = std::fs::write(path, out);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = label;
+}
+
 /// Starts the machine's vCPUs; with `hold`, they wait for [`Handle::release`].
 fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(Handle, Running), String> {
     let Machine {
@@ -355,6 +380,7 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         config,
     } = m;
     let vcpus = config.vcpus;
+    let _ = DIAG_MEMORY.set(memory.clone());
     let vm = Arc::new(vm);
     let bus = Arc::new(bus);
     let start = Arc::new(start);

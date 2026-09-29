@@ -644,6 +644,7 @@ fn serve_workload(
                         let ask = || {
                             let request = crate::warm::receive(&link, &to_guest)?;
                             shards_vmm::diag_phase("request");
+                            shards_vmm::vm::diag_pages("request");
                             served_timing
                                 .asked
                                 .store(request.timing, std::sync::atomic::Ordering::Relaxed);
@@ -670,6 +671,7 @@ fn serve_workload(
                                     .load(std::sync::atomic::Ordering::Relaxed)
                                     .then(|| timing_json(&stopper, Some(&served_timing)));
                                 shards_vmm::diag_phase("answered");
+                                shards_vmm::vm::diag_pages("answered");
                                 crate::warm::finish(&link, connection.as_ref(), &served, timing.as_deref());
                                 save_working_set(&stopper);
                                 (served, true)
