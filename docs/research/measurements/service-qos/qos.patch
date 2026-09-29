@@ -1,0 +1,76 @@
+diff --git a/crates/shards/src/run.rs b/crates/shards/src/run.rs
+index 1e85bf3..8a49fe2 100644
+--- a/crates/shards/src/run.rs
++++ b/crates/shards/src/run.rs
+@@ -57,6 +57,7 @@ enum Pull {
+ }
+ 
+ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
++    shards_vmm::platform::m22_qos();
+     let asked = match parse(args) {
+         Ok(asked) => asked,
+         Err(e) if e.is_empty() => {
+diff --git a/crates/shards/src/vm_run.rs b/crates/shards/src/vm_run.rs
+index a551715..67859b6 100644
+--- a/crates/shards/src/vm_run.rs
++++ b/crates/shards/src/vm_run.rs
+@@ -485,6 +485,7 @@ fn serve_workload(
+         let served = std::thread::Builder::new()
+             .name("workload".into())
+             .spawn(move || {
++                shards_vmm::platform::m22_qos();
+                 // The guest is connected and waiting: the request is a line on stdin.
+                 let gate = || {
+                     let _ = writeln!(std::io::stderr(), "shards-ready");
+diff --git a/crates/vmm/src/devices/virtio/vsock/mod.rs b/crates/vmm/src/devices/virtio/vsock/mod.rs
+index 090c3c9..56ee77c 100644
+--- a/crates/vmm/src/devices/virtio/vsock/mod.rs
++++ b/crates/vmm/src/devices/virtio/vsock/mod.rs
+@@ -200,7 +200,10 @@ impl Vsock {
+         let (flag, waker) = (stop.clone(), self.waker.clone());
+         let thread = thread::Builder::new()
+             .name("virtio-vsock".into())
+-            .spawn(move || run(session, &memory, &interrupt, &waker, &flag))
++            .spawn(move || {
++                crate::platform::m22_qos();
++                run(session, &memory, &interrupt, &waker, &flag)
++            })
+             .map_err(|e| format!("spawning virtio-vsock worker: {e}"))?;
+         self.worker = Some(Worker { thread, stop });
+         Ok(())
+diff --git a/crates/vmm/src/platform/macos_thread.rs b/crates/vmm/src/platform/macos_thread.rs
+index 8aaf7e5..2647c24 100644
+--- a/crates/vmm/src/platform/macos_thread.rs
++++ b/crates/vmm/src/platform/macos_thread.rs
+@@ -21,6 +21,12 @@ unsafe extern "C" {
+     fn mach_timebase_info(info: *mut MachTimebaseInfo) -> libc::c_int;
+ }
+ 
++/// M22: QoS user-interactive only.
++pub fn make_current_interactive() {
++    // SAFETY: a plain call on the current thread.
++    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0) };
++}
++
+ /// Applies QoS user-interactive plus the Mach time-constraint policy to the calling
+ /// thread. Failure is reported, not fatal: the VM still runs, only with coarser timers.
+ pub fn make_current_realtime() -> Result<(), String> {
+diff --git a/crates/vmm/src/platform/mod.rs b/crates/vmm/src/platform/mod.rs
+index 3c9d054..fd22508 100644
+--- a/crates/vmm/src/platform/mod.rs
++++ b/crates/vmm/src/platform/mod.rs
+@@ -18,6 +18,14 @@ pub use windows::*;
+ #[cfg(target_os = "macos")]
+ mod macos_thread;
+ 
++/// M22: user-interactive QoS on the calling thread when SHARDS_M22_QOS=1.
++pub fn m22_qos() {
++    #[cfg(target_os = "macos")]
++    if std::env::var_os("SHARDS_M22_QOS").is_some_and(|v| v == "1") {
++        macos_thread::make_current_interactive();
++    }
++}
++
+ /// Applies the scheduling policy measured to give vCPUs precise timer wake-ups. Only
+ /// macOS has a measured policy (docs/research/platform-measurements.md M8, M10); on other
+ /// hosts this is a no-op until one is measured.

@@ -438,6 +438,39 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   self-tests stay on: turning them off (`cryptomgr.notests`) would drop the kernel's check
   of its own crypto.
 
+### M22. Thread QoS on a templated run's request path
+
+- **Question.** On a busy host, a templated `shards run` has a long tail in three places:
+  restoring, the command's round trip, and launching and tearing down the process. Only
+  vCPU threads run at user-interactive QoS (M10). The main thread, the workload relay
+  and the virtio-vsock worker run at the default. Does raising them shorten the tail?
+- **Method.** Harness: `docs/research/measurements/service-qos/run.sh`.
+  - `qos.patch` adds a switch that raises those three threads to user-interactive. The
+    harness builds it in a temporary worktree.
+  - One binary serves both modes, and runs alternate.
+  - Templates are quiescent (M21). Each is saved and restored once before sampling.
+  - `--load` kept all 18 CPUs busy with `yes`.
+  - 2026-09-29, this machine, with other VMs running.
+- **Results** (ms):
+
+| Load | QoS | n | wall p50 | p90 | p99 | max | restore p99 | command p99 | process p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| the host's own (about 4–5) | default | 300 | 6.55 | 7.31 | 14.26 | 20.09 | 6.21 | 4.44 | 7.13 |
+| | user-interactive | 300 | 6.50 | 7.44 | 17.19 | 17.55 | 7.72 | 4.54 | 7.10 |
+| every CPU busy | default | 160 | 9.07 | 18.04 | 38.61 | 48.47 | 16.67 | 10.97 | 15.09 |
+| | user-interactive | 160 | 8.96 | 17.73 | 30.46 | 36.10 | 14.46 | 6.72 | 16.32 |
+
+  - Neither the median nor p90 moved. The p99s moved both ways between repeats. A first
+    run of the same comparison under load had user-interactive at 37.8 ms p99 against
+    37.2, with a max of 86.9 ms.
+  - In the slowest runs, restoring (5–14 ms), handing off the exit status (1.7–3.8 ms)
+    and launching and tearing down the process (up to 12 ms) grew together. The guest's
+    own steps stayed at their medians.
+- **Consequence.** The service threads keep the default QoS. The tail is the host-side
+  work of a per-request process on shared CPUs: launching it, restoring a VM into it, and
+  tearing it down. D2's warm pool takes all three off the request path. Warm requests in
+  the run benchmark take 0.97 ms at p50.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**
