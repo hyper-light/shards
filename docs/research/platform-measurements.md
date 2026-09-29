@@ -1330,3 +1330,57 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   that a just-exited process mapped). Reproduce it in hvfbench with sequential child
   processes.
 - Linux/KVM counterparts of M4–M11 (to be measured on a KVM host and in an EL2 guest).
+
+### M39. The pinned builder's kernel, and a tick lost to the crypto self-tests at boot
+
+- **Question.** Release kernel-6.18.48-296d2de54137 is the first built in the pinned
+  builder (resources/kernel/builder.env: Debian's gcc 12.2.0 and ld 2.40, where the
+  runners' own toolchains built the releases before), and it carries patch 0001
+  (fs/dax). Does it boot and restore as fast as kernel-6.18.48-1bff175d35cb?
+- **Method.**
+  - `docs/research/measurements/kernel-ab/ab.py` boots shards-init, and restores a
+    snapshot of the `resume` test guest taken with the same kernel, each in a fresh
+    `shards vm` process. The kernels alternate, A then B, then B then A. After 3
+    warm-ups, n = 200 each, timed by the VMM's clock.
+  - Apple M5 Max (Mac17,6), macOS 26.4.1, revision 2ec158b, 1 vCPU and 256 MiB.
+- **Results** (µs, p50 / p90 / p99 / max).
+
+| Phase | 1bff175d35cb | 296d2de54137 |
+|---|---|---|
+| kernel: guest entry → PID 1 | 15903 / 25985 / 26267 / 26313 | 15884 / 26048 / 26203 / 26232 |
+| to_init: VMM `main` → PID 1 | 18771 / 28858 / 29343 / 30083 | 18686 / 28913 / 29296 / 29531 |
+| restore: VMM `main` → RESUMED | 1149 / 1314 / 1486 / 1586 | 1150 / 1313 / 1521 / 1938 |
+
+  - The two kernels are indistinguishable.
+  - Under both, the kernel phase has two modes, 10 ms apart: 15.5–16.3 ms, and
+    25.5–26.3 ms in 57 and 49 of 200 boots. 10 ms is one tick at the configuration's
+    `CONFIG_HZ=100`.
+- **Where the tick goes.**
+  - `boot-log.py` boots the test guest in its `kmsg` mode, which prints the kernel's log
+    once the boot is over. Under `quiet`, the log costs the boot no console output. By
+    the kernel's own clock, 31 of 100 boots ran init at about 22.4 ms and the rest at
+    about 12.3 ms.
+  - The slow boots fell 10.05 ms behind at a single step: between the late initcall
+    that registers encrypted keys and "clk: Disabling unused clocks". With
+    `initcall_debug`, which made every boot slow, `deferred_probe_initcall` took 9.7 ms
+    there and probed nothing.
+  - Just before it, `crypto_algapi_init` starts the crypto self-tests the boot deferred,
+    one `cryptomgr_test` kthread per algorithm, at normal priority (crypto/algapi.c
+    `crypto_start_tests`, crypto/algboss.c `cryptomgr_schedule_test`; unchanged in
+    v7.2-rc4). The kernel is `PREEMPT_NONE` and the guest has one vCPU. When PID 1 sleeps
+    in `deferred_probe_initcall`'s `flush_work`, the tests can take the CPU, and PID 1
+    gets it back at the next tick.
+  - With `cryptomgr.notests=1`, none of 100 boots was slow: init ran at 10.6–11.3 ms
+    (p50 11.0 against 12.4). `fw_devlink=off` and `=permissive` left the slow share
+    where it was, at 35–38% of 60 boots each.
+- **Consequence.**
+  - shards pins kernel-6.18.48-296d2de54137.
+  - The self-tests stay on (resources/kernel/README.md). The fix lies in how they share
+    the CPU with the end of boot: their priority, the preemption model or `HZ`. Each
+    changes more than the boot, so each is to be measured
+    (docs/audit/2026-09-29_response.md).
+  - Templates never see the self-tests: shards-init waits for them before saving one
+    [M21], so restores skip them [M38]. Only boots pay.
+- **Open.** Why the boots of Firecracker's CI kernel in docs/benchmarks.md, on
+  2026-09-28, had one mode, around 18.5 ms.
+

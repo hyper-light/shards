@@ -49,7 +49,8 @@ Build metadata (timestamp, user, host, version) is fixed, and nothing in the con
 generates keys. So the same inputs and toolchain produce the same bytes, which CI checks on
 every build. Before the builder was pinned, two independent CI runs built byte-identical
 x86_64 kernels (releases kernel-6.18.48-0c3e7e3279fd and kernel-6.18.48-1bff175d35cb,
-whose inputs differ only for aarch64): SHA-256 136a182b…c6e181.
+whose inputs differ only for aarch64): SHA-256 136a182b…c6e181. The first release built in
+the pinned builder, kernel-6.18.48-296d2de54137, passed the check on both architectures.
 
 ## Licences
 

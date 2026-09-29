@@ -16,17 +16,17 @@ pub struct Pinned {
 /// The kernel for guests of this host's architecture, which is theirs.
 pub const KERNEL: Option<Pinned> = if cfg!(target_arch = "x86_64") {
     Some(Pinned {
-        name: "vmlinux-6.18.48-x86_64-1bff175d35cb",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-1bff175d35cb/vmlinux-6.18.48-x86_64",
-        size: 27_708_976,
-        sha256: "136a182b7013fa32d852a7f227b91f6c113d9ad9dbe7a9b9d4baac7153ddd59c",
+        name: "vmlinux-6.18.48-x86_64-296d2de54137",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-296d2de54137/vmlinux-6.18.48-x86_64",
+        size: 27_717_320,
+        sha256: "dd464d2076713e58ae4b57f02171779fa358907d6bc7d7cc2d9f14c39209a8dc",
     })
 } else if cfg!(target_arch = "aarch64") {
     Some(Pinned {
-        name: "Image-6.18.48-aarch64-1bff175d35cb",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-1bff175d35cb/Image-6.18.48-aarch64",
-        size: 18_883_072,
-        sha256: "ed7fb50d27b59e29e9e6c9f57f02c4bb82f8c3f5ecd51bd8083741f77597913b",
+        name: "Image-6.18.48-aarch64-296d2de54137",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-296d2de54137/Image-6.18.48-aarch64",
+        size: 18_950_656,
+        sha256: "5cc14e7758925368367175486516b2e338f89d18b185d9c67daaa33f893a8a96",
     })
 } else {
     None

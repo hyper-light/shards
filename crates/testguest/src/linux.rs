@@ -19,6 +19,7 @@ pub fn main() {
             "snapshot" => snapshot(),
             "resume" => resume(),
             "idle" => idle(),
+            "kmsg" => kmsg(),
             "beat" => beat(),
             "vsock" => vsock(),
             "vsock_snapshot" => vsock_snapshot(),
@@ -422,6 +423,32 @@ fn resume() -> Result<(), String> {
     let control = ControlPage::map()?;
     control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
     control.write(shards_abi::control::MARKER, shards_abi::marker::RESUMED);
+    Ok(())
+}
+
+/// Prints the kernel's log, each record as /dev/kmsg gives it (`level,seq,usecs,flags;text`,
+/// Documentation/ABI/testing/dev-kmsg): with `quiet`, a boot's log costs it no console
+/// output, and is read only once the boot has been measured.
+fn kmsg() -> Result<(), String> {
+    let fd = open("/dev/kmsg", libc::O_RDONLY | libc::O_NONBLOCK)?;
+    let mut record = vec![0u8; 8192];
+    let mut out = io::stdout().lock();
+    loop {
+        // SAFETY: `record` is valid for writes of its length; each read is one record.
+        let n = unsafe { libc::read(fd, record.as_mut_ptr().cast(), record.len()) };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            match e.raw_os_error() {
+                Some(libc::EAGAIN) => break,
+                // A record overwritten before it was read.
+                Some(libc::EPIPE) => continue,
+                _ => return Err(format!("reading /dev/kmsg: {e}")),
+            }
+        }
+        let _ = out.write_all(record.get(..n as usize).unwrap_or_default());
+    }
+    // SAFETY: closing our own descriptor.
+    unsafe { libc::close(fd) };
     Ok(())
 }
 
