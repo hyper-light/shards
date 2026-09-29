@@ -656,7 +656,10 @@ for the exit status.
 - **Built: the daemon** (`crates/shards/src/daemon.rs`), with `shards run` as its client
   (`client.rs`).
   - One serves each SHARDS_HOME, holding its `daemon.lock`. `shards run` starts it when
-    nothing listens on its socket, `daemon.sock` in the home.
+    nothing listens on its socket, `daemon.sock` in the home, through `shards daemon
+    --detached`, which starts it in a session of its own and exits: init adopts the
+    daemon and reaps it when it exits (APUE §13.3). Left the child of the client that
+    started it, it stayed a zombie for as long as that client lived.
   - Every process that uses the socket first makes the home its working directory, and
     names the socket relative to it. That name fits a socket address whatever the
     home's path. The per-user directories macOS offers for sockets cost each new process
@@ -665,7 +668,8 @@ for the exit status.
     shared directory must not let another user run commands as this one [PM M25].
   - It keeps SHARDS_POOL warm VMs (default 2) of each template it has served. A pool
     refills once its VM has taken its run, since starting the next VM on the request's
-    path cost 200–600 µs [PM M26]. A run with no template boots a VM that saves one on the way, and a
+    path cost 200–600 µs [PM M26], and on a thread of its own, so that the run's own
+    messages are read as they come. A run with no template boots a VM that saves one on the way, and a
     run with its own kernel and init boots every time. A template whose warm VMs fail
     three times in a row is removed and saved again.
   - **It keeps its copies of the client's descriptors until the VM says `TAKEN`.**
@@ -676,8 +680,18 @@ for the exit status.
     `RESTART`. The daemon removes its socket, ends its runs as `shards daemon stop`
     does, and exits; the client starts its own, which takes the home once the old one
     has gone (up to 20 s).
-  - It follows each run to its end: once the warm VM has sent the client its status, it
-    sends the daemon `DONE`. The daemon can signal a command meanwhile, on the same socket.
+  - It follows each run to its end. The warm VM tells the daemon of its command's start
+    (`STARTED`) before its client has any of the command's output, and of its end
+    (`DONE`) before its client has the status; a Unix socket's send puts a message in
+    the daemon's queue before it returns. Every container command first takes what
+    each run has sent (`settle`), under a lock per run that the run's own thread reads
+    under too, so it answers with all any client has seen: `ps` lists a container whose
+    output has appeared, and not a `--rm` one whose `run` has returned, as dockerd
+    records a container's state before `docker run` learns it (docker/cli run.go
+    `waitExitOrRemoved`). Waiting for the daemon to acknowledge each instead cost a run
+    241 µs at the median (95% [206, 293], `build-ab/ab.py`, n = 400); this costs none
+    measurable (+16 µs, 95% [−30, +73]). The daemon can signal a command meanwhile, on
+    the same socket.
   - It exits after SHARDS_DAEMON_IDLE seconds (900) with no run in progress and none
     asked for. `shards daemon stop` first ends the runs in progress as dockerd ends its
     containers when it shuts down: SIGTERM to each command, then SIGKILL after 10 s
@@ -685,7 +699,10 @@ for the exit status.
     outlives that by 5 s, as dockerd gives up after 15 s (moby daemon/daemon.go). A
     daemon that another build replaces does the same, as dockerd without live-restore
     stops its containers when it restarts: two daemons never keep one home's records.
-    Keeping runs through a restart (live-restore) is a later milestone.
+    Keeping runs through a restart (live-restore) is a later milestone. `stop` returns
+    once the daemon has let go of its home: the daemon unlocks it and closes the stop
+    connections itself, last, since the kernel closes an exiting process's descriptors
+    in no order to rely on (XNU `fdt_invalidate` closes the highest first).
 - **The command's stdin** is /dev/null, or with `-i` a pipe the client fills from its
   own. Under `-t` it feeds the guest's pty, which never closes (D16).
   - It ends when the client does, as `docker run -i`'s does when its client goes
