@@ -144,20 +144,15 @@ impl Registry {
 
     /// Changes the container with `id` by `f`, and writes it.
     pub fn update(&mut self, id: &str, f: impl FnOnce(&mut Container)) -> io::Result<()> {
-        if self.change(id, f) {
+        if let Some(c) = self.by_id.get_mut(id) {
+            f(c);
             self.save(id)?;
         }
         Ok(())
     }
 
-    /// Changes the container with `id` by `f`, without writing it yet; whether there is
-    /// one.
-    pub fn change(&mut self, id: &str, f: impl FnOnce(&mut Container)) -> bool {
-        self.by_id.get_mut(id).map(f).is_some()
-    }
-
     /// Writes the container with `id` to its directory, replacing what was there at once.
-    pub fn save(&self, id: &str) -> io::Result<()> {
+    fn save(&self, id: &str) -> io::Result<()> {
         let Some(c) = self.by_id.get(id) else {
             return Ok(());
         };
@@ -171,26 +166,15 @@ impl Registry {
 
     /// Removes the container with `id`, and everything kept for it.
     pub fn remove(&mut self, id: &str) -> io::Result<Option<Container>> {
-        let removed = self.forget(id);
+        let removed = self.by_id.remove(id);
         if removed.is_some() {
-            self.delete_files(id)?;
+            match std::fs::remove_dir_all(self.root.join(id)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
         }
         Ok(removed)
-    }
-
-    /// Removes the container with `id`, leaving what is kept for it to [`delete_files`].
-    ///
-    /// [`delete_files`]: Self::delete_files
-    pub fn forget(&mut self, id: &str) -> Option<Container> {
-        self.by_id.remove(id)
-    }
-
-    /// Deletes what is kept for the container with `id`.
-    pub fn delete_files(&self, id: &str) -> io::Result<()> {
-        match std::fs::remove_dir_all(self.root.join(id)) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
-        }
     }
 
     /// The directory kept for the container with `id`.

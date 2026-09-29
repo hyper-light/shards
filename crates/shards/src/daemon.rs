@@ -134,6 +134,21 @@ enum For {
 struct Tracked {
     socket: UnixStream,
     vm: Arc<shards_ipc::Child>,
+    inbox: Arc<Mutex<Inbox>>,
+}
+
+/// What a run has told the daemon, and the socket it tells it on: read under this lock
+/// alone, by the run's own thread as messages come (`track`), and by every container
+/// command before it answers (`settle`). A run tells the daemon of its start and end
+/// before its client learns of them, so a command sees what any client has seen.
+struct Inbox {
+    socket: UnixStream,
+    /// The warm VM's process ID, for the log.
+    pid: u32,
+    started: bool,
+    /// A detached run's client, until the daemon tells it whether its command started.
+    detached: Option<UnixStream>,
+    ended: bool,
 }
 
 /// Why a template's pool gave no warm VM.
@@ -276,6 +291,17 @@ fn serve() -> Result<(), String> {
     ));
     daemon.listen(listener);
     Ok(())
+}
+
+/// Whether `socket` has something to read now: a message, or its end.
+fn readable(socket: &UnixStream) -> bool {
+    let mut pfd = libc::pollfd {
+        fd: socket.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: poll(2) on one valid pollfd, without waiting.
+    unsafe { libc::poll(&mut pfd, 1, 0) > 0 }
 }
 
 /// The home's lock, or `None` if another daemon serves the home. One that finds no
@@ -561,11 +587,9 @@ impl Daemon {
                 }
             };
             let handed = hand_over(&ready.socket, &payload, &fds);
-            // Only now, so that starting its successor delays no run.
-            if let Some(dir) = &ready.pool {
-                self.refill(&mut lock(&self.state), dir);
-            }
-            self.make_spare();
+            // Only now, so that starting its successor delays no run, and on a thread of
+            // its own, so that the run's own messages are read as they come (`track`).
+            self.replace(ready.pool.clone());
             match handed {
                 // The warm VM serves the client from here, and ours close. A detached
                 // client waits for the daemon to say whether its command started.
@@ -646,6 +670,26 @@ impl Daemon {
         Ok(())
     }
 
+    /// Starts the successor of a warm VM of `pool` that has just taken a run, and the next
+    /// run's spare container, on a thread of their own: a spawn and a file take
+    /// milliseconds that the run's start and end should not wait for.
+    fn replace(self: &Arc<Self>, pool: Option<PathBuf>) {
+        let refill = |daemon: &Arc<Self>, pool: Option<&Path>| {
+            if let Some(dir) = pool {
+                daemon.refill(&mut lock(&daemon.state), dir);
+            }
+            daemon.make_spare();
+        };
+        let (daemon, theirs) = (self.clone(), pool.clone());
+        let spawned = std::thread::Builder::new()
+            .name("refill".into())
+            .spawn(move || refill(&daemon, theirs.as_deref()));
+        if let Err(e) = spawned {
+            log(format!("a refill thread: {e}; refilling here"));
+            refill(self, pool.as_deref());
+        }
+    }
+
     /// Makes a spare container, if there is none, for the next run to take: making it
     /// costs a directory and a file that no run should wait for.
     fn make_spare(&self) {
@@ -653,7 +697,10 @@ impl Daemon {
             return;
         }
         let made = containers::new_id().and_then(|id| {
-            let log = new_log(&lock(&self.containers).dir(&id))?;
+            // The lock only for the name: the directory and file are made without it,
+            // which a run's record, and `ps`, would otherwise wait for.
+            let dir = lock(&self.containers).dir(&id);
+            let log = new_log(&dir)?;
             Ok((id, log))
         });
         match made {
@@ -684,15 +731,25 @@ impl Daemon {
     /// that never started leaves its container created, with the status that says why
     /// (moby daemon/start.go). A detached run's client learns whether its command started,
     /// and if not, why not, as `docker run -d` does.
-    fn track(self: &Arc<Self>, ready: Ready, id: &str, mut detached: Option<UnixStream>) {
+    fn track(self: &Arc<Self>, ready: Ready, id: &str, detached: Option<UnixStream>) {
         let pid = ready.vm.id();
         // Runs last as long as their commands.
         let _ = ready.socket.set_read_timeout(None);
-        match ready.socket.try_clone() {
+        let fd = ready.socket.as_raw_fd();
+        let signals = ready.socket.try_clone();
+        let inbox = Arc::new(Mutex::new(Inbox {
+            socket: ready.socket,
+            pid,
+            started: false,
+            detached,
+            ended: false,
+        }));
+        match signals {
             Ok(socket) => {
                 let tracked = Tracked {
                     socket,
                     vm: ready.vm.clone(),
+                    inbox: inbox.clone(),
                 };
                 // One handed over while the daemon stops is stopped too.
                 if self.ending.load(Ordering::SeqCst) {
@@ -702,33 +759,64 @@ impl Daemon {
             }
             Err(e) => log(format!("VM {pid}'s socket: {e}")),
         }
-        let mut started = false;
-        let done = loop {
-            match shards_ipc::recv(&ready.socket) {
-                Ok(Some(m)) if m.kind == kind::STARTED => {
-                    started = true;
-                    let mut registry = lock(&self.containers);
-                    registry.change(id, |c| {
-                        c.state = Life::Running;
-                        c.started = Some(containers::now());
-                    });
-                    if let Some(client) = detached.take() {
-                        let _ = shards_ipc::send(&client, kind::END, &[0], &[]);
-                    }
-                    // Before the disk: `ps` reads the record in memory.
-                    let _ = shards_ipc::send(&ready.socket, kind::RECORDED, &[], &[]);
-                    if let Err(e) = registry.save(id) {
-                        log(format!("container {id}: {e}"));
-                    }
-                }
-                Ok(Some(m)) if m.kind == kind::DONE => break Some(m.payload),
+        // A command may have taken the run's end already; then this learns it within a
+        // tick. `fd` stays open while `inbox` holds the socket.
+        while !self.take_messages(id, &inbox) {
+            let mut pfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: poll(2) on one valid pollfd.
+            unsafe { libc::poll(&mut pfd, 1, TICK) };
+        }
+    }
+
+    /// Takes the messages run `id` has sent and nobody has taken yet; whether it has
+    /// ended.
+    fn take_messages(&self, id: &str, inbox: &Mutex<Inbox>) -> bool {
+        let mut inbox = lock(inbox);
+        while !inbox.ended && readable(&inbox.socket) {
+            match shards_ipc::recv(&inbox.socket) {
+                Ok(Some(m)) if m.kind == kind::STARTED => self.run_started(id, &mut inbox),
+                Ok(Some(m)) if m.kind == kind::DONE => self.run_ended(id, &mut inbox, Some(&m.payload)),
                 Ok(Some(_)) => {}
-                Ok(None) | Err(_) => break None,
+                Ok(None) | Err(_) => self.run_ended(id, &mut inbox, None),
             }
-        };
+        }
+        inbox.ended
+    }
+
+    /// Takes what every run has sent, so that what a command answers includes all that
+    /// any client has seen of them.
+    pub(super) fn settle(&self) {
+        let runs: Vec<(String, Arc<Mutex<Inbox>>)> = lock(&self.runs)
+            .iter()
+            .map(|(id, t)| (id.clone(), t.inbox.clone()))
+            .collect();
+        for (id, inbox) in runs {
+            self.take_messages(&id, &inbox);
+        }
+    }
+
+    fn run_started(&self, id: &str, inbox: &mut Inbox) {
+        inbox.started = true;
+        self.record(id, |c| {
+            c.state = Life::Running;
+            c.started = Some(containers::now());
+        });
+        if let Some(client) = inbox.detached.take() {
+            let _ = shards_ipc::send(&client, kind::END, &[0], &[]);
+        }
+    }
+
+    /// Run `id` ended: `done` is its DONE, or `None` for a VM that ended without one.
+    fn run_ended(&self, id: &str, inbox: &mut Inbox, done: Option<&[u8]>) {
+        inbox.ended = true;
+        let (pid, started) = (inbox.pid, inbox.started);
         // DONE carries the status, and for a command that never started what dockerd
         // would say and the code its container keeps (warm.rs finish).
-        let (status, said) = match done.as_deref().and_then(<[u8]>::split_first) {
+        let (status, said) = match done.and_then(<[u8]>::split_first) {
             Some((&status, said)) => (
                 status,
                 (!started).then(|| String::from_utf8_lossy(said).into_owned()),
@@ -750,34 +838,27 @@ impl Daemon {
         {
             let mut registry = lock(&self.containers);
             let removing = registry.get(id).is_some_and(|c| c.auto_remove);
-            if removing {
-                registry.forget(id);
+            let kept = if removing {
+                registry.remove(id).map(drop)
             } else {
-                registry.change(id, |c| {
+                registry.update(id, |c| {
                     c.exit_code = Some(status);
                     if started {
                         c.state = Life::Exited;
                         c.finished = Some(containers::now());
                     }
-                });
+                })
+            };
+            if let Err(e) = kept {
+                log(format!("container {id}: {e}"));
             }
             lock(&self.runs).remove(id);
             for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
                 let _ = waiter.send(status);
             }
-            // The VM tells the client now; the disk can follow.
-            let _ = shards_ipc::send(&ready.socket, kind::RECORDED, &[], &[]);
-            let kept = if removing {
-                registry.delete_files(id)
-            } else {
-                registry.save(id)
-            };
-            if let Err(e) = kept {
-                log(format!("container {id}: {e}"));
-            }
         }
         // A detached command that never started: why, as `docker run -d` says it.
-        if let Some(client) = detached.take() {
+        if let Some(client) = inbox.detached.take() {
             let (text, exits) = crate::workload::not_run(said.as_deref().unwrap_or_default());
             let _ = shards_ipc::send(&client, kind::ERR, format!("{text}\n").as_bytes(), &[]);
             let _ = shards_ipc::send(&client, kind::END, &[exits], &[]);
@@ -805,6 +886,12 @@ impl Daemon {
     }
 
     /// Changes the record of the container with `id` by `f`, and writes it.
+    fn record(&self, id: &str, f: impl FnOnce(&mut Container)) {
+        if let Err(e) = lock(&self.containers).update(id, f) {
+            log(format!("container {id}: {e}"));
+        }
+    }
+
     /// Stops serving: removes the socket, ends the runs in progress, and exits once they
     /// have ended, as dockerd shuts down (`shards daemon stop`, or a client of another
     /// build, whose own daemon then takes the home).

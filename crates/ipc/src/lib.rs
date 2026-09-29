@@ -59,12 +59,12 @@ pub mod kind {
     /// Warm VM → daemon: it has the run's descriptors, so the daemon may close its own.
     pub const TAKEN: u8 = 8;
     /// Warm VM → daemon: the command ended with this status (one byte); then, if the
-    /// command never ran, why not. Its client gets the status once the daemon has
-    /// `RECORDED` it.
+    /// command never ran, why not. Sent before the client has the status, as `STARTED`
+    /// is before the client has anything the command wrote: the daemon's commands, which
+    /// first take what every run has sent, see what any client has seen.
     pub const DONE: u8 = 9;
     /// Warm VM → daemon: the command is executing: it started, where `DONE` without this
-    /// means it never did. The VM relays nothing more to its client until the daemon has
-    /// `RECORDED` it.
+    /// means it never did.
     pub const STARTED: u8 = 10;
     /// Client → daemon: a container command (`ps`, `wait`, `rm`, ...) and its arguments,
     /// as a list of strings, for the daemon to run and answer with `OUT`, `ERR` and `END`.
@@ -80,11 +80,6 @@ pub mod kind {
     /// big-endian u16, as `docker run` resizes a TTY container's (docker/cli
     /// cli/command/container/tty.go).
     pub const RESIZE: u8 = 15;
-    /// Daemon → warm VM: the `STARTED` or `DONE` it sent last is in the daemon's record, so
-    /// what the client sees next, `ps` shows: the command's output only once it is
-    /// running there, its status only once it has exited (or gone, for `--rm`), as dockerd
-    /// has recorded a container's state before `docker run` learns it.
-    pub const RECORDED: u8 = 16;
 }
 
 /// A container command as the client asks for it (`kind::CONTAINER`): its name and the

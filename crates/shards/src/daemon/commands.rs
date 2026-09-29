@@ -146,6 +146,8 @@ impl Daemon {
     /// Runs container command `argv` for a client, answering on `reply`, and returns its
     /// exit status, the client being `asker`.
     pub(super) fn command(self: &Arc<Self>, argv: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
+        // What any client has seen of its run, the answer includes.
+        self.settle();
         let words: Vec<&str> = argv.iter().map(String::as_str).collect();
         let Some((command, path, named)) = commands::find(&words) else {
             reply.err(&format!("shards: no container command in {argv:?}"));
