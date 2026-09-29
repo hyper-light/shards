@@ -108,9 +108,8 @@ pub unsafe fn release(ptr: NonNull<u8>, len: usize) {
 /// written.
 ///
 /// # Safety
-/// `at..at+len` must be page-aligned, inside a reservation from [`reserve`] that nothing
-/// references, and no hypervisor maps unless it follows mapping changes (KVM) and what
-/// the file holds there is what the memory held; `offset` must be page-aligned.
+/// `at..at+len` must be page-aligned, inside a reservation from [`reserve`] that no
+/// hypervisor maps and nothing references yet; `offset` must be page-aligned.
 pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull<u8>) -> io::Result<()> {
     let offset = file_offset(offset)?;
     // SAFETY: MAP_FIXED over memory the caller owns and nothing references.
@@ -140,7 +139,8 @@ pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull
 /// (platform-measurements M17).
 ///
 /// # Safety
-/// As for [`map_file_private`].
+/// `at..at+len` must be page-aligned, inside a reservation from [`reserve`] that no
+/// hypervisor maps and nothing references yet.
 pub unsafe fn map_file_readonly(file: &File, len: usize, at: NonNull<u8>) -> io::Result<()> {
     // SAFETY: MAP_FIXED over memory the caller owns and nothing references.
     let p = unsafe {

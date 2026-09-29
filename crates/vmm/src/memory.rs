@@ -126,26 +126,6 @@ impl GuestMemory {
         Ok(mem)
     }
 
-    /// Maps every region afresh from `file`, copy-on-write, as [`from_file`](Self::from_file)
-    /// does: the guest reads what it did, but the host maps each page again only once
-    /// it is touched, so what is mapped later is what was touched since.
-    ///
-    /// # Safety
-    /// Every vCPU and device must be paused, nothing may reference the regions, `file`
-    /// must hold what [`save`](Self::save) wrote of them, and the hypervisor must follow
-    /// mapping changes (KVM, api.rst 4.35: "changes in the backing of the memory region
-    /// are automatically reflected into the guest").
-    pub unsafe fn remap(&self, file: &std::fs::File) -> io::Result<()> {
-        let mut offset = 0u64;
-        for r in &self.regions {
-            // SAFETY: forwarded caller contract; the region is page-aligned (checked on
-            // creation), and region offsets in the file are page-aligned sums.
-            unsafe { platform::map_file_private(file, offset, r.len, r.host) }?;
-            offset += r.len as u64;
-        }
-        Ok(())
-    }
-
     /// Writes every region in turn to `file`, leaving all-zero pages as holes so the file
     /// stays as small as the memory the guest used. Every vCPU and device must be paused.
     pub fn save(&self, file: &std::fs::File) -> io::Result<()> {
@@ -312,19 +292,20 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    /// What working sets record on Linux (vm::x86_64::record): once remapped, memory maps
-    /// only what is touched from then on, and a page written is a private copy.
+    /// What working sets record on Linux (vm::x86_64::recorder): memory mapped from a
+    /// file maps only what is touched, and a page written is a private copy.
     #[cfg(target_os = "linux")]
     #[test]
-    fn remapped_memory_maps_only_what_is_touched_after() {
+    fn file_backed_memory_maps_only_what_is_touched() {
         let p = page_size().unwrap();
         let base = 0x8000_0000u64;
         let at = |page: usize| base + (page * p) as u64;
-        let m = GuestMemory::anonymous(&[(base, 64 * p)]).unwrap();
+        let ranges = [(base, 64 * p)];
+        let saved = GuestMemory::anonymous(&ranges).unwrap();
         for page in 0..64 {
-            m.write(at(page), &[page as u8 + 1]).unwrap();
+            saved.write(at(page), &[page as u8 + 1]).unwrap();
         }
-        let path = std::env::temp_dir().join(format!("shards-remap-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("shards-touched-{}", std::process::id()));
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -332,9 +313,8 @@ mod tests {
             .truncate(true)
             .open(&path)
             .unwrap();
-        m.save(&file).unwrap();
-        // SAFETY: nothing else uses `m`, and `file` holds what it saved.
-        unsafe { m.remap(&file) }.unwrap();
+        saved.save(&file).unwrap();
+        let m = GuestMemory::from_file(&ranges, &file).unwrap();
         let (_, host, len) = m.regions().next().unwrap();
         assert_eq!(platform::mapped_pages(host, len).unwrap(), []);
 

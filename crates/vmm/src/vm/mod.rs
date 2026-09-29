@@ -15,8 +15,13 @@ use x86_64 as machine;
 pub const SNAPSHOTS: bool = cfg!(hv);
 /// Whether a VM resumed from its snapshot records its working set, for restores to
 /// prefetch: every backend's can, HVF's at stage 2 (hv::hvf::Watch), KVM's from the
-/// pages its host maps (vm::x86_64::record).
+/// pages its host maps (vm::x86_64::recorder).
 pub const WORKING_SETS: bool = cfg!(hv);
+/// Which run records it. HVF's: the one that saves the template, whose command recording
+/// slows sixfold (PM M30), on a run that boots anyway. KVM's: the first warm restore
+/// without one, for which recording costs nothing, and whose pages later restores touch,
+/// where the saving run's they barely do (PM M33).
+pub const RESTORES_RECORD: bool = cfg!(hv = "kvm");
 
 #[cfg(hv)]
 mod runtime;
@@ -80,6 +85,9 @@ pub struct RestoreConfig {
     /// Prefetch the snapshot's working set, if it has one, before the guest runs: for a
     /// restore ahead of its request, which it moves off the request's path (PM M30).
     pub prefetch: bool,
+    /// Record a working set for the snapshot, where it has none and this backend records
+    /// restores' ([`RESTORES_RECORD`]), until [`Handle::save_working_set`] saves it.
+    pub record: bool,
 }
 
 #[derive(Debug, Clone)]

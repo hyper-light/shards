@@ -29,9 +29,7 @@ const REQ_FLUSH: u32 = 0;
 pub struct Region {
     host: NonNull<u8>,
     len: usize,
-    /// How much of it maps the file: its size, rounded up to a page.
-    mapped: usize,
-    file: File,
+    _file: File,
 }
 
 // SAFETY: the mapping is read-only and owned by this value; it is only read, by the
@@ -73,20 +71,8 @@ impl Region {
         Ok(Region {
             host,
             len,
-            mapped,
-            file,
+            _file: file,
         })
-    }
-
-    /// Maps the file afresh over the region: the guest reads what it did, but the host
-    /// maps each page again only once it is touched.
-    ///
-    /// # Safety
-    /// The guest must be paused, and its hypervisor must follow mapping changes (KVM).
-    pub unsafe fn remap(&self) -> std::io::Result<()> {
-        // SAFETY: the reservation `open` made, mapped from the same unchanging file (the
-        // caller contract covers the hypervisor).
-        unsafe { platform::map_file_readonly(&self.file, self.mapped, self.host) }
     }
 
     pub fn host(&self) -> *mut u8 {

@@ -10,8 +10,9 @@
 //!   run from its pool of warm VMs of the image's template (D25, D26). Only where this
 //!   build can snapshot. Restores cost more for some templates than others, so samples
 //!   come from `--templates T` of them (default 5), each saved afresh under a new daemon.
-//!   A template's save and its first two runs are not samples: the pool restored those
-//!   VMs before the save's run had recorded the working set they would prefetch (PM M30).
+//!   A template's save and its first runs are not samples: the pool restored their VMs
+//!   before the working set they would prefetch was recorded, by the save's run (HVF: two
+//!   runs) or the first warm restore (KVM: three) (PM M30, M33).
 //!   Its phases:
 //!   - `template_command`: the command sent → its exit status read (the VM's clock): the
 //!     command's run in the guest.
@@ -50,6 +51,10 @@ fn main() {
     use support::{report, rss_mib, run_env, stats, us, wall_us};
 
     const WARMUP: usize = 3;
+    // A template's runs whose VMs its pool restored before the working set existed: the
+    // pool's first two, and where a warm restore records it, the one restored as the
+    // recording run took its VM.
+    const UNPREFETCHED: usize = if shards_vmm::vm::RESTORES_RECORD { 3 } else { 2 };
     let runs: usize = support::option("--runs").map_or(50, |v| v.parse().expect("--runs N"));
     let templates: usize = support::option("--templates")
         .map_or(5, |v| v.parse().expect("--templates T"))
@@ -93,8 +98,10 @@ fn main() {
             run_env(&stop, false, &env);
             let _ = std::fs::remove_dir_all(home.join("templates"));
             run_env(template_args, false, &env); // saves the template
-            run_env(template_args, false, &env); // the pool's first two runs, restored
-            run_env(template_args, false, &env); // before the working set existed
+            // The runs whose VMs were restored before the working set existed.
+            for _ in 0..UNPREFETCHED {
+                run_env(template_args, false, &env);
+            }
         }
         for _ in 0..runs / templates + usize::from(t < runs % templates) {
             cold.push(run_env(cold_args, false, &cold_env));

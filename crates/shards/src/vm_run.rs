@@ -289,6 +289,8 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         vsock: common.vsock,
         // Restored ahead of its request: the prefetch costs the request nothing.
         prefetch: hold || warm.is_some(),
+        // A warm VM's request ends the recording as it ends a template's (RECORD_FOR).
+        record: warm.is_some(),
     };
     Ok(Restore {
         cfg,

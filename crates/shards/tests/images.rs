@@ -130,9 +130,16 @@ fn repeat_runs_restore_a_template_of_the_image() {
     assert_eq!(saved.len(), 1, "{saved:?}");
     assert!(!saved[0].contains(".new-"), "{saved:?}");
 
-    // The first run recorded what it touched, once it had answered: the working set that
-    // restores prefetch, where the backend records one. The daemon's pool was restored
-    // before it existed, so a new daemon restores the next run.
+    // The working set that restores prefetch, where the backend records one: what the
+    // first run touched, once it had answered (HVF), or the first warm restore, the second
+    // run's (KVM, `vm::RESTORES_RECORD`). The daemon's pool was restored before it
+    // existed, so a new daemon restores the next run.
+    if shards_vmm::vm::RESTORES_RECORD {
+        let recording = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+        assert_eq!(recording.status, Some(0), "{}", recording.stderr);
+        assert!(!booted(&recording), "{}", recording.stderr);
+        assert_eq!(recording.prefetched(), Some(0), "{}", recording.stderr);
+    }
     let working_set = home.join("templates").join(&saved[0]).join("working-set");
     let deadline = std::time::Instant::now() + TIMEOUT;
     while shards_vmm::vm::WORKING_SETS && !working_set.exists() && std::time::Instant::now() < deadline {

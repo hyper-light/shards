@@ -345,12 +345,7 @@ pub type Recorder = Arc<hv::Watch>;
 
 /// Starts recording `vm`'s working set: its stage 2 watches RAM and pmem alike. Every
 /// vCPU must be out of the guest.
-pub fn record(
-    vm: &hv::Vm,
-    _memory: &Arc<GuestMemory>,
-    _bus: &MmioBus,
-    _dir: &Path,
-) -> Result<Option<Recorder>, String> {
+pub fn record(vm: &hv::Vm) -> Result<Option<Recorder>, String> {
     let watch = vm.watch();
     watch.start().map_err(|e| e.to_string())?;
     Ok(Some(watch))
@@ -359,6 +354,11 @@ pub fn record(
 /// Stops recording; the pages touched since [`record`], in order.
 pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
     Ok(recorder.stop())
+}
+
+/// None: on HVF, the run that saves a template records its working set ([`record`]).
+pub fn recorder(_m: &Machine) -> Option<Recorder> {
+    None
 }
 
 /// How many pages of its working set a restored machine prefetched.

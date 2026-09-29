@@ -309,6 +309,7 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     } else {
         None
     };
+    let recording = cfg.record && working_set.is_none();
     let machine = machine::restore(
         &snap,
         &memory_file,
@@ -316,12 +317,27 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
         cfg.vsock.as_deref(),
         working_set.unwrap_or_default(),
     )?;
+    let recorder = if recording {
+        machine::recorder(&machine)
+            .map(|r| File::open(&cfg.dir).map(|dir| (r, dir)))
+            .transpose()
+            .unwrap_or_else(|e| {
+                warn!("not recording a working set: {}: {e}", cfg.dir.display());
+                None
+            })
+    } else {
+        None
+    };
     info!(
         "restored a {} MiB guest from {}",
         snap.config.memory_mib,
         cfg.dir.display()
     );
-    launch(machine, cfg.snapshot.clone(), cfg.hold)
+    let (handle, running) = launch(machine, cfg.snapshot.clone(), cfg.hold)?;
+    if recorder.is_some() {
+        *lock(&handle.shared.recording) = recorder;
+    }
+    Ok((handle, running))
 }
 
 /// Starts the machine's vCPUs; with `hold`, they wait for [`Handle::release`].
@@ -533,10 +549,7 @@ impl Coordinator {
         }
         let started = File::open(&self.policy.dir)
             .map_err(|e| format!("{}: {e}", self.policy.dir.display()))
-            .and_then(|dir| {
-                let recorder = machine::record(&self.vm, &self.memory, &self.bus, &self.policy.dir)?;
-                Ok(recorder.map(|r| (r, dir)))
-            });
+            .and_then(|dir| Ok(machine::record(&self.vm)?.map(|r| (r, dir))));
         match started {
             Ok(r) => *recording = r,
             Err(e) => warn!("not recording a working set: {e}"),

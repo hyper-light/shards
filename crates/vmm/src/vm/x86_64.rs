@@ -21,7 +21,7 @@ use crate::devices::{Interrupt, MmioBus};
 use crate::hv::{self, Io};
 use crate::memory::GuestMemory;
 use crate::snapshot::codec::{Reader, Writer};
-use crate::snapshot::{self, MachineConfig, Snapshot};
+use crate::snapshot::{MachineConfig, Snapshot};
 use crate::{debug, initramfs, platform, warn};
 
 const MIB: u64 = 1 << 20;
@@ -465,46 +465,34 @@ fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> usize {
 /// Stage-2 pages, as working sets record them: the host's pages.
 pub const PAGE: u64 = 4 << 10;
 
-/// What records a working set: the guest's memory, mapped afresh at the snapshot, and
-/// kept mapped until the recording ends, even if the VM stops first.
+/// What records a working set: a restored guest's memory, whose host mappings start
+/// empty, kept mapped until the recording ends, even if the VM stops first.
 #[derive(Debug)]
 pub struct Recorder {
     memory: Arc<GuestMemory>,
     pmem: Vec<(u64, Arc<pmem::Region>)>,
 }
 
-/// Starts recording the working set from the snapshot just written to `dir`, with every
-/// vCPU parked and every device paused. RAM is mapped afresh, copy-on-write, from the
-/// snapshot's memory file, and each pmem region from its file, so the host maps a page
-/// again only once the guest (or a device) touches it; KVM follows (api.rst 4.35). From
-/// here on the VM runs as its restores do, and what the host maps when the recording
-/// ends is what they touch: pages written since are private copies.
-pub fn record(
-    _vm: &hv::Vm,
-    memory: &Arc<GuestMemory>,
-    bus: &Bus,
-    dir: &Path,
-) -> Result<Option<Recorder>, String> {
-    if platform::page_size().map_err(|e| e.to_string())? as u64 != PAGE {
-        return Ok(None);
-    }
-    let path = dir.join(snapshot::MEMORY);
-    let file = File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    // SAFETY: the coordinator records between writing the snapshot and resuming the
-    // devices, with every vCPU parked; `file` is the memory it just saved; KVM follows
-    // mapping changes.
-    unsafe { memory.remap(&file) }.map_err(|e| format!("mapping guest RAM afresh: {e}"))?;
-    for (gpa, region) in &bus.pmem {
-        // SAFETY: as above.
-        unsafe { region.remap() }.map_err(|e| format!("mapping pmem at {gpa:#x} afresh: {e}"))?;
-    }
-    Ok(Some(Recorder {
-        memory: memory.clone(),
-        pmem: bus.pmem.clone(),
-    }))
+/// None: on KVM, the run that saves a template records nothing; its first warm restore
+/// does ([`recorder`], `vm::RESTORES_RECORD`).
+pub fn record(_vm: &hv::Vm) -> Result<Option<Recorder>, String> {
+    Ok(None)
 }
 
-/// The pages touched since [`record`]: those the host maps, written where it holds a
+/// Records what restored machine `m` touches: its RAM is mapped copy-on-write from the
+/// snapshot's file and its pmem from its images, afresh, so the host maps a page only once
+/// the guest (or a device) touches it; what the host maps when the recording ends is
+/// what the guest touched, and a private copy of RAM is a page it wrote. None where the
+/// host's pages are not the working set's.
+pub fn recorder(m: &Machine) -> Option<Recorder> {
+    let page = platform::page_size().ok()? as u64;
+    (page == PAGE).then(|| Recorder {
+        memory: m.memory.clone(),
+        pmem: m.bus.pmem.clone(),
+    })
+}
+
+/// The pages touched since the restore: those the host maps, written where it holds a
 /// private copy of RAM. pmem is read-only, so a page there that is not the file's is the
 /// shared zero page, past the end of the file.
 pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
