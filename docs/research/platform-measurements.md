@@ -358,6 +358,42 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   seeding costs 17 ms, once per process: over three times the whole start budget, for any
   process that makes a TLS connection.
 
+### M20. A restored guest's first vsock connection, with every CPU busy
+
+- **Question.** A restored guest dials the host at once: shards-init does, for its
+  workload. Does that connection survive the reset that follows a restore?
+- **Method.** Harness: `docs/research/measurements/vsock-restore-race/run.sh N COMMAND…`.
+  It keeps every CPU busy with `yes`, runs COMMAND N times, and prints each failure.
+  - COMMAND: `shards vm restore TEMPLATE -- /bin/testguest exit 0`, on a template of the
+    E2E test image, and `shards run --pull never IMAGE exit 0`, which restores the
+    image's template.
+  - For the console of failed runs, a diagnostic build did not discard it.
+  - 2026-09-28/29, this machine (18 CPUs), on a host running other VMs.
+- **Results.**
+
+| Device after a restore | Command | Failed |
+|---|---|---|
+| posts TRANSPORT_RESET (3e47544) | `vm restore` | 13 of 350 |
+| resets the snapshot's streams with RSTs on RX | `vm restore` | 0 of 400 |
+| same | `shards run`, templated | 0 of 400 |
+
+  - The six failures with a console showed the same line: `shards-init: dialing the
+    host: Connection reset by peer (os error 104)`. init then powered off, and shards
+    reported that the guest stopped before the command ended.
+  - The other seven showed the same markers: the guest resumed and never connected.
+  - At the old failure rate, 400 clean runs would happen by chance with p ≈ 3 × 10⁻⁷.
+- **Cause.** Busy CPUs delay the device's worker thread. If it first runs after the
+  guest has sent its REQUEST, one interrupt carries both the RESPONSE (RX queue) and
+  the owed TRANSPORT_RESET (event queue).
+  - Linux's `vm_interrupt` visits queues in setup order: RX, TX, event (virtio_ring.c
+    `list_add_tail`).
+  - So `rx_work` establishes the socket, then `event_work` resets every established
+    socket, the new one included (virtio_transport.c `virtio_vsock_reset_sock`).
+  - `connect` then returns ECONNRESET.
+- **Consequence.** D12: the restored device resets what its snapshot held with RSTs on
+  RX. `rx_work` handles RX strictly in order, so the resets land before anything newer.
+  The event queue is never used.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

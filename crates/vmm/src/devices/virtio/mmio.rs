@@ -315,6 +315,7 @@ impl MmioDevice for MmioTransport {
             w.bool(p.signalled_used.is_some());
             w.u16(p.signalled_used.unwrap_or(0));
         });
+        s.device.save(w);
     }
 
     /// A device that was live resumes on its queues at the saved progress, so requests
@@ -350,6 +351,7 @@ impl MmioDevice for MmioTransport {
                 signalled_used: signalled.then_some(at),
             })
         })?;
+        s.device.restore(r)?;
         s.status = status_reg;
         s.device_features_sel = dev_sel;
         s.driver_features_sel = drv_sel;

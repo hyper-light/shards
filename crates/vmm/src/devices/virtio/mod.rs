@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use super::Interrupt;
 use crate::memory::GuestMemory;
+use crate::snapshot::codec::{self, Reader, Writer};
 use queue::{Queue, QueueState};
 
 /// Feature bits (virtio 1.3 §6).
@@ -140,4 +141,10 @@ pub trait VirtioDevice: Send {
     /// `resume`. Returns each queue's progress, or nothing if the device is not active.
     fn pause(&mut self) -> Vec<QueueState>;
     fn resume(&mut self) -> Result<(), String>;
+    /// Writes what a snapshot keeps of the device beyond its queues. Called while paused.
+    fn save(&self, _w: &mut Writer) {}
+    /// Reads what `save` wrote, before a restored device is activated.
+    fn restore(&mut self, _r: &mut Reader<'_>) -> codec::Result<()> {
+        Ok(())
+    }
 }

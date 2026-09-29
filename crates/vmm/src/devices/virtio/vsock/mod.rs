@@ -22,8 +22,9 @@ use std::time::Instant;
 use super::queue::{Chain, Queue, QueueError};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
 use crate::memory::GuestMemory;
+use crate::snapshot::codec::{self, Reader, Writer};
 use crate::{debug, warn};
-use muxer::{Muxer, Token};
+use muxer::{Muxer, Saved, Token};
 use packet::{HEADER_LEN, Header, MAX_PAYLOAD};
 use poll::{Interest, Ready};
 
@@ -34,9 +35,6 @@ pub const GUEST_CID: u64 = 3;
 const QUEUE_SIZE: u16 = 256;
 const RX: usize = 0;
 const TX: usize = 1;
-const EVENT: usize = 2;
-/// VIRTIO_VSOCK_EVENT_TRANSPORT_RESET: established connections are gone (§5.10.6.7).
-const EVENT_TRANSPORT_RESET: u32 = 0;
 
 /// A run of guest memory: its guest address and where it is mapped in this process.
 #[derive(Debug, Clone, Copy)]
@@ -149,8 +147,6 @@ impl Waker {
 struct Session {
     queues: Vec<Queue>,
     muxer: Muxer,
-    /// A TRANSPORT_RESET event is owed to the guest (after a snapshot restore).
-    reset_owed: bool,
 }
 
 struct Worker {
@@ -166,7 +162,10 @@ pub struct Vsock {
     context: Option<(Arc<GuestMemory>, Arc<DeviceInterrupt>)>,
     worker: Option<Worker>,
     /// The queues while paused.
-    paused: Option<(Vec<Queue>, bool)>,
+    paused: Option<Vec<Queue>>,
+    /// The streams a snapshot's guest may hold, from `restore` until activation resets
+    /// them.
+    saved: Option<Saved>,
 }
 
 impl std::fmt::Debug for Vsock {
@@ -188,6 +187,7 @@ impl Vsock {
             context: None,
             worker: None,
             paused: None,
+            saved: None,
         })
     }
 
@@ -264,13 +264,10 @@ impl VirtioDevice for Vsock {
         if restored {
             // The guest's connections belong to the snapshot's host, not to this one.
             muxer.reset();
+            muxer.restore(self.saved.take().unwrap_or_default());
         }
         self.context = Some((memory, interrupt));
-        self.start(Session {
-            queues,
-            muxer,
-            reset_owed: restored,
-        })
+        self.start(Session { queues, muxer })
     }
 
     fn notify(&self, _queue: u16) {
@@ -290,34 +287,42 @@ impl VirtioDevice for Vsock {
             m.reset();
         }
         self.context = None;
+        self.saved = None;
     }
 
     /// The worker stops between packets, so every popped buffer has been returned and
     /// the queues match guest memory. Connections stay open.
     fn pause(&mut self) -> Vec<super::QueueState> {
         if let Some(s) = self.stop() {
-            self.paused = Some((s.queues, s.reset_owed));
+            self.paused = Some(s.queues);
             self.muxer = Some(s.muxer);
         }
         self.paused
             .iter()
-            .flat_map(|(queues, _)| queues.iter().map(Queue::state))
+            .flat_map(|queues| queues.iter().map(Queue::state))
             .collect()
     }
 
     fn resume(&mut self) -> Result<(), String> {
-        let Some((queues, reset_owed)) = self.paused.take() else {
+        let Some(queues) = self.paused.take() else {
             return Ok(());
         };
         let muxer = self
             .muxer
             .take()
             .ok_or("virtio-vsock resumed without its sockets")?;
-        self.start(Session {
-            queues,
-            muxer,
-            reset_owed,
-        })
+        self.start(Session { queues, muxer })
+    }
+
+    /// The streams the guest holds, which a restored copy resets. Paused, the muxer is
+    /// back here; a device that never started holds none.
+    fn save(&self, w: &mut Writer) {
+        self.muxer.as_ref().map(Muxer::saved).unwrap_or_default().write(w);
+    }
+
+    fn restore(&mut self, r: &mut Reader<'_>) -> codec::Result<()> {
+        self.saved = Some(Saved::read(r)?);
+        Ok(())
     }
 }
 
@@ -369,13 +374,14 @@ fn run(
     s
 }
 
-/// One round: guest packets to the host, the owed reset event, host packets to the guest,
-/// then one interrupt if the driver wants one.
+/// One round: guest packets to the host, host packets to the guest, then one interrupt
+/// if the driver wants one. The event queue is never used: a restore resets the streams
+/// its snapshot held on RX instead (muxer.rs).
 fn step(s: &mut Session, mem: &GuestMemory, irq: &DeviceInterrupt) -> Result<(), QueueError> {
-    let [rxq, txq, evq] = s.queues.as_mut_slice() else {
+    let [rxq, txq, _] = s.queues.as_mut_slice() else {
         return Ok(());
     };
-    let mut used = [false; 3];
+    let mut used = [false; 2];
     // Guest → host. Always drained first: the driver stops taking RX packets while too
     // many of its replies wait in TX (Linux virtio_transport_more_replies).
     loop {
@@ -388,17 +394,6 @@ fn step(s: &mut Session, mem: &GuestMemory, irq: &DeviceInterrupt) -> Result<(),
             used[TX] = true;
         }
         if !txq.enable_notification(mem)? {
-            break;
-        }
-    }
-    while s.reset_owed {
-        if let Some(chain) = evq.pop(mem)? {
-            let wrote = write_span(&chain, mem, &EVENT_TRANSPORT_RESET.to_le_bytes());
-            evq.add_used(mem, chain.head, wrote)?;
-            used[EVENT] = true;
-            s.reset_owed = false;
-        } else if !evq.enable_notification(mem)? {
-            // The driver's next event buffer wakes us.
             break;
         }
     }
@@ -416,11 +411,7 @@ fn step(s: &mut Session, mem: &GuestMemory, irq: &DeviceInterrupt) -> Result<(),
         used[RX] = true;
     }
     let mut interrupt = false;
-    for (q, used) in [
-        (&mut *rxq, used[RX]),
-        (&mut *txq, used[TX]),
-        (&mut *evq, used[EVENT]),
-    ] {
+    for (q, used) in [(&mut *rxq, used[RX]), (&mut *txq, used[TX])] {
         if used {
             interrupt |= q.needs_interrupt(mem)?;
         }

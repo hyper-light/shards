@@ -21,6 +21,7 @@ pub fn main() {
             "idle" => idle(),
             "vsock" => vsock(),
             "vsock_snapshot" => vsock_snapshot(),
+            "vsock_snapshot_held" => vsock_snapshot_held(),
             "pmem" => pmem(),
             "erofs" => erofs(),
             other => Err(format!("unknown test {other:?}")),
@@ -545,11 +546,73 @@ fn vsock() -> Result<(), String> {
 }
 
 /// Listens, asks for a snapshot, and serves the echo in every restored copy: its
-/// listener outlives the transport reset.
+/// listener outlives the restore.
 fn vsock_snapshot() -> Result<(), String> {
     let listener = vsock_listen(ECHO_PORT)?;
     let control = ControlPage::map()?;
     control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+    let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
+    serve_echo(&listener)
+}
+
+/// Sends the guest's line on `conn` and reads the host's, leaving the connection open.
+fn greet(conn: &mut std::fs::File) -> Result<(), String> {
+    use std::io::Read as _;
+    conn.write_all(b"hello from the guest\n")
+        .map_err(|e| format!("writing to the host: {e}"))?;
+    let mut reply = Vec::new();
+    let mut byte = [0u8; 1];
+    while reply.last() != Some(&b'\n') {
+        match conn.read(&mut byte) {
+            Ok(1) => reply.extend_from_slice(&byte),
+            Ok(_) => return Err("the host hung up before answering".into()),
+            Err(e) => return Err(format!("reading from the host: {e}")),
+        }
+    }
+    if reply != b"hello from the host\n" {
+        return Err(format!("the host said {:?}", String::from_utf8_lossy(&reply)));
+    }
+    Ok(())
+}
+
+/// Holds a connection to the host across a snapshot. Each restored copy must find it
+/// closed, since its host is gone, then dials its own host and serves the echo.
+fn vsock_snapshot_held() -> Result<(), String> {
+    use std::io::Read as _;
+    use std::os::fd::AsRawFd;
+    let listener = vsock_listen(ECHO_PORT)?;
+    let mut held = vsock_connect(libc::VMADDR_CID_HOST, HOST_PORT)?;
+    greet(&mut held)?;
+    let control = ControlPage::map()?;
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+    // A restored copy continues here. A reset that never comes fails the test, not hangs.
+    let wait = libc::timeval {
+        tv_sec: 10,
+        tv_usec: 0,
+    };
+    // SAFETY: setsockopt(2) on our own socket, with a timeval of its size.
+    let set = unsafe {
+        libc::setsockopt(
+            held.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            (&raw const wait).cast(),
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    if set != 0 {
+        return Err(format!("SO_RCVTIMEO: {}", io::Error::last_os_error()));
+    }
+    match held.read(&mut [0u8; 1]) {
+        Ok(0) => {}
+        Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {}
+        Ok(_) => return Err("the held connection carried data after the restore".into()),
+        Err(e) => return Err(format!("the held connection was not closed: {e}")),
+    }
+    drop(held);
+    let mut fresh = vsock_connect(libc::VMADDR_CID_HOST, HOST_PORT)?;
+    greet(&mut fresh)?;
+    drop(fresh);
     let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
     serve_echo(&listener)
 }

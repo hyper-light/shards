@@ -3,6 +3,13 @@
 //! - A host client connects to the device's socket, writes `CONNECT <port>\n`, and reads
 //!   `OK <host port>\n` once the guest accepts. Then the socket is the stream.
 //! - A guest connection to host port P reaches the socket `<path>_P`.
+//!
+//! A snapshot keeps the streams the guest may still hold ([`Saved`]). The restored copy
+//! resets each with an RST, ahead of every other packet on the RX queue, which the
+//! Linux driver handles in order. A TRANSPORT_RESET event would come on the event queue
+//! instead, in a work item the driver runs apart from RX (virtio_transport.c: event_work
+//! and rx_work). So it could arrive after a new connection's RESPONSE, and reset that
+//! connection too (docs/design/architecture.md D12).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
@@ -19,6 +26,7 @@ use super::packet::{HOST_CID, Header, TYPE_STREAM, op};
 use super::poll::{Interest, Ready};
 use crate::debug;
 use crate::memory::GuestMemory;
+use crate::snapshot::codec::{self, Reader, Writer};
 
 /// Open connections and pending handshakes together (Firecracker's MAX_CONNECTIONS).
 const MAX_CONNECTIONS: usize = 1023;
@@ -50,6 +58,33 @@ struct Handshake {
     stream: UnixStream,
     line: Vec<u8>,
     deadline: Instant,
+}
+
+/// What a snapshot keeps of a muxer: the streams the guest may still hold, and where
+/// host port allocation had got to.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Saved {
+    /// `(host port, guest port)` of each connection, and of each RST still owed.
+    ports: Vec<(u32, u32)>,
+    last_local_port: u32,
+}
+
+impl Saved {
+    pub fn write(&self, w: &mut Writer) {
+        w.seq(&self.ports, |w, &(local, peer)| {
+            w.u32(local);
+            w.u32(peer);
+        });
+        w.u32(self.last_local_port);
+    }
+
+    pub fn read(r: &mut Reader<'_>) -> codec::Result<Saved> {
+        let ports = r.seq(MAX_CONNECTIONS + MAX_STRAY_RSTS, |r| Ok((r.u32()?, r.u32()?)))?;
+        Ok(Saved {
+            ports,
+            last_local_port: r.u32()?,
+        })
+    }
 }
 
 pub struct Muxer {
@@ -101,6 +136,27 @@ impl Muxer {
         self.rxq.clear();
         self.stray_rsts.clear();
         self.local_ports.clear();
+    }
+
+    /// The streams the guest may hold, for a snapshot.
+    pub fn saved(&self) -> Saved {
+        let conns = self.conns.keys().map(|k| (k.local_port, k.peer_port));
+        Saved {
+            ports: self.stray_rsts.iter().copied().chain(conns).collect(),
+            last_local_port: self.last_local_port,
+        }
+    }
+
+    /// Continues from a snapshot of another host's muxer. Every stream the guest may still
+    /// hold is reset before any other packet reaches it. Their host ports are never
+    /// reused: the guest may keep a stale socket, and Linux drops a REQUEST that matches
+    /// one that is closing (virtio_transport_recv_disconnecting).
+    pub fn restore(&mut self, saved: Saved) {
+        for &(local_port, _) in &saved.ports {
+            self.local_ports.insert(local_port);
+        }
+        self.stray_rsts.extend(saved.ports);
+        self.last_local_port = saved.last_local_port;
     }
 
     pub fn has_pending_rx(&self) -> bool {
@@ -499,6 +555,68 @@ mod tests {
         let mut rest = [0u8; 7];
         h.stream.read_exact(&mut rest).unwrap();
         assert_eq!(&rest, b"payload");
+    }
+
+    /// A restored muxer resets what the snapshot held before the guest hears anything
+    /// else, even a connection it made before the first packet went out, and allocates
+    /// host ports past the snapshot's without reusing a held one.
+    #[test]
+    fn restores_reset_held_streams_first_and_keep_their_ports() {
+        let dir = std::env::temp_dir().join(format!("shards-vsock-restore-{}", std::process::id()));
+        let mut m = Muxer::bind(&dir, 3).unwrap();
+        let mut target = dir.clone().into_os_string();
+        target.push("_5000");
+        let host = UnixListener::bind(&target).unwrap();
+        let held = [(5000, 49_152), (LOCAL_PORT_BASE + 7, 1234)];
+        m.restore(Saved {
+            ports: held.to_vec(),
+            last_local_port: LOCAL_PORT_BASE + 6,
+        });
+
+        // The guest dials host port 5000 from a new port.
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        let request = Header {
+            src_cid: 3,
+            dst_cid: HOST_CID,
+            src_port: 49_153,
+            dst_port: 5000,
+            len: 0,
+            kind: TYPE_STREAM,
+            op: op::REQUEST,
+            flags: 0,
+            buf_alloc: 1 << 16,
+            fwd_cnt: 0,
+        };
+        m.on_guest_packet(&request, &[], &mem);
+        assert!(host.accept().is_ok(), "the guest's connection reached the host");
+        let mut sent = Vec::new();
+        while let Some(h) = m.next_rx(&[]) {
+            sent.push((h.op, h.src_port, h.dst_port));
+        }
+        assert_eq!(
+            sent,
+            [
+                (op::RST, 5000, 49_152),
+                (op::RST, LOCAL_PORT_BASE + 7, 1234),
+                (op::RESPONSE, 5000, 49_153),
+            ]
+        );
+        assert_eq!(m.allocate_local_port(), LOCAL_PORT_BASE + 8);
+        let _ = std::fs::remove_file(&target);
+    }
+
+    #[test]
+    fn saved_streams_round_trip() {
+        let saved = Saved {
+            ports: vec![(5000, 49_152), (LOCAL_PORT_BASE, 1234)],
+            last_local_port: LOCAL_PORT_BASE + 3,
+        };
+        let mut w = Writer::default();
+        saved.write(&mut w);
+        let bytes = w.into_bytes();
+        let mut r = Reader::new(&bytes);
+        assert_eq!(Saved::read(&mut r).unwrap(), saved);
+        r.finish().unwrap();
     }
 
     #[test]

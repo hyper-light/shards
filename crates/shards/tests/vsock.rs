@@ -1,5 +1,5 @@
 //! vsock between the host and real guests: connections both ways, many streams at once,
-//! refusals, and restored copies of a guest that listens.
+//! refusals, and restored copies of a guest that listens or holds a connection.
 
 #![cfg(unix)]
 #![allow(
@@ -278,4 +278,56 @@ fn restored_copies_listen_on_their_own_sockets() {
         "{}",
         bare.seen.join("\n")
     );
+}
+
+/// Serves one guest connection to host port 5000 at `sock`: reads the guest's line,
+/// answers, and holds the connection until the guest's side closes.
+fn greet_once(sock: &Path) -> thread::JoinHandle<String> {
+    let mut path = sock.as_os_str().to_owned();
+    path.push("_5000");
+    let host = UnixListener::bind(path).unwrap();
+    thread::spawn(move || {
+        let (s, _) = host.accept().unwrap();
+        s.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let mut reader = BufReader::new(&s);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        (&s).write_all(b"hello from the host\n").unwrap();
+        let mut rest = Vec::new();
+        reader.read_to_end(&mut rest).unwrap();
+        line
+    })
+}
+
+/// A snapshot taken while the guest holds a connection to the host: each restored copy
+/// finds that connection closed (its host is gone), dials its own host, and serves.
+#[test]
+fn restored_copies_find_held_connections_closed() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let dir = TempDir::new("vsock-held");
+    let snap = dir.join("snap");
+    let original_sock = dir.join("original.sock");
+    let greeted = greet_once(&original_sock);
+    let mut args = guest_args("vsock_snapshot_held", &original_sock);
+    args.extend(["--snapshot-dir".into(), snap.clone().into()]);
+    let mut original = Vm::spawn(&os(&args));
+    assert_eq!(original.wait_exit(), Some(0), "{}", original.seen.join("\n"));
+    assert_eq!(greeted.join().unwrap(), "hello from the guest\n");
+
+    for (salt, name) in [(1, "a.sock"), (2, "b.sock")] {
+        let sock = dir.join(name);
+        let greeted = greet_once(&sock);
+        let mut copy = Vm::spawn(&[
+            "vm".as_ref(),
+            "restore".as_ref(),
+            snap.as_os_str(),
+            "--vsock".as_ref(),
+            sock.as_os_str(),
+        ]);
+        copy.wait_for("SHARDS-TEST READY");
+        assert_eq!(greeted.join().unwrap(), "hello from the guest\n");
+        echo(&sock, salt, 1 << 20);
+    }
 }
