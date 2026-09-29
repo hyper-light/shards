@@ -264,10 +264,21 @@ pub fn vm_run<S: AsRef<std::ffi::OsStr>>(args: &[S], timeout: Duration) -> Run {
 
 /// Runs `shards <command...> <args...>`, killing it (and failing) after `timeout`.
 pub fn run_shards<S: AsRef<std::ffi::OsStr>>(command: &[&str], args: &[S], timeout: Duration) -> Run {
+    run_shards_env(command, args, &[], timeout)
+}
+
+/// [`run_shards`], with `env` added to shards' environment.
+pub fn run_shards_env<S: AsRef<std::ffi::OsStr>>(
+    command: &[&str],
+    args: &[S],
+    env: &[(&str, &std::ffi::OsStr)],
+    timeout: Duration,
+) -> Run {
     let start = Instant::now();
     let mut child = Command::new(shards())
         .args(command)
         .args(args)
+        .envs(env.iter().copied())
         .env("SHARDS_TIMING", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

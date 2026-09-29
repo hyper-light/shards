@@ -482,6 +482,33 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   - `DOCKER_AUTH_CONFIG` and its fallback;
   - `certs.d` CAs, and a mutual-TLS handshake with and without its client certificate.
 
+### `shards run IMAGE` (D24)
+
+`shards run [OPTIONS] IMAGE [COMMAND] [ARG...]` runs a command in a new microVM booted
+into an image, as `docker run` runs one in a new container. The code is
+`crates/shards/src/run.rs`. The VM and the workload are D16's.
+
+- **The image** comes from the store, or is pulled first (D22, D23), as `docker run`
+  pulls it: "Unable to find image … locally", then `docker pull`'s lines, on stderr.
+  `--pull missing|always|never` as for `docker run`.
+- **The workload** merges the command line over the image's config, as dockerd merges
+  them (moby docker-v29.8.1 `daemon/commit.go`, `merge`):
+  - the user and working directory are the image's unless given;
+  - the environment is the given variables, then each of the image's whose name was
+    not given, and D16 lays that over Docker's `PATH` and `HOSTNAME`;
+  - the image's command applies only when neither an entrypoint nor a command is given;
+  - its entrypoint applies unless one is given, and `--entrypoint ""` clears it.
+- **Not yet:** a kernel and shards-init that ship with shards. Until then, `--kernel`
+  and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`. Also TTYs, ports, volumes and
+  detached runs.
+- **Checked against Docker Hub** (2026-09-28): `alpine`, `busybox:1.36` pulled on
+  demand then run (1.0 s in all), and `hello-world` from its own `Cmd`.
+- **Tests:**
+  - unit tests for each rule of the merge;
+  - E2E, a loopback registry and a real VM: the image's user, directory and
+    environment apply. A second run uses the stored image, fetches nothing, and the
+    command line wins.
+
 ## 3. Components
 
 ```
@@ -547,8 +574,8 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
      rootfs image; `shards run IMAGE CMD`.
    - Built: our kernel (CI releases); virtio-pmem; the EROFS writer; layers → one EROFS
      image (D15); booting into an image to run a command (D16); the image store (D18);
-     registry TLS, HTTP and auth (D19–D21); pulls (D22); `shards pull` (D23). Next:
-     `shards run IMAGE`.
+     registry TLS, HTTP and auth (D19–D21); pulls (D22); `shards pull` (D23); `shards run
+     IMAGE` (D24). Next: shipping the kernel and shards-init, and TTYs.
 4. **In-VM engine.**
    - Scope: Docker Engine API subset → full; the rootless runtime (compatible, not
      containers underneath); networks, volumes, build; compose.

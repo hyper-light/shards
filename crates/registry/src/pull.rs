@@ -158,6 +158,41 @@ pub fn pull(
     })
 }
 
+/// The image `reference` names, if it has been pulled: from the store alone. Its root
+/// filesystem is built again if it has gone.
+pub fn local(store: &Store, reference: &Reference, max_layer: u64) -> Result<Option<Pulled>, Error> {
+    let Some(manifest_digest) = store.tagged(&reference.to_string())? else {
+        return Ok(None);
+    };
+    let bytes = store.read(&manifest_digest, oci::MAX_MANIFEST)?;
+    let Document::Manifest(manifest) = oci::parse_document(&bytes, "")? else {
+        return Err(Error::new(format!(
+            "{}: its record names an index",
+            reference.familiar()
+        )));
+    };
+    let config = oci::read_config(File::open(store.blob_path(&manifest.config.digest()?))?)?;
+    let layers = manifest
+        .layers
+        .iter()
+        .zip(&config.rootfs.diff_ids)
+        .map(|(d, id)| {
+            Ok(Layer {
+                blob: d.digest()?,
+                media_type: d.media_type.clone(),
+                diff_id: Digest::parse(id)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let rootfs = store.rootfs(&layers, max_layer)?;
+    Ok(Some(Pulled {
+        resolved: manifest_digest.clone(),
+        manifest: manifest_digest,
+        config,
+        rootfs,
+    }))
+}
+
 /// An index or manifest, fetched and parsed by its descriptor's media type.
 fn document(registry: &Registry, store: &Store, desc: &Descriptor) -> Result<Document, Error> {
     let bytes = registry.fetch_document(store, desc)?;

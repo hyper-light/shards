@@ -142,19 +142,7 @@ struct Run {
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut args = utf8(args);
     let mut rootfs = None;
-    let mut cfg = Config {
-        kernel: PathBuf::new(),
-        initrd: None,
-        init: None,
-        cmdline: "console=ttyS0 earlycon panic=-1".into(),
-        vcpus: 1,
-        memory_mib: 256,
-        console: Console::Stdout,
-        disks: Vec::new(),
-        snapshot: None,
-        pmem: Vec::new(),
-        vsock: None,
-    };
+    let mut cfg = config(PathBuf::new(), None);
     let (mut kernel, mut common) = (None, Common::new());
     while let Some(arg) = args.next() {
         let arg = arg?;
@@ -301,6 +289,34 @@ fn parsed<T>(parse: Result<T, String>, usage: &str) -> Result<T, ExitCode> {
     }
 }
 
+/// A VM with shards' defaults: 1 CPU, 256 MiB, and a console on stdout.
+pub fn config(kernel: PathBuf, init: Option<PathBuf>) -> Config {
+    Config {
+        kernel,
+        initrd: None,
+        init,
+        cmdline: "console=ttyS0 earlycon panic=-1".into(),
+        vcpus: 1,
+        memory_mib: 256,
+        console: Console::Stdout,
+        disks: Vec::new(),
+        snapshot: None,
+        pmem: Vec::new(),
+        vsock: None,
+    }
+}
+
+/// Boots `cfg` into the image `rootfs` and runs `workload` there, as `vm run --rootfs`
+/// does. Exits as the workload does.
+pub fn run_in(mut cfg: Config, rootfs: PathBuf, workload: &Options) -> ExitCode {
+    boot_into(&mut cfg, rootfs, false);
+    cfg.console = Console::Discard;
+    serve_workload(cfg.vsock.clone(), workload, false, move |vsock| {
+        cfg.vsock = Some(vsock);
+        vm::start(&cfg)
+    })
+}
+
 /// Boots into the image `rootfs`: /dev/pmem0, which shards-init mounts as the root.
 fn boot_into(cfg: &mut Config, rootfs: PathBuf, template: bool) {
     cfg.pmem.insert(0, rootfs);
@@ -333,14 +349,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
                 supervise(vm::start(&cfg), cfg.console, true)
             })
         }
-        Mode::Workload(rootfs) => {
-            boot_into(&mut cfg, rootfs, false);
-            cfg.console = Console::Discard;
-            serve_workload(cfg.vsock.clone(), &workload, false, move |vsock| {
-                cfg.vsock = Some(vsock);
-                vm::start(&cfg)
-            })
-        }
+        Mode::Workload(rootfs) => run_in(cfg, rootfs, &workload),
     }
 }
 
