@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [1, 2, 3]
+        runner: [1, 2, 3, 4, 5]
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -58,4 +58,5 @@ jobs:
           # The same template, without its working set.
           cp -a $home $ab/old/home
           rm $ab/old/home/templates/*/working-set
-          python3 docs/research/measurements/build-ab/ab.py $ab/old $ab/new alpine 200 true
+          # Each run's pool refilled before the next: the request's path alone.
+          AB_PAUSE=0.5 python3 docs/research/measurements/build-ab/ab.py $ab/old $ab/new alpine 100 true
