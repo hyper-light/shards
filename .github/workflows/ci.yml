@@ -112,6 +112,34 @@ jobs:
       - name: Image
         run: cargo bench --locked -p shards --bench image -- --runs 100 --templates 5
 
+  # Temporary (branch kvm-restore-perf): where a restored guest's 20 ms goes on KVM.
+  kvm-counters:
+    name: KVM counters around boots and restores
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      - name: Build
+        run: cargo bench --locked -p shards --bench boot --bench restore --no-run
+      - name: Counters
+        run: |
+          stats() {
+            sudo sh -c 'cd /sys/kernel/debug/kvm && for f in exits pf_taken pf_fixed pf_spurious halt_exits halt_wakeup halt_successful_poll irq_exits io_exits mmio_exits signal_exits irq_injections irq_window_exits hypercalls tlb_flush nested_run; do [ -f $f ] && echo "$f $(cat $f)"; done'
+          }
+          delta() { join "$1" "$2" | awk -v n="$3" '{ printf "%-22s %12d total %12.1f each\n", $1, $3 - $2, ($3 - $2) / n }'; }
+          sudo ls /sys/kernel/debug/kvm | head -50
+          stats | sort > b0
+          cargo bench --locked -p shards --bench boot -- --runs 20
+          stats | sort > b1
+          echo "== boot: 20 boots and 3 warm-up boots"; delta b0 b1 23
+          cargo bench --locked -p shards --bench restore -- --runs 20
+          stats | sort > r1
+          echo "== restore: 1 boot, then 46 restores (3 warm-up pairs, 20 pairs)"; delta b1 r1 46
+
   musl:
     name: ${{ matrix.target }}
     timeout-minutes: 60
