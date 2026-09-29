@@ -83,6 +83,20 @@ jobs:
                   stats["in_ws"].append(sum(p in ws for p in new_pages))
                   stats["written"].append(len(written))
                   stats["written_in_ws_as_written"].append(sum(ws.get(p, False) for p in written))
+              # How alike restores are: each VM's request pages found in every other's.
+              sets = []
+              for req in sorted(glob.glob(log + ".*.request")):
+                  ans = req[: -len("request")] + "answered"
+                  try:
+                      before = {int(l.split()[0], 16) for l in open(req)}
+                      after = {int(l.split()[0], 16) for l in open(ans)}
+                  except OSError:
+                      continue
+                  sets.append(after - before)
+              if len(sets) > 2:
+                  common = set.intersection(*sets)
+                  shares = [len(s & sets[(i + 1) % len(sets)]) / max(1, len(s)) for i, s in enumerate(sets)]
+                  print(f"  across VMs: in all {len(common)}, one VM's in the next's median {statistics.median(shares):.3f} min {min(shares):.3f}")
               print(f"== {log}: {len(stats['request'])} VMs")
               for k, v in stats.items():
                   if v:
