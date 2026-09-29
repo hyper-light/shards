@@ -43,7 +43,8 @@ pub mod kind {
     /// Warm VM → client: the command's exit status, one byte, then, if the client asked
     /// for `SHARDS_TIMING`, the VM's timing line for the client to print.
     pub const EXIT: u8 = 3;
-    /// Client → warm VM: a signal for the command, its Linux number as a big-endian u32.
+    /// Client or daemon → warm VM: a signal for the command, its Linux number as a
+    /// big-endian u32.
     pub const SIGNAL: u8 = 4;
     /// Client → daemon: a run ([`Run`](super::Run)). Descriptors: the client's stdin,
     /// stdout and stderr.
@@ -55,6 +56,9 @@ pub mod kind {
     pub const STOP: u8 = 7;
     /// Warm VM → daemon: it has the run's descriptors, so the daemon may close its own.
     pub const TAKEN: u8 = 8;
+    /// Warm VM → daemon: the command ended with this status (one byte), which its client
+    /// already has.
+    pub const DONE: u8 = 9;
 }
 
 /// A binary, as the daemon and its clients tell builds apart: its file's identity.

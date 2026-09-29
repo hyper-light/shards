@@ -172,10 +172,10 @@ fn errors_reach_the_client() {
     assert_eq!(not_found.status, Some(127), "{}", not_found.stderr);
 }
 
-/// `stop` ends the VMs waiting in the daemon's pools; a run in progress goes on, and its
-/// client still gets its status.
+/// `stop` ends the runs in progress as dockerd ends its containers when it shuts down:
+/// SIGTERM to the command, whose client gets its status. The pool's waiting VMs end too.
 #[test]
-fn stop_ends_waiting_vms_but_not_runs() {
+fn stop_ends_runs_and_waiting_vms() {
     if cannot_run_vms() || cannot_snapshot() {
         return;
     }
@@ -192,13 +192,12 @@ fn stop_ends_waiting_vms_but_not_runs() {
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
     assert!(!alive(daemon), "stop returned before the daemon exited");
-    eventually("the pool's waiting VMs did not end", || {
-        processes_with(&templates).len() == 1
-    });
-    // SAFETY: kill(2) of our own child, which forwards the signal to its command.
-    unsafe { libc::kill(sleeper.id() as libc::pid_t, libc::SIGTERM) };
-    assert_eq!(wait(&mut sleeper), Some(128 + 15));
-    eventually("the run's VM did not end", || {
+    assert_eq!(
+        wait(&mut sleeper),
+        Some(128 + 15),
+        "the run was not stopped by SIGTERM"
+    );
+    eventually("VMs outlived the daemon's stop", || {
         processes_with(&templates).is_empty()
     });
 }

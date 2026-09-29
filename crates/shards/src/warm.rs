@@ -107,11 +107,19 @@ pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
         .map_err(|e| format!("the client's connection: {e}"))?;
     // The command will run: a signal from here on waits for it rather than being lost.
     workload::will_run(to);
-    let to = to.clone();
-    std::thread::Builder::new()
-        .name("client-signals".into())
-        .spawn(move || relay_signals(&signals, &to))
-        .map_err(|e| format!("client signal thread: {e}"))?;
+    let from_daemon = daemon
+        .try_clone()
+        .map_err(|e| format!("the daemon's connection: {e}"))?;
+    for (name, conn, client) in [
+        ("client-signals", signals, true),
+        ("daemon-signals", from_daemon, false),
+    ] {
+        let to = to.clone();
+        std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || relay_signals(&conn, &to, client))
+            .map_err(|e| format!("{name} thread: {e}"))?;
+    }
     // A daemon gone by now has no copies left to close.
     let _ = shards_ipc::send(daemon, kind::TAKEN, &[], &[]);
     Ok(Request {
@@ -122,10 +130,11 @@ pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
     })
 }
 
-/// Passes the client's signals to the workload until the client hangs up, then lets go of
-/// its stdio. A workload outlives its client, as a container outlives `docker run`'s.
-fn relay_signals(client: &UnixStream, to: &ToGuest) {
-    while let Ok(Some(message)) = shards_ipc::recv(client) {
+/// Passes the signals that arrive on `conn` to the workload until it closes: the client's,
+/// or the daemon's (`shards stop`, `kill`). When the client hangs up, the VM lets go of its
+/// stdio. A workload outlives its client, as a container outlives `docker run`'s.
+fn relay_signals(conn: &UnixStream, to: &ToGuest, client: bool) {
+    while let Ok(Some(message)) = shards_ipc::recv(conn) {
         if message.kind != kind::SIGNAL {
             continue;
         }
@@ -133,15 +142,15 @@ fn relay_signals(client: &UnixStream, to: &ToGuest) {
             workload::signal_guest(to, u32::from_be_bytes(signal));
         }
     }
-    if let Ok(null) = File::open("/dev/null") {
+    if client && let Ok(null) = File::open("/dev/null") {
         let_go(&null);
     }
 }
 
-/// Tells the client how its command ended. An error goes to its stderr first, and the VM
-/// lets go of the client's stdio before the status goes, so that both arrive before the
-/// client exits. With `timing`, the status carries the VM's timing line for the client to
-/// print.
+/// Tells the client how its command ended, then the daemon. An error goes to the client's
+/// stderr first, and the VM lets go of the client's stdio before the status goes, so that
+/// both arrive before the client exits. With `timing`, the status carries the VM's timing
+/// line for the client to print.
 pub fn finish(link: &Link, client: &UnixStream, served: &Result<u8, String>, timing: Option<&str>) {
     let status = match served {
         Ok(status) => *status,
@@ -154,6 +163,8 @@ pub fn finish(link: &Link, client: &UnixStream, served: &Result<u8, String>, tim
     let mut payload = vec![status];
     payload.extend_from_slice(timing.unwrap_or_default().as_bytes());
     let _ = shards_ipc::send(client, kind::EXIT, &payload, &[]);
+    // Then the daemon, which keeps the run's record.
+    let _ = shards_ipc::send(&link.daemon, kind::DONE, &[status], &[]);
 }
 
 /// Stops using the client's stdio: this process's standard descriptors become `null`.

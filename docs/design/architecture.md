@@ -614,9 +614,13 @@ for the exit status.
   - A client of another build, told apart by its binary's file identity, gets
     `RESTART`. The daemon removes its socket and exits once its runs are handed over,
     and the client starts its own.
-  - It exits after SHARDS_DAEMON_IDLE seconds (900) without a run, or on `shards daemon
-    stop`, ending only the VMs still waiting. Runs in progress go on, as containers
-    outlive `docker run`.
+  - It follows each run to its end: once the warm VM has sent the client its status, it
+    sends the daemon `DONE`. The daemon can signal a command meanwhile, on the same socket.
+  - It exits after SHARDS_DAEMON_IDLE seconds (900) with no run in progress and none
+    asked for. `shards daemon stop` first ends the runs in progress as dockerd ends its
+    containers when it shuts down: SIGTERM to each command, then SIGKILL after 10 s
+    (moby daemon/stop.go, daemon/config/config_linux.go). A daemon that another build
+    replaces sees its runs through, so an upgrade stops no command.
 - **The command's stdin** is /dev/null, or with `-i` a pipe the client fills from its
   own.
   - It ends when the client does, as `docker run -i`'s does when its client goes
@@ -668,11 +672,12 @@ for the exit status.
     - interactive stdin works, and signals arrive as the command's;
     - the VM lets go of the client's stdio before the status and on hang-up (a VM
       frozen at the status still holds none);
-    - the warm VM exits once served; `--warm` refuses stdio and non-sockets;
+    - the warm VM tells the daemon the command's status, then exits; `--warm` refuses
+      stdio and non-sockets;
   - E2E through the daemon: parallel runs keep their own stdio; signals, errors and
     timing reach the client; `-i` stdin ends with the client; a background run on a
-    pseudo-terminal stops by SIGTTIN; `stop`, a killed daemon, a rebuilt binary and
-    idleness each end what they should.
+    pseudo-terminal stops by SIGTTIN; `stop` ends a run by SIGTERM; a killed daemon, a
+    rebuilt binary and idleness each end what they should.
 
 ## 3. Components
 

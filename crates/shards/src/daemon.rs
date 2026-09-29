@@ -6,10 +6,12 @@
 //! the pool refills. A run with no template yet boots a VM that saves one on the way, and
 //! a run with its own kernel and init boots every time.
 //!
-//! Handing a run over is the daemon's last part in it: the warm VM then serves the client
-//! directly. So when the daemon exits, after SHARDS_DAEMON_IDLE seconds (default 900)
-//! without a run or on `shards daemon stop`, it ends only the VMs still waiting. Runs in
-//! progress go on, as containers outlive `docker run`.
+//! Once a warm VM has taken a run, it serves the client directly, and tells the daemon
+//! how the command ended. The daemon follows each run to that end, and can signal its
+//! command meanwhile. It exits after SHARDS_DAEMON_IDLE seconds (default 900) without a
+//! run or a run in progress. `shards daemon stop` ends the runs in progress first, as
+//! dockerd ends its containers when it shuts down; a daemon that another build replaces
+//! sees its runs through instead.
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{OsStr, OsString};
@@ -33,7 +35,7 @@ const USAGE: &str = "usage: shards daemon [--detached | stop]
   Serves `shards run` from warm microVMs; `shards run` starts one when none is running.
   It exits after SHARDS_DAEMON_IDLE seconds (default 900) without a run.
   --detached: write messages to daemon.log in SHARDS_HOME, as when `shards run` starts it.
-  stop: have the running daemon exit once the runs in hand are handed over.
+  stop: have the running daemon end its runs, as dockerd ends containers, and exit.
   SHARDS_POOL: warm microVMs kept for each image (default 2).";
 
 /// How long a VM may take to be ready: a restore takes milliseconds, a boot that saves a
@@ -50,6 +52,12 @@ const HANDOFF_TRIES: usize = 3;
 const TAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a daemon waits for the lock of one that is exiting.
 const TAKEOVER: Duration = Duration::from_secs(5);
+/// How long `shards daemon stop` lets a command end after its SIGTERM, before SIGKILL:
+/// dockerd's default stop timeout (moby daemon/config/config_linux.go), which it gives
+/// each container when it shuts down.
+const STOP_GRACE: Duration = Duration::from_secs(10);
+/// How long a VM may take to end its command after that SIGKILL, before the VM goes too.
+const KILL_GRACE: Duration = Duration::from_secs(1);
 /// How often the daemon looks at its clock when no client arrives.
 const TICK: libc::c_int = 250;
 
@@ -115,6 +123,12 @@ enum For {
     Run(mpsc::Sender<Result<Ready, String>>),
 }
 
+/// A run in progress: its VM's socket, to signal the command, and the VM itself.
+struct Tracked {
+    socket: UnixStream,
+    vm: Arc<shards_ipc::Child>,
+}
+
 /// Why a template's pool gave no warm VM.
 enum Claim {
     /// Its warm VMs keep failing: the template does not restore.
@@ -141,6 +155,10 @@ struct Daemon {
     /// The connections of `shards daemon stop`, held open until this process exits, which
     /// is how they learn it has.
     stoppers: Mutex<Vec<UnixStream>>,
+    /// The runs in progress, by their VM's pid.
+    runs: Mutex<HashMap<u32, Tracked>>,
+    /// `shards daemon stop` asked this daemon to end its runs.
+    ending: AtomicBool,
     /// Numbers the templates a run saves before they become the template.
     saved: AtomicU64,
     /// The home's lock, held while this daemon lives.
@@ -197,6 +215,8 @@ fn serve(detached: bool) -> Result<(), String> {
         stopping: AtomicBool::new(false),
         closed: AtomicBool::new(false),
         stoppers: Mutex::default(),
+        runs: Mutex::default(),
+        ending: AtomicBool::new(false),
         saved: AtomicU64::new(0),
         _lock: home_lock,
     });
@@ -299,7 +319,7 @@ impl Daemon {
                     }
                 }
             }
-            let quiet = self.busy.load(Ordering::SeqCst) == 0;
+            let quiet = self.busy.load(Ordering::SeqCst) == 0 && lock(&self.runs).is_empty();
             let idle = quiet && lock(&self.last).elapsed() >= self.idle;
             if !self.closed.load(Ordering::SeqCst) && (self.stopping.load(Ordering::SeqCst) || idle) {
                 self.close();
@@ -342,8 +362,14 @@ impl Daemon {
         self.busy.fetch_add(1, Ordering::SeqCst);
         let daemon = self.clone();
         let spawned = std::thread::Builder::new().name("run".into()).spawn(move || {
-            let _busy = Busy(&daemon);
-            daemon.handle(&conn);
+            let handed = {
+                let _busy = Busy(&daemon);
+                daemon.handle(conn)
+            };
+            // The client's descriptors are closed by now: its run goes on in the VM.
+            if let Some(ready) = handed {
+                daemon.track(ready);
+            }
         });
         if let Err(e) = spawned {
             self.busy.fetch_sub(1, Ordering::SeqCst);
@@ -363,13 +389,16 @@ impl Daemon {
         std::process::exit(0)
     }
 
-    fn handle(self: &Arc<Self>, conn: &UnixStream) {
+    /// Serves one client's request. A run it hands to a warm VM comes back, for the caller
+    /// to follow once the client's descriptors here are closed.
+    fn handle(self: &Arc<Self>, conn: UnixStream) -> Option<Ready> {
+        let conn = &conn;
         let message = match shards_ipc::recv(conn) {
             Ok(Some(m)) => m,
-            Ok(None) => return,
+            Ok(None) => return None,
             Err(e) => {
                 log(format!("a client's request: {e}"));
-                return;
+                return None;
             }
         };
         match message.kind {
@@ -381,19 +410,20 @@ impl Daemon {
                     Ok(held) => lock(&self.stoppers).push(held),
                     Err(e) => log(format!("holding a stopper's connection: {e}")),
                 }
-                return;
+                self.stop_runs();
+                return None;
             }
             other => {
                 log(format!("a client sent message kind {other}"));
-                return;
+                return None;
             }
         }
         let Ok([stdin, stdout, stderr]) = <[OwnedFd; 3]>::try_from(message.fds) else {
             log("a run without the client's stdio");
-            return;
+            return None;
         };
         let Ok(err) = stderr.try_clone().map(File::from) else {
-            return;
+            return None;
         };
         let say = |line: &str| {
             let _ = writeln!(&err, "{line}");
@@ -403,19 +433,24 @@ impl Daemon {
             let _ = shards_ipc::send(conn, kind::EXIT, &[NOT_RUN], &[]);
         };
         let Some(run) = Run::decode(&message.payload) else {
-            return refuse("a malformed request");
+            refuse("a malformed request");
+            return None;
         };
         if run.daemon != self.identity {
-            // Another build asks: its own daemon serves it from here. The socket goes
-            // first, so that the client's next connection cannot reach this daemon.
+            // Another build asks: its own daemon serves it from here, while this one sees
+            // its runs through. The socket goes first, so that the client's next
+            // connection cannot reach this daemon.
             self.close();
             self.stopping.store(true, Ordering::SeqCst);
             let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
-            return;
+            return None;
         }
         let prepared = match crate::run::prepare(&run, &self.home, &say) {
             Ok(prepared) => prepared,
-            Err(e) => return refuse(&e),
+            Err(e) => {
+                refuse(&e);
+                return None;
+            }
         };
         let mut flags = 0;
         if prepared.interactive {
@@ -430,7 +465,10 @@ impl Daemon {
         for _ in 0..HANDOFF_TRIES {
             let ready = match self.warm_for(&prepared, &say) {
                 Ok(ready) => ready,
-                Err(e) => return refuse(&e),
+                Err(e) => {
+                    refuse(&e);
+                    return None;
+                }
             };
             let handed = hand_over(&ready.socket, &payload, &fds);
             // Only now, so that starting its successor delays no run.
@@ -439,7 +477,7 @@ impl Daemon {
             }
             match handed {
                 // The warm VM serves the client from here, and ours close.
-                Ok(()) => return,
+                Ok(()) => return Some(ready),
                 Err(e) => {
                     log(format!("warm VM {} did not take a run: {e}", ready.vm.id()));
                     let _ = ready.vm.kill(libc::SIGKILL);
@@ -447,6 +485,65 @@ impl Daemon {
             }
         }
         refuse("no warm VM took the run");
+        None
+    }
+
+    /// Follows a run to its end: the VM's DONE, or the VM's end if it dies first.
+    fn track(self: &Arc<Self>, ready: Ready) {
+        let pid = ready.vm.id();
+        // Runs last as long as their commands.
+        let _ = ready.socket.set_read_timeout(None);
+        match ready.socket.try_clone() {
+            Ok(socket) => {
+                let tracked = Tracked {
+                    socket,
+                    vm: ready.vm.clone(),
+                };
+                // One handed over while the daemon stops is stopped too.
+                if self.ending.load(Ordering::SeqCst) {
+                    let _ = shards_ipc::send(&tracked.socket, kind::SIGNAL, &15u32.to_be_bytes(), &[]);
+                }
+                lock(&self.runs).insert(pid, tracked);
+            }
+            Err(e) => log(format!("VM {pid}'s socket: {e}")),
+        }
+        let done = loop {
+            match shards_ipc::recv(&ready.socket) {
+                Ok(Some(m)) if m.kind == kind::DONE => break m.payload.first().copied(),
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => break None,
+            }
+        };
+        lock(&self.runs).remove(&pid);
+        *lock(&self.last) = Instant::now();
+        if done.is_none() {
+            log(format!("VM {pid} ended before its command did"));
+        }
+    }
+
+    /// Ends the runs in progress as dockerd ends its containers when it shuts down: SIGTERM
+    /// to each command, SIGKILL to any still running after STOP_GRACE, and the VM itself
+    /// if its command outlives even that (moby daemon/stop.go).
+    fn stop_runs(self: &Arc<Self>) {
+        self.ending.store(true, Ordering::SeqCst);
+        let signal = |runs: &HashMap<u32, Tracked>, linux: u32| {
+            for t in runs.values() {
+                let _ = shards_ipc::send(&t.socket, kind::SIGNAL, &linux.to_be_bytes(), &[]);
+            }
+        };
+        signal(&lock(&self.runs), 15);
+        let daemon = self.clone();
+        let escalating = std::thread::Builder::new().name("stop".into()).spawn(move || {
+            std::thread::sleep(STOP_GRACE);
+            signal(&lock(&daemon.runs), 9);
+            std::thread::sleep(KILL_GRACE);
+            for t in lock(&daemon.runs).values() {
+                let _ = t.vm.kill(libc::SIGKILL);
+            }
+        });
+        if let Err(e) = escalating {
+            log(format!("the stop thread: {e}"));
+        }
     }
 
     /// A warm VM for `prepared`: from its template's pool, or booted for it, saving the
