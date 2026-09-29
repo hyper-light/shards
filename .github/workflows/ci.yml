@@ -92,6 +92,11 @@ jobs:
   # interleaved (crates/shards/benches/firecracker.rs). Hosted arm64 runners have no /dev/kvm.
   firecracker:
     name: firecracker comparison (x86_64)
+    # Diagnostic (branch restore-diag): three runners, for their CPUs.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [1, 2, 3]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -105,7 +110,7 @@ jobs:
           nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
           grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag,hpage_pmd_size}
       - name: Compare
-        run: cargo bench --locked -p shards --bench firecracker -- --runs 30
+        run: cargo bench --locked -p shards --bench firecracker -- --runs 10
       # shards' own restores and pooled runs on this KVM host (docs/benchmarks.md).
       - name: Restore
         run: cargo bench --locked -p shards --bench restore -- --runs 30
