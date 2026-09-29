@@ -4,6 +4,7 @@
 use std::fmt;
 use std::io;
 
+pub mod auth;
 pub mod http;
 #[cfg(test)]
 mod testing;

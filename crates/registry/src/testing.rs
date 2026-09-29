@@ -4,8 +4,8 @@
 
 use std::io::{self, Read, Write};
 use std::net::TcpListener;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rcgen::{
@@ -64,16 +64,31 @@ pub(crate) enum After {
 trait Io: Read + Write {}
 impl<T: Read + Write> Io for T {}
 
-/// A loopback server answering each request with the next scripted response. Returns its
-/// port, and a count of the connections it accepted.
-pub(crate) fn serve(
-    tls: Option<Arc<ServerConfig>>,
-    script: Vec<(Vec<u8>, After)>,
-) -> (u16, Arc<AtomicUsize>) {
+/// A scripted server: its port, the connections it accepted, and every request it read.
+pub(crate) struct Server {
+    pub port: u16,
+    accepted: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+impl Server {
+    pub fn accepted(&self) -> usize {
+        self.accepted.load(Ordering::SeqCst)
+    }
+
+    /// Every request it has read, head and body.
+    pub fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+/// A loopback server answering each request with the next scripted response.
+pub(crate) fn serve(tls: Option<Arc<ServerConfig>>, script: Vec<(Vec<u8>, After)>) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let accepted = Arc::new(AtomicUsize::new(0));
-    let count = accepted.clone();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (count, seen) = (accepted.clone(), requests.clone());
     std::thread::spawn(move || {
         let mut script = script.into_iter();
         'accept: for tcp in listener.incoming() {
@@ -88,8 +103,12 @@ pub(crate) fn serve(
                 None => Box::new(tcp),
             };
             loop {
-                if read_request(&mut io).is_err() {
-                    continue 'accept;
+                match read_request(&mut io) {
+                    Ok(request) => seen
+                        .lock()
+                        .unwrap()
+                        .push(String::from_utf8_lossy(&request).into_owned()),
+                    Err(_) => continue 'accept,
                 }
                 let Some((response, after)) = script.next() else {
                     return;
@@ -101,7 +120,11 @@ pub(crate) fn serve(
             }
         }
     });
-    (port, accepted)
+    Server {
+        port,
+        accepted,
+        requests,
+    }
 }
 
 /// Reads one request: its head, then as many body bytes as its Content-Length says.

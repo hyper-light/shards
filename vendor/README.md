@@ -47,6 +47,17 @@ Recheck these upstream items with each update:
 - aws/aws-lc-rs#1241: TLS 1.3 AES-GCM sealing from several input slices (open).
 - aws/aws-lc-rs#1165: `Clone` for `aead::LessSafeKey`, which ring has. It waits on an
   AWS-LC context copy (open).
+- aws/aws-lc-rs#1192: reading back an ML-DSA key pair's seed (open). It matters once
+  shards stores ML-DSA keys.
+- aws/aws-lc-rs#738: an HPKE API (RFC 9180; open since 2025-03). It matters for
+  Encrypted Client Hello, which rustls can also do with its own HPKE.
+- aws/aws-lc-rs#617: JWE, and AES-192-GCM, which it lacks (open since 2024-11). Registry
+  tokens are signed (JWS) and opaque to us, so it matters only if shards issues its own.
+- aws/aws-lc-rs#935: GCC 15's `-Werror=unterminated-string-initialization` breaks
+  aws-lc-fips-sys, whose validated sources cannot take the fix.
+  - Our non-FIPS copy has the fix (aws/aws-lc 78c2583). CI's Alpine jobs compile it with
+    GCC 15.2, with no such warning.
+  - It matters again only if we build FIPS.
 
 Then:
 

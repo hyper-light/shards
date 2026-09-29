@@ -38,6 +38,10 @@ const MAX_IDLE: usize = 10;
 const MAX_HEAD: usize = 10 << 20;
 const MAX_CHUNK_LINE: usize = 4096;
 const MAX_TRAILER: usize = 4096;
+const MAX_REDIRECTS: usize = 10;
+/// How much of a redirect's body Go reads so its connection can be reused
+/// (`maxBodySlurpSize`).
+const DRAIN: u64 = 2 << 10;
 
 /// The TLS configuration to use for a URL's host.
 pub type TlsFor = dyn Fn(&Url) -> Result<Arc<ClientConfig>, Error> + Send + Sync;
@@ -128,6 +132,53 @@ impl Client {
         }
         let conn = self.connect(req.url, key)?;
         self.exchange(conn, req, &head).map_err(Failure::into_error)
+    }
+
+    /// Sends `req` and follows redirects as Go's client does (go1.27.1
+    /// `net/http/client.go`): at most 10; 301, 302 and 303 turn a request other than GET or
+    /// HEAD into a GET without a body; 307 and 308 keep the method and body. A redirect
+    /// without a `Location` is the response.
+    ///
+    /// Each hop's `Authorization` comes from `authorize` for that hop's URL, so credentials
+    /// go only where the caller allows. Go instead copies them to the same host and its
+    /// subdomains.
+    pub fn follow(
+        &self,
+        req: &Request<'_>,
+        authorize: &dyn Fn(&Url) -> Result<Option<String>, Error>,
+    ) -> Result<Response, Error> {
+        let mut url = req.url.clone();
+        let mut method = req.method;
+        let mut body = req.body;
+        for _ in 0..=MAX_REDIRECTS {
+            let authorization = authorize(&url)?;
+            let mut headers = req.headers.to_vec();
+            if let Some(value) = &authorization {
+                headers.push(("Authorization", value));
+            }
+            let mut response = self.send(&Request {
+                method,
+                url: &url,
+                headers: &headers,
+                body,
+            })?;
+            let location = match response.status {
+                301 | 302 | 303 | 307 | 308 => response.header("location").map(str::to_string),
+                _ => None,
+            };
+            let Some(location) = location else {
+                return Ok(response);
+            };
+            let _ = io::copy(&mut (&mut response).take(DRAIN), &mut io::sink());
+            if matches!(response.status, 301..=303) {
+                if !matches!(method, "GET" | "HEAD") {
+                    method = "GET";
+                }
+                body = &[];
+            }
+            url = url.join(&location)?;
+        }
+        Err(Error(format!("{}: stopped after 10 redirects", req.url)))
     }
 
     /// The request line and fields, refusing any value that could split them.
@@ -792,7 +843,6 @@ impl Pool {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
-    use std::sync::atomic::Ordering;
 
     use crate::testing::{After, registry, serve};
     use crate::tls::client_config;
@@ -824,8 +874,8 @@ mod tests {
 
     /// One response on its own connection, and what reading it gives.
     fn outcome(response: &str) -> Result<Vec<u8>, Error> {
-        let (port, _) = serve(None, vec![(response.as_bytes().to_vec(), After::Close)]);
-        fetch(&plain(), "GET", &at("http", "127.0.0.1", port)).map(|(_, body)| body)
+        let server = serve(None, vec![(response.as_bytes().to_vec(), After::Close)]);
+        fetch(&plain(), "GET", &at("http", "127.0.0.1", server.port)).map(|(_, body)| body)
     }
 
     #[test]
@@ -849,11 +899,11 @@ mod tests {
             ("HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok", After::Keep),
             ("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew", After::Keep),
         ];
-        let (port, accepted) = serve(
+        let server = serve(
             None,
             script.iter().map(|(r, a)| (r.as_bytes().to_vec(), *a)).collect(),
         );
-        let url = at("http", "127.0.0.1", port);
+        let url = at("http", "127.0.0.1", server.port);
         let client = plain();
         let get = |method| fetch(&client, method, &url).unwrap();
         assert_eq!(get("GET"), (200, b"hello".to_vec()));
@@ -861,11 +911,11 @@ mod tests {
         assert_eq!(get("GET"), (200, b"ok".to_vec()));
         assert_eq!(get("GET"), (204, Vec::new()), "1xx skipped; 204 has no body");
         assert_eq!(get("HEAD"), (200, Vec::new()), "HEAD has no body");
-        assert_eq!(accepted.load(Ordering::SeqCst), 1, "one connection so far");
+        assert_eq!(server.accepted(), 1, "one connection so far");
         assert_eq!(get("GET"), (200, b"until close".to_vec()));
         assert_eq!(get("GET"), (200, b"ok".to_vec()), "HTTP/1.0, not kept alive");
         assert_eq!(get("GET"), (200, b"new".to_vec()));
-        assert_eq!(accepted.load(Ordering::SeqCst), 3);
+        assert_eq!(server.accepted(), 3);
     }
 
     #[test]
@@ -924,7 +974,7 @@ mod tests {
 
     #[test]
     fn a_stale_pooled_connection_is_replaced() {
-        let (port, accepted) = serve(
+        let server = serve(
             None,
             vec![
                 (
@@ -937,11 +987,11 @@ mod tests {
                 ),
             ],
         );
-        let url = at("http", "127.0.0.1", port);
+        let url = at("http", "127.0.0.1", server.port);
         let client = plain();
         assert_eq!(fetch(&client, "GET", &url).unwrap().1, b"ok");
         assert_eq!(fetch(&client, "GET", &url).unwrap().1, b"new");
-        assert_eq!(accepted.load(Ordering::SeqCst), 2);
+        assert_eq!(server.accepted(), 2);
     }
 
     #[test]
@@ -967,13 +1017,13 @@ mod tests {
     fn https_exchanges_share_one_tls_connection() {
         let (ca, server) = registry(&[&rustls::version::TLS13]);
         let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
-        let (port, accepted) = serve(Some(server), vec![(ok.clone(), After::Keep), (ok, After::Keep)]);
+        let listening = serve(Some(server), vec![(ok.clone(), After::Keep), (ok, After::Keep)]);
         let client = Client::new(Box::new(move |_| client_config(vec![ca.clone()])), "shards-test");
         // localhost may resolve to ::1 first, where nothing listens: the race moves on.
-        let url = at("https", "localhost", port);
+        let url = at("https", "localhost", listening.port);
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
-        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+        assert_eq!(listening.accepted(), 1);
     }
 
     #[test]

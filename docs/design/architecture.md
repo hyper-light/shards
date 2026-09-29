@@ -360,6 +360,42 @@ Registries are reached with a small blocking HTTP/1.1 client on rustls and httpa
   - reuse of plain and TLS connections, and a stale pooled connection replaced;
   - RFC 3986's own resolution examples.
 
+### Registry auth (D21)
+
+Pulls authorize as containerd v2.4.1 authorizes ([registry-pull](../research/registry-pull.md)
+§3.1, R5). The code is `crates/registry/src/auth.rs`.
+
+- **Challenges** are parsed as `auth/parse.go` parses `WWW-Authenticate`:
+  - one per line, with bearer preferred to digest, and digest to basic;
+  - parameters are RFC 2616 tokens or quoted strings;
+  - parsing stops at the first byte that doesn't fit.
+  - containerd's own test cases pass.
+- **Tokens** are fetched as `auth/fetch.go` and `authorizer.go` fetch them:
+  - Anonymous: a GET that adds `service` and each scope to the realm's query, encoded
+    in Go's sorted order.
+  - With a password or an identity token: an OAuth2 POST (`client_id=shards`). Where
+    the server has no OAuth2 endpoint (404, 401, 400, or 405 with a username), a GET
+    with Basic authentication.
+  - Tokens are cached per host and sorted set of scopes, with one fetch per set at a
+    time.
+  - A registry token goes to its registry as it is and is never retried, as dockerd
+    sends it.
+- **Stricter than containerd:**
+  - A realm must be https, unless it and the registry are both plain HTTP on loopback:
+    credentials never cross a network unencrypted. containerd sends them to any realm
+    a registry names.
+  - A token lives from `issued_at`, or its receipt, for `expires_in` and at least 60 s,
+    as distribution's client counts. containerd keeps a token without `expires_in`
+    forever.
+  - Credentials go to their registry's host alone, and redirects carry no
+    `Authorization` to another host (D20).
+  - A request refused twice in a row is not retried. An `error=` challenge starts the
+    host's handler over once.
+- **Tests:** a scripted token server checks each flow's exact requests:
+  - the query, the form, Basic authentication, and the OAuth2 fallback;
+  - caching, and expiry from `issued_at`;
+  - malformed answers, the realm rules, registry tokens and Basic challenges.
+
 ## 3. Components
 
 ```
@@ -425,7 +461,7 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
      rootfs image; `shards run IMAGE CMD`.
    - Built: our kernel (CI releases); virtio-pmem; the EROFS writer; layers → one EROFS
      image (D15); booting into an image to run a command (D16); the image store (D18);
-     registry TLS and HTTP (D19, D20). Next: registry auth and pulls, and `shards run IMAGE`.
+     registry TLS, HTTP and auth (D19–D21). Next: pulls, and `shards run IMAGE`.
 4. **In-VM engine.**
    - Scope: Docker Engine API subset → full; the rootless runtime (compatible, not
      containers underneath); networks, volumes, build; compose.
