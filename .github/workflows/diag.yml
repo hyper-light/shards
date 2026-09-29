@@ -1,0 +1,40 @@
+# Diagnostic (branch kvm-ws-diag, temporary): KVM statistics of pooled runs from templates
+# with working sets, to see where a restored guest's time goes.
+name: diag
+
+on:
+  push:
+    branches: [kvm-ws-diag]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.0
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      - name: Host
+        run: |
+          nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
+          grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag,hpage_pmd_size}
+          grep -H . /sys/module/kvm_amd/parameters/npt /sys/module/kvm_intel/parameters/ept 2>/dev/null || true
+      - name: Image, with KVM statistics
+        env:
+          SHARDS_KVM_STATS: "1"
+        run: cargo bench --locked -p shards --bench image -- --runs 8 --templates 2
+      - name: The daemon's log
+        run: |
+          for log in target/bench/image-*/daemon.log; do
+            grep -E 'kvm-stats|working set|error' "$log" | sed 's/^/  /'
+          done
+          ls -l target/bench/image-*/templates/*/ || true

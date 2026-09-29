@@ -311,6 +311,7 @@ impl Vm {
             msrs: self.msrs.clone(),
             xsave_size: self.xsave_size,
             pre_fault: self.pre_fault,
+            vm_fd: Some(self.fd.clone()),
         })
     }
 }
@@ -359,6 +360,7 @@ pub struct Vcpu {
     thread: Arc<Mutex<Option<Thread>>>,
     /// The CPUID it was given, as a snapshot keeps it.
     cpuid: Vec<[u32; 7]>,
+    vm_fd: Option<Arc<sys::VmFd>>,
     msrs: Arc<Vec<u32>>,
     xsave_size: usize,
     pre_fault: bool,
@@ -609,6 +611,24 @@ impl Vcpu {
 impl Drop for Vcpu {
     fn drop(&mut self) {
         *lock(&self.thread) = None;
+        // Diagnostic (branch kvm-restore-perf): this vCPU's and its VM's KVM statistics.
+        if std::env::var_os("SHARDS_KVM_STATS").is_some() {
+            let show = |what: &str, stats: io::Result<Vec<(String, u64)>>| match stats {
+                Ok(s) => {
+                    let line: Vec<String> = s
+                        .iter()
+                        .filter(|(_, v)| *v != 0)
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect();
+                    crate::warn!("kvm-stats {what} {}", line.join(" "));
+                }
+                Err(e) => crate::warn!("kvm-stats {what}: {e}"),
+            };
+            show("vcpu", sys::read_stats(self.fd.raw()));
+            if let Some(vm) = &self.vm_fd {
+                show("vm", sys::read_stats(vm.raw()));
+            }
+        }
     }
 }
 

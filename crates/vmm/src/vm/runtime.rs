@@ -83,6 +83,11 @@ impl Handle {
             return Ok(0);
         };
         let pages = machine::recorded(&recorder)?;
+        warn!(
+            "kvm-stats recorded {} pages, {} written",
+            pages.len(),
+            pages.iter().filter(|t| t.written).count()
+        );
         if !pages.is_empty() {
             snapshot::write_working_set(&dir, &pages, machine::PAGE)?;
         }
@@ -274,6 +279,18 @@ impl Running {
         }
         // Every vCPU was destroyed on its own thread above; the VM goes before its memory.
         self.vm.take();
+        // Diagnostic (branch kvm-ws-diag): the RAM pages this VM mapped, and wrote.
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("SHARDS_KVM_STATS").is_some() {
+            let (mut mapped, mut written) = (0, 0);
+            for (_, host, len) in self._memory.regions() {
+                if let Ok(pages) = crate::platform::mapped_pages(host, len) {
+                    mapped += pages.len();
+                    written += pages.iter().filter(|(_, w)| *w).count();
+                }
+            }
+            warn!("kvm-stats ram mapped={mapped} written={written}");
+        }
         reason
     }
 }

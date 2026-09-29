@@ -104,7 +104,7 @@ fn main() {
         }
     }
     run_env(&stop, false, &env);
-    let _ = std::fs::remove_dir_all(&home);
+    // Diagnostic (branch kvm-ws-diag): the home stays, for its daemon.log.
     let vm_rss_mib = |samples: &[support::Sample]| -> Vec<f64> {
         us(samples, |r| r.rss_kib())
             .into_iter()
