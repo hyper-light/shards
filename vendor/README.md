@@ -53,11 +53,16 @@ Recheck these upstream items with each update:
   Encrypted Client Hello, which rustls can also do with its own HPKE.
 - aws/aws-lc-rs#617: JWE, and AES-192-GCM, which it lacks (open since 2024-11). Registry
   tokens are signed (JWS) and opaque to us, so it matters only if shards issues its own.
-- aws/aws-lc-rs#935: GCC 15's `-Werror=unterminated-string-initialization` breaks
-  aws-lc-fips-sys, whose validated sources cannot take the fix.
+- aws/aws-lc-rs#935: GCC 15's `-Werror=unterminated-string-initialization` broke
+  aws-lc-fips-sys 0.13.9 and 0.13.10. The issue is still open, but fixed in released
+  crates.
+  - The FIPS branch took the fix in aws/aws-lc 9e89db3a5d (#2863): aws-lc-fips-sys
+    0.13.11 and later, and 0.14.x.
+  - Every aws-lc-rs since 1.15.3 allows those, so `cargo update -p aws-lc-fips-sys`
+    suffices. Since 1.17.3 it requires them.
+  - The FIPS 2.0 branch (aws-lc-fips-sys 0.12.x) still has the old initializers.
   - Our non-FIPS copy has the fix (aws/aws-lc 78c2583). CI's Alpine jobs compile it with
     GCC 15.2, with no such warning.
-  - It matters again only if we build FIPS.
 
 Then:
 
