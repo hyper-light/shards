@@ -7,6 +7,7 @@ use std::io;
 
 pub mod erofs;
 pub mod layer;
+pub mod reference;
 pub mod tar;
 
 /// Why an image could not be read or built.
