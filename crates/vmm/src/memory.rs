@@ -338,9 +338,10 @@ mod tests {
         let (_, host, len) = m.regions().next().unwrap();
         assert_eq!(platform::mapped_pages(host, len).unwrap(), []);
 
-        // A read maps its page, and at most the rest of its 16-page block of addresses
-        // (fault-around, 64 KiB by default, aligned in the address space: mm/memory.c
-        // do_fault_around); a write maps its page alone, a private copy.
+        // A read maps its page and pages around it (fault-around, 16 by default: 64 KiB):
+        // from the start of its 16-page block of addresses, or of the mapping if that is
+        // later, 16 pages on, within its page table and the mapping (mm/memory.c
+        // do_fault_around). A write maps its page alone, a private copy.
         assert_eq!(m.read_obj::<u8>(at(5)).unwrap(), 6);
         m.write(at(40), &[0xff]).unwrap();
         let mapped = platform::mapped_pages(host, len).unwrap();
@@ -348,9 +349,10 @@ mod tests {
             mapped.contains(&(5, false)) && mapped.contains(&(40, true)),
             "{mapped:?}"
         );
-        let first = host as usize / p;
-        let block = (first + 5) & !15;
-        let around = block.max(first) - first..block + 16 - first;
+        let pte = (host as usize / p + 5) % 512;
+        let from = (pte & !15).max(pte - pte.min(5));
+        let to = (from + 16).min(512).min(pte + 64 - 5);
+        let around = from + 5 - pte..to + 5 - pte;
         assert!(
             mapped
                 .iter()
