@@ -103,8 +103,8 @@ fn serve(home: &Path, daemon: &Path, request: &Run, detach_keys: &[u8]) -> ExitC
                         return failed("the command's microVM sent no status");
                     };
                     if !timing.is_empty() {
-                        let _ = writeln!(io::stderr(), "shards-timing {}", String::from_utf8_lossy(timing));
-                        let _ = writeln!(io::stderr(), "shards-client-rss {}", shards_ipc::peak_rss_kib());
+                        let line = with_client_rss(&String::from_utf8_lossy(timing));
+                        let _ = writeln!(io::stderr(), "shards-timing {line}");
                     }
                     return ExitCode::from(status);
                 }
@@ -212,6 +212,17 @@ pub fn stop(home: &Path) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => failed(&format!("{}: {e}", home.join(SOCKET).display())),
+    }
+}
+
+/// The VM's timing line, a JSON object, with this client's own peak RSS in KiB as its
+/// first field, `client_rss_kib`, for benchmarks.
+fn with_client_rss(timing: &str) -> String {
+    let kib = shards_ipc::peak_rss_kib();
+    match timing.strip_prefix('{') {
+        Some(rest) if rest.trim_start().starts_with('}') => format!("{{\"client_rss_kib\":{kib}{rest}"),
+        Some(rest) => format!("{{\"client_rss_kib\":{kib},{rest}"),
+        None => timing.to_string(),
     }
 }
 

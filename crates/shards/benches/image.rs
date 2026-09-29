@@ -130,15 +130,10 @@ fn main() {
         ]);
     }
     let clients: Vec<support::Sample> = cold.into_iter().chain(template).collect();
-    // The client's own peak, which it reports beside the VM's timing line.
-    let client_mib = clients
-        .iter()
-        .map(|s| {
-            s.run
-                .client_rss_kib()
-                .expect("the client's shards-client-rss line") as f64
-                / 1024.0
-        })
+    // The client's own peak, which it adds to the VM's timing line.
+    let client_mib = us(&clients, |r| r.client_rss_kib())
+        .into_iter()
+        .map(|kib| kib / 1024.0)
         .collect();
     rows.push(stats("client_rss", "MiB", client_mib));
     report(
