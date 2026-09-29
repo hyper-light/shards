@@ -49,8 +49,11 @@ pub fn main(device: &str, template: bool) -> ! {
             let _ = writeln!(io::stderr(), "shards-init: requesting a snapshot: {e}");
             power_off()
         }
-        // A restored VM continues here.
+        // A restored VM continues here, with its snapshot's wall clock.
         let _ = crate::linux::control_write(control::MARKER, marker::RESUMED);
+        if let Err(e) = crate::linux::sync_clock() {
+            let _ = writeln!(io::stderr(), "shards-init: setting the clock: {e}");
+        }
     }
     let conn = match dial(run::PORT, true) {
         Ok(conn) => conn,

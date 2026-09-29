@@ -14,6 +14,9 @@ pub fn main() {
     if let Err(e) = mark(marker::INIT_STARTED) {
         let _ = writeln!(io::stderr(), "shards-init: control page: {e}");
     }
+    if let Err(e) = sync_clock() {
+        let _ = writeln!(io::stderr(), "shards-init: setting the clock: {e}");
+    }
     // `shards_root=<device>` on the kernel command line: boot into the image on that
     // device and run the host's workload in it; with `shards_template=1`, snapshot first.
     if let Some(device) = std::env::var_os("shards_root") {
@@ -101,7 +104,7 @@ fn control_page() -> io::Result<*mut u8> {
         let page = libc::mmap(
             std::ptr::null_mut(),
             4096,
-            libc::PROT_WRITE,
+            libc::PROT_READ | libc::PROT_WRITE,
             libc::MAP_SHARED,
             fd,
             CONTROL_PAGE as libc::off_t,
@@ -125,6 +128,35 @@ pub(crate) fn control_write(register: u64, value: u32) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("no such control register"))?;
     // SAFETY: an aligned register inside the mapped page.
     unsafe { std::ptr::write_volatile(page.add(offset).cast::<u32>(), value) };
+    Ok(())
+}
+
+/// Reads a 64-bit register of the VMM's control page, in one access.
+fn control_read64(register: u64) -> io::Result<u64> {
+    let page = control_page()?;
+    let offset = usize::try_from(register)
+        .ok()
+        .filter(|&o| o % 8 == 0 && o < 4096)
+        .ok_or_else(|| io::Error::other("no such control register"))?;
+    // SAFETY: an aligned register inside the mapped page.
+    Ok(unsafe { std::ptr::read_volatile(page.add(offset).cast::<u64>()) })
+}
+
+/// Sets CLOCK_REALTIME to the host's time (`control::HOST_TIME`): at boot, where the RTC
+/// gave whole seconds, and after a restore, where the clock is still the snapshot's.
+pub(crate) fn sync_clock() -> io::Result<()> {
+    let ns = control_read64(control::HOST_TIME)?;
+    if ns == 0 {
+        return Err(io::Error::other("the host gave no time"));
+    }
+    let ts = libc::timespec {
+        tv_sec: (ns / 1_000_000_000).try_into().map_err(io::Error::other)?,
+        tv_nsec: (ns % 1_000_000_000).try_into().map_err(io::Error::other)?,
+    };
+    // SAFETY: a valid timespec; PID 1 holds CAP_SYS_TIME.
+    if unsafe { libc::clock_settime(libc::CLOCK_REALTIME, &ts) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
     Ok(())
 }
 

@@ -46,13 +46,22 @@ impl Control {
     }
 }
 
+/// The host's wall clock in nanoseconds since the Unix epoch, or 0 if it is before it.
+fn host_time_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+}
+
 impl MmioDevice for Control {
     fn read(&self, offset: u64, data: &mut [u8]) {
         let value = match offset {
-            control::GENERATION => self.generation(),
+            control::GENERATION => u64::from(self.generation()),
+            // In one access only: halves read apart could straddle a carry.
+            control::HOST_TIME if data.len() == 8 => host_time_ns(),
             _ => 0,
         };
-        put_le(data, u64::from(value));
+        put_le(data, value);
     }
 
     fn write(&self, offset: u64, data: &[u8]) {

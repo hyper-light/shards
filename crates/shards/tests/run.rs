@@ -19,6 +19,14 @@ use std::time::{Duration, Instant};
 use common::{TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, shards, workload_image};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The host's wall clock, in nanoseconds since the Unix epoch.
+fn now_ns() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}
 struct Output {
     status: Option<i32>,
     stdout: Vec<u8>,
@@ -138,15 +146,23 @@ fn commands_run_in_the_image_as_docker_runs_them() {
     let dir = TempDir::new("run");
     let image = workload_image(&dir);
 
+    let before = now_ns();
     let out = run(
         &image,
         &["--hostname", "box", "-e", "GREETING=hi", "-e", "HOSTNAME=renamed"],
         &["/bin/testguest", "report"],
         b"",
     );
+    let after = now_ns();
     assert_eq!(out.status, Some(0), "{out}");
     let r = report(&out);
     let get = |k: &str| r.get(k).map(String::as_str).unwrap_or_default();
+    // The guest's clock is the host's, not the RTC's whole seconds.
+    let realtime: u128 = get("realtime").parse().unwrap();
+    assert!(
+        (before..=after).contains(&realtime),
+        "{before} <= {realtime} <= {after}"
+    );
     assert_eq!((get("uid"), get("gid"), get("groups")), ("0", "0", "0"), "{out}");
     assert_eq!((get("cwd"), get("hostname")), ("/", "box"), "{out}");
     assert_eq!(
@@ -312,10 +328,18 @@ fn templates_restore_into_runs_of_their_own() {
         String::from_utf8_lossy(&saved.stderr)
     );
 
-    // Each run resumes the mounted image and writes to its own copy of it.
+    // Each run resumes the mounted image and writes to its own copy of it, on the host's
+    // clock: the template's time stopped when it was saved.
+    let before = now_ns();
     let first = restore(&template, &[], &["/bin/testguest", "report"]);
+    let after = now_ns();
     assert_eq!(first.status, Some(0), "{first}");
     let first = report(&first);
+    let realtime: u128 = first.get("realtime").unwrap().parse().unwrap();
+    assert!(
+        (before..=after).contains(&realtime),
+        "{before} <= {realtime} <= {after}"
+    );
     let second = restore(&template, &["-u", "app", "-e", "X=1"], &["testguest", "report"]);
     assert_eq!(second.status, Some(0), "{second}");
     let second = report(&second);

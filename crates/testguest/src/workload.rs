@@ -89,6 +89,11 @@ fn report() -> i32 {
     // SAFETY: uname(2) NUL-terminates nodename.
     let host = unsafe { std::ffi::CStr::from_ptr(uts.nodename.as_ptr()) }.to_string_lossy();
     out.push_str(&format!("hostname {host}\n"));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    out.push_str(&format!("realtime {now}\n"));
     for (k, v) in std::env::vars() {
         out.push_str(&format!("env {k}={v}\n"));
     }

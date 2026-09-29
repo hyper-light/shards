@@ -204,6 +204,15 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     after its release. That now happens before the request.
 - **Kernel command line:** `noautogroup`, because otherwise most templates stalled a tick
   in the first `setsid(2)` after a restore (benchmarks.md, "Run").
+- **Wall clock.** shards-init sets `CLOCK_REALTIME` to the host's time at boot and after
+  each restore, before any workload runs, as a container shares its host's clock.
+  - The kernel reads the RTC in whole seconds. A restored guest's clock is its
+    snapshot's: one restored 4 min 41 s after its template was saved read the save time.
+  - The host's time comes from the control page (`HOST_TIME`), read in one 64-bit access:
+    the VMM answers with its clock at that moment. The monotonic clock stays continuous,
+    and wall time is stepped once, as NTP steps it.
+  - E2E: the guest's time lies between the host's readings before and after the run,
+    booted or restored. Without the sync after a restore, the check fails, 106 ms behind.
 - **Signals** reach the command as `docker run --sig-proxy` forwards them (docker/cli
   `signals.go`): every one another process sends, by name, as Linux numbers them.
   - They travel on a second vsock connection that the guest opens once the command runs,

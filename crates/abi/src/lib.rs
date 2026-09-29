@@ -27,6 +27,10 @@ pub mod control {
     /// Read: how many restores this guest's lineage went through: 0 in the VM that
     /// booted, and one more in each VM restored from a snapshot of it.
     pub const GENERATION: u64 = 0x08;
+    /// Read, 64 bits in one access: the host's wall-clock time when read, in nanoseconds
+    /// since the Unix epoch. A booted guest's clock comes from the RTC in whole seconds, and
+    /// a restored guest's is its snapshot's; shards-init sets CLOCK_REALTIME from this.
+    pub const HOST_TIME: u64 = 0x10;
 
     pub const SNAPSHOT_NOW: u32 = 1;
 }
