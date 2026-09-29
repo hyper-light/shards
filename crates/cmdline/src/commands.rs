@@ -23,6 +23,12 @@ pub static RUN: Command = Command {
             Some(b'd'),
             "Run container in background and print container ID",
         ),
+        Flag::string(
+            "detach-keys",
+            None,
+            "",
+            "Override the key sequence for detaching a container",
+        ),
         // Content trust is gone from the CLI; the flag only says so.
         Flag::bool(
             "disable-content-trust",
@@ -63,6 +69,7 @@ pub static RUN: Command = Command {
             None,
             "Automatically remove the container and its associated anonymous volumes when it exits",
         ),
+        Flag::bool("tty", Some(b't'), "Allocate a pseudo-TTY"),
         Flag::string(
             "user",
             Some(b'u'),
@@ -97,7 +104,6 @@ cpu-shares c i 0 -\n\
 cpus - s - -\n\
 cpuset-cpus - s - -\n\
 cpuset-mems - s - -\n\
-detach-keys - s - -\n\
 device - m - -\n\
 device-cgroup-rule - m - -\n\
 device-read-bps - m - -\n\
@@ -162,7 +168,6 @@ stop-timeout - i 0 -\n\
 storage-opt - m - -\n\
 sysctl - m - -\n\
 tmpfs - m - -\n\
-tty t b false -\n\
 ulimit - m - -\n\
 umask - s - -\n\
 use-api-socket - b false -\n\

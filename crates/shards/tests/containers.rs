@@ -494,9 +494,9 @@ fn usage_mistakes_are_answered_without_a_daemon() {
             "unknown flag: --nope\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
         ),
         (
-            &["run", "-t", "alpine"],
+            &["run", "-p", "80:80", "alpine"],
             1,
-            "\"--tty\" is not supported by shards yet\n",
+            "\"--publish\" is not supported by shards yet\n",
         ),
         (
             &["run", "--pull", "sometimes", "alpine"],

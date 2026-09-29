@@ -48,6 +48,7 @@ pub fn main() -> ! {
         "bulk" => bulk(arg(1).parse().unwrap_or(0), arg(2).parse().unwrap_or(0)),
         "orphan" => orphan(),
         "trap" => trap(arg(1)),
+        "tty" => tty(arg(1)),
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -184,6 +185,67 @@ fn orphan() -> i32 {
         }
     }
     let _ = io::stdout().write_all(b"parent done\n");
+    0
+}
+
+/// What a terminal workload sees, one `key value` per line: whether each of its stdio is
+/// a terminal, whether that is its session's controlling terminal with it in the
+/// foreground, the terminal's size and TERM. Then `winch` waits for SIGWINCH and reports
+/// the new size, and `read` reads a line from stdin and reports it.
+fn tty(then: &str) -> i32 {
+    fn size() -> String {
+        // SAFETY: TIOCGWINSZ fills a zeroed winsize.
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        if unsafe { libc::ioctl(0, libc::TIOCGWINSZ, &mut ws) } != 0 {
+            return "none".into();
+        }
+        format!("{} {}", ws.ws_row, ws.ws_col)
+    }
+    // SIGWINCH is blocked from the start, so none is lost before sigsuspend(2) waits.
+    // SAFETY: sigset operations on locals; the handler only stores an atomic.
+    let waiting = unsafe {
+        let mut blocked: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut blocked);
+        libc::sigaddset(&mut blocked, libc::SIGWINCH);
+        let mut before: libc::sigset_t = std::mem::zeroed();
+        libc::sigprocmask(libc::SIG_BLOCK, &blocked, &mut before);
+        libc::signal(
+            libc::SIGWINCH,
+            caught as extern "C" fn(libc::c_int) as libc::sighandler_t,
+        );
+        libc::sigdelset(&mut before, libc::SIGWINCH);
+        before
+    };
+    let mut out = String::new();
+    for (fd, name) in [(0, "stdin"), (1, "stdout"), (2, "stderr")] {
+        // SAFETY: isatty(3) on a standard descriptor.
+        let tty = unsafe { libc::isatty(fd) } == 1;
+        out.push_str(&format!("{name} tty {tty}\n"));
+    }
+    let controlling = std::fs::File::open("/dev/tty").is_ok();
+    // SAFETY: plain getters.
+    let foreground = unsafe { libc::tcgetpgrp(0) == libc::getpgrp() };
+    out.push_str(&format!("controlling {controlling}\nforeground {foreground}\n"));
+    out.push_str(&format!("size {}\n", size()));
+    let term = std::env::var("TERM").unwrap_or_default();
+    out.push_str(&format!("term {term}\nready\n"));
+    let _ = io::stdout().write_all(out.as_bytes());
+    match then {
+        "winch" => {
+            while CAUGHT.load(Ordering::Relaxed) == 0 {
+                // SAFETY: waits with SIGWINCH unblocked, on a valid set.
+                unsafe { libc::sigsuspend(&waiting) };
+            }
+            let _ = writeln!(io::stdout(), "resized {}", size());
+        }
+        "read" => {
+            let mut line = String::new();
+            let _ = io::stdin().read_line(&mut line);
+            let _ = writeln!(io::stdout(), "read {}", line.trim_end());
+        }
+        _ => {}
+    }
     0
 }
 

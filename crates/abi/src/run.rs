@@ -39,6 +39,10 @@ pub mod kind {
     /// Guest to host: the command is executing. It comes before any of its output; a
     /// command that could not start sends [`SYSTEM_ERR`] instead.
     pub const STARTED: u8 = 19;
+    /// Host to guest, on the [`SIGNAL_PORT`](super::SIGNAL_PORT) connection: the size of
+    /// a terminal workload's pty, as a [`Size`](super::Size) encodes it. The kernel sends
+    /// the terminal's foreground process group SIGWINCH if it changed.
+    pub const RESIZE: u8 = 20;
 }
 
 pub fn header(kind: u8, len: u32) -> [u8; HEADER] {
@@ -65,11 +69,39 @@ pub struct Spec {
     /// Docker's `--user`: `user` or `user:group`, each a name or a number; empty for root.
     pub user: Vec<u8>,
     pub hostname: Vec<u8>,
+    /// Docker's `--tty`: the workload's stdio is a pty of this size, whose output reaches
+    /// the host as [`kind::STDOUT`] alone; `None` for pipes.
+    pub tty: Option<Size>,
+}
+
+/// A terminal's size in character cells. Zero in either leaves the pty's size alone, as
+/// runc leaves it (libcontainer/utils_linux.go, setupConsole).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Size {
+    pub rows: u16,
+    pub cols: u16,
+}
+
+impl Size {
+    /// Rows, then columns, each a big-endian u16.
+    pub fn encode(self) -> [u8; 4] {
+        let ([a, b], [c, d]) = (self.rows.to_be_bytes(), self.cols.to_be_bytes());
+        [a, b, c, d]
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Size> {
+        let [a, b, c, d] = <[u8; 4]>::try_from(bytes).ok()?;
+        Some(Size {
+            rows: u16::from_be_bytes([a, b]),
+            cols: u16::from_be_bytes([c, d]),
+        })
+    }
 }
 
 impl Spec {
     /// Lists are a big-endian u32 count, then their strings; each string is a big-endian
-    /// u32 length, then its bytes.
+    /// u32 length, then its bytes. A terminal follows as a 1 and its size; without one,
+    /// nothing follows, so an init from before terminals still reads the spec.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         for list in [&self.argv, &self.env] {
@@ -80,6 +112,10 @@ impl Spec {
         }
         for s in [&self.cwd, &self.user, &self.hostname] {
             put_bytes(&mut out, s);
+        }
+        if let Some(size) = self.tty {
+            out.push(1);
+            out.extend_from_slice(&size.encode());
         }
         out
     }
@@ -93,6 +129,11 @@ impl Spec {
             cwd: r.bytes()?,
             user: r.bytes()?,
             hostname: r.bytes()?,
+            tty: match r.take(1) {
+                None => None,
+                Some([1]) => Some(Size::decode(r.take(4)?)?),
+                Some(_) => return None,
+            },
         };
         r.0.is_empty().then_some(spec)
     }
@@ -151,17 +192,38 @@ mod tests {
             cwd: b"/work".to_vec(),
             user: b"app:staff".to_vec(),
             hostname: b"box".to_vec(),
+            tty: Some(Size { rows: 24, cols: 300 }),
         };
         let bytes = spec.encode();
-        assert_eq!(Spec::decode(&bytes), Some(spec));
+        assert_eq!(Spec::decode(&bytes), Some(spec.clone()));
+        let piped = Spec { tty: None, ..spec };
+        let without = piped.encode();
+        assert_eq!(Spec::decode(&without), Some(piped.clone()));
         assert_eq!(Spec::decode(&Spec::default().encode()), Some(Spec::default()));
+        // Frames carry their length, so only a spec cut before its terminal reads as one
+        // without.
         for cut in 0..bytes.len() {
-            assert_eq!(Spec::decode(&bytes[..cut]), None, "cut at {cut}");
+            let expected = (cut == without.len()).then(|| piped.clone());
+            assert_eq!(Spec::decode(&bytes[..cut]), expected, "cut at {cut}");
         }
         let mut long = bytes.clone();
         long.push(0);
         assert_eq!(Spec::decode(&long), None, "trailing bytes");
         assert_eq!(Spec::decode(&[0xff, 0xff, 0xff, 0xff]), None, "a huge count");
+        let mut bad_tty = Spec::default().encode();
+        bad_tty.push(2);
+        assert_eq!(Spec::decode(&bad_tty), None, "not a terminal");
+    }
+
+    #[test]
+    fn sizes_are_rows_then_columns() {
+        let size = Size {
+            rows: 0x0102,
+            cols: 0x0304,
+        };
+        assert_eq!(size.encode(), [1, 2, 3, 4]);
+        assert_eq!(Size::decode(&size.encode()), Some(size));
+        assert_eq!(Size::decode(&[1, 2, 3]), None);
     }
 
     #[test]

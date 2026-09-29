@@ -2,6 +2,10 @@
 
 Research note, 2026-09-29. Evidence only; nothing here is a final design decision.
 
+Status, 2026-09-29: shards serves `run -t` and `-it` as §3's items 1–5, 7 and 10 sketch
+(docs/design/architecture.md D16, D27), with ^C as item 6 describes. The terminal after
+`kill -9` (item 8) and E1–E8 remain open.
+
 It informs `shards run -t` and `-it`. D16 lists TTYs as "Not yet", and D27 parses `--tty` but refuses it [shards: docs/design/architecture.md:243, 714-716, 796-799]. The goal is parity wherever a user or a script can see a difference:
 
 - the bytes on the terminal, and the terminal's state afterwards;

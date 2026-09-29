@@ -12,7 +12,7 @@
       "run",
       "--help"
     ],
-    "stdout": "Usage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate and run a new container from an image\n\nAliases:\n  shards container run, shards run\n\nOptions:\n  -d, --detach              Run container in background and print container ID\n      --entrypoint string   Overwrite the default ENTRYPOINT of the image\n  -e, --env list            Set environment variables\n      --help                Print usage\n  -h, --hostname string     Container host name\n      --init                Run an init inside the container that\n                            forwards signals and reaps processes\n  -i, --interactive         Keep STDIN open even if not attached\n      --name string         Assign a name to the container\n      --pull string         Pull image before running (\"always\",\n                            \"missing\", \"never\") (default \"missing\")\n      --rm                  Automatically remove the container and its\n                            associated anonymous volumes when it exits\n  -u, --user string         Username or UID (format: \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n  -w, --workdir string      Working directory inside the container\n",
+    "stdout": "Usage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate and run a new container from an image\n\nAliases:\n  shards container run, shards run\n\nOptions:\n  -d, --detach               Run container in background and print\n                             container ID\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n      --entrypoint string    Overwrite the default ENTRYPOINT of the image\n  -e, --env list             Set environment variables\n      --help                 Print usage\n  -h, --hostname string      Container host name\n      --init                 Run an init inside the container that\n                             forwards signals and reaps processes\n  -i, --interactive          Keep STDIN open even if not attached\n      --name string          Assign a name to the container\n      --pull string          Pull image before running (\"always\",\n                             \"missing\", \"never\") (default \"missing\")\n      --rm                   Automatically remove the container and its\n                             associated anonymous volumes when it exits\n  -t, --tty                  Allocate a pseudo-TTY\n  -u, --user string          Username or UID (format:\n                             \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n  -w, --workdir string       Working directory inside the container\n",
     "stderr": "",
     "status": 0
   },
@@ -129,6 +129,59 @@
     "stdout": "RUN --interactive=true --tty=true \"alpine\" \"sh\"\n",
     "stderr": "",
     "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-t",
+      "alpine"
+    ],
+    "stdout": "RUN --tty=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-ti",
+      "--detach-keys",
+      "ctrl-a,x",
+      "alpine"
+    ],
+    "stdout": "RUN --detach-keys=ctrl-a,x --interactive=true --tty=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--tty=false",
+      "--detach-keys=",
+      "alpine"
+    ],
+    "stdout": "RUN --detach-keys= --tty=false \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-dt",
+      "alpine",
+      "top"
+    ],
+    "stdout": "RUN --detach=true --tty=true \"alpine\" \"top\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--detach-keys"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --detach-keys\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
   },
   {
     "argv": [

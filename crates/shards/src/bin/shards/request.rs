@@ -7,7 +7,7 @@
 //! templates.
 
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{IsTerminal as _, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -17,6 +17,7 @@ use shards_ipc::{Pull, Run};
 
 use shards_cmdline::commands::RUN;
 use shards_cmdline::flags::{Flag, Parsed};
+use shards_cmdline::term;
 
 use crate::NOT_RUN;
 
@@ -42,18 +43,41 @@ pub fn run(path: &str, args: &[OsString]) -> ExitCode {
             return ExitCode::from(NOT_RUN);
         }
     };
+    // Checked before anything is created, in the CLI's order, and said as plain errors:
+    // exit 1, no prefix (docker/cli run.go runContainer, streams/in.go CheckTty).
+    if request.tty.is_some() && request.interactive && !request.detach && !std::io::stdin().is_terminal() {
+        return refuse("cannot attach stdin to a TTY-enabled container because stdin is not a terminal");
+    }
+    let keys = parsed.string("detach-keys");
+    let detach_keys = if keys.is_empty() {
+        term::DETACH_KEYS.to_vec()
+    } else {
+        match term::to_bytes(keys) {
+            Ok(bytes) => bytes,
+            Err(e) => return refuse(&format!("invalid detach keys ({keys}): {e}")),
+        }
+    };
     match resolve(&mut request) {
         #[cfg(unix)]
-        Ok((home, daemon)) => crate::client::run(&home, &daemon, &request),
+        Ok((home, daemon)) => crate::client::run(&home, &daemon, &request, &detach_keys),
         #[cfg(not(unix))]
-        Ok(_) => crate::failed(
-            "running a command needs the daemon, which needs Unix sockets, which shards does not support on this platform yet",
-        ),
+        Ok(_) => {
+            let _ = detach_keys;
+            crate::failed(
+                "running a command needs the daemon, which needs Unix sockets, which shards does not support on this platform yet",
+            )
+        }
         Err(e) => {
             let _ = writeln!(std::io::stderr(), "shards: {e}");
             ExitCode::from(NOT_RUN)
         }
     }
+}
+
+/// Says `why` as the CLI says a plain error, and exits 1 (docker/cli cmd/docker/docker.go).
+fn refuse(why: &str) -> ExitCode {
+    let _ = writeln!(std::io::stderr(), "{why}");
+    ExitCode::FAILURE
 }
 
 /// `-e`'s values as the CLI's `opts.ValidateEnv` takes them: `NAME=VALUE` as given, and
@@ -113,8 +137,18 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         name: given("name"),
         detach: parsed.bool("detach"),
         remove: parsed.bool("rm"),
+        // Sized as the CLI's stdout is, even detached (docker/cli create.go, ConsoleSize).
+        tty: parsed.bool("tty").then(stdout_size),
         ..Run::default()
     })
+}
+
+/// Rows and columns of this process's stdout, or 0×0 if it is not a terminal.
+fn stdout_size() -> (u16, u16) {
+    #[cfg(unix)]
+    return crate::terminal::size(1);
+    #[cfg(not(unix))]
+    (0, 0)
 }
 
 /// Completes the request with what only this process knows:
@@ -194,11 +228,13 @@ mod tests {
             self::asked(&["--pull", "sometimes", "alpine"]).unwrap_err(),
             "invalid pull option: 'sometimes': must be one of \"always\", \"missing\" or \"never\""
         );
+        let tty = self::asked(&["-t", "alpine"]).unwrap();
+        assert!(tty.tty.is_some(), "a terminal, as big as stdout");
         assert!(
-            self::asked(&["-t", "alpine"])
+            self::asked(&["-p", "80:80", "alpine"])
                 .unwrap_err()
-                .contains("\"--tty\" is not supported by shards yet"),
-            "no TTYs yet"
+                .contains("\"--publish\" is not supported by shards yet"),
+            "no ports yet"
         );
     }
 }

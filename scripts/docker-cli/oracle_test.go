@@ -26,8 +26,9 @@ import (
 // The flags shards serves, by command; the rest are hidden, as shards hides them.
 var served = map[string][]string{
 	"run": {
-		"detach", "disable-content-trust", "entrypoint", "env", "help", "hostname", "init",
-		"interactive", "kernel-memory", "name", "pull", "rm", "user", "workdir",
+		"detach", "detach-keys", "disable-content-trust", "entrypoint", "env", "help",
+		"hostname", "init", "interactive", "kernel-memory", "name", "pull", "rm", "tty",
+		"user", "workdir",
 	},
 	"ps":   {"all", "help", "last", "latest", "no-trunc", "quiet"},
 	"ls":   {"all", "help", "last", "latest", "no-trunc", "quiet"},
@@ -52,6 +53,11 @@ var cases = [][]string{
 	{"run", "-e", "=x", "alpine"},
 	{"run", "-e"},
 	{"run", "-it", "alpine", "sh"},
+	{"run", "-t", "alpine"},
+	{"run", "-ti", "--detach-keys", "ctrl-a,x", "alpine"},
+	{"run", "--tty=false", "--detach-keys=", "alpine"},
+	{"run", "-dt", "alpine", "top"},
+	{"run", "--detach-keys"},
 	{"run", "-p", "80:80", "-v", "/a:/b", "nginx"},
 	{"run", "--sig-proxy=true", "alpine"},
 	{"run", "--sig-proxy=false", "alpine"},

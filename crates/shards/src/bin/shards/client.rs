@@ -6,6 +6,11 @@
 //! only the client reads its terminal. The client forwards the signals it gets, as
 //! `docker run` does, and exits with the command's status.
 //!
+//! With `-t`, the command's stdio is a pty in the guest. With `-it` the client puts its
+//! terminal in raw mode for the run, as the Docker CLI does, and detaches, exiting 0, when
+//! the detach keys come; a change in its stdout's size resizes the pty
+//! (docs/research/tty-and-interactive-runs.md).
+//!
 //! It needs only `shards_ipc` and the OS: it is the thin `shards` binary's (main.rs).
 
 use std::fs::File;
@@ -17,34 +22,58 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use shards_cmdline::term::{EscapeProxy, Read as Typed};
 use shards_ipc::{Command, Run, SOCKET, kind, log};
 
-use crate::NOT_RUN;
+use crate::{NOT_RUN, terminal};
 
 /// How long a started daemon may take to listen: longer than the one it replaces may take
 /// to end its runs and exit (daemon.rs, TAKEOVER).
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Runs `request` through the daemon of `home`, whose binary is `daemon`. Every path the
-/// request holds is absolute by now (request.rs), since this process makes the home its
-/// working directory, where the daemon's socket is (`shards_ipc::SOCKET`).
-pub fn run(home: &Path, daemon: &Path, request: &Run) -> ExitCode {
+/// Runs `request` through the daemon of `home`, whose binary is `daemon`, detaching on
+/// `detach_keys` under `-it`. Every path the request holds is absolute by now
+/// (request.rs), since this process makes the home its working directory, where the
+/// daemon's socket is (`shards_ipc::SOCKET`). The terminal is back as it was when this
+/// returns.
+pub fn run(home: &Path, daemon: &Path, request: &Run, detach_keys: &[u8]) -> ExitCode {
+    let code = serve(home, daemon, request, detach_keys);
+    terminal::restore();
+    code
+}
+
+fn serve(home: &Path, daemon: &Path, request: &Run, detach_keys: &[u8]) -> ExitCode {
     // Before any thread starts, none of which may use a relative path meanwhile.
     let mut started = match enter(home, daemon) {
         Ok(started) => started,
         Err(e) => return failed(&e),
     };
-    // SAFETY: isatty(3) on this process's stdin.
-    let reads_terminal = request.interactive && unsafe { libc::isatty(0) } == 1;
+    // SAFETY: isatty(3) on this process's stdin and stdout.
+    let (in_terminal, out_terminal) = unsafe { (libc::isatty(0) == 1, libc::isatty(1) == 1) };
+    let attached = request.interactive && !request.detach;
+    let reads_terminal = request.interactive && in_terminal;
+    // A terminal's size follows the client's stdout's, when it is one (docker/cli
+    // cli/command/container/run.go, MonitorTtySize).
+    let resizes = request.tty.is_some() && !request.detach && out_terminal;
     let current: Arc<Mutex<Option<UnixStream>>> = Arc::default();
-    if let Err(e) = forward_signals(current.clone(), reads_terminal) {
+    if let Err(e) = forward_signals(current.clone(), reads_terminal, resizes) {
         return failed(&e);
     }
+    // Only an attached stdin, and only on a terminal, goes raw, unless NORAW is set; the
+    // detach keys are looked for only then (docker/cli hijack.go, streams/in.go).
+    let raw = request.tty.is_some()
+        && attached
+        && in_terminal
+        && std::env::var_os("NORAW").is_none_or(|v| v.is_empty());
+    let proxy = (request.tty.is_some() && attached).then(|| EscapeProxy::new(detach_keys));
     // A detached run's command reads nothing: no client stays to give it input.
-    let stdin = match command_stdin(request.interactive && !request.detach) {
+    let stdin = match command_stdin(attached, proxy) {
         Ok(stdin) => stdin,
         Err(e) => return failed(&e),
     };
+    if raw && let Err(e) = terminal::make_raw() {
+        return failed(&format!("the terminal's raw mode: {e}"));
+    }
     // A daemon from another build answers RESTART once it has stepped aside.
     for _ in 0..2 {
         let conn = match connect(home, daemon, &mut started) {
@@ -62,6 +91,10 @@ pub fn run(home: &Path, daemon: &Path, request: &Run) -> ExitCode {
         match conn.try_clone() {
             Ok(signals) => *current.lock().unwrap_or_else(PoisonError::into_inner) = Some(signals),
             Err(e) => return failed(&format!("the daemon's connection: {e}")),
+        }
+        // The size as the command starts, in case it changed since the request.
+        if resizes {
+            resize(&conn);
         }
         loop {
             match shards_ipc::recv(&conn) {
@@ -256,8 +289,10 @@ fn start(daemon: &Path) -> Result<(), String> {
 }
 
 /// The command's stdin: /dev/null, or with `interactive` a pipe a thread fills from this
-/// process's stdin, closing it when that ends or this process exits.
-fn command_stdin(interactive: bool) -> Result<OwnedFd, String> {
+/// process's stdin, closing it when that ends or this process exits. With a `proxy`, the
+/// detach keys end the client instead, with status 0 and the terminal restored, and the
+/// command runs on, as a container outlives the `docker run` that detached from it.
+fn command_stdin(interactive: bool, mut proxy: Option<EscapeProxy>) -> Result<OwnedFd, String> {
     if !interactive {
         return File::open("/dev/null")
             .map(OwnedFd::from)
@@ -270,15 +305,26 @@ fn command_stdin(interactive: bool) -> Result<OwnedFd, String> {
             let mut buf = vec![0u8; 64 * 1024];
             let mut stdin = io::stdin().lock();
             loop {
-                match stdin.read(&mut buf) {
+                let read = match stdin.read(&mut buf) {
                     Ok(0) => return,
-                    Ok(n) => {
-                        if writer.write_all(buf.get(..n).unwrap_or_default()).is_err() {
-                            return;
-                        }
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Ok(n) => buf.get(..n).unwrap_or_default(),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                     Err(_) => return,
+                };
+                let typed = match proxy.as_mut() {
+                    Some(proxy) => proxy.read(read),
+                    None => Typed::Input(read.to_vec()),
+                };
+                let (input, detached) = match typed {
+                    Typed::Input(input) => (input, false),
+                    Typed::Detach(before) => (before, true),
+                };
+                if writer.write_all(&input).is_err() {
+                    return;
+                }
+                if detached {
+                    terminal::restore();
+                    std::process::exit(0);
                 }
             }
         })
@@ -286,14 +332,31 @@ fn command_stdin(interactive: bool) -> Result<OwnedFd, String> {
     Ok(OwnedFd::from(reader))
 }
 
+/// Sends the size of this process's stdout as the command's terminal's.
+fn resize(conn: &UnixStream) {
+    let (rows, cols) = terminal::size(1);
+    if rows != 0 && cols != 0 {
+        let [a, b] = rows.to_be_bytes();
+        let [c, d] = cols.to_be_bytes();
+        let _ = shards_ipc::send(conn, kind::RESIZE, &[a, b, c, d], &[]);
+    }
+}
+
 /// Sends the signals `docker run` forwards to the command, over the current connection,
 /// even those this process was started ignoring, as the Docker CLI does
 /// (shards_ipc::take_forwarded). They are blocked in the calling thread, which every
 /// thread started later inherits, so only the forwarder's `sigwait` receives them. One that
 /// would end the client, arriving with no connection to send it on, ends the client as it
-/// would have, unless it was ignored. With `reads_terminal`, the terminal's job control
-/// applies to the client (shards_ipc::forwarded).
-fn forward_signals(current: Arc<Mutex<Option<UnixStream>>>, reads_terminal: bool) -> Result<(), String> {
+/// would have, unless it was ignored, with the terminal restored first. With
+/// `reads_terminal`, the terminal's job control applies to the client
+/// (shards_ipc::forwarded). With `resizes`, SIGWINCH first resizes the command's terminal,
+/// then goes to the command too, as both reach a Docker container's (docker/cli tty.go,
+/// signals.go).
+fn forward_signals(
+    current: Arc<Mutex<Option<UnixStream>>>,
+    reads_terminal: bool,
+    resizes: bool,
+) -> Result<(), String> {
     let (set, ignored) =
         shards_ipc::take_forwarded(reads_terminal).map_err(|e| format!("taking signals: {e}"))?;
     std::thread::Builder::new()
@@ -313,10 +376,14 @@ fn forward_signals(current: Arc<Mutex<Option<UnixStream>>>, reads_terminal: bool
                     .unwrap_or_else(PoisonError::into_inner)
                     .as_ref()
                     .is_some_and(|conn| {
+                        if resizes && sig == libc::SIGWINCH {
+                            resize(conn);
+                        }
                         shards_ipc::send(conn, kind::SIGNAL, &linux.to_be_bytes(), &[]).is_ok()
                     });
                 let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
                 if !sent && ends && !ignored.contains(&sig) {
+                    terminal::restore();
                     // SAFETY: the default action of a terminating signal, on this process.
                     unsafe {
                         libc::signal(sig, libc::SIG_DFL);

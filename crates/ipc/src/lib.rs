@@ -74,6 +74,10 @@ pub mod kind {
     pub const ERR: u8 = 13;
     /// Daemon → client: the command's exit status, one byte, last.
     pub const END: u8 = 14;
+    /// Client → warm VM: the size of the command's terminal, rows then columns, each a
+    /// big-endian u16, as `docker run` resizes a TTY container's (docker/cli
+    /// cli/command/container/tty.go).
+    pub const RESIZE: u8 = 15;
 }
 
 /// A container command as the client asks for it (`kind::CONTAINER`): its name and the
@@ -168,6 +172,9 @@ pub struct Run {
     pub detach: bool,
     /// `--rm`: the container goes once it ends.
     pub remove: bool,
+    /// `-t`: the command's stdio is a pseudo-terminal, of this many rows and columns
+    /// (0 for either: the kernel's default).
+    pub tty: Option<(u16, u16)>,
     /// The daemon binary this client would start.
     pub daemon: Identity,
 }
@@ -200,6 +207,14 @@ impl Run {
         put_opt(&mut w, self.name.as_deref());
         w.push(u8::from(self.detach));
         w.push(u8::from(self.remove));
+        match self.tty {
+            Some((rows, cols)) => {
+                w.push(1);
+                w.extend_from_slice(&rows.to_be_bytes());
+                w.extend_from_slice(&cols.to_be_bytes());
+            }
+            None => w.push(0),
+        }
         put_identity(&mut w, &self.daemon);
         w
     }
@@ -228,6 +243,12 @@ impl Run {
             name: r.opt()?,
             detach: r.flag()?,
             remove: r.flag()?,
+            tty: if r.flag()? {
+                let [a, b, c, d] = <[u8; 4]>::try_from(r.take(4)?).ok()?;
+                Some((u16::from_be_bytes([a, b]), u16::from_be_bytes([c, d])))
+            } else {
+                None
+            },
             daemon: r.identity()?,
         };
         r.0.is_empty().then_some(run)
@@ -363,6 +384,7 @@ mod tests {
             name: Some("web".into()),
             detach: true,
             remove: true,
+            tty: Some((24, 300)),
             daemon: Identity {
                 dev: 1,
                 ino: 2,

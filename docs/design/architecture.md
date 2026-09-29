@@ -240,7 +240,25 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     runtime takes it once asked. A script's `shards run ... &` starts with SIGINT and
     SIGQUIT ignored, and macOS drops an ignored signal even for a thread in `sigwait`
     [PM M28].
-- **Not yet:** TTYs (`-t`). Detached runs came with containers (D27).
+- **Terminals** (`run -t`), as Docker gives a container one
+  (docs/research/tty-and-interactive-runs.md):
+  - shards-init opens a pty per request with runc's steps: a new master from
+    `/dev/ptmx`, unlocked; the size the client's stdout has, if both dimensions are
+    nonzero; the peer owned by the command's user, its group left to devpts. The
+    standby opens the peer after `setsid` and makes it its controlling terminal
+    (`TIOCSCTTY`), so the command leads a session in the terminal's foreground.
+  - The pty keeps the kernel's settings, as nothing on Docker's path changes them: the
+    command's output reaches the host as one stream, with `\r\n` line ends and its
+    echoes, and `logs` keeps it so. `TERM=xterm` joins PATH and HOSTNAME, as dockerd
+    sets it.
+  - Its input never closes, as dockerd keeps a TTY container's stdin open: under `-t`
+    alone nothing writes it, and under `-it` the client's end only stops writing.
+  - init reads the master until EIO, which Linux returns once every holder of the peer
+    has gone and nothing is left to read; ending at POLLHUP would lose output.
+  - A resize travels beside the signals, as its own frame; the kernel then signals the
+    terminal's foreground group, if the size changed.
+- **Not yet:** a terminal for `vm run --rootfs`, whose commands are shards' tests and
+  benchmarks. Detached runs came with containers (D27).
 - **Tests:** E2E runs a minimal image (no `/proc`, `/sys` or `/dev`). It covers users,
   groups, the environment, working directories, mounts and every exit status. It also
   sends 8 MiB through stdin and back, and reads 32 MiB of output.
@@ -530,8 +548,8 @@ into an image, as `docker run` runs one in a new container. The code is
   - the image's command applies only when neither an entrypoint nor a command is given;
   - its entrypoint applies unless one is given, and `--entrypoint ""` clears it.
 - **Not yet:** a kernel and shards-init that ship with shards. Until then, `--kernel`
-  and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`. Also TTYs, ports, volumes and
-  detached runs.
+  and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`. Also ports and volumes; terminals
+  and detached runs came later (D16, D27).
 - **Checked against Docker Hub** (2026-09-28): `alpine`, `busybox:1.36` pulled on
   demand then run (1.0 s in all), and `hello-world` from its own `Cmd`.
 - **Tests:**
@@ -650,7 +668,7 @@ for the exit status.
     stops its containers when it restarts: two daemons never keep one home's records.
     Keeping runs through a restart (live-restore) is a later milestone.
 - **The command's stdin** is /dev/null, or with `-i` a pipe the client fills from its
-  own.
+  own. Under `-t` it feeds the guest's pty, which never closes (D16).
   - It ends when the client does, as `docker run -i`'s does when its client goes
     (StdinOnce).
   - Only the client reads its terminal. The client then leaves SIGTTIN unforwarded, so a
@@ -747,7 +765,7 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
     stdin, or 80, as pflag wraps them.
   - Every flag `docker` takes parses. Those shards does not serve yet are left out of
     `--help`, as the CLI leaves out what its daemon cannot do, and refuse any value but
-    their default: `"--tty" is not supported by shards yet`.
+    their default: `"--publish" is not supported by shards yet`.
   - `-e NAME` takes the client's value, as the CLI's `ValidateEnv` does. `--init` is
     served as given: shards-init is every command's PID 1, forwarding signals and
     reaping as docker-init does.
@@ -832,16 +850,40 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   - Whoever waits for a container is told its exit code as its record changes, under
     the records' lock, as moby's `State.Wait` is, so `wait` never reads a record before
     its end is written.
+- **`run -t` and `-it`** as the Docker CLI runs them (docs/research/
+  tty-and-interactive-runs.md §2.1):
+  - `-it` with a stdin that is not a terminal is refused before anything is created:
+    `cannot attach stdin to a TTY-enabled container because stdin is not a terminal`,
+    exit 1. `--detach-keys` is checked next, in moby/term's syntax, with its words.
+  - Under `-it` the client's terminal goes raw with moby/term's flags, which Apple's
+    `cfmakeraw` does not set, unless `NORAW` is set. It goes back as the client ends
+    with the command's status, a start that failed, a detach, or a signal it forwards
+    and would end by; as with Docker, not after SIGKILL.
+  - The detach keys (ctrl-p ctrl-q, or `--detach-keys`) end the client with status 0
+    and nothing said; the container runs on. As moby/term's proxy does, a byte that may
+    start them waits for the next.
+  - The pty is as big as the client's stdout, 0×0 if that is no terminal. Each SIGWINCH
+    resizes it, then goes to the command too, as both reach a Docker container. XNU
+    drops a SIGWINCH at its default even for `sigwait`, so the client gives it a
+    handler that never runs [PM M31].
+  - ^C under `-it` is a byte the guest's pty turns into SIGINT for its foreground group.
+    shards' command is never PID 1, so it ends, as under `docker run --init -it`.
+  - **Not yet:** `docker attach`, and Docker's `detachKeys` in its config file.
 - **Known gaps** (flags parsed and refused): `ps --format`, `--filter` and `--size`, and
-  `run`'s TTY, ports, volumes, networks, limits, restart policies and
-  `--sig-proxy=false`. `/etc/hostname`, `/etc/hosts` and
-  `/etc/resolv.conf` come with networking.
+  `run`'s ports, volumes, networks, limits, restart policies and `--sig-proxy=false`.
+  `/etc/hostname`, `/etc/hosts` and `/etc/resolv.conf` come with networking.
 - **Tests:** E2E with booted VMs, so they need no snapshots: a container outlives its
   run until `rm`, and `wait` reports its status; names are unique, and `--rm` leaves
   nothing; `stop` ends a command by SIGTERM (143) and `kill -s USR1` reaches it; `rm`
   refuses a running container and `rm -f` kills it (137); `ps` and `logs`; `-d` prints
   the ID and runs on, named for its ID; a command that cannot start is reported as
   `docker run` reports it, attached and detached; usage mistakes start no daemon.
+- **Tests of terminals** (E2E, crates/shards/tests/tty.rs): under `-t` the command's
+  stdio is a terminal that leads its session, with `\r\n` in its output and its log;
+  the refusal and bad detach keys create nothing. The client runs on a pty the test
+  plays: the size arrives, the terminal is raw while the command runs and as it was
+  after, typed input is echoed and read, a resize reaches the command, ^C interrupts
+  it (130), and both detach keys leave it running.
 
 ## 3. Components
 
@@ -909,7 +951,7 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
    - Built: our kernel (CI releases); virtio-pmem; the EROFS writer; layers → one EROFS
      image (D15); booting into an image to run a command (D16); the image store (D18);
      registry TLS, HTTP and auth (D19–D21); pulls (D22); `shards pull` (D23); `shards run
-     IMAGE` (D24). Next: shipping the kernel and shards-init, and TTYs.
+     IMAGE` (D24); terminals (D16, D27). Next: shipping the kernel and shards-init.
 4. **In-VM engine.**
    - Scope: Docker Engine API subset → full; the rootless runtime (compatible, not
      containers underneath); networks, volumes, build; compose.

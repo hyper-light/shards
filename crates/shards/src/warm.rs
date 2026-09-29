@@ -165,15 +165,23 @@ pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
 }
 
 /// Passes the signals that arrive on `conn` to the workload until it closes: the client's,
-/// or the daemon's (`shards stop`, `kill`). When the client hangs up, the VM lets go of its
-/// stdio. A workload outlives its client, as a container outlives `docker run`'s.
+/// or the daemon's (`shards stop`, `kill`), and the client's terminal sizes. When the
+/// client hangs up, the VM lets go of its stdio. A workload outlives its client, as a
+/// container outlives `docker run`'s.
 fn relay_signals(conn: &UnixStream, to: &ToGuest, client: bool) {
     while let Ok(Some(message)) = shards_ipc::recv(conn) {
-        if message.kind != kind::SIGNAL {
-            continue;
-        }
-        if let Ok(signal) = <[u8; 4]>::try_from(message.payload.as_slice()) {
-            workload::signal_guest(to, u32::from_be_bytes(signal));
+        match message.kind {
+            kind::SIGNAL => {
+                if let Ok(signal) = <[u8; 4]>::try_from(message.payload.as_slice()) {
+                    workload::signal_guest(to, u32::from_be_bytes(signal));
+                }
+            }
+            kind::RESIZE if client => {
+                if let Some(size) = shards_abi::run::Size::decode(&message.payload) {
+                    workload::resize_guest(to, size);
+                }
+            }
+            _ => {}
         }
     }
     if client && let Ok(null) = File::open("/dev/null") {

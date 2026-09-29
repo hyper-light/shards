@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 #[cfg(unix)]
 use shards_abi::run::kind;
-use shards_abi::run::{self, Spec};
+use shards_abi::run::{self, Size, Spec};
 
 /// Docker's PATH for Linux containers (moby daemon/pkg/oci/defaults.go).
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -38,7 +38,8 @@ pub fn not_run(said: &str) -> (String, u8) {
     )
 }
 
-/// What `--`, `--env`, `--workdir`, `--user`, `--hostname` and `--interactive` asked for.
+/// What `--`, `--env`, `--workdir`, `--user`, `--hostname`, `--interactive` and `--tty`
+/// asked for.
 #[derive(Debug, Default)]
 pub struct Options {
     pub argv: Vec<String>,
@@ -47,14 +48,16 @@ pub struct Options {
     pub user: String,
     pub hostname: Option<String>,
     pub interactive: bool,
+    /// A pty for the command's stdio, of this size.
+    pub tty: Option<Size>,
 }
 
 /// The workload `docker run` would start. Its environment is Docker's PATH and HOSTNAME,
-/// then the variables given, which replace those two, unset them when given without a
-/// value, and are otherwise appended (moby daemon/container/container.go,
-/// CreateDaemonEnvironment; daemon/container/env.go, ReplaceOrAppendEnvValues). As in the
-/// Docker CLI, a variable given without a value first takes shards' own, if shards has
-/// one (docker/cli opts/env.go, ValidateEnv).
+/// and with a terminal TERM=xterm, then the variables given, which replace those,
+/// unset them when given without a value, and are otherwise appended (moby
+/// daemon/container/container.go, CreateDaemonEnvironment; daemon/container/env.go,
+/// ReplaceOrAppendEnvValues). As in the Docker CLI, a variable given without a value first
+/// takes shards' own, if shards has one (docker/cli opts/env.go, ValidateEnv).
 pub fn spec(o: &Options) -> Result<Spec, String> {
     spec_in(o, |name| std::env::var_os(name))
 }
@@ -76,7 +79,10 @@ fn spec_in(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) -> 
             id.iter().map(|b| format!("{b:02x}")).collect()
         }
     };
-    let defaults = [format!("PATH={DEFAULT_PATH}"), format!("HOSTNAME={hostname}")];
+    let mut defaults = vec![format!("PATH={DEFAULT_PATH}"), format!("HOSTNAME={hostname}")];
+    if o.tty.is_some() {
+        defaults.push("TERM=xterm".into());
+    }
     let mut env: Vec<Option<Vec<u8>>> = defaults.iter().map(|d| Some(d.clone().into_bytes())).collect();
     let default_at = |key: &[u8]| {
         defaults
@@ -111,6 +117,7 @@ fn spec_in(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) -> 
         cwd: o.workdir.clone().into_bytes(),
         user: o.user.clone().into_bytes(),
         hostname: hostname.into_bytes(),
+        tty: o.tty,
     };
     if spec.encode().len() > run::MAX_PAYLOAD as usize {
         return Err("the command and its environment are too large".into());
@@ -173,14 +180,14 @@ pub fn listen(vsock: &Path, port: u32) -> io::Result<Listener> {
     Ok(Listener { listener, path })
 }
 
-/// Signals on their way to the workload: sent once the guest has dialed the signal port,
-/// queued before then while the workload runs or is sure to, and otherwise not
-/// forwarded.
+/// Signals and terminal sizes on their way to the workload, as frames: sent once the guest
+/// has dialed the signal port, queued before then while the workload runs or is sure to,
+/// and otherwise not sent.
 #[cfg(unix)]
 #[derive(Debug, Default)]
 pub struct Signals {
     conn: Option<UnixStream>,
-    queued: Vec<u32>,
+    queued: Vec<(u8, Vec<u8>)>,
     /// The workload runs, or is sure to.
     running: bool,
 }
@@ -287,7 +294,7 @@ pub fn serve(
             let queued = std::mem::take(&mut state.queued);
             if queued
                 .iter()
-                .all(|sig| send(&mut c, kind::SIGNAL, &sig.to_be_bytes()).is_ok())
+                .all(|(which, payload)| send(&mut c, *which, payload).is_ok())
             {
                 state.conn = Some(c);
             }
@@ -464,17 +471,28 @@ pub fn will_run(to: &ToGuest) {
 /// send it to.
 #[cfg(unix)]
 pub fn signal_guest(to: &ToGuest, linux: u32) -> bool {
+    to_guest(to, kind::SIGNAL, &linux.to_be_bytes())
+}
+
+/// Sizes the workload's terminal, if it has one, as [`signal_guest`] sends a signal.
+#[cfg(unix)]
+pub fn resize_guest(to: &ToGuest, size: Size) -> bool {
+    to_guest(to, kind::RESIZE, &size.encode())
+}
+
+#[cfg(unix)]
+fn to_guest(to: &ToGuest, which: u8, payload: &[u8]) -> bool {
     let mut guard = lock(to);
     let state = &mut *guard;
     match (&mut state.conn, state.running) {
         (Some(conn), _) => {
-            if send(conn, kind::SIGNAL, &linux.to_be_bytes()).is_err() {
+            if send(conn, which, payload).is_err() {
                 state.conn = None;
             }
             true
         }
         (None, true) => {
-            state.queued.push(linux);
+            state.queued.push((which, payload.to_vec()));
             true
         }
         (None, false) => false,
@@ -543,6 +561,31 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_terminal_brings_term_as_dockerd_sets_it() {
+        let env = |given: &[&str]| {
+            let o = Options {
+                argv: vec!["x".into()],
+                env: given.iter().map(|s| (*s).to_string()).collect(),
+                hostname: Some("box".into()),
+                tty: Some(Size::default()),
+                ..Options::default()
+            };
+            spec_in(&o, |_| None).unwrap().env
+        };
+        assert_eq!(
+            env(&["A=1"]),
+            [
+                format!("PATH={DEFAULT_PATH}").into_bytes(),
+                b"HOSTNAME=box".to_vec(),
+                b"TERM=xterm".to_vec(),
+                b"A=1".to_vec()
+            ]
+        );
+        assert_eq!(env(&["TERM=vt100"]).get(2), Some(&b"TERM=vt100".to_vec()));
+        assert!(!env(&["TERM"]).iter().any(|e| e.starts_with(b"TERM")));
     }
 
     #[test]

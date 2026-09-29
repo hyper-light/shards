@@ -16,6 +16,8 @@ use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 #[cfg(unix)]
 mod client;
 mod request;
+#[cfg(unix)]
+mod terminal;
 
 /// `docker run`'s status when it could not run the command at all.
 const NOT_RUN: u8 = 125;

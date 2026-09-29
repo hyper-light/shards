@@ -178,6 +178,7 @@ fn compose(image: Option<&RunConfig>, asked: &Run) -> Result<Options, String> {
         },
         hostname: asked.hostname.clone(),
         interactive: asked.interactive,
+        tty: asked.tty.map(|(rows, cols)| shards_abi::run::Size { rows, cols }),
     })
 }
 

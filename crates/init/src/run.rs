@@ -10,7 +10,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::time::{Duration, Instant};
 
-use shards_abi::run::{self, Spec, kind};
+use shards_abi::run::{self, Size, Spec, kind};
 use shards_abi::{control, marker};
 
 use crate::linux::power_off;
@@ -347,15 +347,74 @@ mod step {
     pub const STAT: u8 = 4;
     /// The command, named by a path, is a directory or may not be executed.
     pub const ACCESS: u8 = 5;
+    /// Opening its terminal, or making it the session's.
+    pub const TTY: u8 = 6;
 }
 
-/// A running workload and init's ends of its stdio.
+/// A running workload and init's ends of its stdio. With a terminal, `stdout` is its
+/// pty's master and `stdin` a duplicate of it, and there is no `stderr`.
 struct Workload {
     pid: libc::pid_t,
     stdin: Option<OwnedFd>,
     stdout: Option<OwnedFd>,
     stderr: Option<OwnedFd>,
     sigchld: OwnedFd,
+    tty: bool,
+}
+
+/// A pty's master, and the path of its peer, which the standby opens as the workload's
+/// terminal. runc's steps (libcontainer/console_linux.go, safeAllocPty and setupConsole;
+/// docs/research/tty-and-interactive-runs.md §2.2): a new master, unlocked; the size
+/// given, if both dimensions are; the peer owned by the workload's user
+/// (libcontainer/init_linux.go, fixStdioPermissions). The pty keeps the kernel's termios,
+/// as on Docker's path, which changes none.
+struct Pty {
+    master: OwnedFd,
+    peer: Vec<u8>,
+}
+
+impl Pty {
+    fn open(size: Size, uid: u32) -> Result<Pty, Failure> {
+        let failed = |what: &str| setup_failed(format!("{what}: {}", io::Error::last_os_error()));
+        // SAFETY: posix_openpt(3) returns a new descriptor, or -1.
+        let fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
+        if fd < 0 {
+            return Err(failed("opening /dev/ptmx"));
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        let master = unsafe { OwnedFd::from_raw_fd(fd) };
+        // SAFETY: unlockpt(3) on our master.
+        if unsafe { libc::unlockpt(fd) } != 0 {
+            return Err(failed("unlocking the pty"));
+        }
+        let mut name = [0u8; 64];
+        // SAFETY: ptsname_r(3) writes a NUL-terminated name within the buffer's length.
+        if unsafe { libc::ptsname_r(fd, name.as_mut_ptr().cast(), name.len()) } != 0 {
+            return Err(failed("naming the pty"));
+        }
+        let peer = std::ffi::CStr::from_bytes_until_nul(&name)
+            .map_err(|_| setup_failed("the pty's name is not terminated"))?
+            .to_bytes()
+            .to_vec();
+        if size.rows != 0 && size.cols != 0 {
+            let ws = libc::winsize {
+                ws_row: size.rows,
+                ws_col: size.cols,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            // SAFETY: TIOCSWINSZ reads one winsize.
+            if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) } != 0 {
+                return Err(failed("sizing the pty"));
+            }
+        }
+        let path = CString::new(peer.clone()).map_err(|_| setup_failed("the pty's name holds a NUL"))?;
+        // SAFETY: chown(2) of the peer by path; gid -1 keeps devpts's.
+        if unsafe { libc::chown(path.as_ptr(), uid, u32::MAX) } != 0 {
+            return Err(failed("handing the pty to the workload's user"));
+        }
+        Ok(Pty { master, peer })
+    }
 }
 
 /// A process forked ahead of its workload's request, waiting to exec it, with the pipes
@@ -491,10 +550,16 @@ impl Standby {
         // The workload owns its stdio, so it can reopen it through /proc/self/fd, as runc's
         // fixStdioPermissions arranges (libcontainer/init_linux.go). A pipe's two ends are
         // one inode.
-        for fd in [&standby.stdin, &standby.stdout, &standby.stderr] {
-            // SAFETY: fchown(2) on our own pipe; gid -1 leaves the group.
-            unsafe { libc::fchown(fd.as_raw_fd(), uid, u32::MAX) };
-        }
+        let pty = match spec.tty {
+            Some(size) => Some(Pty::open(size, uid)?),
+            None => {
+                for fd in [&standby.stdin, &standby.stdout, &standby.stderr] {
+                    // SAFETY: fchown(2) on our own pipe; gid -1 leaves the group.
+                    unsafe { libc::fchown(fd.as_raw_fd(), uid, u32::MAX) };
+                }
+                None
+            }
+        };
         let tried = candidates.clone();
         let orders = Orders {
             uid,
@@ -505,6 +570,7 @@ impl Standby {
             candidates,
             argv: spec.argv.clone(),
             env,
+            tty: pty.as_ref().map(|p| p.peer.clone()).unwrap_or_default(),
         }
         .encode();
         let Standby {
@@ -528,18 +594,37 @@ impl Standby {
             // SAFETY: waits for our own child.
             unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
             let errno = i32::from_be_bytes([e0, e1, e2, e3]);
-            let tried = usize::try_from(u32::from_be_bytes([c0, c1, c2, c3]))
-                .ok()
-                .and_then(|i| tried.get(i))
-                .map_or(&argv0[..], Vec::as_slice);
+            let tried = match (which, &pty) {
+                (step::TTY, Some(p)) => &p.peer[..],
+                _ => usize::try_from(u32::from_be_bytes([c0, c1, c2, c3]))
+                    .ok()
+                    .and_then(|i| tried.get(i))
+                    .map_or(&argv0[..], Vec::as_slice),
+            };
             return Err(exec_failure(which, errno, argv0, tried, &spec.cwd, &spec.user));
         }
+        let Some(Pty { master, .. }) = pty else {
+            return Ok(Workload {
+                pid,
+                stdin: Some(stdin),
+                stdout: Some(stdout),
+                stderr: Some(stderr),
+                sigchld,
+                tty: false,
+            });
+        };
+        // The terminal carries everything; the pipes go unused.
+        drop((stdin, stdout, stderr));
+        let input = master
+            .try_clone()
+            .map_err(|e| setup_failed(format!("the pty's master: {e}")))?;
         Ok(Workload {
             pid,
-            stdin: Some(stdin),
-            stdout: Some(stdout),
-            stderr: Some(stderr),
+            stdin: Some(input),
+            stdout: Some(master),
+            stderr: None,
             sigchld,
+            tty: true,
         })
     }
 }
@@ -554,6 +639,8 @@ struct Orders {
     candidates: Vec<Vec<u8>>,
     argv: Vec<Vec<u8>>,
     env: Vec<Vec<u8>>,
+    /// The terminal the workload opens as its stdio, or empty for the standby's pipes.
+    tty: Vec<u8>,
 }
 
 impl Orders {
@@ -577,6 +664,7 @@ impl Orders {
         list(&mut w, &self.candidates);
         list(&mut w, &self.argv);
         list(&mut w, &self.env);
+        list(&mut w, std::slice::from_ref(&self.tty));
         w
     }
 
@@ -621,6 +709,7 @@ impl Orders {
             candidates: list(&mut r)?,
             argv: list(&mut r)?,
             env: list(&mut r)?,
+            tty: list(&mut r)?.pop()?,
         };
         r.is_empty().then_some(orders)
     }
@@ -644,15 +733,21 @@ fn standby(ends: Ends) -> ! {
         let cstrings = |items: &[Vec<u8>]| -> Option<Vec<CString>> {
             items.iter().map(|b| CString::new(b.clone()).ok()).collect()
         };
+        let tty = if o.tty.is_empty() {
+            None
+        } else {
+            Some(CString::new(o.tty.clone()).ok()?)
+        };
         Some((
             cstrings(&o.candidates)?,
             cstrings(&o.argv)?,
             cstrings(&o.env)?,
             CString::new(o.cwd.clone()).ok()?,
+            tty,
             o,
         ))
     });
-    let Some((candidates, argv, envp, cwd, o)) = built else {
+    let Some((candidates, argv, envp, cwd, tty, o)) = built else {
         // No orders: init has gone, or the VM is powering off. Nothing to run.
         // SAFETY: ends this process without running atexit handlers inherited from init.
         unsafe { libc::_exit(NOT_RUN as libc::c_int) }
@@ -667,6 +762,7 @@ fn standby(ends: Ends) -> ! {
     unsafe {
         child(&Child {
             stdio: [stdin.as_raw_fd(), stdout.as_raw_fd(), stderr.as_raw_fd()],
+            tty: tty.as_ref(),
             err: err.as_raw_fd(),
             cwd: &cwd,
             uid: o.uid,
@@ -798,7 +894,14 @@ impl Workload {
                             from_signals.extend_from_slice(buf.get(..n).unwrap_or_default());
                             let pid = self.pid;
                             let running = status.is_none();
+                            let pty = self.stdout.as_ref().filter(|_| self.tty).map(AsRawFd::as_raw_fd);
                             let whole = each_frame(&mut from_signals, |which, payload| {
+                                if which == kind::RESIZE {
+                                    if let (Some(fd), Some(size)) = (pty, Size::decode(payload)) {
+                                        resize(fd, size);
+                                    }
+                                    return;
+                                }
                                 if let (kind::SIGNAL, Ok(sig)) =
                                     (which, <[u8; 4]>::try_from(payload).map(u32::from_be_bytes))
                                     && running
@@ -874,6 +977,24 @@ impl Workload {
     }
 }
 
+/// Sizes the pty whose master is `fd`, as the shim resizes a TTY container's
+/// (containerd console, tc_unix.go): the kernel signals the terminal's foreground process
+/// group only if the size changed (tty_io.c, tty_do_resize). A zero dimension leaves the
+/// size alone, as the Docker CLI never sends one (cli/command/container/tty.go).
+fn resize(fd: RawFd, size: Size) {
+    if size.rows == 0 || size.cols == 0 {
+        return;
+    }
+    let ws = libc::winsize {
+        ws_row: size.rows,
+        ws_col: size.cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: TIOCSWINSZ reads one winsize.
+    unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) };
+}
+
 /// Calls `f` with each complete frame in `buf`, removing them. Returns false if the
 /// stream is malformed, which cannot be resynchronized.
 fn each_frame(buf: &mut Vec<u8>, mut f: impl FnMut(u8, &[u8])) -> bool {
@@ -930,6 +1051,7 @@ fn exec_failure(which: u8, errno: i32, argv0: &[u8], tried: &[u8], cwd: &[u8], u
         step::ACCESS => format!("exec: {}: {err}", quote(&cmd)),
         step::CHDIR => format!("chdir to cwd ({}): {err}", quote(&String::from_utf8_lossy(cwd))),
         step::USER => format!("setting user {}: {err}", quote(&String::from_utf8_lossy(user))),
+        step::TTY => format!("open {}: {err}", String::from_utf8_lossy(tried)),
         _ => format!("exec {}: {err}", String::from_utf8_lossy(tried)),
     };
     Failure {
@@ -941,6 +1063,8 @@ fn exec_failure(which: u8, errno: i32, argv0: &[u8], tried: &[u8], cwd: &[u8], u
 /// What the child needs, built before fork.
 struct Child<'a> {
     stdio: [RawFd; 3],
+    /// The terminal to open as stdio instead, with the session it controls.
+    tty: Option<&'a CString>,
     err: RawFd,
     cwd: &'a CString,
     uid: u32,
@@ -986,10 +1110,25 @@ unsafe fn child(c: &Child<'_>) -> ! {
             libc::signal(sig, libc::SIG_DFL);
         }
         libc::setsid();
-        for (i, &fd) in c.stdio.iter().enumerate() {
+        let stdio = match c.tty {
+            // The session's controlling terminal, as runc makes it (TIOCSCTTY after
+            // setsid, libcontainer/init_linux.go).
+            Some(path) => {
+                let fd = libc::open(path.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
+                if fd < 0 || libc::ioctl(fd, libc::TIOCSCTTY, 0) != 0 {
+                    fail(step::TTY);
+                }
+                [fd; 3]
+            }
+            None => c.stdio,
+        };
+        for (i, &fd) in stdio.iter().enumerate() {
             if libc::dup2(fd, i as libc::c_int) < 0 {
                 fail(step::EXEC);
             }
+        }
+        if c.tty.is_some() && stdio[0] > 2 {
+            libc::close(stdio[0]);
         }
         // As root first; if root may not, again as the user (runc does the same).
         let mut chdir_ok = libc::chdir(c.cwd.as_ptr()) == 0;

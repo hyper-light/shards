@@ -893,6 +893,41 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   - The pool keeps refilling at the handover: refilling at the run's end is worth 49 µs
     at the median, at a risk to the tail of back-to-back runs.
 
+### M31. A blocked signal whose default is to ignore it, and `sigwait`
+
+- **Question.** `run -t` resizes the command's terminal when the client gets SIGWINCH,
+  which the client forwards with every other signal from a `sigwait` thread (M28). On the
+  Mac it never came. Does XNU deliver a blocked signal whose default action is to ignore
+  it?
+- **Method.**
+  - `docs/research/measurements/signal-default-ignore/probe.c`: for SIGWINCH, SIGIO,
+    SIGCONT and SIGINT, a new process blocks the signal, sets its disposition (SIG_DFL,
+    or a handler), sends it to itself, and checks `sigpending`.
+  - The same probe, built for Linux (`zig cc -target aarch64-linux-musl`), in Docker
+    Desktop's VM.
+  - XNU's source at the version this macOS runs (apple-oss-distributions/xnu
+    xnu-12377.121.6).
+  - 2026-09-29, this machine: macOS 26.4.1 (Darwin 25.4.0); Linux 6.12.76-linuxkit.
+- **Results.**
+
+| Signal | XNU, SIG_DFL | XNU, handler | Linux, SIG_DFL | Linux, handler |
+|---|---|---|---|---|
+| SIGWINCH | discarded | pending | pending | pending |
+| SIGIO | discarded | pending | pending | pending |
+| SIGCONT | pending | pending | pending | pending |
+| SIGINT | pending | pending | pending | pending |
+
+  - XNU's `setsigvec` puts a signal in `p_sigignore` when it is SIG_IGN, or SIG_DFL with
+    a default of ignoring it, but for SIGCONT (bsd/kern/kern_sig.c:689-703), and
+    `psignal_internal` discards any signal in `p_sigignore` when it is sent, blocked or
+    not (:2133-2136). Linux's `sig_ignored` never ignores a blocked signal, "since the
+    signal handler may change by the time it is unblocked" (6.18.48 kernel/signal.c:
+    106-114).
+- **Consequence.** D26: `shards_ipc::take_forwarded` gives SIGWINCH and SIGIO a handler,
+  which never runs while they stay blocked for `sigwait`, as Go's `os/signal` gives every
+  signal it is notified of. Before, neither the client nor `vm run` forwarded them on the
+  Mac.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**
