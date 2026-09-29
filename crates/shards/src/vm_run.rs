@@ -636,10 +636,12 @@ fn serve_workload(
                     }
                     Command::Warm(link) => {
                         let client = std::sync::OnceLock::new();
-                        let started = || crate::warm::started(&link);
+                        let started = || {
+                            crate::warm::started(&link);
+                            end_recording_in(&stopper, RECORD_FOR);
+                        };
                         let ask = || {
                             let request = crate::warm::receive(&link, &to_guest)?;
-                            end_recording_in(&stopper, RECORD_FOR);
                             served_timing
                                 .asked
                                 .store(request.timing, std::sync::atomic::Ordering::Relaxed);
@@ -723,10 +725,12 @@ fn serve_workload(
     ExitCode::from(125)
 }
 
-/// How long a VM records its working set after the request, at most: a command still
-/// running then has long passed its start. Recording slows the guest about sixfold (a
-/// pooled `true` took 9.9 ms against 1.5, PM M30), so this is some 8 ms of the command's
-/// own time, past the 5 ms a run should take.
+/// How long a VM records its working set after its command starts, at most: a command
+/// still running then has long passed its start. The whole way from the request to the
+/// start is recorded, however long a host takes over it (a nested KVM host took over
+/// 50 ms, PM M33). Recording slows HVF's guest about sixfold (a pooled `true` took 9.9 ms
+/// against 1.5, PM M30), so this is some 8 ms of the command's own time there, past the
+/// 5 ms a run should take; KVM's costs nothing.
 #[cfg(unix)]
 const RECORD_FOR: std::time::Duration = std::time::Duration::from_millis(50);
 
