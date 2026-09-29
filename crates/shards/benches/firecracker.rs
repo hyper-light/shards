@@ -256,7 +256,7 @@ mod compare {
                 let s = match vmm {
                     Vmm::Shards => {
                         let mut c = Command::new(common::shards_vm());
-                        c.arg("restore").arg(&snapshot);
+                        c.arg("restore").arg(&snapshot).env("SHARDS_LOG", "debug");
                         restore_sample(&mut c, guest_bytes, || {})
                     }
                     Vmm::Firecracker => {
@@ -344,10 +344,16 @@ mod compare {
         let mut child = command.spawn().expect("spawning the VMM");
         let pid = child.id() as libc::pid_t;
         let (beat, out) = first_beat(child.stdout.take().unwrap());
-        let mut stderr = child.stderr.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        // Diagnostic (branch restore-diag): each stderr line with its arrival, from spawn.
         let err = thread::spawn(move || {
             let mut all = String::new();
-            let _ = stderr.read_to_string(&mut all);
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                all.push_str(&format!(
+                    "[+{:>8.0} us] {line}\n",
+                    start.elapsed().as_secs_f64() * 1e6
+                ));
+            }
             all
         });
         after_spawn();
@@ -376,6 +382,13 @@ mod compare {
         unsafe { libc::kill(pid, libc::SIGKILL) };
         child.wait().unwrap();
         let (out, err) = (out.join().unwrap(), err.join().unwrap());
+        if let Ok(at) = beat {
+            println!(
+                "restore-timeline {:?} first beat at +{:.0} us\n{err}",
+                command.get_program(),
+                at.duration_since(start).as_secs_f64() * 1e6
+            );
+        }
         let (Ok(beat), Some(overhead_bytes)) = (beat, overhead) else {
             panic!(
                 "the restored guest never beat\n--- stdout\n{}\n--- stderr\n{err}",

@@ -390,7 +390,9 @@ pub fn restore(
     let (_, ranges) = ram_ranges(snap.config.memory_mib)?;
     let memory =
         Arc::new(GuestMemory::from_file(&ranges, memory_file).map_err(|e| format!("snapshot memory: {e}"))?);
+    debug!("diag: memory mapped");
     let a = assemble(&memory, &snap.config, console, vsock)?;
+    debug!("diag: assembled");
     if let Err(e) = copy_written(&memory, &working_set) {
         warn!("{e}; the guest copies the pages it writes as it writes them");
     }

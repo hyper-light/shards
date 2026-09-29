@@ -15,7 +15,7 @@ use crate::hv;
 use crate::memory::GuestMemory;
 use crate::snapshot::{self, MachineConfig, Snapshot, codec::Writer};
 use crate::sync::{lock, wait};
-use crate::{info, platform, warn};
+use crate::{debug, info, platform, warn};
 
 /// Ok when this host can run VMs; otherwise, why not.
 pub fn check_host() -> Result<(), String> {
@@ -299,7 +299,9 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
 /// Resumes the VM a snapshot holds, in this process.
 pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     check_host()?;
+    debug!("diag: restore begins");
     let (snap, memory_file) = snapshot::read(&cfg.dir)?;
+    debug!("diag: snapshot read");
     check_vcpus(snap.config.vcpus)?;
     let working_set = if cfg.prefetch {
         snapshot::read_working_set(&cfg.dir, machine::PAGE).unwrap_or_else(|e| {
@@ -402,7 +404,7 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
             }
         }
         match created_rx.recv() {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => debug!("diag: vCPU {index} created and restored"),
             Ok(Err(e)) => {
                 shared.stop(ExitReason::Error(format!("vCPU {index}: {e}")));
                 break;
@@ -416,7 +418,9 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         }
     }
     if !shared.exiting() {
-        match machine::finish(&vm, &bus, &finish, &start) {
+        let finished = machine::finish(&vm, &bus, &finish, &start);
+        debug!("diag: finished (VM state, devices, generation)");
+        match finished {
             Ok(()) if !hold => shared.release_vcpus(),
             Ok(()) => {}
             Err(e) => shared.stop(ExitReason::Error(e)),
