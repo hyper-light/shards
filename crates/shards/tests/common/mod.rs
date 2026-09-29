@@ -68,7 +68,6 @@ pub fn cannot_snapshot() -> bool {
     true
 }
 
-/// Firecracker CI's guest kernel for the host architecture (uncompressed, virtio built in).
 /// shards' guest kernel for the host architecture: Linux 6.18.48 with Firecracker's
 /// microVM config and ours (resources/kernel), built reproducibly by CI.
 pub fn kernel_artifact() -> Artifact {
@@ -110,8 +109,10 @@ pub fn fetch(a: &Artifact) -> PathBuf {
     }
     std::fs::create_dir_all(&dir).unwrap();
     let part = dir.join(format!("{}.{}.part", a.name, std::process::id()));
+    // Every failure is retried, a connection reset in the TLS handshake as well: curl's
+    // `--retry` alone retries timeouts and some HTTP statuses (curl(1)).
     let ok = Command::new("curl")
-        .args(["-fsSL", "--retry", "3", "-o"])
+        .args(["-fsSL", "--retry", "3", "--retry-all-errors", "-o"])
         .arg(&part)
         .arg(a.url)
         .status()
