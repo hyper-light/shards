@@ -140,7 +140,9 @@ pub struct Ended {
 }
 
 /// Serves the guest: sends the command, relays stdio, and returns how the workload ended.
-/// Signals go through `to`, on the connection the guest makes to `signals`.
+/// Signals go through `to`, on the connection the guest makes to `signals`. The command
+/// goes only to a guest whose init announced this build's contract, `guest_abi`
+/// (shards_abi::control::ABI): an init built for another shards could misread it.
 #[cfg(unix)]
 pub fn serve(
     listener: &Listener,
@@ -148,6 +150,7 @@ pub fn serve(
     request: Request<'_>,
     to: &ToGuest,
     timing: &Timing,
+    guest_abi: &dyn Fn() -> Option<u64>,
 ) -> Result<Ended, String> {
     let (mut conn, _) = listener
         .listener
@@ -168,6 +171,15 @@ pub fn serve(
         Request::Later(ask) => ask()?,
     };
     let _ = timing.request_us.set(shards_vmm::log::uptime_us());
+    let abi = guest_abi();
+    if abi != Some(shards_abi::IDENTITY) {
+        let spoken = abi.map_or_else(|| "none".to_string(), |abi| format!("{abi:016x}"));
+        return Err(format!(
+            "the microVM's shards-init speaks another shards' protocol ({spoken}, where this \
+             shards speaks {:016x}): boot the shards-init built with this shards",
+            shards_abi::IDENTITY
+        ));
+    }
     send(&mut conn, kind::SPEC, &spec.encode()).map_err(|e| format!("sending the command: {e}"))?;
     if interactive {
         let mut input = conn.try_clone().map_err(|e| e.to_string())?;

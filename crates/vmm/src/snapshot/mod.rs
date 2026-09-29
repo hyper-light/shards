@@ -34,7 +34,8 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 2: MachineConfig records whether the machine has a vsock device.
 /// 3: and its virtio-pmem files.
 /// 4: virtio devices' own state follows their queues' (vsock: the streams a restore resets).
-const VERSION: u32 = 4;
+/// 5: the control page's state records the identity the guest's init announced.
+const VERSION: u32 = 5;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;

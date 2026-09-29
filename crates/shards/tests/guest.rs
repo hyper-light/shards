@@ -113,3 +113,30 @@ fn a_download_that_is_not_the_pinned_kernel_is_kept_nowhere() {
         let _ = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     }
 }
+
+/// An init built for another shards announces another contract, and gets no workload:
+/// the run fails as `docker run` fails a command that never ran.
+#[test]
+fn an_init_built_for_another_shards_gets_no_workload() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("foreign-init");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", common::foreign_init().as_os_str()),
+    ];
+    let run = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", run.stdout, run.stderr);
+    assert_eq!(run.status, Some(125), "{shown}");
+    let why = format!(
+        "speaks another shards' protocol (0000000000000001, where this shards speaks {:016x})",
+        shards_abi::IDENTITY
+    );
+    assert!(run.stderr.contains(&why), "{shown}");
+    assert!(!run.stdout.lines().any(|l| l.starts_with("uid ")), "{shown}");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+}

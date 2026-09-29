@@ -7,6 +7,8 @@ extern crate alloc;
 
 pub mod run;
 
+include!(concat!(env!("OUT_DIR"), "/identity.rs"));
+
 /// Guest-physical address of the control page. Guests share the host's architecture,
 /// so the VMM and the guest build of this crate always agree.
 #[cfg(target_arch = "aarch64")]
@@ -31,6 +33,10 @@ pub mod control {
     /// since the Unix epoch. A booted guest's clock comes from the RTC in whole seconds, and
     /// a restored guest's is its snapshot's; shards-init sets CLOCK_REALTIME from this.
     pub const HOST_TIME: u64 = 0x10;
+    /// Write, 64 bits in one access: the [`IDENTITY`](super::IDENTITY) of the contract the
+    /// guest's init was built with. shards-init writes it as it starts, a snapshot keeps it,
+    /// and the host hands a workload only to a guest whose init wrote the host's own.
+    pub const ABI: u64 = 0x18;
 
     pub const SNAPSHOT_NOW: u32 = 1;
 }

@@ -41,6 +41,11 @@ impl Handle {
         self.control.markers()
     }
 
+    /// The contract the guest's init announced (`shards_abi::control::ABI`), if it has.
+    pub fn guest_abi(&self) -> Option<u64> {
+        self.control.guest_abi()
+    }
+
     /// Microseconds since VMM start at which the boot vCPU first entered the guest.
     pub fn entered_at_us(&self) -> Option<u128> {
         self.shared.entered_at_us.get().copied()

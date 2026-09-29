@@ -38,6 +38,10 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn guest_abi(&self) -> Option<u64> {
+        match self.0 {}
+    }
+
     pub fn entered_at_us(&self) -> Option<u128> {
         match self.0 {}
     }

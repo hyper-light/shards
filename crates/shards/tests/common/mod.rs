@@ -135,7 +135,25 @@ pub fn kernel() -> &'static Path {
 
 /// Builds guest package `name` (static musl, `guest` profile) and returns its binary.
 fn guest_binary(name: &str) -> PathBuf {
-    let target_dir = workspace().join("target/guest");
+    guest_binary_in(name, "target/guest", &[])
+}
+
+/// shards-init built as if for another shards: its contract's identity is not this build's
+/// (shards_abi::IDENTITY, crates/abi/build.rs).
+pub fn foreign_init() -> &'static Path {
+    static F: OnceLock<PathBuf> = OnceLock::new();
+    F.get_or_init(|| {
+        guest_binary_in(
+            "shards-init",
+            "target/guest-foreign",
+            &[("SHARDS_ABI_IDENTITY", "1")],
+        )
+    })
+}
+
+/// Builds guest package `name` into `target_dir` with `env` added.
+fn guest_binary_in(name: &str, target_dir: &str, env: &[(&str, &str)]) -> PathBuf {
+    let target_dir = workspace().join(target_dir);
     let guest_target = format!("{ARCH}-unknown-linux-musl");
     // Go through the rustup proxy on PATH (not $CARGO, the bare cargo binary) and drop
     // the dyld paths cargo injects into test processes: the proxy's environment is
@@ -150,6 +168,7 @@ fn guest_binary(name: &str) -> PathBuf {
         .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
         .env_remove("DYLD_LIBRARY_PATH")
         .env(linker, "rust-lld")
+        .envs(env.iter().copied())
         .current_dir(workspace())
         .args([
             "build",

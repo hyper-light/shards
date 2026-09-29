@@ -14,6 +14,11 @@ pub fn main() {
     if let Err(e) = mark(marker::INIT_STARTED) {
         let _ = writeln!(io::stderr(), "shards-init: control page: {e}");
     }
+    // Which contract this init speaks, for the host to check before it hands over a
+    // workload. A snapshot keeps it.
+    if let Err(e) = control_write64(control::ABI, shards_abi::IDENTITY) {
+        let _ = writeln!(io::stderr(), "shards-init: announcing the protocol: {e}");
+    }
     if let Err(e) = sync_clock() {
         let _ = writeln!(io::stderr(), "shards-init: setting the clock: {e}");
     }
@@ -128,6 +133,18 @@ pub(crate) fn control_write(register: u64, value: u32) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("no such control register"))?;
     // SAFETY: an aligned register inside the mapped page.
     unsafe { std::ptr::write_volatile(page.add(offset).cast::<u32>(), value) };
+    Ok(())
+}
+
+/// Writes a 64-bit register of the VMM's control page, in one access.
+fn control_write64(register: u64, value: u64) -> io::Result<()> {
+    let page = control_page()?;
+    let offset = usize::try_from(register)
+        .ok()
+        .filter(|&o| o % 8 == 0 && o < 4096)
+        .ok_or_else(|| io::Error::other("no such control register"))?;
+    // SAFETY: an aligned register inside the mapped page.
+    unsafe { std::ptr::write_volatile(page.add(offset).cast::<u64>(), value) };
     Ok(())
 }
 

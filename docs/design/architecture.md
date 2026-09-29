@@ -992,6 +992,16 @@ docs/research/shipping-the-guest.md; the code is `crates/shards/build.rs`,
   ended left.
 - **`shards guest use` overrides it.** A recorded guest wins over the default, and
   `shards guest` says which is in use.
+- **An init says which contract it speaks.** `shards-abi`'s build script hashes the
+  crate's sources into `IDENTITY`. shards-init writes it to the control page as it starts
+  (`control::ABI`), and a snapshot keeps it. The host hands a workload only to a guest
+  whose init wrote the host's own. Otherwise the run fails with 125 before the command is
+  sent, as `docker run` fails a command that never ran.
+  - Any change to what the two share gives another identity, so an init from another
+    build is refused rather than misread. gVisor checks its helpers' release label the
+    same way [shipping-the-guest.md §2.9].
+  - The check costs a run nothing: init writes the identity once, before a template is
+    saved, and the host reads it from the VMM's own state.
 - **Upgrades.** An upgrade that changes the init's bytes changes its digest, and so the
   templates it names (D25). A template never restores against an init it was not made
   with.
@@ -1000,7 +1010,6 @@ docs/research/shipping-the-guest.md; the code is `crates/shards/build.rs`,
     [shipping-the-guest.md E1];
   - a compressed kernel asset, which would move about a third of the bytes (E7);
   - fetching the kernel while the image is pulled;
-  - an ABI check for inits the user gives (§3.6);
   - signed release binaries (§3.8).
 - **Tests** (E2E, crates/shards/tests/guest.rs, a real VM):
   - A first run fetches the kernel from a loopback server behind a redirect, stores it
@@ -1008,6 +1017,8 @@ docs/research/shipping-the-guest.md; the code is `crates/shards/build.rs`,
     the init `shardsd` carries, from build.rs's output.
   - A kernel with one byte changed, one byte more or less, or a 404 is refused before
     the image is pulled, and nothing is kept.
+  - A shards-init built with another identity boots, but gets no workload: the run
+    exits 125, saying why.
 
 ## 3. Components
 

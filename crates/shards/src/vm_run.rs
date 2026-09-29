@@ -588,6 +588,7 @@ fn serve_workload(
         let served = std::thread::Builder::new()
             .name("workload".into())
             .spawn(move || {
+                let guest_abi = || stopper.guest_abi();
                 // How the workload ended, and whether its client has been told.
                 let outcome = match command {
                     Command::Given {
@@ -616,7 +617,14 @@ fn serve_workload(
                             }
                         };
                         (
-                            workload::serve(&listener, signals, request, &to_guest, &served_timing),
+                            workload::serve(
+                                &listener,
+                                signals,
+                                request,
+                                &to_guest,
+                                &served_timing,
+                                &guest_abi,
+                            ),
                             false,
                         )
                     }
@@ -645,6 +653,7 @@ fn serve_workload(
                             Request::Later(&ask),
                             &to_guest,
                             &served_timing,
+                            &guest_abi,
                         );
                         // Some once the request came: its client, if it has one.
                         match client.get() {
