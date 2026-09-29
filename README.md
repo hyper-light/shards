@@ -59,8 +59,8 @@ took 7 ms, most of it process start and exit. The saved machine runs the test pr
 > with Firecracker's CI build of Linux 6.18 as `vmlinux`.
 
 > [!IMPORTANT]
-> Shards has no release yet. Today it boots Linux microVMs on Apple silicon Macs and x86_64
-> Linux, and snapshots and restores them on the Mac. Building microVMs like Docker images,
+> Shards has no release yet. Today it boots, snapshots and restores Linux microVMs on Apple
+> silicon Macs and x86_64 Linux. Building microVMs like Docker images,
 > the runtime that runs agents inside them, per-agent isolation, the Docker-compatible commands
 > and GPU support are still being built. See [Where things stand](#where-things-stand).
 
@@ -158,7 +158,7 @@ SHARDS-TEST PASS
 ```
 
 > [!NOTE]
-> Snapshots work on macOS. Linux is next.
+> Snapshots work on macOS and on x86_64 Linux.
 
 ## Where things stand
 
@@ -166,11 +166,11 @@ SHARDS-TEST PASS
 |---|---|
 | Boot Linux on Apple silicon Macs | Works |
 | Boot Linux on x86_64 Linux | Works, tested in CI on every push |
-| Snapshot and restore | Works on macOS; Linux is next |
+| Snapshot and restore | Works on macOS and x86_64 Linux |
 | arm64 Linux, Intel Macs, Windows | Builds, but can't run machines yet |
 | Connect host programs to programs in a running machine (vsock) | Works |
 | Pull images from Docker Hub and other registries, as `docker pull` does | Works: `shards pull`. Your `docker login` credentials and `certs.d` certificates work as they are |
-| Run a command in an image, as `docker run` does | Works: `shards run IMAGE`, with the image's entrypoint, command, environment, directory, user and stdin (`-i`), on a terminal (`-t`), in the background (`-d`), named (`--name`) or removed when done (`--rm`). On the Mac, repeated runs of an image are served from copies of its booted microVM that a background service restores ahead of time: about 5 ms from start to exit |
+| Run a command in an image, as `docker run` does | Works: `shards run IMAGE`, with the image's entrypoint, command, environment, directory, user and stdin (`-i`), on a terminal (`-t`), in the background (`-d`), named (`--name`) or removed when done (`--rm`). Repeated runs of an image are served from copies of its booted microVM that a background service restores ahead of time: about 3 ms from start to exit on the Mac |
 | Build microVMs like Docker images | In progress: image layers become bootable images |
 | Run many agents on a microVM's OS, each isolated like a container | Planned |
 | Networks, files, devices and permissions per agent and per microVM | Planned |

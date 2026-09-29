@@ -137,6 +137,23 @@ background load as the boot run above
 | **warm_request** | **149 µs** | **169 µs** | **197 µs** | **201 µs** |
 | warm_peak_rss | 12.5 MiB | 12.5 MiB | 12.5 MiB | 12.5 MiB |
 
+**2026-09-29, x86_64 Linux on KVM** · d21a89f (branch kvm-snapshots) · GitHub's
+ubuntu-24.04 runner: AMD EPYC 9V45, 4 vCPUs, itself a VM under Microsoft's hypervisor, so
+KVM runs nested · Linux 6.17.0-1022-azure · kernel vmlinux-6.18.48-x86_64 · n=30, 1 vCPU,
+256 MiB · load 1.53 0.84 0.33
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| cold_restore | 24438 µs | 24650 µs | 24950 µs | 24950 µs |
+| cold_spawn_exit | 63914 µs | 65956 µs | 69934 µs | 69934 µs |
+| **warm_request** | **20025 µs** | **23832 µs** | **24026 µs** | **24026 µs** |
+| warm_peak_rss | 33.1 MiB | 33.1 MiB | 33.1 MiB | 33.1 MiB |
+
+The first restores on KVM. From its release a restored guest takes 20 ms to run again,
+where on the Mac it takes 17 µs: the VMM's own part of a cold restore is the other 4 ms.
+Where the 20 ms goes is not measured yet; this host nests KVM, which makes each of the
+guest's first touches of its memory, 4 KiB at a time from the snapshot's file, costly.
+
 ## Run (`crates/shards/benches/run.rs`)
 
 `cargo bench -p shards --bench run [-- --runs N]`
@@ -434,6 +451,25 @@ The guest's part fell from 1.0 ms to 366 µs at the median. The first two runs o
 template, whose VMs the pool restored before the working set existed, are no longer
 samples. An interleaved A/B against a0f7926 from one template (M30) puts the change at
 857 µs of wall time at the median (95% [834, 891]).
+
+**2026-09-29, x86_64 Linux on KVM** · d21a89f (branch kvm-snapshots) · GitHub's
+ubuntu-24.04 runner as in Restore (AMD EPYC 9V45, KVM nested) · n=100 over 5 templates,
+1 vCPU, 256 MiB · load 1.38 0.90 0.38
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| run_cold | 249985 µs | 255058 µs | 260014 µs | 272166 µs |
+| **run_template** | **82921 µs** | **86346 µs** | **95990 µs** | **100363 µs** |
+| template_command | 81230 µs | 84399 µs | 94095 µs | 97960 µs |
+| template_outside | 1781 µs | 2207 µs | 2876 µs | 3376 µs |
+| run_cold_rss | 66.5 MiB | 68.6 MiB | 68.6 MiB | 70.6 MiB |
+| run_template_rss | 20.2 MiB | 20.4 MiB | 20.5 MiB | 20.6 MiB |
+| client_rss | 33.6 MiB | 33.6 MiB | 33.6 MiB | 33.6 MiB |
+
+Pooled runs from templates, on Linux for the first time: three times faster than a boot,
+but the command's 81 ms in a restored guest is the whole of it, as in Restore. Outside
+the guest a run costs 1.8 ms. The client's peak RSS, 33.6 MiB against 1.7 on the Mac, is
+not explained yet.
 
 ## Firecracker (`crates/shards/benches/firecracker.rs`)
 

@@ -87,6 +87,24 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   a new VMGenID and raises its interrupt (the guest kernel has the `microsoft,vmgenid`
   driver), so each clone reseeds its RNG before its first user instruction. The E2E test
   checks that clones of one snapshot draw different random bytes.
+- **x86_64 on KVM.** What Firecracker saves, after KVM's api.rst (fc: arch/x86_64/vcpu.rs,
+  save_state and restore_state):
+  - per vCPU: MP state, registers, special registers, the XSAVE area (KVM_CAP_XSAVE2's
+    size where larger), XCRs, debug registers, the LAPIC, events, the TSC's frequency,
+    and every MSR in KVM's list that it reads (a PMU MSR of a guest without a PMU is
+    left out); per VM: both PICs, the IOAPIC and kvmclock;
+  - kept as KVM's own structures, since a template restores only where it was saved;
+  - restored in the order KVM's dependencies need: MP state first, the registers before
+    the events (SET_REGS drops a pending exception), the LAPIC after the special
+    registers and before the MSRs, IA32_TSC_DEADLINE after IA32_TSC;
+  - the interrupt controllers and kvmclock only once every vCPU exists, as the GIC on
+    arm64; kvmclock goes on from its saved value;
+  - a vCPU whose CPUID differs from the snapshot's refuses, as arm64's CPU ID does;
+  - the VMGenID reaches Linux's ACPI driver (`VMGENCTR`, with its `ADDR`), and its
+    interrupt a Generic Event Device (`ACPI0013`) on GSI 23 whose `_EVT` notifies it, as
+    Firecracker declares them; the 16 bytes are the first of the firmware area.
+  - The E2E snapshot, template, pooled-run, vsock and pmem tests run on CI's x86_64
+    runners (KVM) as on the Mac.
 
 ### Platforms (D13)
 
@@ -96,7 +114,7 @@ the guest arch is always the host arch.
 
 | Host OS | Arch (Rust triple / OCI name) | Backend (`hv`) | Status |
 |---|---|---|---|
-| Linux (glibc, musl) | x86_64 / amd64 | KVM | booting Linux: SMP, ACPI, virtio-blk; CI on both libcs. Snapshots next |
+| Linux (glibc, musl) | x86_64 / amd64 | KVM | booting Linux: SMP, ACPI, virtio-blk; snapshots with cold and warm restore; CI on both libcs |
 | Linux (glibc, musl) | aarch64 / arm64 | KVM | planned |
 | macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux; snapshots with cold and warm restore |
 | macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | planned |
@@ -591,8 +609,9 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
     the same of serverless functions' snapshots (Ustiugov et al., ASPLOS 2021).
   - It is written through the directory held open since the snapshot, since the daemon
     renames it into place meanwhile. A damaged one is ignored.
-- **Where it applies.** Builds that can snapshot (HVF on arm64 today, `vm::SNAPSHOTS`);
-  elsewhere every run boots. `--kernel` and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`,
+- **Where it applies.** Builds that can snapshot (HVF on arm64, KVM on x86_64,
+  `vm::SNAPSHOTS`); elsewhere every run boots. Working sets are HVF's only
+  (`vm::WORKING_SETS`): on KVM, nothing records one yet. `--kernel` and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`,
   name files by path, so those runs always boot.
 - **Saved quiescent.** The kernel is still running its crypto self-tests after init
   mounts the image, for about 20 ms. The template waits for them (D16), or every restored
