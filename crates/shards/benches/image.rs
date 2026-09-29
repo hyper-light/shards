@@ -46,6 +46,13 @@ fn main() {
     let _ = writeln!(std::io::stderr(), "SKIP: the image benchmark needs a Unix host");
 }
 
+/// Diagnostic (branch pool-diag): every KVM event, and the vCPU and vsock threads'
+/// wakeups and switches, on CLOCK_MONOTONIC.
+#[cfg(unix)]
+const TRACE_ON: &str = r#"cd /sys/kernel/tracing && echo 0 > tracing_on && echo > trace && echo mono > trace_clock && echo 32768 > buffer_size_kb && echo 'comm ~ "vcpu*" || comm == "virtio-vsock"' > events/sched/sched_wakeup/filter && echo 'prev_comm ~ "vcpu*" || next_comm ~ "vcpu*" || prev_comm == "virtio-vsock" || next_comm == "virtio-vsock"' > events/sched/sched_switch/filter && echo 1 > events/sched/sched_wakeup/enable && echo 1 > events/sched/sched_switch/enable && echo 1 > events/kvm/enable && echo 1 > tracing_on"#;
+#[cfg(unix)]
+const TRACE_DUMP: &str = r#"cd /sys/kernel/tracing && echo 0 > tracing_on && grep -v '^#' trace; echo 0 > events/enable; echo > trace"#;
+
 #[cfg(unix)]
 fn main() {
     use support::{peak_rss_mib, report, run_env, stats, us, wall_us};
@@ -103,10 +110,41 @@ fn main() {
                 run_env(template_args, false, &env);
             }
         }
-        for _ in 0..runs / templates + usize::from(t < runs % templates) {
+        for i in 0..runs / templates + usize::from(t < runs % templates) {
             cold.push(run_env(cold_args, false, &cold_env));
             if templated {
-                template.push(run_env(template_args, false, &env));
+                // Diagnostic (branch pool-diag): KVM's events and the scheduling of vCPU
+                // and vsock threads through a templated run, raw, for its first runs.
+                let traced = t == 0 && i < 4;
+                if traced {
+                    let _ = std::process::Command::new("sudo")
+                        .args(["sh", "-c", TRACE_ON])
+                        .status();
+                }
+                let sample = run_env(template_args, false, &env);
+                if traced {
+                    let dump = std::process::Command::new("sudo")
+                        .args(["sh", "-c", TRACE_DUMP])
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                        .unwrap_or_default();
+                    println!(
+                        "trace-run {i} wall {:.0} us",
+                        sample.run.elapsed.as_secs_f64() * 1e6
+                    );
+                    for line in sample
+                        .run
+                        .stderr
+                        .lines()
+                        .filter(|l| l.starts_with("shards-timing"))
+                    {
+                        println!("trace-timing {line}");
+                    }
+                    for line in dump.lines() {
+                        println!("trace| {line}");
+                    }
+                }
+                template.push(sample);
             }
         }
     }

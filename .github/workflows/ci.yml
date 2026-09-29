@@ -16,6 +16,8 @@ env:
 
 jobs:
   format:
+    # Diagnostic (branch pool-diag): only the image benchmark runs.
+    if: github.ref_name != 'pool-diag'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -24,6 +26,8 @@ jobs:
 
   # The vendored crates are what crates.io publishes, file for file (vendor/README.md).
   vendor:
+    # Diagnostic (branch pool-diag): only the image benchmark runs.
+    if: github.ref_name != 'pool-diag'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -34,6 +38,8 @@ jobs:
   # no backend yet or no hardware virtualization.
   native:
     name: ${{ matrix.target }}
+    # Diagnostic (branch pool-diag): only the image benchmark runs.
+    if: github.ref_name != 'pool-diag'
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -92,6 +98,11 @@ jobs:
   # interleaved (crates/shards/benches/firecracker.rs). Hosted arm64 runners have no /dev/kvm.
   firecracker:
     name: firecracker comparison (x86_64)
+    # Diagnostic (branch pool-diag): three runners, for their CPUs.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [1, 2, 3]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -105,15 +116,19 @@ jobs:
           nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
           grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag,hpage_pmd_size}
       - name: Compare
+        if: github.ref_name != 'pool-diag'
         run: cargo bench --locked -p shards --bench firecracker -- --runs 30
       # shards' own restores and pooled runs on this KVM host (docs/benchmarks.md).
       - name: Restore
+        if: github.ref_name != 'pool-diag'
         run: cargo bench --locked -p shards --bench restore -- --runs 30
       - name: Image
-        run: cargo bench --locked -p shards --bench image -- --runs 100 --templates 5
+        run: cargo bench --locked -p shards --bench image -- --runs 20 --templates 2
 
   musl:
     name: ${{ matrix.target }}
+    # Diagnostic (branch pool-diag): only the image benchmark runs.
+    if: github.ref_name != 'pool-diag'
     timeout-minutes: 60
     strategy:
       fail-fast: false
