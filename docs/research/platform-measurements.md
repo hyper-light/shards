@@ -1243,6 +1243,20 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
     before it saves a template [M21], so both VMMs snapshot a quiet guest.
   - Restore comparisons made before then measured the self-tests' tails as much as the
     VMMs.
+- **After** (6e2a83e: 9fb77f5 plus diagnostics; n = 20 per variant). No restore under
+  either VMM ran self-test code, and the medians agreed across runners:
+
+| Host | shards | Per page [M37] | Firecracker |
+|---|---|---|---|
+| AMD EPYC 9V74 | 10.2 ms | 13.1 ms | 12.9 ms |
+| AMD EPYC 7763 | 9.4 ms | 12.1 ms | 12.0 ms |
+| AMD EPYC 7763 | 9.8 ms | 12.5 ms | 12.5 ms |
+
+  - One shards restore on the first 7763 took 17.6 ms. Everything in it was about twice
+    as slow as in the other samples on that runner: shards-vm's own setup before the
+    guest ran (3.4 ms against 1.8), the time handling the same 347 nested page faults
+    (3.4 ms against 1.75), and the guest's time. That points to the host, but it is not
+    proven.
 
 ## Implications for shards (macOS/HVF backend)
 

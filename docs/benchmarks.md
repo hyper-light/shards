@@ -580,3 +580,32 @@ These restores, like every restore comparison before the `beat` guest waited for
 kernel's crypto self-tests, include the self-tests' remaining work in each guest, in
 amounts that depend on when each VMM took its snapshot (PM M38). They do not compare the
 VMMs' restores fairly.
+
+**2026-09-29, quiet guests** · 9fb77f5 · GitHub `ubuntu-24.04` runner: AMD EPYC 7763,
+Linux 6.17.0-1022-azure, KVM nested · Firecracker v1.17.0 · kernel vmlinux-6.18.48-x86_64
+· n=30, 1 vCPU, 128 MiB · load 2.02 1.21 0.49, then 1.73 1.19 0.49
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| shards to_ready | 122352 µs | 124801 µs | 126096 µs | 126096 µs |
+| Firecracker to_ready | 122943 µs | 126760 µs | 128179 µs | 128179 µs |
+| **shards overhead** | **2.7 MiB** | **2.7 MiB** | **2.7 MiB** | **2.7 MiB** |
+| Firecracker overhead | 4.5 MiB | 4.5 MiB | 4.5 MiB | 4.5 MiB |
+| shards peak_rss | 60.7 MiB | 62.7 MiB | 62.7 MiB | 62.7 MiB |
+| Firecracker peak_rss | 60.5 MiB | 62.5 MiB | 62.5 MiB | 62.5 MiB |
+| **shards to_beat (restore)** | **8951 µs** | **9159 µs** | **9757 µs** | **9757 µs** |
+| Firecracker to_beat (restore) | 12524 µs | 12734 µs | 18756 µs | 18756 µs |
+| **shards overhead (restore)** | **2.7 MiB** | **2.7 MiB** | **2.7 MiB** | **2.7 MiB** |
+| Firecracker overhead (restore) | 6.8 MiB | 6.8 MiB | 6.8 MiB | 6.8 MiB |
+| shards peak_rss (restore) | 20.8 MiB | 20.9 MiB | 20.9 MiB | 20.9 MiB |
+| **Firecracker peak_rss (restore)** | **16.5 MiB** | **16.5 MiB** | **16.5 MiB** | **16.5 MiB** |
+
+Both guests are now snapshotted once the kernel's crypto self-tests are done (PM M38),
+and shards writes each run of used pages with one write (PM M37). A restored shards
+guest beats again 3.6 ms sooner at the median, 29% less time, and 9.0 ms sooner at p99.
+Its VMM costs 60% less memory outside the guest's.
+
+Its peak RSS is 4.3 MiB higher than Firecracker's, and 8.1 MiB higher than at fd7628d
+(12.7 MiB), when snapshots were written a page per write. The difference is the process
+mapping more of the snapshot file's page cache. VMs restored from one snapshot share
+that page cache, but how much of the RSS is shared has not been measured.
