@@ -142,7 +142,7 @@ jobs:
       - name: KVM statistics of one boot and three restores
         run: |
           kernel=$(ls target/artifacts/vmlinux-6.18.48-x86_64* | head -1)
-          guest=target/x86_64-unknown-linux-musl/guest/shards-testguest
+          guest=target/guest/x86_64-unknown-linux-musl/guest/shards-testguest
           shards=target/release/shards
           ls -l $kernel $guest $shards
           export SHARDS_KVM_STATS=1
