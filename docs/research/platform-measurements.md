@@ -1384,3 +1384,157 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
 - **Open.** Why the boots of Firecracker's CI kernel in docs/benchmarks.md, on
   2026-09-28, had one mode, around 18.5 ms.
 
+### M40. Sparse snapshot files, materialized RAM, and CoW stores
+
+- **Question.** What do production RAM mapping/saving APIs allocate and fault, and
+  does sparse output preserve sparse anonymous input? What does an identical store cost?
+- **Method.** [Harness](measurements/audit-memory/README.md): actual GuestMemory APIs,
+  64 MiB RAM, one byte touched per 16 KiB host page, fresh process per condition,
+  discarded warmup, randomized condition order, n=30. Nonzero file backing is cache-hot
+  from preparation. Count samples are separate from timings. Host getrusage fault
+  deltas and proc_pid_rusage RSS/physical-footprint deltas are captured, excluding
+  hypervisor/stage-2 mapping. Snapshot cases use untouched zero RAM or one nonzero byte
+  per MiB. Post-save sampled restores pass; private stores leave the backing unchanged.
+- **Host.** 2026-09-29, Apple M5 Max, Mac17,6, 128 GiB, macOS 26.4.1/Darwin 25.4.0,
+  Rust 1.98.0, revision 38457b709e67c4a43de87adfd7f2053531672dc2. Source/binary hashes,
+  method, all raw samples and every case's quantiles are in
+  [results.json](measurements/audit-memory/results.json).
+- **Results** (ms, p50 / p90 / p99 / max; medians for faults/resource deltas).
+
+| Actual operation | Time | Host minor faults | RSS delta | Physical-footprint delta |
+|---|---|---:|---:|---:|
+| File read, every page | 2.201 / 2.316 / 2.526 / 2.526 | 4096 | 64 MiB | about 48 KiB |
+| File read+identical write, every page | 10.627 / 11.217 / 11.259 / 11.259 | 8192 | 64 MiB | about 64 MiB |
+| Identical write after full file read | 8.586 / 9.306 / 9.749 / 9.749 | another 4096 | 0 | another 64 MiB |
+| File read/write, 64 pages one per MiB | 0.183 / 0.223 / 0.410 / 0.410 | 128 | 1 MiB | about 1.047 MiB |
+| Save untouched zero anonymous RAM | 19.778 / 20.012 / 22.366 / 22.366 | 4096 | 64 MiB | about 64 MiB |
+| Save anonymous RAM with 64 nonzero pages | 19.719 / 20.513 / 48.799 / 48.799 | 4032 | 63 MiB | 63 MiB |
+
+  - Both saves make zero Rust heap allocations. The zero file is logically 64 MiB but
+    has zero allocated data blocks; the sparse-used file allocates 1 MiB.
+  - 64 identical one-byte stores still create 1 MiB of private copies; pre-reading
+    does not eliminate the later CoW faults. Physical footprint is process accounting,
+    not PSS or proof of fleet unique physical bytes. All median major-fault deltas are 0.
+- **Consequence.** Audit D01/D02: count page materialization alongside allocations;
+  bound speculative private prefetch and optimize full-RAM zero scans. Skipping a
+  nonresident page is unsafe without zero/dirty provenance. This does not measure a
+  completed optimization, full snapshot transaction, real VM or Firecracker comparison.
+- **Image allocation companion.** The same harness calls actual Tree/EROFS APIs on
+  10,000 files with a black-boxed fill source/byte-counting sink, excluding tar and I/O.
+  Empty-file writing makes 20,128 allocations/341 reallocations; 512-byte inline files
+  make 30,128/10,341. Their writer peak requested live heap is 4,263,451/9,797,147 bytes.
+  With 1,024-byte xattrs, writing makes 40,128/40,341 and peaks at 38,495,931 bytes.
+  One tree generation retains 17,816,656 bytes; four replacements of the same names
+  retain 69,088,816, while output still has 10,001 reachable inodes. All n=30 timing
+  distributions and separate counts are recorded. Heap capacity is not RSS.
+
+### M41. Virtqueue allocation, readiness rebuilding, and bounded live buffers
+
+- **Question.** What heap/syscall work recurs per device operation?
+- **Method.** [Harness](measurements/audit-device-allocations/README.md): actual public
+  Queue, production poll.rs included unchanged, one untimed allocation census;
+  counters disabled for n=20,000 queue timings after 500 warmups, n=2,000 zero-timeout
+  ready-socket timings after 100 warmups. Host/revision/compiler are M40's.
+  No VM starts. [Results](measurements/audit-device-allocations/results.json) and
+  [176,000 chronological timing samples](measurements/audit-device-allocations/results-samples.jsonl)
+  include source hashes and all quantiles. Small timings approach clock resolution.
+- **Results** (ns, p50 / p90 / p99 / max).
+
+| Operation | Rust alloc / realloc | Time |
+|---|---|---|
+| Queue direct, 3 descriptors | 1 / 0 | 41 / 42 / 42 / 167 |
+| Queue direct, 256 descriptors | 1 / 6 | 583 / 875 / 959 / 39792 |
+| Queue indirect, 256 descriptors | 1 / 6 | 791 / 834 / 958 / 16375 |
+| Queue indirect, 4096 descriptors, nonconforming | 1 / 10 | 10584 / 11042 / 11958 / 222458 |
+| macOS wait, 2 read/write interests | 2 / 0 | 1084 / 1125 / 1375 / 1833 |
+| macOS wait, 64 read/write interests | 2 / 0 | 18375 / 19041 / 34250 / 93292 |
+
+  - A small chain requests 64 bytes. 256 descriptors cumulatively request 8128 bytes
+    and reach 4096 bytes of capacity; 4096 descriptors reach 65536, before each chain
+    is freed. Each macOS wait creates/closes a
+    kqueue; 64 read/write interests request 8192 heap bytes per call.
+  - Source-derived TxBuf growth 65,535→65,536 live bytes reallocates capacity from
+    65,535 to 131,070. This verifies permitted capacity, not its normal traffic rate.
+  - A synthetic driver of the actual vsock worker delivered 1024 one-byte spans;
+    1025 delivered 0 and emitted RST at host IOV_MAX 1024. Both chains exceed this
+    device's 256-entry Queue Size and are nonconforming: not a valid-packet failure.
+- **Consequence.** Audit D05/D06/D09: bounded reusable metadata, persistent readiness
+  with FD-generation correctness, capacity budgets, and early Queue Size bounds.
+  Preserve validation, ordering, credits and half-close. No speedup is implemented;
+  requested bytes exclude kernel/native allocations, socket buffers and physical RAM.
+
+### M42. Stream compaction, launch allocations, and retained log history
+
+- **Method.** [Harness](measurements/audit-stream-allocations/README.md) extracts current
+  private frame/log routines by build script and calls actual ABI/IPC APIs. Construction
+  cases reproduce identified operations. n=500 with separate allocation census;
+  host/revision/compiler are M40's. Native System allocator, not guest musl.
+  [Raw results](measurements/audit-stream-allocations/2026-09-29-macos-arm64.json)
+  capture input hashes, all samples, n/p50/p90/p99/max and limitations.
+- **Parser results.** 65,535 bytes contain 5461 valid 12-byte SIGNAL frames and a 3-byte
+  partial header. Both parsers deliver every frame and preserve that tail. Actual
+  each_frame requires 178,918,743 suffix bytes of compaction; a local cursor prototype
+  shifts 3. These byte totals are calculated from drain lengths, not hardware counters;
+  parser latency is measured.
+
+| Parser | p50 / p90 / p99 / max, µs |
+|---|---|
+| Actual prefix-draining parser | 1670.042 / 1708.000 / 1799.875 / 1903.292 |
+| Local cursor prototype | 3.417 / 3.500 / 3.709 / 6.167 |
+
+- **Allocation results.** The six-entry poll construction makes 1 allocation + 1 realloc,
+  requesting 40 then 80 bytes. A 64 KiB log record makes 1 allocation of 65,549 bytes;
+  plain stdin makes 1 of 65,536. A 4166-byte Spec with 3 argv/64 env makes 1 allocation
+  plus 10 reallocations when encoding, and 72 plus 4 when decoding. Exec pointer lists
+  make 2+2; reproduced CString
+  construction makes 69+71. Sizes/counts are per case, not an end-to-end census.
+- **Retention.** Reading 1 MiB of log output in 1024 lines makes 1027 allocations + 8
+  reallocations, requesting 3,227,904 bytes; retained Vec capacities total 2,138,320
+  (1,048,784 pending + 1,048,576 payload + 40,960 line metadata). Actual logs-f ownership
+  holds initial lines and pending capacity across follow. Read timing is
+  356.375 / 374.291 / 400.750 / 410.250 µs.
+- **Consequence.** Audit D07/D08/D10 and A12: one compaction per batch, bounded reused
+  storage, release historical ownership, avoid duplicate serialization and terminator
+  growth. The cursor is an algorithm experiment, not a completed guest/end-to-end
+  optimization. Capacity retention is not RSS or immediate allocator reclamation.
+
+### M43. Working-set expansion, CPIO capacity, and memory round-trip invariants
+
+- **Method.** [Harness](measurements/audit-working-set/README.md): public working-set
+  reader/writer and actual initramfs::with_init; n=30 allocation samples, all identical,
+  and 30 separate timing samples per case. Decoder files were cache-warm; CPIO
+  construction was memory-only. Host/revision/compiler are M40's.
+  [Summary](measurements/audit-working-set/summary.json) and
+  [raw samples](measurements/audit-working-set/samples.json) record source hashes and
+  nearest-rank distributions. No VM is required. Returned contents/layout are checked
+  outside measured intervals.
+- **Results** (timing µs, p50 / p90 / p99 / max; heap is requested capacity).
+
+| Operation | Alloc / realloc | Peak heap | Retained capacity | Time |
+|---|---|---:|---:|---|
+| Decode 718 touches | 4 / 0 | 23011 | 11488 | 10.584 / 10.875 / 14.875 / 14.875 |
+| Decode 3867 touches | 4 / 0 | 123779 | 61872 | 17.459 / 17.708 / 17.792 / 17.792 |
+| Decode 65536 touches | 4 / 0 | 2097187 | 1048576 | 157.959 / 203.333 / 397.833 / 397.833 |
+| CPIO with 256-byte init | 79 / 7 | 1032 | 1024 | 3.334 / 3.417 / 3.500 / 3.500 |
+| CPIO with 1 MiB init | 79 / 9 | 2098336 | 2098328 | 35.125 / 35.917 / 68.417 / 68.417 |
+
+  - Touch is 16 bytes. Decoder peak is 32N+35, returned capacity 16N. ARM VcpuState is
+    896 inline bytes, excluding owned heap vectors. One-shot restored state remains
+    owned for the VM lifetime by Shared.start and vCPU closures at this checkpoint.
+  - CPIO's 1 MiB archive is 1,049,288 bytes; its final trailer triggers capacity doubling.
+    There are 78 field-formatting string allocations plus one output vector allocation.
+- **Correctness probes.** [Source](measurements/audit-working-set/src/bin/range-order.rs)
+  and [observations](measurements/audit-working-set/range-order.json) demonstrate:
+  unsorted high/low ranges save low=L/high=H but restore low=H/high=L; a zero guest
+  page saved into a preseeded 0xaa target restores 0xaa. Current concrete machine
+  ranges are sorted and snapshot generations create fresh files, avoiding these
+  triggers. They remain public-API defects A21/A22, not measured normal-CLI corruption.
+- **Consequence.** Audit D03/D13: bounded/fallible decode planning, release one-shot
+  metadata after all startup users, reserve complete CPIO capacity, and enforce memory
+  serialization invariants before optimizing. These results exclude native/mmap memory,
+  guest faults, complete restore latency and Firecracker comparisons.
+
+**Audit measurement checkpoint:** M40–M43 describe 38457b7 and their recorded source
+hashes. Subsequent in-progress changes to guest-memory access and device integration
+are preserved and are not certified by these samples. Reproduce against the recorded
+revision before comparing a changed API/implementation.

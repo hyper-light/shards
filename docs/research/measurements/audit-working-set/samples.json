@@ -1,0 +1,3209 @@
+{
+  "metadata": {
+    "timestamp_utc": "2026-09-29T20:59:57.415113+00:00",
+    "revision": "38457b709e67c4a43de87adfd7f2053531672dc2",
+    "status_before_results": "?? docs/research/measurements/audit-device-allocations/\n?? docs/research/measurements/audit-memory/\n?? docs/research/measurements/audit-stream-allocations/\n?? docs/research/measurements/audit-working-set/",
+    "host": "Adas-MacBook-Pro-2.local",
+    "host_cpu": "Apple M5 Max",
+    "os": "macOS-26.4.1-arm64-arm-64bit",
+    "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "page_bytes": 16384,
+    "source_sha256": {
+      "crates/vmm/src/snapshot/mod.rs": "f1519d5833dd64d03a1bcd24e8b36bf09dbb26840de397b10c372686e7c2143f",
+      "crates/vmm/src/snapshot/codec.rs": "35eb27335f3c85256a35af43e692f99dc7b17426fc4a0b1b39c8e13a538944d9",
+      "crates/vmm/src/platform/mod.rs": "f6b4756dc1678739c0d38d2f897b56f0e75fe16037073c6516d8c6d7dba4c112",
+      "crates/vmm/src/platform/unix.rs": "e1d1c24117f1effc31aa3cce262273ea1cfef249cf12d15a095ddb972c3b90ea",
+      "crates/vmm/src/hv/mod.rs": "e553054e23b3db1ffca90aaa9d1f15afa236f308042a5590d8878e6727ac157e",
+      "crates/vmm/src/initramfs.rs": "a240935676ea6d2c85a69c563609cd505e59def6b6c508df2936890d85f7e1d1",
+      "crates/vmm/src/memory.rs": "2338d23f36157fdb31b1d59a1efc00f239b4a87330e269dcfaafa807a1cae6c3"
+    },
+    "notes": "Rust System allocator requests only; cached local filesystem reads; no VM/hypervisor. Peak is requested live heap, not allocator RSS or physical footprint. Timings use the same binary with allocation counters disabled."
+  },
+  "samples": [
+    {
+      "kind": "layout",
+      "touch_bytes": 16,
+      "arm_vcpu_inline_bytes": 896
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 0,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 1,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 2,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 3,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 4,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 5,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 6,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 7,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 8,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 9,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 10,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 11,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 12,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 13,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 14,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 15,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 16,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 17,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 18,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 19,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 20,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 21,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 22,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 23,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 24,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 25,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 26,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 27,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 28,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "allocations",
+      "pages": 1,
+      "sample": 29,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 79,
+      "peak_requested_live_bytes": 67,
+      "retained_requested_bytes": 16
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 0,
+      "us": 10.665999999999999
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 1,
+      "us": 10.708
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 2,
+      "us": 10.5
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 3,
+      "us": 10.459
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 4,
+      "us": 10.542
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 5,
+      "us": 10.584000000000001
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 6,
+      "us": 10.417
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 7,
+      "us": 26.625
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 8,
+      "us": 12.25
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 9,
+      "us": 10.583
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 10,
+      "us": 10.5
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 11,
+      "us": 10.625
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 12,
+      "us": 10.5
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 13,
+      "us": 10.375
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 14,
+      "us": 10.583
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 15,
+      "us": 10.417
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 16,
+      "us": 10.292000000000002
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 17,
+      "us": 10.375
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 18,
+      "us": 10.209
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 19,
+      "us": 10.25
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 20,
+      "us": 10.375
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 21,
+      "us": 10.292000000000002
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 22,
+      "us": 10.25
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 23,
+      "us": 10.291
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 24,
+      "us": 10.332999999999998
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 25,
+      "us": 10.292000000000002
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 26,
+      "us": 10.292000000000002
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 27,
+      "us": 10.5
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 28,
+      "us": 10.292000000000002
+    },
+    {
+      "kind": "timing",
+      "pages": 1,
+      "sample": 29,
+      "us": 11.958
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 0,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 1,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 2,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 3,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 4,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 5,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 6,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 7,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 8,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 9,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 10,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 11,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 12,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 13,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 14,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 15,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 16,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 17,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 18,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 19,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 20,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 21,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 22,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 23,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 24,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 25,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 26,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 27,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 28,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "allocations",
+      "pages": 718,
+      "sample": 29,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 23023,
+      "peak_requested_live_bytes": 23011,
+      "retained_requested_bytes": 11488
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 0,
+      "us": 11.042
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 1,
+      "us": 10.665999999999999
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 2,
+      "us": 10.665999999999999
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 3,
+      "us": 10.667
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 4,
+      "us": 10.916
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 5,
+      "us": 14.875
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 6,
+      "us": 10.708
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 7,
+      "us": 10.875
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 8,
+      "us": 10.541
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 9,
+      "us": 10.542
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 10,
+      "us": 10.417
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 11,
+      "us": 10.583
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 12,
+      "us": 10.665999999999999
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 13,
+      "us": 10.708
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 14,
+      "us": 10.834
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 15,
+      "us": 10.584000000000001
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 16,
+      "us": 10.459
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 17,
+      "us": 10.667
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 18,
+      "us": 10.542
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 19,
+      "us": 10.459
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 20,
+      "us": 10.665999999999999
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 21,
+      "us": 10.5
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 22,
+      "us": 10.459
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 23,
+      "us": 10.417
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 24,
+      "us": 10.541
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 25,
+      "us": 10.75
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 26,
+      "us": 10.541
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 27,
+      "us": 10.625
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 28,
+      "us": 10.458
+    },
+    {
+      "kind": "timing",
+      "pages": 718,
+      "sample": 29,
+      "us": 10.5
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 0,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 1,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 2,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 3,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 4,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 5,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 6,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 7,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 8,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 9,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 10,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 11,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 12,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 13,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 14,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 15,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 16,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 17,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 18,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 19,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 20,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 21,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 22,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 23,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 24,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 25,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 26,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 27,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 28,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "allocations",
+      "pages": 3867,
+      "sample": 29,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 123791,
+      "peak_requested_live_bytes": 123779,
+      "retained_requested_bytes": 61872
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 0,
+      "us": 17.584
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 1,
+      "us": 17.584
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 2,
+      "us": 17.375
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 3,
+      "us": 17.459
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 4,
+      "us": 17.333000000000002
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 5,
+      "us": 17.291999999999998
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 6,
+      "us": 17.333000000000002
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 7,
+      "us": 17.416
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 8,
+      "us": 17.5
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 9,
+      "us": 17.375
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 10,
+      "us": 17.416999999999998
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 11,
+      "us": 17.375
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 12,
+      "us": 17.625
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 13,
+      "us": 17.791999999999998
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 14,
+      "us": 17.625
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 15,
+      "us": 17.709
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 16,
+      "us": 17.708000000000002
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 17,
+      "us": 17.625
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 18,
+      "us": 17.459
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 19,
+      "us": 17.625
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 20,
+      "us": 17.333000000000002
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 21,
+      "us": 17.625
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 22,
+      "us": 17.583000000000002
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 23,
+      "us": 17.709
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 24,
+      "us": 17.666999999999998
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 25,
+      "us": 17.291999999999998
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 26,
+      "us": 17.458000000000002
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 27,
+      "us": 17.291
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 28,
+      "us": 17.25
+    },
+    {
+      "kind": "timing",
+      "pages": 3867,
+      "sample": 29,
+      "us": 17.291999999999998
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 0,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 1,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 2,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 3,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 4,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 5,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 6,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 7,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 8,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 9,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 10,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 11,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 12,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 13,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 14,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 15,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 16,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 17,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 18,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 19,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 20,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 21,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 22,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 23,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 24,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 25,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 26,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 27,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 28,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "allocations",
+      "pages": 65536,
+      "sample": 29,
+      "allocs": 4,
+      "reallocs": 0,
+      "deallocs": 3,
+      "requested_bytes": 2097199,
+      "peak_requested_live_bytes": 2097187,
+      "retained_requested_bytes": 1048576
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 0,
+      "us": 157.959
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 1,
+      "us": 155.084
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 2,
+      "us": 153.875
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 3,
+      "us": 154.25
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 4,
+      "us": 157
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 5,
+      "us": 156
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 6,
+      "us": 166.667
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 7,
+      "us": 154.458
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 8,
+      "us": 154.542
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 9,
+      "us": 154.333
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 10,
+      "us": 154.583
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 11,
+      "us": 215.542
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 12,
+      "us": 397.83299999999997
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 13,
+      "us": 192.917
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 14,
+      "us": 203.33300000000003
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 15,
+      "us": 208.25
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 16,
+      "us": 187.625
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 17,
+      "us": 181.25
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 18,
+      "us": 160.917
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 19,
+      "us": 160.417
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 20,
+      "us": 159.792
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 21,
+      "us": 166.5
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 22,
+      "us": 158.166
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 23,
+      "us": 164.042
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 24,
+      "us": 156.333
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 25,
+      "us": 154.833
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 26,
+      "us": 155.917
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 27,
+      "us": 155.125
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 28,
+      "us": 161.042
+    },
+    {
+      "kind": "timing",
+      "pages": 65536,
+      "sample": 29,
+      "us": 154
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 0,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 1,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 2,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 3,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 4,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 5,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 6,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 7,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 8,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 9,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 10,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 11,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 12,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 13,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 14,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 15,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 16,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 17,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 18,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 19,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 20,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 21,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 22,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 23,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 24,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 25,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 26,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 27,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 28,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 256,
+      "sample": 29,
+      "allocs": 79,
+      "reallocs": 7,
+      "deallocs": 78,
+      "requested_bytes": 2664,
+      "peak_requested_live_bytes": 1032,
+      "retained_requested_bytes": 1024,
+      "archive_bytes": 968,
+      "archive_capacity": 1024
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 0,
+      "us": 3.4589999999999996
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 1,
+      "us": 3.5
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 2,
+      "us": 3.4170000000000003
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 3,
+      "us": 3.334
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 4,
+      "us": 3.209
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 5,
+      "us": 3.334
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 6,
+      "us": 3.25
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 7,
+      "us": 3.333
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 8,
+      "us": 3.25
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 9,
+      "us": 3.375
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 10,
+      "us": 3.209
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 11,
+      "us": 3.375
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 12,
+      "us": 3.375
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 13,
+      "us": 3.292
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 14,
+      "us": 3.25
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 15,
+      "us": 3.375
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 16,
+      "us": 3.25
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 17,
+      "us": 3.375
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 18,
+      "us": 3.25
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 19,
+      "us": 3.375
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 20,
+      "us": 3.292
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 21,
+      "us": 3.4170000000000003
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 22,
+      "us": 3.208
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 23,
+      "us": 3.375
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 24,
+      "us": 3.333
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 25,
+      "us": 3.375
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 26,
+      "us": 3.375
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 27,
+      "us": 3.292
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 28,
+      "us": 3.375
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 256,
+      "sample": 29,
+      "us": 3.167
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 0,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 1,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 2,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 3,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 4,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 5,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 6,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 7,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 8,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 9,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 10,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 11,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 12,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 13,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 14,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 15,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 16,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 17,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 18,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 19,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 20,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 21,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 22,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 23,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 24,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 25,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 26,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 27,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 28,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_allocations",
+      "payload_bytes": 1048576,
+      "sample": 29,
+      "allocs": 79,
+      "reallocs": 9,
+      "deallocs": 78,
+      "requested_bytes": 3150156,
+      "peak_requested_live_bytes": 2098336,
+      "retained_requested_bytes": 2098328,
+      "archive_bytes": 1049288,
+      "archive_capacity": 2098328
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 0,
+      "us": 33.917
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 1,
+      "us": 29.459
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 2,
+      "us": 29.333
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 3,
+      "us": 29.25
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 4,
+      "us": 29
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 5,
+      "us": 47.5
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 6,
+      "us": 68.417
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 7,
+      "us": 35.917
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 8,
+      "us": 35.125
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 9,
+      "us": 35.5
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 10,
+      "us": 35.5
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 11,
+      "us": 35.25
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 12,
+      "us": 35.25
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 13,
+      "us": 35.125
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 14,
+      "us": 35
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 15,
+      "us": 35.166000000000004
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 16,
+      "us": 35.166999999999994
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 17,
+      "us": 34.959
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 18,
+      "us": 34.833
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 19,
+      "us": 34.875
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 20,
+      "us": 35.417
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 21,
+      "us": 34.709
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 22,
+      "us": 35.333999999999996
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 23,
+      "us": 35.25
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 24,
+      "us": 35.833
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 25,
+      "us": 38.541999999999994
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 26,
+      "us": 35.917
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 27,
+      "us": 34.959
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 28,
+      "us": 35
+    },
+    {
+      "kind": "initramfs_timing",
+      "payload_bytes": 1048576,
+      "sample": 29,
+      "us": 34.916999999999994
+    }
+  ]
+}

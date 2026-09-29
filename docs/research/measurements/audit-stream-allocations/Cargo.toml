@@ -1,0 +1,16 @@
+[package]
+name = "audit-stream-allocations"
+version = "0.0.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+[dependencies]
+libc = "0.2"
+shards-abi = { path = "../../../../crates/abi" }
+shards-ipc = { path = "../../../../crates/ipc" }
+
+[profile.release]
+lto = "thin"
+
+[workspace]

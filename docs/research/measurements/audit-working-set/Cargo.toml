@@ -1,0 +1,15 @@
+[package]
+name = "audit-working-set"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+shards-vmm = { path = "../../../../crates/vmm" }
+
+[profile.release]
+lto = "thin"
+opt-level = 2
+
