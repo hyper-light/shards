@@ -48,7 +48,9 @@ jobs:
           home=$ab/new/home
           SHARDS_HOME=$home $ab/new/shards pull -q alpine
           SHARDS_HOME=$home $ab/new/shards guest use --kernel $kernel --init $init
-          # The first run saves the template, and records its working set once it has answered.
+          # The first run saves the template; the second, the first warm restore, records
+          # its working set once it has answered.
+          SHARDS_HOME=$home $ab/new/shards run --pull never alpine true
           SHARDS_HOME=$home $ab/new/shards run --pull never alpine true
           for i in $(seq 100); do ls $home/templates/*/working-set >/dev/null 2>&1 && break; sleep 0.1; done
           SHARDS_HOME=$home $ab/new/shards daemon stop
