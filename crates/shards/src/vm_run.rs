@@ -680,7 +680,7 @@ fn serve_workload(
             handle.stop();
             return failed(format!("workload thread: {e}"));
         }
-        let reason = running.wait(handle.clone());
+        let reason = running.wait();
         // A warm VM's client printed its timing line from the exit status.
         if !warm {
             report_timing(&handle, Some(&timing));
@@ -836,7 +836,7 @@ fn supervise(started: Result<(Handle, Running), String>, console: Console, templ
     };
     let terminal = (console == Console::Stdout).then(RawTerminal::enable).flatten();
     forward_stdin(handle.clone());
-    let reason = running.wait(handle.clone());
+    let reason = running.wait();
     drop(terminal);
     report_timing(&handle, None);
     match reason {

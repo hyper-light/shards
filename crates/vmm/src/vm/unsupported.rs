@@ -83,7 +83,7 @@ impl Handle {
 pub struct Running(Never);
 
 impl Running {
-    pub fn wait(self, _handle: Handle) -> ExitReason {
+    pub fn wait(self) -> ExitReason {
         match self.0 {}
     }
 }

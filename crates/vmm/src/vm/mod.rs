@@ -206,8 +206,8 @@ pub enum ExitReason {
 
 /// Boots a VM and waits for it to exit.
 pub fn run(cfg: &Config) -> Result<ExitReason, String> {
-    let (handle, running) = start(cfg)?;
-    Ok(running.wait(handle))
+    let (_, running) = start(cfg)?;
+    Ok(running.wait())
 }
 
 #[cfg(all(test, hv))]

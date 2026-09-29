@@ -1124,6 +1124,10 @@ shards (host CLI, docker-compatible) ──unix socket──▶ shardsd (daemon)
   registry, TLS and image code cost each VM about 1 MiB [PM M34]. The hot
   path is kept free of allocation and locks; device threads communicate with vCPU
   threads through lock-free rings.
+  - A running machine is owned: waiting for it or dropping it stops it, joins its vCPU
+    and snapshot threads (each vCPU is destroyed on its own thread), stops its device
+    workers, destroys the VM, and only then lets go of the devices and guest memory the
+    VM mapped (audit A04; `tests/lifecycle.rs`).
 - **Daemon** (`shardsd`): serves a Docker-compatible API with extensions for VM
   specs and isolation policy. It owns the warm pool and the template snapshots, and
   carries the shards-init its guests run (D28).

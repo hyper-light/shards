@@ -230,27 +230,49 @@ impl Shared {
     }
 }
 
-/// Joins the vCPU threads and tears the VM down once the guest exits.
+/// The running machine, which it owns: waiting for it, or dropping it, stops it and tears
+/// it down in order (audit A04).
 #[derive(Debug)]
 pub struct Running {
+    shared: Arc<Shared>,
     vm: Option<Arc<hv::Vm>>,
     threads: Vec<JoinHandle<()>>,
     /// Devices own memory the VM maps (virtio-pmem regions): they go after the VM, as
     /// guest RAM does.
-    _bus: Arc<machine::Bus>,
+    bus: Arc<machine::Bus>,
     _memory: Arc<GuestMemory>,
 }
 
 impl Running {
-    pub fn wait(mut self, handle: Handle) -> ExitReason {
-        let reason = handle.shared.wait_exit();
-        handle.shared.stop(reason.clone());
+    /// Waits for the guest to exit, then tears the machine down.
+    pub fn wait(mut self) -> ExitReason {
+        let reason = self.shared.wait_exit();
+        self.teardown(reason.clone());
+        reason
+    }
+
+    /// Stops the machine, if it runs, and takes it apart in order: every vCPU and the
+    /// snapshot coordinator joined, so each vCPU was destroyed on its own thread; the
+    /// device workers stopped; the VM destroyed; and only then, as the fields drop, the
+    /// devices and guest memory it mapped. Again, it does nothing.
+    fn teardown(&mut self, reason: ExitReason) {
+        self.shared.stop(reason);
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
-        // Every vCPU was destroyed on its own thread above; the VM goes before its memory.
-        self.vm.take();
-        reason
+        if let Some(vm) = self.vm.take() {
+            // The device workers go quiet before the VM they raise interrupts in goes.
+            self.bus.pause();
+            drop(vm);
+        }
+    }
+}
+
+impl Drop for Running {
+    /// A machine dropped without [`wait`](Running::wait) is stopped, not left running
+    /// with nothing to own its memory (audit A04).
+    fn drop(&mut self) {
+        self.teardown(ExitReason::Stopped);
     }
 }
 
@@ -419,6 +441,7 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         "{vcpus} vCPU(s) ready to run after {} us",
         crate::log::uptime_us()
     );
+    let handle_shared = shared.clone();
     Ok((
         Handle {
             shared,
@@ -426,9 +449,10 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
             control,
         },
         Running {
+            shared: handle_shared,
             vm: Some(vm),
             threads,
-            _bus: bus,
+            bus,
             _memory: memory,
         },
     ))
