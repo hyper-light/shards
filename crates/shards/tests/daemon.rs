@@ -73,8 +73,21 @@ fn wait(child: &mut Child) -> Option<i32> {
     }
 }
 
-/// The pids of the processes whose command line mentions `needle`.
+/// The pids of the processes whose command line mentions `needle`: from /proc on Linux,
+/// whose `ps` may be busybox's, which takes no `-o args`; from `ps` elsewhere.
 fn processes_with(needle: &str) -> Vec<u32> {
+    if cfg!(target_os = "linux") {
+        return std::fs::read_dir("/proc")
+            .unwrap()
+            .filter_map(|e| {
+                let e = e.ok()?;
+                let pid: u32 = e.file_name().to_str()?.parse().ok()?;
+                let cmdline = std::fs::read(e.path().join("cmdline")).ok()?;
+                let args = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+                args.contains(needle).then_some(pid)
+            })
+            .collect();
+    }
     let out = Command::new("ps").args(["-axo", "pid=,args="]).output().unwrap();
     String::from_utf8_lossy(&out.stdout)
         .lines()

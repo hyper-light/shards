@@ -60,7 +60,9 @@ jobs:
         if: matrix.target == 'x86_64-pc-windows-msvc'
         shell: bash
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          # Retried: Windows' TLS checks revocation online, and its server is sometimes
+          # unreachable (CRYPT_E_REVOCATION_OFFLINE); the digest below checks the file.
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
           echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
           unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
