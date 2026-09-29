@@ -338,6 +338,26 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
     `neon_sha3_check.c`, so aws-lc-sys leaves that code out of the lint build. Lints don't
     depend on it, and CI builds each target with its native compiler.
 
+### M19. AWS-LC's first random bytes in a new process
+
+- **Question.** AWS-LC seeds its DRBG on a process's first random draw. What does that
+  cost with its default CPU jitter entropy source, and when seeded from the OS
+  (`AWS_LC_SYS_NO_JITTER_ENTROPY=1`)?
+- **Method.** Harness: `docs/research/measurements/aws-lc-entropy/run.sh 50`. It builds a
+  tiny binary on our vendored aws-lc-rs 1.18.1 / aws-lc-sys 0.45.0 both ways (release),
+  then runs each as 50 fresh processes, interleaved. Each process times its first and its
+  second 32-byte `SystemRandom::fill`. 2026-09-28, this machine, revision 965c5ed.
+- **Results** (µs, n = 50 each):
+
+| Seed source | first p50 | first p90 | first p99 | first max | second p50 | second max |
+|---|---|---|---|---|---|---|
+| CPU jitter (default) | 17 372 | 18 885 | 19 720 | 19 720 | 2 | 3 |
+| OS | 7 | 8 | 29 | 29 | 2 | 2 |
+
+- **Consequence.** Every build seeds AWS-LC from the OS (D19, vendor/README.md). Jitter
+  seeding costs 17 ms, once per process: over three times the whole start budget, for any
+  process that makes a TLS connection.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

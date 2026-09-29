@@ -1,0 +1,16 @@
+# M19: the first random bytes a new process gets from AWS-LC, with and without its CPU
+# Jitter entropy source (see run.sh). A workspace of its own, on our vendored AWS-LC.
+[package]
+name = "aws-lc-entropy"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+aws-lc-rs = { version = "1.18.1", default-features = false, features = ["aws-lc-sys"] }
+
+[patch.crates-io]
+aws-lc-rs = { path = "../../../../vendor/aws-lc-rs" }
+aws-lc-sys = { path = "../../../../vendor/aws-lc-sys" }
+
+[workspace]

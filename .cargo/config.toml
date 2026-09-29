@@ -5,6 +5,10 @@ MACOSX_DEPLOYMENT_TARGET = "15.0"
 # AWS-LC is assembled from source everywhere: aws-lc-sys may not fall back to the
 # prebuilt Windows x64 objects it ships, so those builds need NASM (vendor/README.md).
 AWS_LC_SYS_PREBUILT_NASM = "0"
+# AWS-LC seeds its DRBG from the OS CSPRNG, as BoringSSL and ring do, not from CPU jitter:
+# the jitter source costs every new process 17 ms before its first random bytes
+# (platform-measurements.md M19, vendor/README.md).
+AWS_LC_SYS_NO_JITTER_ENTROPY = "1"
 
 # Hypervisor.framework refuses unentitled processes, so every binary cargo runs on
 # macOS (including test harnesses) is ad-hoc signed with the entitlement first.

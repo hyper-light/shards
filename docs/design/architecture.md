@@ -306,6 +306,11 @@ The code is `crates/registry/src/tls.rs`.
   file against their published crates, in CI too (`vendor/README.md`).
 - **Assembled from source.** aws-lc-sys's prebuilt Windows x64 objects are disabled, so
   NASM assembles that code. With NASM hidden, the Windows x64 build fails.
+- **Seeded by the OS.** AWS-LC's DRBG seeds from the OS CSPRNG, as BoringSSL and ring
+  seed, not from its default CPU jitter source (`AWS_LC_SYS_NO_JITTER_ENTROPY=1`).
+  - Jitter entropy serves FIPS's two-source rule; ours is the non-FIPS build.
+  - It cost every new process 17 ms before its first random bytes, against 7 µs from
+    the OS (platform-measurements.md M19): more than three times our start budget.
 - **Verified as Docker verifies.** On macOS and Windows the OS verifies, as Go delegates
   to it there; Linux uses webpki with the system bundle. Per-registry CAs are extra roots.
 - **TLS 1.2 stays on:** a Docker-operated CDN host refuses TLS 1.3.

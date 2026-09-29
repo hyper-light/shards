@@ -26,7 +26,29 @@ uses them when NASM is missing. `.cargo/config.toml` sets `AWS_LC_SYS_PREBUILT_N
 so they are never used: Windows x64 builds assemble AWS-LC with NASM, and fail without
 it. CI installs the official NASM 3.02 build, pinned by hash.
 
+## Seeded by the OS
+
+`.cargo/config.toml` sets `AWS_LC_SYS_NO_JITTER_ENTROPY=1`. AWS-LC then seeds its DRBG
+from the OS CSPRNG (`CRYPTO_sysrand`: `CCRandomGenerateBytes`, getrandom or `urandom`,
+`BCryptGenRandom`), as BoringSSL and ring do. RDRAND or RNDR supply its personalization
+string where the CPU has one (`crypto/fipsmodule/rand/entropy/entropy_sources.c`). AWS-LC
+picks this configuration itself on Linux when `/dev/sysgenid` says a VM snapshot can
+clone the process (`crypto/ube/vm_ube_detect.c`).
+
+Its default seeds from CPU jitter entropy, which exists for FIPS's two-source rule; ours
+is the non-FIPS build. That default costs every new process 17 ms before its first random
+bytes, against 7 µs from the OS (platform-measurements.md M19).
+
 ## Updating
+
+Recheck these upstream items with each update:
+- Whether jitter entropy stops being the default, which AWS-LC's maintainers have
+  suggested.
+- aws/aws-lc-rs#1241: TLS 1.3 AES-GCM sealing from several input slices (open).
+- aws/aws-lc-rs#1165: `Clone` for `aead::LessSafeKey`, which ring has. It waits on an
+  AWS-LC context copy (open).
+
+Then:
 
 1. Run `scripts/vendor-crate NAME VERSION` for each crate, then `cargo update -p NAME`.
 2. Update the table above and D19.
