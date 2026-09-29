@@ -55,9 +55,10 @@ pub fn cannot_run_vms() -> bool {
     }
 }
 
-/// Snapshots exist on arm64 (HVF) so far; tests of them skip elsewhere with a SKIP line.
+/// Snapshots exist where this build has a backend (vm::SNAPSHOTS); tests of them skip
+/// elsewhere with a SKIP line.
 pub fn cannot_snapshot() -> bool {
-    if ARCH == "aarch64" {
+    if shards_vmm::vm::SNAPSHOTS {
         return false;
     }
     let _ = writeln!(

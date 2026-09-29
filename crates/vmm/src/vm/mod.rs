@@ -11,9 +11,11 @@ use aarch64 as machine;
 mod x86_64;
 #[cfg(all(hv, target_arch = "x86_64"))]
 use x86_64 as machine;
-/// Whether this build's VMs can be snapshotted and restored: the arm64 backend's can; the
-/// x86_64 backend's cannot yet.
-pub const SNAPSHOTS: bool = cfg!(all(hv, target_arch = "aarch64"));
+/// Whether this build's VMs can be snapshotted and restored: every backend's can.
+pub const SNAPSHOTS: bool = cfg!(hv);
+/// Whether a VM resumed from its snapshot records its working set, for restores to
+/// prefetch: HVF's can (hv::hvf::Watch).
+pub const WORKING_SETS: bool = cfg!(hv = "hvf");
 
 #[cfg(hv)]
 mod runtime;

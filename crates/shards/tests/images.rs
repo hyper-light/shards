@@ -131,15 +131,18 @@ fn repeat_runs_restore_a_template_of_the_image() {
     assert!(!saved[0].contains(".new-"), "{saved:?}");
 
     // The first run recorded what it touched, once it had answered: the working set that
-    // restores prefetch. The daemon's pool was restored before it existed, so a new daemon
-    // restores the next run.
+    // restores prefetch, where the backend records one. The daemon's pool was restored
+    // before it existed, so a new daemon restores the next run.
     let working_set = home.join("templates").join(&saved[0]).join("working-set");
     let deadline = std::time::Instant::now() + TIMEOUT;
-    while !working_set.exists() && std::time::Instant::now() < deadline {
+    while shards_vmm::vm::WORKING_SETS && !working_set.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let recorded = std::fs::metadata(&working_set).map(|m| m.len()).unwrap_or(0);
-    assert!(recorded > 1024, "a working set of {recorded} bytes");
+    assert!(
+        recorded > 1024 || !shards_vmm::vm::WORKING_SETS,
+        "a working set of {recorded} bytes"
+    );
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 
@@ -152,7 +155,7 @@ fn repeat_runs_restore_a_template_of_the_image() {
     assert!(second.marker_us(shards_abi::marker::RESUMED).is_some(), "{shown}");
     let prefetched = second.prefetched().unwrap_or(0);
     assert!(
-        prefetched > 100 && prefetched * 8 < u128::from(recorded),
+        (prefetched > 100 && prefetched * 8 < u128::from(recorded)) || !shards_vmm::vm::WORKING_SETS,
         "{prefetched} pages prefetched of a {recorded}-byte working set: {shown}"
     );
     for line in ["uid 1000", "cwd /work", "env FROM_IMAGE=yes"] {
@@ -165,7 +168,8 @@ fn repeat_runs_restore_a_template_of_the_image() {
     );
     assert_eq!(templates(), saved, "the template was reused");
 
-    // A damaged working set is only a lost prefetch.
+    // A damaged working set is only a lost prefetch; without working sets, a file that is
+    // none is ignored alike.
     std::fs::write(&working_set, b"not a working set").unwrap();
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);

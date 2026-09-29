@@ -28,6 +28,62 @@ pub const KVM_GET_SREGS: u64 = 0x8138_AE83;
 pub const KVM_SET_SREGS: u64 = 0x4138_AE84;
 pub const KVM_SET_CPUID2: u64 = 0x4008_AE90;
 
+// Snapshot state (research doc §1.9; each number is _IOC(dir, 0xAE, nr, size), as several
+// share a number and differ only there).
+pub const KVM_GET_MSR_INDEX_LIST: u64 = 0xC004_AE02;
+pub const KVM_GET_IRQCHIP: u64 = 0xC208_AE62;
+/// Encoded `_IOR`, as KVM's own header has it.
+pub const KVM_SET_IRQCHIP: u64 = 0x8208_AE63;
+pub const KVM_SET_CLOCK: u64 = 0x4030_AE7B;
+pub const KVM_GET_CLOCK: u64 = 0x8030_AE7C;
+pub const KVM_GET_REGS: u64 = 0x8090_AE81;
+pub const KVM_GET_MSRS: u64 = 0xC008_AE88;
+pub const KVM_SET_MSRS: u64 = 0x4008_AE89;
+pub const KVM_GET_LAPIC: u64 = 0x8400_AE8E;
+pub const KVM_SET_LAPIC: u64 = 0x4400_AE8F;
+pub const KVM_GET_MP_STATE: u64 = 0x8004_AE98;
+pub const KVM_SET_MP_STATE: u64 = 0x4004_AE99;
+pub const KVM_GET_VCPU_EVENTS: u64 = 0x8040_AE9F;
+pub const KVM_SET_VCPU_EVENTS: u64 = 0x4040_AEA0;
+pub const KVM_GET_DEBUGREGS: u64 = 0x8080_AEA1;
+pub const KVM_SET_DEBUGREGS: u64 = 0x4080_AEA2;
+pub const KVM_SET_TSC_KHZ: u64 = 0xAEA2;
+pub const KVM_GET_TSC_KHZ: u64 = 0xAEA3;
+pub const KVM_GET_XSAVE: u64 = 0x9000_AEA4;
+pub const KVM_SET_XSAVE: u64 = 0x5000_AEA5;
+pub const KVM_GET_XCRS: u64 = 0x8188_AEA6;
+pub const KVM_SET_XCRS: u64 = 0x4188_AEA7;
+pub const KVM_KVMCLOCK_CTRL: u64 = 0xAEAD;
+pub const KVM_GET_XSAVE2: u64 = 0x9000_AECF;
+
+/// The sizes of the state structures above, which a snapshot keeps as their bytes.
+pub const LAPIC_SIZE: usize = 1024;
+pub const VCPU_EVENTS_SIZE: usize = 64;
+pub const DEBUGREGS_SIZE: usize = 128;
+pub const XSAVE_SIZE: usize = 4096;
+pub const XCRS_SIZE: usize = 392;
+pub const IRQCHIP_SIZE: usize = 520;
+pub const CLOCK_SIZE: usize = 48;
+/// Each size is the one its ioctl numbers encode (bits 16-29).
+const _: () = {
+    const fn size(request: u64) -> usize {
+        ((request >> 16) & 0x3fff) as usize
+    }
+    assert!(size(KVM_GET_LAPIC) == LAPIC_SIZE && size(KVM_SET_LAPIC) == LAPIC_SIZE);
+    assert!(size(KVM_GET_VCPU_EVENTS) == VCPU_EVENTS_SIZE);
+    assert!(size(KVM_SET_VCPU_EVENTS) == VCPU_EVENTS_SIZE);
+    assert!(size(KVM_GET_DEBUGREGS) == DEBUGREGS_SIZE && size(KVM_SET_DEBUGREGS) == DEBUGREGS_SIZE);
+    assert!(size(KVM_GET_XSAVE) == XSAVE_SIZE && size(KVM_SET_XSAVE) == XSAVE_SIZE);
+    assert!(size(KVM_GET_XCRS) == XCRS_SIZE && size(KVM_SET_XCRS) == XCRS_SIZE);
+    assert!(size(KVM_GET_IRQCHIP) == IRQCHIP_SIZE && size(KVM_SET_IRQCHIP) == IRQCHIP_SIZE);
+    assert!(size(KVM_GET_CLOCK) == CLOCK_SIZE && size(KVM_SET_CLOCK) == CLOCK_SIZE);
+    assert!(size(KVM_GET_REGS) == size_of::<kvm_regs>());
+};
+/// `kvm_irqchip.chip_id`s.
+pub const IRQCHIP_PIC_MASTER: u32 = 0;
+pub const IRQCHIP_PIC_SLAVE: u32 = 1;
+pub const IRQCHIP_IOAPIC: u32 = 2;
+
 pub const CAP_IRQCHIP: u64 = 0;
 pub const CAP_USER_MEMORY: u64 = 3;
 pub const CAP_SET_TSS_ADDR: u64 = 4;
@@ -39,6 +95,8 @@ pub const CAP_MAX_VCPUS: u64 = 66;
 pub const CAP_TSC_DEADLINE_TIMER: u64 = 72;
 pub const CAP_IMMEDIATE_EXIT: u64 = 136;
 pub const CAP_READONLY_MEM: u64 = 81;
+/// On the VM fd: the size of the guest's XSAVE area, 4096 or more, or 0 without XSAVE2.
+pub const CAP_XSAVE2: u64 = 208;
 
 /// kvm_userspace_memory_region flags.
 pub const MEM_READONLY: u32 = 1 << 1;
@@ -184,6 +242,45 @@ struct Cpuid2 {
     entries: [kvm_cpuid_entry2; MAX_CPUID_ENTRIES],
 }
 
+/// Calls `request`, which fills a structure of `len` bytes, and returns the bytes: state a
+/// snapshot keeps whole, to give back on the host that saved it. `init` goes in first, for
+/// requests that read a field before they write (`kvm_irqchip.chip_id`).
+fn get_bytes(fd: RawFd, request: u64, len: usize, init: &[u8]) -> io::Result<Vec<u8>> {
+    let mut buf = vec![0u8; len];
+    for (b, &i) in buf.iter_mut().zip(init) {
+        *b = i;
+    }
+    // SAFETY: a buffer of the structure's size, which the kernel copies whole.
+    unsafe { ioctl(fd, request, buf.as_mut_ptr() as libc::c_ulong) }?;
+    Ok(buf)
+}
+
+/// Calls `request` with `bytes`, a structure of its size, which the kernel copies in.
+fn set_bytes(fd: RawFd, request: u64, bytes: &[u8], len: usize) -> io::Result<()> {
+    if bytes.len() < len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} bytes where the kernel reads {len}", bytes.len()),
+        ));
+    }
+    // SAFETY: at least `len` bytes, which the kernel copies in and does not keep.
+    unsafe { ioctl(fd, request, bytes.as_ptr() as libc::c_ulong) }.map(drop)
+}
+
+/// `struct kvm_msrs` holding `entries`: nmsrs, padding, then each index, a reserved word
+/// and the value.
+fn msrs_buffer(entries: &[(u32, u64)]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(8 + 16 * entries.len());
+    b.extend_from_slice(&u32::try_from(entries.len()).unwrap_or(u32::MAX).to_ne_bytes());
+    b.extend_from_slice(&0u32.to_ne_bytes());
+    for &(index, data) in entries {
+        b.extend_from_slice(&index.to_ne_bytes());
+        b.extend_from_slice(&0u32.to_ne_bytes());
+        b.extend_from_slice(&data.to_ne_bytes());
+    }
+    b
+}
+
 fn ret(r: libc::c_int) -> io::Result<libc::c_int> {
     if r < 0 {
         Err(io::Error::last_os_error())
@@ -249,6 +346,37 @@ impl Kvm {
         Ok(c.entries.iter().take(n).copied().collect())
     }
 
+    /// The MSRs KVM saves and restores for a VMM: those it passes through and those it
+    /// emulates (api.rst, KVM_GET_MSR_INDEX_LIST).
+    pub fn msr_index_list(&self) -> io::Result<Vec<u32>> {
+        const MAX: usize = 1024;
+        let mut buf = vec![0u8; 4 + 4 * MAX];
+        if let Some(n) = buf.get_mut(..4) {
+            n.copy_from_slice(&(MAX as u32).to_ne_bytes());
+        }
+        // SAFETY: a kvm_msr_list with room for MAX indices.
+        unsafe {
+            ioctl(
+                self.0.as_raw_fd(),
+                KVM_GET_MSR_INDEX_LIST,
+                buf.as_mut_ptr() as libc::c_ulong,
+            )
+        }?;
+        let n = buf
+            .get(..4)
+            .and_then(|b| b.try_into().ok())
+            .map_or(0, |b: [u8; 4]| u32::from_ne_bytes(b) as usize)
+            .min(MAX);
+        Ok(buf
+            .get(4..4 + 4 * n)
+            .unwrap_or_default()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&c| u32::from_ne_bytes(c))
+            .collect())
+    }
+
     pub fn create_vm(&self) -> io::Result<VmFd> {
         // SAFETY: type 0 (KVM_X86_DEFAULT_VM) by value; the result is a new fd we own.
         let fd = unsafe { ioctl(self.0.as_raw_fd(), KVM_CREATE_VM, 0) }?;
@@ -302,6 +430,36 @@ impl VmFd {
             )
         }
         .map(drop)
+    }
+
+    /// As `Kvm::check_extension`, for capabilities that depend on the VM.
+    pub fn check_extension(&self, cap: u64) -> io::Result<i32> {
+        // SAFETY: the capability number is passed by value.
+        unsafe { ioctl(self.fd(), KVM_CHECK_EXTENSION, cap as libc::c_ulong) }
+    }
+
+    /// One of the in-kernel interrupt controllers' state (`IRQCHIP_*`), as its bytes.
+    pub fn get_irqchip(&self, chip: u32) -> io::Result<Vec<u8>> {
+        get_bytes(self.fd(), KVM_GET_IRQCHIP, IRQCHIP_SIZE, &chip.to_ne_bytes())
+    }
+
+    pub fn set_irqchip(&self, state: &[u8]) -> io::Result<()> {
+        set_bytes(self.fd(), KVM_SET_IRQCHIP, state, IRQCHIP_SIZE)
+    }
+
+    /// kvmclock (`struct kvm_clock_data`), as its bytes.
+    pub fn get_clock(&self) -> io::Result<Vec<u8>> {
+        get_bytes(self.fd(), KVM_GET_CLOCK, CLOCK_SIZE, &[])
+    }
+
+    /// Sets kvmclock to the value saved in `state`, from now: with its flags cleared, as
+    /// Firecracker restores it, so that the guest's clock goes on from the snapshot.
+    pub fn set_clock(&self, state: &[u8]) -> io::Result<()> {
+        let mut clock = state.to_vec();
+        if let Some(flags) = clock.get_mut(8..12) {
+            flags.fill(0);
+        }
+        set_bytes(self.fd(), KVM_SET_CLOCK, &clock, CLOCK_SIZE)
     }
 
     /// Drives a GSI; any thread may call it.
@@ -472,6 +630,77 @@ impl VcpuFd {
     pub fn set_regs(&self, r: &kvm_regs) -> io::Result<()> {
         // SAFETY: a pointer to a live struct.
         unsafe { ioctl(self.fd(), KVM_SET_REGS, r as *const _ as libc::c_ulong) }.map(drop)
+    }
+
+    /// A state structure `request` fills, of `len` bytes.
+    pub fn get_state(&self, request: u64, len: usize) -> io::Result<Vec<u8>> {
+        get_bytes(self.fd(), request, len, &[])
+    }
+
+    /// A state structure `request` reads, of `len` bytes.
+    pub fn set_state(&self, request: u64, state: &[u8], len: usize) -> io::Result<()> {
+        set_bytes(self.fd(), request, state, len)
+    }
+
+    /// The values of the MSRs `indices` names, as far as KVM reads them: it stops at the
+    /// first it cannot, and says how many it read.
+    pub fn get_msrs(&self, indices: &[u32]) -> io::Result<Vec<(u32, u64)>> {
+        let entries: Vec<(u32, u64)> = indices.iter().map(|&i| (i, 0)).collect();
+        let mut buf = msrs_buffer(&entries);
+        // SAFETY: a kvm_msrs with `nmsrs` entries, which KVM fills.
+        let read = unsafe { ioctl(self.fd(), KVM_GET_MSRS, buf.as_mut_ptr() as libc::c_ulong) }?;
+        Ok(buf
+            .get(8..)
+            .unwrap_or_default()
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .take(read.unsigned_abs() as usize)
+            .map(|e| {
+                let (index, rest) = e.split_first_chunk::<4>().unwrap_or((&[0; 4], &[]));
+                let data = rest.get(4..12).and_then(|d| d.try_into().ok()).unwrap_or([0; 8]);
+                (u32::from_ne_bytes(*index), u64::from_ne_bytes(data))
+            })
+            .collect())
+    }
+
+    /// Writes `entries`; returns how many KVM took, stopping at the first it refused.
+    pub fn set_msrs(&self, entries: &[(u32, u64)]) -> io::Result<usize> {
+        let buf = msrs_buffer(entries);
+        // SAFETY: a kvm_msrs with `nmsrs` entries, which KVM reads.
+        let set = unsafe { ioctl(self.fd(), KVM_SET_MSRS, buf.as_ptr() as libc::c_ulong) }?;
+        Ok(set.unsigned_abs() as usize)
+    }
+
+    pub fn get_mp_state(&self) -> io::Result<u32> {
+        let mut state = 0u32;
+        // SAFETY: KVM writes one u32.
+        unsafe { ioctl(self.fd(), KVM_GET_MP_STATE, (&raw mut state) as libc::c_ulong) }?;
+        Ok(state)
+    }
+
+    pub fn set_mp_state(&self, state: u32) -> io::Result<()> {
+        // SAFETY: KVM reads one u32.
+        unsafe { ioctl(self.fd(), KVM_SET_MP_STATE, (&raw const state) as libc::c_ulong) }.map(drop)
+    }
+
+    /// The guest TSC's frequency in kHz.
+    pub fn tsc_khz(&self) -> io::Result<u32> {
+        // SAFETY: no argument; the result is the frequency.
+        let khz = unsafe { ioctl(self.fd(), KVM_GET_TSC_KHZ, 0) }?;
+        Ok(khz.unsigned_abs())
+    }
+
+    pub fn set_tsc_khz(&self, khz: u32) -> io::Result<()> {
+        // SAFETY: the frequency by value.
+        unsafe { ioctl(self.fd(), KVM_SET_TSC_KHZ, libc::c_ulong::from(khz)) }.map(drop)
+    }
+
+    /// Tells a guest with kvmclock that its vCPU was stopped, so its soft-lockup watchdog
+    /// does not take the pause for a hang (api.rst, KVM_KVMCLOCK_CTRL).
+    pub fn kvmclock_ctrl(&self) -> io::Result<()> {
+        // SAFETY: no argument.
+        unsafe { ioctl(self.fd(), KVM_KVMCLOCK_CTRL, 0) }.map(drop)
     }
 
     /// Enters the guest and decodes the exit. The returned data borrows the

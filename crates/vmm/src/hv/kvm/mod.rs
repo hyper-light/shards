@@ -4,7 +4,10 @@
 //! through devices (ACPI sleep control, i8042), so those come from the machine, and a
 //! triple fault is a reset. Ground truth: docs/research/kvm-x86_64-ground-truth.md.
 
+mod state;
 mod sys;
+
+pub use state::{VcpuState, VmState};
 
 use std::fmt;
 use std::io;
@@ -145,6 +148,10 @@ pub struct Vm {
     tsc_deadline: bool,
     vcpus: u32,
     next_slot: AtomicU32,
+    /// The MSRs a snapshot keeps: KVM's list (api.rst, KVM_GET_MSR_INDEX_LIST).
+    msrs: Arc<Vec<u32>>,
+    /// The guest's XSAVE area: KVM_CAP_XSAVE2's size, or 4096 before it.
+    xsave_size: usize,
 }
 
 impl Vm {
@@ -176,6 +183,10 @@ impl Vm {
             .check_extension(sys::CAP_TSC_DEADLINE_TIMER)
             .map_err(call("KVM_CHECK_EXTENSION"))?
             > 0;
+        let msrs = kvm.msr_index_list().map_err(call("KVM_GET_MSR_INDEX_LIST"))?;
+        let xsave2 = fd
+            .check_extension(sys::CAP_XSAVE2)
+            .map_err(call("KVM_CHECK_EXTENSION"))?;
         Ok(Vm {
             fd: Arc::new(fd),
             cpuid,
@@ -183,7 +194,31 @@ impl Vm {
             tsc_deadline,
             vcpus: config.vcpus,
             next_slot: AtomicU32::new(0),
+            msrs: Arc::new(msrs),
+            xsave_size: (xsave2.unsigned_abs() as usize).max(sys::XSAVE_SIZE),
         })
+    }
+
+    /// The in-kernel interrupt controllers and kvmclock. Every vCPU must be stopped.
+    pub fn save_state(&self) -> Result<VmState> {
+        let chip = |id| self.fd.get_irqchip(id).map_err(call("KVM_GET_IRQCHIP"));
+        Ok(VmState {
+            pic_master: chip(sys::IRQCHIP_PIC_MASTER)?,
+            pic_slave: chip(sys::IRQCHIP_PIC_SLAVE)?,
+            ioapic: chip(sys::IRQCHIP_IOAPIC)?,
+            clock: self.fd.get_clock().map_err(call("KVM_GET_CLOCK"))?,
+        })
+    }
+
+    /// Restores `st` once every vCPU exists and holds its own state: an IOAPIC restored
+    /// earlier could deliver to LAPICs that are not there yet. kvmclock goes on from the
+    /// value saved, so the guest's clocks do not jump by the time between.
+    pub fn restore_state(&self, st: &VmState) -> Result<()> {
+        self.fd.set_clock(&st.clock).map_err(call("KVM_SET_CLOCK"))?;
+        for chip in [&st.pic_master, &st.pic_slave, &st.ioapic] {
+            self.fd.set_irqchip(chip).map_err(call("KVM_SET_IRQCHIP"))?;
+        }
+        Ok(())
     }
 
     /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`, in a new memslot.
@@ -262,6 +297,12 @@ impl Vm {
             },
             fd,
             thread,
+            cpuid: leaves
+                .iter()
+                .map(|e| [e.function, e.index, e.flags, e.eax, e.ebx, e.ecx, e.edx])
+                .collect(),
+            msrs: self.msrs.clone(),
+            xsave_size: self.xsave_size,
         })
     }
 }
@@ -308,9 +349,144 @@ pub struct Vcpu {
     kicker: Kicker,
     /// Cleared on drop, so no kick can signal a thread that no longer runs this vCPU.
     thread: Arc<Mutex<Option<Thread>>>,
+    /// The CPUID it was given, as a snapshot keeps it.
+    cpuid: Vec<[u32; 7]>,
+    msrs: Arc<Vec<u32>>,
+    xsave_size: usize,
 }
 
+/// IA32_TSC_DEADLINE, restored after IA32_TSC: KVM arms the deadline against the TSC, so
+/// in the other order a timer could fire at the wrong time or not at all (as Firecracker's
+/// DEFERRED_MSRS notes; arch/x86/kvm/lapic.c).
+const MSR_IA32_TSC_DEADLINE: u32 = 0x6e0;
+
+/// How far the TSC's frequency may differ from the snapshot's before a restore sets it:
+/// 250 parts per million, QEMU's tolerance, which Firecracker keeps.
+const TSC_KHZ_TOLERANCE_PPM: u64 = 250;
+
 impl Vcpu {
+    /// Captures the vCPU's state, in the order Firecracker's comments give: MP state first,
+    /// since reading it may change the LAPIC's, and the events last. Call on the vCPU's
+    /// thread, with the vCPU out of the guest and every other stopped.
+    pub fn save_state(&self) -> Result<VcpuState> {
+        let fd = &self.fd;
+        let mp_state = fd.get_mp_state().map_err(call("KVM_GET_MP_STATE"))?;
+        let get = |request: u64, len: usize, op| fd.get_state(request, len).map_err(call(op));
+        let regs = get(sys::KVM_GET_REGS, size_of::<sys::kvm_regs>(), "KVM_GET_REGS")?;
+        let sregs = get(sys::KVM_GET_SREGS, size_of::<sys::kvm_sregs>(), "KVM_GET_SREGS")?;
+        let xsave = if self.xsave_size > sys::XSAVE_SIZE {
+            get(sys::KVM_GET_XSAVE2, self.xsave_size, "KVM_GET_XSAVE2")?
+        } else {
+            get(sys::KVM_GET_XSAVE, sys::XSAVE_SIZE, "KVM_GET_XSAVE")?
+        };
+        let xcrs = get(sys::KVM_GET_XCRS, sys::XCRS_SIZE, "KVM_GET_XCRS")?;
+        let debugregs = get(sys::KVM_GET_DEBUGREGS, sys::DEBUGREGS_SIZE, "KVM_GET_DEBUGREGS")?;
+        let lapic = get(sys::KVM_GET_LAPIC, sys::LAPIC_SIZE, "KVM_GET_LAPIC")?;
+        let tsc_khz = fd.tsc_khz().map_err(call("KVM_GET_TSC_KHZ"))?;
+        let msrs = self.save_msrs()?;
+        let events = get(
+            sys::KVM_GET_VCPU_EVENTS,
+            sys::VCPU_EVENTS_SIZE,
+            "KVM_GET_VCPU_EVENTS",
+        )?;
+        Ok(VcpuState {
+            cpuid: self.cpuid.clone(),
+            mp_state,
+            regs,
+            sregs,
+            xsave,
+            xcrs,
+            debugregs,
+            lapic,
+            msrs,
+            events,
+            tsc_khz,
+        })
+    }
+
+    /// Every MSR in KVM's list that it reads for this vCPU. KVM stops at the first it
+    /// cannot read, such as a PMU MSR of a guest without a PMU; that one is left out.
+    fn save_msrs(&self) -> Result<Vec<(u32, u64)>> {
+        let mut saved = Vec::with_capacity(self.msrs.len());
+        let mut rest: &[u32] = &self.msrs;
+        while !rest.is_empty() {
+            let read = self.fd.get_msrs(rest).map_err(call("KVM_GET_MSRS"))?;
+            let skip = read.len() + 1;
+            saved.extend(read);
+            rest = rest.get(skip..).unwrap_or_default();
+        }
+        Ok(saved)
+    }
+
+    /// Loads `st` into this new vCPU, in the order Firecracker's comments give: CPUID
+    /// first, the registers before the events (SET_REGS drops a pending exception, the
+    /// events bring it back), the LAPIC after the SREGS (which hold its base) and before
+    /// the MSRs (the TSC deadline needs it). A vCPU given another CPUID refuses: the
+    /// snapshot was taken on another CPU.
+    pub fn restore_state(&mut self, st: &VcpuState) -> Result<()> {
+        if st.cpuid != self.cpuid {
+            return Err(Error::Guest(
+                "this CPU is not the one the snapshot was taken on (its CPUID differs)".into(),
+            ));
+        }
+        if st.xsave.len() < self.xsave_size {
+            return Err(Error::Guest(format!(
+                "the snapshot's XSAVE area is {} bytes; this CPU's is {}",
+                st.xsave.len(),
+                self.xsave_size
+            )));
+        }
+        let fd = &self.fd;
+        let set =
+            |request: u64, state: &[u8], len: usize, op| fd.set_state(request, state, len).map_err(call(op));
+        fd.set_mp_state(st.mp_state).map_err(call("KVM_SET_MP_STATE"))?;
+        set(
+            sys::KVM_SET_REGS,
+            &st.regs,
+            size_of::<sys::kvm_regs>(),
+            "KVM_SET_REGS",
+        )?;
+        set(
+            sys::KVM_SET_SREGS,
+            &st.sregs,
+            size_of::<sys::kvm_sregs>(),
+            "KVM_SET_SREGS",
+        )?;
+        set(sys::KVM_SET_XSAVE, &st.xsave, sys::XSAVE_SIZE, "KVM_SET_XSAVE")?;
+        set(sys::KVM_SET_XCRS, &st.xcrs, sys::XCRS_SIZE, "KVM_SET_XCRS")?;
+        set(
+            sys::KVM_SET_DEBUGREGS,
+            &st.debugregs,
+            sys::DEBUGREGS_SIZE,
+            "KVM_SET_DEBUGREGS",
+        )?;
+        set(sys::KVM_SET_LAPIC, &st.lapic, sys::LAPIC_SIZE, "KVM_SET_LAPIC")?;
+        let khz = fd.tsc_khz().map_err(call("KVM_GET_TSC_KHZ"))?;
+        if u64::from(khz.abs_diff(st.tsc_khz)) * 1_000_000 > u64::from(st.tsc_khz) * TSC_KHZ_TOLERANCE_PPM {
+            fd.set_tsc_khz(st.tsc_khz).map_err(call("KVM_SET_TSC_KHZ"))?;
+        }
+        type Msrs = Vec<(u32, u64)>;
+        let (deadline, rest): (Msrs, Msrs) = st
+            .msrs
+            .iter()
+            .partition(|&&(index, _)| index == MSR_IA32_TSC_DEADLINE);
+        for msrs in [rest, deadline] {
+            let set = fd.set_msrs(&msrs).map_err(call("KVM_SET_MSRS"))?;
+            if let Some(&(index, _)) = msrs.get(set) {
+                return Err(Error::Guest(format!("KVM refused MSR {index:#x}")));
+            }
+        }
+        set(
+            sys::KVM_SET_VCPU_EVENTS,
+            &st.events,
+            sys::VCPU_EVENTS_SIZE,
+            "KVM_SET_VCPU_EVENTS",
+        )?;
+        // Fails, harmlessly, for a guest that never enabled kvmclock.
+        let _ = fd.kvmclock_ctrl();
+        Ok(())
+    }
+
     pub fn kicker(&self) -> Kicker {
         self.kicker.clone()
     }

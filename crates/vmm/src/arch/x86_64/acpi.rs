@@ -4,7 +4,9 @@
 //!
 //! - RSDP (rev 2) → XSDT → FADT (HW-reduced, rev 6.5) + MADT, FADT → DSDT
 //! - MADT: one Local APIC per vCPU (APIC id = index) and the IOAPIC, GSI base 0
-//! - DSDT: COM1 (`PNP0501`), each virtio-mmio device (`LNRO0005`), and `\_S5`
+//! - DSDT: COM1 (`PNP0501`), each virtio-mmio device (`LNRO0005`), the VM generation ID
+//!   (`VMGENCTR`) with the Generic Event Device (`ACPI0013`) that tells the guest of a
+//!   new one, and `\_S5`
 //! - FADT SLEEP_CONTROL/STATUS registers on a port pair, so `reboot(RB_POWER_OFF)`
 //!   writes SLP_TYP 5 | SLP_EN and the VMM sees a power-off
 
@@ -242,9 +244,84 @@ mod aml {
         d.extend_from_slice(&gsi.to_le_bytes());
         d
     }
+
+    /// `\SCOPE.NAME`, from the root: RootChar, DualNamePrefix, two NameSegs (§20.2.2).
+    pub fn root_path(scope: &str, name: &str) -> Vec<u8> {
+        let mut out = vec![b'\\', 0x2e];
+        out.extend(seg(scope));
+        out.extend(seg(name));
+        out
+    }
+
+    /// `Method (NAME, args, Serialized) { ... }` (§20.2.5.2): flags hold the argument
+    /// count and, in bit 3, SerializeFlag.
+    pub fn method(name: &str, args: u8, body: Vec<u8>) -> Vec<u8> {
+        let mut content = seg(name).to_vec();
+        content.push((args & 0x7) | 0x08);
+        content.extend(body);
+        with_pkg(&[0x14], content)
+    }
+
+    /// `If (predicate) { ... }` (§20.2.5.3).
+    pub fn if_then(predicate: Vec<u8>, body: Vec<u8>) -> Vec<u8> {
+        let mut content = predicate;
+        content.extend(body);
+        with_pkg(&[0xa0], content)
+    }
+
+    /// `LEqual (a, b)` (§20.2.5.4).
+    pub fn lequal(a: Vec<u8>, b: Vec<u8>) -> Vec<u8> {
+        [vec![0x93], a, b].concat()
+    }
+
+    /// `ArgN` (§20.2.6.1).
+    pub fn arg(n: u8) -> Vec<u8> {
+        vec![0x68 + (n & 0x7)]
+    }
+
+    /// `Notify (object, value)` (§20.2.5.3).
+    pub fn notify(object: Vec<u8>, value: u64) -> Vec<u8> {
+        [vec![0x86], object, integer(value)].concat()
+    }
 }
 
-fn dsdt(virtio: &[MmioDevice]) -> Vec<u8> {
+/// The VM generation ID's device, as Linux's driver finds it (drivers/virt/vmgenid.c:
+/// `VMGENCTR`, and `ADDR`, the ID's address as two 32-bit halves), and the Generic Event
+/// Device whose interrupt, on [`layout::GSI_GED`], notifies it of a new ID (ACPI 6.5
+/// §5.6.9; drivers/acpi/evged.c), as Firecracker declares both.
+fn vmgenid_devices(vmgenid: u64) -> Vec<u8> {
+    let crs = |descriptors: &[Vec<u8>]| aml::name(b"_CRS", aml::resources(descriptors));
+    let mut devices = aml::device(
+        "VGEN",
+        [
+            aml::name(b"_HID", aml::string("VMGENCTR")),
+            aml::name(b"_CID", aml::string("VM_Gen_Counter")),
+            aml::name(b"_DDN", aml::string("VM_Gen_Counter")),
+            aml::name(b"ADDR", aml::package(&[vmgenid & 0xffff_ffff, vmgenid >> 32])),
+        ]
+        .concat(),
+    );
+    devices.extend(aml::device(
+        "GED",
+        [
+            aml::name(b"_HID", aml::string("ACPI0013")),
+            aml::name(b"_UID", aml::integer(0)),
+            crs(&[aml::interrupt_edge(layout::GSI_GED)]),
+            aml::method(
+                "_EVT",
+                1,
+                aml::if_then(
+                    aml::lequal(aml::arg(0), aml::integer(u64::from(layout::GSI_GED))),
+                    aml::notify(aml::root_path("_SB", "VGEN"), 0x80),
+                ),
+            ),
+        ]
+        .concat(),
+    ));
+    devices
+}
+
+fn dsdt(virtio: &[MmioDevice], vmgenid: u64) -> Vec<u8> {
     let crs = |descriptors: &[Vec<u8>]| aml::name(b"_CRS", aml::resources(descriptors));
     let mut devices = Vec::new();
     devices.extend(aml::device(
@@ -272,6 +349,7 @@ fn dsdt(virtio: &[MmioDevice]) -> Vec<u8> {
             .concat(),
         ));
     }
+    devices.extend(vmgenid_devices(vmgenid));
     let mut body = aml::scope_root("_SB", devices);
     body.extend(aml::name(b"\\_S5_", aml::package(&[u64::from(S5_SLP_TYP), 0])));
     sdt(b"DSDT", 2, &body)
@@ -284,7 +362,8 @@ pub fn build(vcpus: u32, virtio: &[MmioDevice]) -> Result<Tables, String> {
             "{vcpus} vCPUs: the MADT holds 8-bit APIC ids, at most 254"
         ));
     }
-    let mut at = layout::SYSTEM;
+    // After the VM generation ID, which the VMM writes itself (devices/vmgenid.rs).
+    let mut at = layout::VMGENID + crate::devices::vmgenid::SIZE as u64;
     let mut blobs = Vec::new();
     let mut place = |bytes: Vec<u8>| {
         let addr = at.next_multiple_of(8);
@@ -292,7 +371,7 @@ pub fn build(vcpus: u32, virtio: &[MmioDevice]) -> Result<Tables, String> {
         blobs.push((addr, bytes));
         addr
     };
-    let dsdt_at = place(dsdt(virtio));
+    let dsdt_at = place(dsdt(virtio, layout::VMGENID));
     let fadt_at = place(fadt(dsdt_at));
     let madt_at = place(madt(vcpus));
     let mut entries = Vec::new();
@@ -376,6 +455,43 @@ mod tests {
         assert_eq!(aml::eisa_id("PNP0501"), vec![0x0c, 0x41, 0xd0, 0x05, 0x01]);
         assert_eq!(aml::integer(0x1234), vec![0x0b, 0x34, 0x12]);
         assert_eq!(aml::package(&[5, 0]), vec![0x12, 0x05, 0x02, 0x0a, 0x05, 0x00]);
+        // \_SB_.VGEN, and Notify (\_SB_.VGEN, 0x80): as iasl compiles them.
+        let path = aml::root_path("_SB", "VGEN");
+        assert_eq!(path, b"\\.\x5fSB_VGEN".to_vec());
+        assert_eq!(
+            aml::notify(path, 0x80),
+            [&[0x86][..], b"\\.\x5fSB_VGEN", &[0x0a, 0x80]].concat()
+        );
+        // Method (_EVT, 1, Serialized) { If (LEqual (Arg0, 23)) { } }
+        assert_eq!(
+            aml::method(
+                "_EVT",
+                1,
+                aml::if_then(aml::lequal(aml::arg(0), aml::integer(23)), vec![])
+            ),
+            vec![
+                0x14, 0x0c, b'_', b'E', b'V', b'T', 0x09, 0xa0, 0x05, 0x93, 0x68, 0x0a, 23
+            ]
+        );
+    }
+
+    #[test]
+    fn the_dsdt_names_the_vm_generation_id() {
+        let t = build(1, &[]).unwrap();
+        let (_, dsdt) = t.blobs.iter().find(|(_, b)| b.starts_with(b"DSDT")).unwrap();
+        let has = |needle: &[u8]| dsdt.windows(needle.len()).any(|w| w == needle);
+        assert!(has(b"VMGENCTR\0") && has(b"ACPI0013\0"));
+        let addr = [
+            aml::integer(layout::VMGENID & 0xffff_ffff),
+            aml::integer(layout::VMGENID >> 32),
+        ]
+        .concat();
+        assert!(has(&addr), "ADDR holds {:#x}", layout::VMGENID);
+        assert_eq!(layout::VMGENID % 8, 0);
+        assert!(
+            t.blobs.iter().all(|&(at, _)| at >= layout::VMGENID + 16),
+            "no table overlaps the ID"
+        );
     }
 
     #[test]

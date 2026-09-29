@@ -531,9 +531,9 @@ impl Coordinator {
         }
         let started = File::open(&self.policy.dir)
             .map_err(|e| format!("{}: {e}", self.policy.dir.display()))
-            .and_then(|dir| Ok((machine::record(&self.vm)?, dir)));
+            .and_then(|dir| Ok(machine::record(&self.vm)?.map(|r| (r, dir))));
         match started {
-            Ok(r) => *recording = Some(r),
+            Ok(r) => *recording = r,
             Err(e) => warn!("not recording a working set: {e}"),
         }
     }

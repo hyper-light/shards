@@ -22,6 +22,8 @@ pub mod layout {
     pub const CMDLINE_MAX: usize = 2048;
     /// Firmware tables (reserved in e820): ACPI tables from here up to the RSDP.
     pub const SYSTEM: u64 = 0x9_fc00;
+    /// The VM generation ID's 16 bytes, first in the firmware area (devices/vmgenid.rs).
+    pub const VMGENID: u64 = SYSTEM;
     pub const RSDP: u64 = 0xe_0000;
     /// Where e820 RAM resumes, and the lowest a kernel segment may load.
     pub const HIMEM: u64 = 0x10_0000;
@@ -35,8 +37,8 @@ pub mod layout {
     /// virtio-mmio transports, `VIRTIO_MMIO_STRIDE` apart, on GSIs from `GSI_VIRTIO`.
     pub const VIRTIO_MMIO: u64 = 0xc000_1000;
     pub const VIRTIO_MMIO_STRIDE: u64 = 0x200;
-    /// GSIs 5-23 are free IOAPIC pins: at most 19 virtio devices.
-    pub const VIRTIO_MMIO_MAX: u64 = 19;
+    /// GSIs 5-22 are free IOAPIC pins: at most 18 virtio devices.
+    pub const VIRTIO_MMIO_MAX: u64 = 18;
     /// KVM's in-kernel IOAPIC and LAPIC.
     pub const IOAPIC: u64 = 0xfec0_0000;
     pub const LAPIC: u64 = 0xfee0_0000;
@@ -48,6 +50,9 @@ pub mod layout {
     pub const COM1: u16 = 0x3f8;
     pub const GSI_COM1: u32 = 4;
     pub const GSI_VIRTIO: u32 = 5;
+    /// The Generic Event Device's, which tells the guest of a new VM generation ID: the
+    /// IOAPIC's last pin.
+    pub const GSI_GED: u32 = 23;
     /// The i8042 data and command ports (only the reset command is emulated).
     pub const I8042: u16 = 0x60;
     /// ACPI SLEEP_CONTROL_REG and SLEEP_STATUS_REG (HW-reduced ACPI), a free port pair.

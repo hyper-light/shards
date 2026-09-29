@@ -344,10 +344,10 @@ pub const PAGE: u64 = hv::PAGE;
 pub type Recorder = Arc<hv::Watch>;
 
 /// Starts recording `vm`'s working set. Every vCPU must be out of the guest.
-pub fn record(vm: &hv::Vm) -> Result<Recorder, String> {
+pub fn record(vm: &hv::Vm) -> Result<Option<Recorder>, String> {
     let watch = vm.watch();
     watch.start().map_err(|e| e.to_string())?;
-    Ok(watch)
+    Ok(Some(watch))
 }
 
 /// Stops recording; the pages touched since [`record`], in order.
