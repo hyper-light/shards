@@ -110,7 +110,7 @@ jobs:
           nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
           grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag,hpage_pmd_size}
       - name: Compare
-        run: cargo bench --locked -p shards --bench firecracker -- --runs 10
+        run: cargo bench --locked -p shards --bench firecracker -- --runs 20
       # shards' own restores and pooled runs on this KVM host (docs/benchmarks.md).
       - name: Restore
         run: cargo bench --locked -p shards --bench restore -- --runs 30

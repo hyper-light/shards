@@ -199,6 +199,27 @@ mod compare {
             "shards' snapshot: {}",
             String::from_utf8_lossy(&saved.stderr)
         );
+        // Diagnostic (branch restore-diag): the same snapshot with its memory written one
+        // page per pwrite, as shards wrote it before e9ed44d, restored beside it.
+        let perpage = dir.join("shards-perpage");
+        std::fs::create_dir_all(&perpage).unwrap();
+        for entry in std::fs::read_dir(&snapshot).unwrap() {
+            let entry = entry.unwrap();
+            let to = perpage.join(entry.file_name());
+            if entry.file_name() == "memory" {
+                use std::os::unix::fs::FileExt;
+                let bytes = std::fs::read(entry.path()).unwrap();
+                let f = std::fs::File::create(&to).unwrap();
+                for (i, page) in bytes.chunks(4096).enumerate() {
+                    if page.iter().any(|&b| b != 0) {
+                        f.write_all_at(page, (i * 4096) as u64).unwrap();
+                    }
+                }
+                f.set_len(bytes.len() as u64).unwrap();
+            } else {
+                std::fs::copy(entry.path(), &to).unwrap();
+            }
+        }
         // Diagnostic (branch restore-diag): the guest's mitigations under each VMM.
         for line in String::from_utf8_lossy(&saved.stdout)
             .lines()
@@ -259,7 +280,21 @@ mod compare {
             json_string(&fc_memory.to_string_lossy())
         );
         let (mut shards, mut fc) = (Vec::with_capacity(runs), Vec::with_capacity(runs));
+        let mut per_page = Vec::with_capacity(runs);
         for i in 0..WARMUP + runs {
+            // Diagnostic (branch restore-diag): the per-page copy, first or last in turn.
+            let mut sample_per_page = || {
+                let mut c = Command::new(common::shards_vm());
+                c.arg("restore").arg(&perpage).env("SHARDS_LOG", "debug");
+                println!("per-page restore:");
+                let s = restore_sample(&mut c, guest_bytes, || {});
+                if i >= WARMUP {
+                    per_page.push(s);
+                }
+            };
+            if i % 4 < 2 {
+                sample_per_page();
+            }
             let order = if i % 2 == 0 {
                 [Vmm::Shards, Vmm::Firecracker]
             } else {
@@ -288,6 +323,9 @@ mod compare {
                     }
                 }
             }
+            if i % 4 >= 2 {
+                sample_per_page();
+            }
         }
         let _ = std::fs::remove_dir_all(&dir);
         let to_beat = |v: &[Sample]| v.iter().map(|s| s.to_ready_us).collect::<Vec<_>>();
@@ -304,6 +342,7 @@ mod compare {
             ],
             &[
                 support::stats("shards_to_beat", "us", to_beat(&shards)),
+                support::stats("perpage_to_beat", "us", to_beat(&per_page)),
                 support::stats("fc_to_beat", "us", to_beat(&fc)),
                 support::stats("shards_overhead", "MiB", mib(&shards, |s| s.overhead_bytes)),
                 support::stats("fc_overhead", "MiB", mib(&fc, |s| s.overhead_bytes)),
