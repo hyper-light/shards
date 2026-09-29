@@ -1,15 +1,33 @@
 //! Guest physical memory.
 //!
-//! Guest RAM is host memory that running vCPUs write concurrently, so the VMM never
-//! forms Rust references into it. Every access is a bounds-checked raw copy or an
-//! atomic operation.
+//! Guest RAM is shared. The guest's vCPUs write it while they run, the host's kernel reads
+//! and writes it in system calls given guest addresses, and the VMM's own threads (vCPU
+//! threads handling exits, device workers, the snapshot coordinator) read and write it for
+//! the devices. Rust makes a race between two of its own threads undefined unless both
+//! accesses are atomic and of one size, and a volatile access counts as non-atomic
+//! (std::sync::atomic, "Memory model for atomic accesses"; std::ptr::read_volatile). So:
+//!
+//! - The VMM's threads reach guest memory through an [`Access`], which one of them holds
+//!   at a time. Their accesses are ordered, never racing, whatever addresses a guest gives
+//!   its devices, overlapping or not (audit A01).
+//! - Within an access, reads and writes are volatile, since the guest and the kernel change
+//!   guest memory under them, and the virtqueue indices that order the host against the
+//!   guest are atomic ([`Access::load_u16`], [`Access::store_u16`]).
+//! - Nothing forms a Rust reference or slice into guest memory.
+//! - Bulk data goes by system calls given guest addresses ([`GuestMemory::host_ptr`]),
+//!   without an access held, as the guest's own accesses go: the kernel, like the guest,
+//!   is outside Rust's abstract machine.
 
 use std::fmt;
+use std::fs::File;
 use std::io;
+use std::ops::Range;
 use std::ptr::NonNull;
-use std::sync::atomic::AtomicU16;
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::platform;
+use crate::sync::lock;
 
 /// A guest-physical range that is not backed by guest RAM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +44,19 @@ impl fmt::Display for OutOfBounds {
 
 impl std::error::Error for OutOfBounds {}
 
+/// An [`Access`] asked for by the thread that holds one already, which would wait for
+/// itself forever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reentered;
+
+impl fmt::Display for Reentered {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("guest memory accessed again by the thread that holds it")
+    }
+}
+
+impl std::error::Error for Reentered {}
+
 /// Plain data: every bit pattern is a valid value and there is no padding.
 ///
 /// # Safety
@@ -40,6 +71,9 @@ unsafe impl Pod for u16 {}
 unsafe impl Pod for u32 {}
 // SAFETY: as above.
 unsafe impl Pod for u64 {}
+
+/// The width of the volatile accesses that copy whole words.
+const WORD: usize = size_of::<u64>();
 
 #[derive(Debug)]
 struct Region {
@@ -58,13 +92,29 @@ impl Region {
 #[derive(Debug)]
 pub struct GuestMemory {
     regions: Vec<Region>,
+    /// Held by the thread with the [`Access`].
+    host: Mutex<()>,
+    /// That thread's [`token`], or 0.
+    holder: AtomicUsize,
 }
 
-// SAFETY: the reservations are plain memory owned by this value; all access is via raw
-// copies/atomics that tolerate concurrent mutation by guest vCPUs.
+// SAFETY: the reservations are memory this value owns. The host reaches it only through an
+// `Access`, which one thread holds at a time, or through raw pointers handed to the
+// kernel and the hypervisor; volatile and atomic accesses tolerate the guest's and the
+// kernel's concurrent ones.
 unsafe impl Send for GuestMemory {}
 // SAFETY: as above.
 unsafe impl Sync for GuestMemory {}
+
+thread_local! {
+    /// Its address tells this thread from every other live thread.
+    static TOKEN: u8 = const { 0 };
+}
+
+/// A nonzero number no other live thread has.
+fn token() -> usize {
+    TOKEN.with(|t| std::ptr::from_ref(t).addr())
+}
 
 impl GuestMemory {
     /// Reserves zero-filled memory for each `(gpa, len)` range. Pages are materialized on
@@ -75,6 +125,8 @@ impl GuestMemory {
         // Built incrementally so that Drop unmaps whatever was mapped if a later range fails.
         let mut mem = GuestMemory {
             regions: Vec::with_capacity(ranges.len()),
+            host: Mutex::new(()),
+            holder: AtomicUsize::new(0),
         };
         for &(gpa, len) in ranges {
             if len == 0 || !len.is_multiple_of(page) || !gpa.is_multiple_of(page as u64) {
@@ -96,63 +148,108 @@ impl GuestMemory {
         Ok(mem)
     }
 
-    /// Guest RAM backed copy-on-write by `file`, which holds each region in turn (as
-    /// [`save`](Self::save) writes them). Clones share every page none of them writes.
-    /// Where the platform cannot map a file into reserved memory, the file is read in.
+    /// Guest RAM backed copy-on-write by `file`, which holds each region in turn by guest
+    /// address, as [`save`](Self::save) writes them, whatever order `ranges` lists them in
+    /// (audit A21). Clones share every page none of them writes. Where the platform cannot
+    /// map a file into reserved memory, the file is read in.
     ///
-    /// The file must not change while the VM runs: pages the guest has not yet touched
-    /// come from it.
-    pub fn from_file(ranges: &[(u64, usize)], file: &std::fs::File) -> io::Result<GuestMemory> {
+    /// The file must hold all of them, and must not change while the VM runs: pages the
+    /// guest has not yet touched come from it.
+    pub fn from_file(ranges: &[(u64, usize)], file: &File) -> io::Result<GuestMemory> {
         let mem = GuestMemory::anonymous(ranges)?;
+        let total = mem.regions.iter().map(|r| r.len as u64).sum::<u64>();
+        let have = file.metadata()?.len();
+        if have < total {
+            // A mapping past the file's end would fault the guest's access with SIGBUS.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("a memory file of {have} bytes for {total} bytes of guest RAM"),
+            ));
+        }
         let mut offset = 0u64;
-        for &(gpa, len) in ranges {
-            let host = mem
-                .host_ptr(gpa, len)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-            let host = NonNull::new(host).ok_or_else(|| io::Error::other("null guest pointer"))?;
+        for r in &mem.regions {
             // SAFETY: a whole region we just reserved: page-aligned, unmapped by any
             // hypervisor, unreferenced; region offsets in the file are page-aligned sums.
-            match unsafe { platform::map_file_private(file, offset, len, host) } {
+            match unsafe { platform::map_file_private(file, offset, r.len, r.host) } {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::Unsupported => {
-                    // SAFETY: the region is ours and nothing else references it yet.
-                    let region = unsafe { std::slice::from_raw_parts_mut(host.as_ptr(), len) };
-                    platform::read_exact_at(file, region, offset)?;
+                    mem.read_file(r.gpa, r.len, file, offset)?;
                 }
                 Err(e) => return Err(e),
             }
-            offset += len as u64;
+            offset += r.len as u64;
         }
         Ok(mem)
     }
 
-    /// Writes every region in turn to `file`, leaving all-zero pages as holes so the file
-    /// stays as small as the memory the guest used. Each run of pages the guest used is
-    /// one write: a write's length sets the order of the page-cache folios it fills (Linux
-    /// 6.17, ext4 `write_begin_get_folio`), and a restore maps those folios. Every vCPU and
-    /// device must be paused.
-    pub fn save(&self, file: &std::fs::File) -> io::Result<()> {
+    /// Exclusive access to guest memory among the host's threads, until it is dropped.
+    /// The thread that holds one already gets [`Reentered`] instead of waiting for itself.
+    pub fn access(&self) -> Result<Access<'_>, Reentered> {
+        let me = token();
+        // Only this thread stores its own token, so this sees whether it holds `host`.
+        if self.holder.load(Ordering::Relaxed) == me {
+            return Err(Reentered);
+        }
+        let held = lock(&self.host);
+        self.holder.store(me, Ordering::Relaxed);
+        Ok(Access {
+            mem: self,
+            _held: held,
+        })
+    }
+
+    /// Fills `len` bytes of guest memory at `gpa` from `file` at `offset`, by system calls
+    /// given the guest address, as the block device transfers. Fails on a short file.
+    pub fn read_file(&self, gpa: u64, len: usize, file: &File, offset: u64) -> io::Result<()> {
+        let dst = self
+            .host_ptr(gpa, len)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let mut done = 0;
+        while done < len {
+            let at = offset
+                .checked_add(done as u64)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+            // SAFETY: `dst + done .. dst + len` is guest memory (`host_ptr` checked it all);
+            // the kernel writes it.
+            let n = unsafe { platform::read_at(file, dst.add(done), len - done, at)? };
+            if n == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            done += n;
+        }
+        Ok(())
+    }
+
+    /// Writes every region in turn, by guest address, to `file`, leaving all-zero pages as
+    /// holes so the file stays as small as the memory the guest used. The file is emptied
+    /// first, so no page keeps bytes it held before (audit A22); it must not be one that
+    /// backs guest memory. Each run of pages the guest used is one write: a write's length
+    /// sets the order of the page-cache folios it fills (Linux 6.17, ext4
+    /// `write_begin_get_folio`), and a restore maps those folios. It holds an [`Access`]
+    /// throughout, so no host thread writes meanwhile; a snapshot's is the memory of a
+    /// machine whose vCPUs and devices are paused.
+    pub fn save(&self, file: &File) -> io::Result<()> {
         let page = platform::page_size()?;
+        let _held = self.access().map_err(io::Error::other)?;
+        file.set_len(0)?;
         let mut offset = 0u64;
         for r in &self.regions {
-            // SAFETY: the VM is paused (caller contract), so nothing writes this region
-            // while the slice lives.
-            let region = unsafe { std::slice::from_raw_parts(r.host.as_ptr(), r.len) };
             // Where the run of used pages being gathered starts.
             let mut run = None;
-            for (i, chunk) in region.chunks(page).enumerate() {
-                let used = chunk.iter().any(|&b| b != 0);
+            for start in (0..r.len).step_by(page) {
+                // SAFETY: the page at `start` lies in this region, which is page-aligned.
+                let used = unsafe { !is_zero(r.host.as_ptr().add(start), page) };
                 match (run, used) {
-                    (None, true) => run = Some(i * page),
-                    (Some(start), false) => {
-                        write_run(file, region, start..i * page, offset)?;
+                    (None, true) => run = Some(start),
+                    (Some(first), false) => {
+                        write_run(file, r, first..start, offset)?;
                         run = None;
                     }
                     _ => {}
                 }
             }
-            if let Some(start) = run {
-                write_run(file, region, start..region.len(), offset)?;
+            if let Some(first) = run {
+                write_run(file, r, first..r.len, offset)?;
             }
             offset += r.len as u64;
         }
@@ -164,7 +261,8 @@ impl GuestMemory {
         self.regions.iter().map(|r| (r.gpa, r.host.as_ptr(), r.len))
     }
 
-    /// Host address of `gpa..gpa+len`, which must lie within one region.
+    /// Host address of `gpa..gpa+len`, which must lie within one region: for the kernel
+    /// and the hypervisor, and for an [`Access`].
     pub fn host_ptr(&self, gpa: u64, len: usize) -> Result<*mut u8, OutOfBounds> {
         let oob = OutOfBounds { gpa, len: len as u64 };
         let end = gpa.checked_add(len as u64).ok_or(oob)?;
@@ -175,44 +273,6 @@ impl GuestMemory {
             .ok_or(oob)?;
         // SAFETY: offset is within the region's mapping (checked above).
         Ok(unsafe { r.host.as_ptr().add((gpa - r.gpa) as usize) })
-    }
-
-    pub fn read(&self, gpa: u64, buf: &mut [u8]) -> Result<(), OutOfBounds> {
-        let src = self.host_ptr(gpa, buf.len())?;
-        // SAFETY: `src` is valid for `buf.len()` bytes; guest memory never aliases `buf`.
-        unsafe { std::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), buf.len()) };
-        Ok(())
-    }
-
-    pub fn write(&self, gpa: u64, buf: &[u8]) -> Result<(), OutOfBounds> {
-        let dst = self.host_ptr(gpa, buf.len())?;
-        // SAFETY: `dst` is valid for `buf.len()` bytes; guest memory never aliases `buf`.
-        unsafe { std::ptr::copy_nonoverlapping(buf.as_ptr(), dst, buf.len()) };
-        Ok(())
-    }
-
-    pub fn read_obj<T: Pod>(&self, gpa: u64) -> Result<T, OutOfBounds> {
-        let src = self.host_ptr(gpa, size_of::<T>())?;
-        // SAFETY: in bounds; `T: Pod` accepts any bytes; unaligned read tolerated.
-        Ok(unsafe { src.cast::<T>().read_unaligned() })
-    }
-
-    pub fn write_obj<T: Pod>(&self, gpa: u64, value: T) -> Result<(), OutOfBounds> {
-        let dst = self.host_ptr(gpa, size_of::<T>())?;
-        // SAFETY: in bounds; unaligned write tolerated.
-        unsafe { dst.cast::<T>().write_unaligned(value) };
-        Ok(())
-    }
-
-    /// An atomic view of the naturally aligned `u16` at `gpa` (virtqueue indices).
-    pub fn atomic_u16(&self, gpa: u64) -> Result<&AtomicU16, OutOfBounds> {
-        if !gpa.is_multiple_of(2) {
-            return Err(OutOfBounds { gpa, len: 2 });
-        }
-        let p = self.host_ptr(gpa, 2)?;
-        // SAFETY: aligned, in bounds, lives as long as `self`; atomics permit the guest's
-        // concurrent accesses.
-        Ok(unsafe { AtomicU16::from_ptr(p.cast()) })
     }
 }
 
@@ -225,19 +285,181 @@ impl Drop for GuestMemory {
     }
 }
 
-/// Writes `region[run]` to `file`, which holds `region` from `offset` on.
-fn write_run(
-    file: &std::fs::File,
-    region: &[u8],
-    run: std::ops::Range<usize>,
-    offset: u64,
-) -> io::Result<()> {
+/// One host thread's access to guest memory: while it lives, no other host thread has
+/// one ([`GuestMemory::access`]).
+#[derive(Debug)]
+pub struct Access<'a> {
+    mem: &'a GuestMemory,
+    _held: MutexGuard<'a, ()>,
+}
+
+impl Drop for Access<'_> {
+    fn drop(&mut self) {
+        // Before `_held` unlocks, so the next holder's token is never overwritten.
+        self.mem.holder.store(0, Ordering::Relaxed);
+    }
+}
+
+impl<'a> Access<'a> {
+    /// The memory this accesses: for the bounds and addresses of ranges the kernel is
+    /// given.
+    pub fn memory(&self) -> &'a GuestMemory {
+        self.mem
+    }
+
+    /// Copies guest memory at `gpa` into `buf`.
+    pub fn read(&self, gpa: u64, buf: &mut [u8]) -> Result<(), OutOfBounds> {
+        let src = self.mem.host_ptr(gpa, buf.len())?;
+        // SAFETY: `src` is valid for `buf.len()` bytes of guest memory, which host memory
+        // like `buf` never overlaps.
+        unsafe { copy_in(src, buf.as_mut_ptr(), buf.len()) };
+        Ok(())
+    }
+
+    /// Copies `buf` into guest memory at `gpa`.
+    pub fn write(&self, gpa: u64, buf: &[u8]) -> Result<(), OutOfBounds> {
+        let dst = self.mem.host_ptr(gpa, buf.len())?;
+        // SAFETY: `dst` is valid for `buf.len()` bytes of guest memory, which host memory
+        // like `buf` never overlaps.
+        unsafe { copy_out(buf.as_ptr(), dst, buf.len()) };
+        Ok(())
+    }
+
+    /// The `T` at `gpa`, which need not be aligned.
+    pub fn read_obj<T: Pod>(&self, gpa: u64) -> Result<T, OutOfBounds> {
+        let src = self.mem.host_ptr(gpa, size_of::<T>())?;
+        let mut value = std::mem::MaybeUninit::<T>::uninit();
+        // SAFETY: `src` is valid for `size_of::<T>()` bytes of guest memory, `value` for as
+        // many bytes of this thread's, and every byte of it is written; `T: Pod` accepts
+        // whatever bytes arrive.
+        unsafe {
+            copy_in(src, value.as_mut_ptr().cast(), size_of::<T>());
+            Ok(value.assume_init())
+        }
+    }
+
+    /// Stores `value` at `gpa`, which need not be aligned.
+    pub fn write_obj<T: Pod>(&self, gpa: u64, value: T) -> Result<(), OutOfBounds> {
+        let dst = self.mem.host_ptr(gpa, size_of::<T>())?;
+        // SAFETY: `dst` is valid for `size_of::<T>()` bytes of guest memory, and `value`'s
+        // bytes are all initialized (`T: Pod` has no padding).
+        unsafe { copy_out(std::ptr::from_ref(&value).cast(), dst, size_of::<T>()) };
+        Ok(())
+    }
+
+    /// Loads the naturally aligned `u16` at `gpa` in one access: a virtqueue index, which
+    /// the guest stores whole.
+    pub fn load_u16(&self, gpa: u64, order: Ordering) -> Result<u16, OutOfBounds> {
+        let p = self.aligned_u16(gpa)?;
+        // SAFETY: aligned, in bounds, and valid for the call; host accesses are ordered by
+        // this access, the guest's are the hardware's.
+        Ok(unsafe { AtomicU16::from_ptr(p) }.load(order))
+    }
+
+    /// Stores the naturally aligned `u16` at `gpa` in one access: a virtqueue index, which
+    /// the guest loads whole.
+    pub fn store_u16(&self, gpa: u64, value: u16, order: Ordering) -> Result<(), OutOfBounds> {
+        let p = self.aligned_u16(gpa)?;
+        // SAFETY: as in `load_u16`.
+        unsafe { AtomicU16::from_ptr(p) }.store(value, order);
+        Ok(())
+    }
+
+    fn aligned_u16(&self, gpa: u64) -> Result<*mut u16, OutOfBounds> {
+        if !gpa.is_multiple_of(2) {
+            return Err(OutOfBounds { gpa, len: 2 });
+        }
+        // Regions are page-aligned, so an even address is aligned in the host too.
+        Ok(self.mem.host_ptr(gpa, 2)?.cast())
+    }
+}
+
+/// Copies `len` bytes of guest memory at `src` to host memory at `dst`, by volatile reads,
+/// a word at a time from `src`'s first word boundary.
+///
+/// # Safety
+/// `src` must be valid for reads of `len` bytes of guest memory, and `dst` for writes of
+/// `len` bytes of host memory that nothing else accesses meanwhile.
+unsafe fn copy_in(src: *const u8, dst: *mut u8, len: usize) {
+    let head = src.align_offset(WORD).min(len);
+    let mut i = 0;
+    // SAFETY: every offset stays below `len`, and words are read only from `src` offsets
+    // `head + k * WORD`, which are aligned.
+    unsafe {
+        while i < head {
+            dst.add(i).write(src.add(i).read_volatile());
+            i += 1;
+        }
+        while len - i >= WORD {
+            let word = src.add(i).cast::<u64>().read_volatile();
+            dst.add(i).cast::<u64>().write_unaligned(word);
+            i += WORD;
+        }
+        while i < len {
+            dst.add(i).write(src.add(i).read_volatile());
+            i += 1;
+        }
+    }
+}
+
+/// Copies `len` bytes of host memory at `src` to guest memory at `dst`, by volatile writes,
+/// a word at a time from `dst`'s first word boundary.
+///
+/// # Safety
+/// `src` must be valid for reads of `len` bytes of host memory, and `dst` for writes of
+/// `len` bytes of guest memory.
+unsafe fn copy_out(src: *const u8, dst: *mut u8, len: usize) {
+    let head = dst.align_offset(WORD).min(len);
+    let mut i = 0;
+    // SAFETY: every offset stays below `len`, and words are written only to `dst` offsets
+    // `head + k * WORD`, which are aligned.
+    unsafe {
+        while i < head {
+            dst.add(i).write_volatile(src.add(i).read());
+            i += 1;
+        }
+        while len - i >= WORD {
+            let word = src.add(i).cast::<u64>().read_unaligned();
+            dst.add(i).cast::<u64>().write_volatile(word);
+            i += WORD;
+        }
+        while i < len {
+            dst.add(i).write_volatile(src.add(i).read());
+            i += 1;
+        }
+    }
+}
+
+/// Whether the `len` bytes of guest memory at `p`, word-aligned and a whole number of
+/// words, are all zero, by volatile reads.
+///
+/// # Safety
+/// `p` must be word-aligned and valid for reads of `len` bytes of guest memory.
+unsafe fn is_zero(p: *const u8, len: usize) -> bool {
+    let words = p.cast::<u64>();
+    // SAFETY: `k < len / WORD` keeps each aligned word within the range.
+    (0..len / WORD).all(|k| unsafe { words.add(k).read_volatile() } == 0)
+}
+
+/// Writes `run` of region `r` to `file`, which holds the region from `offset` on, by
+/// system calls given the guest address.
+fn write_run(file: &File, r: &Region, run: Range<usize>, offset: u64) -> io::Result<()> {
+    if run.start > run.end || run.end > r.len {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
     let at = offset + run.start as u64;
-    let bytes = region.get(run).ok_or(io::ErrorKind::InvalidInput)?;
     let mut done = 0;
-    while let Some(rest) = bytes.get(done..).filter(|b| !b.is_empty()) {
-        // SAFETY: `rest` is a live slice of `rest.len()` bytes.
-        let n = unsafe { platform::write_at(file, rest.as_ptr(), rest.len(), at + done as u64)? };
+    while done < run.len() {
+        // SAFETY: `run.start + done .. run.end` lies in the region (checked above); the
+        // kernel reads it.
+        let n = unsafe {
+            platform::write_at(
+                file,
+                r.host.as_ptr().add(run.start + done),
+                run.len() - done,
+                at + done as u64,
+            )?
+        };
         if n == 0 {
             return Err(io::ErrorKind::WriteZero.into());
         }
@@ -261,15 +483,29 @@ mod tests {
     fn roundtrip_and_bounds() {
         let m = mem();
         let p = page_size().unwrap() as u64;
-        m.write_obj(0x8000_0003u64, 0xdead_beef_u32).unwrap();
-        assert_eq!(m.read_obj::<u32>(0x8000_0003).unwrap(), 0xdead_beef);
+        m.access()
+            .unwrap()
+            .write_obj(0x8000_0003u64, 0xdead_beef_u32)
+            .unwrap();
+        assert_eq!(
+            m.access().unwrap().read_obj::<u32>(0x8000_0003).unwrap(),
+            0xdead_beef
+        );
         // Last byte of a region is fine; one past is not; ranges may not straddle holes.
-        m.write(0x8000_0000 + 4 * p - 1, &[7]).unwrap();
-        assert!(m.write(0x8000_0000 + 4 * p, &[7]).is_err());
-        assert!(m.read(0x8000_0000 + 4 * p - 2, &mut [0; 4]).is_err());
-        assert!(m.read(0x7fff_ffff, &mut [0; 2]).is_err());
+        m.access().unwrap().write(0x8000_0000 + 4 * p - 1, &[7]).unwrap();
+        assert!(m.access().unwrap().write(0x8000_0000 + 4 * p, &[7]).is_err());
+        assert!(
+            m.access()
+                .unwrap()
+                .read(0x8000_0000 + 4 * p - 2, &mut [0; 4])
+                .is_err()
+        );
+        assert!(m.access().unwrap().read(0x7fff_ffff, &mut [0; 2]).is_err());
         assert!(m.host_ptr(u64::MAX - 1, 4).is_err());
-        assert_eq!(m.read_obj::<u8>(0x1_0000_0000 + p - 1).unwrap(), 0);
+        assert_eq!(
+            m.access().unwrap().read_obj::<u8>(0x1_0000_0000 + p - 1).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -285,8 +521,14 @@ mod tests {
         let p = page_size().unwrap();
         let ranges = [(0x8000_0000u64, 4 * p), (0x1_0000_0000, 2 * p)];
         let m = GuestMemory::anonymous(&ranges).unwrap();
-        m.write(0x8000_0000 + p as u64 + 5, b"hello").unwrap();
-        m.write(0x1_0000_0000 + 2 * p as u64 - 1, &[0xee]).unwrap();
+        m.access()
+            .unwrap()
+            .write(0x8000_0000 + p as u64 + 5, b"hello")
+            .unwrap();
+        m.access()
+            .unwrap()
+            .write(0x1_0000_0000 + 2 * p as u64 - 1, &[0xee])
+            .unwrap();
         let path = std::env::temp_dir().join(format!("shards-mem-{}", std::process::id()));
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -301,17 +543,35 @@ mod tests {
         let a = GuestMemory::from_file(&ranges, &file).unwrap();
         let b = GuestMemory::from_file(&ranges, &file).unwrap();
         let mut buf = [0u8; 5];
-        a.read(0x8000_0000 + p as u64 + 5, &mut buf).unwrap();
+        a.access()
+            .unwrap()
+            .read(0x8000_0000 + p as u64 + 5, &mut buf)
+            .unwrap();
         assert_eq!(&buf, b"hello");
-        assert_eq!(a.read_obj::<u8>(0x1_0000_0000 + 2 * p as u64 - 1).unwrap(), 0xee);
-        assert_eq!(a.read_obj::<u64>(0x8000_0000).unwrap(), 0);
+        assert_eq!(
+            a.access()
+                .unwrap()
+                .read_obj::<u8>(0x1_0000_0000 + 2 * p as u64 - 1)
+                .unwrap(),
+            0xee
+        );
+        assert_eq!(a.access().unwrap().read_obj::<u64>(0x8000_0000).unwrap(), 0);
         // Writes stay private to each copy and never reach the file.
-        a.write(0x8000_0000 + p as u64 + 5, b"HELLO").unwrap();
-        b.read(0x8000_0000 + p as u64 + 5, &mut buf).unwrap();
+        a.access()
+            .unwrap()
+            .write(0x8000_0000 + p as u64 + 5, b"HELLO")
+            .unwrap();
+        b.access()
+            .unwrap()
+            .read(0x8000_0000 + p as u64 + 5, &mut buf)
+            .unwrap();
         assert_eq!(&buf, b"hello");
         drop((a, b));
         let c = GuestMemory::from_file(&ranges, &file).unwrap();
-        c.read(0x8000_0000 + p as u64 + 5, &mut buf).unwrap();
+        c.access()
+            .unwrap()
+            .read(0x8000_0000 + p as u64 + 5, &mut buf)
+            .unwrap();
         assert_eq!(&buf, b"hello");
         drop(file);
         let _ = std::fs::remove_file(path);
@@ -338,8 +598,11 @@ mod tests {
         let m = GuestMemory::anonymous(&ranges).unwrap();
         for page in (0..19).filter(|&page| used(page)) {
             let (first, last) = marks(page);
-            m.write(gpa(page), &[first]).unwrap();
-            m.write(gpa(page) + p as u64 - 1, &[last]).unwrap();
+            m.access().unwrap().write(gpa(page), &[first]).unwrap();
+            m.access()
+                .unwrap()
+                .write(gpa(page) + p as u64 - 1, &[last])
+                .unwrap();
         }
         let path = std::env::temp_dir().join(format!("shards-runs-{}", std::process::id()));
         let file = std::fs::OpenOptions::new()
@@ -354,8 +617,12 @@ mod tests {
 
         let r = GuestMemory::from_file(&ranges, &file).unwrap();
         for page in 0..19 {
-            let first = r.read_obj::<u8>(gpa(page)).unwrap();
-            let last = r.read_obj::<u8>(gpa(page) + p as u64 - 1).unwrap();
+            let first = r.access().unwrap().read_obj::<u8>(gpa(page)).unwrap();
+            let last = r
+                .access()
+                .unwrap()
+                .read_obj::<u8>(gpa(page) + p as u64 - 1)
+                .unwrap();
             assert_eq!((first, last), marks(page), "page {page}");
         }
 
@@ -392,7 +659,11 @@ mod tests {
         let ranges = [(base, 64 * p)];
         let saved = GuestMemory::anonymous(&ranges).unwrap();
         for page in 0..64 {
-            saved.write(at(page), &[page as u8 + 1]).unwrap();
+            saved
+                .access()
+                .unwrap()
+                .write(at(page), &[page as u8 + 1])
+                .unwrap();
         }
         let path = std::env::temp_dir().join(format!("shards-touched-{}", std::process::id()));
         let file = std::fs::OpenOptions::new()
@@ -411,8 +682,8 @@ mod tests {
         // from the start of its 16-page block of addresses, or of the mapping if that is
         // later, 16 pages on, within its page table and the mapping (mm/memory.c
         // do_fault_around). A write maps its page alone, a private copy.
-        assert_eq!(m.read_obj::<u8>(at(5)).unwrap(), 6);
-        m.write(at(40), &[0xff]).unwrap();
+        assert_eq!(m.access().unwrap().read_obj::<u8>(at(5)).unwrap(), 6);
+        m.access().unwrap().write(at(40), &[0xff]).unwrap();
         let mapped = platform::mapped_pages(host, len).unwrap();
         assert!(
             mapped.contains(&(5, false)) && mapped.contains(&(40, true)),
@@ -440,19 +711,178 @@ mod tests {
             !mapped.iter().any(|&(page, _)| page == 49 || page == 52),
             "{mapped:?}"
         );
-        assert_eq!(m.read_obj::<u8>(at(51)).unwrap(), 52);
+        assert_eq!(m.access().unwrap().read_obj::<u8>(at(51)).unwrap(), 52);
         drop(file);
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn atomic_view_is_aligned_only() {
+    fn index_accesses_are_aligned_only() {
         let m = mem();
-        use std::sync::atomic::Ordering;
-        m.atomic_u16(0x8000_0010)
+        let a = m.access().unwrap();
+        a.store_u16(0x8000_0010, 0xabcd, Ordering::Release).unwrap();
+        assert_eq!(a.read_obj::<u16>(0x8000_0010).unwrap(), 0xabcd);
+        assert_eq!(a.load_u16(0x8000_0010, Ordering::Acquire).unwrap(), 0xabcd);
+        assert!(a.store_u16(0x8000_0011, 1, Ordering::Release).is_err());
+        assert!(a.load_u16(0x8000_0011, Ordering::Acquire).is_err());
+    }
+
+    /// Copies land byte for byte at every alignment of guest address and length, whatever
+    /// mix of bytes and words carries them.
+    #[test]
+    fn copies_are_exact_at_every_alignment() {
+        let m = mem();
+        let a = m.access().unwrap();
+        let pattern: Vec<u8> = (0..64u8).map(|b| b.wrapping_mul(37).wrapping_add(11)).collect();
+        for at in 0..16u64 {
+            for len in 0..40usize {
+                let gpa = 0x8000_0100 + at;
+                a.write(0x8000_0100 - 8, &[0xee; 64 + 16]).unwrap();
+                a.write(gpa, &pattern[..len]).unwrap();
+                let mut got = vec![0u8; len + 16];
+                a.read(gpa - 8, &mut got).unwrap();
+                assert_eq!(&got[..8], &[0xee; 8], "before {at}+{len}");
+                assert_eq!(&got[8..8 + len], &pattern[..len], "{at}+{len}");
+                assert_eq!(&got[8 + len..], &[0xee; 8], "after {at}+{len}");
+            }
+        }
+        a.write_obj(0x8000_0203u64, 0x0102_0304_0506_0708u64).unwrap();
+        assert_eq!(a.read_obj::<u64>(0x8000_0203).unwrap(), 0x0102_0304_0506_0708);
+        let mut bytes = [0u8; 8];
+        a.read(0x8000_0203, &mut bytes).unwrap();
+        assert_eq!(bytes, 0x0102_0304_0506_0708u64.to_ne_bytes());
+    }
+
+    /// One host thread at a time holds an access: threads writing and reading back the same
+    /// guest bytes never see one another's writes midway (audit A01).
+    #[test]
+    fn host_threads_take_turns() {
+        let m = mem();
+        let inside = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|s| {
+            for t in 0..8u8 {
+                let (m, inside) = (&m, &inside);
+                s.spawn(move || {
+                    let mine = [t.wrapping_mul(29).wrapping_add(1); 48];
+                    for _ in 0..2000 {
+                        let a = m.access().unwrap();
+                        assert!(!inside.swap(true, Ordering::Relaxed), "two accesses at once");
+                        // Overlapping every other thread's bytes, at an odd address.
+                        a.write(0x8000_0007, &mine).unwrap();
+                        let mut back = [0u8; 48];
+                        a.read(0x8000_0007, &mut back).unwrap();
+                        assert_eq!(back, mine);
+                        inside.store(false, Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+    }
+
+    /// A thread that asks again for the access it holds is refused, not left waiting for
+    /// itself; once it lets go, it and other threads get it.
+    #[test]
+    fn a_nested_access_is_refused() {
+        let m = mem();
+        let a = m.access().unwrap();
+        assert_eq!(m.access().unwrap_err(), Reentered);
+        assert!(m.save(&tempfile("nested")).is_err());
+        std::thread::scope(|s| {
+            let other = s.spawn(|| m.access().map(|a| a.read_obj::<u8>(0x8000_0000).unwrap()));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            assert!(
+                !other.is_finished(),
+                "another thread got in while this one held it"
+            );
+            drop(a);
+            assert_eq!(other.join().unwrap(), Ok(0));
+        });
+        drop(m.access().unwrap());
+    }
+
+    /// Ranges given out of address order, of different sizes and with gaps, come back from
+    /// a save in the same places, whichever order the restore lists them in (audit A21).
+    #[test]
+    fn regions_round_trip_whatever_order_their_ranges_come_in() {
+        let p = page_size().unwrap();
+        let ranges = [(0x1_0000_0000u64, 2 * p), (0x8000_0000, 4 * p), (0x4000_0000, p)];
+        let m = GuestMemory::anonymous(&ranges).unwrap();
+        let mark = |gpa: u64| (gpa >> 24) as u8 ^ 0x5a;
+        for &(gpa, len) in &ranges {
+            let a = m.access().unwrap();
+            a.write(gpa, &[mark(gpa)]).unwrap();
+            a.write(gpa + len as u64 - 1, &[mark(gpa) ^ 0xff]).unwrap();
+        }
+        let file = tempfile("order");
+        m.save(&file).unwrap();
+        let mut sorted = ranges;
+        sorted.sort_unstable();
+        let mut reversed = sorted;
+        reversed.reverse();
+        for order in [&ranges[..], &sorted, &reversed] {
+            let r = GuestMemory::from_file(order, &file).unwrap();
+            let a = r.access().unwrap();
+            for &(gpa, len) in &ranges {
+                assert_eq!(
+                    a.read_obj::<u8>(gpa).unwrap(),
+                    mark(gpa),
+                    "{gpa:#x} in {order:x?}"
+                );
+                assert_eq!(
+                    a.read_obj::<u8>(gpa + len as u64 - 1).unwrap(),
+                    mark(gpa) ^ 0xff,
+                    "{gpa:#x} in {order:x?}"
+                );
+            }
+        }
+        // A file that cannot hold the guest's RAM is refused, not mapped past its end.
+        file.set_len(6 * p as u64).unwrap();
+        assert!(GuestMemory::from_file(&ranges, &file).is_err());
+    }
+
+    /// A save into a file that held other bytes leaves none of them, in zero pages or past
+    /// the end (audit A22).
+    #[test]
+    fn a_save_leaves_nothing_of_the_file_before() {
+        use std::io::Write as _;
+        let p = page_size().unwrap();
+        let ranges = [(0x8000_0000u64, 4 * p), (0x1_0000_0000, p)];
+        let m = GuestMemory::anonymous(&ranges).unwrap();
+        m.access()
             .unwrap()
-            .store(0xabcd, Ordering::Release);
-        assert_eq!(m.read_obj::<u16>(0x8000_0010).unwrap(), 0xabcd);
-        assert!(m.atomic_u16(0x8000_0011).is_err());
+            .write(0x8000_0000 + p as u64, b"kept")
+            .unwrap();
+        for garbage in [5 * p, 9 * p] {
+            let mut file = tempfile("garbage");
+            file.write_all(&vec![0xa5; garbage]).unwrap();
+            m.save(&file).unwrap();
+            assert_eq!(file.metadata().unwrap().len(), 5 * p as u64);
+            let r = GuestMemory::from_file(&ranges, &file).unwrap();
+            let a = r.access().unwrap();
+            let mut page = vec![0u8; p];
+            for &(gpa, len) in &ranges {
+                for at in (gpa..gpa + len as u64).step_by(p) {
+                    a.read(at, &mut page).unwrap();
+                    let used = at == 0x8000_0000 + p as u64;
+                    assert_eq!(page.iter().any(|&b| b != 0), used, "{at:#x} after {garbage}");
+                }
+            }
+            let mut kept = [0u8; 4];
+            a.read(0x8000_0000 + p as u64, &mut kept).unwrap();
+            assert_eq!(&kept, b"kept");
+        }
+    }
+
+    fn tempfile(tag: &str) -> std::fs::File {
+        let path = std::env::temp_dir().join(format!("shards-mem-{tag}-{}", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        let _ = std::fs::remove_file(path);
+        file
     }
 }

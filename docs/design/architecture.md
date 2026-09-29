@@ -1039,6 +1039,49 @@ docs/research/shipping-the-guest.md; the code is `crates/shards/build.rs`,
   - A shards-init built with another identity boots, but gets no workload: the run
     exits 125, saying why.
 
+### Guest memory (D29)
+
+Guest RAM is shared: the guest's vCPUs write it as they run, the host kernel reads and
+writes it in system calls given guest addresses, and the VMM's threads (vCPU threads
+handling exits, device workers, the snapshot coordinator) read and write it for the
+devices. The code is `crates/vmm/src/memory.rs`.
+
+- **One host thread at a time.** Rust makes a race between two of its threads undefined
+  unless both accesses are atomic, and racing atomic accesses must not partially overlap;
+  a volatile access counts as non-atomic [std::sync::atomic, "Memory model for atomic
+  accesses"; std::ptr::read_volatile]. The guest decides where its devices' rings and
+  buffers lie, and can lay one device's on another's. So the VMM's threads reach guest
+  memory only through an `Access`, which one of them holds at a time: their accesses are
+  ordered, whatever the guest overlaps (audit A01).
+  - A thread that asks for one while it holds one gets an error, not a deadlock.
+  - Devices hold one for a step of queue work (a pop, a request's header, a completion)
+    and never across a system call, so no device waits on another's I/O.
+- **Within one, volatile and atomic.** The guest and the kernel change guest memory under
+  the host's reads, as I/O memory changes, so reads and writes are volatile, a word at a
+  time where aligned. The virtqueue indices that order the host against the guest are
+  atomic: acquire loads of `avail.idx`, release stores of `used.idx`.
+- **No references into guest memory.** Nothing forms a Rust reference or slice into it.
+  Bulk data moves by system calls given guest addresses: block I/O, vsock payloads,
+  kernel loading and snapshot writes. The kernel, like the guest, is outside Rust's
+  abstract machine.
+- **Saves and restores agree.** Regions are saved and mapped in guest-address order,
+  whatever order the caller lists them in (audit A21). A save empties its file first, so
+  a zero page keeps nothing the file held (A22). A memory file too short for the guest is
+  refused, not mapped past its end, where the guest's first access would raise SIGBUS.
+- **Checked by the tools that know the rules.** ThreadSanitizer and Miri run the tests
+  where host threads share guest memory, among them two queues whose rings lie on each
+  other's; with a guard that excludes nothing, both report the data races. CI runs them
+  [PM M44].
+- **What it costs.** Nothing measurable in runs: the paired medians of interleaved
+  pooled runs moved by 10 µs or less, within their intervals. The word-at-a-time zero
+  check made a 256 MiB save three to five times faster [PM M44].
+- **Not yet:** a save still reads every untouched page, and so makes it resident (audit
+  D01); snapshots of a machine whose every CPU and device has stopped (A02).
+- **Tests:** `memory::tests` (copies at every alignment, threads taking turns, a nested
+  access refused, ranges in any order, a reused file) and
+  `queue::tests::queues_laid_over_each_other_work_on_two_threads`, under
+  `access-guard/check.sh` too; every E2E test runs its devices through the guard.
+
 ## 3. Components
 
 ```

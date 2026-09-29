@@ -1538,3 +1538,55 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
 hashes. Subsequent in-progress changes to guest-memory access and device integration
 are preserved and are not certified by these samples. Reproduce against the recorded
 revision before comparing a changed API/implementation.
+
+### M44. The guest-memory access guard: what checks it, and what it costs
+
+- **Question.** D29 has the VMM's threads reach guest memory through one `Access` at a
+  time, with volatile and atomic accesses within it (audit A01). Do the tools that know
+  Rust's rules for concurrent accesses find a race? What does the guard cost runs, and
+  what does its word-at-a-time zero check do to saves?
+- **Method.**
+  - `docs/research/measurements/access-guard/check.sh` runs ThreadSanitizer
+    (nightly-2026-09-05, `-Zsanitizer=thread`, std rebuilt with it) over the memory and
+    virtqueue unit tests, and Miri over those that map no file. In them, eight threads
+    write and read back the same unaligned bytes, and two threads work two queues whose
+    rings lie on each other's descriptors and rings. `negative-control.patch` gives every
+    access a lock of its own, which excludes nothing.
+  - Runs: `docs/research/measurements/build-ab/ab.py`, 38457b7 against this change, both
+    restoring one template: `shards run --pull never alpine true`, n = 1000 twice, and
+    `head -c 1048576 /dev/zero`, n = 300 then 1000.
+  - Saves: `access-guard/save-ab/run.py 38457b7` times `GuestMemory::save` of 256 MiB
+    with a nonzero byte in every 16th 16 KiB page, the others untouched or touched and
+    zero, in a fresh process per sample, alternating the builds, n = 30.
+  - Apple M5 Max (Mac17,6), macOS 26.4.1. Other work kept load averages at 7–15.
+- **Results.**
+  - With the guard, ThreadSanitizer reported nothing over 16 tests, and Miri found no
+    undefined behavior in 9. With the negative control, ThreadSanitizer reported 5 data
+    races in the two-queue test, among them a 2-byte atomic store against the other
+    thread's accesses of the same bytes, and Miri stopped at "Data race detected between
+    (1) non-atomic read ... and (2) atomic store": a descriptor read against an index
+    store.
+  - Runs, the paired median of new − old with its 95% interval:
+
+| Command | n | Wall | In the guest |
+|---|---|---|---|
+| `true` | 1000 | −5 µs [−39, +38] | +3 µs [−6, +15] |
+| `true` | 1000 | −54 µs [−132, +25] | −1 µs [−7, +6] |
+| 1 MiB of output | 300 | +15 µs [−70, +115] | +10 µs [−63, +78] |
+| 1 MiB of output | 1000 | +0 µs [−94, +50] | +10 µs [−20, +56] |
+
+  - The tails followed the host's load, in both arms alike: wall-time p99 for `true` was
+    15.1 ms and 11.4 ms (38457b7, this change) in the first run, and 50.3 ms and 37.3 ms
+    in the second, at higher load.
+  - Saves (ms, p50 / p90 / p99 / max):
+
+| RAM besides every 16th page | 38457b7 | This change | Paired new − old |
+|---|---|---|---|
+| untouched | 79.5 / 80.4 / 82.4 / 82.4 | 26.1 / 28.5 / 38.1 / 38.1 | −53.4 [−54.0, −52.7] |
+| touched, zero | 69.3 / 100.4 / 119.9 / 119.9 | 14.5 / 15.9 / 30.5 / 30.5 | −54.7 [−57.8, −52.8] |
+
+  - The old check read each page a byte at a time until it found a nonzero one
+    (`iter().any`); the new one reads words. Both still read, and so materialize, every
+    untouched page (audit D01).
+- **Consequence.** D29 stands: no host thread races another, at no measured cost to
+  runs, and saves take a third to a fifth of the time. CI runs `check.sh`.

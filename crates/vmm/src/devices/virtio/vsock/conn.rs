@@ -437,7 +437,9 @@ impl TxBuf {
         let old = self.data.len();
         self.data.resize(old + len, 0);
         let tail = self.data.get_mut(old..).unwrap_or_default();
-        mem.read(gpa, tail)
+        mem.access()
+            .map_err(io::Error::other)?
+            .read(gpa, tail)
             .map_err(|e| io::Error::other(format!("guest buffer: {e}")))
     }
 
@@ -542,7 +544,7 @@ mod tests {
         let g = Guest::new();
         let (mut c, mut host) = established(&g, 256 * 1024);
         let data: Vec<u8> = (0..60_000u32).map(|i| i as u8).collect();
-        g.mem.write(BASE, &data).unwrap();
+        g.mem.access().unwrap().write(BASE, &data).unwrap();
         let h = Guest::guest_header(op::RW, data.len() as u32, 256 * 1024, 0);
         c.on_guest_packet(&h, &[g.span(BASE, data.len())], &g.mem);
         assert_eq!(pump(&mut c, &mut host, data.len()), data);
@@ -569,7 +571,7 @@ mod tests {
         let h = c.next_rx(&space).unwrap();
         assert_eq!((h.op, h.len), (op::RW, 3000));
         let mut got = vec![0u8; 3000];
-        g.mem.read(BASE + 44, &mut got).unwrap();
+        g.mem.access().unwrap().read(BASE + 44, &mut got).unwrap();
         assert!(got.iter().all(|&b| b == 7));
         // Out of credit: the connection asks rather than reads.
         let h = c.next_rx(&space).unwrap();
@@ -590,7 +592,7 @@ mod tests {
         let h = c.next_rx(&[g.span(BASE, 4096)]).unwrap();
         assert_eq!((h.op, h.flags), (op::SHUTDOWN, shutdown::SEND));
         // The guest still sends, and the host still receives.
-        g.mem.write(BASE, b"reply").unwrap();
+        g.mem.access().unwrap().write(BASE, b"reply").unwrap();
         let rw = Guest::guest_header(op::RW, 5, 256 * 1024, 0);
         c.on_guest_packet(&rw, &[g.span(BASE, 5)], &g.mem);
         let mut got = [0u8; 5];
@@ -612,7 +614,11 @@ mod tests {
         let (mut c, host) = established(&g, 256 * 1024);
         // Fill the host socket so nothing more is taken, then exceed BUF_ALLOC.
         let big = vec![1u8; 1 << 20];
-        g.mem.write(BASE, &big[..BUF_ALLOC as usize]).unwrap();
+        g.mem
+            .access()
+            .unwrap()
+            .write(BASE, &big[..BUF_ALLOC as usize])
+            .unwrap();
         let mut sent = 0usize;
         for _ in 0..64 {
             let h = Guest::guest_header(op::RW, BUF_ALLOC, 256 * 1024, 0);

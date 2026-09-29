@@ -7,7 +7,7 @@ use std::fmt;
 use std::fs::File;
 
 use super::{Boot, Segment, layout};
-use crate::memory::{GuestMemory, OutOfBounds};
+use crate::memory::{GuestMemory, OutOfBounds, Reentered};
 use crate::platform;
 
 #[derive(Debug)]
@@ -15,6 +15,7 @@ pub enum BootError {
     Io(std::io::Error),
     NotAnElf(&'static str),
     Memory(OutOfBounds),
+    Access(Reentered),
     DoesNotFit { what: &'static str, at: u64, len: u64 },
 }
 
@@ -24,6 +25,7 @@ impl fmt::Display for BootError {
             BootError::Io(e) => write!(f, "reading the kernel: {e}"),
             BootError::NotAnElf(why) => write!(f, "kernel is not an x86_64 vmlinux: {why}"),
             BootError::Memory(e) => write!(f, "{e}"),
+            BootError::Access(e) => write!(f, "{e}"),
             BootError::DoesNotFit { what, at, len } => {
                 write!(f, "{what} at {at:#x}+{len:#x} does not fit guest RAM")
             }
@@ -42,6 +44,12 @@ impl From<std::io::Error> for BootError {
 impl From<OutOfBounds> for BootError {
     fn from(e: OutOfBounds) -> Self {
         BootError::Memory(e)
+    }
+}
+
+impl From<Reentered> for BootError {
+    fn from(e: Reentered) -> Self {
+        BootError::Access(e)
     }
 }
 
@@ -168,10 +176,7 @@ pub fn load_kernel(mem: &GuestMemory, kernel: &File, low_ram_end: u64) -> Result
             });
         }
         let len = usize::try_from(seg.filesz).map_err(|_| BootError::NotAnElf("segment size"))?;
-        let dst = mem.host_ptr(seg.paddr, len)?;
-        // SAFETY: `dst` is valid for `len` bytes of guest RAM and no vCPU runs yet.
-        let buf = unsafe { std::slice::from_raw_parts_mut(dst, len) };
-        platform::read_exact_at(kernel, buf, seg.offset)?;
+        mem.read_file(seg.paddr, len, kernel, seg.offset)?;
         // Fresh guest RAM is zero, so bss (memsz beyond filesz) needs no clearing.
         end = end.max(seg_end.unwrap_or(0));
     }
@@ -200,7 +205,7 @@ pub fn load_initrd(
             len,
         });
     }
-    mem.write(start, initrd)?;
+    mem.access()?.write(start, initrd)?;
     Ok((start, len))
 }
 
@@ -323,18 +328,19 @@ pub fn write_boot_state(
             len: bytes.len() as u64,
         });
     }
-    mem.write(layout::CMDLINE, bytes)?;
-    mem.write(layout::ZERO_PAGE, &zero_page(z)?)?;
+    let a = mem.access()?;
+    a.write(layout::CMDLINE, bytes)?;
+    a.write(layout::ZERO_PAGE, &zero_page(z)?)?;
 
     for (i, d) in [0u64, 0, GDT_CODE64, GDT_DATA].iter().enumerate() {
-        mem.write_obj(layout::GDT + 8 * i as u64, *d)?;
+        a.write_obj(layout::GDT + 8 * i as u64, *d)?;
     }
-    mem.write_obj(layout::IDT, 0u64)?;
+    a.write_obj(layout::IDT, 0u64)?;
 
-    mem.write_obj(layout::PML4, layout::PDPT | PTE_PRESENT_RW)?;
-    mem.write_obj(layout::PDPT, layout::PD | PTE_PRESENT_RW)?;
+    a.write_obj(layout::PML4, layout::PDPT | PTE_PRESENT_RW)?;
+    a.write_obj(layout::PDPT, layout::PD | PTE_PRESENT_RW)?;
     for i in 0..512u64 {
-        mem.write_obj(layout::PD + 8 * i, (i << 21) | PDE_2M)?;
+        a.write_obj(layout::PD + 8 * i, (i << 21) | PDE_2M)?;
     }
 
     Ok(Boot {

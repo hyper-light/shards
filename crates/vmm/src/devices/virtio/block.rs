@@ -10,9 +10,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle, Thread};
 
-use super::queue::{Chain, Descriptor, Queue};
+use super::queue::{Chain, Descriptor, Queue, with};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
-use crate::memory::GuestMemory;
+use crate::memory::{Access, GuestMemory};
 use crate::{debug, platform, warn};
 
 pub const DEVICE_ID: u32 = 2;
@@ -252,17 +252,17 @@ fn drain(
 ) -> Result<(), String> {
     let e = |e: super::queue::QueueError| e.to_string();
     loop {
-        queue.disable_notification(mem).map_err(e)?;
+        with(mem, |a| queue.disable_notification(a)).map_err(e)?;
         let mut completed = false;
-        while let Some(chain) = queue.pop(mem).map_err(e)? {
+        while let Some(chain) = with(mem, |a| queue.pop(a)).map_err(e)? {
             let written = handle(&chain, mem, backend);
-            queue.add_used(mem, chain.head, written).map_err(e)?;
+            with(mem, |a| queue.add_used(a, chain.head, written)).map_err(e)?;
             completed = true;
         }
-        if completed && queue.needs_interrupt(mem).map_err(e)? {
+        if completed && with(mem, |a| queue.needs_interrupt(a)).map_err(e)? {
             irq.used_buffer();
         }
-        if !queue.enable_notification(mem).map_err(e)? {
+        if !with(mem, |a| queue.enable_notification(a)).map_err(e)? {
             return Ok(());
         }
     }
@@ -285,7 +285,8 @@ fn handle(chain: &Chain, mem: &GuestMemory, backend: &Backend) -> u32 {
         Ok(n) => (S_OK, n),
         Err(status) => (status, 0),
     };
-    if mem.write_obj(status_at, status).is_err() {
+    let stored = mem.access().map(|a| a.write_obj(status_at, status));
+    if !matches!(stored, Ok(Ok(()))) {
         return 0;
     }
     data_written.saturating_add(1)
@@ -294,7 +295,7 @@ fn handle(chain: &Chain, mem: &GuestMemory, backend: &Backend) -> u32 {
 /// Returns bytes of data written into guest buffers, or a status code on failure.
 fn execute(chain: &Chain, status: Descriptor, mem: &GuestMemory, backend: &Backend) -> Result<u32, u8> {
     let mut header = [0u8; 16];
-    let body = gather_header(chain, mem, &mut header)?;
+    let body = gather_header(chain, &mem.access().map_err(|_| S_IOERR)?, &mut header)?;
     let kind = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
     let sector = u64::from_le_bytes([
         header[8], header[9], header[10], header[11], header[12], header[13], header[14], header[15],
@@ -312,10 +313,11 @@ fn execute(chain: &Chain, status: Descriptor, mem: &GuestMemory, backend: &Backe
         T_GET_ID => {
             let mut written = 0u32;
             let mut id = backend.id.as_slice();
+            let a = mem.access().map_err(|_| S_IOERR)?;
             for d in &out {
                 let n = id.len().min(d.len as usize);
                 let (chunk, rest) = id.split_at(n);
-                mem.write(d.addr, chunk).map_err(|_| S_IOERR)?;
+                a.write(d.addr, chunk).map_err(|_| S_IOERR)?;
                 written += n as u32;
                 id = rest;
             }
@@ -327,7 +329,7 @@ fn execute(chain: &Chain, status: Descriptor, mem: &GuestMemory, backend: &Backe
 
 /// Copies the 16-byte request header out of the readable descriptors and returns the
 /// readable data that follows it (framing is not assumed, per VIRTIO 1.x).
-fn gather_header(chain: &Chain, mem: &GuestMemory, header: &mut [u8; 16]) -> Result<Vec<Descriptor>, u8> {
+fn gather_header(chain: &Chain, mem: &Access<'_>, header: &mut [u8; 16]) -> Result<Vec<Descriptor>, u8> {
     let mut filled = 0usize;
     let mut body = Vec::new();
     for d in chain.readable() {

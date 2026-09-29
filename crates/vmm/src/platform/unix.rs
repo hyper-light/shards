@@ -26,13 +26,16 @@ pub fn page_size() -> io::Result<usize> {
 /// Reserves `len` bytes of zero-filled read/write memory. Pages are materialized on
 /// first touch, so reserved-but-untouched guest RAM costs no host memory.
 pub fn reserve(len: usize) -> io::Result<NonNull<u8>> {
+    // Miri, which checks the memory tests' accesses (docs/research/measurements/
+    // access-guard), maps only plain private anonymous memory, and has no swap to reserve.
+    let noreserve = if cfg!(miri) { 0 } else { libc::MAP_NORESERVE };
     // SAFETY: fresh private anonymous mapping; the caller owns it until `release`.
     let p = unsafe {
         libc::mmap(
             std::ptr::null_mut(),
             len,
             libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE,
+            libc::MAP_PRIVATE | libc::MAP_ANON | noreserve,
             -1,
             0,
         )
@@ -49,7 +52,7 @@ pub fn reserve(len: usize) -> io::Result<NonNull<u8>> {
 /// Huge pages are the standard remedy for the cost of nested paging's two-dimensional
 /// page walks (Bhargava et al., ASPLOS 2008; Gandhi et al., MICRO 2014).
 pub fn reserve_ram(len: usize) -> io::Result<NonNull<u8>> {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(miri)))]
     if let Some(huge) = huge_page_size()
         && len >= huge
     {
@@ -59,7 +62,7 @@ pub fn reserve_ram(len: usize) -> io::Result<NonNull<u8>> {
 }
 
 /// The kernel's transparent huge page size, if it has transparent huge pages.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(miri)))]
 fn huge_page_size() -> Option<usize> {
     std::fs::read_to_string("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size")
         .ok()?
@@ -69,7 +72,7 @@ fn huge_page_size() -> Option<usize> {
         .filter(|size| size.is_power_of_two())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(miri)))]
 fn reserve_huge(len: usize, huge: usize) -> io::Result<NonNull<u8>> {
     let span = len
         .checked_add(huge)

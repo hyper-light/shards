@@ -315,7 +315,11 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         rng_seed,
     })
     .map_err(|e| e.to_string())?;
-    memory.write(fdt_addr, &fdt).map_err(|e| e.to_string())?;
+    memory
+        .access()
+        .map_err(|e| e.to_string())?
+        .write(fdt_addr, &fdt)
+        .map_err(|e| e.to_string())?;
     debug!(
         "kernel entry {:#x} end {:#x}; dtb at {fdt_addr:#x} ({} bytes)",
         kernel.entry,

@@ -316,9 +316,12 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
 
     let config = super::machine_config(cfg)?;
     let a = assemble(&memory, &config, cfg.console, cfg.vsock.as_deref())?;
-    for (addr, bytes) in acpi::build(cfg.vcpus, &a.virtio)?.blobs {
-        memory.write(addr, &bytes).map_err(|e| e.to_string())?;
+    let tables = acpi::build(cfg.vcpus, &a.virtio)?.blobs;
+    let access = memory.access().map_err(|e| e.to_string())?;
+    for (addr, bytes) in tables {
+        access.write(addr, &bytes).map_err(|e| e.to_string())?;
     }
+    drop(access);
     a.vmgenid.write_new_id()?;
 
     let read = |p: &PathBuf| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));

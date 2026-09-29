@@ -8,7 +8,7 @@ use std::fs::File;
 
 use super::layout;
 use crate::fdt::{Fdt, FdtError};
-use crate::memory::{GuestMemory, OutOfBounds};
+use crate::memory::{GuestMemory, OutOfBounds, Reentered};
 use crate::platform;
 
 const IMAGE_MAGIC: u32 = 0x644d_5241; // "ARM\x64"
@@ -27,6 +27,7 @@ pub enum BootError {
         have: u64,
     },
     Memory(OutOfBounds),
+    Access(Reentered),
     Fdt(FdtError),
 }
 
@@ -42,6 +43,7 @@ impl fmt::Display for BootError {
                 )
             }
             BootError::Memory(e) => write!(f, "{e}"),
+            BootError::Access(e) => write!(f, "{e}"),
             BootError::Fdt(e) => write!(f, "{e}"),
         }
     }
@@ -57,6 +59,11 @@ impl From<std::io::Error> for BootError {
 impl From<OutOfBounds> for BootError {
     fn from(e: OutOfBounds) -> Self {
         BootError::Memory(e)
+    }
+}
+impl From<Reentered> for BootError {
+    fn from(e: Reentered) -> Self {
+        BootError::Access(e)
     }
 }
 impl From<FdtError> for BootError {
@@ -157,16 +164,13 @@ pub fn load_initrd(
             have: limit.saturating_sub(start),
         });
     }
-    mem.write(start, initrd)?;
+    mem.access()?.write(start, initrd)?;
     Ok((start, len))
 }
 
 fn read_into_guest(mem: &GuestMemory, file: &File, gpa: u64, len: u64) -> Result<(), BootError> {
-    let dst = mem.host_ptr(gpa, len as usize)?;
-    // SAFETY: `dst` is valid for `len` bytes of guest RAM, and no vCPU runs yet.
-    let buf = unsafe { std::slice::from_raw_parts_mut(dst, len as usize) };
-    platform::read_exact_at(file, buf, 0)?;
-    Ok(())
+    let len = usize::try_from(len).map_err(|_| BootError::Memory(OutOfBounds { gpa, len }))?;
+    Ok(mem.read_file(gpa, len, file, 0)?)
 }
 
 /// A virtio-mmio transport to describe in the devicetree.

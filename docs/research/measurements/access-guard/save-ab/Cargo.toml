@@ -1,0 +1,14 @@
+[package]
+name = "save-ab"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Its own workspace: built against a checkout's shards-vmm by run.py, not with shards'.
+[workspace]
+
+[dependencies]
+shards-vmm = { path = "../../../../../crates/vmm" }
+
+[profile.release]
+debug = "line-tables-only"

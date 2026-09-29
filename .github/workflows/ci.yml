@@ -29,6 +29,16 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - run: scripts/vendor-crate --check
 
+  # Host threads reach guest memory one at a time (docs/design/architecture.md D29):
+  # ThreadSanitizer and Miri check the tests where they share it. Both need nightly.
+  memory-model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install nightly-2026-09-05 --profile minimal --component rust-src,miri
+      - run: docs/research/measurements/access-guard/check.sh nightly-2026-09-05
+
   # The platform matrix (docs/design/architecture.md D13) on native runners. Every target is
   # linted; the ones a runner can execute are tested. VM tests print SKIP where the host has
   # no backend yet or no hardware virtualization.

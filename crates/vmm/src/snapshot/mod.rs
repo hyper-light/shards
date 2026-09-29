@@ -781,7 +781,10 @@ mod tests {
         /// Guest RAM whose every byte is `marker`.
         fn ram(marker: u8) -> GuestMemory {
             let mem = GuestMemory::anonymous(&RAM).unwrap();
-            mem.write(0x8000_0000, &vec![marker; 1 << 20]).unwrap();
+            mem.access()
+                .unwrap()
+                .write(0x8000_0000, &vec![marker; 1 << 20])
+                .unwrap();
             mem
         }
 
@@ -808,14 +811,14 @@ mod tests {
             let s = Scratch::new("round-trip");
             let dir = s.0.join("snap");
             let mem = GuestMemory::anonymous(&RAM).unwrap();
-            mem.write(0x8000_0010, b"guest").unwrap();
+            mem.access().unwrap().write(0x8000_0010, b"guest").unwrap();
             write(&dir, &sample(&s.0, 1), &mem).unwrap();
             assert!(exists(&dir));
             let p = read(&dir).unwrap();
             assert_eq!(p.snapshot, sample(&s.0, 1));
             let restored = GuestMemory::from_file(&RAM, &p.memory).unwrap();
             let mut buf = [0u8; 5];
-            restored.read(0x8000_0010, &mut buf).unwrap();
+            restored.access().unwrap().read(0x8000_0010, &mut buf).unwrap();
             assert_eq!(&buf, b"guest");
             // One generation, and the pointer to it.
             let names = generations(&dir);

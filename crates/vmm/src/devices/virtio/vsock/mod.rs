@@ -19,9 +19,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use super::queue::{Chain, Queue, QueueError};
+use super::queue::{Chain, Queue, QueueError, with};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
-use crate::memory::GuestMemory;
+use crate::memory::{Access, GuestMemory};
 use crate::snapshot::codec::{self, Reader, Writer};
 use crate::{debug, warn};
 use muxer::{Muxer, Saved, Token};
@@ -384,36 +384,38 @@ fn step(s: &mut Session, mem: &GuestMemory, irq: &DeviceInterrupt) -> Result<(),
     let mut used = [false; 2];
     // Guest → host. Always drained first: the driver stops taking RX packets while too
     // many of its replies wait in TX (Linux virtio_transport_more_replies).
+    // Each packet is parsed under an access, and its payload moved to or from the host
+    // socket with none held.
     loop {
-        txq.disable_notification(mem)?;
-        while let Some(chain) = txq.pop(mem)? {
-            if let Some((h, payload)) = parse_tx(&chain, mem) {
+        with(mem, |a| txq.disable_notification(a))?;
+        while let Some((packet, chain)) = with(mem, |a| Ok(txq.pop(a)?.map(|c| (parse_tx(&c, a), c))))? {
+            if let Some((h, payload)) = packet {
                 s.muxer.on_guest_packet(&h, &payload, mem);
             }
-            txq.add_used(mem, chain.head, 0)?;
+            with(mem, |a| txq.add_used(a, chain.head, 0))?;
             used[TX] = true;
         }
-        if !txq.enable_notification(mem)? {
+        if !with(mem, |a| txq.enable_notification(a))? {
             break;
         }
     }
     // Host → guest, while there are packets and buffers for them.
     while s.muxer.has_pending_rx() {
-        let Some(chain) = rxq.pop(mem)? else {
+        let Some(chain) = with(mem, |a| rxq.pop(a))? else {
             // Out of buffers: ask the driver to notify when it adds some.
-            if rxq.enable_notification(mem)? {
+            if with(mem, |a| rxq.enable_notification(a))? {
                 continue;
             }
             break;
         };
         let written = fill_rx(&chain, mem, &mut s.muxer);
-        rxq.add_used(mem, chain.head, written)?;
+        with(mem, |a| rxq.add_used(a, chain.head, written))?;
         used[RX] = true;
     }
     let mut interrupt = false;
     for (q, used) in [(&mut *rxq, used[RX]), (&mut *txq, used[TX])] {
         if used {
-            interrupt |= q.needs_interrupt(mem)?;
+            interrupt |= with(mem, |a| q.needs_interrupt(a))?;
         }
     }
     if interrupt {
@@ -443,7 +445,7 @@ fn spans(chain: &Chain, mem: &GuestMemory, writable: bool, mut skip: usize) -> O
 
 /// A guest packet: its header and payload spans. Malformed packets are dropped, as
 /// Linux drops them in the other direction.
-fn parse_tx(chain: &Chain, mem: &GuestMemory) -> Option<(Header, Vec<Span>)> {
+fn parse_tx(chain: &Chain, mem: &Access<'_>) -> Option<(Header, Vec<Span>)> {
     let mut raw = [0u8; HEADER_LEN];
     let mut filled = 0;
     for d in chain.readable() {
@@ -464,7 +466,7 @@ fn parse_tx(chain: &Chain, mem: &GuestMemory) -> Option<(Header, Vec<Span>)> {
         debug!("virtio-vsock: TX payload of {} bytes", h.len);
         return None;
     }
-    let mut payload = spans(chain, mem, false, HEADER_LEN)?;
+    let mut payload = spans(chain, mem.memory(), false, HEADER_LEN)?;
     let mut need = h.len as usize;
     payload.retain_mut(|s| {
         s.len = s.len.min(need);
@@ -491,13 +493,13 @@ fn fill_rx(chain: &Chain, mem: &GuestMemory, muxer: &mut Muxer) -> u32 {
     let Some(h) = muxer.next_rx(&space) else {
         return 0;
     };
-    let wrote = write_span(chain, mem, &h.encode());
+    let wrote = mem.access().map_or(0, |a| write_span(chain, &a, &h.encode()));
     wrote + h.len
 }
 
 /// Copies `bytes` into the chain's writable descriptors from the start; returns the
 /// bytes copied.
-fn write_span(chain: &Chain, mem: &GuestMemory, bytes: &[u8]) -> u32 {
+fn write_span(chain: &Chain, mem: &Access<'_>, bytes: &[u8]) -> u32 {
     let mut rest = bytes;
     let mut wrote = 0u32;
     for d in chain.writable() {

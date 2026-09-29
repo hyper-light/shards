@@ -10,9 +10,9 @@ use std::path::Path;
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
-use super::queue::{Chain, Queue, QueueError};
+use super::queue::{Chain, Queue, QueueError, with};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
-use crate::memory::GuestMemory;
+use crate::memory::{Access, GuestMemory};
 use crate::sync::lock;
 use crate::{platform, warn};
 
@@ -203,14 +203,20 @@ impl VirtioDevice for Pmem {
     }
 }
 
+/// Answers each request under an access of its own, so other devices' threads get guest
+/// memory between them.
 fn drain(queue: &mut Queue, mem: &GuestMemory, irq: &DeviceInterrupt) -> Result<(), QueueError> {
     let mut used = false;
-    while let Some(chain) = queue.pop(mem)? {
-        let written = answer(&chain, mem);
-        queue.add_used(mem, chain.head, written)?;
+    loop {
+        let a = mem.access()?;
+        let Some(chain) = queue.pop(&a)? else {
+            break;
+        };
+        let written = answer(&chain, &a);
+        queue.add_used(&a, chain.head, written)?;
         used = true;
     }
-    if used && queue.needs_interrupt(mem)? {
+    if used && with(mem, |a| queue.needs_interrupt(a))? {
         irq.used_buffer();
     }
     Ok(())
@@ -218,7 +224,7 @@ fn drain(queue: &mut Queue, mem: &GuestMemory, irq: &DeviceInterrupt) -> Result<
 
 /// Reads `struct virtio_pmem_req { le32 type; }` and writes `struct virtio_pmem_resp
 /// { le32 ret; }`: 0 for a flush, 1 for anything else. Returns the bytes written.
-fn answer(chain: &Chain, mem: &GuestMemory) -> u32 {
+fn answer(chain: &Chain, mem: &Access<'_>) -> u32 {
     let (Some(req), Some(resp)) = (chain.readable().next(), chain.writable().next()) else {
         return 0;
     };
