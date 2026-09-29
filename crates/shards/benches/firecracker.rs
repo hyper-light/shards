@@ -15,6 +15,11 @@
 //!   /proc/PID/status, read once the readings are done. Not wait4(2)'s `ru_maxrss`, which
 //!   starts from this harness's own peak: exec keeps the peak of the address space it
 //!   replaces, the spawner's under `posix_spawn` (fs/exec.c `exec_mmap`).
+//! - `rss_anon`, `rss_file`: the VMM's anonymous and file-backed resident memory at the
+//!   same moment, `RssAnon` and `RssFile` in /proc/PID/status. A restored guest's memory is
+//!   a private mapping of its snapshot file: the pages it only reads are the file's, in the
+//!   page cache every VM restored from that snapshot shares, and a page it writes becomes
+//!   an anonymous copy of its own.
 //!
 //! Firecracker is its pinned release binary, run without the jailer as its getting-started
 //! guide runs it: `--no-api --config-file`, default seccomp filters. Each iteration
@@ -97,6 +102,8 @@ mod compare {
         to_ready_us: f64,
         overhead_bytes: u64,
         peak_rss_bytes: u64,
+        rss_anon_bytes: u64,
+        rss_file_bytes: u64,
     }
 
     pub fn main() {
@@ -168,6 +175,10 @@ mod compare {
                 support::stats("fc_overhead", "MiB", mib(&fc, |s| s.overhead_bytes)),
                 support::stats("shards_peak_rss", "MiB", mib(&shards, |s| s.peak_rss_bytes)),
                 support::stats("fc_peak_rss", "MiB", mib(&fc, |s| s.peak_rss_bytes)),
+                support::stats("shards_rss_anon", "MiB", mib(&shards, |s| s.rss_anon_bytes)),
+                support::stats("fc_rss_anon", "MiB", mib(&fc, |s| s.rss_anon_bytes)),
+                support::stats("shards_rss_file", "MiB", mib(&shards, |s| s.rss_file_bytes)),
+                support::stats("fc_rss_file", "MiB", mib(&fc, |s| s.rss_file_bytes)),
             ],
         );
         restores(&firecracker, kernel, &initrd, &cpus, &memory, runs);
@@ -296,6 +307,10 @@ mod compare {
                 support::stats("fc_overhead", "MiB", mib(&fc, |s| s.overhead_bytes)),
                 support::stats("shards_peak_rss", "MiB", mib(&shards, |s| s.peak_rss_bytes)),
                 support::stats("fc_peak_rss", "MiB", mib(&fc, |s| s.peak_rss_bytes)),
+                support::stats("shards_rss_anon", "MiB", mib(&shards, |s| s.rss_anon_bytes)),
+                support::stats("fc_rss_anon", "MiB", mib(&fc, |s| s.rss_anon_bytes)),
+                support::stats("shards_rss_file", "MiB", mib(&shards, |s| s.rss_file_bytes)),
+                support::stats("fc_rss_file", "MiB", mib(&fc, |s| s.rss_file_bytes)),
             ],
         );
     }
@@ -361,7 +376,7 @@ mod compare {
                 .max()
                 .unwrap_or(0)
         });
-        let peak = peak_bytes(pid);
+        let [peak, anon, file] = ["VmHWM", "RssAnon", "RssFile"].map(|field| status_bytes(pid, field));
         // SAFETY: the child is not yet reaped, so `pid` still names it.
         unsafe { libc::kill(pid, libc::SIGKILL) };
         child.wait().unwrap();
@@ -376,6 +391,8 @@ mod compare {
             to_ready_us: beat.duration_since(start).as_secs_f64() * 1e6,
             overhead_bytes,
             peak_rss_bytes: peak.expect("the VMM's VmHWM"),
+            rss_anon_bytes: anon.expect("the VMM's RssAnon"),
+            rss_file_bytes: file.expect("the VMM's RssFile"),
         }
     }
 
@@ -536,7 +553,7 @@ mod compare {
                 .unwrap_or(0)
         });
         // The guest has idled through the readings: its peak so far is its peak.
-        let peak = peak_bytes(pid);
+        let [peak, anon, file] = ["VmHWM", "RssAnon", "RssFile"].map(|field| status_bytes(pid, field));
         // SAFETY: the child is not yet reaped, so `pid` still names it.
         unsafe { libc::kill(pid, libc::SIGKILL) };
         let mut status = 0;
@@ -551,15 +568,18 @@ mod compare {
             to_ready_us: ready.duration_since(start).as_secs_f64() * 1e6,
             overhead_bytes,
             peak_rss_bytes: peak.expect("the VMM's VmHWM"),
+            rss_anon_bytes: anon.expect("the VMM's RssAnon"),
+            rss_file_bytes: file.expect("the VMM's RssFile"),
         }
     }
 
-    /// `pid`'s peak resident set so far: `VmHWM` in /proc/PID/status (proc(5)).
-    fn peak_bytes(pid: libc::pid_t) -> Option<u64> {
+    /// A size in `pid`'s /proc/PID/status (proc(5)): `VmHWM`, its peak resident set so
+    /// far, or `RssAnon` and `RssFile`, its anonymous and file-backed resident memory now.
+    fn status_bytes(pid: libc::pid_t, field: &str) -> Option<u64> {
         let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
         let kib: u64 = status
             .lines()
-            .find_map(|l| l.strip_prefix("VmHWM:"))?
+            .find_map(|l| l.strip_prefix(field)?.strip_prefix(':'))?
             .trim()
             .strip_suffix("kB")?
             .trim()
