@@ -340,6 +340,10 @@ mod compare {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Diagnostic (branch restore-diag): KVM's exits and entries, traced from the spawn.
+        let _ = Command::new("sudo")
+            .args(["sh", "-c", "cd /sys/kernel/tracing && echo 0 > tracing_on && echo > trace && echo 8192 > buffer_size_kb && echo 1 > events/kvm/kvm_exit/enable && echo 1 > events/kvm/kvm_entry/enable && echo 1 > events/kvm/kvm_userspace_exit/enable && echo 1 > tracing_on"])
+            .status();
         let start = Instant::now();
         let mut child = command.spawn().expect("spawning the VMM");
         let pid = child.id() as libc::pid_t;
@@ -358,7 +362,26 @@ mod compare {
         });
         after_spawn();
         let beat = beat.recv_timeout(TIMEOUT);
-        // Diagnostic (branch restore-diag): the VM's KVM counters at its first beat.
+        // Diagnostic (branch restore-diag): the time from each exit to the next entry, by
+        // reason, until the first beat; and what the guest printed before it.
+        if beat.is_ok() {
+            let summary = Command::new("sudo")
+                .args(["sh", "-c"])
+                .arg(concat!(
+                    "cd /sys/kernel/tracing && echo 0 > tracing_on && cat trace | awk '",
+                    r#"function ts(  i) { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+:$/) return substr($i, 1, length($i) - 1); return 0 }
+function after(w,  i) { for (i = 1; i < NF; i++) if ($i == w) return $(i + 1); return "?" }
+/kvm_exit:/ { t = ts(); if ($1 in ran) { guest += (t - ran[$1]) * 1e6; runs++; delete ran[$1] } last[$1] = t; why[$1] = after("reason"); next }
+/kvm_userspace_exit:/ { if ($1 in why) why[$1] = why[$1] "/user:" after("reason"); next }
+/kvm_entry:/ { t = ts(); if ($1 in last) { r = why[$1]; n[r]++; us[r] += (t - last[$1]) * 1e6; delete last[$1] } ran[$1] = t }
+END { printf "guest n=%d us=%.0f\n", runs, guest; for (r in n) printf "%s n=%d us=%.0f\n", r, n[r], us[r] }"#,
+                    "' | sort -t= -k3 -n -r | head -25; echo 0 > events/kvm/enable 2>/dev/null; echo > trace"
+                ))
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default();
+            println!("kvm-trace {:?}\n{summary}", command.get_program());
+        }
         if beat.is_ok() {
             let dump = Command::new("sudo")
                 .args(["sh", "-c"])
