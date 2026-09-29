@@ -82,8 +82,10 @@ impl Handle {
         let Some((recorder, dir)) = lock(&self.shared.recording).take() else {
             return Ok(0);
         };
-        let pages = machine::recorded(&recorder);
-        snapshot::write_working_set(&dir, &pages, machine::PAGE)?;
+        let pages = machine::recorded(&recorder)?;
+        if !pages.is_empty() {
+            snapshot::write_working_set(&dir, &pages, machine::PAGE)?;
+        }
         Ok(pages.len())
     }
 
@@ -531,7 +533,10 @@ impl Coordinator {
         }
         let started = File::open(&self.policy.dir)
             .map_err(|e| format!("{}: {e}", self.policy.dir.display()))
-            .and_then(|dir| Ok(machine::record(&self.vm)?.map(|r| (r, dir))));
+            .and_then(|dir| {
+                let recorder = machine::record(&self.vm, &self.memory, &self.bus, &self.policy.dir)?;
+                Ok(recorder.map(|r| (r, dir)))
+            });
         match started {
             Ok(r) => *recording = r,
             Err(e) => warn!("not recording a working set: {e}"),

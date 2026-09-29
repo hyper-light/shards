@@ -14,8 +14,9 @@ use x86_64 as machine;
 /// Whether this build's VMs can be snapshotted and restored: every backend's can.
 pub const SNAPSHOTS: bool = cfg!(hv);
 /// Whether a VM resumed from its snapshot records its working set, for restores to
-/// prefetch: HVF's can (hv::hvf::Watch).
-pub const WORKING_SETS: bool = cfg!(hv = "hvf");
+/// prefetch: every backend's can, HVF's at stage 2 (hv::hvf::Watch), KVM's from the
+/// pages its host maps (vm::x86_64::record).
+pub const WORKING_SETS: bool = cfg!(hv);
 
 #[cfg(hv)]
 mod runtime;

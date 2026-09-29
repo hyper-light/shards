@@ -152,6 +152,8 @@ pub struct Vm {
     msrs: Arc<Vec<u32>>,
     /// The guest's XSAVE area: KVM_CAP_XSAVE2's size, or 4096 before it.
     xsave_size: usize,
+    /// Whether vCPUs can map memory ahead of the guest ([`Vcpu::pre_fault`]).
+    pre_fault: bool,
 }
 
 impl Vm {
@@ -187,6 +189,10 @@ impl Vm {
         let xsave2 = fd
             .check_extension(sys::CAP_XSAVE2)
             .map_err(call("KVM_CHECK_EXTENSION"))?;
+        let pre_fault = fd
+            .check_extension(sys::CAP_PRE_FAULT_MEMORY)
+            .map_err(call("KVM_CHECK_EXTENSION"))?
+            > 0;
         Ok(Vm {
             fd: Arc::new(fd),
             cpuid,
@@ -196,6 +202,7 @@ impl Vm {
             next_slot: AtomicU32::new(0),
             msrs: Arc::new(msrs),
             xsave_size: (xsave2.unsigned_abs() as usize).max(sys::XSAVE_SIZE),
+            pre_fault,
         })
     }
 
@@ -303,6 +310,7 @@ impl Vm {
                 .collect(),
             msrs: self.msrs.clone(),
             xsave_size: self.xsave_size,
+            pre_fault: self.pre_fault,
         })
     }
 }
@@ -353,6 +361,7 @@ pub struct Vcpu {
     cpuid: Vec<[u32; 7]>,
     msrs: Arc<Vec<u32>>,
     xsave_size: usize,
+    pre_fault: bool,
 }
 
 /// IA32_TSC_DEADLINE, restored after IA32_TSC: KVM arms the deadline against the TSC, so
@@ -485,6 +494,35 @@ impl Vcpu {
         // Fails, harmlessly, for a guest that never enabled kvmclock.
         let _ = fd.kvmclock_ctrl();
         Ok(())
+    }
+
+    /// Maps `len` bytes of guest memory at `gpa` into the stage-2 tables now, so that the
+    /// guest finds them there instead of faulting on each page. KVM maps them as a read
+    /// fault would: writable where the host page is writable already (a copy made ahead,
+    /// kvm_main.c hva_to_pfn_fast), read-only where a write would still copy it (api.rst
+    /// 4.143). `Ok(false)` where KVM cannot: before Linux 6.10, or without two-dimensional
+    /// paging. Called after [`restore_state`](Self::restore_state), so that it maps for
+    /// the state the guest runs in.
+    pub fn pre_fault(&self, gpa: u64, len: u64) -> Result<bool> {
+        if !self.pre_fault {
+            return Ok(false);
+        }
+        let mut range = sys::kvm_pre_fault_memory {
+            gpa,
+            size: len,
+            ..Default::default()
+        };
+        while range.size > 0 {
+            match self.fd.pre_fault_memory(&mut range) {
+                // Each success maps at least a page, and advances `range` past it.
+                Ok(()) => {}
+                // A signal came first, and was delivered on the way out.
+                Err(e) if e.raw_os_error() == Some(libc::EINTR) => {}
+                Err(e) if e.raw_os_error() == Some(libc::EOPNOTSUPP) => return Ok(false),
+                Err(e) => return Err(call("KVM_PRE_FAULT_MEMORY")(e)),
+            }
+        }
+        Ok(true)
     }
 
     pub fn kicker(&self) -> Kicker {

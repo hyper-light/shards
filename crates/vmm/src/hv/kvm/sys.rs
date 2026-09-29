@@ -55,6 +55,7 @@ pub const KVM_GET_XCRS: u64 = 0x8188_AEA6;
 pub const KVM_SET_XCRS: u64 = 0x4188_AEA7;
 pub const KVM_KVMCLOCK_CTRL: u64 = 0xAEAD;
 pub const KVM_GET_XSAVE2: u64 = 0x9000_AECF;
+pub const KVM_PRE_FAULT_MEMORY: u64 = 0xC040_AED5;
 
 /// The sizes of the state structures above, which a snapshot keeps as their bytes.
 pub const LAPIC_SIZE: usize = 1024;
@@ -78,6 +79,7 @@ const _: () = {
     assert!(size(KVM_GET_IRQCHIP) == IRQCHIP_SIZE && size(KVM_SET_IRQCHIP) == IRQCHIP_SIZE);
     assert!(size(KVM_GET_CLOCK) == CLOCK_SIZE && size(KVM_SET_CLOCK) == CLOCK_SIZE);
     assert!(size(KVM_GET_REGS) == size_of::<kvm_regs>());
+    assert!(size(KVM_PRE_FAULT_MEMORY) == size_of::<kvm_pre_fault_memory>());
 };
 /// `kvm_irqchip.chip_id`s.
 pub const IRQCHIP_PIC_MASTER: u32 = 0;
@@ -97,6 +99,8 @@ pub const CAP_IMMEDIATE_EXIT: u64 = 136;
 pub const CAP_READONLY_MEM: u64 = 81;
 /// On the VM fd: the size of the guest's XSAVE area, 4096 or more, or 0 without XSAVE2.
 pub const CAP_XSAVE2: u64 = 208;
+/// KVM_PRE_FAULT_MEMORY (Linux 6.10); x86 reports it only with two-dimensional paging.
+pub const CAP_PRE_FAULT_MEMORY: u64 = 236;
 
 /// kvm_userspace_memory_region flags.
 pub const MEM_READONLY: u32 = 1 << 1;
@@ -221,7 +225,18 @@ pub struct kvm_irq_level {
     pub level: u32,
 }
 
+/// A range of guest memory to map ahead (api.rst 4.143); KVM advances it as it goes.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct kvm_pre_fault_memory {
+    pub gpa: u64,
+    pub size: u64,
+    pub flags: u64,
+    pub padding: [u64; 5],
+}
+
 const _: () = {
+    assert!(size_of::<kvm_pre_fault_memory>() == 64);
     assert!(size_of::<kvm_userspace_memory_region>() == 32);
     assert!(size_of::<kvm_regs>() == 144);
     assert!(size_of::<kvm_segment>() == 24);
@@ -694,6 +709,19 @@ impl VcpuFd {
     pub fn set_tsc_khz(&self, khz: u32) -> io::Result<()> {
         // SAFETY: the frequency by value.
         unsafe { ioctl(self.fd(), KVM_SET_TSC_KHZ, libc::c_ulong::from(khz)) }.map(drop)
+    }
+
+    /// Maps what it can of `range` into the stage-2 tables, and advances it past that.
+    pub fn pre_fault_memory(&self, range: &mut kvm_pre_fault_memory) -> io::Result<()> {
+        // SAFETY: KVM reads and updates one kvm_pre_fault_memory, which `range` is.
+        unsafe {
+            ioctl(
+                self.fd(),
+                KVM_PRE_FAULT_MEMORY,
+                (&raw mut *range) as libc::c_ulong,
+            )
+        }
+        .map(drop)
     }
 
     /// Tells a guest with kvmclock that its vCPU was stopped, so its soft-lockup watchdog

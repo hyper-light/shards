@@ -21,7 +21,7 @@ use crate::devices::{Interrupt, MmioBus};
 use crate::hv::{self, Io};
 use crate::memory::GuestMemory;
 use crate::snapshot::codec::{Reader, Writer};
-use crate::snapshot::{MachineConfig, Snapshot};
+use crate::snapshot::{self, MachineConfig, Snapshot};
 use crate::{debug, initramfs, platform, warn};
 
 const MIB: u64 = 1 << 20;
@@ -47,6 +47,10 @@ pub struct Restored {
     pub vm: hv::VmState,
     /// The device buses' saved state, applied by [`finish`].
     pub devices: Vec<u8>,
+    /// The snapshot's working set, to map before the guest runs; empty for none.
+    pub working_set: Vec<hv::Touch>,
+    /// How many of its pages were mapped ahead.
+    pub prefetched: std::sync::OnceLock<usize>,
 }
 
 /// MMIO devices and port I/O devices.
@@ -54,6 +58,8 @@ pub struct Restored {
 pub struct Bus {
     pub mmio: MmioBus,
     pub pio: MmioBus,
+    /// Each pmem device's region and guest address, which working sets record.
+    pub pmem: Vec<(u64, Arc<pmem::Region>)>,
 }
 
 impl Io for Bus {
@@ -220,7 +226,13 @@ fn assemble(
             layout::VIRTIO_MMIO_MAX
         ));
     }
-    let mut bus = Bus::default();
+    let mut bus = Bus {
+        pmem: regions
+            .iter()
+            .map(|(region, gpa)| (*gpa, region.clone()))
+            .collect(),
+        ..Bus::default()
+    };
     let mut virtio = Vec::with_capacity(slots);
     // Each virtio device takes the next MMIO window and GSI, in the guest's probe order.
     let mut add_virtio = |bus: &mut Bus, device: Box<dyn VirtioDevice>| -> Result<(), String> {
@@ -356,14 +368,15 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     })
 }
 
-/// A machine that resumes `snap`, with guest RAM mapped copy-on-write from `memory_file`.
-/// It prefetches no working set: recording one needs HVF's stage-2 protection today.
+/// A machine that resumes `snap`, with guest RAM mapped copy-on-write from `memory_file`,
+/// that maps `working_set` before the guest runs: the pages the guest wrote are copied
+/// here, and vCPU 0 maps them all into the stage-2 tables ([`setup_vcpu`]).
 pub fn restore(
     snap: &Snapshot,
     memory_file: &File,
     console: Console,
     vsock: Option<&Path>,
-    _working_set: Vec<hv::Touch>,
+    working_set: Vec<hv::Touch>,
 ) -> Result<Machine, String> {
     super::check_vsock(snap, vsock)?;
     let (vm_state, vcpus) = decode_state(&snap.arch)?;
@@ -378,6 +391,9 @@ pub fn restore(
     let memory =
         Arc::new(GuestMemory::from_file(&ranges, memory_file).map_err(|e| format!("snapshot memory: {e}"))?);
     let a = assemble(&memory, &snap.config, console, vsock)?;
+    if let Err(e) = copy_written(&memory, &working_set) {
+        warn!("{e}; the guest copies the pages it writes as it writes them");
+    }
     Ok(Machine {
         vm: a.vm,
         memory,
@@ -390,30 +406,136 @@ pub fn restore(
             vcpus,
             vm: vm_state,
             devices: snap.devices.clone(),
+            working_set,
+            prefetched: std::sync::OnceLock::new(),
         }),
         config: snap.config.clone(),
     })
 }
 
-/// Stage-2 pages, as working sets would record them.
+/// Makes the private copies of RAM that the guest wrote while its working set was
+/// recorded, as its writes would make them: KVM then maps these pages writable ahead,
+/// where a write to a page mapped read-only would fault, copy, and fault again.
+fn copy_written(memory: &GuestMemory, working_set: &[hv::Touch]) -> Result<(), String> {
+    let written = working_set.iter().filter(|t| t.written).map(|t| t.gpa);
+    for (gpa, len) in runs(written) {
+        let at = |e: &dyn std::fmt::Display| format!("copying written pages at {gpa:#x}+{len:#x}: {e}");
+        let len = usize::try_from(len).map_err(|e| at(&e))?;
+        let host = memory.host_ptr(gpa, len).map_err(|e| at(&e))?;
+        platform::populate_writable(host, len).map_err(|e| at(&e))?;
+    }
+    Ok(())
+}
+
+/// The runs of consecutive pages among `pages`, as `(gpa, len)`, in order.
+fn runs(pages: impl Iterator<Item = u64>) -> Vec<(u64, u64)> {
+    let mut pages: Vec<u64> = pages.map(|gpa| gpa & !(PAGE - 1)).collect();
+    pages.sort_unstable();
+    pages.dedup();
+    let mut runs: Vec<(u64, u64)> = Vec::new();
+    for gpa in pages {
+        match runs.last_mut() {
+            Some((start, len)) if start.checked_add(*len) == Some(gpa) => *len += PAGE,
+            _ => runs.push((gpa, PAGE)),
+        }
+    }
+    runs
+}
+
+/// Maps every page of `working_set` into the stage-2 tables; how many it mapped. A page
+/// that cannot be mapped ahead is only a fault later.
+fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> usize {
+    let mut mapped = 0;
+    for (gpa, len) in runs(working_set.iter().map(|t| t.gpa)) {
+        match vcpu.pre_fault(gpa, len) {
+            Ok(true) => mapped += (len / PAGE) as usize,
+            Ok(false) => {
+                debug!("KVM cannot map memory ahead here (Linux 6.10+, with two-dimensional paging)");
+                break;
+            }
+            Err(e) => {
+                warn!("mapping the working set ahead at {gpa:#x}+{len:#x}: {e}");
+                break;
+            }
+        }
+    }
+    mapped
+}
+
+/// Stage-2 pages, as working sets record them: the host's pages.
 pub const PAGE: u64 = 4 << 10;
 
-/// Nothing records a working set on KVM yet.
+/// What records a working set: the guest's memory, mapped afresh at the snapshot, and
+/// kept mapped until the recording ends, even if the VM stops first.
 #[derive(Debug)]
-pub enum Recorder {}
-
-/// None: recording a working set needs HVF's stage-2 protection, which KVM has no
-/// counterpart of here yet.
-pub fn record(_vm: &hv::Vm) -> Result<Option<Recorder>, String> {
-    Ok(None)
+pub struct Recorder {
+    memory: Arc<GuestMemory>,
+    pmem: Vec<(u64, Arc<pmem::Region>)>,
 }
 
-pub fn recorded(recorder: &Recorder) -> Vec<hv::Touch> {
-    match *recorder {}
+/// Starts recording the working set from the snapshot just written to `dir`, with every
+/// vCPU parked and every device paused. RAM is mapped afresh, copy-on-write, from the
+/// snapshot's memory file, and each pmem region from its file, so the host maps a page
+/// again only once the guest (or a device) touches it; KVM follows (api.rst 4.35). From
+/// here on the VM runs as its restores do, and what the host maps when the recording
+/// ends is what they touch: pages written since are private copies.
+pub fn record(
+    _vm: &hv::Vm,
+    memory: &Arc<GuestMemory>,
+    bus: &Bus,
+    dir: &Path,
+) -> Result<Option<Recorder>, String> {
+    if platform::page_size().map_err(|e| e.to_string())? as u64 != PAGE {
+        return Ok(None);
+    }
+    let path = dir.join(snapshot::MEMORY);
+    let file = File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // SAFETY: the coordinator records between writing the snapshot and resuming the
+    // devices, with every vCPU parked; `file` is the memory it just saved; KVM follows
+    // mapping changes.
+    unsafe { memory.remap(&file) }.map_err(|e| format!("mapping guest RAM afresh: {e}"))?;
+    for (gpa, region) in &bus.pmem {
+        // SAFETY: as above.
+        unsafe { region.remap() }.map_err(|e| format!("mapping pmem at {gpa:#x} afresh: {e}"))?;
+    }
+    Ok(Some(Recorder {
+        memory: memory.clone(),
+        pmem: bus.pmem.clone(),
+    }))
 }
 
-pub fn prefetched(_start: &Start) -> usize {
-    0
+/// The pages touched since [`record`]: those the host maps, written where it holds a
+/// private copy of RAM. pmem is read-only, so a page there that is not the file's is the
+/// shared zero page, past the end of the file.
+pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
+    let regions = recorder
+        .memory
+        .regions()
+        .map(|(gpa, host, len)| (gpa, host, len, true))
+        .chain(
+            recorder
+                .pmem
+                .iter()
+                .map(|(gpa, r)| (*gpa, r.host(), r.len(), false)),
+        );
+    let mut touched = Vec::new();
+    for (gpa, host, len, writable) in regions {
+        let mapped =
+            platform::mapped_pages(host, len).map_err(|e| format!("the pages mapped at {gpa:#x}: {e}"))?;
+        touched.extend(mapped.into_iter().map(|(i, copied)| hv::Touch {
+            gpa: gpa + i as u64 * PAGE,
+            written: copied && writable,
+        }));
+    }
+    Ok(touched)
+}
+
+/// How many pages of its working set a restored machine mapped ahead.
+pub fn prefetched(start: &Start) -> usize {
+    match start {
+        Start::Restore(r) => r.prefetched.get().copied().unwrap_or(0),
+        Start::Boot(_) => 0,
+    }
 }
 
 /// Creates vCPU `index` and puts it where `start` says: the boot protocol's registers for
@@ -432,6 +554,17 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu, 
                 .get(index)
                 .ok_or_else(|| format!("the snapshot has no vCPU {index}"))?;
             vcpu.restore_state(state).map_err(|e| e.to_string())?;
+            // After the state, which sets the paging mode KVM maps for.
+            if index == 0 && !r.working_set.is_empty() {
+                let t0 = crate::log::uptime_us();
+                let n = pre_fault(&vcpu, &r.working_set);
+                debug!(
+                    "mapped {n} of {} working-set pages ahead in {} us",
+                    r.working_set.len(),
+                    crate::log::uptime_us().saturating_sub(t0)
+                );
+                let _ = r.prefetched.set(n);
+            }
         }
     }
     Ok(vcpu)
@@ -486,4 +619,20 @@ fn decode_state(bytes: &[u8]) -> Result<(hv::VmState, Vec<hv::VcpuState>), Strin
         .map_err(|e| format!("snapshot vCPU state: {e}"))?;
     r.finish().map_err(|e| format!("snapshot state: {e}"))?;
     Ok((vm, vcpus))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runs_join_consecutive_pages_once_each() {
+        let last = !(PAGE - 1);
+        let pages = [0x3000, 0x1000, 0x2000, 0x2000, 0x2fff, 0x9000, 0x8000, last];
+        assert_eq!(
+            runs(pages.into_iter()),
+            [(0x1000, 0x3000), (0x8000, 0x2000), (last, PAGE)]
+        );
+        assert_eq!(runs(std::iter::empty()), []);
+    }
 }

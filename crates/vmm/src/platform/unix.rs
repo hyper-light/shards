@@ -108,8 +108,9 @@ pub unsafe fn release(ptr: NonNull<u8>, len: usize) {
 /// written.
 ///
 /// # Safety
-/// `at..at+len` must be page-aligned, inside a reservation from [`reserve`] that no
-/// hypervisor maps and nothing references yet; `offset` must be page-aligned.
+/// `at..at+len` must be page-aligned, inside a reservation from [`reserve`] that nothing
+/// references, and no hypervisor maps unless it follows mapping changes (KVM) and what
+/// the file holds there is what the memory held; `offset` must be page-aligned.
 pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull<u8>) -> io::Result<()> {
     let offset = file_offset(offset)?;
     // SAFETY: MAP_FIXED over memory the caller owns and nothing references.
@@ -139,8 +140,7 @@ pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull
 /// (platform-measurements M17).
 ///
 /// # Safety
-/// `at..at+len` must be page-aligned, inside a reservation from [`reserve`] that no
-/// hypervisor maps and nothing references yet.
+/// As for [`map_file_private`].
 pub unsafe fn map_file_readonly(file: &File, len: usize, at: NonNull<u8>) -> io::Result<()> {
     // SAFETY: MAP_FIXED over memory the caller owns and nothing references.
     let p = unsafe {
@@ -160,6 +160,64 @@ pub unsafe fn map_file_readonly(file: &File, len: usize, at: NonNull<u8>) -> io:
         return Err(io::Error::other("mmap(MAP_FIXED) placed the mapping elsewhere"));
     }
     Ok(())
+}
+
+/// Faults in the `len` bytes at `ptr` writable, copying each page a private mapping
+/// still shares with its file: the copies the first writes would make, made ahead
+/// (madvise(2) MADV_POPULATE_WRITE, Linux 5.14: a write fault on each page, mm/madvise.c
+/// madvise_populate).
+#[cfg(target_os = "linux")]
+pub fn populate_writable(ptr: *mut u8, len: usize) -> io::Result<()> {
+    loop {
+        // SAFETY: MADV_POPULATE_WRITE only faults pages in: every byte keeps its value,
+        // and a range that is not all mapped is an error, not an access.
+        if unsafe { libc::madvise(ptr.cast(), len, libc::MADV_POPULATE_WRITE) } == 0 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// The pages of the `len` bytes at `ptr` that are mapped now, each as its index and
+/// whether it is a private copy, written since it was mapped, rather than a page of the
+/// mapped file: the present (63) and file-page (61) bits of /proc/self/pagemap, which
+/// need no privilege, unlike its frame numbers (Documentation/admin-guide/mm/pagemap.rst).
+#[cfg(target_os = "linux")]
+pub fn mapped_pages(ptr: *const u8, len: usize) -> io::Result<Vec<(usize, bool)>> {
+    use std::os::unix::fs::FileExt;
+    const PRESENT: u64 = 1 << 63;
+    const FILE_PAGE: u64 = 1 << 61;
+    let page = page_size()?;
+    if !(ptr as usize).is_multiple_of(page) || !len.is_multiple_of(page) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{ptr:p}+{len:#x} is not page-aligned"),
+        ));
+    }
+    let (start, pages) = (ptr as usize / page, len / page);
+    let pagemap = File::open("/proc/self/pagemap")?;
+    let mut entries = vec![0u8; 8 << 13];
+    let mut mapped = Vec::new();
+    let mut done = 0;
+    while done < pages {
+        let n = (pages - done).min(entries.len() / 8);
+        let chunk = entries
+            .get_mut(..n * 8)
+            .ok_or_else(|| io::Error::other("pagemap buffer"))?;
+        pagemap.read_exact_at(chunk, (start + done) as u64 * 8)?;
+        let (words, _) = chunk.as_chunks::<8>();
+        for (i, word) in words.iter().enumerate() {
+            let entry = u64::from_ne_bytes(*word);
+            if entry & PRESENT != 0 {
+                mapped.push((done + i, entry & FILE_PAGE == 0));
+            }
+        }
+        done += n;
+    }
+    Ok(mapped)
 }
 
 /// Writes back `len` bytes at `ptr` from the data cache to memory, so a guest that maps
