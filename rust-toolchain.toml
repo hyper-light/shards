@@ -1,0 +1,6 @@
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
+# Guest binaries: static musl for every guest architecture.
+targets = ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
+profile = "minimal"

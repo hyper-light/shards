@@ -1,0 +1,140 @@
+archive file-and-dir.tar
+entry flag=48 name=736d616c6c2e747874 link= mode=0 uid=0 gid=0 mtime=0 nsec=0 size=5 devmajor=0 devminor=0 sparse=0 xattrs= data=5:41640c9df4580df6
+entry flag=53 name=6469722f link= mode=0 uid=0 gid=0 mtime=0 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive gnu-incremental.tar
+entry flag=68 name=74657374322f link= mode=16877 uid=1000 gid=1000 mtime=1441973427 nsec=0 size=14 devmajor=0 devminor=0 sparse=0 xattrs= data=14:45079e26ca55f4f3
+entry flag=48 name=74657374322f666f6f link= mode=33188 uid=1000 gid=1000 mtime=1441973363 nsec=0 size=64 devmajor=0 devminor=0 sparse=0 xattrs= data=64:e17e4250418e69ca
+entry flag=83 name=74657374322f737061727365 link= mode=33188 uid=1000 gid=1000 mtime=1441973427 nsec=0 size=536870912 devmajor=0 devminor=0 sparse=0 xattrs= data=536870912:7b56e11704222325
+end
+archive gnu-long-nul.tar
+entry flag=48 name=30313233343536373839 link= mode=420 uid=1000 gid=1000 mtime=1486082191 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive gnu-multi-hdrs.tar
+entry flag=50 name=474e55322f474e55322f6c6f6e672d706174682d6e616d65 link=474e55342f474e55342f6c6f6e672d6c696e6b706174682d6e616d65 mode=0 uid=0 gid=0 mtime=0 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive gnu-nil-sparse-data.tar
+entry flag=83 name=7370617273652e6462 link= mode=0 uid=0 gid=0 mtime=0 nsec=0 size=1000 devmajor=0 devminor=0 sparse=0 xattrs= data=1000:13995fa800d66b75
+end
+archive gnu-nil-sparse-hole.tar
+entry flag=83 name=7370617273652e6462 link= mode=0 uid=0 gid=0 mtime=0 nsec=0 size=1000 devmajor=0 devminor=0 sparse=0 xattrs= data=1000:12633b178b17a745
+end
+archive gnu-not-utf8.tar
+entry flag=48 name=686980818283627965 link= mode=420 uid=1000 gid=1000 mtime=0 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive gnu-utf8.tar
+entry flag=48 name=e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9e298bae298bbe298b9 link= mode=420 uid=1000 gid=1000 mtime=0 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive gnu.tar
+entry flag=48 name=736d616c6c2e747874 link= mode=416 uid=73025 gid=5000 mtime=1244428340 nsec=0 size=5 devmajor=0 devminor=0 sparse=0 xattrs= data=5:41640c9df4580df6
+entry flag=48 name=736d616c6c322e747874 link= mode=416 uid=73025 gid=5000 mtime=1244436044 nsec=0 size=11 devmajor=0 devminor=0 sparse=0 xattrs= data=11:95d2d9dc54274d5d
+end
+archive hardlink.tar
+entry flag=48 name=66696c652e747874 link= mode=420 uid=1000 gid=100 mtime=1425484303 nsec=0 size=15 devmajor=0 devminor=0 sparse=0 xattrs= data=15:5471ebcce88b7017
+entry flag=49 name=686172642e747874 link=66696c652e747874 mode=420 uid=1000 gid=100 mtime=1425484303 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive hdr-only.tar
+entry flag=53 name=6469722f link= mode=488 uid=319973 gid=5000 mtime=1442273732 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=54 name=6669666f link= mode=416 uid=319973 gid=5000 mtime=1442273806 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=48 name=66696c65 link= mode=416 uid=319973 gid=5000 mtime=1442273747 nsec=0 size=46 devmajor=0 devminor=0 sparse=0 xattrs= data=46:89ffa9be0b11e0e3
+entry flag=49 name=686172646c696e6b link=66696c65 mode=416 uid=319973 gid=5000 mtime=1442273747 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=51 name=6e756c6c link= mode=438 uid=319973 gid=5000 mtime=1442264573 nsec=0 size=0 devmajor=1 devminor=3 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=52 name=736461 link= mode=432 uid=319973 gid=5000 mtime=1442264573 nsec=0 size=0 devmajor=8 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=50 name=73796d6c696e6b link=66696c65 mode=511 uid=319973 gid=5000 mtime=1442273756 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=50 name=6261646c696e6b link=6d697373696e67 mode=511 uid=319973 gid=5000 mtime=1442274044 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=53 name=6469722f link= mode=488 uid=319973 gid=5000 mtime=1442273732 nsec=0 size=5 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=54 name=6669666f link= mode=416 uid=319973 gid=5000 mtime=1442273806 nsec=0 size=5 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=48 name=66696c65 link= mode=416 uid=319973 gid=5000 mtime=1442273747 nsec=0 size=46 devmajor=0 devminor=0 sparse=0 xattrs= data=46:89ffa9be0b11e0e3
+entry flag=49 name=686172646c696e6b link=66696c65 mode=416 uid=319973 gid=5000 mtime=1442273747 nsec=0 size=5 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=51 name=6e756c6c link= mode=438 uid=319973 gid=5000 mtime=1442264573 nsec=0 size=5 devmajor=1 devminor=3 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=52 name=736461 link= mode=432 uid=319973 gid=5000 mtime=1442264573 nsec=0 size=5 devmajor=8 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=50 name=73796d6c696e6b link=66696c65 mode=511 uid=319973 gid=5000 mtime=1442273756 nsec=0 size=5 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=50 name=6261646c696e6b link=6d697373696e67 mode=511 uid=319973 gid=5000 mtime=1442274044 nsec=0 size=5 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive invalid-go17.tar
+entry flag=48 name=616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161612f666f6f link= mode=0 uid=2097152 gid=0 mtime=0 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive issue10968.tar
+error archive/tar: invalid tar header
+archive issue11169.tar
+error archive/tar: invalid tar header
+archive issue12435.tar
+error archive/tar: invalid tar header
+archive neg-size.tar
+error archive/tar: invalid tar header
+archive nil-uid.tar
+entry flag=48 name=50313035303233382e4a50472e6c6f67 link= mode=436 uid=0 gid=0 mtime=1365454838 nsec=0 size=14 devmajor=0 devminor=0 sparse=0 xattrs= data=14:4481866e76b38d0d
+end
+archive pax-bad-hdr-file.tar
+error archive/tar: invalid tar header
+archive pax-bad-mtime-file.tar
+error archive/tar: invalid tar header
+archive pax-global-records.tar
+entry flag=103 name=676c6f62616c31 link= mode=0 uid=0 gid=0 mtime=-62135596800 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=48 name=66696c6531 link= mode=0 uid=0 gid=0 mtime=0 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=48 name=66696c6532 link= mode=0 uid=0 gid=0 mtime=0 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=103 name=476c6f62616c486561642e302e30 link= mode=0 uid=0 gid=0 mtime=-62135596800 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=48 name=66696c6533 link= mode=0 uid=0 gid=0 mtime=0 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+entry flag=48 name=66696c6534 link= mode=0 uid=0 gid=0 mtime=1400000000 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive pax-multi-hdrs.tar
+entry flag=50 name=626172 link=504158342f504158342f6c6f6e672d6c696e6b706174682d6e616d65 mode=0 uid=0 gid=0 mtime=0 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive pax-nil-sparse-data.tar
+entry flag=48 name=7370617273652e6462 link= mode=0 uid=0 gid=0 mtime=0 nsec=0 size=1000 devmajor=0 devminor=0 sparse=1 xattrs= data=1000:13995fa800d66b75
+end
+archive pax-nil-sparse-hole.tar
+entry flag=48 name=7370617273652e6462 link= mode=0 uid=0 gid=0 mtime=0 nsec=0 size=1000 devmajor=0 devminor=0 sparse=1 xattrs= data=1000:12633b178b17a745
+end
+archive pax-nul-path.tar
+error archive/tar: invalid tar header
+archive pax-nul-xattrs.tar
+error archive/tar: invalid tar header
+archive pax-path-hdr.tar
+end
+archive pax-pos-size-file.tar
+entry flag=48 name=666f6f link= mode=416 uid=319973 gid=5000 mtime=1442282516 nsec=0 size=999 devmajor=0 devminor=0 sparse=0 xattrs= data=999:6c556a7f8f3b31b5
+end
+archive pax-records.tar
+entry flag=48 name=66696c65 link= mode=0 uid=0 gid=0 mtime=0 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive pax.tar
+entry flag=48 name=612f313233343536373839313031313132313331343135313631373138313932303231323232333234323532363237323832393330333133323333333433353336333733383339343034313432343334343435343634373438343935303531353235333534353535363537353835393630363136323633363436353636363736383639373037313732373337343735373637373738373938303831383238333834383538363837383838393930393139323933393439353936393739383939313030 link= mode=436 uid=1000 gid=1000 mtime=1350244992 nsec=23960108 size=7 devmajor=0 devminor=0 sparse=0 xattrs= data=7:725c378be8c1e168
+entry flag=50 name=612f62 link=313233343536373839313031313132313331343135313631373138313932303231323232333234323532363237323832393330333133323333333433353336333733383339343034313432343334343435343634373438343935303531353235333534353535363537353835393630363136323633363436353636363736383639373037313732373337343735373637373738373938303831383238333834383538363837383838393930393139323933393439353936393739383939313030 mode=511 uid=1000 gid=1000 mtime=1350266320 nsec=910238425 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive sparse-formats.tar
+entry flag=83 name=7370617273652d676e75 link= mode=420 uid=1000 gid=1000 mtime=1392395740 nsec=0 size=200 devmajor=0 devminor=0 sparse=0 xattrs= data=200:b0b49cde003fa29a
+entry flag=48 name=7370617273652d706f7369782d302e30 link= mode=420 uid=1000 gid=1000 mtime=1392342187 nsec=0 size=200 devmajor=0 devminor=0 sparse=1 xattrs= data=200:b0b49cde003fa29a
+entry flag=48 name=7370617273652d706f7369782d302e31 link= mode=420 uid=1000 gid=1000 mtime=1392340456 nsec=0 size=200 devmajor=0 devminor=0 sparse=1 xattrs= data=200:b0b49cde003fa29a
+entry flag=48 name=7370617273652d706f7369782d312e30 link= mode=420 uid=1000 gid=1000 mtime=1392337404 nsec=0 size=200 devmajor=0 devminor=0 sparse=1 xattrs= data=200:b0b49cde003fa29a
+entry flag=48 name=656e64 link= mode=420 uid=1000 gid=1000 mtime=1392398319 nsec=0 size=4 devmajor=0 devminor=0 sparse=0 xattrs= data=4:912543605d90f000
+end
+archive star.tar
+entry flag=48 name=736d616c6c2e747874 link= mode=416 uid=73025 gid=5000 mtime=1244592783 nsec=0 size=5 devmajor=0 devminor=0 sparse=0 xattrs= data=5:41640c9df4580df6
+entry flag=48 name=736d616c6c322e747874 link= mode=416 uid=73025 gid=5000 mtime=1244592783 nsec=0 size=11 devmajor=0 devminor=0 sparse=0 xattrs= data=11:95d2d9dc54274d5d
+end
+archive trailing-slash.tar
+entry flag=53 name=3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f3132333435363738392f link= mode=0 uid=0 gid=0 mtime=0 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive ustar-file-devs.tar
+entry flag=48 name=66696c65 link= mode=420 uid=0 gid=0 mtime=0 nsec=0 size=0 devmajor=1 devminor=1 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive ustar-file-reg.tar
+entry flag=48 name=666f6f link= mode=416 uid=319973 gid=5000 mtime=1442282516 nsec=0 size=684 devmajor=0 devminor=0 sparse=0 xattrs= data=684:099bff6d1a8defff
+end
+archive ustar.tar
+entry flag=48 name=6c6f6e676e616d652f6c6f6e676e616d652f6c6f6e676e616d652f6c6f6e676e616d652f6c6f6e676e616d652f6c6f6e676e616d652f6c6f6e676e616d652f6c6f6e676e616d652f6c6f6e676e616d652f6c6f6e676e616d652f6c6f6e676e616d652f6c6f6e676e616d652f6c6f6e676e616d652f6c6f6e676e616d652f6c6f6e676e616d652f66696c652e747874 link= mode=420 uid=501 gid=20 mtime=1360135598 nsec=0 size=6 devmajor=0 devminor=0 sparse=0 xattrs= data=6:a9bc80cca21f28b3
+end
+archive v7.tar
+entry flag=48 name=736d616c6c2e747874 link= mode=292 uid=73025 gid=5000 mtime=1244593104 nsec=0 size=5 devmajor=0 devminor=0 sparse=0 xattrs= data=5:41640c9df4580df6
+entry flag=48 name=736d616c6c322e747874 link= mode=292 uid=73025 gid=5000 mtime=1244593104 nsec=0 size=11 devmajor=0 devminor=0 sparse=0 xattrs= data=11:95d2d9dc54274d5d
+end
+archive writer.tar
+entry flag=48 name=736d616c6c2e747874 link= mode=416 uid=73025 gid=5000 mtime=1246508266 nsec=0 size=5 devmajor=0 devminor=0 sparse=0 xattrs= data=5:41640c9df4580df6
+entry flag=48 name=736d616c6c322e747874 link= mode=416 uid=73025 gid=5000 mtime=1245217492 nsec=0 size=11 devmajor=0 devminor=0 sparse=0 xattrs= data=11:95d2d9dc54274d5d
+entry flag=50 name=6c696e6b2e747874 link=736d616c6c2e747874 mode=511 uid=1000 gid=1000 mtime=1314603082 nsec=0 size=0 devmajor=0 devminor=0 sparse=0 xattrs= data=0:cbf29ce484222325
+end
+archive xattrs.tar
+entry flag=48 name=736d616c6c2e747874 link= mode=420 uid=1000 gid=10 mtime=1386065770 nsec=448252320 size=5 devmajor=0 devminor=0 sparse=0 xattrs=73656375726974792e73656c696e7578:756e636f6e66696e65645f753a6f626a6563745f723a64656661756c745f743a733000,757365722e6b657932:76616c756532,757365722e6b6579:76616c7565 data=5:41640c9df4580df6
+entry flag=48 name=736d616c6c322e747874 link= mode=420 uid=1000 gid=10 mtime=1386065770 nsec=449252304 size=11 devmajor=0 devminor=0 sparse=0 xattrs=73656375726974792e73656c696e7578:756e636f6e66696e65645f753a6f626a6563745f723a64656661756c745f743a733000 data=11:95d2d9dc54274d5d
+end

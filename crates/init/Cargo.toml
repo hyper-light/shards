@@ -1,0 +1,16 @@
+[package]
+name = "shards-init"
+version = "0.1.0"
+description = "PID 1 of every shards guest"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+libc = { workspace = true }
+shards-abi = { path = "../abi" }
+shards-cmdline = { path = "../cmdline" }

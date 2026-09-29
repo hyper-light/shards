@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.0 # keep in sync with rust-toolchain.toml
+  # Static musl builds run in this Alpine image on their native architecture. The digest pins
+  # the multi-arch index, so each runner pulls its own architecture.
+  MUSL_IMAGE: rust:1.98.0-alpine@sha256:a10e64dd139b7387337c7fbe8aca31b959b57b2fd4c8ae20a02cf1d6ea424dce
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt
+      - run: cargo fmt --all --check
+
+  # The vendored crates are what crates.io publishes, file for file (vendor/README.md).
+  vendor:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: scripts/vendor-crate --check
+
+  # The platform matrix (docs/design/architecture.md D13) on native runners. Every target is
+  # linted; the ones a runner can execute are tested. VM tests print SKIP where the host has
+  # no backend yet or no hardware virtualization.
+  native:
+    name: ${{ matrix.target }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, runner: macos-15, test: true }
+          - { target: x86_64-apple-darwin, runner: macos-15, test: false }
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04, test: true }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, test: true }
+          - { target: x86_64-pc-windows-msvc, runner: windows-2025, test: true }
+          - { target: aarch64-pc-windows-msvc, runner: windows-2025, test: false }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        shell: bash
+        # Guest binaries build for every architecture's musl target.
+        run: |
+          rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy \
+            --target ${{ matrix.target }} --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+      # AWS-LC's x64 assembly is built from source, never from the objects aws-lc-sys ships
+      # (vendor/README.md), so Windows x64 needs NASM: the official 3.02 build, pinned.
+      - name: NASM (Windows x64)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        run: |
+          # Retried: Windows' TLS checks revocation online, and its server is sometimes
+          # unreachable (CRYPT_E_REVOCATION_OFFLINE); the digest below checks the file.
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
+      - name: Host virtualization (what this runner offers each backend)
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) ls -l /dev/kvm 2>&1 || true ;;
+            macOS) sysctl kern.hv_support || true ;;
+            Windows) powershell -NoProfile -Command \
+              "(Get-CimInstance Win32_ComputerSystem).HypervisorPresent; (Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State" || true ;;
+          esac
+      - name: Lints (production code never panics; clippy.toml exempts tests)
+        shell: bash
+        run: cargo clippy --locked --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
+      # The runner's /dev/kvm is root:kvm 0660 and the runner user is not in `kvm`.
+      - name: KVM access (Linux)
+        if: runner.os == 'Linux'
+        run: if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+      - name: Tests
+        if: matrix.test
+        timeout-minutes: 30
+        shell: bash
+        run: cargo test --locked --workspace --release --target ${{ matrix.target }}
+
+  # shards against Firecracker on one KVM host: the same kernel, initrd and command line,
+  # interleaved (crates/shards/benches/firecracker.rs). Hosted arm64 runners have no /dev/kvm.
+  firecracker:
+    name: firecracker comparison (x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      - name: Host
+        run: |
+          nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
+          grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag,hpage_pmd_size}
+      - name: Compare
+        run: cargo bench --locked -p shards --bench firecracker -- --runs 30
+      # shards' own restores and pooled runs on this KVM host (docs/benchmarks.md).
+      - name: Restore
+        run: cargo bench --locked -p shards --bench restore -- --runs 30
+      - name: Image
+        run: cargo bench --locked -p shards --bench image -- --runs 100 --templates 5
+
+  musl:
+    name: ${{ matrix.target }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Host virtualization (what this runner offers each backend)
+        run: ls -l /dev/kvm 2>&1 || true
+      - name: Lint, test and build on the native architecture, in Alpine
+        timeout-minutes: 45
+        run: |
+          # VM tests need the host's /dev/kvm inside the container, where they run as root.
+          kvm=""
+          if [ -e /dev/kvm ]; then kvm="--device /dev/kvm"; fi
+          docker run --rm $kvm -v "$PWD:/work" -w /work -e TARGET \
+            -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
+            -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc \
+            "$MUSL_IMAGE" sh -eu -c '
+              apk add --no-cache build-base curl
+              rustup component add clippy
+              cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
+              cargo test --locked --workspace --release --target "$TARGET"
+              cargo build --locked --release -p shards --target "$TARGET"
+            '
+          sudo chown -R "$(id -u):$(id -g)" target
+      - name: The executable is static
+        run: |
+          bin="target/$TARGET/release/shards"
+          if readelf --program-headers "$bin" | grep -q INTERP; then
+            echo "$bin requests a program interpreter"; exit 1
+          fi
+          if readelf --dynamic "$bin" | grep -q NEEDED; then
+            echo "$bin needs shared libraries"; exit 1
+          fi

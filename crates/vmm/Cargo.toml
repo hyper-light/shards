@@ -1,0 +1,20 @@
+[package]
+name = "shards-vmm"
+version = "0.1.0"
+description = "The shards virtual machine monitor (library)"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+shards-abi = { path = "../abi" }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }

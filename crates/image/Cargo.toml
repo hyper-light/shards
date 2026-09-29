@@ -1,0 +1,19 @@
+[package]
+name = "shards-image"
+version = "0.1.0"
+description = "Images for shards microVMs: EROFS filesystems built from OCI layers"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+flate2 = "1"
+regex = "1"
+ruzstd = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"

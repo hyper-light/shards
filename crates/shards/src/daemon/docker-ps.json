@@ -1,0 +1,790 @@
+{
+  "durations": [
+    {
+      "seconds": 0,
+      "text": "Less than a second"
+    },
+    {
+      "seconds": 1,
+      "text": "1 second"
+    },
+    {
+      "seconds": 2,
+      "text": "2 seconds"
+    },
+    {
+      "seconds": 59,
+      "text": "59 seconds"
+    },
+    {
+      "seconds": 60,
+      "text": "About a minute"
+    },
+    {
+      "seconds": 119,
+      "text": "About a minute"
+    },
+    {
+      "seconds": 120,
+      "text": "2 minutes"
+    },
+    {
+      "seconds": 3599,
+      "text": "59 minutes"
+    },
+    {
+      "seconds": 3600,
+      "text": "About an hour"
+    },
+    {
+      "seconds": 5399,
+      "text": "About an hour"
+    },
+    {
+      "seconds": 5400,
+      "text": "2 hours"
+    },
+    {
+      "seconds": 170999,
+      "text": "47 hours"
+    },
+    {
+      "seconds": 171000,
+      "text": "2 days"
+    },
+    {
+      "seconds": 172800,
+      "text": "2 days"
+    },
+    {
+      "seconds": 1206000,
+      "text": "13 days"
+    },
+    {
+      "seconds": 1209600,
+      "text": "2 weeks"
+    },
+    {
+      "seconds": 5097600,
+      "text": "8 weeks"
+    },
+    {
+      "seconds": 5184000,
+      "text": "2 months"
+    },
+    {
+      "seconds": 62985600,
+      "text": "24 months"
+    },
+    {
+      "seconds": 63072000,
+      "text": "2 years"
+    },
+    {
+      "seconds": 63068400,
+      "text": "24 months"
+    },
+    {
+      "seconds": 63072000,
+      "text": "2 years"
+    }
+  ],
+  "tables": [
+    {
+      "containers": [
+        {
+          "id": "4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19",
+          "image": "nginx:alpine",
+          "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
+          "ago": 1,
+          "status": "Up Less than a second",
+          "name": "test"
+        },
+        {
+          "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
+          "image": "docker.io/library/busybox:latest",
+          "command": "sh",
+          "ago": 4,
+          "status": "Exited (0) 3 seconds ago",
+          "name": "ecstatic_beaver"
+        },
+        {
+          "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
+          "image": "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "echo 12345678901234567890",
+          "ago": 7200,
+          "status": "Created",
+          "name": "x"
+        },
+        {
+          "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
+          "image": "localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "printf 'a\tb\nc'",
+          "ago": 120,
+          "status": "Exited (137) About a minute ago",
+          "name": "tabs"
+        },
+        {
+          "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
+          "image": "ghcr.io/org/image",
+          "command": "echo 日本語の文字列です",
+          "ago": 3600,
+          "status": "Up About an hour",
+          "name": "cjk"
+        },
+        {
+          "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
+          "image": "docker.io/team/tool:1",
+          "command": "echo é   ‮ x",
+          "ago": 90000,
+          "status": "Up 25 hours",
+          "name": "marks"
+        },
+        {
+          "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
+          "image": "busybox",
+          "command": "echo …… ambiguous width",
+          "ago": 172800,
+          "status": "Exited (1) 2 days ago",
+          "name": "ambiguous"
+        },
+        {
+          "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
+          "image": "busybox:1.36",
+          "command": "sh -c 'echo \"quoted\" \\ back'",
+          "ago": 1209600,
+          "status": "Exited (2) 2 weeks ago",
+          "name": "quotes"
+        },
+        {
+          "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
+          "image": "busybox",
+          "command": "echo 😀 done\u0001",
+          "ago": 5184000,
+          "status": "Exited (0) 8 weeks ago",
+          "name": "a-rather-long-container-name_1"
+        }
+      ],
+      "trunc": true,
+      "quiet": false,
+      "east_asian": false,
+      "output": "CONTAINER ID   IMAGE                          COMMAND                    CREATED             STATUS                            PORTS     NAMES\n4bed76d3ad42   nginx:alpine                   \"/docker-entrypoint.…\"     1 second ago        Up Less than a second                       test\nb0318bca5aef   busybox:latest                 \"sh\"                       4 seconds ago       Exited (0) 3 seconds ago                    ecstatic_beaver\nc0318bca5aef   alpine                         \"echo 12345678901234…\"     2 hours ago         Created                                     x\nd0318bca5aef   localhost:5000/team/app:v1.2   \"printf 'a\\tb\\nc'\"         2 minutes ago       Exited (137) About a minute ago             tabs\ne0318bca5aef   ghcr.io/org/image              \"echo 日本語の文字列…\"     About an hour ago   Up About an hour                            cjk\nf0318bca5aef   team/tool:1                    \"echo é \\u00a0 \\u202e x\"   25 hours ago        Up 25 hours                                 marks\na1318bca5aef   busybox                        \"echo …… ambiguous w…\"     2 days ago          Exited (1) 2 days ago                       ambiguous\na2318bca5aef   busybox:1.36                   \"sh -c 'echo \\\"quoted…\"    2 weeks ago         Exited (2) 2 weeks ago                      quotes\na3318bca5aef   busybox                        \"echo 😀 done\\x01\\x7f\"     2 months ago        Exited (0) 8 weeks ago                      a-rather-long-container-name_1\n"
+    },
+    {
+      "containers": null,
+      "trunc": true,
+      "quiet": false,
+      "east_asian": false,
+      "output": "CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES\n"
+    },
+    {
+      "containers": [
+        {
+          "id": "4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19",
+          "image": "nginx:alpine",
+          "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
+          "ago": 1,
+          "status": "Up Less than a second",
+          "name": "test"
+        },
+        {
+          "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
+          "image": "docker.io/library/busybox:latest",
+          "command": "sh",
+          "ago": 4,
+          "status": "Exited (0) 3 seconds ago",
+          "name": "ecstatic_beaver"
+        },
+        {
+          "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
+          "image": "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "echo 12345678901234567890",
+          "ago": 7200,
+          "status": "Created",
+          "name": "x"
+        },
+        {
+          "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
+          "image": "localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "printf 'a\tb\nc'",
+          "ago": 120,
+          "status": "Exited (137) About a minute ago",
+          "name": "tabs"
+        },
+        {
+          "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
+          "image": "ghcr.io/org/image",
+          "command": "echo 日本語の文字列です",
+          "ago": 3600,
+          "status": "Up About an hour",
+          "name": "cjk"
+        },
+        {
+          "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
+          "image": "docker.io/team/tool:1",
+          "command": "echo é   ‮ x",
+          "ago": 90000,
+          "status": "Up 25 hours",
+          "name": "marks"
+        },
+        {
+          "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
+          "image": "busybox",
+          "command": "echo …… ambiguous width",
+          "ago": 172800,
+          "status": "Exited (1) 2 days ago",
+          "name": "ambiguous"
+        },
+        {
+          "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
+          "image": "busybox:1.36",
+          "command": "sh -c 'echo \"quoted\" \\ back'",
+          "ago": 1209600,
+          "status": "Exited (2) 2 weeks ago",
+          "name": "quotes"
+        },
+        {
+          "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
+          "image": "busybox",
+          "command": "echo 😀 done\u0001",
+          "ago": 5184000,
+          "status": "Exited (0) 8 weeks ago",
+          "name": "a-rather-long-container-name_1"
+        }
+      ],
+      "trunc": true,
+      "quiet": true,
+      "east_asian": false,
+      "output": "4bed76d3ad42\nb0318bca5aef\nc0318bca5aef\nd0318bca5aef\ne0318bca5aef\nf0318bca5aef\na1318bca5aef\na2318bca5aef\na3318bca5aef\n"
+    },
+    {
+      "containers": null,
+      "trunc": true,
+      "quiet": true,
+      "east_asian": false,
+      "output": ""
+    },
+    {
+      "containers": [
+        {
+          "id": "4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19",
+          "image": "nginx:alpine",
+          "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
+          "ago": 1,
+          "status": "Up Less than a second",
+          "name": "test"
+        },
+        {
+          "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
+          "image": "docker.io/library/busybox:latest",
+          "command": "sh",
+          "ago": 4,
+          "status": "Exited (0) 3 seconds ago",
+          "name": "ecstatic_beaver"
+        },
+        {
+          "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
+          "image": "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "echo 12345678901234567890",
+          "ago": 7200,
+          "status": "Created",
+          "name": "x"
+        },
+        {
+          "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
+          "image": "localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "printf 'a\tb\nc'",
+          "ago": 120,
+          "status": "Exited (137) About a minute ago",
+          "name": "tabs"
+        },
+        {
+          "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
+          "image": "ghcr.io/org/image",
+          "command": "echo 日本語の文字列です",
+          "ago": 3600,
+          "status": "Up About an hour",
+          "name": "cjk"
+        },
+        {
+          "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
+          "image": "docker.io/team/tool:1",
+          "command": "echo é   ‮ x",
+          "ago": 90000,
+          "status": "Up 25 hours",
+          "name": "marks"
+        },
+        {
+          "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
+          "image": "busybox",
+          "command": "echo …… ambiguous width",
+          "ago": 172800,
+          "status": "Exited (1) 2 days ago",
+          "name": "ambiguous"
+        },
+        {
+          "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
+          "image": "busybox:1.36",
+          "command": "sh -c 'echo \"quoted\" \\ back'",
+          "ago": 1209600,
+          "status": "Exited (2) 2 weeks ago",
+          "name": "quotes"
+        },
+        {
+          "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
+          "image": "busybox",
+          "command": "echo 😀 done\u0001",
+          "ago": 5184000,
+          "status": "Exited (0) 8 weeks ago",
+          "name": "a-rather-long-container-name_1"
+        }
+      ],
+      "trunc": false,
+      "quiet": false,
+      "east_asian": false,
+      "output": "CONTAINER ID                                                       IMAGE                                                                                                  COMMAND                                          CREATED             STATUS                            PORTS     NAMES\n4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19   nginx:alpine                                                                                           \"/docker-entrypoint.sh nginx -g 'daemon off;'\"   1 second ago        Up Less than a second                       test\nb0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001   docker.io/library/busybox:latest                                                                       \"sh\"                                             4 seconds ago       Exited (0) 3 seconds ago                    ecstatic_beaver\nc0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002   alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1                         \"echo 12345678901234567890\"                      2 hours ago         Created                                     x\nd0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003   localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1   \"printf 'a\\tb\\nc'\"                               2 minutes ago       Exited (137) About a minute ago             tabs\ne0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004   ghcr.io/org/image                                                                                      \"echo 日本語の文字列です\"                        About an hour ago   Up About an hour                            cjk\nf0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005   docker.io/team/tool:1                                                                                  \"echo é \\u00a0 \\u202e x\"                         25 hours ago        Up 25 hours                                 marks\na1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006   busybox                                                                                                \"echo …… ambiguous width\"                        2 days ago          Exited (1) 2 days ago                       ambiguous\na2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007   busybox:1.36                                                                                           \"sh -c 'echo \\\"quoted\\\" \\\\ back'\"                2 weeks ago         Exited (2) 2 weeks ago                      quotes\na3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008   busybox                                                                                                \"echo 😀 done\\x01\\x7f\"                           2 months ago        Exited (0) 8 weeks ago                      a-rather-long-container-name_1\n"
+    },
+    {
+      "containers": null,
+      "trunc": false,
+      "quiet": false,
+      "east_asian": false,
+      "output": "CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES\n"
+    },
+    {
+      "containers": [
+        {
+          "id": "4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19",
+          "image": "nginx:alpine",
+          "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
+          "ago": 1,
+          "status": "Up Less than a second",
+          "name": "test"
+        },
+        {
+          "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
+          "image": "docker.io/library/busybox:latest",
+          "command": "sh",
+          "ago": 4,
+          "status": "Exited (0) 3 seconds ago",
+          "name": "ecstatic_beaver"
+        },
+        {
+          "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
+          "image": "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "echo 12345678901234567890",
+          "ago": 7200,
+          "status": "Created",
+          "name": "x"
+        },
+        {
+          "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
+          "image": "localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "printf 'a\tb\nc'",
+          "ago": 120,
+          "status": "Exited (137) About a minute ago",
+          "name": "tabs"
+        },
+        {
+          "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
+          "image": "ghcr.io/org/image",
+          "command": "echo 日本語の文字列です",
+          "ago": 3600,
+          "status": "Up About an hour",
+          "name": "cjk"
+        },
+        {
+          "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
+          "image": "docker.io/team/tool:1",
+          "command": "echo é   ‮ x",
+          "ago": 90000,
+          "status": "Up 25 hours",
+          "name": "marks"
+        },
+        {
+          "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
+          "image": "busybox",
+          "command": "echo …… ambiguous width",
+          "ago": 172800,
+          "status": "Exited (1) 2 days ago",
+          "name": "ambiguous"
+        },
+        {
+          "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
+          "image": "busybox:1.36",
+          "command": "sh -c 'echo \"quoted\" \\ back'",
+          "ago": 1209600,
+          "status": "Exited (2) 2 weeks ago",
+          "name": "quotes"
+        },
+        {
+          "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
+          "image": "busybox",
+          "command": "echo 😀 done\u0001",
+          "ago": 5184000,
+          "status": "Exited (0) 8 weeks ago",
+          "name": "a-rather-long-container-name_1"
+        }
+      ],
+      "trunc": false,
+      "quiet": true,
+      "east_asian": false,
+      "output": "4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19\nb0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001\nc0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002\nd0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003\ne0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004\nf0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005\na1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006\na2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007\na3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008\n"
+    },
+    {
+      "containers": null,
+      "trunc": false,
+      "quiet": true,
+      "east_asian": false,
+      "output": ""
+    },
+    {
+      "containers": [
+        {
+          "id": "4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19",
+          "image": "nginx:alpine",
+          "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
+          "ago": 1,
+          "status": "Up Less than a second",
+          "name": "test"
+        },
+        {
+          "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
+          "image": "docker.io/library/busybox:latest",
+          "command": "sh",
+          "ago": 4,
+          "status": "Exited (0) 3 seconds ago",
+          "name": "ecstatic_beaver"
+        },
+        {
+          "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
+          "image": "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "echo 12345678901234567890",
+          "ago": 7200,
+          "status": "Created",
+          "name": "x"
+        },
+        {
+          "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
+          "image": "localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "printf 'a\tb\nc'",
+          "ago": 120,
+          "status": "Exited (137) About a minute ago",
+          "name": "tabs"
+        },
+        {
+          "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
+          "image": "ghcr.io/org/image",
+          "command": "echo 日本語の文字列です",
+          "ago": 3600,
+          "status": "Up About an hour",
+          "name": "cjk"
+        },
+        {
+          "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
+          "image": "docker.io/team/tool:1",
+          "command": "echo é   ‮ x",
+          "ago": 90000,
+          "status": "Up 25 hours",
+          "name": "marks"
+        },
+        {
+          "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
+          "image": "busybox",
+          "command": "echo …… ambiguous width",
+          "ago": 172800,
+          "status": "Exited (1) 2 days ago",
+          "name": "ambiguous"
+        },
+        {
+          "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
+          "image": "busybox:1.36",
+          "command": "sh -c 'echo \"quoted\" \\ back'",
+          "ago": 1209600,
+          "status": "Exited (2) 2 weeks ago",
+          "name": "quotes"
+        },
+        {
+          "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
+          "image": "busybox",
+          "command": "echo 😀 done\u0001",
+          "ago": 5184000,
+          "status": "Exited (0) 8 weeks ago",
+          "name": "a-rather-long-container-name_1"
+        }
+      ],
+      "trunc": true,
+      "quiet": false,
+      "east_asian": true,
+      "output": "CONTAINER ID   IMAGE                          COMMAND                     CREATED             STATUS                            PORTS     NAMES\n4bed76d3ad42   nginx:alpine                   \"/docker-entrypoint.…\"     1 second ago        Up Less than a second                       test\nb0318bca5aef   busybox:latest                 \"sh\"                        4 seconds ago       Exited (0) 3 seconds ago                    ecstatic_beaver\nc0318bca5aef   alpine                         \"echo 12345678901234…\"     2 hours ago         Created                                     x\nd0318bca5aef   localhost:5000/team/app:v1.2   \"printf 'a\\tb\\nc'\"          2 minutes ago       Exited (137) About a minute ago             tabs\ne0318bca5aef   ghcr.io/org/image              \"echo 日本語の文字列…\"     About an hour ago   Up About an hour                            cjk\nf0318bca5aef   team/tool:1                    \"echo é \\u00a0 \\u202e x\"    25 hours ago        Up 25 hours                                 marks\na1318bca5aef   busybox                        \"echo …… ambiguous w…\"   2 days ago          Exited (1) 2 days ago                       ambiguous\na2318bca5aef   busybox:1.36                   \"sh -c 'echo \\\"quoted…\"    2 weeks ago         Exited (2) 2 weeks ago                      quotes\na3318bca5aef   busybox                        \"echo 😀 done\\x01\\x7f\"      2 months ago        Exited (0) 8 weeks ago                      a-rather-long-container-name_1\n"
+    },
+    {
+      "containers": null,
+      "trunc": true,
+      "quiet": false,
+      "east_asian": true,
+      "output": "CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES\n"
+    },
+    {
+      "containers": [
+        {
+          "id": "4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19",
+          "image": "nginx:alpine",
+          "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
+          "ago": 1,
+          "status": "Up Less than a second",
+          "name": "test"
+        },
+        {
+          "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
+          "image": "docker.io/library/busybox:latest",
+          "command": "sh",
+          "ago": 4,
+          "status": "Exited (0) 3 seconds ago",
+          "name": "ecstatic_beaver"
+        },
+        {
+          "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
+          "image": "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "echo 12345678901234567890",
+          "ago": 7200,
+          "status": "Created",
+          "name": "x"
+        },
+        {
+          "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
+          "image": "localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "printf 'a\tb\nc'",
+          "ago": 120,
+          "status": "Exited (137) About a minute ago",
+          "name": "tabs"
+        },
+        {
+          "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
+          "image": "ghcr.io/org/image",
+          "command": "echo 日本語の文字列です",
+          "ago": 3600,
+          "status": "Up About an hour",
+          "name": "cjk"
+        },
+        {
+          "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
+          "image": "docker.io/team/tool:1",
+          "command": "echo é   ‮ x",
+          "ago": 90000,
+          "status": "Up 25 hours",
+          "name": "marks"
+        },
+        {
+          "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
+          "image": "busybox",
+          "command": "echo …… ambiguous width",
+          "ago": 172800,
+          "status": "Exited (1) 2 days ago",
+          "name": "ambiguous"
+        },
+        {
+          "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
+          "image": "busybox:1.36",
+          "command": "sh -c 'echo \"quoted\" \\ back'",
+          "ago": 1209600,
+          "status": "Exited (2) 2 weeks ago",
+          "name": "quotes"
+        },
+        {
+          "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
+          "image": "busybox",
+          "command": "echo 😀 done\u0001",
+          "ago": 5184000,
+          "status": "Exited (0) 8 weeks ago",
+          "name": "a-rather-long-container-name_1"
+        }
+      ],
+      "trunc": true,
+      "quiet": true,
+      "east_asian": true,
+      "output": "4bed76d3ad42\nb0318bca5aef\nc0318bca5aef\nd0318bca5aef\ne0318bca5aef\nf0318bca5aef\na1318bca5aef\na2318bca5aef\na3318bca5aef\n"
+    },
+    {
+      "containers": null,
+      "trunc": true,
+      "quiet": true,
+      "east_asian": true,
+      "output": ""
+    },
+    {
+      "containers": [
+        {
+          "id": "4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19",
+          "image": "nginx:alpine",
+          "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
+          "ago": 1,
+          "status": "Up Less than a second",
+          "name": "test"
+        },
+        {
+          "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
+          "image": "docker.io/library/busybox:latest",
+          "command": "sh",
+          "ago": 4,
+          "status": "Exited (0) 3 seconds ago",
+          "name": "ecstatic_beaver"
+        },
+        {
+          "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
+          "image": "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "echo 12345678901234567890",
+          "ago": 7200,
+          "status": "Created",
+          "name": "x"
+        },
+        {
+          "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
+          "image": "localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "printf 'a\tb\nc'",
+          "ago": 120,
+          "status": "Exited (137) About a minute ago",
+          "name": "tabs"
+        },
+        {
+          "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
+          "image": "ghcr.io/org/image",
+          "command": "echo 日本語の文字列です",
+          "ago": 3600,
+          "status": "Up About an hour",
+          "name": "cjk"
+        },
+        {
+          "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
+          "image": "docker.io/team/tool:1",
+          "command": "echo é   ‮ x",
+          "ago": 90000,
+          "status": "Up 25 hours",
+          "name": "marks"
+        },
+        {
+          "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
+          "image": "busybox",
+          "command": "echo …… ambiguous width",
+          "ago": 172800,
+          "status": "Exited (1) 2 days ago",
+          "name": "ambiguous"
+        },
+        {
+          "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
+          "image": "busybox:1.36",
+          "command": "sh -c 'echo \"quoted\" \\ back'",
+          "ago": 1209600,
+          "status": "Exited (2) 2 weeks ago",
+          "name": "quotes"
+        },
+        {
+          "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
+          "image": "busybox",
+          "command": "echo 😀 done\u0001",
+          "ago": 5184000,
+          "status": "Exited (0) 8 weeks ago",
+          "name": "a-rather-long-container-name_1"
+        }
+      ],
+      "trunc": false,
+      "quiet": false,
+      "east_asian": true,
+      "output": "CONTAINER ID                                                       IMAGE                                                                                                  COMMAND                                          CREATED             STATUS                            PORTS     NAMES\n4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19   nginx:alpine                                                                                           \"/docker-entrypoint.sh nginx -g 'daemon off;'\"   1 second ago        Up Less than a second                       test\nb0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001   docker.io/library/busybox:latest                                                                       \"sh\"                                             4 seconds ago       Exited (0) 3 seconds ago                    ecstatic_beaver\nc0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002   alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1                         \"echo 12345678901234567890\"                      2 hours ago         Created                                     x\nd0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003   localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1   \"printf 'a\\tb\\nc'\"                               2 minutes ago       Exited (137) About a minute ago             tabs\ne0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004   ghcr.io/org/image                                                                                      \"echo 日本語の文字列です\"                        About an hour ago   Up About an hour                            cjk\nf0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005   docker.io/team/tool:1                                                                                  \"echo é \\u00a0 \\u202e x\"                         25 hours ago        Up 25 hours                                 marks\na1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006   busybox                                                                                                \"echo …… ambiguous width\"                      2 days ago          Exited (1) 2 days ago                       ambiguous\na2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007   busybox:1.36                                                                                           \"sh -c 'echo \\\"quoted\\\" \\\\ back'\"                2 weeks ago         Exited (2) 2 weeks ago                      quotes\na3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008   busybox                                                                                                \"echo 😀 done\\x01\\x7f\"                           2 months ago        Exited (0) 8 weeks ago                      a-rather-long-container-name_1\n"
+    },
+    {
+      "containers": null,
+      "trunc": false,
+      "quiet": false,
+      "east_asian": true,
+      "output": "CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES\n"
+    },
+    {
+      "containers": [
+        {
+          "id": "4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19",
+          "image": "nginx:alpine",
+          "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
+          "ago": 1,
+          "status": "Up Less than a second",
+          "name": "test"
+        },
+        {
+          "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
+          "image": "docker.io/library/busybox:latest",
+          "command": "sh",
+          "ago": 4,
+          "status": "Exited (0) 3 seconds ago",
+          "name": "ecstatic_beaver"
+        },
+        {
+          "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
+          "image": "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "echo 12345678901234567890",
+          "ago": 7200,
+          "status": "Created",
+          "name": "x"
+        },
+        {
+          "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
+          "image": "localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+          "command": "printf 'a\tb\nc'",
+          "ago": 120,
+          "status": "Exited (137) About a minute ago",
+          "name": "tabs"
+        },
+        {
+          "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
+          "image": "ghcr.io/org/image",
+          "command": "echo 日本語の文字列です",
+          "ago": 3600,
+          "status": "Up About an hour",
+          "name": "cjk"
+        },
+        {
+          "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
+          "image": "docker.io/team/tool:1",
+          "command": "echo é   ‮ x",
+          "ago": 90000,
+          "status": "Up 25 hours",
+          "name": "marks"
+        },
+        {
+          "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
+          "image": "busybox",
+          "command": "echo …… ambiguous width",
+          "ago": 172800,
+          "status": "Exited (1) 2 days ago",
+          "name": "ambiguous"
+        },
+        {
+          "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
+          "image": "busybox:1.36",
+          "command": "sh -c 'echo \"quoted\" \\ back'",
+          "ago": 1209600,
+          "status": "Exited (2) 2 weeks ago",
+          "name": "quotes"
+        },
+        {
+          "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
+          "image": "busybox",
+          "command": "echo 😀 done\u0001",
+          "ago": 5184000,
+          "status": "Exited (0) 8 weeks ago",
+          "name": "a-rather-long-container-name_1"
+        }
+      ],
+      "trunc": false,
+      "quiet": true,
+      "east_asian": true,
+      "output": "4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19\nb0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001\nc0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002\nd0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003\ne0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004\nf0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005\na1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006\na2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007\na3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008\n"
+    },
+    {
+      "containers": null,
+      "trunc": false,
+      "quiet": true,
+      "east_asian": true,
+      "output": ""
+    }
+  ]
+}

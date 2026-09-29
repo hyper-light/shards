@@ -1,0 +1,1205 @@
+//! Container commands the daemon runs for its clients (`shards ps`, `wait`, `logs`, `rm`,
+//! `stop`, `kill`), answering on the client's stdout and stderr as `docker` answers
+//! (docs/design/architecture.md D27). The client has read the command line already
+//! (shards_cmdline); the daemon reads it again by the same rules, and does what dockerd
+//! would, in the order and with the words the Docker CLI and dockerd use.
+
+use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
+
+use shards_cmdline::commands::{self, KILL, LOGS, PS, RM, STOP, WAIT};
+use shards_cmdline::flags::{self, Outcome, Parsed};
+use shards_cmdline::{go, gotime, width};
+use shards_ipc::kind;
+
+use super::{Daemon, STOP_GRACE, lock};
+use crate::containers::{Container, State as Life, now};
+use crate::workload::{LOG_STDERR, LOG_STDOUT};
+
+/// How long a command may take to end after SIGKILL before its VM goes too, and how long
+/// the VM may take then (moby daemon/kill.go, kill).
+const KILL_WAIT: Duration = Duration::from_secs(10);
+const LAST_WAIT: Duration = Duration::from_secs(2);
+/// How long `stop` waits after a signal it could not send (moby daemon/stop.go).
+const UNSENT_WAIT: Duration = Duration::from_secs(2);
+/// How many containers `stop`, `kill` and `rm` act on at once (docker/cli
+/// cli/command/container/utils.go, parallelOperation).
+const AT_ONCE: usize = 50;
+
+/// The client's end: what a command prints goes there.
+pub(super) struct Reply<'a>(pub &'a UnixStream);
+
+impl Reply<'_> {
+    fn out(&self, line: &str) {
+        let _ = shards_ipc::send(self.0, kind::OUT, format!("{line}\n").as_bytes(), &[]);
+    }
+
+    fn err(&self, line: &str) {
+        let _ = shards_ipc::send(self.0, kind::ERR, format!("{line}\n").as_bytes(), &[]);
+    }
+
+    /// Bytes for the client's stdout (`stream` 1) or stderr, as they are.
+    fn bytes(&self, stream: u8, bytes: &[u8]) -> bool {
+        let which = if stream == LOG_STDERR {
+            kind::ERR
+        } else {
+            kind::OUT
+        };
+        shards_ipc::send(self.0, which, bytes, &[]).is_ok()
+    }
+}
+
+/// Linux's signals by name, as dockerd takes them (moby/sys/signal v0.7.1,
+/// signal_linux.go SignalMap), the real-time ones aside.
+const SIGNALS: [(&str, i64); 34] = [
+    ("ABRT", 6),
+    ("ALRM", 14),
+    ("BUS", 7),
+    ("CHLD", 17),
+    ("CLD", 17),
+    ("CONT", 18),
+    ("FPE", 8),
+    ("HUP", 1),
+    ("ILL", 4),
+    ("INT", 2),
+    ("IO", 29),
+    ("IOT", 6),
+    ("KILL", 9),
+    ("PIPE", 13),
+    ("POLL", 29),
+    ("PROF", 27),
+    ("PWR", 30),
+    ("QUIT", 3),
+    ("SEGV", 11),
+    ("STKFLT", 16),
+    ("STOP", 19),
+    ("SYS", 31),
+    ("TERM", 15),
+    ("TRAP", 5),
+    ("TSTP", 20),
+    ("TTIN", 21),
+    ("TTOU", 22),
+    ("URG", 23),
+    ("USR1", 10),
+    ("USR2", 12),
+    ("VTALRM", 26),
+    ("WINCH", 28),
+    ("XCPU", 24),
+    ("XFSZ", 25),
+];
+/// The real-time signals, `RTMIN` to `RTMAX`, as signal_linux.go numbers them.
+const RTMIN: i64 = 34;
+const RTMAX: i64 = 64;
+
+/// A signal as dockerd reads it (moby/sys/signal ParseSignal): a number other than 0, or a
+/// name in any case, with or without `SIG`; `RTMIN+n` and `RTMAX-n` for n up to 15 and 14.
+fn parse_signal(given: &str) -> Result<i64, String> {
+    let invalid = || format!("invalid signal: {given}");
+    if let Some(n) = atoi(given) {
+        return if n == 0 { Err(invalid()) } else { Ok(n) };
+    }
+    let upper = given.to_uppercase();
+    let name = upper.strip_prefix("SIG").unwrap_or(&upper);
+    if let Some(&(_, n)) = SIGNALS.iter().find(|(s, _)| *s == name) {
+        return Ok(n);
+    }
+    let real_time = match name {
+        "RTMIN" => Some(RTMIN),
+        "RTMAX" => Some(RTMAX),
+        _ => name
+            .strip_prefix("RTMIN+")
+            .and_then(|k| decimal(k).filter(|k| (1..=15).contains(k)))
+            .map(|k| RTMIN + k)
+            .or_else(|| {
+                name.strip_prefix("RTMAX-")
+                    .and_then(|k| decimal(k).filter(|k| (1..=14).contains(k)))
+                    .map(|k| RTMAX - k)
+            }),
+    };
+    real_time.ok_or_else(invalid)
+}
+
+/// `k` if it is written as Go writes the number `k`: `RTMIN+01` is no signal's name.
+fn decimal(k: &str) -> Option<i64> {
+    k.parse::<i64>().ok().filter(|n| n.to_string() == k)
+}
+
+/// Go's `strconv.Atoi`: decimal digits after an optional sign, in range.
+fn atoi(s: &str) -> Option<i64> {
+    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.strip_prefix('+').unwrap_or(s).parse().ok()
+}
+
+/// Whether dockerd on Linux takes `n` for a signal (moby/sys/signal
+/// ValidSignalForPlatform): it names one in the map above.
+fn linux_signal(n: i64) -> Option<u32> {
+    let known = SIGNALS.iter().any(|&(_, s)| s == n) || (RTMIN..=RTMAX).contains(&n);
+    known.then(|| u32::try_from(n).ok()).flatten()
+}
+
+impl Daemon {
+    /// Runs container command `argv` for a client, answering on `reply`, and returns its
+    /// exit status, the client being `asker`.
+    pub(super) fn command(self: &Arc<Self>, argv: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
+        // What any client has seen of its run, the answer includes.
+        self.settle();
+        let words: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let Some((command, path, named)) = commands::find(&words) else {
+            reply.err(&format!("shards: no container command in {argv:?}"));
+            return 1;
+        };
+        let rest = argv.get(named..).unwrap_or_default();
+        let parsed = match flags::parse(command, path, rest, &|_, value| Ok(value.to_string())) {
+            Outcome::Run(parsed) => parsed,
+            // The client answers these itself; this is what it would have said.
+            Outcome::Help { .. } => {
+                reply.bytes(LOG_STDOUT, flags::help(command, path, 80).as_bytes());
+                return 0;
+            }
+            Outcome::Fail { text, status, .. } => {
+                reply.err(&text);
+                return status;
+            }
+        };
+        if std::ptr::eq(command, &PS) {
+            self.ps(&parsed, asker.east_asian, reply)
+        } else if std::ptr::eq(command, &WAIT) {
+            self.wait(&parsed.args, reply)
+        } else if std::ptr::eq(command, &LOGS) {
+            self.logs(&parsed, asker, reply)
+        } else if std::ptr::eq(command, &RM) {
+            self.rm(&parsed, reply)
+        } else if std::ptr::eq(command, &STOP) {
+            self.stop(&parsed, reply)
+        } else if std::ptr::eq(command, &KILL) {
+            self.kill(&parsed, reply)
+        } else {
+            reply.err(&format!("shards: {path} is not a container command"));
+            1
+        }
+    }
+
+    /// The ID of the container `reference` names: all of its ID, its name, or the start of
+    /// its ID and of no other's (moby daemon/container.go, GetContainer).
+    fn resolve(&self, reference: &str) -> Result<String, String> {
+        let registry = lock(&self.containers);
+        if !reference.is_empty() {
+            if registry.get(reference).is_some() {
+                return Ok(reference.to_string());
+            }
+            let name = reference.strip_prefix('/').unwrap_or(reference);
+            if let Some(c) = registry.name_taken(name) {
+                return Ok(c.id.clone());
+            }
+            let mut matching = registry.all().filter(|c| c.id.starts_with(reference));
+            if let Some(first) = matching.next() {
+                if matching.next().is_some() {
+                    return Err(format!(
+                        "Error response from daemon: multiple IDs found with provided prefix: {reference}"
+                    ));
+                }
+                return Ok(first.id.clone());
+            }
+        }
+        Err(format!(
+            "Error response from daemon: No such container: {reference}"
+        ))
+    }
+
+    /// Whether the container with `id` runs, as the daemon follows it.
+    fn running(&self, id: &str) -> bool {
+        lock(&self.runs).contains_key(id)
+    }
+
+    /// Sends Linux signal `linux` to the command of the container with `id`; whether it
+    /// could.
+    fn signal(&self, id: &str, linux: u32) -> bool {
+        lock(&self.runs)
+            .get(id)
+            .is_some_and(|t| shards_ipc::send(&t.socket, kind::SIGNAL, &linux.to_be_bytes(), &[]).is_ok())
+    }
+
+    /// Ends the command of the running container with `id` as dockerd does (moby
+    /// daemon/stop.go containerStop, daemon/kill.go kill): signal `linux`, then wait up to
+    /// `grace` (for ever if `None`, 2 s if the signal could not be sent), then SIGKILL and
+    /// up to 10 s more, then the VM itself and 2 s more. Whether the command ended.
+    fn end(&self, id: &str, linux: u32, grace: Option<Duration>) -> bool {
+        if linux != 9 {
+            let grace = if self.signal(id, linux) {
+                grace
+            } else {
+                Some(UNSENT_WAIT)
+            };
+            if self.await_exit(id, grace).is_some() {
+                return true;
+            }
+        }
+        self.signal(id, 9);
+        if self.await_exit(id, Some(KILL_WAIT)).is_some() {
+            return true;
+        }
+        if let Some(t) = lock(&self.runs).get(id) {
+            let _ = t.vm.kill(libc::SIGKILL);
+        }
+        self.await_exit(id, Some(LAST_WAIT)).is_some()
+    }
+
+    /// Runs `op` for each of `args`, up to 50 at once and in their order, and answers as
+    /// the Docker CLI does (cli/command/container/utils.go parallelOperation; stop.go,
+    /// kill.go, rm.go): each success prints its argument as given, once it and those
+    /// before it are done, unless `op` says it has nothing to say; the errors follow,
+    /// one per line, and make the status 1.
+    fn each(
+        &self,
+        args: &[String],
+        op: &(dyn Fn(&str) -> Result<bool, String> + Sync),
+        reply: &Reply<'_>,
+    ) -> u8 {
+        let done: Mutex<Vec<Option<Result<bool, String>>>> = Mutex::new(vec![None; args.len()]);
+        let changed = Condvar::new();
+        let next = AtomicUsize::new(0);
+        let work = || {
+            loop {
+                let i = next.fetch_add(1, Ordering::SeqCst);
+                let Some(arg) = args.get(i) else {
+                    return;
+                };
+                let result = op(arg);
+                if let Some(slot) = lock(&done).get_mut(i) {
+                    *slot = Some(result);
+                }
+                changed.notify_all();
+            }
+        };
+        let mut errors = Vec::new();
+        std::thread::scope(|scope| {
+            let workers = (0..args.len().min(AT_ONCE))
+                .filter(|_| {
+                    std::thread::Builder::new()
+                        .name("container".into())
+                        .spawn_scoped(scope, work)
+                        .is_ok()
+                })
+                .count();
+            // With no thread to be had, one at a time, here.
+            if workers == 0 {
+                work();
+            }
+            for (i, arg) in args.iter().enumerate() {
+                let mut all = lock(&done);
+                let result = loop {
+                    match all.get_mut(i).map(Option::take) {
+                        Some(Some(result)) => break result,
+                        Some(None) => {
+                            all = changed
+                                .wait(all)
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        }
+                        None => break Ok(false),
+                    }
+                };
+                drop(all);
+                match result {
+                    Ok(true) => reply.out(arg),
+                    Ok(false) => {}
+                    Err(e) => errors.push(e),
+                }
+            }
+        });
+        for e in &errors {
+            reply.err(e);
+        }
+        u8::from(!errors.is_empty())
+    }
+
+    /// `shards wait`: for each container in turn, its exit code once it stops.
+    fn wait(&self, references: &[String], reply: &Reply<'_>) -> u8 {
+        let mut errors = Vec::new();
+        for reference in references {
+            match self.resolve(reference) {
+                Ok(id) => {
+                    let code = self.await_exit(&id, None).unwrap_or(0);
+                    reply.out(&code.to_string());
+                }
+                Err(e) => errors.push(e),
+            }
+        }
+        for e in &errors {
+            reply.err(e);
+        }
+        u8::from(!errors.is_empty())
+    }
+
+    /// `shards rm [-f]`: removes containers that have stopped; with `-f`, kills the ones
+    /// still running first, and says nothing of those not there. The CLI trims `/` from
+    /// both ends of each argument (docker/cli rm.go; moby daemon/delete.go).
+    fn rm(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
+        let force = parsed.bool("force");
+        self.each(
+            &parsed.args,
+            &|given| {
+                let reference = given.trim_matches('/');
+                if reference.is_empty() {
+                    return Err("container name cannot be empty".into());
+                }
+                let id = match self.resolve(reference) {
+                    Ok(id) => id,
+                    Err(_) if force => return Ok(false),
+                    Err(e) => return Err(e),
+                };
+                let cannot = |why: &str| {
+                    format!("Error response from daemon: cannot remove container \"{reference}\": {why}")
+                };
+                if !lock(&self.removing).insert(id.clone()) {
+                    return Err(format!(
+                        "Error response from daemon: removal of container {reference} is already in progress"
+                    ));
+                }
+                let removed = (|| {
+                    if lock(&self.containers).get(&id).is_none() {
+                        return Ok(true);
+                    }
+                    if self.running(&id) {
+                        if !force {
+                            return Err(cannot(
+                                "container is running: stop the container before removing or force remove",
+                            ));
+                        }
+                        if !self.end(&id, 9, None) {
+                            return Err(cannot(
+                                "could not kill container: tried to kill container, but did not receive an exit event",
+                            ));
+                        }
+                    }
+                    lock(&self.containers)
+                        .remove(&id)
+                        .map(|_| true)
+                        .map_err(|e| cannot(&e.to_string()))
+                })();
+                lock(&self.removing).remove(&id);
+                removed
+            },
+            reply,
+        )
+    }
+
+    /// `shards stop [-t SECONDS] [-s SIGNAL]`: the signal (SIGTERM), then SIGKILL once the
+    /// time (10 s) is up, as dockerd stops a container (moby daemon/stop.go). A negative
+    /// time waits for ever; a stopped container stops again without complaint.
+    fn stop(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
+        if parsed.changed("time") && parsed.changed("timeout") {
+            reply.err("conflicting options: cannot specify both --timeout and --time");
+            return 1;
+        }
+        let grace = if parsed.changed("timeout") || parsed.changed("time") {
+            // Go multiplies the seconds into nanoseconds, wrapping (daemon/stop.go).
+            let seconds = parsed.int("timeout");
+            (seconds >= 0).then(|| {
+                let ns = seconds.wrapping_mul(1_000_000_000);
+                Duration::from_nanos(u64::try_from(ns).unwrap_or(0))
+            })
+        } else {
+            Some(STOP_GRACE)
+        };
+        let signal = parsed.string("signal");
+        self.each(
+            &parsed.args,
+            &|reference| {
+                let id = self.resolve(reference)?;
+                if !self.running(&id) {
+                    return Ok(true);
+                }
+                let cannot = |why: &str| {
+                    format!("Error response from daemon: cannot stop container: {reference}: {why}")
+                };
+                let linux = if signal.is_empty() {
+                    15
+                } else {
+                    // A number Linux has no signal for cannot be sent.
+                    parse_signal(signal).map_err(|e| cannot(&e))?
+                };
+                match u32::try_from(linux).ok().filter(|n| (1..=64).contains(n)) {
+                    Some(linux) if self.end(&id, linux, grace) => Ok(true),
+                    None if self.end(&id, 9, Some(UNSENT_WAIT)) => Ok(true),
+                    _ => Err(cannot(
+                        "tried to kill container, but did not receive an exit event",
+                    )),
+                }
+            },
+            reply,
+        )
+    }
+
+    /// `shards kill [-s SIGNAL]`: the signal (SIGKILL) to each running container's command.
+    /// SIGKILL waits for the end, as dockerd's kill does; other signals are only sent
+    /// (moby daemon/kill.go ContainerKill). Every error names its container (moby
+    /// container_routes.go postContainersKill).
+    fn kill(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
+        let signal = parsed.string("signal");
+        self.each(
+            &parsed.args,
+            &|reference| {
+                let cannot = |why: &str| {
+                    format!("Error response from daemon: cannot kill container: {reference}: {why}")
+                };
+                let linux = if signal.is_empty() {
+                    9
+                } else {
+                    let n = parse_signal(signal).map_err(|e| cannot(&e))?;
+                    linux_signal(n)
+                        .ok_or_else(|| cannot(&format!("the linux daemon does not support signal {n}")))?
+                };
+                let id = self
+                    .resolve(reference)
+                    .map_err(|e| cannot(e.trim_start_matches("Error response from daemon: ")))?;
+                let not_running = || cannot(&format!("container {id} is not running"));
+                if !self.running(&id) {
+                    return Err(not_running());
+                }
+                if linux == 9 {
+                    if !self.end(&id, 9, None) {
+                        return Err(cannot(
+                            "tried to kill container, but did not receive an exit event",
+                        ));
+                    }
+                } else if !self.signal(&id, linux) {
+                    return Err(not_running());
+                }
+                Ok(true)
+            },
+            reply,
+        )
+    }
+
+    /// `shards ps`: the containers, as `docker ps` lists them (docker/cli v29.8.1
+    /// cli/command/formatter/container.go): the running ones, or all with `-a`, or the
+    /// last `-n` made (`-l`: one); newest first; with `-q` their IDs alone.
+    fn ps(&self, parsed: &Parsed, east_asian: bool, reply: &Reply<'_>) -> u8 {
+        // `-l` is `-n 1`, unless `-n` says otherwise (docker/cli list.go).
+        let last = match parsed.int("last") {
+            -1 if parsed.bool("latest") => 1,
+            n => n,
+        };
+        let last = usize::try_from(last).ok().filter(|&n| n > 0);
+        let all = parsed.bool("all") || last.is_some();
+        let trunc = !parsed.bool("no-trunc");
+        let mut list: Vec<Container> = lock(&self.containers)
+            .all()
+            .filter(|c| all || c.state == Life::Running)
+            .cloned()
+            .collect();
+        list.sort_by_key(|c| std::cmp::Reverse(c.created));
+        list.truncate(last.unwrap_or(usize::MAX));
+        let at = now();
+        let listed: Vec<Listed> = list
+            .iter()
+            .map(|c| Listed {
+                id: c.id.clone(),
+                image: c.image.clone(),
+                command: command_line(&c.command),
+                created: c.created,
+                status: status(c, at),
+                name: c.name.clone(),
+            })
+            .collect();
+        let shown = Listing {
+            trunc,
+            quiet: parsed.bool("quiet"),
+            east_asian,
+        };
+        for line in ps_lines(&listed, at, shown) {
+            reply.out(&line);
+        }
+        0
+    }
+
+    /// `shards logs [-f] [-t] [--details] [--tail N] [--since T] [--until T]`: a
+    /// container's output, stdout to stdout and stderr to stderr, in the order it arrived;
+    /// the last N lines with `--tail`, of which those from `--since` on and to `--until`,
+    /// each after its time with `-t`, and more as it comes until the container ends with
+    /// `-f`. Lines carry no attributes here, so `--details` adds only the space that would
+    /// follow them (moby daemon/server/httputils/logstream/logstream.go).
+    fn logs(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
+        let Some(reference) = parsed.args.first() else {
+            return 1;
+        };
+        // `all`, a negative count or anything but a number means every line (moby
+        // client/container_logs.go; daemon/logger/loggerutils/logfile.go).
+        let tail = parsed
+            .string("tail")
+            .parse::<i64>()
+            .ok()
+            .and_then(|n| usize::try_from(n).ok());
+        let shown = Shown {
+            stamps: parsed.bool("timestamps"),
+            details: parsed.bool("details"),
+        };
+        let follow = parsed.bool("follow");
+        // The CLI finds the container before it reads the times (docker/cli logs.go).
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(e) => {
+                reply.err(&e);
+                return 1;
+            }
+        };
+        let mut window = Window::default();
+        for (flag, bound) in [("since", &mut window.since), ("until", &mut window.until)] {
+            let given = parsed.string(flag);
+            if given.is_empty() {
+                continue;
+            }
+            // What the client makes of it, then what dockerd makes of that (moby
+            // client/container_logs.go; daemon/server/router/container/container_routes.go).
+            let sent = match gotime::get_timestamp(given, i128::from(asker.now), i64::from(asker.utc_offset))
+            {
+                Ok(sent) => sent,
+                Err(e) => {
+                    reply.err(&format!("invalid value for \"{flag}\": {e}"));
+                    return 1;
+                }
+            };
+            if flag == "until" && sent == "0" {
+                continue;
+            }
+            match gotime::parse_unix_timestamp(&sent) {
+                Ok(at) => *bound = at,
+                Err(e) => {
+                    reply.err(&format!(
+                        "Error response from daemon: invalid value for \"{flag}\": {e}"
+                    ));
+                    return 1;
+                }
+            }
+        }
+        let path = lock(&self.containers).dir(&id).join("log");
+        let mut log = Log::default();
+        log.read(&path);
+        // Without -f, what is there is all there is: a line in progress too.
+        let lines = log.take_lines(!follow || !self.running(&id));
+        let skip = tail.map_or(0, |n| lines.len().saturating_sub(n));
+        for line in lines.iter().skip(skip) {
+            match window.admit(line.at) {
+                Admit::Skip => continue,
+                Admit::Stop => return 0,
+                Admit::Pass => {}
+            }
+            if !line.send(reply, shown) {
+                return 0;
+            }
+        }
+        if !follow {
+            return 0;
+        }
+        loop {
+            let running = self.running(&id);
+            log.read(&path);
+            // Once the container has ended, what is left of a line is all of it.
+            for line in log.take_lines(!running) {
+                match window.admit(line.at) {
+                    Admit::Skip => continue,
+                    Admit::Stop => return 0,
+                    Admit::Pass => {}
+                }
+                if !line.send(reply, shown) {
+                    return 0;
+                }
+            }
+            if !running {
+                return 0;
+            }
+            std::thread::sleep(FOLLOW_POLL);
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn times_print_as_docker_logs_prints_them() {
+        assert_eq!(rfc3339_nano(0), "1970-01-01T00:00:00.000000000Z");
+        // 2026-09-29T09:12:34.000000005Z
+        assert_eq!(
+            rfc3339_nano(1_790_673_154_000_000_005),
+            "2026-09-29T09:12:34.000000005Z"
+        );
+        // A leap day.
+        assert_eq!(
+            rfc3339_nano(1_709_164_800_000_000_000),
+            "2024-02-29T00:00:00.000000000Z"
+        );
+    }
+
+    #[test]
+    fn log_windows_filter_as_dockerd_forwards() {
+        let mut window = Window {
+            since: Some(10),
+            until: Some(20),
+        };
+        let seen: Vec<Admit> = [5, 12, 8, 20, 21, 15]
+            .iter()
+            .map(|&at| window.admit(at))
+            .collect();
+        // Once a line has passed `since`, an earlier time passes too.
+        assert_eq!(
+            seen,
+            [
+                Admit::Skip,
+                Admit::Pass,
+                Admit::Pass,
+                Admit::Pass,
+                Admit::Stop,
+                Admit::Pass
+            ]
+        );
+        assert_eq!(Window::default().admit(0), Admit::Pass);
+    }
+
+    #[test]
+    fn logs_split_into_lines_per_stream() {
+        let mut log = Log::default();
+        log.split(LOG_STDOUT, 1, b"a\nb");
+        log.split(LOG_STDERR, 2, b"e\n");
+        log.split(LOG_STDOUT, 3, b"c\n");
+        let lines = log.take_lines(false);
+        let got: Vec<(u8, u64, &[u8])> = lines
+            .iter()
+            .map(|l| (l.stream, l.at, l.bytes.as_slice()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (LOG_STDOUT, 1, &b"a\n"[..]),
+                (LOG_STDERR, 2, b"e\n"),
+                (LOG_STDOUT, 1, b"bc\n")
+            ]
+        );
+        log.split(LOG_STDOUT, 4, b"end");
+        assert!(log.take_lines(false).is_empty());
+        assert_eq!(log.take_lines(true).len(), 1);
+    }
+
+    /// Every table the Docker CLI printed of the same containers (scripts/docker-cli/
+    /// ps_test.go), shards prints byte for byte; and go-units' durations likewise.
+    #[test]
+    fn ps_prints_what_the_docker_cli_prints() {
+        let golden: serde_json::Value = serde_json::from_str(include_str!("docker-ps.json")).unwrap();
+        let s = 1_000_000_000u128;
+        for d in golden["durations"].as_array().unwrap() {
+            let seconds = u128::from(d["seconds"].as_u64().unwrap());
+            assert_eq!(
+                human_duration(seconds * s),
+                d["text"].as_str().unwrap(),
+                "{seconds} s"
+            );
+        }
+        let tables = golden["tables"].as_array().unwrap();
+        assert_eq!(tables.len(), 16);
+        let at = 1_790_673_154 * s;
+        for t in tables {
+            let text = |v: &serde_json::Value| v.as_str().unwrap().to_string();
+            let list: Vec<Listed> = t["containers"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(|c| Listed {
+                    id: text(&c["id"]),
+                    image: text(&c["image"]),
+                    command: text(&c["command"]),
+                    created: at - u128::from(c["ago"].as_u64().unwrap()) * s,
+                    status: text(&c["status"]),
+                    name: text(&c["name"]),
+                })
+                .collect();
+            let shown = Listing {
+                trunc: t["trunc"].as_bool().unwrap(),
+                quiet: t["quiet"].as_bool().unwrap(),
+                east_asian: t["east_asian"].as_bool().unwrap(),
+            };
+            let printed: String = ps_lines(&list, at, shown)
+                .iter()
+                .map(|l| format!("{l}\n"))
+                .collect();
+            assert_eq!(
+                printed,
+                t["output"].as_str().unwrap(),
+                "trunc {} quiet {} east_asian {}",
+                shown.trunc,
+                shown.quiet,
+                shown.east_asian
+            );
+        }
+    }
+
+    #[test]
+    fn durations_read_as_go_units_writes_them() {
+        let s = 1_000_000_000u128;
+        for (ns, words) in [
+            (s / 2, "Less than a second"),
+            (s, "1 second"),
+            (59 * s, "59 seconds"),
+            (60 * s, "About a minute"),
+            (119 * s, "About a minute"),
+            (120 * s, "2 minutes"),
+            (3599 * s, "59 minutes"),
+            (3600 * s, "About an hour"),
+            (5399 * s, "About an hour"),
+            (5400 * s, "2 hours"),
+            (47 * 3600 * s, "47 hours"),
+            (48 * 3600 * s, "2 days"),
+            (14 * 24 * 3600 * s, "2 weeks"),
+            (60 * 24 * 3600 * s, "2 months"),
+            (730 * 24 * 3600 * s, "2 years"),
+        ] {
+            assert_eq!(human_duration(ns), words, "{ns}");
+        }
+    }
+
+    #[test]
+    fn commands_and_images_show_as_docker_ps_shows_them() {
+        let argv = |w: &[&str]| w.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        assert_eq!(command_line(&argv(&["sh", "-c", "echo hi"])), "sh -c 'echo hi'");
+        for (stored, shown) in [
+            ("alpine", "alpine"),
+            ("alpine:3.20", "alpine:3.20"),
+            ("docker.io/library/alpine:latest", "alpine:latest"),
+            ("ghcr.io/a/b:v1", "ghcr.io/a/b:v1"),
+            (
+                "alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "alpine:3.20",
+            ),
+            ("", "<no image>"),
+            ("NOT/valid", "NOT/valid"),
+        ] {
+            assert_eq!(image(stored, true), shown, "{stored}");
+        }
+        assert_eq!(
+            image("docker.io/library/alpine", false),
+            "docker.io/library/alpine"
+        );
+    }
+
+    #[test]
+    fn tables_align_as_go_tabwriter_aligns_them() {
+        let rows = [
+            ["CONTAINER ID", "IMAGE", "NAMES"].map(String::from),
+            ["0123456789ab", "alpine", "web"].map(String::from),
+        ];
+        assert_eq!(
+            tabulate(&rows, false),
+            ["CONTAINER ID   IMAGE     NAMES", "0123456789ab   alpine    web"]
+        );
+        // The ellipsis is ambiguous: two columns in an East Asian locale.
+        let cut = [["\"ab\u{2026}\"", "x"].map(String::from)];
+        assert_eq!(tabulate(&cut, false), ["\"ab\u{2026}\"     x"]);
+        assert_eq!(tabulate(&cut, true), ["\"ab\u{2026}\"    x"]);
+    }
+
+    #[test]
+    fn signals_are_taken_as_dockerd_takes_them() {
+        for (given, n) in [
+            ("KILL", 9),
+            ("SIGTERM", 15),
+            ("term", 15),
+            ("sigusr1", 10),
+            ("9", 9),
+            ("+9", 9),
+            ("-9", -9),
+            ("99", 99),
+            ("cld", 17),
+            ("RTMIN", 34),
+            ("SIGRTMIN+15", 49),
+            ("RTMAX-14", 50),
+            ("rtmax", 64),
+        ] {
+            assert_eq!(parse_signal(given), Ok(n), "{given}");
+        }
+        for bad in [
+            "", "0", "SIG", "NOPE", "RTMIN+16", "RTMIN+01", "RTMAX-0", "1.5", " 9",
+        ] {
+            assert_eq!(parse_signal(bad), Err(format!("invalid signal: {bad}")), "{bad}");
+        }
+        assert_eq!(linux_signal(31), Some(31));
+        assert_eq!(linux_signal(34), Some(34));
+        for bad in [32, 33, 65, -9] {
+            assert_eq!(linux_signal(bad), None, "{bad}");
+        }
+    }
+}
+
+/// A container as dockerd lists it to the CLI: its command as one line, its status in
+/// words, and when it was made, in nanoseconds since the epoch.
+struct Listed {
+    id: String,
+    image: String,
+    command: String,
+    created: u128,
+    status: String,
+    name: String,
+}
+
+/// How `ps` was asked to list: `--no-trunc` or not, `-q`, and the client's locale.
+#[derive(Clone, Copy)]
+struct Listing {
+    trunc: bool,
+    quiet: bool,
+    east_asian: bool,
+}
+
+/// `list` as `docker ps` prints it at `at` (docker/cli cli/command/formatter/container.go,
+/// the default table): with `-q` the IDs alone, else a table under its header.
+fn ps_lines(list: &[Listed], at: u128, shown: Listing) -> Vec<String> {
+    let id = |c: &Listed| {
+        if shown.trunc {
+            c.id.get(..12).unwrap_or(&c.id).to_string()
+        } else {
+            c.id.clone()
+        }
+    };
+    if shown.quiet {
+        return list.iter().map(id).collect();
+    }
+    let mut rows = vec![
+        [
+            "CONTAINER ID",
+            "IMAGE",
+            "COMMAND",
+            "CREATED",
+            "STATUS",
+            "PORTS",
+            "NAMES",
+        ]
+        .map(String::from),
+    ];
+    for c in list {
+        let command = if shown.trunc {
+            width::ellipsis(&c.command, 20)
+        } else {
+            c.command.clone()
+        };
+        // The API gives creation times in whole seconds.
+        let created = c.created / 1_000_000_000 * 1_000_000_000;
+        rows.push([
+            id(c),
+            image(&c.image, shown.trunc),
+            go::quote(&command),
+            format!("{} ago", human_duration(at.saturating_sub(created))),
+            c.status.clone(),
+            String::new(),
+            c.name.clone(),
+        ]);
+    }
+    tabulate(&rows, shown.east_asian)
+}
+
+/// A container's command as the API shows it: the path, then the arguments, each in single
+/// quotes if it holds a space (moby daemon/container/view.go).
+fn command_line(argv: &[String]) -> String {
+    let Some((path, args)) = argv.split_first() else {
+        return String::new();
+    };
+    let mut line = path.clone();
+    for arg in args {
+        line.push(' ');
+        if arg.contains(' ') {
+            line.push('\'');
+            line.push_str(arg);
+            line.push('\'');
+        } else {
+            line.push_str(arg);
+        }
+    }
+    line
+}
+
+/// A container's image as `docker ps` shows it (docker/cli formatter/container.go,
+/// Image): as given with `--no-trunc`; else its familiar name, without the digest but
+/// with the tag.
+fn image(stored: &str, trunc: bool) -> String {
+    if stored.is_empty() {
+        return "<no image>".into();
+    }
+    if !trunc {
+        return stored.to_string();
+    }
+    match shards_image::reference::Reference::parse_normalized(stored) {
+        Ok(mut reference) => {
+            reference.digest = None;
+            reference.familiar()
+        }
+        Err(_) => stored.to_string(),
+    }
+}
+
+/// A duration in nanoseconds, in words, as go-units v0.5.0 `HumanDuration` puts it.
+fn human_duration(ns: u128) -> String {
+    let seconds = ns / 1_000_000_000;
+    let minutes = seconds / 60;
+    // Go rounds the hours: int(d.Hours() + 0.5).
+    let hours = (ns + 1_800_000_000_000) / 3_600_000_000_000;
+    match () {
+        () if seconds < 1 => "Less than a second".into(),
+        () if seconds == 1 => "1 second".into(),
+        () if seconds < 60 => format!("{seconds} seconds"),
+        () if minutes == 1 => "About a minute".into(),
+        () if minutes < 60 => format!("{minutes} minutes"),
+        () if hours == 1 => "About an hour".into(),
+        () if hours < 48 => format!("{hours} hours"),
+        () if hours < 24 * 7 * 2 => format!("{} days", hours / 24),
+        () if hours < 24 * 30 * 2 => format!("{} weeks", hours / 24 / 7),
+        () if hours < 24 * 365 * 2 => format!("{} months", hours / 24 / 30),
+        () => format!("{} years", ns / 3_600_000_000_000 / 24 / 365),
+    }
+}
+
+/// A container's status as dockerd words it (moby daemon/container/state.go): up for how
+/// long, or exited with what status how long ago, or created and never started.
+fn status(c: &Container, at: u128) -> String {
+    match (c.state, c.started, c.finished) {
+        (Life::Running, Some(started), _) => format!("Up {}", human_duration(at.saturating_sub(started))),
+        (_, None, _) => "Created".into(),
+        (_, Some(_), Some(finished)) => format!(
+            "Exited ({}) {} ago",
+            c.exit_code.unwrap_or(0),
+            human_duration(at.saturating_sub(finished))
+        ),
+        (_, Some(_), None) => String::new(),
+    }
+}
+
+/// `rows` aligned as the Docker CLI's tabwriter aligns them (minimum width 10, padding 3,
+/// spaces; docker/cli cli/command/formatter/tabwriter): each column but the last is as
+/// wide as its widest cell plus 3, and at least 10, in go-runewidth's columns.
+fn tabulate<const N: usize>(rows: &[[String; N]], east_asian: bool) -> Vec<String> {
+    let cell_width = |cell: &str| width::string_width(cell, east_asian);
+    let mut widths = [10usize; N];
+    for row in rows {
+        for (w, cell) in widths.iter_mut().zip(row.iter()) {
+            *w = (*w).max(cell_width(cell) + 3);
+        }
+    }
+    rows.iter()
+        .map(|row| {
+            let mut line = String::new();
+            for (i, cell) in row.iter().enumerate() {
+                line.push_str(cell);
+                if i + 1 < N {
+                    let pad = widths
+                        .get(i)
+                        .copied()
+                        .unwrap_or(10)
+                        .saturating_sub(cell_width(cell));
+                    line.extend(std::iter::repeat_n(' ', pad));
+                }
+            }
+            line
+        })
+        .collect()
+}
+
+/// Who asked for a container command, and what of theirs shapes the answer.
+pub(super) struct Asker {
+    /// Their locale is East Asian, for `ps`'s widths.
+    pub east_asian: bool,
+    /// Their clock, nanoseconds since the epoch, and their zone's offset east of UTC in
+    /// seconds, for `logs --since` and `--until`.
+    pub now: i64,
+    pub utc_offset: i32,
+}
+
+/// The times `logs` shows lines between, as dockerd's log forwarder keeps them (moby
+/// daemon/logger/loggerutils/logfile.go, forwarder.Do), in nanoseconds since the epoch.
+#[derive(Default)]
+struct Window {
+    since: Option<i128>,
+    until: Option<i128>,
+}
+
+/// What `Window::admit` makes of a line.
+#[derive(Debug, PartialEq, Eq)]
+enum Admit {
+    Pass,
+    Skip,
+    /// This line and every one after it are past `until`.
+    Stop,
+}
+
+impl Window {
+    /// Whether the line that arrived `at` shows. Lines before `since` are skipped until
+    /// one is not: after that none is, as times need not rise from line to line. The
+    /// first line after `until` ends the output.
+    fn admit(&mut self, at: u64) -> Admit {
+        let at = i128::from(at);
+        if let Some(since) = self.since {
+            if at < since {
+                return Admit::Skip;
+            }
+            self.since = None;
+        }
+        if self.until.is_some_and(|until| at > until) {
+            return Admit::Stop;
+        }
+        Admit::Pass
+    }
+}
+
+/// How often `logs -f` looks for more output.
+const FOLLOW_POLL: Duration = Duration::from_millis(20);
+
+/// What `docker logs` puts before each line: its time with `-t`, and with `--details` its
+/// attributes and a space.
+#[derive(Clone, Copy)]
+struct Shown {
+    stamps: bool,
+    details: bool,
+}
+
+/// A container's log as read so far (workload.rs `log_record`): the bytes not yet taken,
+/// and each stream's line in progress.
+#[derive(Default)]
+struct Log {
+    offset: u64,
+    pending: Vec<u8>,
+    partial: [Option<Line>; 2],
+    lines: Vec<Line>,
+}
+
+/// One line of output, or the last piece of one, and when its first byte arrived.
+struct Line {
+    stream: u8,
+    at: u64,
+    bytes: Vec<u8>,
+}
+
+impl Line {
+    fn send(&self, reply: &Reply<'_>, shown: Shown) -> bool {
+        if !shown.stamps && !shown.details {
+            return reply.bytes(self.stream, &self.bytes);
+        }
+        let mut line = Vec::with_capacity(self.bytes.len() + 32);
+        if shown.stamps {
+            line.extend_from_slice(rfc3339_nano(self.at).as_bytes());
+            line.push(b' ');
+        }
+        if shown.details {
+            line.push(b' ');
+        }
+        line.extend_from_slice(&self.bytes);
+        reply.bytes(self.stream, &line)
+    }
+}
+
+impl Log {
+    /// Reads what the log at `path` holds past what was read, and splits its records
+    /// into lines. A record still being written waits for the next read.
+    fn read(&mut self, path: &std::path::Path) {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut file) = std::fs::File::open(path) else {
+            return;
+        };
+        if file.seek(SeekFrom::Start(self.offset)).is_err() {
+            return;
+        }
+        let mut more = Vec::new();
+        if file.read_to_end(&mut more).is_err() {
+            return;
+        }
+        self.offset += more.len() as u64;
+        let mut pending = std::mem::take(&mut self.pending);
+        pending.extend_from_slice(&more);
+        let mut used = 0;
+        while let Some(record) = pending.get(used..) {
+            let Some((&stream, rest)) = record.split_first() else {
+                break;
+            };
+            let (Some(at), Some(len)) = (
+                rest.first_chunk::<8>(),
+                rest.get(8..).and_then(|r| r.first_chunk::<4>()),
+            ) else {
+                break;
+            };
+            let len = u32::from_be_bytes(*len) as usize;
+            let Some(bytes) = rest.get(12..12 + len) else {
+                break;
+            };
+            let at = u64::from_be_bytes(*at);
+            self.split(stream, at, bytes);
+            used += 13 + len;
+        }
+        pending.drain(..used);
+        self.pending = pending;
+    }
+
+    fn split(&mut self, stream: u8, at: u64, mut bytes: &[u8]) {
+        let slot = usize::from(stream == LOG_STDERR);
+        while !bytes.is_empty() {
+            let (piece, rest) = match bytes.iter().position(|&b| b == b'\n') {
+                Some(end) => bytes.split_at(end + 1),
+                None => (bytes, &[][..]),
+            };
+            let line = self.partial.get_mut(slot).and_then(Option::take);
+            let mut line = line.unwrap_or(Line {
+                stream: if stream == LOG_STDERR {
+                    LOG_STDERR
+                } else {
+                    LOG_STDOUT
+                },
+                at,
+                bytes: Vec::new(),
+            });
+            line.bytes.extend_from_slice(piece);
+            if piece.ends_with(b"\n") {
+                self.lines.push(line);
+            } else if let Some(partial) = self.partial.get_mut(slot) {
+                *partial = Some(line);
+            }
+            bytes = rest;
+        }
+    }
+
+    /// The whole lines read so far, and with `ended` the lines still in progress too.
+    fn take_lines(&mut self, ended: bool) -> Vec<Line> {
+        if ended {
+            for partial in &mut self.partial {
+                if let Some(line) = partial.take() {
+                    self.lines.push(line);
+                }
+            }
+        }
+        std::mem::take(&mut self.lines)
+    }
+}
+
+/// A time in nanoseconds since the Unix epoch as RFC 3339 in UTC with nine digits of
+/// fraction, as `docker logs -t` prints it (moby jsonmessage.RFC3339NanoFixed).
+fn rfc3339_nano(ns: u64) -> String {
+    let secs = ns / 1_000_000_000;
+    let (days, day) = (secs / 86_400, secs % 86_400);
+    // Days since 1970-01-01 to a civil date (Howard Hinnant, "chrono-Compatible Low-Level
+    // Date Algorithms", days_from_civil's inverse).
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z % 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + u64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:09}Z",
+        day / 3600,
+        day % 3600 / 60,
+        day % 60,
+        ns % 1_000_000_000
+    )
+}

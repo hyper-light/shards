@@ -1,0 +1,77 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/abi",
+  "crates/image",
+  "crates/cmdline",
+  "crates/init",
+  "crates/ipc",
+  "crates/registry",
+  "crates/shards",
+  "crates/testguest",
+  "crates/vmm",
+]
+# The guest init only builds for Linux guests; host builds default to the rest.
+default-members = ["crates/abi", "crates/cmdline", "crates/image", "crates/ipc", "crates/registry", "crates/shards", "crates/vmm"]
+# Vendored crates are built as published, under their own lints (vendor/README.md).
+exclude = ["vendor"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/hyper-light/shards"
+rust-version = "1.98"
+
+# Versions are pinned once here.
+[workspace.dependencies]
+libc = "0.2"
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security_Cryptography",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
+  "Win32_System_IO",
+  "Win32_System_Memory",
+  "Win32_System_SystemInformation",
+] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+# Production code never panics (CLAUDE.md); clippy.toml exempts tests.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+# The TLS provider builds from our vendored copies (vendor/README.md).
+[patch.crates-io]
+aws-lc-rs = { path = "vendor/aws-lc-rs" }
+aws-lc-sys = { path = "vendor/aws-lc-sys" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = "line-tables-only"
+
+# Guest binaries: small, fully stripped (they ship inside every microVM).
+[profile.guest]
+inherits = "release"
+opt-level = "s"
+debug = false
+strip = true
+
+[profile.dev]
+panic = "abort"

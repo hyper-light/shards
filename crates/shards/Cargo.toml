@@ -1,0 +1,63 @@
+[package]
+name = "shards"
+version = "0.1.0"
+description = "shards: microVMs for agents, designed for home or at scale"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+autobins = false
+
+# The command, which links only the standard library, shards-ipc and shards-cmdline, so it
+# starts fast.
+[[bin]]
+name = "shards"
+path = "src/bin/shards/main.rs"
+
+# Everything that runs microVMs: the daemon, the VMM, pulls and the guest.
+[[bin]]
+name = "shardsd"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+shards-abi = { path = "../abi" }
+shards-cmdline = { path = "../cmdline" }
+shards-image = { path = "../image" }
+shards-ipc = { path = "../ipc" }
+shards-registry = { path = "../registry" }
+shards-vmm = { path = "../vmm" }
+sha2 = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[dev-dependencies]
+shards-testguest = { path = "../testguest" }
+
+[[bench]]
+name = "boot"
+harness = false
+
+[[bench]]
+name = "restore"
+harness = false
+
+[[bench]]
+name = "firecracker"
+harness = false
+
+[[bench]]
+name = "run"
+harness = false
+
+[[bench]]
+name = "image"
+harness = false

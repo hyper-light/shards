@@ -1,0 +1,62 @@
+#!/bin/sh
+# Regenerates what shards-cmdline takes from the Docker CLI, from docker/cli v29.8.1 built
+# by the Go release that builds it (1.26):
+# - crates/cmdline/src/tables.rs, the character classes the CLI formats text with
+#   (tables/main.go);
+# - crates/cmdline/tests/docker-cli.json, the CLI's answers to the command lines in
+#   oracle_test.go, which crates/cmdline/tests/docker_cli.rs expects shards to give;
+# - crates/shards/src/daemon/docker-ps.json, the CLI's `ps` tables of the containers in
+#   ps_test.go, which daemon/commands.rs's tests expect shards to print;
+# - crates/cmdline/tests/docker-time.json, what the client sends dockerd for `logs
+#   --since` and `--until` and what dockerd makes of it (time/main.go), for
+#   crates/cmdline/src/gotime.rs's tests. dockerd's side is moby's, fetched at the tag the
+#   CLI goes with.
+# The CLI is not a Go module; its with-go-mod.sh makes it one for each run, so both import
+# exactly the packages the CLI vendors.
+#
+#   scripts/docker-cli/generate [DOCKER_CLI_CHECKOUT]
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+tag=v29.8.1
+commit=4a63305d74332de5ceba7fcbccbc3cbb7412f5ba
+moby=464cd50c3d9e92877d56940ea160de6fca7bea23
+cli=${1:-}
+if [ -z "$cli" ]; then
+	cli=$(mktemp -d)
+	trap 'rm -rf "$cli"' EXIT
+	git clone --quiet --depth 1 --branch "$tag" https://github.com/docker/cli "$cli"
+fi
+if [ "$(git -C "$cli" rev-parse HEAD)" != "$commit" ]; then
+	echo "$cli is not docker/cli $tag ($commit)" >&2
+	exit 1
+fi
+case $(go env GOVERSION) in
+go1.26 | go1.26.*) ;;
+*)
+	echo "Go 1.26 builds docker/cli $tag; this is $(go env GOVERSION)" >&2
+	exit 1
+	;;
+esac
+
+mkdir -p "$cli/shards-tables" "$cli/shards-time/client" "$cli/shards-time/daemon"
+cp "$here/tables/main.go" "$cli/shards-tables/main.go"
+cp "$here/time/main.go" "$cli/shards-time/main.go"
+cp "$cli/vendor/github.com/moby/moby/client/internal/timestamp/timestamp.go" "$cli/shards-time/client/"
+curl -fsSL -A shards-dev -o "$cli/shards-time/daemon/timestamp.go" \
+	"https://raw.githubusercontent.com/moby/moby/$moby/daemon/internal/timestamp/timestamp.go"
+cp "$here/oracle_test.go" "$cli/cmd/docker/zz_shards_oracle_test.go"
+cp "$here/ps_test.go" "$cli/cli/command/formatter/zz_shards_ps_test.go"
+cleanup() {
+	rm -rf "$cli/shards-tables" "$cli/shards-time" "$cli/cmd/docker/zz_shards_oracle_test.go" \
+		"$cli/cli/command/formatter/zz_shards_ps_test.go"
+}
+trap 'cleanup; [ -z "${1:-}" ] && rm -rf "$cli"' EXIT
+cd "$cli"
+./scripts/with-go-mod.sh go run -mod=vendor ./shards-tables >"$root/crates/cmdline/src/tables.rs"
+./scripts/with-go-mod.sh go run -mod=vendor ./shards-time >"$root/crates/cmdline/tests/docker-time.json"
+SHARDS_ORACLE_OUT="$root/crates/cmdline/tests/docker-cli.json" \
+	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsOracle$' ./cmd/docker/
+SHARDS_PS_OUT="$root/crates/shards/src/daemon/docker-ps.json" \
+	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsPs$' ./cli/command/formatter/

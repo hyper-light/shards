@@ -1,0 +1,1154 @@
+[
+  {
+    "argv": [
+      "run"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards run' requires at least 1 argument\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nSee 'shards run --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "run",
+      "--help"
+    ],
+    "stdout": "Usage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate and run a new container from an image\n\nAliases:\n  shards container run, shards run\n\nOptions:\n  -d, --detach               Run container in background and print\n                             container ID\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n      --entrypoint string    Overwrite the default ENTRYPOINT of the image\n  -e, --env list             Set environment variables\n      --help                 Print usage\n  -h, --hostname string      Container host name\n      --init                 Run an init inside the container that\n                             forwards signals and reaps processes\n  -i, --interactive          Keep STDIN open even if not attached\n      --name string          Assign a name to the container\n      --pull string          Pull image before running (\"always\",\n                             \"missing\", \"never\") (default \"missing\")\n      --rm                   Automatically remove the container and its\n                             associated anonymous volumes when it exits\n  -t, --tty                  Allocate a pseudo-TTY\n  -u, --user string          Username or UID (format:\n                             \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n  -w, --workdir string       Working directory inside the container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-h"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: 'h' in -h\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--nope",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "alpine"
+    ],
+    "stdout": "RUN \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "alpine",
+      "--rm",
+      "-d"
+    ],
+    "stdout": "RUN \"alpine\" \"--rm\" \"-d\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-d",
+      "--rm",
+      "--name",
+      "web",
+      "alpine",
+      "sleep",
+      "1"
+    ],
+    "stdout": "RUN --detach=true --name=web --rm=true \"alpine\" \"sleep\" \"1\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-di",
+      "-eA=1",
+      "--name=web",
+      "--pull=never",
+      "alpine"
+    ],
+    "stdout": "RUN --detach=true --env=[A=1] --interactive=true --name=web --pull=never \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-e",
+      "A=1",
+      "-e",
+      "B",
+      "-e",
+      "UNSET",
+      "alpine",
+      "env"
+    ],
+    "stdout": "RUN --env=[A=1 B=from-env UNSET] \"alpine\" \"env\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-e",
+      "=x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"=x\" for \"-e, --env\" flag: invalid environment variable: =x\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-e"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: 'e' in -e\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-it",
+      "alpine",
+      "sh"
+    ],
+    "stdout": "RUN --interactive=true --tty=true \"alpine\" \"sh\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-t",
+      "alpine"
+    ],
+    "stdout": "RUN --tty=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-ti",
+      "--detach-keys",
+      "ctrl-a,x",
+      "alpine"
+    ],
+    "stdout": "RUN --detach-keys=ctrl-a,x --interactive=true --tty=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--tty=false",
+      "--detach-keys=",
+      "alpine"
+    ],
+    "stdout": "RUN --detach-keys= --tty=false \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-dt",
+      "alpine",
+      "top"
+    ],
+    "stdout": "RUN --detach=true --tty=true \"alpine\" \"top\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--detach-keys"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --detach-keys\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-p",
+      "80:80",
+      "-v",
+      "/a:/b",
+      "nginx"
+    ],
+    "stdout": "RUN --publish=[80:80] --volume=[/a:/b] \"nginx\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--sig-proxy=true",
+      "alpine"
+    ],
+    "stdout": "RUN --sig-proxy=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--sig-proxy=false",
+      "alpine"
+    ],
+    "stdout": "RUN --sig-proxy=false \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--init",
+      "--init=false",
+      "alpine"
+    ],
+    "stdout": "RUN --init=false \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--disable-content-trust",
+      "alpine"
+    ],
+    "stdout": "Flag --disable-content-trust has been deprecated, support for docker content trust was removed\nRUN --disable-content-trust=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--kernel-memory",
+      "0",
+      "alpine"
+    ],
+    "stdout": "Flag --kernel-memory has been deprecated, and no longer supported by the kernel\nRUN --kernel-memory=0 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-h",
+      "host",
+      "-u",
+      "1000:1000",
+      "-w",
+      "/srv",
+      "alpine",
+      "pwd"
+    ],
+    "stdout": "RUN --hostname=host --user=1000:1000 --workdir=/srv \"alpine\" \"pwd\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--entrypoint=",
+      "alpine"
+    ],
+    "stdout": "RUN --entrypoint= \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--entrypoint",
+      "",
+      "alpine",
+      "x"
+    ],
+    "stdout": "RUN --entrypoint= \"alpine\" \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--",
+      "alpine",
+      "ls"
+    ],
+    "stdout": "RUN \"alpine\" \"ls\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--name"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --name\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--cpu-shares",
+      "x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"-c, --cpu-shares\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--memory-swappiness",
+      "-1",
+      "alpine"
+    ],
+    "stdout": "RUN --memory-swappiness=-1 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--stop-timeout",
+      "0x0",
+      "alpine"
+    ],
+    "stdout": "RUN --stop-timeout=0 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps"
+    ],
+    "stdout": "RUN\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "--help"
+    ],
+    "stdout": "Usage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all        Show all containers (default shows just running)\n  -n, --last int   Show n last created containers (includes all states)\n                   (default -1)\n  -l, --latest     Show the latest created container (includes all states)\n      --no-trunc   Don't truncate output\n  -q, --quiet      Only display container IDs\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all        Show all containers (default shows just running)\n  -n, --last int   Show n last created containers (includes all states)\n                   (default -1)\n  -l, --latest     Show the latest created container (includes all states)\n      --no-trunc   Don't truncate output\n  -q, --quiet      Only display container IDs\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-h",
+      "extra"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all        Show all containers (default shows just running)\n  -n, --last int   Show n last created containers (includes all states)\n                   (default -1)\n  -l, --latest     Show the latest created container (includes all states)\n      --no-trunc   Don't truncate output\n  -q, --quiet      Only display container IDs\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "extra"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards ps' accepts no arguments\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "ps",
+      "-aq"
+    ],
+    "stdout": "RUN --all=true --quiet=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-a",
+      "-q",
+      "--no-trunc"
+    ],
+    "stdout": "RUN --all=true --no-trunc=true --quiet=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-n",
+      "3"
+    ],
+    "stdout": "RUN --last=3\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-n=3"
+    ],
+    "stdout": "RUN --last=3\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-n3"
+    ],
+    "stdout": "RUN --last=3\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "--last=0x10"
+    ],
+    "stdout": "RUN --last=16\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-n",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"-n, --last\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "-n",
+      "08"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"08\" for \"-n, --last\" flag: strconv.ParseInt: parsing \"08\": invalid syntax\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "-n",
+      "99999999999999999999"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"99999999999999999999\" for \"-n, --last\" flag: strconv.ParseInt: parsing \"99999999999999999999\": value out of range\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "-n"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: 'n' in -n\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "--last"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --last\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "--all=false"
+    ],
+    "stdout": "RUN --all=false\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-a=false"
+    ],
+    "stdout": "RUN --all=false\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-a="
+    ],
+    "stdout": "",
+    "stderr": "unknown shorthand flag: '=' in -=\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "--all=maybe"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"maybe\" for \"-a, --all\" flag: strconv.ParseBool: parsing \"maybe\": invalid syntax\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "-l"
+    ],
+    "stdout": "RUN --latest=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "--format",
+      "{{.ID}}"
+    ],
+    "stdout": "RUN --format={{.ID}}\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-s",
+      "-f",
+      "name=x"
+    ],
+    "stdout": "RUN --filter={\"name\":{\"x\":true}} --size=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-test.v"
+    ],
+    "stdout": "RUN\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-atest.v"
+    ],
+    "stdout": "RUN --all=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-a",
+      "--",
+      "-q"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards ps' accepts no arguments\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "ps",
+      "---x"
+    ],
+    "stdout": "",
+    "stderr": "bad flag syntax: ---x\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "--=x"
+    ],
+    "stdout": "",
+    "stderr": "bad flag syntax: --=x\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "--nope=1"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "-Z"
+    ],
+    "stdout": "",
+    "stderr": "unknown shorthand flag: 'Z' in -Z\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "-aZq"
+    ],
+    "stdout": "",
+    "stderr": "unknown shorthand flag: 'Z' in -Zq\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "-é"
+    ],
+    "stdout": "",
+    "stderr": "unknown shorthand flag: 'Ã' in -é\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "-aé"
+    ],
+    "stdout": "",
+    "stderr": "unknown shorthand flag: 'Ã' in -é\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "-"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards ps' accepts no arguments\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "container",
+      "ls",
+      "-a"
+    ],
+    "stdout": "RUN --all=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "ps",
+      "--nope"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards container ls [OPTIONS]\n\nRun 'shards container ls --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "list",
+      "--help"
+    ],
+    "stdout": "Usage:  shards container ls [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all        Show all containers (default shows just running)\n  -n, --last int   Show n last created containers (includes all states)\n                   (default -1)\n  -l, --latest     Show the latest created container (includes all states)\n      --no-trunc   Don't truncate output\n  -q, --quiet      Only display container IDs\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "ls",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards container ls' accepts no arguments\n\nUsage:  shards container ls [OPTIONS]\n\nRun 'shards container ls --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "wait"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards wait' requires at least 1 argument\n\nUsage:  shards wait CONTAINER [CONTAINER...]\n\nSee 'shards wait --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "wait",
+      "--help"
+    ],
+    "stdout": "Usage:  shards wait CONTAINER [CONTAINER...]\n\nBlock until one or more containers stop, then print their exit codes\n\nAliases:\n  shards container wait, shards wait\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "wait",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "wait",
+      "-x",
+      "a"
+    ],
+    "stdout": "",
+    "stderr": "unknown shorthand flag: 'x' in -x\n\nUsage:  shards wait CONTAINER [CONTAINER...]\n\nRun 'shards wait --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "wait"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards container wait' requires at least 1 argument\n\nUsage:  shards container wait CONTAINER [CONTAINER...]\n\nSee 'shards container wait --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "logs"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards logs' requires 1 argument\n\nUsage:  shards logs [OPTIONS] CONTAINER\n\nRun 'shards logs --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "logs",
+      "--help"
+    ],
+    "stdout": "Usage:  shards logs [OPTIONS] CONTAINER\n\nFetch the logs of a container\n\nAliases:\n  shards container logs, shards logs\n\nOptions:\n      --details        Show extra details provided to logs\n  -f, --follow         Follow log output\n      --since string   Show logs since timestamp (e.g.\n                       \"2013-01-02T13:23:37Z\") or relative (e.g. \"42m\"\n                       for 42 minutes)\n  -n, --tail string    Number of lines to show from the end of the logs\n                       (default \"all\")\n  -t, --timestamps     Show timestamps\n      --until string   Show logs before a timestamp (e.g.\n                       \"2013-01-02T13:23:37Z\") or relative (e.g. \"42m\"\n                       for 42 minutes)\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "logs",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards logs' requires 1 argument\n\nUsage:  shards logs [OPTIONS] CONTAINER\n\nRun 'shards logs --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "logs",
+      "-f",
+      "a"
+    ],
+    "stdout": "RUN --follow=true \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "logs",
+      "-n",
+      "5",
+      "a"
+    ],
+    "stdout": "RUN --tail=5 \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "logs",
+      "--tail",
+      "all",
+      "-t",
+      "--details",
+      "a"
+    ],
+    "stdout": "RUN --details=true --tail=all --timestamps=true \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "logs",
+      "--since",
+      "10m",
+      "a"
+    ],
+    "stdout": "RUN --since=10m \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "logs",
+      "--until=2013-01-02T13:23:37Z",
+      "--since",
+      "",
+      "a"
+    ],
+    "stdout": "RUN --since= --until=2013-01-02T13:23:37Z \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "logs",
+      "--since"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --since\n\nUsage:  shards logs [OPTIONS] CONTAINER\n\nRun 'shards logs --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "logs",
+      "a",
+      "-ft"
+    ],
+    "stdout": "RUN --follow=true --timestamps=true \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "logs"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards container logs' requires 1 argument\n\nUsage:  shards container logs [OPTIONS] CONTAINER\n\nRun 'shards container logs --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "rm"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards rm' requires at least 1 argument\n\nUsage:  shards rm [OPTIONS] CONTAINER [CONTAINER...]\n\nSee 'shards rm --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "rm",
+      "--help"
+    ],
+    "stdout": "Usage:  shards rm [OPTIONS] CONTAINER [CONTAINER...]\n\nRemove one or more containers\n\nAliases:\n  shards container rm, shards container remove, shards rm\n\nOptions:\n  -f, --force     Force the removal of a running container (uses SIGKILL)\n  -v, --volumes   Remove anonymous volumes associated with the container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "rm",
+      "-f",
+      "a"
+    ],
+    "stdout": "RUN --force=true \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "rm",
+      "-fv",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --force=true --volumes=true \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "rm",
+      "-l",
+      "a"
+    ],
+    "stdout": "RUN --link=true \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "rm",
+      "--link=false",
+      "a"
+    ],
+    "stdout": "RUN --link=false \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "rm"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards container rm' requires at least 1 argument\n\nUsage:  shards container rm [OPTIONS] CONTAINER [CONTAINER...]\n\nSee 'shards container rm --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "container",
+      "remove",
+      "-f",
+      "a"
+    ],
+    "stdout": "RUN --force=true \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "remove",
+      "--help"
+    ],
+    "stdout": "Usage:  shards container rm [OPTIONS] CONTAINER [CONTAINER...]\n\nRemove one or more containers\n\nAliases:\n  shards container rm, shards container remove, shards rm\n\nOptions:\n  -f, --force     Force the removal of a running container (uses SIGKILL)\n  -v, --volumes   Remove anonymous volumes associated with the container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stop"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards stop' requires at least 1 argument\n\nUsage:  shards stop [OPTIONS] CONTAINER [CONTAINER...]\n\nSee 'shards stop --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "stop",
+      "--help"
+    ],
+    "stdout": "Usage:  shards stop [OPTIONS] CONTAINER [CONTAINER...]\n\nStop one or more running containers\n\nAliases:\n  shards container stop, shards stop\n\nOptions:\n  -s, --signal string   Signal to send to the container\n  -t, --timeout int     Seconds to wait before killing the container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stop",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards stop [OPTIONS] CONTAINER [CONTAINER...]\n\nStop one or more running containers\n\nAliases:\n  shards container stop, shards stop\n\nOptions:\n  -s, --signal string   Signal to send to the container\n  -t, --timeout int     Seconds to wait before killing the container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stop",
+      "a"
+    ],
+    "stdout": "RUN \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stop",
+      "-t",
+      "5",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --timeout=5 \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stop",
+      "--time",
+      "5",
+      "a"
+    ],
+    "stdout": "Flag --time has been deprecated, use --timeout instead\nRUN --time=5 \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stop",
+      "--time=5",
+      "--timeout=3",
+      "a"
+    ],
+    "stdout": "Flag --time has been deprecated, use --timeout instead\nRUN --time=3 --timeout=3 \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stop",
+      "-s",
+      "KILL",
+      "a"
+    ],
+    "stdout": "RUN --signal=KILL \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stop",
+      "-t",
+      "x",
+      "a"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"-t, --timeout\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards stop [OPTIONS] CONTAINER [CONTAINER...]\n\nRun 'shards stop --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "stop",
+      "a",
+      "-t",
+      "-1"
+    ],
+    "stdout": "RUN --timeout=-1 \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stop",
+      "--",
+      "-a"
+    ],
+    "stdout": "RUN \"-a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stop",
+      "-t"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: 't' in -t\n\nUsage:  shards stop [OPTIONS] CONTAINER [CONTAINER...]\n\nRun 'shards stop --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "stop",
+      "--time",
+      "5"
+    ],
+    "stdout": "Flag --time has been deprecated, use --timeout instead\n",
+    "stderr": "shards: 'shards stop' requires at least 1 argument\n\nUsage:  shards stop [OPTIONS] CONTAINER [CONTAINER...]\n\nSee 'shards stop --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "stop",
+      "--time",
+      "5",
+      "--help"
+    ],
+    "stdout": "Flag --time has been deprecated, use --timeout instead\nUsage:  shards stop [OPTIONS] CONTAINER [CONTAINER...]\n\nStop one or more running containers\n\nAliases:\n  shards container stop, shards stop\n\nOptions:\n  -s, --signal string   Signal to send to the container\n  -t, --timeout int     Seconds to wait before killing the container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "stop",
+      "--nope"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards container stop [OPTIONS] CONTAINER [CONTAINER...]\n\nRun 'shards container stop --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "kill"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards kill' requires at least 1 argument\n\nUsage:  shards kill [OPTIONS] CONTAINER [CONTAINER...]\n\nSee 'shards kill --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "kill",
+      "--help"
+    ],
+    "stdout": "Usage:  shards kill [OPTIONS] CONTAINER [CONTAINER...]\n\nKill one or more running containers\n\nAliases:\n  shards container kill, shards kill\n\nOptions:\n  -s, --signal string   Signal to send to the container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "kill",
+      "-s"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: 's' in -s\n\nUsage:  shards kill [OPTIONS] CONTAINER [CONTAINER...]\n\nRun 'shards kill --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "kill",
+      "-s",
+      "HUP",
+      "a"
+    ],
+    "stdout": "RUN --signal=HUP \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "kill",
+      "--signal=9",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --signal=9 \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "kill"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards container kill' requires at least 1 argument\n\nUsage:  shards container kill [OPTIONS] CONTAINER [CONTAINER...]\n\nSee 'shards container kill --help' for more information\n",
+    "status": 1
+  }
+]

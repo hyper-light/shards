@@ -1,0 +1,14 @@
+[package]
+name = "shards-ipc"
+version = "0.1.0"
+description = "How shards' processes talk: messages, descriptors, and where they meet"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true

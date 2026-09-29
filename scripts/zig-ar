@@ -1,0 +1,3 @@
+#!/bin/sh
+# zig's ar, for archiving Linux objects from any host (scripts/lint).
+exec zig ar "$@"
