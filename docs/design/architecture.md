@@ -777,6 +777,11 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   - `logs`: stdout to stdout and stderr to stderr, in the order they arrived; `-f`
     while the container runs; `-t` with RFC 3339 times; `--tail` (not a number: all);
     `--details` adds the space before the attributes shards' lines do not have.
+    `--since` and `--until` are read as the Docker client reads them, on the client's
+    clock and in its zone: Go durations, Go's time layouts with their error texts, Unix
+    timestamps (`shards_cmdline::gotime`, matched against the client's own code); the
+    daemon then reads the timestamps as dockerd does, and filters the tail as dockerd's
+    log forwarder does.
   - `stop`, `kill` and `rm` act on up to 50 containers at once. Each success prints its
     argument once it and those before it are done, and the errors follow (docker/cli
     parallelOperation).
@@ -793,9 +798,9 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   - Whoever waits for a container is told its exit code as its record changes, under
     the records' lock, as moby's `State.Wait` is, so `wait` never reads a record before
     its end is written.
-- **Known gaps** (flags parsed and refused): `logs --since/--until`, `ps --format`,
-  `--filter` and `--size`, and `run`'s TTY, ports, volumes, networks, limits, restart
-  policies and `--sig-proxy=false`. `/etc/hostname`, `/etc/hosts` and
+- **Known gaps** (flags parsed and refused): `ps --format`, `--filter` and `--size`, and
+  `run`'s TTY, ports, volumes, networks, limits, restart policies and
+  `--sig-proxy=false`. `/etc/hostname`, `/etc/hosts` and
   `/etc/resolv.conf` come with networking.
 - **Tests:** E2E with booted VMs, so they need no snapshots: a container outlives its
   run until `rm`, and `wait` reports its status; names are unique, and `--rm` leaves

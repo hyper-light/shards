@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use shards_cmdline::commands::{self, KILL, LOGS, PS, RM, STOP, WAIT};
 use shards_cmdline::flags::{self, Outcome, Parsed};
-use shards_cmdline::{go, width};
+use shards_cmdline::{go, gotime, width};
 use shards_ipc::kind;
 
 use super::{Daemon, STOP_GRACE, lock};
@@ -144,8 +144,8 @@ fn linux_signal(n: i64) -> Option<u32> {
 
 impl Daemon {
     /// Runs container command `argv` for a client, answering on `reply`, and returns its
-    /// exit status. `east_asian` is the client's locale's, for `ps`'s widths.
-    pub(super) fn command(self: &Arc<Self>, argv: &[String], east_asian: bool, reply: &Reply<'_>) -> u8 {
+    /// exit status, the client being `asker`.
+    pub(super) fn command(self: &Arc<Self>, argv: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
         let words: Vec<&str> = argv.iter().map(String::as_str).collect();
         let Some((command, path, named)) = commands::find(&words) else {
             reply.err(&format!("shards: no container command in {argv:?}"));
@@ -165,11 +165,11 @@ impl Daemon {
             }
         };
         if std::ptr::eq(command, &PS) {
-            self.ps(&parsed, east_asian, reply)
+            self.ps(&parsed, asker.east_asian, reply)
         } else if std::ptr::eq(command, &WAIT) {
             self.wait(&parsed.args, reply)
         } else if std::ptr::eq(command, &LOGS) {
-            self.logs(&parsed, reply)
+            self.logs(&parsed, asker, reply)
         } else if std::ptr::eq(command, &RM) {
             self.rm(&parsed, reply)
         } else if std::ptr::eq(command, &STOP) {
@@ -516,12 +516,13 @@ impl Daemon {
         0
     }
 
-    /// `shards logs [-f] [-t] [--details] [--tail N]`: a container's output, stdout to
-    /// stdout and stderr to stderr, in the order it arrived; the last N lines with
-    /// `--tail`, each after its time with `-t`, and more as it comes until the container
-    /// ends with `-f`. Lines carry no attributes here, so `--details` adds only the space
-    /// that would follow them (moby daemon/server/httputils/logstream/logstream.go).
-    fn logs(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
+    /// `shards logs [-f] [-t] [--details] [--tail N] [--since T] [--until T]`: a
+    /// container's output, stdout to stdout and stderr to stderr, in the order it arrived;
+    /// the last N lines with `--tail`, of which those from `--since` on and to `--until`,
+    /// each after its time with `-t`, and more as it comes until the container ends with
+    /// `-f`. Lines carry no attributes here, so `--details` adds only the space that would
+    /// follow them (moby daemon/server/httputils/logstream/logstream.go).
+    fn logs(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
         let Some(reference) = parsed.args.first() else {
             return 1;
         };
@@ -537,6 +538,7 @@ impl Daemon {
             details: parsed.bool("details"),
         };
         let follow = parsed.bool("follow");
+        // The CLI finds the container before it reads the times (docker/cli logs.go).
         let id = match self.resolve(reference) {
             Ok(id) => id,
             Err(e) => {
@@ -544,6 +546,35 @@ impl Daemon {
                 return 1;
             }
         };
+        let mut window = Window::default();
+        for (flag, bound) in [("since", &mut window.since), ("until", &mut window.until)] {
+            let given = parsed.string(flag);
+            if given.is_empty() {
+                continue;
+            }
+            // What the client makes of it, then what dockerd makes of that (moby
+            // client/container_logs.go; daemon/server/router/container/container_routes.go).
+            let sent = match gotime::get_timestamp(given, i128::from(asker.now), i64::from(asker.utc_offset))
+            {
+                Ok(sent) => sent,
+                Err(e) => {
+                    reply.err(&format!("invalid value for \"{flag}\": {e}"));
+                    return 1;
+                }
+            };
+            if flag == "until" && sent == "0" {
+                continue;
+            }
+            match gotime::parse_unix_timestamp(&sent) {
+                Ok(at) => *bound = at,
+                Err(e) => {
+                    reply.err(&format!(
+                        "Error response from daemon: invalid value for \"{flag}\": {e}"
+                    ));
+                    return 1;
+                }
+            }
+        }
         let path = lock(&self.containers).dir(&id).join("log");
         let mut log = Log::default();
         log.read(&path);
@@ -551,6 +582,11 @@ impl Daemon {
         let lines = log.take_lines(!follow || !self.running(&id));
         let skip = tail.map_or(0, |n| lines.len().saturating_sub(n));
         for line in lines.iter().skip(skip) {
+            match window.admit(line.at) {
+                Admit::Skip => continue,
+                Admit::Stop => return 0,
+                Admit::Pass => {}
+            }
             if !line.send(reply, shown) {
                 return 0;
             }
@@ -563,6 +599,11 @@ impl Daemon {
             log.read(&path);
             // Once the container has ended, what is left of a line is all of it.
             for line in log.take_lines(!running) {
+                match window.admit(line.at) {
+                    Admit::Skip => continue,
+                    Admit::Stop => return 0,
+                    Admit::Pass => {}
+                }
                 if !line.send(reply, shown) {
                     return 0;
                 }
@@ -593,6 +634,31 @@ mod tests {
             rfc3339_nano(1_709_164_800_000_000_000),
             "2024-02-29T00:00:00.000000000Z"
         );
+    }
+
+    #[test]
+    fn log_windows_filter_as_dockerd_forwards() {
+        let mut window = Window {
+            since: Some(10),
+            until: Some(20),
+        };
+        let seen: Vec<Admit> = [5, 12, 8, 20, 21, 15]
+            .iter()
+            .map(|&at| window.admit(at))
+            .collect();
+        // Once a line has passed `since`, an earlier time passes too.
+        assert_eq!(
+            seen,
+            [
+                Admit::Skip,
+                Admit::Pass,
+                Admit::Pass,
+                Admit::Pass,
+                Admit::Stop,
+                Admit::Pass
+            ]
+        );
+        assert_eq!(Window::default().admit(0), Admit::Pass);
     }
 
     #[test]
@@ -936,6 +1002,52 @@ fn tabulate<const N: usize>(rows: &[[String; N]], east_asian: bool) -> Vec<Strin
             line
         })
         .collect()
+}
+
+/// Who asked for a container command, and what of theirs shapes the answer.
+pub(super) struct Asker {
+    /// Their locale is East Asian, for `ps`'s widths.
+    pub east_asian: bool,
+    /// Their clock, nanoseconds since the epoch, and their zone's offset east of UTC in
+    /// seconds, for `logs --since` and `--until`.
+    pub now: i64,
+    pub utc_offset: i32,
+}
+
+/// The times `logs` shows lines between, as dockerd's log forwarder keeps them (moby
+/// daemon/logger/loggerutils/logfile.go, forwarder.Do), in nanoseconds since the epoch.
+#[derive(Default)]
+struct Window {
+    since: Option<i128>,
+    until: Option<i128>,
+}
+
+/// What `Window::admit` makes of a line.
+#[derive(Debug, PartialEq, Eq)]
+enum Admit {
+    Pass,
+    Skip,
+    /// This line and every one after it are past `until`.
+    Stop,
+}
+
+impl Window {
+    /// Whether the line that arrived `at` shows. Lines before `since` are skipped until
+    /// one is not: after that none is, as times need not rise from line to line. The
+    /// first line after `until` ends the output.
+    fn admit(&mut self, at: u64) -> Admit {
+        let at = i128::from(at);
+        if let Some(since) = self.since {
+            if at < since {
+                return Admit::Skip;
+            }
+            self.since = None;
+        }
+        if self.until.is_some_and(|until| at > until) {
+            return Admit::Stop;
+        }
+        Admit::Pass
+    }
 }
 
 /// How often `logs -f` looks for more output.

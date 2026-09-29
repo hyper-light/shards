@@ -702,7 +702,7 @@
       "logs",
       "--help"
     ],
-    "stdout": "Usage:  shards logs [OPTIONS] CONTAINER\n\nFetch the logs of a container\n\nAliases:\n  shards container logs, shards logs\n\nOptions:\n      --details       Show extra details provided to logs\n  -f, --follow        Follow log output\n  -n, --tail string   Number of lines to show from the end of the logs\n                      (default \"all\")\n  -t, --timestamps    Show timestamps\n",
+    "stdout": "Usage:  shards logs [OPTIONS] CONTAINER\n\nFetch the logs of a container\n\nAliases:\n  shards container logs, shards logs\n\nOptions:\n      --details        Show extra details provided to logs\n  -f, --follow         Follow log output\n      --since string   Show logs since timestamp (e.g.\n                       \"2013-01-02T13:23:37Z\") or relative (e.g. \"42m\"\n                       for 42 minutes)\n  -n, --tail string    Number of lines to show from the end of the logs\n                       (default \"all\")\n  -t, --timestamps     Show timestamps\n      --until string   Show logs before a timestamp (e.g.\n                       \"2013-01-02T13:23:37Z\") or relative (e.g. \"42m\"\n                       for 42 minutes)\n",
     "stderr": "",
     "status": 0
   },
@@ -760,6 +760,27 @@
     "stdout": "RUN --since=10m \"a\"\n",
     "stderr": "",
     "status": 0
+  },
+  {
+    "argv": [
+      "logs",
+      "--until=2013-01-02T13:23:37Z",
+      "--since",
+      "",
+      "a"
+    ],
+    "stdout": "RUN --since= --until=2013-01-02T13:23:37Z \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "logs",
+      "--since"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --since\n\nUsage:  shards logs [OPTIONS] CONTAINER\n\nRun 'shards logs --help' for more information\n",
+    "status": 125
   },
   {
     "argv": [

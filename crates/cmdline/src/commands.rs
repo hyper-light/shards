@@ -286,16 +286,26 @@ pub static LOGS: Command = Command {
         Flag::bool("follow", Some(b'f'), "Follow log output"),
         HELP,
         Flag::string(
+            "since",
+            None,
+            "",
+            "Show logs since timestamp (e.g. \"2013-01-02T13:23:37Z\") or relative (e.g. \"42m\" for 42 minutes)",
+        ),
+        Flag::string(
             "tail",
             Some(b'n'),
             "all",
             "Number of lines to show from the end of the logs",
         ),
         Flag::bool("timestamps", Some(b't'), "Show timestamps"),
+        Flag::string(
+            "until",
+            None,
+            "",
+            "Show logs before a timestamp (e.g. \"2013-01-02T13:23:37Z\") or relative (e.g. \"42m\" for 42 minutes)",
+        ),
     ],
-    unserved: "\
-since - s - -\n\
-until - s - -",
+    unserved: "",
     interspersed: true,
 };
 

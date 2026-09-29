@@ -85,6 +85,10 @@ pub struct Command {
     /// The client's locale is East Asian, where the Docker CLI counts ambiguous-width
     /// characters as two columns (shards_cmdline::width::east_asian).
     pub east_asian: bool,
+    /// The client's clock, in nanoseconds since the epoch, and its time zone's offset east
+    /// of UTC then, in seconds: the Docker client reads `logs --since` by them.
+    pub now: i64,
+    pub utc_offset: i32,
     pub daemon: Identity,
 }
 
@@ -93,6 +97,8 @@ impl Command {
         let mut w = Vec::new();
         put_list(&mut w, &self.argv);
         w.push(u8::from(self.east_asian));
+        w.extend_from_slice(&self.now.to_be_bytes());
+        w.extend_from_slice(&self.utc_offset.to_be_bytes());
         put_identity(&mut w, &self.daemon);
         w
     }
@@ -103,6 +109,8 @@ impl Command {
         let command = Command {
             argv: r.list()?,
             east_asian: r.flag()?,
+            now: r.u64()? as i64,
+            utc_offset: r.u32()? as i32,
             daemon: r.identity()?,
         };
         r.0.is_empty().then_some(command)
@@ -376,6 +384,8 @@ mod tests {
         let command = Command {
             argv: vec!["ps".into(), "-a".into(), String::new()],
             east_asian: true,
+            now: -5,
+            utc_offset: -18_000,
             daemon: identity,
         };
         let bytes = command.encode();

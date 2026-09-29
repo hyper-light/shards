@@ -75,6 +75,8 @@ fn container(
                     east_asian: shards_cmdline::width::east_asian(|name| {
                         std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
                     }),
+                    now: now_ns(),
+                    utc_offset: utc_offset(),
                     daemon: identity,
                 },
             ),
@@ -131,6 +133,31 @@ fn columns() -> u16 {
         }
     }
     80
+}
+
+/// This clock, in nanoseconds since the epoch.
+#[cfg(unix)]
+fn now_ns() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_nanos()).ok())
+        .unwrap_or(0)
+}
+
+/// This process's time zone's offset east of UTC now, in seconds, as Go's `time.Now()`
+/// has it in its `Local` zone: localtime(3)'s `tm_gmtoff`.
+#[cfg(unix)]
+fn utc_offset() -> i32 {
+    // SAFETY: time(3) and localtime_r(3) write only into the locals given.
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut local: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&now, &mut local).is_null() {
+            return 0;
+        }
+        i32::try_from(local.tm_gmtoff).unwrap_or(0)
+    }
 }
 
 /// `args` as text, which every command here takes.

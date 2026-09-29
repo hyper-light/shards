@@ -293,6 +293,51 @@ fn logs_keep_what_a_container_wrote() {
         assert!(reported.stdout.lines().any(|l| l == rest), "{line}");
     }
 
+    // --since and --until, read as the Docker client reads them (gotime.rs).
+    let recent = shards_in(&home, &["logs", "--since", "1h", "reporter"]);
+    assert_eq!(recent.stdout, reported.stdout, "{recent}");
+    for window in [
+        &["--since", "2999-01-01T00:00:00Z"][..],
+        &["--until", "2000-01-01"],
+        &["--since", "-1h"],
+    ] {
+        let args: Vec<&str> = ["logs"]
+            .iter()
+            .chain(window)
+            .chain(&["reporter"])
+            .copied()
+            .collect();
+        let none = shards_in(&home, &args);
+        assert_eq!(
+            (none.status, none.stdout.as_str()),
+            (Some(0), ""),
+            "{window:?}: {none}"
+        );
+    }
+    for (window, said) in [
+        (
+            "x",
+            "invalid value for \"since\": failed to parse value as time or duration: \"x\"\n",
+        ),
+        (
+            "2013-13-01",
+            "invalid value for \"since\": parsing time \"2013-13-01\": month out of range\n",
+        ),
+        (
+            "1.+5",
+            "Error response from daemon: invalid value for \"since\": invalid timestamp \"1.+5\": invalid nanoseconds: invalid character '+' at position 0\n",
+        ),
+    ] {
+        let bad = shards_in(&home, &["logs", "--since", window, "reporter"]);
+        assert_eq!((bad.status, bad.stderr.as_str()), (Some(1), said), "{window}");
+    }
+    // The container is found first, as the CLI inspects it first.
+    let missing = shards_in(&home, &["logs", "--since", "x", "nosuch"]);
+    assert_eq!(
+        missing.stderr,
+        "Error response from daemon: No such container: nosuch\n"
+    );
+
     let errs = run_in(&home, &image, &["--name", "errs"], &["stderr", "to stderr"]);
     assert_eq!(errs.status, Some(0), "{}", errs.stderr);
     let logs = shards_in(&home, &["logs", "errs"]);

@@ -444,7 +444,12 @@ impl Daemon {
                     let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
                     return None;
                 }
-                let status = self.command(&command.argv, command.east_asian, &commands::Reply(conn));
+                let asker = commands::Asker {
+                    east_asian: command.east_asian,
+                    now: command.now,
+                    utc_offset: command.utc_offset,
+                };
+                let status = self.command(&command.argv, &asker, &commands::Reply(conn));
                 let _ = shards_ipc::send(conn, kind::END, &[status], &[]);
                 return None;
             }

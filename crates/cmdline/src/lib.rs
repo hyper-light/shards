@@ -4,6 +4,7 @@
 //!   help and error texts;
 //! - `commands`: the commands, with docker/cli's flags and words;
 //! - `go`: the Go formats those texts print values in (`strconv`);
+//! - `gotime`: Go's time formats, as `logs --since` and `--until` take them;
 //! - `width`: how wide the CLI takes text to be on a terminal.
 //!
 //! Sources: docker/cli v29.8.1 (4a63305d7433) with what it vendors: spf13/pflag v1.0.10,
@@ -13,5 +14,6 @@
 pub mod commands;
 pub mod flags;
 pub mod go;
+pub mod gotime;
 mod tables;
 pub mod width;

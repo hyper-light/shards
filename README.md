@@ -189,7 +189,7 @@ Firecracker. The plan and its evidence are in
 | `shards run [OPTIONS] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container, with `-d`, `-e`, `-h`, `-i`, `-u`, `-w`, `--entrypoint`, `--name`, `--pull` and `--rm`. `IMAGE` is pulled first if it isn't here. It boots the guest `shards guest use` chose, or `SHARDS_KERNEL` and `SHARDS_INIT` |
 | `shards ps [-a] [-q] [-n N] [-l] [--no-trunc]` | List containers, as `docker ps` does: each run is one, until `shards rm` or `--rm` removes it |
 | `shards wait CONTAINER...` | Wait for containers to stop, and print their exit codes |
-| `shards logs [-f] [-t] [-n N] CONTAINER` | Print what a container wrote, stdout to stdout and stderr to stderr |
+| `shards logs [-f] [-t] [-n N] [--since T] [--until T] CONTAINER` | Print what a container wrote, stdout to stdout and stderr to stderr |
 | `shards stop [-t SECONDS] [-s SIGNAL] CONTAINER...` | Stop containers: the signal (SIGTERM), then SIGKILL after 10 s |
 | `shards kill [-s SIGNAL] CONTAINER...` | Send containers a signal (SIGKILL) |
 | `shards rm [-f] CONTAINER...` | Remove stopped containers; with `-f`, running ones too |

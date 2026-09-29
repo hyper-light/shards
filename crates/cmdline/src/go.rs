@@ -86,14 +86,44 @@ pub struct NumError {
     range: bool,
 }
 
-impl fmt::Display for NumError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let why = if self.range {
+impl NumError {
+    /// Text `func` could not read at all.
+    pub fn syntax(func: &'static str, text: &str) -> NumError {
+        NumError {
+            func,
+            text: text.to_string(),
+            range: false,
+        }
+    }
+
+    /// A number `func` read that does not fit.
+    pub fn range(func: &'static str, text: &str) -> NumError {
+        NumError {
+            func,
+            text: text.to_string(),
+            range: true,
+        }
+    }
+
+    /// Why, as Go's `ErrSyntax` and `ErrRange` say it.
+    pub fn reason(&self) -> &'static str {
+        if self.range {
             "value out of range"
         } else {
             "invalid syntax"
-        };
-        write!(f, "strconv.{}: parsing {}: {why}", self.func, quote(&self.text))
+        }
+    }
+}
+
+impl fmt::Display for NumError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "strconv.{}: parsing {}: {}",
+            self.func,
+            quote(&self.text),
+            self.reason()
+        )
     }
 }
 
