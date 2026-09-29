@@ -609,3 +609,37 @@ Its peak RSS is 4.3 MiB higher than Firecracker's, and 8.1 MiB higher than at fd
 (12.7 MiB), when snapshots were written a page per write. The difference is the process
 mapping more of the snapshot file's page cache. VMs restored from one snapshot share
 that page cache, but how much of the RSS is shared has not been measured.
+
+**2026-09-29, resident memory by kind** · c7a3edd · GitHub `ubuntu-24.04` runner: Intel
+Xeon Platinum 8573C, Linux 6.17.0-1022-azure, KVM nested · Firecracker v1.17.0 · kernel
+vmlinux-6.18.48-x86_64 · n=30, 1 vCPU, 128 MiB
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| shards to_ready | 75707 µs | 77155 µs | 79018 µs | 79018 µs |
+| Firecracker to_ready | 77339 µs | 81157 µs | 82951 µs | 82951 µs |
+| **shards overhead** | **2.8 MiB** | **2.8 MiB** | **2.8 MiB** | **2.8 MiB** |
+| Firecracker overhead | 4.5 MiB | 4.5 MiB | 4.5 MiB | 4.5 MiB |
+| shards peak_rss | 62.8 MiB | 62.8 MiB | 64.8 MiB | 64.8 MiB |
+| Firecracker peak_rss | 62.5 MiB | 62.5 MiB | 62.5 MiB | 62.5 MiB |
+| shards rss_anon | 60.2 MiB | 60.2 MiB | 62.2 MiB | 62.2 MiB |
+| Firecracker rss_anon | 60.2 MiB | 60.2 MiB | 60.2 MiB | 60.2 MiB |
+| shards rss_file | 2.6 MiB | 2.6 MiB | 2.6 MiB | 2.6 MiB |
+| Firecracker rss_file | 2.2 MiB | 2.2 MiB | 2.2 MiB | 2.2 MiB |
+| **shards to_beat (restore)** | **7377 µs** | **7832 µs** | **8359 µs** | **8359 µs** |
+| Firecracker to_beat (restore) | 9700 µs | 10248 µs | 13048 µs | 13048 µs |
+| **shards overhead (restore)** | **2.8 MiB** | **2.9 MiB** | **2.9 MiB** | **2.9 MiB** |
+| Firecracker overhead (restore) | 6.8 MiB | 6.8 MiB | 6.8 MiB | 6.8 MiB |
+| shards peak_rss (restore) | 21.2 MiB | 21.2 MiB | 21.2 MiB | 21.2 MiB |
+| **Firecracker peak_rss (restore)** | **16.4 MiB** | **16.4 MiB** | **16.4 MiB** | **16.4 MiB** |
+| **shards rss_anon (restore)** | **0.7 MiB** | **0.7 MiB** | **0.7 MiB** | **0.7 MiB** |
+| Firecracker rss_anon (restore) | 5.0 MiB | 5.0 MiB | 5.0 MiB | 5.0 MiB |
+| shards rss_file (restore) | 20.4 MiB | 20.5 MiB | 20.5 MiB | 20.5 MiB |
+| **Firecracker rss_file (restore)** | **11.4 MiB** | **11.4 MiB** | **11.4 MiB** | **11.4 MiB** |
+
+`rss_anon` and `rss_file` split the resident set as the guest beats. A restored shards
+VM's anonymous memory, its own, is 0.7 MiB against Firecracker's 5.0. The rest of its
+RSS is the snapshot file's page cache, 20.4 MiB against 11.4. Every VM restored from one
+snapshot maps that same page cache, so each more VM costs about 0.7 MiB and its page
+tables. On this Intel runner, the restored guest beats again 24% sooner at the median
+and 36% sooner at p99.
