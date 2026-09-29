@@ -1,0 +1,21 @@
+[package]
+name = "shards-registry"
+version = "0.1.0"
+description = "Pulling images for shards microVMs from OCI registries"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+httparse = "1.10.1"
+iri-string = "0.7.14"
+rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12", "aws_lc_rs", "prefer-post-quantum"] }
+rustls-platform-verifier = "0.7.1"
+
+[dev-dependencies]
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+time = "0.3"

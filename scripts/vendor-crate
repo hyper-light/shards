@@ -1,0 +1,57 @@
+#!/bin/sh
+# Vendors a crate into vendor/<name> exactly as crates.io publishes it, once the .crate
+# matches the checksum in crates.io's index. With --check, verifies instead that every
+# vendored crate still matches its published .crate, file for file.
+#
+#   scripts/vendor-crate NAME VERSION
+#   scripts/vendor-crate --check
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+sha256() {
+	if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1
+}
+
+# Downloads NAME VERSION into $tmp/NAME-VERSION, verified against the sparse index.
+fetch() {
+	name=$1 version=$2
+	lower=$(printf %s "$name" | tr 'A-Z' 'a-z')
+	case ${#lower} in
+	1) path="1/$lower" ;;
+	2) path="2/$lower" ;;
+	3) path="3/$(printf %s "$lower" | cut -c1)/$lower" ;;
+	*) path="$(printf %s "$lower" | cut -c1-2)/$(printf %s "$lower" | cut -c3-4)/$lower" ;;
+	esac
+	want=$(curl -fsSL "https://index.crates.io/$path" | jq -r --arg v "$version" 'select(.vers == $v) | .cksum')
+	if [ -z "$want" ]; then
+		echo "$name $version is not in the crates.io index" >&2
+		exit 1
+	fi
+	curl -fsSL -o "$tmp/$name.crate" "https://static.crates.io/crates/$name/$name-$version.crate"
+	got=$(sha256 "$tmp/$name.crate")
+	if [ "$got" != "$want" ]; then
+		echo "$name $version: the .crate hashes to $got, the index says $want" >&2
+		exit 1
+	fi
+	tar -xzf "$tmp/$name.crate" -C "$tmp"
+}
+
+if [ "${1:-}" = "--check" ]; then
+	for manifest in "$root"/vendor/*/Cargo.toml; do
+		package() { sed -n '/^\[package\]/,/^\[/s/^'"$1"' = "\(.*\)"$/\1/p' "$manifest" | head -n 1; }
+		name=$(package name) version=$(package version)
+		fetch "$name" "$version"
+		diff -r "$tmp/$name-$version" "$(dirname "$manifest")"
+		echo "vendor/$name is $name $version as published (sha256 $want)"
+	done
+	exit 0
+fi
+
+fetch "$1" "$2"
+rm -rf "$root/vendor/$1"
+mkdir -p "$root/vendor"
+mv "$tmp/$1-$2" "$root/vendor/$1"
+echo "vendored $1 $2 (sha256 $want)"

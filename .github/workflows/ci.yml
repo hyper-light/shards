@@ -22,6 +22,13 @@ jobs:
       - run: rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt
       - run: cargo fmt --all --check
 
+  # The vendored crates are what crates.io publishes, file for file (vendor/README.md).
+  vendor:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: scripts/vendor-crate --check
+
   # The platform matrix (docs/design/architecture.md D13) on native runners. Every target is
   # linted; the ones a runner can execute are tested. VM tests print SKIP where the host has
   # no backend yet or no hardware virtualization.
@@ -47,6 +54,16 @@ jobs:
         run: |
           rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy \
             --target ${{ matrix.target }} --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+      # AWS-LC's x64 assembly is built from source, never from the objects aws-lc-sys ships
+      # (vendor/README.md), so Windows x64 needs NASM: the official 3.02 build, pinned.
+      - name: NASM (Windows x64)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
       - name: Host virtualization (what this runner offers each backend)
         shell: bash
         run: |

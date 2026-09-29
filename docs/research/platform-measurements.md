@@ -301,6 +301,43 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   HVF wants mappings whose maximum protection includes write, which a copy-on-write
   mapping has and a shared mapping of a read-only descriptor does not.
 
+### M18. Linting every target with a C dependency (registry-pull M1)
+
+- **Question.** aws-lc-sys (D19) compiles C for every target, and `cargo clippy` runs its
+  build script. What does linting all 8 CI targets from this Mac cost?
+- **Setup.** `brew install zig llvm nasm` and `cargo install cargo-xwin` (zig 0.16.0, LLVM
+  23.1.2, NASM 3.02, cargo-xwin 0.23.1). `scripts/lint` compiles the C with zig for Linux
+  (glibc and musl), with clang-cl through cargo-xwin for Windows, and with Apple clang for
+  macOS. The first Windows lint downloads Microsoft's CRT and SDK: that run took 312 s
+  (n = 1).
+- **Disk.** zig 246 MB, LLVM 1.8 GB, NASM 2.9 MB, the cargo-xwin cache 1.1 GB.
+- **Method.** Harness: `docs/research/measurements/cross-lint/run.sh 5`. For each target:
+  - one untimed run;
+  - 5 cold runs: the target's build directory is removed, so AWS-LC compiles again, but
+    the host's build scripts stay built;
+  - 5 warm runs: `crates/registry/src/lib.rs` touched.
+  - Wall time of `scripts/lint <target>`. rustc 1.98.0; the workspace at 2e7a3db plus
+    the registry crate; 2026-09-28, on this machine and nothing else running.
+- **Results** (seconds, n = 5 each; at n = 5, p90 and p99 are the maximum):
+
+| Target | cold p50 | cold p90 | cold p99 | cold max | warm p50 | warm max |
+|---|---|---|---|---|---|---|
+| aarch64-apple-darwin | 10.86 | 12.38 | 12.38 | 12.38 | 0.20 | 0.29 |
+| x86_64-apple-darwin | 9.70 | 15.13 | 15.13 | 15.13 | 0.19 | 0.20 |
+| x86_64-unknown-linux-gnu | 10.01 | 14.00 | 14.00 | 14.00 | 0.25 | 0.26 |
+| aarch64-unknown-linux-gnu | 10.39 | 11.24 | 11.24 | 11.24 | 0.19 | 0.70 |
+| x86_64-pc-windows-msvc | 9.02 | 13.58 | 13.58 | 13.58 | 0.23 | 0.31 |
+| aarch64-pc-windows-msvc | 7.74 | 8.01 | 8.01 | 8.01 | 0.23 | 0.25 |
+| x86_64-unknown-linux-musl | 12.19 | 12.48 | 12.48 | 12.48 | 0.22 | 0.25 |
+| aarch64-unknown-linux-musl | 11.28 | 11.54 | 11.54 | 11.54 | 0.18 | 0.21 |
+
+- **Consequences.**
+  - Lint all 8 targets locally (registry-pull R3, option a). A cold pass costs about
+    80 s in all, and an edit re-lints in about 2 s. That is cheaper than waiting on CI.
+  - The compilers disagree on some of AWS-LC's feature probes: zig's clang fails
+    `neon_sha3_check.c`, so aws-lc-sys leaves that code out of the lint build. Lints don't
+    depend on it, and CI builds each target with its native compiler.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

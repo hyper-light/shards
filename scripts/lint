@@ -1,0 +1,32 @@
+#!/bin/sh
+# Lints the workspace for every CI target from this one host (CLAUDE.md). The C in
+# aws-lc-sys needs a compiler per target:
+# - Linux (glibc and musl): zig.
+# - Windows: cargo-xwin, which drives clang-cl with Microsoft's CRT and SDK. clang-cl and
+#   llvm-lib come from LLVM's bin directory, and Windows x64 also needs NASM.
+#
+#   scripts/lint [TARGET...]
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+all="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+x86_64-pc-windows-msvc aarch64-pc-windows-msvc x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
+llvm=${LLVM_BIN:-$(brew --prefix llvm 2>/dev/null || true)/bin}
+
+for target in ${*:-$all}; do
+	var=$(printf %s "$target" | tr - _)
+	echo "== $target"
+	case $target in
+	*-linux-gnu | *-linux-musl)
+		env "CC_$var=$root/scripts/zig-cc" "AR_$var=$root/scripts/zig-ar" \
+			ZIG_TARGET="${target%%-*}-linux-${target##*-}" \
+			cargo clippy --workspace --all-targets --target "$target" -- -D warnings
+		;;
+	*-windows-msvc)
+		PATH="$llvm:$PATH" cargo xwin clippy --workspace --all-targets --target "$target" -- -D warnings
+		;;
+	*)
+		cargo clippy --workspace --all-targets --target "$target" -- -D warnings
+		;;
+	esac
+done

@@ -1,8 +1,18 @@
 [workspace]
 resolver = "3"
-members = ["crates/abi", "crates/image", "crates/init", "crates/shards", "crates/testguest", "crates/vmm"]
+members = [
+  "crates/abi",
+  "crates/image",
+  "crates/init",
+  "crates/registry",
+  "crates/shards",
+  "crates/testguest",
+  "crates/vmm",
+]
 # The guest init only builds for Linux guests; host builds default to the rest.
-default-members = ["crates/abi", "crates/image", "crates/shards", "crates/vmm"]
+default-members = ["crates/abi", "crates/image", "crates/registry", "crates/shards", "crates/vmm"]
+# Vendored crates are built as published, under their own lints (vendor/README.md).
+exclude = ["vendor"]
 
 [workspace.package]
 edition = "2024"
@@ -41,6 +51,11 @@ indexing_slicing = "deny"
 string_slice = "deny"
 print_stdout = "deny"
 print_stderr = "deny"
+
+# The TLS provider builds from our vendored copies (vendor/README.md).
+[patch.crates-io]
+aws-lc-rs = { path = "vendor/aws-lc-rs" }
+aws-lc-sys = { path = "vendor/aws-lc-sys" }
 
 [profile.release]
 opt-level = 3

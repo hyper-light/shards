@@ -289,6 +289,72 @@ The store keeps what a pull fetches and what guests boot from. The code is
   - the sniffing edges and every media-type rule;
   - one rootfs build per chain.
 
+### Registry TLS (D19)
+
+Pulls use rustls 0.23.45 with the AWS-LC provider (aws-lc-rs 1.18.1), verified by
+rustls-platform-verifier 0.7.1 ([registry-pull](../research/registry-pull.md) R2, R3).
+The code is `crates/registry/src/tls.rs`.
+
+- **AWS-LC, not ring**, the siblings' provider (registry-pull §6.2):
+  - It offers X25519MLKEM768. Docker Hub's token host and CDN, GCP, ECR and GHCR's blob
+    host negotiate it, so registry passwords and refresh tokens resist
+    harvest-now-decrypt-later.
+  - Parts of it are formally verified; ring has no such proofs.
+  - Both need a C compiler for every target, so the siblings' reason for ring ("builds
+    without cmake") no longer separates them.
+- **Vendored.** aws-lc-rs and aws-lc-sys build from in-repo copies, verified file for
+  file against their published crates, in CI too (`vendor/README.md`).
+- **Assembled from source.** aws-lc-sys's prebuilt Windows x64 objects are disabled, so
+  NASM assembles that code. With NASM hidden, the Windows x64 build fails.
+- **Verified as Docker verifies.** On macOS and Windows the OS verifies, as Go delegates
+  to it there; Linux uses webpki with the system bundle. Per-registry CAs are extra roots.
+- **TLS 1.2 stays on:** a Docker-operated CDN host refuses TLS 1.3.
+- **One C crate.** `crates/image` stays pure Rust. Every target lints from one host
+  (`scripts/lint`): zig compiles the C for Linux, and cargo-xwin with clang-cl for
+  Windows. The cost is measured (platform-measurements.md, M1).
+- **Tests:** a loopback registry certified by a test CA.
+  - It is trusted only through that CA, over TLS 1.3 with X25519MLKEM768.
+  - A TLS 1.2-only host is still reached.
+
+### Registry HTTP (D20)
+
+Registries are reached with a small blocking HTTP/1.1 client on rustls and httparse
+(registry-pull R4). The code is `crates/registry/src/http.rs` and `url.rs`.
+
+- **Why our own.** Every probed registry, token host and CDN speaks HTTP/1.1 (§6.4).
+  Pulls need exact control of redirects, credentials and streaming. ureq reaches
+  providers other than ring only through an API it marks unstable, and hyper is async.
+- **Responses are read as Go 1.27.1's net/http reads them** for Docker and containerd:
+  - 1xx responses are skipped, and heads may total 10 MiB.
+  - Framing: no body after HEAD, 1xx, 204 or 304. Chunked only when
+    `Transfer-Encoding` is exactly `chunked`. Else a `Content-Length` whose copies
+    agree. Else until the connection closes.
+  - Chunked bodies as `internal/chunked.go` reads them:
+    - lines end in CRLF only (RFC 9112 erratum 7633) and hold at most 4096 bytes;
+    - sizes have at most 16 hex digits;
+    - overhead is bounded, and trailers take at most 4 KiB.
+  - A connection is not reused after a response with both framings, or with bytes past
+    its end. The second rule is Go's too, and it keeps responses from desynchronizing.
+- **Connections as containerd's transport keeps them** (`core/remotes/docker/registry.go`):
+  - 30 s to connect, racing addresses 300 ms apart (RFC 8305);
+  - 10 s for the TLS handshake, 30 s for the response head;
+  - at most 10 idle connections, each kept for 30 s.
+  - A GET or HEAD that fails on a reused connection before its response is resent on a
+    new one, as Go resends replayable requests.
+  - A body that makes no progress for 30 s fails, where Go would wait on its context.
+- **URLs** follow RFC 3986 (iri-string): references resolve as §5.2 says, and nothing is
+  normalized, so a presigned URL keeps the exact bytes its signature covers. Messages
+  never show a query.
+- **Fields** holding CR, LF or NUL are refused (RFC 9110 §5.5), so a token from a server
+  cannot inject fields.
+- **Not yet:** proxies (`HTTPS_PROXY`, `NO_PROXY`, CONNECT), and decoding a
+  `Content-Encoding`.
+- **Tests:** a scripted loopback server covers:
+  - every framing and 1xx skipping;
+  - 16 malformed responses, all refused;
+  - reuse of plain and TLS connections, and a stale pooled connection replaced;
+  - RFC 3986's own resolution examples.
+
 ## 3. Components
 
 ```
@@ -353,8 +419,8 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
    - Scope: `shards-init`; tuned kernel built in a shards builder VM; OCI pull →
      rootfs image; `shards run IMAGE CMD`.
    - Built: our kernel (CI releases); virtio-pmem; the EROFS writer; layers → one EROFS
-     image (D15); booting into an image to run a command (D16). Next: registry pulls, and
-     `shards run IMAGE`.
+     image (D15); booting into an image to run a command (D16); the image store (D18);
+     registry TLS and HTTP (D19, D20). Next: registry auth and pulls, and `shards run IMAGE`.
 4. **In-VM engine.**
    - Scope: Docker Engine API subset → full; the rootless runtime (compatible, not
      containers underneath); networks, volumes, build; compose.

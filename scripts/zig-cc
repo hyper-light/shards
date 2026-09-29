@@ -1,0 +1,10 @@
+#!/bin/sh
+# zig as the C compiler for $ZIG_TARGET, for linting Linux targets from any host
+# (scripts/lint). cc-rs passes clang's --target with Rust's triple, which zig does not
+# parse, so that is dropped and zig gets its own.
+for arg do
+	shift
+	case $arg in --target=*) continue ;; esac
+	set -- "$@" "$arg"
+done
+exec zig cc -target "$ZIG_TARGET" "$@"

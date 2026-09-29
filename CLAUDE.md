@@ -38,7 +38,9 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
   `cargo build -p shards-init --profile guest --target <arch>-unknown-linux-musl`
   - The guest arch is the host arch.
   - Lint them with the same `--target`, because host builds compile only their stub.
-- Lint every matrix target before pushing: `cargo clippy --workspace --all-targets --target <triple> -- -D warnings`. `.github/workflows/ci.yml` lists the triples.
+- Lint every matrix target before pushing: `scripts/lint`, or `scripts/lint <triple>…`. `.github/workflows/ci.yml` lists the triples.
+  - aws-lc-sys compiles C for each target, so this needs zig, LLVM (clang-cl, llvm-lib), NASM and cargo-xwin: `brew install zig llvm nasm` and `cargo install cargo-xwin`.
+  - The first Windows lint downloads Microsoft's CRT and SDK.
 - VM tests print `SKIP:` and return where the host cannot run VMs (`vm::check_host`). `this_host_has_its_hypervisor_backend` pins which hosts must have a backend.
 - When tests invoke cargo, call the rustup proxy on `PATH` with `DYLD_*` removed. Otherwise `rust-lld` cannot load `libLLVM`.
 - `../linux` sits on case-insensitive APFS, which corrupts files whose names differ only by case. Build kernels inside a Linux VM.
@@ -49,6 +51,8 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 - `docs/research/`: literature reviews, plus `platform-measurements.md` for Hypervisor.framework ground truth.
 - `crates/shards`: the CLI, and the real-VM E2E tests.
 - `crates/vmm`: the VMM library.
+- `crates/image`: layers, EROFS images, OCI documents and the image store.
+- `crates/registry`: pulling from registries. It is the only crate with C (AWS-LC, vendored in `vendor/`, see `vendor/README.md`).
 - `crates/init`: guest PID 1.
 - `crates/testguest`: PID 1 of test VMs. Its library holds the data patterns the host tests share.
 - `crates/abi`: constants shared by the VMM and the guest.
