@@ -75,10 +75,10 @@ pub struct Request {
     pub log: Option<File>,
 }
 
-/// Tells the daemon this VM is ready, then waits for its request. Makes the client's stdio
-/// this process's, starts passing the client's signals to the workload through `to`, and
-/// tells the daemon it has taken the request. Until then the daemon holds its own copies
-/// of the client's descriptors, and gives the request to another VM if this one fails.
+/// Tells the daemon this VM is ready, then waits for its request, and tells the daemon it
+/// has taken it. Until then the daemon holds its own copies of the client's descriptors,
+/// and gives the request to another VM if this one fails. Then makes the client's stdio
+/// this process's, and starts passing the client's signals to the workload through `to`.
 pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
     let daemon = &link.daemon;
     shards_ipc::send(daemon, kind::READY, &[], &[]).map_err(|e| format!("telling the daemon: {e}"))?;
@@ -121,6 +121,19 @@ pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
     if fds.next().is_some() {
         return Err(format!("a request brings {count} descriptors, too many"));
     }
+    // TAKEN before anything of the client's is touched or anything starts: a VM that ends
+    // without it never started the run, which the daemon may then hand to another VM
+    // (daemon.rs, hand_over). A daemon gone by now has no copies left to close, and hands
+    // the run to no other: the command runs. Any other failure leaves the daemon unable to
+    // tell whether this VM has the run, so it does not.
+    if let Err(e) = shards_ipc::send(daemon, kind::TAKEN, &[], &[])
+        && !matches!(
+            e.kind(),
+            io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+        )
+    {
+        return Err(format!("telling the daemon the request is taken: {e}"));
+    }
     for (fd, target) in [
         (stdin.as_raw_fd(), 0),
         (stdout.as_raw_fd(), 1),
@@ -154,8 +167,6 @@ pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
             .spawn(move || relay_signals(&conn, &to, client))
             .map_err(|e| format!("{name} thread: {e}"))?;
     }
-    // A daemon gone by now has no copies left to close.
-    let _ = shards_ipc::send(daemon, kind::TAKEN, &[], &[]);
     Ok(Request {
         client,
         spec,

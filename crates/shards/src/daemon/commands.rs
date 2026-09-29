@@ -14,7 +14,7 @@ use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
 use shards_ipc::kind;
 
-use super::{Daemon, STOP_GRACE, lock};
+use super::{Daemon, RunState, STOP_GRACE, lock};
 use crate::containers::{Container, State as Life, now};
 use crate::spec::{LOG_STDERR, LOG_STDOUT};
 
@@ -211,17 +211,20 @@ impl Daemon {
         ))
     }
 
-    /// Whether the container with `id` runs, as the daemon follows it.
+    /// Whether the container with `id` runs: its run was handed over, and has not ended.
     fn running(&self, id: &str) -> bool {
-        lock(&self.runs).contains_key(id)
+        matches!(lock(&self.runs).get(id), Some(RunState::Tracked(_)))
     }
 
     /// Sends Linux signal `linux` to the command of the container with `id`; whether it
     /// could.
     fn signal(&self, id: &str, linux: u32) -> bool {
-        lock(&self.runs)
-            .get(id)
-            .is_some_and(|t| shards_ipc::send(&t.socket, kind::SIGNAL, &linux.to_be_bytes(), &[]).is_ok())
+        match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(t)) => {
+                shards_ipc::send(&t.socket, kind::SIGNAL, &linux.to_be_bytes(), &[]).is_ok()
+            }
+            _ => false,
+        }
     }
 
     /// Ends the command of the running container with `id` as dockerd does (moby
@@ -243,7 +246,7 @@ impl Daemon {
         if self.await_exit(id, Some(KILL_WAIT)).is_some() {
             return true;
         }
-        if let Some(t) = lock(&self.runs).get(id) {
+        if let Some(RunState::Tracked(t)) = lock(&self.runs).get(id) {
             let _ = t.vm.kill(libc::SIGKILL);
         }
         self.await_exit(id, Some(LAST_WAIT)).is_some()
@@ -337,7 +340,11 @@ impl Daemon {
 
     /// `shards rm [-f]`: removes containers that have stopped; with `-f`, kills the ones
     /// still running first, and says nothing of those not there. The CLI trims `/` from
-    /// both ends of each argument (docker/cli rm.go; moby daemon/delete.go).
+    /// both ends of each argument (docker/cli rm.go; moby daemon/delete.go). A container
+    /// whose run no VM has yet been committed to has not started: it goes, and its run
+    /// never starts, as dockerd removes a created container. One whose run is being handed
+    /// over is removed once it is known whether it started, as dockerd's removal waits
+    /// for a start under way (moby daemon/start.go holds the container's lock throughout).
     fn rm(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
         let force = parsed.bool("force");
         self.each(
@@ -361,6 +368,9 @@ impl Daemon {
                     ));
                 }
                 let removed = (|| {
+                    if self.cancel_start(&id).map_err(|e| cannot(&e.to_string()))? {
+                        return Ok(true);
+                    }
                     if lock(&self.containers).get(&id).is_none() {
                         return Ok(true);
                     }
@@ -390,7 +400,9 @@ impl Daemon {
 
     /// `shards stop [-t SECONDS] [-s SIGNAL]`: the signal (SIGTERM), then SIGKILL once the
     /// time (10 s) is up, as dockerd stops a container (moby daemon/stop.go). A negative
-    /// time waits for ever; a stopped container stops again without complaint.
+    /// time waits for ever; a stopped container stops again without complaint. A container
+    /// still starting is stopped once it runs: `shards run -d` prints its ID before then,
+    /// where `docker run -d` prints it after.
     fn stop(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
         if parsed.changed("time") && parsed.changed("timeout") {
             reply.err("conflicting options: cannot specify both --timeout and --time");
@@ -411,6 +423,7 @@ impl Daemon {
             &parsed.args,
             &|reference| {
                 let id = self.resolve(reference)?;
+                self.await_start(&id);
                 if !self.running(&id) {
                     return Ok(true);
                 }
@@ -438,7 +451,8 @@ impl Daemon {
     /// `shards kill [-s SIGNAL]`: the signal (SIGKILL) to each running container's command.
     /// SIGKILL waits for the end, as dockerd's kill does; other signals are only sent
     /// (moby daemon/kill.go ContainerKill). Every error names its container (moby
-    /// container_routes.go postContainersKill).
+    /// container_routes.go postContainersKill). A container still starting is signalled
+    /// once it runs, as `stop` stops it.
     fn kill(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
         let signal = parsed.string("signal");
         self.each(
@@ -458,6 +472,7 @@ impl Daemon {
                     .resolve(reference)
                     .map_err(|e| cannot(e.trim_start_matches("Error response from daemon: ")))?;
                 let not_running = || cannot(&format!("container {id} is not running"));
+                self.await_start(&id);
                 if !self.running(&id) {
                     return Err(not_running());
                 }

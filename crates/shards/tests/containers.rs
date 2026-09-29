@@ -20,7 +20,9 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served, shards};
+use common::{
+    Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served, shards, shards_vm, shardsd,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -518,4 +520,185 @@ fn usage_mistakes_are_answered_without_a_daemon() {
         !home.join("daemon.sock").exists() && !home.join("daemon.pid").exists(),
         "no daemon was started"
     );
+}
+
+/// This build's `shards` and `shardsd` in a directory of their own, beside a `shards-vm`
+/// that waits for a gate to open before it becomes this build's. Every VM their daemon
+/// starts waits there, so a run stays pending, its container created, for as long as the
+/// test keeps the gate shut (audit A06).
+struct Gated {
+    dir: TempDir,
+}
+
+impl Gated {
+    fn new(name: &str) -> Gated {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new(name);
+        for (from, to) in [(shards(), "shards"), (shardsd(), "shardsd")] {
+            // A link where there can be one: macOS assesses a copy as a new binary.
+            if std::fs::hard_link(from, dir.join(to)).is_err() {
+                std::fs::copy(from, dir.join(to)).unwrap();
+            }
+        }
+        let vm = dir.join("shards-vm");
+        let script = format!(
+            "#!/bin/sh\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nexec '{}' \"$@\"\n",
+            dir.join("open").display(),
+            shards_vm().display()
+        );
+        std::fs::write(&vm, script).unwrap();
+        std::fs::set_permissions(&vm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Gated { dir }
+    }
+
+    fn open(&self) {
+        std::fs::write(self.dir.join("open"), b"").unwrap();
+    }
+
+    /// `shards ARGS` from this directory in `home`, whose runs boot the test kernel and
+    /// init, left going.
+    fn start(&self, home: &Path, args: &[&str]) -> Going {
+        let mut child = Command::new(self.dir.join("shards"))
+            .args(args)
+            .env("SHARDS_HOME", home)
+            .env("SHARDS_KERNEL", kernel())
+            .env("SHARDS_INIT", guest_init())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let collect = |mut from: Box<dyn std::io::Read + Send>| {
+            std::thread::spawn(move || {
+                let mut text = String::new();
+                let _ = from.read_to_string(&mut text);
+                text
+            })
+        };
+        let out = collect(Box::new(child.stdout.take().unwrap()));
+        let err = collect(Box::new(child.stderr.take().unwrap()));
+        Going { child, out, err }
+    }
+
+    /// `shards ARGS` from this directory in `home`.
+    fn shards(&self, home: &Path, args: &[&str]) -> Run {
+        self.start(home, args).finish()
+    }
+}
+
+/// A command left going, its output collected as it comes.
+struct Going {
+    child: Child,
+    out: std::thread::JoinHandle<String>,
+    err: std::thread::JoinHandle<String>,
+}
+
+impl Going {
+    fn finished(&mut self) -> bool {
+        self.child.try_wait().unwrap().is_some()
+    }
+
+    fn finish(mut self) -> Run {
+        let start = Instant::now();
+        let status = exit(&mut self.child);
+        Run {
+            status,
+            stdout: self.out.join().unwrap(),
+            stderr: self.err.join().unwrap(),
+            elapsed: start.elapsed(),
+        }
+    }
+}
+
+/// The ID of the one container in `home`, once it is there: created, its run pending.
+fn created(gated: &Gated, home: &Path) -> String {
+    let id = std::cell::RefCell::new(String::new());
+    eventually("the run's container never showed", || {
+        *id.borrow_mut() = gated.shards(home, &["ps", "-a", "-q", "--no-trunc"]).stdout;
+        !id.borrow().is_empty()
+    });
+    let all = gated.shards(home, &["ps", "-a"]).stdout;
+    assert!(
+        all.lines().nth(1).is_some_and(|l| l.contains(" Created ")),
+        "{all}"
+    );
+    id.into_inner().trim_end().to_string()
+}
+
+/// `rm` of a container whose run has no VM yet removes it, and the run never starts: its
+/// client hears that the container is gone, as `docker run` hears it of a container
+/// removed before it was started, and nothing is left (audit A06, whose reproduction
+/// this is: before, the command ran after its container was removed).
+#[test]
+fn rm_cancels_a_run_whose_vm_is_not_ready() {
+    let Some((home, image)) = home("containers-cancel") else {
+        return;
+    };
+    let gated = Gated::new("cancel-bin");
+    let args = run_args(&image, &["--name", "racer"], &["exit", "7"]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let run = gated.start(&home, &args);
+    let id = created(&gated, &home);
+    let waiting = gated.start(&home, &["wait", "racer"]);
+    let removed = gated.shards(&home, &["rm", "racer"]);
+    assert_eq!(
+        (removed.status, removed.stdout.as_str()),
+        (Some(0), "racer\n"),
+        "{removed}"
+    );
+    // `wait` asked before the removal, and hears the 0 of a container that never ran, or
+    // after it, and hears there is no such container; either way while every VM waits.
+    let waited = waiting.finish();
+    assert!(
+        waited.status == Some(0) && waited.stdout == "0\n"
+            || waited.status == Some(1)
+                && waited.stderr == "Error response from daemon: No such container: racer\n",
+        "{waited}"
+    );
+    gated.open();
+    let run = run.finish();
+    assert_eq!(run.status, Some(125), "{run}");
+    assert_eq!(
+        untimed(&run.stderr),
+        format!(
+            "shards: Error response from daemon: No such container: {id}\n\nRun 'shards run --help' for more information\n"
+        ),
+        "{run}"
+    );
+    assert_eq!(run.stdout, "", "{run}");
+    assert_eq!(gated.shards(&home, &["ps", "-a", "-q"]).stdout, "");
+    assert_eq!(gated.shards(&home, &["daemon", "stop"]).status, Some(0));
+}
+
+/// A daemon told to stop starts no run still pending: it ends once the run has been
+/// refused, and the run's container stays, created, with the code of a start that failed.
+#[test]
+fn a_stopping_daemon_starts_no_pending_run() {
+    let Some((home, image)) = home("containers-stop-pending") else {
+        return;
+    };
+    let gated = Gated::new("stop-pending-bin");
+    let args = run_args(&image, &["--name", "racer"], &["exit", "7"]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let run = gated.start(&home, &args);
+    let id = created(&gated, &home);
+    let mut stopping = gated.start(&home, &["daemon", "stop"]);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!stopping.finished(), "the daemon ended with a run pending");
+    gated.open();
+    let run = run.finish();
+    assert_eq!(run.status, Some(125), "{run}");
+    assert_eq!(
+        untimed(&run.stderr),
+        "shards: Error response from daemon: the daemon is shutting down\n\nRun 'shards run --help' for more information\n",
+        "{run}"
+    );
+    let stopped = stopping.finish();
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    // The next daemon finds the container as the last one left it.
+    let listed = gated.shards(&home, &["ps", "-a", "-q", "--no-trunc"]);
+    assert_eq!(listed.stdout, format!("{id}\n"), "{listed}");
+    assert_eq!(gated.shards(&home, &["wait", "racer"]).stdout, "128\n");
+    assert_eq!(gated.shards(&home, &["rm", "racer"]).status, Some(0));
+    assert_eq!(gated.shards(&home, &["daemon", "stop"]).status, Some(0));
 }

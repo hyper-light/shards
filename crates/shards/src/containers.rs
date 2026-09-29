@@ -136,13 +136,15 @@ impl Registry {
         self.by_id.insert(c.id.clone(), c);
     }
 
-    /// Changes the container with `id` by `f`, and writes it.
+    /// Changes the container with `id` by `f`, and writes it. A container with no record
+    /// is an error: whoever changes one owns it until it goes (audit A06).
     pub fn update(&mut self, id: &str, f: impl FnOnce(&mut Container)) -> io::Result<()> {
-        if let Some(c) = self.by_id.get_mut(id) {
-            f(c);
-            self.save(id)?;
-        }
-        Ok(())
+        let c = self
+            .by_id
+            .get_mut(id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no record of the container"))?;
+        f(c);
+        self.save(id)
     }
 
     /// Writes the container with `id` to its directory, replacing what was there at once.
@@ -231,6 +233,21 @@ mod tests {
             let id = new_id().unwrap();
             assert!(!id.bytes().take(12).all(|b| b.is_ascii_digit()), "{id}");
         }
+    }
+
+    /// A change to a container with no record fails: whatever changes a container owns
+    /// it until it goes, so one missing is a broken invariant, not nothing to do (audit
+    /// A06).
+    #[test]
+    fn a_container_with_no_record_cannot_change() {
+        let home = temp_home("missing");
+        let mut registry = Registry::open(&home).unwrap();
+        let e = registry.update("gone", |c| c.exit_code = Some(1)).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
+        registry.reserve(container("here", "here", State::Created));
+        registry.update("here", |c| c.exit_code = Some(1)).unwrap();
+        assert_eq!(registry.get("here").unwrap().exit_code, Some(1));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

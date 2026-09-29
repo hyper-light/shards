@@ -914,6 +914,38 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   with the exit code dockerd gives it, 126, 127 or 128, from the message dockerd amends
   (moby daemon/errors.go, setExitCodeFromError). Nothing goes to its log, as nothing
   reaches `docker logs`. A detached client gets the same, after the ID.
+- **A run's start has one owner** (`daemon.rs`, `RunState`; audit A06). The container
+  and its pending run appear together, under the records' lock, and the run then moves
+  through three states the commands and the daemon's shutdown consult:
+  - *Pending*: no warm VM committed to yet. `rm` removes the container and cancels the
+    run, as dockerd removes a created container; the run's warm VM goes back to its pool
+    unused, and its client hears `No such container: ID`, as `docker run` hears it of a
+    container removed before its start (exit 125).
+  - *Handing*: committed to a warm VM, which has the request or is getting it. `rm`,
+    `stop`, `kill` and `wait` wait to learn whether it started, then act on what
+    happened, as dockerd's removal waits for a start under way (moby daemon/start.go
+    holds the container's lock throughout).
+  - *Tracked*: taken, and followed until it ends, registered before the client stops
+    counting as busy, so shutdown always sees one or the other.
+  - `stop` and `kill` of a container still starting act once it runs: `shards run -d`
+    prints the ID before the start, where `docker run -d` prints it after, so a script
+    that stops what `run -d` printed stops a running command in both.
+  - A daemon told to stop commits no pending run: `ending` is set under the runs' lock,
+    so a run either committed before and is signalled once it runs, or sees it and is
+    refused.
+  - A warm VM says TAKEN before it touches the client's stdio or starts anything, and if
+    the daemon cannot hear it, it runs nothing. So one that ends without a word surely
+    never started the run, which goes to another VM; one that answers otherwise, or not
+    in time, may have, and is ended and followed like any run, never retried: no run
+    starts twice.
+  - A record changed after it went is an error, not nothing to do.
+  - **Evidence:** deterministic unit tests that play the warm VMs over socket pairs and
+    hold each step (acquisition, TAKEN, STARTED, DONE) while `rm`, `rm -f`, `wait`,
+    `stop`, `kill` and daemon stop act, fourteen mutations of the fix each caught; and
+    the audit's real-VM reproduction, a `shards-vm` held at a gate, which the old
+    daemon fails (the command ran, exit 7, after its container was removed or the
+    daemon stopped) and this one passes (`containers::rm_cancels_a_run_whose_vm_is_not_ready`,
+    `a_stopping_daemon_starts_no_pending_run`).
 - **Commands** (`crates/shards/src/daemon/commands.rs`), answering with dockerd's and the
   CLI's words:
   - A container is named by its ID, its name, or the start of its ID and of no other's
@@ -944,7 +976,7 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
     included, and every error names its container.
   - `rm` trims `/` from its arguments, refuses a running container unless `-f`, which
     kills it, says nothing of a missing one with `-f`, and removes one container at a
-    time.
+    time; one still starting as above.
   - Whoever waits for a container is told its exit code as its record changes, under
     the records' lock, as moby's `State.Wait` is, so `wait` never reads a record before
     its end is written.
