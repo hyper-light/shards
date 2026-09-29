@@ -1077,6 +1077,8 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
 - **Consequence.** VM processes run a binary of their own, `shards-vm`, which links the
   VMM and what a VM process runs, and nothing of `shardsd`'s: on the Mac it loads
   Hypervisor.framework alone.
+- **After** (da483ac, AMD EPYC 9V74; fd7628d, 7763; n = 30 each): the overhead was
+  2.7 MiB at p50 and at max in both runs, against Firecracker's 4.5.
 
 ## Implications for shards (macOS/HVF backend)
 

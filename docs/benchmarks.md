@@ -549,3 +549,29 @@ The runner's THP mode is `always`, so both VMMs' 2 MiB-aligned guest RAM could a
 huge pages. `MADV_HUGEPAGE` adds alignment by construction and, under `defrag=madvise`,
 direct compaction on fault. shards is 2.8% faster at p50 and 29% faster at p99. Peak RSS is
 unchanged. A same-runner A/B without the advice is still needed to attribute the gain.
+
+**2026-09-29, boots and restores** · fd7628d · GitHub `ubuntu-24.04` runner: AMD EPYC
+7763, Linux 6.17.0-1022-azure, KVM nested · Firecracker v1.17.0 · kernel
+vmlinux-6.18.48-x86_64 · n=30, 1 vCPU, 128 MiB · load 1.99 1.20 0.48, then 1.65 1.17 0.49
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| shards to_ready | 121626 µs | 125298 µs | 132115 µs | 132115 µs |
+| Firecracker to_ready | 123039 µs | 126631 µs | 129091 µs | 129091 µs |
+| **shards overhead** | **2.7 MiB** | **2.7 MiB** | **2.7 MiB** | **2.7 MiB** |
+| Firecracker overhead | 4.5 MiB | 4.5 MiB | 4.5 MiB | 4.5 MiB |
+| shards peak_rss | 60.7 MiB | 62.7 MiB | 62.7 MiB | 62.7 MiB |
+| Firecracker peak_rss | 60.5 MiB | 62.5 MiB | 62.5 MiB | 62.5 MiB |
+| shards to_beat (restore) | 18892 µs | 19623 µs | 22896 µs | 22896 µs |
+| **Firecracker to_beat (restore)** | **13945 µs** | **18833 µs** | **21980 µs** | **21980 µs** |
+| **shards overhead (restore)** | **2.7 MiB** | **2.7 MiB** | **2.8 MiB** | **2.8 MiB** |
+| Firecracker overhead (restore) | 6.8 MiB | 6.8 MiB | 6.8 MiB | 6.8 MiB |
+| **shards peak_rss (restore)** | **12.7 MiB** | **12.8 MiB** | **12.8 MiB** | **12.8 MiB** |
+| Firecracker peak_rss (restore) | 18.4 MiB | 18.4 MiB | 18.4 MiB | 18.4 MiB |
+
+The first restores against Firecracker's. A restored shards VM costs 60% less memory
+outside its guest's, and 31% less at its peak, but its guest runs again 4.9 ms later at
+the median, and about as soon at p90 and p99. Each VM process now runs `shards-vm`,
+whose overhead is back to 2.7 MiB from the 3.8 its predecessor, `shardsd`, cost (PM M34).
+`peak_rss` is each process's own `VmHWM` from here on: `ru_maxrss` counted the harness's
+peak on Linux (see Boot).
