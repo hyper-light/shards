@@ -69,11 +69,11 @@ fn put_pairs32(w: &mut Writer, v: &[(u32, u64)]) {
 }
 
 fn get_pairs16(r: &mut Reader<'_>, max: usize) -> Result<Vec<(u16, u64)>> {
-    r.seq(max, |r| Ok((r.u16()?, r.u64()?)))
+    r.seq(max, 10, |r| Ok((r.u16()?, r.u64()?)))
 }
 
 fn get_pairs32(r: &mut Reader<'_>, max: usize) -> Result<Vec<(u32, u64)>> {
-    r.seq(max, |r| Ok((r.u32()?, r.u64()?)))
+    r.seq(max, 12, |r| Ok((r.u32()?, r.u64()?)))
 }
 
 impl VcpuState {
@@ -149,7 +149,7 @@ impl MachineState {
             counter: r.u64()?,
             cpu_id: get_pairs16(r, MAX_ID)?,
             dist: get_pairs32(r, MAX_DIST)?,
-            vcpus: r.seq(MAX_VCPUS, VcpuState::decode)?,
+            vcpus: r.seq(MAX_VCPUS, 1, VcpuState::decode)?,
         })
     }
 }

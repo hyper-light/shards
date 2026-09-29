@@ -5,7 +5,9 @@ use std::ptr::NonNull;
 
 use windows_sys::Win32::Foundation::ERROR_HANDLE_EOF;
 use windows_sys::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
-use windows_sys::Win32::Storage::FileSystem::{FlushFileBuffers, ReadFile, WriteFile};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_FLAG_BACKUP_SEMANTICS, FlushFileBuffers, ReadFile, WriteFile,
+};
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Memory::{
     MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree,
@@ -133,6 +135,24 @@ pub unsafe fn write_at(file: &File, src: *const u8, len: usize, offset: u64) -> 
         return Err(io::Error::last_os_error());
     }
     Ok(n as usize)
+}
+
+/// Opens the directory at `path`: a directory opens only for backup semantics
+/// (CreateFileW).
+pub fn open_dir(path: &std::path::Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+}
+
+/// Opens `name` in the directory `dir` holds open. No snapshots are read on Windows.
+pub fn open_in(_dir: &File, _name: &str) -> io::Result<File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "opening a file in an open directory is not supported on Windows",
+    ))
 }
 
 /// Creates `name` in the directory `dir` holds open. No snapshots are written on Windows.

@@ -942,7 +942,7 @@ impl Daemon {
             return self.cold(&cfg, &prepared.rootfs, None);
         }
         let dir = crate::run::template(&self.home, guest, &prepared.rootfs, &cfg);
-        if dir.join(shards_vmm::snapshot::STATE).is_file() {
+        if shards_vmm::snapshot::exists(&dir) {
             match self.claim(&dir) {
                 Ok(ready) => return Ok(ready),
                 Err(Claim::Failed(e)) => return Err(e),
@@ -961,7 +961,7 @@ impl Daemon {
         let fresh = dir.with_extension(format!("new-{}-{n}", std::process::id()));
         let ready = self.cold(&cfg, &prepared.rootfs, Some(&fresh));
         crate::run::settle(&fresh, &dir);
-        if ready.is_ok() && dir.join(shards_vmm::snapshot::STATE).is_file() {
+        if ready.is_ok() && shards_vmm::snapshot::exists(&dir) {
             self.refill(&mut lock(&self.state), &dir);
         }
         ready

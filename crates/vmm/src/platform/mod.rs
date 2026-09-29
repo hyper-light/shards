@@ -28,6 +28,43 @@ pub fn prioritize_vcpu_thread() -> Result<(), String> {
     Ok(())
 }
 
+/// The bytes of `name` in the directory `dir` holds open, or `None` if there is no such
+/// file. A file longer than `max` bytes is an error, found before it is read.
+pub fn read_in(dir: &File, name: &str, max: u64) -> io::Result<Option<Vec<u8>>> {
+    let file = match open_in(dir, name) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let len = file.metadata()?.len();
+    if len > max {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name}: {len} bytes, past the limit of {max}"),
+        ));
+    }
+    let len = usize::try_from(len).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(len)
+        .map_err(|e| io::Error::new(io::ErrorKind::OutOfMemory, e.to_string()))?;
+    bytes.resize(len, 0);
+    read_exact_at(&file, &mut bytes, 0)?;
+    Ok(Some(bytes))
+}
+
+/// Makes the entries of the directory at `path` durable: the renames into it survive a
+/// crash once this returns.
+pub fn sync_dir(path: &std::path::Path) -> io::Result<()> {
+    #[cfg(unix)]
+    return File::open(path)?.sync_all();
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
 /// Fills `buf` from `file` at `offset`, failing on a short file.
 pub fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     let mut done = 0;

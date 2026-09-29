@@ -72,6 +72,12 @@ pub fn cannot_snapshot() -> bool {
 #[path = "../../src/kernel.rs"]
 pub mod pinned;
 
+/// The file `name` of the snapshot generation `dir` points at (vmm snapshot/mod.rs).
+pub fn snapshot_file(dir: &Path, name: &str) -> PathBuf {
+    let current = std::fs::read_to_string(dir.join("current")).unwrap();
+    dir.join(current.trim_end()).join(name)
+}
+
 /// shards' guest kernel for the host architecture: Linux 6.18.48 with Firecracker's
 /// microVM config and ours (resources/kernel), built reproducibly by CI.
 pub fn kernel_artifact() -> Artifact {
@@ -367,8 +373,32 @@ pub fn run_shards_env<S: AsRef<std::ffi::OsStr>>(
     env: &[(&str, &std::ffi::OsStr)],
     timeout: Duration,
 ) -> Run {
+    run_shards_with(command, args, env, None, timeout)
+}
+
+/// [`run_shards`], in the working directory `dir`.
+pub fn run_shards_in<S: AsRef<std::ffi::OsStr>>(
+    dir: &Path,
+    command: &[&str],
+    args: &[S],
+    timeout: Duration,
+) -> Run {
+    run_shards_with(command, args, &[], Some(dir), timeout)
+}
+
+fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
+    command: &[&str],
+    args: &[S],
+    env: &[(&str, &std::ffi::OsStr)],
+    dir: Option<&Path>,
+    timeout: Duration,
+) -> Run {
     let start = Instant::now();
-    let mut child = Command::new(shards())
+    let mut cmd = Command::new(shards());
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
+    let mut child = cmd
         .args(command)
         .args(args)
         .envs(env.iter().copied())

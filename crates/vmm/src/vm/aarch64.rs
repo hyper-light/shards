@@ -130,6 +130,8 @@ struct Assembled {
     redist_total: u64,
     virtio: Vec<boot::MmioDevice>,
     mpidrs: Vec<u64>,
+    /// Each pmem region's guest address and length.
+    pmem: Vec<(u64, u64)>,
 }
 
 /// `vsock` is the host socket path of the vsock device `config` asks for.
@@ -154,6 +156,10 @@ fn assemble(
         top = next;
         regions.push((region, gpa));
     }
+    let pmem: Vec<(u64, u64)> = regions
+        .iter()
+        .map(|(region, gpa)| (*gpa, region.len() as u64))
+        .collect();
     let ipa_bits = ipa_bits(top)?;
     let mpidrs: Vec<u64> = (0..config.vcpus).map(aarch64::mpidr).collect();
     let vm = hv::Vm::new(hv::VmConfig {
@@ -264,6 +270,7 @@ fn assemble(
         redist_total,
         virtio,
         mpidrs,
+        pmem,
     })
 }
 
@@ -277,13 +284,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     let kernel = boot::load_kernel(&memory, &kernel_file, ram).map_err(|e| e.to_string())?;
     debug!("kernel loaded");
 
-    let config = MachineConfig {
-        vcpus: cfg.vcpus,
-        memory_mib: cfg.memory_mib,
-        disks: cfg.disks.iter().map(|d| (d.path.clone(), d.read_only)).collect(),
-        pmem: cfg.pmem.clone(),
-        vsock: cfg.vsock.is_some(),
-    };
+    let config = super::machine_config(cfg)?;
     let a = assemble(&memory, &config, cfg.console, cfg.vsock.as_deref())?;
     a.vmgenid.write_new_id()?;
 
@@ -393,6 +394,12 @@ pub fn restore(
             .map_err(|e| format!("snapshot memory: {e}"))?,
     );
     let a = assemble(&memory, &snap.config, console, vsock)?;
+    let guest: Vec<(u64, u64)> = memory
+        .regions()
+        .map(|(gpa, _, len)| (gpa, len as u64))
+        .chain(a.pmem.iter().copied())
+        .collect();
+    let working_set = super::usable_working_set(working_set, PAGE, &guest);
     Ok(Machine {
         vm: a.vm,
         memory,

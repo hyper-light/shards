@@ -78,8 +78,27 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   refused. Memory is sparse (zero pages are holes). Each run of pages the guest used is one
   write: on ext4 a write's length sets the order of the page-cache folios a restore maps,
   and restores of a snapshot written that way reached their first beat 17–25% sooner than
-  of one written a page per write [PM M37]. Files are written, synced and renamed.
-  Decoding treats the files as untrusted.
+  of one written a page per write [PM M37]. Decoding treats the files as untrusted.
+- **Generations.** A snapshot directory holds generations, each a directory of its own
+  (`state`, `memory`, and later a `working-set`), and `current`, naming the one in use.
+  - A write stages a generation under a name of its own, syncs its files and directory,
+    renames it into place, and points `current` at it by renaming a synced file over it.
+    Writers to one directory take turns under a lock, and each removes what `current`
+    does not name.
+  - A reader opens the generation `current` names, and both its files through that open
+    directory, so no write can pair one generation's state with another's memory. The
+    state names its generation; a state under another name is refused.
+  - A failure after any step leaves the generation before, or, once `current` moved, the
+    one after (audit A03).
+- **Backing files.** A machine's disks and pmem files are resolved to absolute paths when
+  it is built, and a snapshot records them in the OS's own bytes, with each file's
+  device, inode, size and modification time. A restore refuses another file under the
+  name, and a file the guest only reads that has changed; a writable disk may have been
+  written since. Nothing reads whole files to check them (audit A18).
+- **Working sets are bounded** by the guest's pages: RAM, and each pmem region at its
+  2 MiB-aligned size. A longer file is not read, a count is checked against the bytes
+  left before anything is allocated, and every page must be aligned, distinct and inside
+  the guest; otherwise the restore goes without prefetching (audit A16).
 - **Restore.** Memory is mapped copy-on-write from the snapshot file; clones share every
   page none of them writes. vCPUs are created in order and loaded with one counter offset,
   so CNTVCT continues and agrees across CPUs. **The GIC distributor is applied only after

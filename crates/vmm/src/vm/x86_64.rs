@@ -314,13 +314,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     let kernel = boot::load_kernel(&memory, &kernel_file, low_ram_end).map_err(|e| e.to_string())?;
     debug!("kernel loaded");
 
-    let config = MachineConfig {
-        vcpus: cfg.vcpus,
-        memory_mib: cfg.memory_mib,
-        disks: cfg.disks.iter().map(|d| (d.path.clone(), d.read_only)).collect(),
-        pmem: cfg.pmem.clone(),
-        vsock: cfg.vsock.is_some(),
-    };
+    let config = super::machine_config(cfg)?;
     let a = assemble(&memory, &config, cfg.console, cfg.vsock.as_deref())?;
     for (addr, bytes) in acpi::build(cfg.vcpus, &a.virtio)?.blobs {
         memory.write(addr, &bytes).map_err(|e| e.to_string())?;
@@ -391,6 +385,12 @@ pub fn restore(
     let memory =
         Arc::new(GuestMemory::from_file(&ranges, memory_file).map_err(|e| format!("snapshot memory: {e}"))?);
     let a = assemble(&memory, &snap.config, console, vsock)?;
+    let guest: Vec<(u64, u64)> = memory
+        .regions()
+        .map(|(gpa, _, len)| (gpa, len as u64))
+        .chain(a.bus.pmem.iter().map(|(gpa, region)| (*gpa, region.len() as u64)))
+        .collect();
+    let working_set = super::usable_working_set(working_set, PAGE, &guest);
     if let Err(e) = copy_written(&memory, &working_set) {
         warn!("{e}; the guest copies the pages it writes as it writes them");
     }
@@ -603,7 +603,7 @@ fn decode_state(bytes: &[u8]) -> Result<(hv::VmState, Vec<hv::VcpuState>), Strin
     let mut r = Reader::new(bytes);
     let vm = hv::VmState::decode(&mut r).map_err(|e| format!("snapshot VM state: {e}"))?;
     let vcpus = r
-        .seq(254, hv::VcpuState::decode)
+        .seq(254, 1, hv::VcpuState::decode)
         .map_err(|e| format!("snapshot vCPU state: {e}"))?;
     r.finish().map_err(|e| format!("snapshot state: {e}"))?;
     Ok((vm, vcpus))

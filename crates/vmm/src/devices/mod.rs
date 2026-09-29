@@ -201,7 +201,7 @@ mod tests {
             });
         }
         fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()> {
-            let writes = r.seq(64, |r| Ok((r.u64()?, r.bytes(8)?.to_vec())))?;
+            let writes = r.seq(64, 12, |r| Ok((r.u64()?, r.bytes(8)?.to_vec())))?;
             *self.0.lock().unwrap() = writes;
             Ok(())
         }

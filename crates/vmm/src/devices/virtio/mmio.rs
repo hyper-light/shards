@@ -326,7 +326,7 @@ impl MmioDevice for MmioTransport {
             [r.u32()?, r.u32()?, r.u32()?, r.u32()?, r.u32()?, r.u32()?];
         let driver_features = r.u64()?;
         let failed = r.bool()?;
-        let queues = r.seq(s.queues.len(), |r| {
+        let queues = r.seq(s.queues.len(), 1, |r| {
             Ok(QueueConfig {
                 size: r.u16()?,
                 desc: r.u64()?,
@@ -342,7 +342,7 @@ impl MmioDevice for MmioTransport {
                 s.queues.len()
             )));
         }
-        let progress = r.seq(s.queues.len(), |r| {
+        let progress = r.seq(s.queues.len(), 7, |r| {
             let (next_avail, next_used, signalled) = (r.u16()?, r.u16()?, r.bool()?);
             let at = r.u16()?;
             Ok(QueueState {

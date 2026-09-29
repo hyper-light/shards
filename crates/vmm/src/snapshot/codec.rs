@@ -124,19 +124,30 @@ impl<'a> Reader<'a> {
         Ok(head)
     }
 
-    /// A length-prefixed sequence of at most `max` items.
+    /// A length-prefixed sequence of at most `max` items, each at least `min_bytes` long.
+    /// A count the remaining input cannot hold fails before anything is allocated, and the
+    /// allocation itself may fail with an error: a short input's count cannot reserve
+    /// memory it could never fill (audit A16).
     pub fn seq<T>(
         &mut self,
         max: usize,
+        min_bytes: usize,
         mut each: impl FnMut(&mut Reader<'a>) -> Result<T>,
     ) -> Result<Vec<T>> {
         let len = self.u32()? as usize;
         if len > max {
             return Err(DecodeError(format!("sequence of {len} (limit {max})")));
         }
-        // Capacity comes from the checked length, and each item consumes input, so a
-        // hostile count cannot allocate more than `max` items.
-        let mut out = Vec::with_capacity(len);
+        let needed = len.checked_mul(min_bytes.max(1));
+        if needed.is_none_or(|needed| needed > self.buf.len()) {
+            return Err(DecodeError(format!(
+                "sequence of {len} with {} bytes left",
+                self.buf.len()
+            )));
+        }
+        let mut out = Vec::new();
+        out.try_reserve_exact(len)
+            .map_err(|e| DecodeError(format!("sequence of {len}: {e}")))?;
         for _ in 0..len {
             out.push(each(self)?);
         }
@@ -178,7 +189,7 @@ mod tests {
         assert_eq!(r.u128().unwrap(), u128::MAX - 1);
         assert!(r.bool().unwrap());
         assert_eq!(r.bytes(16).unwrap(), b"abc");
-        assert_eq!(r.seq(8, |r| r.u32()).unwrap(), vec![7, 8, 9]);
+        assert_eq!(r.seq(8, 4, |r| r.u32()).unwrap(), vec![7, 8, 9]);
         r.finish().unwrap();
     }
 
@@ -199,7 +210,7 @@ mod tests {
         assert!(Reader::new(&[9, 0, 0, 0]).bytes(4).is_err());
         assert!(
             Reader::new(&[0xff, 0xff, 0xff, 0xff])
-                .seq(16, |r| r.u8())
+                .seq(16, 1, |r| r.u8())
                 .is_err()
         );
         assert!(Reader::new(&[2]).bool().is_err());

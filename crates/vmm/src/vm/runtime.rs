@@ -11,6 +11,7 @@ use super::{AfterSnapshot, Config, ExitReason, RestoreConfig, SnapshotPolicy};
 use crate::devices::control::Control;
 use crate::devices::power::PowerEvent;
 use crate::devices::serial::Serial;
+use crate::devices::virtio::pmem;
 use crate::hv;
 use crate::memory::GuestMemory;
 use crate::snapshot::{self, MachineConfig, Snapshot, codec::Writer};
@@ -301,13 +302,35 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     launch(machine::build(cfg)?, cfg.snapshot.clone(), false)
 }
 
+/// The most stage-2 pages `snap`'s guest can have, RAM and pmem regions (each its file
+/// rounded up to [`pmem::ALIGN`]): the bound on its working set. A pmem file that cannot
+/// be read adds nothing; the restore reports it.
+fn guest_pages(snap: &snapshot::Snapshot) -> u64 {
+    let pmem: u64 = snap
+        .config
+        .pmem
+        .iter()
+        .filter_map(|path| std::fs::metadata(path).ok())
+        .map(|m| m.len().checked_next_multiple_of(pmem::ALIGN).unwrap_or(u64::MAX))
+        .fold(0, u64::saturating_add);
+    snap.config
+        .memory_mib
+        .saturating_mul(1 << 20)
+        .saturating_add(pmem)
+        .div_ceil(machine::PAGE)
+}
+
 /// Resumes the VM a snapshot holds, in this process.
 pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     check_host()?;
-    let (snap, memory_file) = snapshot::read(&cfg.dir)?;
+    let snapshot::Pinned {
+        snapshot: snap,
+        memory: memory_file,
+        generation,
+    } = snapshot::read(&cfg.dir)?;
     check_vcpus(snap.config.vcpus)?;
     let working_set = if cfg.prefetch {
-        snapshot::read_working_set(&cfg.dir, machine::PAGE).unwrap_or_else(|e| {
+        snapshot::read_working_set(&generation, machine::PAGE, guest_pages(&snap)).unwrap_or_else(|e| {
             warn!("{e}; restoring without prefetching it");
             None
         })
@@ -322,14 +345,9 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
         cfg.vsock.as_deref(),
         working_set.unwrap_or_default(),
     )?;
+    // A working set is saved into the generation it was recorded from.
     let recorder = if recording {
-        machine::recorder(&machine)
-            .map(|r| File::open(&cfg.dir).map(|dir| (r, dir)))
-            .transpose()
-            .unwrap_or_else(|e| {
-                warn!("not recording a working set: {}: {e}", cfg.dir.display());
-                None
-            })
+        machine::recorder(&machine).map(|r| (r, generation))
     } else {
         None
     };
@@ -518,9 +536,10 @@ impl Coordinator {
                 Some(captured) => self.write(captured),
                 None => Err("a vCPU parked without its state".into()),
             };
-            if let Err(e) = written {
-                return self.sh.stop(ExitReason::Error(format!("snapshot: {e}")));
-            }
+            let generation = match written {
+                Ok(generation) => generation,
+                Err(e) => return self.sh.stop(ExitReason::Error(format!("snapshot: {e}"))),
+            };
             info!(
                 "snapshot written to {} in {} us",
                 self.policy.dir.display(),
@@ -530,7 +549,7 @@ impl Coordinator {
                 AfterSnapshot::Stop => return self.sh.stop(ExitReason::Snapshotted),
                 AfterSnapshot::Resume => {
                     if self.policy.working_set {
-                        self.record();
+                        self.record(generation);
                     }
                     if let Err(e) = self.bus.resume() {
                         return self.sh.stop(ExitReason::Error(format!("resuming devices: {e}")));
@@ -545,17 +564,15 @@ impl Coordinator {
         }
     }
 
-    /// Starts recording the working set from the snapshot just written, with every vCPU
-    /// parked, unless one is being recorded already. Without one, restores just run.
-    fn record(&self) {
+    /// Starts recording the working set of `generation`, the snapshot just written, with
+    /// every vCPU parked, unless one is being recorded already. Without one, restores just
+    /// run.
+    fn record(&self, generation: File) {
         let mut recording = lock(&self.sh.recording);
         if recording.is_some() {
             return;
         }
-        let started = File::open(&self.policy.dir)
-            .map_err(|e| format!("{}: {e}", self.policy.dir.display()))
-            .and_then(|dir| Ok(machine::record(&self.vm)?.map(|r| (r, dir))));
-        match started {
+        match machine::record(&self.vm).map(|r| r.map(|r| (r, generation))) {
             Ok(r) => *recording = r,
             Err(e) => warn!("not recording a working set: {e}"),
         }
@@ -575,8 +592,9 @@ impl Coordinator {
         }
     }
 
-    /// Quiesces devices, then saves interrupt controller, devices and memory.
-    fn write(&self, captured: Vec<machine::Captured>) -> Result<(), String> {
+    /// Quiesces devices, then saves interrupt controller, devices and memory. Returns the
+    /// new generation's directory, held open.
+    fn write(&self, captured: Vec<machine::Captured>) -> Result<File, String> {
         self.bus.pause();
         let arch = machine::encode_state(&self.vm, captured)?;
         let mut w = Writer::default();

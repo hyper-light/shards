@@ -324,16 +324,52 @@ pub unsafe fn write_at(file: &File, src: *const u8, len: usize, offset: u64) -> 
     }
 }
 
+/// Opens the directory at `path`, to open files in it wherever it goes ([`open_in`],
+/// [`write_in`]).
+pub fn open_dir(path: &std::path::Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY)
+        .open(path)
+}
+
+/// Opens `name` for reading in the directory `dir` holds open: the file there, even if the
+/// directory was renamed or replaced since.
+pub fn open_in(dir: &File, name: &str) -> io::Result<File> {
+    use std::os::fd::FromRawFd as _;
+    let name = std::ffi::CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file name with NUL"))?;
+    // SAFETY: openat(2) with a NUL-terminated name, relative to a directory we hold open.
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor we just opened, and nothing else owns.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
 /// Creates `name` in the directory `dir` holds open, durably: written to a temporary
-/// sibling, synced, renamed over `name`, and the directory synced. It lands there even if
-/// the directory was renamed since it was opened.
+/// sibling of its own, synced, renamed over `name`, and the directory synced. It lands
+/// there even if the directory was renamed since it was opened, and of writers racing to
+/// the same name, one replaces the file whole.
 pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write as _;
     use std::os::fd::FromRawFd as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNT: AtomicU64 = AtomicU64::new(0);
     let invalid = |_| io::Error::new(io::ErrorKind::InvalidInput, "a file name with NUL");
-    let tmp = std::ffi::CString::new(format!(".{name}.tmp")).map_err(invalid)?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let tmp = std::ffi::CString::new(format!(
+        ".{name}.{nanos:x}-{:x}-{:x}.tmp",
+        std::process::id(),
+        COUNT.fetch_add(1, Ordering::Relaxed)
+    ))
+    .map_err(invalid)?;
     let target = std::ffi::CString::new(name).map_err(invalid)?;
-    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_CLOEXEC;
+    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC;
     // SAFETY: openat(2) with a NUL-terminated name, relative to a directory we hold open.
     let fd = unsafe { libc::openat(dir.as_raw_fd(), tmp.as_ptr(), flags, 0o644 as libc::c_uint) };
     if fd < 0 {
@@ -341,12 +377,24 @@ pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
     }
     // SAFETY: a descriptor we just opened, and nothing else owns.
     let mut file = unsafe { File::from_raw_fd(fd) };
-    file.write_all(bytes)?;
-    sync_durable(&file)?;
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| sync_durable(&file))
+        .and_then(|()| {
+            // SAFETY: renameat(2) with NUL-terminated names, relative to a directory we hold
+            // open.
+            if unsafe { libc::renameat(dir.as_raw_fd(), tmp.as_ptr(), dir.as_raw_fd(), target.as_ptr()) } != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
     drop(file);
-    // SAFETY: renameat(2) with NUL-terminated names, relative to a directory we hold open.
-    if unsafe { libc::renameat(dir.as_raw_fd(), tmp.as_ptr(), dir.as_raw_fd(), target.as_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
+    if let Err(e) = written {
+        // SAFETY: unlinkat(2) of our own temporary file, relative to a directory we hold
+        // open.
+        unsafe { libc::unlinkat(dir.as_raw_fd(), tmp.as_ptr(), 0) };
+        return Err(e);
     }
     dir.sync_all()
 }

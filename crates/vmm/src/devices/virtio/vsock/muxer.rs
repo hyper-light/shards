@@ -79,7 +79,7 @@ impl Saved {
     }
 
     pub fn read(r: &mut Reader<'_>) -> codec::Result<Saved> {
-        let ports = r.seq(MAX_CONNECTIONS + MAX_STRAY_RSTS, |r| Ok((r.u32()?, r.u32()?)))?;
+        let ports = r.seq(MAX_CONNECTIONS + MAX_STRAY_RSTS, 8, |r| Ok((r.u32()?, r.u32()?)))?;
         Ok(Saved {
             ports,
             last_local_port: r.u32()?,

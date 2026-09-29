@@ -140,7 +140,7 @@ fn repeat_runs_restore_a_template_of_the_image() {
         assert!(!booted(&recording), "{}", recording.stderr);
         assert_eq!(recording.prefetched(), Some(0), "{}", recording.stderr);
     }
-    let working_set = home.join("templates").join(&saved[0]).join("working-set");
+    let working_set = common::snapshot_file(&home.join("templates").join(&saved[0]), "working-set");
     let deadline = std::time::Instant::now() + TIMEOUT;
     while shards_vmm::vm::WORKING_SETS && !working_set.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -194,7 +194,7 @@ fn repeat_runs_restore_a_template_of_the_image() {
     // again. The daemon's pool holds VMs restored before the damage, so a new daemon, with
     // none, has to find out.
     std::fs::write(
-        home.join("templates").join(&saved[0]).join("state"),
+        common::snapshot_file(&home.join("templates").join(&saved[0]), "state"),
         b"not a snapshot",
     )
     .unwrap();

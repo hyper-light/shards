@@ -122,10 +122,7 @@ pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> Path
 /// Makes a freshly saved template the template, unless another run's got there first; a
 /// save that did not complete is removed.
 pub fn settle(fresh: &Path, dir: &Path) {
-    if fresh.join(shards_vmm::snapshot::STATE).is_file()
-        && !dir.exists()
-        && std::fs::rename(fresh, dir).is_ok()
-    {
+    if shards_vmm::snapshot::exists(fresh) && !dir.exists() && std::fs::rename(fresh, dir).is_ok() {
         return;
     }
     let _ = std::fs::remove_dir_all(fresh);

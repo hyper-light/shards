@@ -63,7 +63,7 @@ impl VcpuState {
     }
 
     pub fn decode(r: &mut Reader<'_>) -> codec::Result<VcpuState> {
-        let cpuid = r.seq(MAX_CPUID, |r| {
+        let cpuid = r.seq(MAX_CPUID, 28, |r| {
             let mut e = [0u32; 7];
             for v in &mut e {
                 *v = r.u32()?;
@@ -90,7 +90,7 @@ impl VcpuState {
         if xsave.len() < sys::XSAVE_SIZE {
             return Err(DecodeError(format!("an XSAVE area of {} bytes", xsave.len())));
         }
-        let msrs = r.seq(MAX_MSRS, |r| Ok((r.u32()?, r.u64()?)))?;
+        let msrs = r.seq(MAX_MSRS, 12, |r| Ok((r.u32()?, r.u64()?)))?;
         let events = r.bytes(sys::VCPU_EVENTS_SIZE)?.to_vec();
         if events.len() != sys::VCPU_EVENTS_SIZE {
             return Err(DecodeError("vCPU events of the wrong size".into()));

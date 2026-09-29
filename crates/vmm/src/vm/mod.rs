@@ -45,6 +45,57 @@ fn check_vsock(snap: &crate::snapshot::Snapshot, path: Option<&std::path::Path>)
     }
 }
 
+/// `cfg`'s machine, its backing files resolved once to absolute paths: a snapshot of it
+/// names the files the machine had, wherever it is restored from (audit A18).
+#[cfg(hv)]
+fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String> {
+    let resolve =
+        |path: &std::path::Path| std::fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()));
+    Ok(crate::snapshot::MachineConfig {
+        vcpus: cfg.vcpus,
+        memory_mib: cfg.memory_mib,
+        disks: cfg
+            .disks
+            .iter()
+            .map(|d| Ok((resolve(&d.path)?, d.read_only)))
+            .collect::<Result<_, String>>()?,
+        pmem: cfg
+            .pmem
+            .iter()
+            .map(|p| resolve(p))
+            .collect::<Result<_, String>>()?,
+        vsock: cfg.vsock.is_some(),
+    })
+}
+
+/// `working_set` if every page of it, `page` bytes long, lies in one of `ranges`, the
+/// `(guest address, length)` of the guest's RAM and pmem. Else nothing: the restore goes
+/// without it rather than prefetch what the guest does not have (audit A16).
+#[cfg(hv)]
+fn usable_working_set(
+    working_set: Vec<crate::hv::Touch>,
+    page: u64,
+    ranges: &[(u64, u64)],
+) -> Vec<crate::hv::Touch> {
+    let inside = |gpa: u64| {
+        gpa.checked_add(page).is_some_and(|end| {
+            ranges
+                .iter()
+                .any(|&(start, len)| gpa >= start && start.checked_add(len).is_some_and(|stop| end <= stop))
+        })
+    };
+    match working_set.iter().find(|t| !inside(t.gpa)) {
+        None => working_set,
+        Some(t) => {
+            crate::warn!(
+                "the working set names {:#x}, outside the guest's memory; restoring without prefetching it",
+                t.gpa
+            );
+            Vec::new()
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub kernel: PathBuf,
@@ -155,4 +206,46 @@ pub enum ExitReason {
 pub fn run(cfg: &Config) -> Result<ExitReason, String> {
     let (handle, running) = start(cfg)?;
     Ok(running.wait(handle))
+}
+
+#[cfg(all(test, hv))]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::hv::Touch;
+
+    /// Backing files are resolved when the machine is built, so a snapshot of it names
+    /// them wherever it is restored from (audit A18). Tests run in their package's
+    /// directory, which holds `Cargo.toml`.
+    #[test]
+    fn a_machines_backing_files_resolve_to_absolute_paths() {
+        let mut cfg = Config::new(PathBuf::from("kernel"), None);
+        cfg.disks = vec![Disk {
+            path: PathBuf::from("Cargo.toml"),
+            read_only: true,
+        }];
+        cfg.pmem = vec![PathBuf::from("./src/../Cargo.toml")];
+        let machine = machine_config(&cfg).unwrap();
+        let absolute = std::fs::canonicalize("Cargo.toml").unwrap();
+        assert!(absolute.is_absolute());
+        assert_eq!(machine.disks, vec![(absolute.clone(), true)]);
+        assert_eq!(machine.pmem, vec![absolute]);
+        cfg.pmem = vec![PathBuf::from("no-such-file")];
+        assert!(machine_config(&cfg).unwrap_err().starts_with("no-such-file: "));
+    }
+
+    /// A working set naming a page the guest does not have is not prefetched at all
+    /// (audit A16).
+    #[test]
+    fn a_working_set_outside_the_guest_is_dropped() {
+        let page = 0x4000;
+        let ranges = [(0x8000_0000, 0x10_0000), (0x1_0000_0000, 0x20_0000)];
+        let touch = |gpa| Touch { gpa, written: false };
+        let inside = vec![touch(0x8000_0000), touch(0x800f_c000), touch(0x1_001f_c000)];
+        assert_eq!(usable_working_set(inside.clone(), page, &ranges), inside);
+        for outside in [0x8010_0000, 0x7fff_c000, 0x1_0020_0000, !(page - 1)] {
+            let set = vec![touch(0x8000_0000), touch(outside)];
+            assert!(usable_working_set(set, page, &ranges).is_empty(), "{outside:#x}");
+        }
+    }
 }

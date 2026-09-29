@@ -206,7 +206,7 @@ mod compare {
             .output()
             .unwrap();
         assert!(
-            saved.status.success() && snapshot.join("state").exists(),
+            saved.status.success() && shards_vmm::snapshot::exists(&snapshot),
             "shards' snapshot: {}",
             String::from_utf8_lossy(&saved.stderr)
         );
