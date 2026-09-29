@@ -1,0 +1,15 @@
+# M23: what handing a request and its stdio to a pre-spawned worker costs, as a warm-pool
+# daemon would, and what the client process costs (see run.sh). A workspace of its own.
+[package]
+name = "daemon-ipc"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+debug = false
+
+[workspace]

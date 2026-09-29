@@ -8,6 +8,8 @@ mod pull;
 mod run;
 mod terminal;
 mod vm_run;
+#[cfg(unix)]
+mod warm;
 mod workload;
 
 const USAGE: &str = "usage: shards <command> [args...]

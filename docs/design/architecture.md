@@ -57,6 +57,7 @@ performance and resource usage.
 | D10 | Pin the guest's CPU view explicitly: MPIDR, PARange clamped to the IPA, SME exposure decided per image. Don't inherit defaults. | Defaults show PARange 40 on a 36-bit IPA and expose SME2 [PM M12] |
 | D11 | GPUs are zero-cost when unused. GPU VMs are a separate class assigned from a warm pool (VFIO via iommufd on Linux; virtio-gpu/Venus plus a remoting broker on macOS). | Assigned devices pin all RAM and break CoW; FLR ≥ 100 ms; CUDA init takes seconds [GPU §2.3, R1–R6] |
 | D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). Built (a7b32ab): guest ports map to host Unix sockets as in Firecracker (`CONNECT <port>`; the guest reaches `<path>_P`). Unlike Firecracker, host EOF is a half-close, so a guest can answer after stdin ends. Each restored copy binds its own socket. A snapshot keeps the streams the device held. The restored device resets each of them with an RST on its RX queue, ahead of every other packet, and continues host port allocation past the snapshot's, never reusing a held port. It posts no TRANSPORT_RESET: Linux handles that event in a work item apart from RX, and on one interrupt it visits RX first. So a connection made right after the restore could be established and then reset (13 of 350 restores under CPU load). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7]; macOS poll reports POLLHUP on a half-close, so the device waits with kqueue there; restores [PM M20]: Linux 7.2 net/vmw_vsock/virtio_transport.c (`event_work`, `rx_work` handles RX in order), drivers/virtio/virtio_mmio.c `vm_interrupt` over queues in setup order (virtio_ring.c `list_add_tail`); a REQUEST matching a closing socket is dropped (virtio_transport_common.c `virtio_transport_recv_disconnecting`) |
+| D26 | `shards run` is served by a per-user daemon that hands each request to a warm VM process of the image's template: resumed, connected, waiting for its command. The client passes its stdio and connection by `SCM_RIGHTS`, and the CLI is a thin binary. | Handoff 31 µs p50; warm VM 12.3 MiB, no CPU; a thin client costs 1.4 ms against 3.5 ms for a binary linking the VMM's frameworks [PM M23]; pre-created VM shells [Manco17 §5.2; Wanninger22 §5.2] |
 
 ### Snapshots (D14)
 
@@ -559,6 +560,51 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
     host's clock;
   - a corrupted template is removed and that run boots;
   - the next run saves the template again, under the same name.
+
+### Warm pool (D26, in progress)
+
+A per-user daemon hands each `shards run` to a **warm VM**: a VMM process that has already
+restored the image's template, resumed the guest and let it connect, and now waits only
+for a command (D2). The client is a thin process that asks the daemon for a run, passes it
+its stdio, and waits for the exit status.
+
+- **Built: warm VMs.** `shards vm restore DIR --warm FD` is one, where FD is its socket to
+  the daemon (`crates/shards/src/warm.rs`; messages in `crates/ipc`).
+  - It says `READY` once the guest waits for its command.
+  - The daemon answers with `RUN`: the command, plus four descriptors passed by
+    `SCM_RIGHTS`: the client's connection, then its stdin, stdout and stderr. They become
+    the warm VM's own stdio, so the workload writes straight to the client's.
+  - Signals come from the client on its connection, as Linux numbers. The exit status
+    goes back the moment the command ends, before the VM is torn down, and any error
+    reaches the client's stderr before it.
+  - The warm VM serves one request, then exits.
+- **Measured** (PM M23):
+  - Handing a request and its stdio to a warm process costs 31 µs at p50 and 75 µs at
+    p99; §4 budgeted 10–50 µs.
+  - A waiting warm VM costs 12.3 MiB of RSS and no CPU.
+  - A thin client's process costs 1.4 ms at p50. `shards` costs 3.5 ms before doing
+    anything, because its frameworks load at every launch. Only a thin client leaves room
+    for the 5 ms target at p99.
+- **Children get only what they are given.** A descriptor received on macOS is not
+  close-on-exec until the `fcntl` that follows (there is no `MSG_CMSG_CLOEXEC`), so a
+  child spawned by another thread in between could inherit another client's stdout.
+  shards starts children with `posix_spawn` and, on macOS, `POSIX_SPAWN_CLOEXEC_DEFAULT`:
+  a child gets only the descriptors named for it (`shards_ipc::spawn`). On Linux every
+  descriptor is close-on-exec from the start.
+- **Next:**
+  - the daemon: pools per template, refilled after each run, with auto-start and idle
+    exit;
+  - `shards run` as its client;
+  - then the CLI as a binary of its own that links none of the VMM's frameworks.
+- **Tests:**
+  - the IPC crate: descriptors that work on arrival, are close-on-exec, and respect the
+    limits; children that inherit nothing else (a mutation removing the flag fails it);
+  - E2E, a real warm VM driven by the test as daemon and client:
+    - the client's stdio carries the command's;
+    - exit statuses are `docker run`'s: an exit code, a signal, 127 with a reason;
+    - interactive stdin works, and signals arrive as the command's;
+    - the warm VM exits once served;
+    - `--warm` refuses stdio and non-sockets.
 
 ## 3. Components
 

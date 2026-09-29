@@ -185,26 +185,33 @@ pub struct Timing {
     pub answered_us: std::sync::OnceLock<u128>,
 }
 
-/// Serves the guest: sends `spec`, relays stdio, and returns the workload's exit status.
-/// Signals go through `to`, on the connection the guest makes to `signals`. With a
-/// `gate`, the guest waits, connected, until the gate returns: the request to a warm VM.
+/// The command a served VM runs.
+#[cfg(unix)]
+pub enum Request<'a> {
+    /// Known before the guest connects.
+    Now { spec: Spec, interactive: bool },
+    /// Asked for once the guest is connected and waiting: a warm VM's request.
+    Later(&'a dyn Fn() -> Result<(Spec, bool), String>),
+}
+
+/// Serves the guest: sends the command, relays stdio, and returns the workload's exit
+/// status. Signals go through `to`, on the connection the guest makes to `signals`.
 #[cfg(unix)]
 pub fn serve(
     listener: &Listener,
     signals: Listener,
-    spec: &Spec,
-    interactive: bool,
+    request: Request<'_>,
     to: &ToGuest,
-    gate: Option<&dyn Fn()>,
     timing: &Timing,
 ) -> Result<u8, String> {
     let (mut conn, _) = listener
         .listener
         .accept()
         .map_err(|e| format!("waiting for the guest: {e}"))?;
-    if let Some(gate) = gate {
-        gate();
-    }
+    let (spec, interactive) = match request {
+        Request::Now { spec, interactive } => (spec, interactive),
+        Request::Later(ask) => ask()?,
+    };
     let _ = timing.request_us.set(shards_vmm::log::uptime_us());
     send(&mut conn, kind::SPEC, &spec.encode()).map_err(|e| format!("sending the command: {e}"))?;
     if interactive {
@@ -369,23 +376,7 @@ pub fn forward_signals(to: ToGuest) -> Result<(), String> {
                 let Some(&(_, linux)) = FORWARDED.iter().find(|(s, _)| *s == sig) else {
                     continue;
                 };
-                let forwarded = {
-                    let mut guard = lock(&to);
-                    let state = &mut *guard;
-                    match (&mut state.conn, state.running) {
-                        (Some(conn), _) => {
-                            if send(conn, kind::SIGNAL, &linux.to_be_bytes()).is_err() {
-                                state.conn = None;
-                            }
-                            true
-                        }
-                        (None, true) => {
-                            state.queued.push(linux);
-                            true
-                        }
-                        (None, false) => false,
-                    }
-                };
+                let forwarded = signal_guest(&to, linux);
                 let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
                 if !forwarded && ends {
                     // SAFETY: the default action of a terminating signal, on this process.
@@ -402,6 +393,28 @@ pub fn forward_signals(to: ToGuest) -> Result<(), String> {
         })
         .map_err(|e| format!("signal thread: {e}"))?;
     Ok(())
+}
+
+/// Sends Linux signal `linux` to the workload through `to`, or queues it until the guest
+/// dials the signal port. Returns false before the workload runs, when there is no one to
+/// send it to.
+#[cfg(unix)]
+pub fn signal_guest(to: &ToGuest, linux: u32) -> bool {
+    let mut guard = lock(to);
+    let state = &mut *guard;
+    match (&mut state.conn, state.running) {
+        (Some(conn), _) => {
+            if send(conn, kind::SIGNAL, &linux.to_be_bytes()).is_err() {
+                state.conn = None;
+            }
+            true
+        }
+        (None, true) => {
+            state.queued.push(linux);
+            true
+        }
+        (None, false) => false,
+    }
 }
 
 /// An environment value's bytes, as the OS holds them.

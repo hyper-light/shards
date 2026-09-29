@@ -4,13 +4,14 @@ members = [
   "crates/abi",
   "crates/image",
   "crates/init",
+  "crates/ipc",
   "crates/registry",
   "crates/shards",
   "crates/testguest",
   "crates/vmm",
 ]
 # The guest init only builds for Linux guests; host builds default to the rest.
-default-members = ["crates/abi", "crates/image", "crates/registry", "crates/shards", "crates/vmm"]
+default-members = ["crates/abi", "crates/image", "crates/ipc", "crates/registry", "crates/shards", "crates/vmm"]
 # Vendored crates are built as published, under their own lints (vendor/README.md).
 exclude = ["vendor"]
 

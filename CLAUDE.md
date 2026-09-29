@@ -56,3 +56,4 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 - `crates/init`: guest PID 1.
 - `crates/testguest`: PID 1 of test VMs. Its library holds the data patterns the host tests share.
 - `crates/abi`: constants shared by the VMM and the guest.
+- `crates/ipc`: messages with file descriptors between the CLI, the daemon and warm VMs, and `spawn`, which gives a child only the descriptors named for it.

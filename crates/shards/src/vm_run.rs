@@ -34,6 +34,7 @@ const RUN_USAGE: &str = "usage: shards vm run --kernel PATH [--initrd PATH | --i
 
 const RESTORE_USAGE: &str = "usage: shards vm restore DIR [--hold] [--vsock PATH] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards vm restore DIR [--hold] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
+       shards vm restore DIR --warm FD
   Resumes the VM in snapshot directory DIR. With a COMMAND, DIR is a template saved by
   `shards vm run --rootfs`, and the command runs there as `docker run` would.
   Workload options, as for `docker run`: -e NAME[=VALUE], -w DIR, -u USER[:GROUP],
@@ -44,6 +45,8 @@ const RESTORE_USAGE: &str = "usage: shards vm restore DIR [--hold] [--vsock PATH
           on stdin: a warm VM whose start costs only the release. With a COMMAND, the VM
           resumes at once and connects, and the line runs the command: a warm VM whose
           request costs only the command.
+  --warm: resume at once and connect, then take one command, with the stdio and connection
+          of the client it is for, from the daemon on the Unix socket at descriptor FD.
   Console escape: Ctrl-A x stops the VM.";
 
 /// Arguments as UTF-8 strings, with an error naming the first one that is not.
@@ -203,11 +206,13 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
 struct Restore {
     cfg: RestoreConfig,
     workload: Options,
+    /// `--warm FD`: the daemon's socket.
+    warm: Option<i32>,
 }
 
 fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String> {
     let mut args = utf8(args);
-    let (mut dir, mut common, mut hold) = (None, Common::new(), false);
+    let (mut dir, mut common, mut hold, mut warm) = (None, Common::new(), false, None);
     while let Some(arg) = args.next() {
         let arg = arg?;
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"))?;
@@ -217,6 +222,13 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         match arg.as_str() {
             "-h" | "--help" => return Err(String::new()),
             "--hold" => hold = true,
+            "--warm" => {
+                let fd = value("--warm")?;
+                warm = Some(
+                    fd.parse::<i32>()
+                        .map_err(|_| format!("--warm: {fd:?} is not a descriptor"))?,
+                );
+            }
             "--" => {
                 common.workload.argv = args.by_ref().collect::<Result<_, _>>()?;
                 break;
@@ -227,6 +239,15 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         }
     }
     common.check_workload()?;
+    if warm.is_some()
+        && (hold
+            || common.workload_options
+            || !common.workload.argv.is_empty()
+            || common.snapshot_dir.is_some()
+            || common.vsock.is_some())
+    {
+        return Err("--warm takes its command from the daemon: no --hold, --vsock, --snapshot-dir, workload options or command".into());
+    }
     let cfg = RestoreConfig {
         dir: dir.ok_or("the snapshot directory is required")?,
         console: common.console,
@@ -237,6 +258,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     Ok(Restore {
         cfg,
         workload: common.workload,
+        warm,
     })
 }
 
@@ -311,7 +333,11 @@ pub fn config(kernel: PathBuf, init: Option<PathBuf>) -> Config {
 pub fn run_in(mut cfg: Config, rootfs: PathBuf, workload: &Options) -> ExitCode {
     boot_into(&mut cfg, rootfs, false);
     cfg.console = Console::Discard;
-    serve_workload(cfg.vsock.clone(), workload, false, move |vsock| {
+    let source = Source::Given {
+        options: workload,
+        hold: false,
+    };
+    serve_workload(cfg.vsock.clone(), source, move |vsock| {
         cfg.vsock = Some(vsock);
         vm::start(&cfg)
     })
@@ -326,7 +352,11 @@ pub fn run_saving(mut cfg: Config, rootfs: PathBuf, dir: PathBuf, workload: &Opt
         then: AfterSnapshot::Resume,
     });
     cfg.console = Console::Discard;
-    serve_workload(cfg.vsock.clone(), workload, false, move |vsock| {
+    let source = Source::Given {
+        options: workload,
+        hold: false,
+    };
+    serve_workload(cfg.vsock.clone(), source, move |vsock| {
         cfg.vsock = Some(vsock);
         vm::start(&cfg)
     })
@@ -337,7 +367,11 @@ pub fn run_saving(mut cfg: Config, rootfs: PathBuf, dir: PathBuf, workload: &Opt
 pub fn restore_or_boot(dir: PathBuf, mut cold: Config, rootfs: PathBuf, workload: &Options) -> ExitCode {
     boot_into(&mut cold, rootfs, false);
     cold.console = Console::Discard;
-    serve_workload(None, workload, false, move |vsock| {
+    let source = Source::Given {
+        options: workload,
+        hold: false,
+    };
+    serve_workload(None, source, move |vsock| {
         let restore = RestoreConfig {
             dir: dir.clone(),
             console: Console::Discard,
@@ -391,16 +425,27 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
 }
 
 pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
-    let Restore { mut cfg, workload } = match parsed(parse_restore(args), RESTORE_USAGE) {
+    let Restore {
+        mut cfg,
+        workload,
+        warm,
+    } = match parsed(parse_restore(args), RESTORE_USAGE) {
         Ok(restore) => restore,
         Err(code) => return code,
     };
+    if let Some(fd) = warm {
+        return warm_restore(cfg, fd);
+    }
     if !workload.argv.is_empty() {
         cfg.console = Console::Discard;
         // A held run resumes now, and holds the command instead: whatever a restored guest
         // does first (its reseed, its connection) is done before the request.
         let hold = std::mem::take(&mut cfg.hold);
-        return serve_workload(cfg.vsock.clone(), &workload, hold, move |vsock| {
+        let source = Source::Given {
+            options: &workload,
+            hold,
+        };
+        return serve_workload(cfg.vsock.clone(), source, move |vsock| {
             cfg.vsock = Some(vsock);
             vm::restore(&cfg)
         });
@@ -444,23 +489,73 @@ fn with_vsock(_: Option<PathBuf>, _: impl FnOnce(PathBuf) -> ExitCode) -> ExitCo
     ExitCode::from(125)
 }
 
+/// Where a served VM's command comes from.
+// Where shards has no vsock yet (Windows), nothing serves a command.
+#[cfg_attr(not(unix), allow(dead_code))]
+enum Source<'a> {
+    /// The command line's: sent once the guest connects or, with `hold`, once a line then
+    /// arrives on stdin.
+    Given { options: &'a Options, hold: bool },
+    /// A warm VM's: one request from the daemon on this socket (warm.rs).
+    #[cfg(unix)]
+    Warm(std::os::unix::net::UnixStream),
+}
+
+/// A warm VM's restore: `vm restore DIR --warm FD`.
+#[cfg(unix)]
+fn warm_restore(mut cfg: RestoreConfig, fd: i32) -> ExitCode {
+    let daemon = match crate::warm::daemon_socket(fd) {
+        Ok(socket) => socket,
+        Err(e) => {
+            report(e);
+            return ExitCode::FAILURE;
+        }
+    };
+    cfg.console = Console::Discard;
+    serve_workload(None, Source::Warm(daemon), move |vsock| {
+        cfg.vsock = Some(vsock);
+        vm::restore(&cfg)
+    })
+}
+
+#[cfg(not(unix))]
+fn warm_restore(_: RestoreConfig, _: i32) -> ExitCode {
+    report("warm VMs need Unix sockets, which shards does not support on this platform yet");
+    ExitCode::from(125)
+}
+
 /// Runs a workload in the VM `start` starts, whose vsock device it gives the socket path
 /// for. Exits as the workload does.
 #[cfg(unix)]
 fn serve_workload(
     vsock: Option<PathBuf>,
-    options: &Options,
-    hold: bool,
+    source: Source<'_>,
     start: impl FnOnce(PathBuf) -> Result<(Handle, Running), String>,
 ) -> ExitCode {
-    use crate::workload::{self, NOT_RUN};
+    use crate::workload::{self, NOT_RUN, Request};
     let failed = |e: String| {
         report(e);
         ExitCode::from(NOT_RUN)
     };
-    let spec = match workload::spec(options) {
-        Ok(spec) => spec,
-        Err(e) => return failed(e),
+    /// The command, resolved before anything starts.
+    enum Command {
+        Given {
+            spec: shards_abi::run::Spec,
+            interactive: bool,
+            hold: bool,
+        },
+        Warm(std::os::unix::net::UnixStream),
+    }
+    let command = match source {
+        Source::Given { options, hold } => match workload::spec(options) {
+            Ok(spec) => Command::Given {
+                spec,
+                interactive: options.interactive,
+                hold,
+            },
+            Err(e) => return failed(e),
+        },
+        Source::Warm(daemon) => Command::Warm(daemon),
     };
     with_vsock(vsock, |vsock| {
         let listeners = workload::listen(&vsock, shards_abi::run::PORT)
@@ -469,9 +564,12 @@ fn serve_workload(
             Ok(l) => l,
             Err(e) => return failed(format!("listening for the guest: {e}")),
         };
-        // Before the VM's threads start, so that they inherit the blocked signals.
+        // A warm VM's signals come from its client. The command line's are this process's:
+        // blocked before the VM's threads start, so that they inherit the mask.
         let to_guest = workload::ToGuest::default();
-        if let Err(e) = workload::forward_signals(to_guest.clone()) {
+        if matches!(command, Command::Given { .. })
+            && let Err(e) = workload::forward_signals(to_guest.clone())
+        {
             return failed(e);
         }
         let (handle, running) = match start(vsock) {
@@ -479,28 +577,62 @@ fn serve_workload(
             Err(e) => return failed(e),
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        let interactive = options.interactive;
         let timing = std::sync::Arc::new(workload::Timing::default());
         let served_timing = timing.clone();
         let served = std::thread::Builder::new()
             .name("workload".into())
             .spawn(move || {
-                // The guest is connected and waiting: the request is a line on stdin.
-                let gate = || {
-                    let _ = writeln!(std::io::stderr(), "shards-ready");
-                    let _ = std::io::stdin().read_line(&mut String::new());
+                // How the workload ended, and whether its client has been told.
+                let outcome = match command {
+                    Command::Given {
+                        spec,
+                        interactive,
+                        hold,
+                    } => {
+                        // Held, the guest is connected and waiting: the request is a line
+                        // on stdin.
+                        let gate = || {
+                            let _ = writeln!(std::io::stderr(), "shards-ready");
+                            let _ = std::io::stdin().read_line(&mut String::new());
+                            Ok((spec.clone(), interactive))
+                        };
+                        let request = if hold {
+                            Request::Later(&gate)
+                        } else {
+                            Request::Now {
+                                spec: spec.clone(),
+                                interactive,
+                            }
+                        };
+                        (
+                            workload::serve(&listener, signals, request, &to_guest, &served_timing),
+                            false,
+                        )
+                    }
+                    Command::Warm(daemon) => {
+                        let client = std::sync::OnceLock::new();
+                        let ask = || {
+                            let (connection, spec, interactive) = crate::warm::receive(&daemon, &to_guest)?;
+                            let _ = client.set(connection);
+                            Ok((spec, interactive))
+                        };
+                        let served = workload::serve(
+                            &listener,
+                            signals,
+                            Request::Later(&ask),
+                            &to_guest,
+                            &served_timing,
+                        );
+                        match client.get() {
+                            Some(connection) => {
+                                crate::warm::finish(connection, &served);
+                                (served, true)
+                            }
+                            None => (served, false),
+                        }
+                    }
                 };
-                let gate: Option<&dyn Fn()> = if hold { Some(&gate) } else { None };
-                let served = workload::serve(
-                    &listener,
-                    signals,
-                    &spec,
-                    interactive,
-                    &to_guest,
-                    gate,
-                    &served_timing,
-                );
-                let _ = tx.send(served);
+                let _ = tx.send(outcome);
             });
         if let Err(e) = served {
             handle.stop();
@@ -514,8 +646,11 @@ fn serve_workload(
         // The guest waits for its status to be read before it powers off, so the relay
         // has finished unless the guest never ran the command.
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
-            Ok(Ok(status)) => ExitCode::from(status),
-            Ok(Err(e)) => failed(e),
+            // A warm VM's client has its status, and any error on its stderr: the warm
+            // VM's own status says that it served.
+            Ok((_, true)) => ExitCode::SUCCESS,
+            Ok((Ok(status), false)) => ExitCode::from(status),
+            Ok((Err(e), false)) => failed(e),
             Err(_) => failed("the guest stopped without running the command".into()),
         }
     })
@@ -524,8 +659,7 @@ fn serve_workload(
 #[cfg(not(unix))]
 fn serve_workload(
     _: Option<PathBuf>,
-    _: &Options,
-    _: bool,
+    _: Source<'_>,
     _: impl FnOnce(PathBuf) -> Result<(Handle, Running), String>,
 ) -> ExitCode {
     report("running a command in a microVM needs vsock, which shards does not support on this platform yet");

@@ -471,6 +471,44 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   tearing it down. D2's warm pool takes all three off the request path. Warm requests in
   the run benchmark take 0.97 ms at p50.
 
+### M23. A warm pool's handoff, and the client that asks for it
+
+- **Question.** A warm pool's daemon receives a client's request and hands it, with the
+  client's stdio, to a warm VM process. What does that handoff cost? And what does the
+  client process cost, since every `shards run` starts one?
+- **Method.** Harness: `docs/research/measurements/daemon-ipc/run.sh 500 SHARDS version`.
+  - Two daemons run side by side. One answers each client itself. The other passes the
+    client's connection, and the three stdio descriptors it sent (`SCM_RIGHTS`), to a
+    pre-spawned worker, which answers on the client's connection.
+  - Requests are 256 bytes and answers 8 bytes.
+  - Samples interleave: in-process requests, then whole client processes (spawn →
+    exit), a no-op process, and the full `shards` binary's `version`.
+  - 2026-09-29, this machine. The load was 6.2 (1 min); an earlier run at load 14 gave
+    the same order and gaps.
+- **Results** (µs, n = 500 each):
+
+| | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| request answered by the daemon | 22.5 | 40.2 | 55.9 | 122.7 |
+| request handed to a worker | 31.2 | 44.4 | 74.7 | 91.8 |
+| client process, request handed to a worker | 1 425 | 1 654 | 1 975 | 2 272 |
+| no-op process (the same thin Rust binary) | 1 368 | 1 609 | 1 860 | 2 001 |
+| `shards version` | 3 481 | 3 920 | 4 409 | 5 503 |
+
+  - A handed-off request costs about 9 µs more than one the daemon answers itself.
+  - A thin client's request adds about 60 µs to its launch.
+  - `shards` costs 2.1 ms more than a thin binary at p50 and 2.5 ms more at p99, before
+    doing anything. Interleaved launches put the cause in its frameworks: Hypervisor,
+    Security and CoreFoundation each add the same ~1.3 ms over a trivial binary, and
+    together no more than one alone. It also runs AWS-LC's static constructor
+    (`OPENSSL_cpuid_setup`) at every launch.
+- **A warm VM's standing cost.** Resumed, reseeded, connected and waiting for its
+  command, one takes 12.3 MiB of RSS (n = 12, VMM process and touched guest memory
+  together). It uses no CPU: 0.000 s over 3 s. Its vCPU waits in WFI inside HVF (M7).
+- **Consequence.** D26: the handoff fits the start path's budget (§4), with room to
+  spare. A pooled VM costs 12 MiB and no CPU. The client must be a binary that links
+  none of those frameworks.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 shards-abi = { path = "../abi" }
 shards-image = { path = "../image" }
+shards-ipc = { path = "../ipc" }
 shards-registry = { path = "../registry" }
 shards-vmm = { path = "../vmm" }
 sha2 = "0.11"
