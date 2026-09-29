@@ -7,6 +7,8 @@ use std::io;
 
 pub mod erofs;
 pub mod layer;
+pub mod oci;
+pub mod platform;
 pub mod reference;
 pub mod tar;
 
