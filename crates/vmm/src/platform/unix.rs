@@ -258,6 +258,33 @@ pub unsafe fn write_at(file: &File, src: *const u8, len: usize, offset: u64) -> 
     }
 }
 
+/// Creates `name` in the directory `dir` holds open, durably: written to a temporary
+/// sibling, synced, renamed over `name`, and the directory synced. It lands there even if
+/// the directory was renamed since it was opened.
+pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+    use std::os::fd::FromRawFd as _;
+    let invalid = |_| io::Error::new(io::ErrorKind::InvalidInput, "a file name with NUL");
+    let tmp = std::ffi::CString::new(format!(".{name}.tmp")).map_err(invalid)?;
+    let target = std::ffi::CString::new(name).map_err(invalid)?;
+    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_CLOEXEC;
+    // SAFETY: openat(2) with a NUL-terminated name, relative to a directory we hold open.
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), tmp.as_ptr(), flags, 0o644 as libc::c_uint) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor we just opened, and nothing else owns.
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    file.write_all(bytes)?;
+    sync_durable(&file)?;
+    drop(file);
+    // SAFETY: renameat(2) with NUL-terminated names, relative to a directory we hold open.
+    if unsafe { libc::renameat(dir.as_raw_fd(), tmp.as_ptr(), dir.as_raw_fd(), target.as_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    dir.sync_all()
+}
+
 /// Makes completed writes durable on stable storage. On macOS `fsync` does not flush the
 /// drive's write cache; `F_FULLFSYNC` does (fsync(2), fcntl(2)).
 pub fn sync_durable(file: &File) -> io::Result<()> {

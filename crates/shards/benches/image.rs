@@ -10,7 +10,9 @@
 //!   run from its pool of warm VMs of the image's template (D25, D26). Only where this
 //!   build can snapshot. Restores cost more for some templates than others, so samples
 //!   come from `--templates T` of them (default 5), each saved afresh under a new daemon.
-//!   A template's save and its first run are not samples. Its phases:
+//!   A template's save and its first two runs are not samples: the pool restored those
+//!   VMs before the save's run had recorded the working set they would prefetch (PM M30).
+//!   Its phases:
 //!   - `template_command`: the command sent → its exit status read (the VM's clock): the
 //!     command's run in the guest.
 //!   - `template_outside`: the rest of the wall clock: the client launched, the request
@@ -91,7 +93,8 @@ fn main() {
             run_env(&stop, false, &env);
             let _ = std::fs::remove_dir_all(home.join("templates"));
             run_env(template_args, false, &env); // saves the template
-            run_env(template_args, false, &env); // its first run from the pool
+            run_env(template_args, false, &env); // the pool's first two runs, restored
+            run_env(template_args, false, &env); // before the working set existed
         }
         for _ in 0..runs / templates + usize::from(t < runs % templates) {
             cold.push(run_env(cold_args, false, &cold_env));

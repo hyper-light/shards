@@ -5,21 +5,31 @@
 //!   access through [`Io`], writes Rt and advances PC, as `kvm_handle_mmio_return` does (row 6).
 //! - PSCI runs here, CPU_ON included. A powered-off vCPU parks inside `run` (row 4).
 //! - Trapped system registers read as zero and ignore writes.
+//! - A working set is recorded by taking guest memory away at stage 2 ([`Watch`]), and
+//!   prefetched by a vCPU that touches it before the guest runs ([`Vcpu::prefetch`]):
+//!   HVF fills stage 2 only as the guest touches it (PM M5).
 
 mod ffi;
 mod power;
 mod sys;
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry as Slot;
 use std::fmt;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub use sys::{Gic, GicLayout, GicParams, MsiFrame};
 
-use super::{Exit, Io};
-use crate::arch::aarch64::{self, Entry, esr, psci, sysreg};
+use super::{Exit, Io, Touch};
+use crate::arch::aarch64::{self, Entry, esr, layout, psci, sysreg};
 use crate::debug;
 use crate::devices::get_le;
+use crate::sync::lock;
 use power::Wake;
+
+/// The stage-2 page: shards sets HVF's 16 KiB IPA granule, the only one before macOS 26
+/// (PM M5, D6).
+pub const PAGE: u64 = 16 << 10;
 
 /// A failed Hypervisor.framework call, or guest behavior the VMM does not emulate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +100,7 @@ pub struct Vm {
     ipa_bits: u32,
     /// Base and per-vCPU size of the redistributor frames, once the GIC exists.
     redist: OnceLock<(u64, u64)>,
+    watch: Arc<Watch>,
 }
 
 impl Vm {
@@ -103,7 +114,13 @@ impl Vm {
             mpidrs: config.mpidrs,
             ipa_bits: config.ipa_bits,
             redist: OnceLock::new(),
+            watch: Arc::new(Watch::default()),
         })
+    }
+
+    /// What records this VM's working set.
+    pub fn watch(&self) -> Arc<Watch> {
+        self.watch.clone()
     }
 
     /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`.
@@ -114,6 +131,11 @@ impl Vm {
     pub unsafe fn map_ram(&self, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
         // SAFETY: forwarded caller contract.
         unsafe { self.sys.map(host, gpa, len, sys::Perms::RWX) }?;
+        self.watch.add(Region {
+            gpa,
+            len: len as u64,
+            perms: sys::Perms::RWX,
+        });
         self.power.add_ram(gpa, gpa.saturating_add(len as u64));
         Ok(())
     }
@@ -134,6 +156,11 @@ impl Vm {
         let perms = if writable { sys::Perms::RWX } else { sys::Perms::RX };
         // SAFETY: forwarded caller contract.
         unsafe { self.sys.map(host, gpa, len, perms) }?;
+        self.watch.add(Region {
+            gpa,
+            len: len as u64,
+            perms,
+        });
         Ok(())
     }
 
@@ -146,7 +173,8 @@ impl Vm {
     }
 
     /// Creates vCPU `index` on the calling thread, which owns it from then on. vCPUs must
-    /// be created in index order: redistributor frames follow creation order (PM M13).
+    /// be created in index order: redistributor frames follow creation order (PM M13),
+    /// and after guest memory is mapped.
     pub fn create_vcpu(&self, index: usize) -> Result<Vcpu> {
         let guest = |msg: String| Error::Guest(msg);
         let &mpidr = self
@@ -198,7 +226,98 @@ impl Vm {
             power: self.power.clone(),
             index,
             on: false,
+            memory: lock(&self.watch.regions).clone(),
+            watch: self.watch.clone(),
         })
+    }
+}
+
+/// Guest memory the VM maps, and the guest's access to it.
+#[derive(Debug, Clone, Copy)]
+struct Region {
+    gpa: u64,
+    len: u64,
+    perms: sys::Perms,
+}
+
+impl Region {
+    fn holds(&self, gpa: u64) -> bool {
+        gpa.checked_sub(self.gpa).is_some_and(|off| off < self.len)
+    }
+}
+
+/// Records a working set: guest memory is taken away from the guest at stage 2, and each
+/// page goes back as the guest faults on it, noted in the order of first touch. A page
+/// read goes back read-only while recording, so that a later write is noted too.
+#[derive(Debug, Default)]
+pub struct Watch {
+    regions: Mutex<Vec<Region>>,
+    recording: Mutex<Option<Recording>>,
+}
+
+#[derive(Debug, Default)]
+struct Recording {
+    touches: Vec<Touch>,
+    /// Each page's place in `touches`.
+    seen: HashMap<u64, usize>,
+}
+
+impl Watch {
+    fn add(&self, region: Region) {
+        lock(&self.regions).push(region);
+    }
+
+    /// Takes all guest memory away and starts recording. Call with every vCPU out of the
+    /// guest.
+    pub fn start(&self) -> Result<()> {
+        *lock(&self.recording) = Some(Recording::default());
+        let regions = lock(&self.regions).clone();
+        for r in &regions {
+            if let Err(e) = sys::protect(r.gpa, r.len, sys::Perms::NONE) {
+                self.stop();
+                return Err(e.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Stops recording and gives the guest all its memory back. Returns the pages touched
+    /// since [`Watch::start`], in the order of their first touch; none if it never started.
+    /// Callable from any thread, while vCPUs run: a vCPU that faulted before the memory
+    /// came back gets its page back in [`Vcpu::run`].
+    pub fn stop(&self) -> Vec<Touch> {
+        let recorded = lock(&self.recording).take();
+        if recorded.is_some() {
+            for r in lock(&self.regions).iter() {
+                // It fails only once the VM is gone, with nothing left to give back.
+                let _ = sys::protect(r.gpa, r.len, r.perms);
+            }
+        }
+        recorded.map(|r| r.touches).unwrap_or_default()
+    }
+
+    /// Notes a fault on `page`, in memory the guest may access with `full`; returns the
+    /// access it gets back.
+    fn touched(&self, page: u64, write: bool, full: sys::Perms) -> sys::Perms {
+        let mut recording = lock(&self.recording);
+        let Some(r) = recording.as_mut() else {
+            return full;
+        };
+        match r.seen.entry(page) {
+            Slot::Occupied(at) => {
+                if let Some(t) = r.touches.get_mut(*at.get()) {
+                    t.written |= write;
+                }
+            }
+            Slot::Vacant(at) => {
+                at.insert(r.touches.len());
+                r.touches.push(Touch {
+                    gpa: page,
+                    written: write,
+                });
+            }
+        }
+        if write { full } else { sys::Perms::RX }
     }
 }
 
@@ -212,6 +331,10 @@ pub struct Vcpu {
     /// Powered on. Only a powered-off vCPU consults the shared power table, so exits
     /// in the running guest take no lock.
     on: bool,
+    /// The VM's guest memory, fixed before any vCPU exists: a fault there is a page taken
+    /// away by `watch`, never a device access.
+    memory: Vec<Region>,
+    watch: Arc<Watch>,
 }
 
 impl Vcpu {
@@ -228,6 +351,8 @@ impl Vcpu {
     /// Runs the guest until it powers off, resets, or a kick arrives. Returns an error for
     /// guest behavior the VMM cannot emulate.
     pub fn run(&mut self, io: &dyn Io) -> Result<Exit> {
+        // The page the last exit gave back whole: faulting again at once, it never will stop.
+        let mut given_back = None;
         loop {
             if !self.on {
                 match self.power.park(self.index) {
@@ -251,7 +376,11 @@ impl Vcpu {
                     return Err(Error::Guest(format!("unknown exit reason {reason}")));
                 }
             };
+            let returned = given_back.take();
             match esr::ec(syndrome) {
+                ec @ (esr::EC_DABT_LOW | esr::EC_IABT_LOW) if self.memory.iter().any(|r| r.holds(ipa)) => {
+                    given_back = self.give_back(io, ec, syndrome, ipa, returned)?;
+                }
                 esr::EC_DABT_LOW => self.mmio(io, syndrome, ipa)?,
                 esr::EC_HVC64 | esr::EC_SMC64 => {
                     // HVC exits with PC already past the instruction; a trapped SMC does not
@@ -268,6 +397,38 @@ impl Vcpu {
                 ec => return Err(Error::Guest(self.describe_fault(ec, syndrome, ipa))),
             }
         }
+    }
+
+    /// A fault on guest memory, which faults only while [`Watch`] has taken it away, or
+    /// for a write to read-only device memory. The page goes back, and the access runs
+    /// again. Returns the page if it went back whole; `last` is the page the previous exit
+    /// gave back whole.
+    fn give_back(
+        &mut self,
+        io: &dyn Io,
+        ec: u32,
+        syndrome: u64,
+        ipa: u64,
+        last: Option<u64>,
+    ) -> Result<Option<u64>> {
+        let Some(region) = self.memory.iter().find(|r| r.holds(ipa)).copied() else {
+            return Err(Error::Guest(self.describe_fault(ec, syndrome, ipa)));
+        };
+        let write = ec == esr::EC_DABT_LOW && esr::writes(syndrome);
+        if write && region.perms != sys::Perms::RWX {
+            // Dropped, like a write to no device (map_device_memory).
+            self.mmio(io, syndrome, ipa)?;
+            return Ok(None);
+        }
+        let page = ipa & !(PAGE - 1);
+        let perms = self.watch.touched(page, write, region.perms);
+        if perms == region.perms && last == Some(page) {
+            return Err(Error::Guest(format!(
+                "guest memory at {ipa:#x} faults with its access given back"
+            )));
+        }
+        sys::protect(page, PAGE, perms)?;
+        Ok((perms == region.perms).then_some(page))
     }
 
     /// Architectural entry state for boot and CPU_ON: EL1h with DAIF masked, MMU and
@@ -415,7 +576,6 @@ const ICC_REGS: &[u16] = &[
     0xc665, 0xc664, 0xc230, 0xc643, 0xc663, 0xc644, 0xc648, 0xc666, 0xc667,
 ];
 
-const HV_BAD_ARGUMENT: i32 = 0xfae9_4003_u32 as i32;
 const GICD_CTLR: u16 = 0x0000;
 /// GICD_CTLR.RWP is read-only; ARE_NS (bit 4) must be set before routing registers mean
 /// anything.
@@ -519,7 +679,7 @@ impl Vcpu {
         for &r in SYSREGS_15_2 {
             match s.sys_reg(r) {
                 Ok(val) => sys.push((r, val)),
-                Err(e) if e.code == HV_BAD_ARGUMENT => {} // before macOS 15.2
+                Err(e) if e.code == ffi::HV_BAD_ARGUMENT => {} // before macOS 15.2
                 Err(e) => return Err(e.into()),
             }
         }
@@ -574,6 +734,193 @@ impl Vcpu {
         self.on = st.power == Power::On;
         Ok(())
     }
+
+    /// Touches a working set's pages in guest memory from this vCPU, so that HVF maps them
+    /// at stage 2 before the guest runs: a read for each page, and for each page the guest
+    /// wrote, a write that copies it now. Pages outside guest memory are left out, as are
+    /// writes to read-only memory and pages listed twice, so a damaged list costs no more
+    /// than touching guest memory once. Returns how many pages it touched.
+    ///
+    /// For a fresh vCPU, before its state is restored: it runs [`PREFETCH_CODE`] at EL1
+    /// with its own MMU state, all of which the restore sets again.
+    pub fn prefetch(&mut self, vm: &Vm, pages: &[Touch]) -> Result<usize> {
+        const TABLE: usize = 4 << 10;
+        // Atomic instructions (FEAT_LSE): ID_AA64ISAR0_EL1.Atomic is 2 or more.
+        let lse = (self.sys.sys_reg(sysreg::ID_AA64ISAR0_EL1)? >> 20) & 0xf >= 2;
+        let mut listed = std::collections::HashSet::new();
+        let list: Vec<u64> = pages
+            .iter()
+            .filter_map(|t| {
+                let page = t.gpa & !(PAGE - 1);
+                let r = self.memory.iter().find(|r| r.holds(page))?;
+                let write = t.written && lse && r.perms == sys::Perms::RWX;
+                (page < PREFETCH_REACH && listed.insert(page)).then_some(page | u64::from(write))
+            })
+            .collect();
+        if list.is_empty() {
+            return Ok(0);
+        }
+        let size = (PAGE as usize).saturating_add((list.len() * 8).next_multiple_of(PAGE as usize));
+        let mut table = [0u64; 512];
+        let gib = |gpa: u64| (gpa >> 30) as usize;
+        let block = |gpa: u64, code: bool| {
+            // Normal memory (MAIR attribute 0), inner shareable, accessed, EL1 read-write;
+            // never executable at EL0, nor at EL1 unless it holds the code.
+            let never = if code { 1 << 54 } else { 3 << 53 };
+            (gpa & !((1 << 30) - 1)) | never | (1 << 10) | (3 << 8) | 0b01
+        };
+        for &entry in &list {
+            if let Some(slot) = table.get_mut(gib(entry)) {
+                *slot = block(entry, false);
+            }
+        }
+        if let Some(slot) = table.get_mut(gib(layout::PREFETCH)) {
+            *slot = block(layout::PREFETCH, true);
+        }
+        let scratch = Scratch::new(size)?;
+        scratch.put(
+            0,
+            &PREFETCH_CODE
+                .iter()
+                .flat_map(|w| w.to_le_bytes())
+                .collect::<Vec<u8>>(),
+        );
+        scratch.put(
+            TABLE,
+            &table.iter().flat_map(|e| e.to_le_bytes()).collect::<Vec<u8>>(),
+        );
+        scratch.put(
+            PAGE as usize,
+            &list.iter().flat_map(|e| e.to_le_bytes()).collect::<Vec<u8>>(),
+        );
+        // SAFETY: `scratch` stays mapped until after the unmap below.
+        unsafe { vm.sys.map(scratch.host, layout::PREFETCH, size, sys::Perms::RX) }?;
+        let ran = self.run_prefetch(
+            layout::PREFETCH + TABLE as u64,
+            layout::PREFETCH + PAGE,
+            list.len(),
+        );
+        if let Err(e) = vm.sys.unmap(layout::PREFETCH, size) {
+            // The guest still maps it: it must outlive the VM.
+            std::mem::forget(scratch);
+            return Err(e.into());
+        }
+        ran.map(|()| list.len())
+    }
+
+    fn run_prefetch(&mut self, table: u64, list: u64, n: usize) -> Result<()> {
+        let s = &mut self.sys;
+        let parange = s.sys_reg(sysreg::ID_AA64MMFR0_EL1)? & 0xf;
+        // A 39-bit space from TTBR0 at 4 KiB granules, whose first level maps 1 GiB blocks;
+        // walks write-back cacheable and inner shareable; no TTBR1 walks; IPS = PARange.
+        let tcr = 25 | (1 << 8) | (1 << 10) | (3 << 12) | (25 << 16) | (1 << 23) | (parange << 32);
+        s.set_sys_reg(sysreg::MAIR_EL1, 0xff)?;
+        s.set_sys_reg(sysreg::TCR_EL1, tcr)?;
+        s.set_sys_reg(sysreg::TTBR0_EL1, table)?;
+        s.set_sys_reg(
+            sysreg::SCTLR_EL1,
+            sysreg::SCTLR_EL1_RESET | sysreg::SCTLR_EL1_MMU_CACHES,
+        )?;
+        s.set_reg(sys::Reg::CPSR, sysreg::PSTATE_EL1H_DAIF)?;
+        s.set_x(0, list)?;
+        s.set_x(1, n as u64)?;
+        s.set_reg(sys::Reg::PC, layout::PREFETCH)?;
+        // Nothing kicks a vCPU before its setup is done, so the loop ends only at its HVC.
+        match s.run()? {
+            sys::Exit::Exception { syndrome, .. } if esr::ec(syndrome) == esr::EC_HVC64 => Ok(()),
+            sys::Exit::Exception { syndrome, ipa, .. } => Err(Error::Guest(format!(
+                "prefetching the working set: ESR {syndrome:#x} at IPA {ipa:#x}"
+            ))),
+            other => Err(Error::Guest(format!("prefetching the working set: {other:?}"))),
+        }
+    }
+}
+
+/// The first 512 GiB of guest memory, which [`PREFETCH_CODE`]'s one level of 1 GiB blocks
+/// can map.
+const PREFETCH_REACH: u64 = 512 << 30;
+
+/// Touches the list at X0, X1 entries long, then `hvc #0`. The MMU is on, over an identity
+/// map of 1 GiB Normal write-back blocks, so the writes are coherent with the host's view
+/// of the memory. An entry is a page's address, with bit 0 set for a write: an atomic add
+/// of zero, a write for permission purposes that cannot change the data (Arm ARM, LDADD).
+/// `tlbi vmalle1is` last, so that no translation of the map outlives it on any core.
+///
+/// ```text
+///     cbz  x1, 3f            2:  and  x2, x2, #~1
+/// 1:  ldr  x2, [x0], #8          staddb wzr, [x2]
+///     tbnz x2, #0, 2f            subs x1, x1, #1
+///     ldrb w3, [x2]              b.ne 1b
+///     subs x1, x1, #1        3:  tlbi vmalle1is
+///     b.ne 1b                    dsb  ish
+///     b    3f                    isb
+///                                hvc  #0
+/// ```
+const PREFETCH_CODE: [u32; 15] = [
+    0xb400_0161,
+    0xf840_8402,
+    0x3700_00a2,
+    0x3940_0043,
+    0xf100_0421,
+    0x54ff_ff81,
+    0x1400_0005,
+    0x927f_f842,
+    0x383f_005f,
+    0xf100_0421,
+    0x54ff_fee1,
+    0xd508_831f,
+    0xd503_3b9f,
+    0xd503_3fdf,
+    0xd400_0002,
+];
+
+/// Anonymous host memory for the prefetch loop, unmapped on drop.
+struct Scratch {
+    host: *mut u8,
+    len: usize,
+}
+
+impl Scratch {
+    fn new(len: usize) -> Result<Scratch> {
+        // SAFETY: a fresh private anonymous mapping, owned by the Scratch.
+        let host = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANON,
+                -1,
+                0,
+            )
+        };
+        if host == libc::MAP_FAILED {
+            return Err(Error::Guest(format!(
+                "memory for the prefetch loop: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(Scratch {
+            host: host.cast(),
+            len,
+        })
+    }
+
+    /// Copies `bytes` in at `offset`, as far as they fit.
+    fn put(&self, offset: usize, bytes: &[u8]) {
+        let n = bytes.len().min(self.len.saturating_sub(offset));
+        if n == 0 {
+            return;
+        }
+        // SAFETY: `offset + n` is within the mapping, which nothing else references.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.host.add(offset), n) };
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        // SAFETY: our own mapping, which the guest no longer maps.
+        unsafe { libc::munmap(self.host.cast(), self.len) };
+    }
 }
 
 #[cfg(test)]
@@ -589,11 +936,22 @@ mod tests {
         if check_host().is_err() {
             return;
         }
+        // Guest RAM with a pattern, mapped before any vCPU exists. It outlives the VM.
+        const RAM: u64 = 0x8000_0000;
+        let ram_len = 1usize << 20;
+        let ram = crate::platform::reserve(ram_len).unwrap().as_ptr();
+        let pattern = |i: usize| (i % 251) as u8;
+        for i in 0..ram_len {
+            // SAFETY: within the fresh reservation.
+            unsafe { ram.add(i).write(pattern(i)) };
+        }
         let vm = Vm::new(VmConfig {
             ipa_bits: 36,
             mpidrs: vec![0, 1],
         })
         .unwrap();
+        // SAFETY: the reservation is never unmapped.
+        unsafe { vm.map_ram(ram, RAM, ram_len) }.unwrap();
         vm.create_gic(&GicLayout {
             dist_base: 0x0800_0000,
             redist_base: 0x080a_0000,
@@ -620,6 +978,34 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(move || {
                 let mut a = vm.create_vcpu(0).unwrap();
+
+                // The prefetch touches a page read and a page written, leaves out a page
+                // outside guest memory and a page listed twice, and changes no byte. A
+                // recording with nothing running records nothing, and gives the memory back.
+                let pages = [
+                    Touch {
+                        gpa: RAM,
+                        written: false,
+                    },
+                    Touch {
+                        gpa: RAM + PAGE,
+                        written: true,
+                    },
+                    Touch {
+                        gpa: 0x1_0000_0000,
+                        written: true,
+                    },
+                    Touch {
+                        gpa: RAM + PAGE,
+                        written: false,
+                    },
+                ];
+                assert_eq!(a.prefetch(vm, &pages).unwrap(), 2);
+                let watch = vm.watch();
+                watch.start().unwrap();
+                assert!(watch.stop().is_empty());
+                assert_eq!(a.prefetch(vm, &pages).unwrap(), 2);
+
                 for n in 0..31u8 {
                     a.sys.set_x(n, 0x1111_0000 + u64::from(n)).unwrap();
                 }
@@ -647,6 +1033,10 @@ mod tests {
                 done_tx.send(()).unwrap();
             });
         });
+        for i in 0..ram_len {
+            // SAFETY: within the reservation; no vCPU runs any more.
+            assert_eq!(unsafe { ram.add(i).read() }, pattern(i), "byte {i}");
+        }
     }
 
     /// Which host mappings `hv_vm_map` accepts for read-only device memory

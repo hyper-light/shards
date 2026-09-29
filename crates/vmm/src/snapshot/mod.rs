@@ -4,6 +4,11 @@
 //!   architecture's CPU and interrupt-controller state, and the devices' state
 //! - `memory`: guest RAM, one region after another, with all-zero pages as holes
 //!
+//! and, once a VM resumed from the snapshot has recorded one, a third:
+//!
+//! - `working-set`: the guest pages that VM touched after the snapshot, which restores
+//!   ahead of their request prefetch (PM M30)
+//!
 //! Each file is written under a temporary name, synced, then renamed, so the directory
 //! holds a complete snapshot or none.
 
@@ -15,10 +20,16 @@ use std::path::{Path, PathBuf};
 
 use codec::{DecodeError, Reader, Writer};
 
+use crate::hv::Touch;
 use crate::memory::GuestMemory;
 
 pub const STATE: &str = "state";
 pub const MEMORY: &str = "memory";
+pub const WORKING_SET: &str = "working-set";
+const WORKING_SET_MAGIC: [u8; 8] = *b"SHRDWSET";
+const WORKING_SET_VERSION: u32 = 1;
+/// A working set lists at most every page of 1 TiB.
+const MAX_WORKING_SET: usize = 1 << 26;
 const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 2: MachineConfig records whether the machine has a vsock device.
 /// 3: and its virtio-pmem files.
@@ -184,6 +195,68 @@ pub fn read(dir: &Path) -> Result<(Snapshot, File), String> {
     Ok((snap, memory))
 }
 
+fn encode_working_set(pages: &[Touch], page: u64) -> Vec<u8> {
+    let mut w = Writer::default();
+    WORKING_SET_MAGIC.iter().for_each(|&b| w.u8(b));
+    w.u32(WORKING_SET_VERSION);
+    w.bytes(std::env::consts::ARCH.as_bytes());
+    w.u64(page);
+    w.seq(pages, |w, t| w.u64(t.gpa | u64::from(t.written)));
+    w.into_bytes()
+}
+
+/// A working set recorded at stage-2 pages of `page` bytes; `None` for one recorded at
+/// another page size.
+fn decode_working_set(bytes: &[u8], page: u64) -> codec::Result<Option<Vec<Touch>>> {
+    let mut r = Reader::new(bytes);
+    let mut magic = [0u8; 8];
+    for b in &mut magic {
+        *b = r.u8()?;
+    }
+    if magic != WORKING_SET_MAGIC {
+        return Err(DecodeError("not a shards working set".into()));
+    }
+    let version = r.u32()?;
+    if version != WORKING_SET_VERSION {
+        return Err(DecodeError(format!(
+            "working set format {version}; this shards reads {WORKING_SET_VERSION}"
+        )));
+    }
+    if r.bytes(32)? != std::env::consts::ARCH.as_bytes() {
+        return Err(DecodeError("a working set of another architecture".into()));
+    }
+    let recorded = r.u64()?;
+    let pages = r.seq(MAX_WORKING_SET, |r| {
+        let entry = r.u64()?;
+        Ok(Touch {
+            gpa: entry & !1,
+            written: entry & 1 != 0,
+        })
+    })?;
+    r.finish()?;
+    Ok((recorded == page).then_some(pages))
+}
+
+/// Saves `pages`, recorded at stage-2 pages of `page` bytes, as the working set of the
+/// snapshot in the directory `dir` holds open. The directory may have been renamed since.
+pub fn write_working_set(dir: &File, pages: &[Touch], page: u64) -> Result<(), String> {
+    crate::platform::write_in(dir, WORKING_SET, &encode_working_set(pages, page))
+        .map_err(|e| format!("the working set: {e}"))
+}
+
+/// The working set saved with the snapshot in `dir`, if it has one recorded at stage-2
+/// pages of `page` bytes.
+pub fn read_working_set(dir: &Path, page: u64) -> Result<Option<Vec<Touch>>, String> {
+    let path = dir.join(WORKING_SET);
+    let at = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(at(&e)),
+    };
+    decode_working_set(&bytes, page).map_err(|e| at(&e))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
@@ -220,6 +293,50 @@ mod tests {
         restored.read(0x8000_0010, &mut buf).unwrap();
         assert_eq!(&buf, b"guest");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn working_sets_round_trip_and_reject_damage() {
+        let pages = [
+            Touch {
+                gpa: 0x8000_4000,
+                written: true,
+            },
+            Touch {
+                gpa: 0xc000_0000,
+                written: false,
+            },
+        ];
+        let good = encode_working_set(&pages, 16384);
+        assert_eq!(decode_working_set(&good, 16384).unwrap().unwrap(), pages);
+        assert_eq!(
+            decode_working_set(&good, 4096).unwrap(),
+            None,
+            "recorded at another page size"
+        );
+        for cut in 0..good.len() {
+            assert!(decode_working_set(&good[..cut], 16384).is_err());
+        }
+        let mut bad_magic = good.clone();
+        bad_magic[0] ^= 1;
+        assert!(decode_working_set(&bad_magic, 16384).is_err());
+        let mut trailing = good.clone();
+        trailing.push(0);
+        assert!(decode_working_set(&trailing, 16384).is_err());
+
+        let dir = std::env::temp_dir().join(format!("shards-wset-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_working_set(&dir, 16384).unwrap(), None, "none saved");
+        let held = File::open(&dir).unwrap();
+        let moved = dir.with_extension("moved");
+        std::fs::rename(&dir, &moved).unwrap();
+        write_working_set(&held, &pages, 16384).unwrap();
+        assert_eq!(
+            read_working_set(&moved, 16384).unwrap().unwrap(),
+            pages,
+            "written where the directory went"
+        );
+        let _ = std::fs::remove_dir_all(moved);
     }
 
     #[test]

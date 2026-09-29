@@ -57,6 +57,8 @@ impl Perms {
     pub const RX: Perms = Perms(ffi::HV_MEMORY_READ | ffi::HV_MEMORY_EXEC);
     #[cfg(test)]
     pub const R: Perms = Perms(ffi::HV_MEMORY_READ);
+    /// No access: every touch exits to the VMM.
+    pub const NONE: Perms = Perms(0);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -121,6 +123,12 @@ impl Vm {
         })
     }
 
+    /// Unmaps `size` bytes at guest-physical `gpa`.
+    pub fn unmap(&self, gpa: u64, size: usize) -> Result<()> {
+        // SAFETY: no host memory is passed.
+        check("hv_vm_unmap", unsafe { ffi::hv_vm_unmap(gpa, size) })
+    }
+
     /// Creates the in-kernel GICv3. Must happen before any vCPU is created.
     pub fn create_gic(&self, layout: &GicLayout) -> Result<Gic> {
         // SAFETY: the config object is created, used and released on this thread.
@@ -173,6 +181,17 @@ impl Drop for Vm {
         }
         VM_EXISTS.store(false, Ordering::Release);
     }
+}
+
+/// Sets the guest's access to `len` mapped bytes at `gpa`, in the process's VM. Callable
+/// from any thread, while vCPUs run.
+pub fn protect(gpa: u64, len: u64, perms: Perms) -> Result<()> {
+    let size = usize::try_from(len).map_err(|_| Error {
+        op: "hv_vm_protect",
+        code: ffi::HV_BAD_ARGUMENT,
+    })?;
+    // SAFETY: no host memory is passed; HVF checks that the range is mapped.
+    check("hv_vm_protect", unsafe { ffi::hv_vm_protect(gpa, size, perms.0) })
 }
 
 /// Whether this Mac can run Hypervisor.framework VMs: `sysctl kern.hv_support`, the check

@@ -24,6 +24,9 @@ pub mod layout {
     pub const VIRTIO_MMIO: u64 = 0x0a00_0000;
     pub const VIRTIO_MMIO_STRIDE: u64 = 0x200;
     pub const VIRTIO_MMIO_MAX: u64 = 32;
+    /// Where the VMM maps a working set's prefetch loop while it runs, before the guest
+    /// does (hv::Vcpu::prefetch): 1 GiB between the devices and RAM that nothing else uses.
+    pub const PREFETCH: u64 = 0x4000_0000;
     pub const DRAM_BASE: u64 = 0x8000_0000;
     /// The first 2 MiB of DRAM hold data the VMM writes for guest drivers that map it as
     /// a device (VMGenID). Left out of the devicetree's memory node, so Linux can
@@ -66,12 +69,18 @@ pub mod sysreg {
     pub const MPIDR_EL1: u16 = enc(3, 0, 0, 0, 5);
     pub const ID_AA64PFR1_EL1: u16 = enc(3, 0, 0, 4, 1);
     pub const ID_AA64MMFR0_EL1: u16 = enc(3, 0, 0, 7, 0);
+    pub const ID_AA64ISAR0_EL1: u16 = enc(3, 0, 0, 6, 0);
     pub const SCTLR_EL1: u16 = enc(3, 0, 1, 0, 0);
+    pub const TTBR0_EL1: u16 = enc(3, 0, 2, 0, 0);
+    pub const TCR_EL1: u16 = enc(3, 0, 2, 0, 2);
+    pub const MAIR_EL1: u16 = enc(3, 0, 10, 2, 0);
     pub const CNTV_CTL_EL0: u16 = enc(3, 3, 14, 3, 1);
     pub const CNTV_CVAL_EL0: u16 = enc(3, 3, 14, 3, 2);
 
     /// SCTLR_EL1 with MMU and caches off: only the RES1 bits (Arm ARM D19.2.118).
     pub const SCTLR_EL1_RESET: u64 = 0x30d0_0800;
+    /// SCTLR_EL1.M, .C and .I: the MMU on, data and instruction caches on.
+    pub const SCTLR_EL1_MMU_CACHES: u64 = 1 | (1 << 2) | (1 << 12);
     /// PSTATE for entry at EL1h with D, A, I, F masked (Linux booting.rst).
     pub const PSTATE_EL1H_DAIF: u64 = 0x3c5;
 }

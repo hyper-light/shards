@@ -792,6 +792,100 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   of rarely used `&str`s costs every parse that touches its page; such data stays out of
   the thin client's hot path. Two builds' runs compare only from one template.
 
+### M30. A pooled run's working set, recorded and prefetched
+
+- **Question.** A pooled run spends about 1.4 ms in the guest (M29), where a booted guest
+  takes the same path in a fraction of it: 145 µs from connection to exec against 795
+  restored (benchmarks.md, Run). How much of it is first touches of guest memory (M5,
+  M27)? Is what a run touches the same from one restore of a template to the next, as
+  REAP found for serverless functions (Ustiugov et al., ASPLOS 2021)? And does touching
+  it before the request pay?
+- **Method.**
+  - *Recording* (`docs/research/measurements/working-set/experiment.patch`, the tracker):
+    guest RAM and the image's pmem are mapped with no access (`hv_vm_protect`), so each
+    16 KiB page's first touch exits to the VMM. The VMM notes the page, the time, and
+    the kind of touch (fetch, read, write, table walk), then gives it back: read-execute
+    for a read, so that a later write exits too.
+    - Warm VMs of one template: n = 7 runs of `shards run --rm alpine true` and n = 4 of
+      `sh -c 'ls / >/dev/null; cat /etc/os-release >/dev/null'`. `pages.py` splits each
+      VM's pages into before its request, while serving it (request to answer), and
+      after.
+    - Then a template saved afresh, recorded from its snapshot on, against 5 warm VMs of
+      it.
+  - *Prefetch* (the same patch). A warm VM does one of four things before its vCPU
+    state is restored, chosen by process ID within one daemon and template, so the arms
+    interleave (`ab.py`, n ≈ 100 each):
+    - 0: nothing;
+    - 1: vCPU 0 reads each recorded page, with its MMU off;
+    - 2: as 1, after the host has written a byte of each page the guest wrote, copying it;
+    - 3: vCPU 0 reads each page and adds zero atomically to each page the guest wrote,
+      with its MMU on over an identity map of write-back memory.
+
+    The list is one warm VM's pages up to its answer (`list.py`): 731, 308 of them
+    written. Memory is the process's `phys_footprint` after the prefetch, when the
+    request came and at the answer, with `footprint` and `vmmap` for its regions.
+  - *The change*, as M29 measures one (`build-ab/ab.py`): a0f7926 against this change,
+    both restoring one template (this change's, working set included),
+    `shards run --pull never alpine true`, n = 1000 each.
+  - 2026-09-29, this machine, load 4–12.
+- **Results.**
+  - A warm VM running `alpine true` first touches 350 pages between its restore and the
+    request, 381 while serving it, and 69 after. Of the 381:
+    - 97 fetched (kernel text), 110 read and 85 written first, all in RAM;
+    - 86 read in the image;
+    - 4 table walks;
+    - 165 written by the answer.
+  - The set is stable. 379 of the 381 pages were the same in all 7 VMs, and one VM's set
+    covered another's by 98.4–100%. For `sh -c 'ls; cat'`, 467 pages were touched
+    while serving it, 81% of them `true`'s: the kernel's path, init's and the loader's
+    are most of it.
+  - The boot that saves the template, recorded from its snapshot to its first answer,
+    touched 718 pages, 304 of them written. They covered 99.7–100% of each warm VM's
+    pages while serving (99.4–100% of those written) and 95–96% of those before the
+    request; 3–4 went unused.
+  - Recording slows the guest: `true` took 9.9 ms from request to answer instead of
+    1.5 ms.
+  - Prefetch arms, load 5.2 (µs; memory in MiB of `phys_footprint`, at the request and
+    at the answer):
+
+| Arm | n | guest p50 | p90 | p99 | wall p50 | p90 | p99 | prefetch p50 | memory waiting | at answer |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 0 none | 95 | 1975 | 2454 | 2679 | 7481 | 8657 | 9423 | 0 | 4.4 | 7.1 |
+| 1 reads, MMU off | 106 | 1420 | 1952 | 2304 | 6347 | 7970 | 8549 | 911 | 4.4 | 7.1 |
+| 2 reads, host copies | 97 | 804 | 935 | 1075 | 6352 | 7510 | 8183 | 1732 | 12.0 | 12.0 |
+| 3 reads and writes, MMU on | 102 | 768 | 938 | 1044 | 6396 | 7215 | 7711 | 1964 | 7.2 | 7.3 |
+
+  - Arm 3 against arm 0: guest −1207 µs (95% [−1516, −961]), wall −1085 µs (95%
+    [−1583, −614]). Arm 2: guest −1171, wall −1128. Arm 1: guest −555.
+  - The guest's own copy-on-write pages count in `phys_footprint`, but in no region that
+    `footprint` or `vmmap` shows: they are mapped at stage 2 alone. Arm 2's host copies
+    show in both. The 308 pages (4.8 MiB) the host copied added 9.7 MiB of footprint
+    (11.8 MiB after the prefetch, against arm 0's 2.1). Whether the host allocated them
+    twice or counts them twice, free memory with 24 VMs per arm was too noisy to tell.
+    Arm 3 copies at stage 2 only: 6.9 MiB after the prefetch, and at the answer about
+    the same as arm 0.
+  - The change (µs):
+
+| Part | Arm | n | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|
+| wall | a0f7926 | 1000 | 5155 | 5968 | 7081 | 10604 |
+| wall | working sets | 1000 | 4252 | 5236 | 6957 | 14022 |
+| guest | a0f7926 | 1000 | 1422 | 1535 | 1765 | 1955 |
+| guest | working sets | 1000 | 517 | 586 | 867 | 1078 |
+| outside | a0f7926 | 1000 | 3703 | 4571 | 5726 | 9086 |
+| outside | working sets | 1000 | 3703 | 4738 | 6488 | 13542 |
+
+  - Paired, working sets − a0f7926: wall −857 µs (95% [−891, −834]), guest −905
+    (95% [−912, −898]), outside +45 (95% [16, 64]). The outside's cost is not explained
+    yet.
+- **Consequence.** D25, D26:
+  - The boot that saves a template records the working set from its snapshot to its
+    first answer, 50 ms after the request at most, and saves it with the template.
+  - Warm and held restores prefetch it as arm 3 does, before the guest runs.
+  - A waiting warm VM holds the pages its run will write, about 2.9 MiB for `true`.
+    Arm 2's host copies count twice their size, and arm 1 leaves the writes' faults on
+    the request's path.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**
@@ -828,9 +922,10 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
    - Host-side pre-reading does *not* help (1.37 µs), because the stage-2 fault
      itself dominates.
    - On macOS, working-set prefetch (cf. REAP) must therefore be done from guest
-     context (helper vCPUs), not by host reads.
+     context (helper vCPUs), not by host reads. It is, for pooled runs (M30).
    - Every page a restored guest writes costs a ~1.9 µs CoW fault plus 16 KiB of
-     private memory.
+     private memory. A page the host copies counts twice in the process's footprint
+     once the guest maps it (M30).
 6. **Exits are expensive (~0.7–0.8 µs, M4) and HVF has no ioeventfd.**
    - Each virtio queue notify is a vCPU exit handled on the vCPU thread.
    - The design must suppress notifications (EVENT_IDX), batch, and make the notify

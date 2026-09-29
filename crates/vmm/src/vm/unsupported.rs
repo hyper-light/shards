@@ -61,6 +61,18 @@ impl Handle {
     pub fn released_at_us(&self) -> Option<u128> {
         match self.0 {}
     }
+
+    pub fn recording(&self) -> bool {
+        match self.0 {}
+    }
+
+    pub fn save_working_set(&self) -> Result<usize, String> {
+        match self.0 {}
+    }
+
+    pub fn prefetched(&self) -> usize {
+        match self.0 {}
+    }
 }
 
 #[derive(Debug)]

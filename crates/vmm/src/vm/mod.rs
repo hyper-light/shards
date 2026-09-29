@@ -74,6 +74,9 @@ pub struct RestoreConfig {
     /// Where this VM's vsock device listens. A snapshot with a vsock device needs one:
     /// the original VM may still hold its own path.
     pub vsock: Option<PathBuf>,
+    /// Prefetch the snapshot's working set, if it has one, before the guest runs: for a
+    /// restore ahead of its request, which it moves off the request's path (PM M30).
+    pub prefetch: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +84,9 @@ pub struct SnapshotPolicy {
     /// Where to write the snapshot when the guest asks for one.
     pub dir: PathBuf,
     pub then: AfterSnapshot,
+    /// Once resumed from its snapshot, record the pages the guest touches, until
+    /// [`Handle::save_working_set`] saves them with the snapshot.
+    pub working_set: bool,
 }
 
 /// What the VM does once its snapshot is written.

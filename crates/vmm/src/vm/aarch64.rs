@@ -48,6 +48,10 @@ pub struct Restored {
     pub dist: Vec<(u32, u64)>,
     /// The device bus's saved state, applied by [`finish`].
     pub devices: Vec<u8>,
+    /// The snapshot's working set, to prefetch before the guest runs; empty for none.
+    pub working_set: Vec<hv::Touch>,
+    /// How many of its pages were prefetched.
+    pub prefetched: std::sync::OnceLock<usize>,
 }
 
 /// The devices' address space: MMIO only on arm64.
@@ -333,12 +337,40 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     })
 }
 
-/// A machine that resumes `snap`, with guest RAM mapped copy-on-write from `memory_file`.
+/// Stage-2 pages, as working sets record them.
+pub const PAGE: u64 = hv::PAGE;
+
+/// What records a working set.
+pub type Recorder = Arc<hv::Watch>;
+
+/// Starts recording `vm`'s working set. Every vCPU must be out of the guest.
+pub fn record(vm: &hv::Vm) -> Result<Recorder, String> {
+    let watch = vm.watch();
+    watch.start().map_err(|e| e.to_string())?;
+    Ok(watch)
+}
+
+/// Stops recording; the pages touched since [`record`], in order.
+pub fn recorded(recorder: &Recorder) -> Vec<hv::Touch> {
+    recorder.stop()
+}
+
+/// How many pages of its working set a restored machine prefetched.
+pub fn prefetched(start: &Start) -> usize {
+    match start {
+        Start::Restore(r) => r.prefetched.get().copied().unwrap_or(0),
+        Start::Boot(_) => 0,
+    }
+}
+
+/// A machine that resumes `snap`, with guest RAM mapped copy-on-write from `memory_file`,
+/// that prefetches `working_set` before the guest runs.
 pub fn restore(
     snap: &Snapshot,
     memory_file: &File,
     console: Console,
     vsock: Option<&Path>,
+    working_set: Vec<hv::Touch>,
 ) -> Result<Machine, String> {
     super::check_vsock(snap, vsock)?;
     let state = decode_state(&snap.arch)?;
@@ -369,6 +401,8 @@ pub fn restore(
             cpu_id: state.cpu_id,
             dist: state.dist,
             devices: snap.devices.clone(),
+            working_set,
+            prefetched: std::sync::OnceLock::new(),
         }),
         config: snap.config.clone(),
     })
@@ -412,6 +446,14 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu, 
                         r.cpu_id
                     ));
                 }
+            }
+            // Before the state: the prefetch runs on this vCPU. A failure is the VM's, since
+            // its translations may outlive a loop that stopped short.
+            if index == 0 && !r.working_set.is_empty() {
+                let n = vcpu
+                    .prefetch(vm, &r.working_set)
+                    .map_err(|e| format!("prefetching the working set: {e}"))?;
+                let _ = r.prefetched.set(n);
             }
             let state = r
                 .vcpus

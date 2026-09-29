@@ -290,7 +290,10 @@ Method:
   (D25, D26).
   - Restores cost more for some templates than others, so samples come from
     `--templates T` templates (default 5), each saved afresh under a new daemon.
-  - A template's save and its first run are not samples.
+  - A template's save and its first two runs are not samples: since 2026-09-29's working
+    sets, the pool restores those VMs before the save's run has recorded the working
+    set the others prefetch (platform-measurements.md M30). Before, only the first run
+    was left out.
 - Cold and templated samples alternate, after three cold warm-up runs. Between runs the
   daemon refills its pool.
 - Each run records the host's load averages as it ends.
@@ -410,6 +413,27 @@ The host's load was more than twice the last run's. An interleaved A/B against f
 from one template (platform-measurements.md M29) puts this change's cost at 17 µs of
 wall time at the median (95% [1, 37]), all of it outside the guest: most of the
 difference from the last run is the host.
+
+**2026-09-29, working sets** · a0f7926 plus working-set recording and prefetch
+(uncommitted) · same host, OS and kernel · n=300 over 10 templates, 1 vCPU, 256 MiB ·
+load 8.53 8.84 7.03
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| run_cold | 34802 µs | 35875 µs | 36910 µs | 37458 µs |
+| **run_template** | **2973 µs** | **3218 µs** | **3447 µs** | **6703 µs** |
+| template_command | 366 µs | 425 µs | 487 µs | 1721 µs |
+| template_outside | 2598 µs | 2831 µs | 3080 µs | 4982 µs |
+| run_cold_rss | 60.0 MiB | 60.0 MiB | 60.1 MiB | 60.1 MiB |
+| run_template_rss | 16.8 MiB | 16.8 MiB | 16.9 MiB | 16.9 MiB |
+| client_rss | 1.7 MiB | 1.7 MiB | 1.7 MiB | 1.7 MiB |
+
+The boot that saves a template records the pages its first run touches, and every warm
+VM restored after that touches them before its request (platform-measurements.md M30).
+The guest's part fell from 1.0 ms to 366 µs at the median. The first two runs of each
+template, whose VMs the pool restored before the working set existed, are no longer
+samples. An interleaved A/B against a0f7926 from one template (M30) puts the change at
+857 µs of wall time at the median (95% [834, 891]).
 
 ## Firecracker (`crates/shards/benches/firecracker.rs`)
 

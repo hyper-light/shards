@@ -130,6 +130,19 @@ fn repeat_runs_restore_a_template_of_the_image() {
     assert_eq!(saved.len(), 1, "{saved:?}");
     assert!(!saved[0].contains(".new-"), "{saved:?}");
 
+    // The first run recorded what it touched, once it had answered: the working set that
+    // restores prefetch. The daemon's pool was restored before it existed, so a new daemon
+    // restores the next run.
+    let working_set = home.join("templates").join(&saved[0]).join("working-set");
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while !working_set.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let recorded = std::fs::metadata(&working_set).map(|m| m.len()).unwrap_or(0);
+    assert!(recorded > 1024, "a working set of {recorded} bytes");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+
     let before = now_ns();
     let second = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
     let after = now_ns();
@@ -137,6 +150,11 @@ fn repeat_runs_restore_a_template_of_the_image() {
     assert_eq!(second.status, Some(0), "{shown}");
     assert!(!booted(&second), "restored, not booted: {shown}");
     assert!(second.marker_us(shards_abi::marker::RESUMED).is_some(), "{shown}");
+    let prefetched = second.prefetched().unwrap_or(0);
+    assert!(
+        prefetched > 100 && prefetched * 8 < u128::from(recorded),
+        "{prefetched} pages prefetched of a {recorded}-byte working set: {shown}"
+    );
     for line in ["uid 1000", "cwd /work", "env FROM_IMAGE=yes"] {
         assert!(second.stdout.lines().any(|l| l == line), "{line}\n{shown}");
     }
@@ -146,6 +164,20 @@ fn repeat_runs_restore_a_template_of_the_image() {
         "{before} <= {realtime} <= {after}"
     );
     assert_eq!(templates(), saved, "the template was reused");
+
+    // A damaged working set is only a lost prefetch.
+    std::fs::write(&working_set, b"not a working set").unwrap();
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+    let unprefetched = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+    assert_eq!(unprefetched.status, Some(0), "{}", unprefetched.stderr);
+    assert!(!booted(&unprefetched), "{}", unprefetched.stderr);
+    assert_eq!(unprefetched.prefetched(), Some(0), "{}", unprefetched.stderr);
+    assert!(
+        unprefetched.stdout.lines().any(|l| l == "uid 1000"),
+        "{}",
+        unprefetched.stdout
+    );
 
     // A template that no longer restores is removed, and the run boots instead, saving it
     // again. The daemon's pool holds VMs restored before the damage, so a new daemon, with

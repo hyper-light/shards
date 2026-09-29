@@ -114,7 +114,11 @@ impl Common {
 
     fn policy(&mut self) -> Option<SnapshotPolicy> {
         let then = self.then;
-        self.snapshot_dir.take().map(|dir| SnapshotPolicy { dir, then })
+        self.snapshot_dir.take().map(|dir| SnapshotPolicy {
+            dir,
+            then,
+            working_set: false,
+        })
     }
 
     /// Checks that workload options come with a command.
@@ -206,9 +210,11 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 "--warm takes its command from the daemon: no --vsock, workload options or command".into(),
             );
         }
-        // A template saved on the way resumes to serve its request.
+        // A template saved on the way resumes to serve its request, and records what that
+        // touches: the working set its restores prefetch (PM M30).
         if let Some(policy) = cfg.snapshot.as_mut() {
             policy.then = AfterSnapshot::Resume;
+            policy.working_set = true;
         }
         return Ok(Run {
             cfg,
@@ -281,6 +287,8 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         snapshot: common.policy(),
         hold,
         vsock: common.vsock,
+        // Restored ahead of its request: the prefetch costs the request nothing.
+        prefetch: hold || warm.is_some(),
     };
     Ok(Restore {
         cfg,
@@ -631,6 +639,7 @@ fn serve_workload(
                         let started = || crate::warm::started(&link);
                         let ask = || {
                             let request = crate::warm::receive(&link, &to_guest)?;
+                            end_recording_in(&stopper, RECORD_FOR);
                             served_timing
                                 .asked
                                 .store(request.timing, std::sync::atomic::Ordering::Relaxed);
@@ -657,6 +666,7 @@ fn serve_workload(
                                     .load(std::sync::atomic::Ordering::Relaxed)
                                     .then(|| timing_json(&stopper, Some(&served_timing)));
                                 crate::warm::finish(&link, connection.as_ref(), &served, timing.as_deref());
+                                save_working_set(&stopper);
                                 (served, true)
                             }
                             // The daemon went without a request: nobody will ever send one.
@@ -713,6 +723,42 @@ fn serve_workload(
     ExitCode::from(125)
 }
 
+/// How long a VM records its working set after the request, at most: a command still
+/// running then has long passed its start. Recording slows the guest about sixfold (a
+/// pooled `true` took 9.9 ms against 1.5, PM M30), so this is some 8 ms of the command's
+/// own time, past the 5 ms a run should take.
+#[cfg(unix)]
+const RECORD_FOR: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Saves the working set `after` from now, if the VM still records it then.
+#[cfg(unix)]
+fn end_recording_in(handle: &Handle, after: std::time::Duration) {
+    if !handle.recording() {
+        return;
+    }
+    let handle = handle.clone();
+    let spawned = std::thread::Builder::new()
+        .name("working-set".into())
+        .spawn(move || {
+            std::thread::sleep(after);
+            save_working_set(&handle);
+        });
+    if let Err(e) = spawned {
+        shards_vmm::debug!("the working set's timer: {e}");
+    }
+}
+
+/// Saves the working set the VM records, if any. A failure costs later runs their
+/// prefetch, and nothing else: it goes to the debug log, never to a command's stderr.
+#[cfg(unix)]
+fn save_working_set(handle: &Handle) {
+    match handle.save_working_set() {
+        Ok(0) => {}
+        Ok(n) => shards_vmm::debug!("saved a working set of {n} pages"),
+        Err(e) => shards_vmm::debug!("{e}"),
+    }
+}
+
 /// The workload's request and answer times, where there is a workload.
 #[cfg(unix)]
 type WorkloadTiming = crate::workload::Timing;
@@ -752,10 +798,11 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
         (0, 0)
     };
     format!(
-        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"rss_kib\":{},\"markers\":[{}]}}",
+        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"prefetched\":{},\"rss_kib\":{},\"markers\":[{}]}}",
         handle.released_at_us().unwrap_or(0),
         handle.entered_at_us().unwrap_or(0),
         handle.exited_at_us().unwrap_or(0),
+        handle.prefetched(),
         max_rss_kib(),
         markers.join(",")
     )

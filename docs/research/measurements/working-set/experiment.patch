@@ -1,0 +1,604 @@
+diff --git a/crates/shards/src/vm_run.rs b/crates/shards/src/vm_run.rs
+index ebde3e8..adf8296 100644
+--- a/crates/shards/src/vm_run.rs
++++ b/crates/shards/src/vm_run.rs
+@@ -674,6 +674,18 @@ fn serve_workload(
+             return failed(format!("workload thread: {e}"));
+         }
+         let reason = running.wait(handle.clone());
++        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
++        shards_vmm::hv::track::dump(&format!(
++            "request_us {} answered_us {} released_us {}{}",
++            timing.request_us.get().copied().unwrap_or(0),
++            timing.answered_us.get().copied().unwrap_or(0),
++            handle.released_at_us().unwrap_or(0),
++            handle
++                .markers()
++                .iter()
++                .map(|(m, t)| format!(" marker{m} {t}"))
++                .collect::<String>()
++        ));
+         // A warm VM's client printed its timing line from the exit status.
+         if !warm {
+             report_timing(&handle, Some(&timing));
+@@ -752,7 +764,12 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
+         (0, 0)
+     };
+     format!(
+-        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"rss_kib\":{},\"markers\":[{}]}}",
++        "{{\"prefetched_kib\":{},\"waiting_kib\":{},\"footprint_kib\":{},\"prefetch\":{},\"prefetch_us\":{},\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"rss_kib\":{},\"markers\":[{}]}}",
++        shards_vmm::vm::arm64_prefetch().2,
++        crate::workload::WAITING_FOOTPRINT_KIB.load(std::sync::atomic::Ordering::Relaxed),
++        footprint_kib(),
++        shards_vmm::vm::arm64_prefetch().0,
++        shards_vmm::vm::arm64_prefetch().1,
+         handle.released_at_us().unwrap_or(0),
+         handle.entered_at_us().unwrap_or(0),
+         handle.exited_at_us().unwrap_or(0),
+@@ -761,6 +778,27 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
+     )
+ }
+ 
++/// Experiment (PM M30): this process's physical footprint now, in KiB.
++pub fn footprint_kib() -> u64 {
++    #[cfg(target_os = "macos")]
++    {
++        // SAFETY: proc_pid_rusage fills a rusage_info_v2 for this process.
++        let mut ri: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
++        // SAFETY: as above.
++        let rc = unsafe {
++            libc::proc_pid_rusage(
++                std::process::id() as i32,
++                libc::RUSAGE_INFO_V2,
++                (&raw mut ri).cast(),
++            )
++        };
++        if rc == 0 {
++            return ri.ri_phys_footprint / 1024;
++        }
++    }
++    0
++}
++
+ /// This process's peak resident set so far, in KiB; 0 where unknown.
+ fn max_rss_kib() -> u64 {
+     #[cfg(unix)]
+diff --git a/crates/shards/src/workload.rs b/crates/shards/src/workload.rs
+index 11d5174..9764d78 100644
+--- a/crates/shards/src/workload.rs
++++ b/crates/shards/src/workload.rs
+@@ -196,6 +196,9 @@ fn lock(to: &ToGuest) -> std::sync::MutexGuard<'_, Signals> {
+ /// When a request arrived and when it was answered, on the VMM's clock (for
+ /// `SHARDS_TIMING`).
+ #[cfg(unix)]
++/// Experiment (PM M30): the footprint while the VM waited for its request.
++pub static WAITING_FOOTPRINT_KIB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
+ #[derive(Debug, Default)]
+ pub struct Timing {
+     pub request_us: std::sync::OnceLock<u128>,
+@@ -260,6 +263,7 @@ pub fn serve(
+         },
+         Request::Later(ask) => ask()?,
+     };
++    WAITING_FOOTPRINT_KIB.store(crate::vm_run::footprint_kib(), std::sync::atomic::Ordering::Relaxed);
+     let _ = timing.request_us.set(shards_vmm::log::uptime_us());
+     send(&mut conn, kind::SPEC, &spec.encode()).map_err(|e| format!("sending the command: {e}"))?;
+     if interactive {
+diff --git a/crates/vmm/src/hv/hvf/ffi.rs b/crates/vmm/src/hv/hvf/ffi.rs
+index e2c5586..3cfa1a7 100644
+--- a/crates/vmm/src/hv/hvf/ffi.rs
++++ b/crates/vmm/src/hv/hvf/ffi.rs
+@@ -62,6 +62,7 @@ unsafe extern "C" {
+     pub fn hv_vm_create(config: hv_vm_config_t) -> hv_return_t;
+     pub fn hv_vm_destroy() -> hv_return_t;
+     pub fn hv_vm_map(addr: *mut c_void, ipa: hv_ipa_t, size: usize, flags: hv_memory_flags_t) -> hv_return_t;
++    pub fn hv_vm_unmap(ipa: hv_ipa_t, size: usize) -> hv_return_t;
+ 
+     pub fn hv_vcpu_create(
+         vcpu: *mut hv_vcpu_t,
+diff --git a/crates/vmm/src/hv/hvf/mod.rs b/crates/vmm/src/hv/hvf/mod.rs
+index f371e6c..c339b87 100644
+--- a/crates/vmm/src/hv/hvf/mod.rs
++++ b/crates/vmm/src/hv/hvf/mod.rs
+@@ -9,6 +9,7 @@
+ mod ffi;
+ mod power;
+ mod sys;
++pub mod track;
+ 
+ use std::fmt;
+ use std::sync::{Arc, OnceLock};
+@@ -114,6 +115,7 @@ impl Vm {
+     pub unsafe fn map_ram(&self, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+         // SAFETY: forwarded caller contract.
+         unsafe { self.sys.map(host, gpa, len, sys::Perms::RWX) }?;
++        track::watch(gpa, len as u64, 7);
+         self.power.add_ram(gpa, gpa.saturating_add(len as u64));
+         Ok(())
+     }
+@@ -134,6 +136,7 @@ impl Vm {
+         let perms = if writable { sys::Perms::RWX } else { sys::Perms::RX };
+         // SAFETY: forwarded caller contract.
+         unsafe { self.sys.map(host, gpa, len, perms) }?;
++        track::watch(gpa, len as u64, if writable { 7 } else { 5 });
+         Ok(())
+     }
+ 
+@@ -252,6 +255,7 @@ impl Vcpu {
+                 }
+             };
+             match esr::ec(syndrome) {
++                ec @ (esr::EC_DABT_LOW | esr::EC_IABT_LOW) if track::fault(ec, syndrome, ipa) => {}
+                 esr::EC_DABT_LOW => self.mmio(io, syndrome, ipa)?,
+                 esr::EC_HVC64 | esr::EC_SMC64 => {
+                     // HVC exits with PC already past the instruction; a trapped SMC does not
+@@ -355,6 +359,172 @@ impl Vcpu {
+     }
+ }
+ 
++/// Where the prefetch loop and its page list sit while it runs: below RAM, where the
++/// memory map has no device.
++const PREFETCH_IPA: u64 = 0x4000_0000;
++const PREFETCH_PAGE: usize = 16 << 10;
++/// `cbz x1, 2f; 1: ldr x2, [x0], #8; ldrb w3, [x2]; subs x1, x1, #1; b.ne 1b; 2: hvc #0`
++const PREFETCH_CODE: [u32; 6] = [
++    0xb400_00a1,
++    0xf840_8402,
++    0x3940_0043,
++    0xf100_0421,
++    0x54ff_ffa1,
++    0xd400_0002,
++];
++
++impl Vcpu {
++    /// Reads a byte of each of `pages` (guest-physical) from this vCPU, with its MMU off,
++    /// so that HVF maps them at stage 2 before the guest needs them. Call on a fresh vCPU
++    /// before its state is restored: it clobbers X0-X3, PC and PSTATE.
++    pub fn prefetch(&mut self, vm: &Vm, pages: &[u64]) -> Result<()> {
++        let list = (pages.len() * 8).next_multiple_of(PREFETCH_PAGE);
++        let size = PREFETCH_PAGE + list;
++        // SAFETY: a fresh anonymous mapping, unmapped below.
++        let host = unsafe {
++            libc::mmap(
++                std::ptr::null_mut(),
++                size,
++                libc::PROT_READ | libc::PROT_WRITE,
++                libc::MAP_PRIVATE | libc::MAP_ANON,
++                -1,
++                0,
++            )
++        };
++        if host == libc::MAP_FAILED {
++            return Err(Error::Guest(format!("prefetch scratch: {}", std::io::Error::last_os_error())));
++        }
++        // SAFETY: `host` spans `size` bytes: the code, then the list.
++        unsafe {
++            let code = host.cast::<u32>();
++            for (i, &w) in PREFETCH_CODE.iter().enumerate() {
++                code.add(i).write(w);
++            }
++            let list = host.cast::<u8>().add(PREFETCH_PAGE).cast::<u64>();
++            for (i, &p) in pages.iter().enumerate() {
++                list.add(i).write(p);
++            }
++        }
++        // SAFETY: `host` stays mapped until after the unmap below.
++        let ran = unsafe { vm.sys.map(host.cast(), PREFETCH_IPA, size, sys::Perms::RX) }
++            .map_err(Error::from)
++            .and_then(|()| self.run_prefetch(pages.len() as u64));
++        let unmapped = vm.sys.unmap(PREFETCH_IPA, size);
++        // SAFETY: unmapped from the guest above; ours alone.
++        unsafe { libc::munmap(host, size) };
++        ran?;
++        Ok(unmapped?)
++    }
++
++    fn run_prefetch(&mut self, n: u64) -> Result<()> {
++        self.sys.set_reg(sys::Reg::CPSR, sysreg::PSTATE_EL1H_DAIF)?;
++        self.sys.set_sys_reg(sysreg::SCTLR_EL1, sysreg::SCTLR_EL1_RESET)?;
++        self.sys.set_x(0, PREFETCH_IPA + PREFETCH_PAGE as u64)?;
++        self.sys.set_x(1, n)?;
++        self.sys.set_reg(sys::Reg::PC, PREFETCH_IPA)?;
++        loop {
++            match self.sys.run()? {
++                sys::Exit::Exception { syndrome, .. } if esr::ec(syndrome) == esr::EC_HVC64 => return Ok(()),
++                sys::Exit::Canceled => continue,
++                sys::Exit::Exception { syndrome, ipa, .. } => {
++                    return Err(Error::Guest(format!(
++                        "prefetch: EC {:#x} at IPA {ipa:#x}",
++                        esr::ec(syndrome)
++                    )));
++                }
++                other => return Err(Error::Guest(format!("prefetch: {other:?}"))),
++            }
++        }
++    }
++}
++
++/// Arm 3: MMU on over an identity map of 1 GiB Normal write-back blocks; entries with bit
++/// 0 set get an atomic add of zero (a write, so the copy happens now), others a load. Ends
++/// with `tlbi vmalle1is`, so none of the map's translations outlive it.
++const PREFETCH_MMU_CODE: [u32; 15] = [
++    0xb400_0161, 0xf840_8402, 0x3700_00a2, 0x3940_0043, 0xf100_0421, 0x54ff_ff81, 0x1400_0005,
++    0x927f_f842, 0x383f_005f, 0xf100_0421, 0x54ff_fee1, 0xd508_831f, 0xd503_3b9f, 0xd503_3fdf,
++    0xd400_0002,
++];
++
++impl Vcpu {
++    pub fn prefetch_mmu(&mut self, vm: &Vm, pages: &[(u64, bool)]) -> Result<()> {
++        let list = (pages.len() * 8).next_multiple_of(PREFETCH_PAGE);
++        let size = PREFETCH_PAGE + list;
++        // SAFETY: a fresh anonymous mapping, unmapped below.
++        let host = unsafe {
++            libc::mmap(
++                std::ptr::null_mut(),
++                size,
++                libc::PROT_READ | libc::PROT_WRITE,
++                libc::MAP_PRIVATE | libc::MAP_ANON,
++                -1,
++                0,
++            )
++        };
++        if host == libc::MAP_FAILED {
++            return Err(Error::Guest(format!("prefetch scratch: {}", std::io::Error::last_os_error())));
++        }
++        const GIB: u64 = 1 << 30;
++        let block = |base: u64, exec: bool| -> u64 {
++            let xn = if exec { 1u64 << 54 } else { 3u64 << 53 };
++            (base & !(GIB - 1)) | xn | (1 << 10) | (3 << 8) | 0b01
++        };
++        // SAFETY: `host` spans `size` bytes: the code, the table at 4 KiB, then the list.
++        unsafe {
++            let code = host.cast::<u32>();
++            for (i, &w) in PREFETCH_MMU_CODE.iter().enumerate() {
++                code.add(i).write(w);
++            }
++            let table = host.cast::<u8>().add(4096).cast::<u64>();
++            table.add((PREFETCH_IPA / GIB) as usize).write(block(PREFETCH_IPA, true));
++            let list = host.cast::<u8>().add(PREFETCH_PAGE).cast::<u64>();
++            for (i, &(p, written)) in pages.iter().enumerate() {
++                let slot = (p / GIB) as usize;
++                if slot < 512 {
++                    table.add(slot).write(block(p, false));
++                }
++                list.add(i).write(p | u64::from(written));
++            }
++        }
++        // SAFETY: `host` stays mapped until after the unmap below.
++        let ran = unsafe { vm.sys.map(host.cast(), PREFETCH_IPA, size, sys::Perms::RX) }
++            .map_err(Error::from)
++            .and_then(|()| {
++                let ips = self.sys.sys_reg(sysreg::ID_AA64MMFR0_EL1)? & 0xf;
++                let tcr = 25 | (1 << 8) | (1 << 10) | (3 << 12) | (25 << 16) | (1 << 23) | (ips << 32);
++                self.sys.set_sys_reg(0xc510, 0xff)?; // MAIR_EL1: attr 0 Normal WB
++                self.sys.set_sys_reg(0xc102, tcr)?; // TCR_EL1
++                self.sys.set_sys_reg(0xc100, PREFETCH_IPA + 4096)?; // TTBR0_EL1
++                self.sys.set_reg(sys::Reg::CPSR, sysreg::PSTATE_EL1H_DAIF)?;
++                self.sys
++                    .set_sys_reg(sysreg::SCTLR_EL1, sysreg::SCTLR_EL1_RESET | 1 | (1 << 2) | (1 << 12))?;
++                self.sys.set_x(0, PREFETCH_IPA + PREFETCH_PAGE as u64)?;
++                self.sys.set_x(1, pages.len() as u64)?;
++                self.sys.set_reg(sys::Reg::PC, PREFETCH_IPA)?;
++                loop {
++                    match self.sys.run()? {
++                        sys::Exit::Exception { syndrome, .. } if esr::ec(syndrome) == esr::EC_HVC64 => {
++                            return Ok(());
++                        }
++                        sys::Exit::Canceled => continue,
++                        sys::Exit::Exception { syndrome, ipa, va } => {
++                            return Err(Error::Guest(format!(
++                                "prefetch: ESR {syndrome:#x} VA {va:#x} IPA {ipa:#x}"
++                            )));
++                        }
++                        other => return Err(Error::Guest(format!("prefetch: {other:?}"))),
++                    }
++                }
++            });
++        let unmapped = vm.sys.unmap(PREFETCH_IPA, size);
++        // SAFETY: unmapped from the guest above; ours alone.
++        unsafe { libc::munmap(host, size) };
++        ran?;
++        Ok(unmapped?)
++    }
++}
++
+ /// Interrupts a vCPU's `run` from any thread, whether it is in the guest or parked.
+ #[derive(Debug, Clone)]
+ pub struct Kicker {
+diff --git a/crates/vmm/src/hv/hvf/sys.rs b/crates/vmm/src/hv/hvf/sys.rs
+index 93be1c9..0d198e7 100644
+--- a/crates/vmm/src/hv/hvf/sys.rs
++++ b/crates/vmm/src/hv/hvf/sys.rs
+@@ -121,6 +121,12 @@ impl Vm {
+         })
+     }
+ 
++    /// Unmaps `size` bytes at guest-physical `gpa`.
++    pub fn unmap(&self, gpa: u64, size: usize) -> Result<()> {
++        // SAFETY: no host memory is passed.
++        check("hv_vm_unmap", unsafe { ffi::hv_vm_unmap(gpa, size) })
++    }
++
+     /// Creates the in-kernel GICv3. Must happen before any vCPU is created.
+     pub fn create_gic(&self, layout: &GicLayout) -> Result<Gic> {
+         // SAFETY: the config object is created, used and released on this thread.
+diff --git a/crates/vmm/src/hv/hvf/track.rs b/crates/vmm/src/hv/hvf/track.rs
+new file mode 100644
+index 0000000..7fa272e
+--- /dev/null
++++ b/crates/vmm/src/hv/hvf/track.rs
+@@ -0,0 +1,151 @@
++//! Measurement only (PM M30): with SHARDS_TRACK_PAGES=DIR, guest memory is mapped with
++//! no access, and each 16 KiB page's first touch exits to the VMM, which records it and
++//! opens the page. A read or fetch opens it read-execute, so a later write exits again.
++
++use std::collections::HashMap;
++use std::sync::{Mutex, OnceLock};
++
++use super::ffi;
++
++const PAGE: u64 = 16 << 10;
++
++pub struct Region {
++    pub base: u64,
++    pub len: u64,
++    pub full: u64,
++}
++
++#[derive(Clone, Copy)]
++pub struct Page {
++    pub first_us: u128,
++    pub kind: u8,
++    pub write_us: u128,
++}
++
++pub struct Tracker {
++    pub dir: String,
++    pub regions: Mutex<Vec<Region>>,
++    pub pages: Mutex<HashMap<u64, Page>>,
++    pub since: Mutex<u128>,
++}
++
++static TRACKER: OnceLock<Option<Tracker>> = OnceLock::new();
++
++pub fn get() -> Option<&'static Tracker> {
++    TRACKER
++        .get_or_init(|| {
++            std::env::var("SHARDS_TRACK_PAGES").ok().map(|dir| Tracker {
++                dir,
++                regions: Mutex::new(Vec::new()),
++                pages: Mutex::new(HashMap::new()),
++                since: Mutex::new(0),
++            })
++        })
++        .as_ref()
++}
++
++/// Takes a freshly mapped region away from the guest, to see its first touches.
++pub fn watch(base: u64, len: u64, full: u64) {
++    let Some(t) = get() else { return };
++    // SAFETY: the region was just mapped.
++    let rc = unsafe { hv_vm_protect(base, len as usize, 0) };
++    if rc != ffi::HV_SUCCESS {
++        crate::warn!("hv_vm_protect {base:#x}: {rc:#x}");
++        return;
++    }
++    if let Ok(mut r) = t.regions.lock() {
++        r.push(Region { base, len, full });
++    }
++}
++
++/// Takes every watched region away again and forgets what was touched: from a snapshot
++/// point on.
++pub fn rewatch() {
++    let Some(t) = get() else { return };
++    if let Ok(r) = t.regions.lock() {
++        for g in r.iter() {
++            // SAFETY: the region is mapped.
++            unsafe { hv_vm_protect(g.base, g.len as usize, 0) };
++        }
++    }
++    if let Ok(mut p) = t.pages.lock() {
++        p.clear();
++    }
++    if let Ok(mut s) = t.since.lock() {
++        *s = crate::log::uptime_us();
++    }
++}
++
++/// Handles a stage-2 fault on a watched page; false when `ipa` is not one.
++pub fn fault(ec: u32, syndrome: u64, ipa: u64) -> bool {
++    let Some(t) = get() else { return false };
++    let Some(full) = t.regions.lock().ok().and_then(|r| {
++        r.iter()
++            .find(|g| ipa >= g.base && ipa - g.base < g.len)
++            .map(|g| g.full)
++    }) else {
++        return false;
++    };
++    let walk = syndrome & (1 << 7) != 0;
++    let kind = if ec == 0x20 {
++        b'x'
++    } else if walk {
++        b'p'
++    } else if syndrome & (1 << 6) != 0 {
++        b'w'
++    } else {
++        b'r'
++    };
++    let writes = kind == b'w' || kind == b'p';
++    if writes && full & ffi::HV_MEMORY_WRITE == 0 {
++        return false;
++    }
++    let page = ipa & !(PAGE - 1);
++    let now = crate::log::uptime_us();
++    if let Ok(mut pages) = t.pages.lock() {
++        let e = pages.entry(page).or_insert(Page {
++            first_us: now,
++            kind,
++            write_us: 0,
++        });
++        if writes && e.write_us == 0 {
++            e.write_us = now;
++        }
++    }
++    let perms = if writes {
++        full
++    } else {
++        ffi::HV_MEMORY_READ | ffi::HV_MEMORY_EXEC
++    };
++    // SAFETY: the page lies in a mapped region.
++    let rc = unsafe { hv_vm_protect(page, PAGE as usize, perms) };
++    rc == ffi::HV_SUCCESS
++}
++
++/// Writes DIR/PID.pages: the regions, then each page as `ipa first_us kind write_us`.
++pub fn dump(header: &str) {
++    let Some(t) = get() else { return };
++    let since = t.since.lock().map(|s| *s).unwrap_or(0);
++    let mut out = format!("{header} rewatched_us {since}\n");
++    if let Ok(r) = t.regions.lock() {
++        for g in r.iter() {
++            out.push_str(&format!("region {:#x} {:#x} {}\n", g.base, g.len, g.full));
++        }
++    }
++    if let Ok(p) = t.pages.lock() {
++        let mut v: Vec<_> = p.iter().map(|(&k, &v)| (k, v)).collect();
++        v.sort_by_key(|&(_, p)| p.first_us);
++        for (ipa, p) in v {
++            out.push_str(&format!(
++                "{ipa:#x} {} {} {}\n",
++                p.first_us, p.kind as char, p.write_us
++            ));
++        }
++    }
++    let _ = std::fs::write(format!("{}/{}.pages", t.dir, std::process::id()), out);
++}
++
++#[link(name = "Hypervisor", kind = "framework")]
++unsafe extern "C" {
++    fn hv_vm_protect(ipa: u64, size: usize, flags: u64) -> i32;
++}
+diff --git a/crates/vmm/src/vm/aarch64.rs b/crates/vmm/src/vm/aarch64.rs
+index 86f98e1..9ed75a6 100644
+--- a/crates/vmm/src/vm/aarch64.rs
++++ b/crates/vmm/src/vm/aarch64.rs
+@@ -333,6 +333,32 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
+     })
+ }
+ 
++pub static PREFETCH_MODE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(9);
++pub static PREFETCH_US: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
++static MEMORY: std::sync::OnceLock<Arc<GuestMemory>> = std::sync::OnceLock::new();
++pub static AFTER_PREFETCH_KIB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
++fn footprint_kib() -> u64 {
++    // SAFETY: proc_pid_rusage fills a rusage_info_v2 for this process.
++    let mut ri: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
++    // SAFETY: as above.
++    let rc = unsafe { libc::proc_pid_rusage(std::process::id() as i32, libc::RUSAGE_INFO_V2, (&raw mut ri).cast()) };
++    if rc == 0 { ri.ri_phys_footprint / 1024 } else { 0 }
++}
++
++/// Experiment (PM M30): SHARDS_PREFETCH names a file of `IPA r|w` lines.
++fn experiment_pages() -> Option<Vec<(u64, bool)>> {
++    let text = std::fs::read_to_string(std::env::var_os("SHARDS_PREFETCH")?).ok()?;
++    Some(
++        text.lines()
++            .filter_map(|l| {
++                let (ipa, kind) = l.split_once(' ')?;
++                Some((u64::from_str_radix(ipa.trim_start_matches("0x"), 16).ok()?, kind == "w"))
++            })
++            .collect(),
++    )
++}
++
+ /// A machine that resumes `snap`, with guest RAM mapped copy-on-write from `memory_file`.
+ pub fn restore(
+     snap: &Snapshot,
+@@ -355,6 +381,7 @@ pub fn restore(
+             .map_err(|e| format!("snapshot memory: {e}"))?,
+     );
+     let a = assemble(&memory, &snap.config, console, vsock)?;
++    let _ = MEMORY.set(memory.clone());
+     Ok(Machine {
+         vm: a.vm,
+         memory,
+@@ -413,6 +440,37 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu,
+                     ));
+                 }
+             }
++            if index == 0
++                && let Some(pages) = experiment_pages()
++            {
++                let mode = std::env::var("SHARDS_PREFETCH_ARM")
++                    .ok()
++                    .and_then(|a| a.parse().ok())
++                    .unwrap_or(std::process::id() % 4);
++                PREFETCH_MODE.store(mode, std::sync::atomic::Ordering::Relaxed);
++                let t0 = crate::log::uptime_us();
++                if mode == 2 {
++                    for &(ipa, written) in &pages {
++                        if written && let Some(m) = MEMORY.get()
++                            && let Ok(p) = m.host_ptr(ipa, 1)
++                        {
++                            // SAFETY: guest RAM; no vCPU runs yet. The same byte goes back.
++                            unsafe { p.write_volatile(p.read_volatile()) };
++                        }
++                    }
++                }
++                if mode == 3 {
++                    vcpu.prefetch_mmu(vm, &pages).map_err(e)?;
++                } else if mode >= 1 {
++                    let ipas: Vec<u64> = pages.iter().map(|&(ipa, _)| ipa).collect();
++                    vcpu.prefetch(vm, &ipas).map_err(e)?;
++                }
++                PREFETCH_US.store(
++                    (crate::log::uptime_us() - t0) as u32,
++                    std::sync::atomic::Ordering::Relaxed,
++                );
++                AFTER_PREFETCH_KIB.store(footprint_kib(), std::sync::atomic::Ordering::Relaxed);
++            }
+             let state = r
+                 .vcpus
+                 .get(index)
+diff --git a/crates/vmm/src/vm/mod.rs b/crates/vmm/src/vm/mod.rs
+index 4e0a4ea..a2a2a68 100644
+--- a/crates/vmm/src/vm/mod.rs
++++ b/crates/vmm/src/vm/mod.rs
+@@ -15,6 +15,21 @@ use x86_64 as machine;
+ /// x86_64 backend's cannot yet.
+ pub const SNAPSHOTS: bool = cfg!(all(hv, target_arch = "aarch64"));
+ 
++/// Experiment (PM M30): this VM's prefetch arm and its cost in µs.
++pub fn arm64_prefetch() -> (u32, u32, u64) {
++    #[cfg(all(hv, target_arch = "aarch64"))]
++    {
++        use std::sync::atomic::Ordering::Relaxed;
++        (
++            aarch64::PREFETCH_MODE.load(Relaxed),
++            aarch64::PREFETCH_US.load(Relaxed),
++            aarch64::AFTER_PREFETCH_KIB.load(Relaxed),
++        )
++    }
++    #[cfg(not(all(hv, target_arch = "aarch64")))]
++    (9, 0, 0)
++}
++
+ #[cfg(hv)]
+ mod runtime;
+ #[cfg(hv)]
+diff --git a/crates/vmm/src/vm/runtime.rs b/crates/vmm/src/vm/runtime.rs
+index 4655a27..0b1948e 100644
+--- a/crates/vmm/src/vm/runtime.rs
++++ b/crates/vmm/src/vm/runtime.rs
+@@ -466,6 +466,8 @@ impl Coordinator {
+             match self.policy.then {
+                 AfterSnapshot::Stop => return self.sh.stop(ExitReason::Snapshotted),
+                 AfterSnapshot::Resume => {
++                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
++                    crate::hv::track::rewatch();
+                     if let Err(e) = self.bus.resume() {
+                         return self.sh.stop(ExitReason::Error(format!("resuming devices: {e}")));
+                     }

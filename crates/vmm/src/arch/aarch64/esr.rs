@@ -12,6 +12,12 @@ pub fn ec(esr: u64) -> u32 {
     ((esr >> 26) & 0x3f) as u32
 }
 
+/// Whether a data abort was a write (WnR), for an instruction syndrome or not. A stage 1
+/// table walk's abort is a write when the walk would update a descriptor.
+pub fn writes(esr: u64) -> bool {
+    esr & (1 << 6) != 0
+}
+
 /// Instruction length: 4 bytes when IL is set, else 2 (only for T32, never here).
 pub fn instr_len(esr: u64) -> u64 {
     if esr & (1 << 25) != 0 { 4 } else { 2 }

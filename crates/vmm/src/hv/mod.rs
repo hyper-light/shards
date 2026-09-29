@@ -34,6 +34,17 @@ pub const BACKEND: Option<&str> = if cfg!(hv = "hvf") {
     None
 };
 
+/// A guest page in a working set: what a run touched, in the order it first did, so that
+/// later copies can have it in place before they run (REAP, Ustiugov et al., ASPLOS 2021;
+/// platform-measurements M30).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Touch {
+    /// The page's guest-physical address, aligned to the backend's stage-2 page.
+    pub gpa: u64,
+    /// Whether the guest wrote it.
+    pub written: bool,
+}
+
 /// The guest's device accesses, as the VMM's buses serve them. Backends call these from
 /// vCPU threads, concurrently.
 pub trait Io: Sync {

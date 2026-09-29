@@ -562,6 +562,17 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
   - If another run's template got there first, the other copy is removed.
 - **Later runs restore it.** A template that does not restore is removed; the run boots
   instead and says so on stderr, and the next run saves the template again.
+- **The first run records the working set.** From the snapshot on, the boot that saves
+  the template records each guest page it touches, until its command answers (50 ms
+  after the request at most), and saves them with the template as `working-set` [PM
+  M30]. Its guest memory is taken away at stage 2 (`hv_vm_protect`), and each page goes
+  back on its first fault, read-only if read, so a later write is seen too. Recording
+  slows that run's command about sixfold, on a run that is a boot anyway.
+  - A restored copy touches nearly the same pages on the same path: the boot's set
+    covered 99.7–100% of what warm VMs touched while serving a run [PM M30]. REAP found
+    the same of serverless functions' snapshots (Ustiugov et al., ASPLOS 2021).
+  - It is written through the directory held open since the snapshot, since the daemon
+    renames it into place meanwhile. A damaged one is ignored.
 - **Where it applies.** Builds that can snapshot (HVF on arm64 today, `vm::SNAPSHOTS`);
   elsewhere every run boots. `--kernel` and `--init`, or `SHARDS_KERNEL` and `SHARDS_INIT`,
   name files by path, so those runs always boot.
@@ -571,9 +582,11 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
 - **Measured** (docs/benchmarks.md, "Image"), over 10 templates on a busy host: 7.5 ms at
   p50 against 34.2 ms for a boot. It was 16.5 ms before templates waited for the
   self-tests.
-- **Not yet:** removing templates and guests nothing uses.
+- **Not yet:** removing templates and guests nothing uses. A working set is recorded
+  once, from its template's first command; later commands' own pages still fault.
 - **Tests** (E2E, a real VM):
-  - the first run boots and saves one template;
+  - the first run boots and saves one template, and then its working set;
+  - a later restore prefetches it, and a damaged one only costs the prefetch;
   - the second restores it, with no `INIT_STARTED` marker, the image's settings and the
     host's clock;
   - a corrupted template is removed and that run boots;
@@ -671,8 +684,27 @@ for the exit status.
     client's peak RSS fell from 6.3 to 1.6 MiB [PM M26].
   - Raising the request path's service threads to user-interactive QoS changed nothing,
     on a busy host or a saturated one [PM M22, M26].
-- **Next:** the guest's command, 1.1 ms of a run: a warm VM could fault in the command's
-  working set while it waits.
+- **Built: working-set prefetch.** A warm VM, and a held restore, touches its template's
+  working set (D25) before the guest runs, so HVF fills stage 2 before the request
+  instead of on it: HVF maps guest memory only as the guest touches it, and a touch
+  from the host does not count [PM M5].
+  - vCPU 0 does it, before its state is restored: a loop the VMM maps below RAM for the
+    purpose (`layout::PREFETCH`), with its MMU on over an identity map of write-back
+    1 GiB blocks. It reads each page and adds zero atomically to each page the guest
+    wrote, a write that copies the page now and changes no byte. It ends with
+    `tlbi vmalle1is`, and the restore then sets every register it used.
+  - The alternatives cost more. Reads alone left the writes' faults on the path. Copies
+    by the host counted twice their size in the VM's footprint, once the guest mapped
+    them [PM M30]. With the MMU off, the loop's accesses would be uncached, and whether
+    HVF keeps those coherent with the host's cached copy is undocumented (ground-truth
+    doc §5 row 25): a write-back could store a stale byte.
+  - Measured: the guest's part of a pooled `alpine true` fell from 1422 to 517 µs at
+    p50, and the whole run by 857 µs (95% [834, 891]) [PM M30]. A waiting warm VM holds
+    the pages its run will write, 2.9 MiB for that run, at no cost to the run's peak.
+  - A template's first two pooled VMs are restored before its working set exists, and
+    do not prefetch.
+- **Next:** the pool refills at the handover, and the refill's restore now overlaps the
+  rest of the run: whether that is the 45 µs the run's outside part gained [PM M30].
 - **Tests:**
   - the IPC crate: descriptors that work on arrival, are close-on-exec, and respect the
     limits; descriptors past the limit, or on any part of a message, are closed; children
@@ -849,7 +881,7 @@ shards (host CLI, docker-compatible) ──unix socket──▶ shardsd (daemon)
 | `mmap` snapshot memory `MAP_PRIVATE` + `hv_vm_map` | ~1–10 µs | [PM M3] |
 | GIC restore at register level | ~20–30 µs | [PM M14] |
 | vCPU register restore | ~0.5 µs per vCPU | [PM M14] |
-| Resume; guest faults in its working set | ~64 µs per MiB (1 vCPU), ~2.2× less with prefetch vCPUs | [PM M5, M6] |
+| Resume; guest faults in its working set | ~64 µs per MiB (1 vCPU), ~2.2× less with prefetch vCPUs; a warm VM prefetches it before the request | [PM M5, M6, M30] |
 | Engine starts the container, reports ready over vsock | to be measured | pending |
 
 Clone correctness hazards (RNG reseed via vmgenid, clock via vtimer offset, network

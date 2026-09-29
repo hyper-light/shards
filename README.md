@@ -232,10 +232,11 @@ Details are in [docs/benchmarks.md](docs/benchmarks.md).
 | Restore, in a new process | 794 µs | 1.7 ms |
 | Cold boot, to PID 1 | 21.2 ms | 22.2 ms |
 
-Running a command in an image you have run before takes **3.4 ms** at p50 and 3.9 ms at
-p99, start to exit (`shards run IMAGE exit 0`), where a boot takes 33.5 ms. That is 300
-runs over 10 saved copies, on a Mac running other VMs. About a third of it is starting
-the `shards` process, and another third is the command itself, inside the microVM.
+Running a command in an image you have run before takes **3.0 ms** at p50 and 3.4 ms at
+p99, start to exit (`shards run IMAGE exit 0`), where a boot takes 34.8 ms. That is 300
+runs over 10 saved copies, on a Mac running other VMs. Over a third of it is starting the
+`shards` process. The command itself takes 0.4 ms inside the microVM: the microVM
+waiting for your run has already touched the memory the first run of the image used.
 
 Linux itself takes 18.6 ms of a cold boot. That is why shards restores snapshots, and why a
 leaner kernel is coming.

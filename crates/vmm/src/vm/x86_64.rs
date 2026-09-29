@@ -296,9 +296,29 @@ pub fn restore(
     _memory_file: &File,
     _console: Console,
     vsock: Option<&Path>,
+    _working_set: Vec<hv::Touch>,
 ) -> Result<Machine, String> {
     super::check_vsock(snap, vsock)?;
     Err(NO_SNAPSHOTS.into())
+}
+
+/// Stage-2 pages, as working sets would record them.
+pub const PAGE: u64 = 4 << 10;
+
+/// Nothing records a working set without snapshots.
+#[derive(Debug)]
+pub enum Recorder {}
+
+pub fn record(_vm: &hv::Vm) -> Result<Recorder, String> {
+    Err(NO_SNAPSHOTS.into())
+}
+
+pub fn recorded(recorder: &Recorder) -> Vec<hv::Touch> {
+    match *recorder {}
+}
+
+pub fn prefetched(_start: &Start) -> usize {
+    0
 }
 
 /// Creates vCPU `index`; the boot vCPU gets the boot protocol's registers.

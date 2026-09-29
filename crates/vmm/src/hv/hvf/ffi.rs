@@ -21,6 +21,7 @@ pub type hv_ipa_granule_t = u32;
 
 pub const HV_SUCCESS: hv_return_t = 0;
 pub const HV_EXISTS: hv_return_t = 0xfae9_4008_u32 as hv_return_t;
+pub const HV_BAD_ARGUMENT: hv_return_t = 0xfae9_4003_u32 as hv_return_t;
 
 pub const HV_MEMORY_READ: hv_memory_flags_t = 1 << 0;
 pub const HV_MEMORY_WRITE: hv_memory_flags_t = 1 << 1;
@@ -62,6 +63,8 @@ unsafe extern "C" {
     pub fn hv_vm_create(config: hv_vm_config_t) -> hv_return_t;
     pub fn hv_vm_destroy() -> hv_return_t;
     pub fn hv_vm_map(addr: *mut c_void, ipa: hv_ipa_t, size: usize, flags: hv_memory_flags_t) -> hv_return_t;
+    pub fn hv_vm_unmap(ipa: hv_ipa_t, size: usize) -> hv_return_t;
+    pub fn hv_vm_protect(ipa: hv_ipa_t, size: usize, flags: hv_memory_flags_t) -> hv_return_t;
 
     pub fn hv_vcpu_create(
         vcpu: *mut hv_vcpu_t,

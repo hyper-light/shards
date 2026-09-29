@@ -288,6 +288,11 @@ impl Run {
         self.timing_field("rss_kib")
     }
 
+    /// How many pages of its template's working set the VM prefetched before it ran.
+    pub fn prefetched(&self) -> Option<u128> {
+        self.timing_field("prefetched")
+    }
+
     fn timing_field(&self, name: &str) -> Option<u128> {
         let t = self.timing()?;
         let v = t.split(&format!("\"{name}\":")).nth(1)?.split(',').next()?;

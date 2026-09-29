@@ -1,6 +1,7 @@
 //! vCPU threads and the VM lifecycle, on any backend and architecture: boot or restore,
 //! run, snapshot, stop.
 
+use std::fs::File;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, mpsc};
 use std::thread::JoinHandle;
@@ -69,6 +70,27 @@ impl Handle {
     pub fn console_input(&self, bytes: &[u8]) {
         self.serial.enqueue_input(bytes);
     }
+
+    /// Whether the VM is recording a working set ([`SnapshotPolicy::working_set`]).
+    pub fn recording(&self) -> bool {
+        lock(&self.shared.recording).is_some()
+    }
+
+    /// Stops recording the working set, and saves it with the snapshot the VM resumed
+    /// from. Returns how many pages it holds: 0 when nothing was being recorded.
+    pub fn save_working_set(&self) -> Result<usize, String> {
+        let Some((recorder, dir)) = lock(&self.shared.recording).take() else {
+            return Ok(0);
+        };
+        let pages = machine::recorded(&recorder);
+        snapshot::write_working_set(&dir, &pages, machine::PAGE)?;
+        Ok(pages.len())
+    }
+
+    /// How many pages of its snapshot's working set this VM prefetched before it ran.
+    pub fn prefetched(&self) -> usize {
+        machine::prefetched(&self.shared.start)
+    }
 }
 
 /// A snapshot in progress: vCPUs park here with their state captured.
@@ -100,6 +122,9 @@ struct Shared {
     start: Arc<Start>,
     /// When the vCPUs were released (µs since VMM start).
     released_at_us: OnceLock<u128>,
+    /// While a working set is recorded: what records it, and the directory of the
+    /// snapshot it goes with, held open since the daemon may rename it.
+    recording: Mutex<Option<(machine::Recorder, File)>>,
 }
 
 #[derive(Debug, Default)]
@@ -128,6 +153,7 @@ impl Shared {
             release: Condvar::new(),
             start,
             released_at_us: OnceLock::new(),
+            recording: Mutex::new(None),
         }
     }
 
@@ -273,7 +299,21 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     check_host()?;
     let (snap, memory_file) = snapshot::read(&cfg.dir)?;
     check_vcpus(snap.config.vcpus)?;
-    let machine = machine::restore(&snap, &memory_file, cfg.console, cfg.vsock.as_deref())?;
+    let working_set = if cfg.prefetch {
+        snapshot::read_working_set(&cfg.dir, machine::PAGE).unwrap_or_else(|e| {
+            warn!("{e}; restoring without prefetching it");
+            None
+        })
+    } else {
+        None
+    };
+    let machine = machine::restore(
+        &snap,
+        &memory_file,
+        cfg.console,
+        cfg.vsock.as_deref(),
+        working_set.unwrap_or_default(),
+    )?;
     info!(
         "restored a {} MiB guest from {}",
         snap.config.memory_mib,
@@ -466,6 +506,9 @@ impl Coordinator {
             match self.policy.then {
                 AfterSnapshot::Stop => return self.sh.stop(ExitReason::Snapshotted),
                 AfterSnapshot::Resume => {
+                    if self.policy.working_set {
+                        self.record();
+                    }
                     if let Err(e) = self.bus.resume() {
                         return self.sh.stop(ExitReason::Error(format!("resuming devices: {e}")));
                     }
@@ -476,6 +519,22 @@ impl Coordinator {
                     self.sh.paused.notify_all();
                 }
             }
+        }
+    }
+
+    /// Starts recording the working set from the snapshot just written, with every vCPU
+    /// parked, unless one is being recorded already. Without one, restores just run.
+    fn record(&self) {
+        let mut recording = lock(&self.sh.recording);
+        if recording.is_some() {
+            return;
+        }
+        let started = File::open(&self.policy.dir)
+            .map_err(|e| format!("{}: {e}", self.policy.dir.display()))
+            .and_then(|dir| Ok((machine::record(&self.vm)?, dir)));
+        match started {
+            Ok(r) => *recording = Some(r),
+            Err(e) => warn!("not recording a working set: {e}"),
         }
     }
 

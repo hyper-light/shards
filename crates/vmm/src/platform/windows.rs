@@ -135,6 +135,14 @@ pub unsafe fn write_at(file: &File, src: *const u8, len: usize, offset: u64) -> 
     Ok(n as usize)
 }
 
+/// Creates `name` in the directory `dir` holds open. No snapshots are written on Windows.
+pub fn write_in(_dir: &File, _name: &str, _bytes: &[u8]) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "writing into an open directory is not supported on Windows",
+    ))
+}
+
 /// Flushes file data and metadata to stable storage.
 pub fn sync_durable(file: &File) -> io::Result<()> {
     // SAFETY: flushing an owned, open handle.
