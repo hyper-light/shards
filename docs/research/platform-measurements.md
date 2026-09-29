@@ -705,6 +705,93 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
     before its request, so it could fault in the path's working set then, from inside
     the guest (M6). That is the next measurement.
 
+### M28. A signal a process was started ignoring, and `sigwait`
+
+- **Question.** Two E2E tests that send SIGINT to `shards run` and `shards vm run` hung
+  in one full run and passed in the next. Where did the signal go?
+- **Method.**
+  - The hung client, found by `ps`, with the byte counters of its connection to the warm
+    VM (`netstat -f unix -anv`): it had sent 119 bytes, exactly its `START` request for
+    that command line, and no `SIGNAL` frame, before or after a second SIGINT sent by
+    hand. The warm VM's end had received those bytes and the control data of their three
+    descriptors (143), and held nothing.
+  - SIGINT's disposition in the hung client, read with `lldb -p PID` calling
+    `sigaction(2, NULL, &old)`: the handler was 1, `SIG_IGN`. SIGTERM's was `SIG_DFL`.
+  - The hung runs had been started by a non-interactive shell as `cmd &`, which starts an
+    asynchronous list with SIGINT and SIGQUIT ignored [POSIX.1-2024, XCU 2.9.3.1]. The
+    ignore is inherited through fork and exec, down to the test's `shards` process.
+  - XNU drops a signal whose disposition is `SIG_IGN` when it is sent, before it looks
+    for a thread in `sigwait` (bsd/kern/kern_sig.c, psignal_internal). Linux keeps a
+    blocked signal pending whatever its disposition (kernel/signal.c, sig_ignored).
+  - Go's runtime, and so the Docker CLI, leaves SIGINT and SIGHUP ignored at start but
+    takes them once `signal.Notify` asks for them [go: src/os/signal/doc.go], and
+    `docker run`'s signal proxy asks for every signal (docker/cli run.go,
+    notifyAllSignals).
+  - The daemon test, run 10 times as `cmd &` with the fix below and 2 times without it,
+    2026-09-29, this machine.
+- **Results.** Without the fix, both runs as `cmd &` hung at their first SIGINT. With it,
+  10 of 10 passed. SIGINT sent through the daemon (`shards kill -s INT`) had reached
+  the same command, whose guest-side path was never at fault.
+- **Consequence.** shards takes the signals it forwards as the Docker CLI does: having
+  blocked them, it makes any it was started ignoring default again, and forwards them
+  (`shards_ipc::take_forwarded`). One that would end it with nowhere to send it still
+  leaves it alone if it was ignored. E2E tests start `shards run` and `shards vm run`
+  with SIGINT and SIGQUIT ignored.
+  - The same run showed a race in the test guest: `trap` checked for its signal and then
+    called `pause()`, so a signal between the two left it waiting for ever. It now waits
+    in `sigsuspend(2)`, which unblocks and sleeps at once.
+
+### M29. What reading command lines as the Docker CLI does costs a run
+
+- **Question.** D27 has the thin client read `run`'s command line as docker/cli does
+  (shards_cmdline): every flag Docker has, pflag's rules, cobra's checks. What does that
+  cost a pooled run?
+- **Method.**
+  - An interleaved A/B (docs/research/measurements/build-ab/ab.py): f779d1b against this
+    change, each with its own daemon and home, `shards run --pull never alpine true`
+    alternating between them, n = 3000 per arm. Each run is split by its timing line into
+    the command's time in the guest and the rest; the median of the paired differences
+    has a bootstrap 95% interval.
+  - The client alone: its launch, with `shards daemon stop` of a home that does not
+    exist, and its launch and parse, with `run --pull sometimes`, which the client
+    refuses; n = 2000 each, paired the same way. Page faults and instructions from
+    `/usr/bin/time -l`.
+  - `sigaction` and `sysctl` costs from a C loop (20000 iterations).
+  - 2026-09-29, this machine, load 4.3–7.9.
+- **Results.**
+  - With each arm's own template, the new build was slower by 71 µs (95% [54, 86]), 48
+    of them in the guest. The guest runs the same shards-init in both arms. Restored from
+    one template copied into both homes, the guest's time differed by 1 µs (95% [−5, 6]):
+    the 48 µs was the two templates' different restore costs, the variance the image
+    benchmark spreads over 10 templates.
+  - Same template, final build (µs):
+
+| Part | Arm | n | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|
+| wall | f779d1b | 3000 | 5080 | 5649 | 7732 | 19730 |
+| wall | D27 | 3000 | 5105 | 5669 | 7415 | 21754 |
+| command | f779d1b | 3000 | 1471 | 1650 | 1932 | 7271 |
+| command | D27 | 3000 | 1475 | 1636 | 1950 | 2655 |
+| outside | f779d1b | 3000 | 3588 | 4092 | 5897 | 18185 |
+| outside | D27 | 3000 | 3599 | 4100 | 5841 | 20336 |
+
+  - Paired, D27 − f779d1b: wall +17 µs (95% [1, 37]), command +1 (95% [−5, 6]),
+    outside +23 (95% [8, 34]).
+  - At first the client's launch and parse cost 12 µs more (95% [7, 16]), its launch
+    alone 8 (95% [4, 13]). `run` knows Docker's 115 flags, and the 95 it does not serve
+    were a table of `&str`s, whose pointers filled a second 16 KiB page of
+    `__DATA_CONST` that every parse faulted in. Listed instead as one string, read only
+    when a command line names one of them, they took the page and 175 of the 328 new
+    fixups with them: launch and parse then cost 5 µs more (95% [−1, 9]). Launch alone
+    still cost 9 µs more (95% [5, 13]), from 6 more page reclaims (288 against 282) and
+    60 thousand more of 16.8 million instructions, nearly all dyld's.
+  - Taking the forwarded signals (M28) is 18 `sigaction` reads: 1.9 µs. One
+    `KERN_PROC_PID` sysctl, which returns every ignored signal at once, costs 8.5 µs.
+- **Consequence.** Reading command lines as the Docker CLI does costs a pooled run about
+  20 µs, all of it outside the guest and most of it the larger client's launch. A table
+  of rarely used `&str`s costs every parse that touches its page; such data stays out of
+  the thin client's hot path. Two builds' runs compare only from one template.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

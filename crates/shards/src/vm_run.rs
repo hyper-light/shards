@@ -687,7 +687,16 @@ fn serve_workload(
             // A warm VM's client has its status, and any error on its stderr: the warm
             // VM's own status says that it served.
             Ok((_, true)) => ExitCode::SUCCESS,
-            Ok((Ok(status), false)) => ExitCode::from(status),
+            Ok((Ok(ended), false)) => match &ended.not_run {
+                // As `docker run` would say it, and exit.
+                Some(why) => {
+                    let (said, _) = shards_cmdline::commands::start_failed(why);
+                    let (text, status) = crate::workload::not_run(&said);
+                    let _ = writeln!(std::io::stderr(), "{text}");
+                    ExitCode::from(status)
+                }
+                None => ExitCode::from(ended.status),
+            },
             Ok((Err(e), false)) => failed(e),
             Err(_) => failed("the guest stopped without running the command".into()),
         }

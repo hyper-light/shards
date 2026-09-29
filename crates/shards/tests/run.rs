@@ -368,8 +368,26 @@ fn templates_restore_into_runs_of_their_own() {
 /// Runs `command` in the image, sends `signal` to shards once the command says `ready`,
 /// and returns what shards returns.
 fn signaled(image: &Path, command: &[&str], signal: libc::c_int) -> Output {
+    signaled_ignoring(image, command, signal, false)
+}
+
+/// [`signaled`], with shards started ignoring SIGINT and SIGQUIT if `ignoring`, as a
+/// non-interactive shell starts `cmd &` (POSIX.1-2024, XCU 2.9.3.1).
+fn signaled_ignoring(image: &Path, command: &[&str], signal: libc::c_int, ignoring: bool) -> Output {
     use std::io::BufRead;
-    let mut child = Command::new(shards())
+    use std::os::unix::process::CommandExt;
+    let mut run = Command::new(shards());
+    if ignoring {
+        // SAFETY: signal(2) only, between fork and exec.
+        unsafe {
+            run.pre_exec(|| {
+                libc::signal(libc::SIGINT, libc::SIG_IGN);
+                libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+    }
+    let mut child = run
         .args(["vm", "run", "--kernel"])
         .arg(kernel())
         .args([
@@ -426,6 +444,13 @@ fn signals_reach_the_command_as_docker_run_forwards_them() {
         assert_eq!(out.status, Some(0), "{name}: {out}");
         assert_eq!(out.stdout, format!("got {linux}\n").into_bytes(), "{name}: {out}");
     }
+    // Even one shards was started ignoring, as `docker run`'s signal proxy takes it.
+    let out = signaled_ignoring(&image, &["/bin/testguest", "trap", "INT"], libc::SIGINT, true);
+    assert_eq!(
+        (out.status, out.stdout.as_slice()),
+        (Some(0), &b"got 2\n"[..]),
+        "{out}"
+    );
     // A signal the command does not catch ends it, and `docker run`'s status says which.
     let out = signaled(&image, &["/bin/testguest", "sleep"], libc::SIGTERM);
     assert_eq!(out.status, Some(128 + 15), "{out}");

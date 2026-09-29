@@ -8,7 +8,8 @@ repository.workspace = true
 rust-version.workspace = true
 autobins = false
 
-# The command, which links only the standard library and shards-ipc, so it starts fast.
+# The command, which links only the standard library, shards-ipc and shards-cmdline, so it
+# starts fast.
 [[bin]]
 name = "shards"
 path = "src/bin/shards/main.rs"
@@ -23,6 +24,7 @@ workspace = true
 
 [dependencies]
 shards-abi = { path = "../abi" }
+shards-cmdline = { path = "../cmdline" }
 shards-image = { path = "../image" }
 shards-ipc = { path = "../ipc" }
 shards-registry = { path = "../registry" }

@@ -311,10 +311,15 @@ fn ask_helper(helper: &str, key: &str, env: Env<'_>) -> Result<Option<HelperAnsw
     let mut child = command
         .spawn()
         .map_err(|e| Error::new(format!("running {program}: {e}")))?;
+    // A helper may exit without reading its input: its status and output then say what
+    // it had to say, as Go's os/exec, which Docker's helper client uses, ignores the
+    // broken pipe (exec.go, skipStdinCopyError).
     if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(key.as_bytes())
-            .map_err(|e| Error::new(format!("{program}: {e}")))?;
+        match stdin.write_all(key.as_bytes()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(e) => return Err(Error::new(format!("{program}: {e}"))),
+        }
     }
     let mut out = Vec::new();
     if let Some(stdout) = child.stdout.take() {
@@ -463,6 +468,31 @@ mod tests {
         )
         .unwrap();
         assert!(warnings[0].contains("missing key `auth`"), "{warnings:?}");
+    }
+
+    /// A helper that answers without reading its input, as Docker's client allows.
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_that_does_not_read_its_input_is_heard() {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = temp("deaf-helper");
+        let path = bin.join("docker-credential-deaf");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nexec 0<&-\necho '{\"ServerURL\":\"x\",\"Username\":\"u\",\"Secret\":\"s\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dirs = format!("{}:/bin:/usr/bin", bin.display());
+        let env = [("PATH", dirs.as_str())];
+        let long = "k".repeat(1 << 20);
+        let answer = ask_helper("deaf", &long, &|name| {
+            env.iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| (*v).to_string())
+        });
+        assert!(matches!(answer, Ok(Some(_))), "{:?}", answer.err());
+        let _ = std::fs::remove_dir_all(&bin);
     }
 
     /// A credential helper that knows `found.example` and `token.example`.

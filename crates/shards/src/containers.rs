@@ -46,11 +46,18 @@ pub fn now() -> u128 {
 }
 
 /// A new container ID: 32 random bytes in hex, as moby's `stringid.GenerateRandomID`
-/// makes them.
+/// makes them, drawn again while the first 12 digits are all decimal: the short ID names
+/// the container's host, and a hostname must not look like a number
+/// (moby daemon/internal/stringid/stringid.go).
 pub fn new_id() -> io::Result<String> {
-    let mut bytes = [0u8; 32];
-    shards_vmm::platform::fill_random(&mut bytes)?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    loop {
+        let mut bytes = [0u8; 32];
+        shards_vmm::platform::fill_random(&mut bytes)?;
+        let id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        if !id.bytes().take(12).all(|b| b.is_ascii_digit()) {
+            return Ok(id);
+        }
+    }
 }
 
 /// Whether `name` may name a container: `[a-zA-Z0-9][a-zA-Z0-9_.-]+`, after an optional
@@ -75,9 +82,11 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// The containers kept under `containers` in `home`. One left `running` by a daemon
-    /// that is gone can no longer be followed: it becomes exited, as its end went unseen.
-    /// A directory with no record is a spare a daemon made and never used, and goes.
+    /// The containers kept under `containers` in `home`, as dockerd restores its own when
+    /// it starts (moby daemon/daemon.go restore). One left running by a daemon that is
+    /// gone can no longer be followed: it exited, with 255 for the status nobody saw. A
+    /// `--rm` one that no longer runs goes. A directory with no record is a spare a daemon
+    /// made and never used, and goes too.
     pub fn open(home: &Path) -> io::Result<Registry> {
         let root = home.join("containers");
         shards_vmm::platform::create_private_dir(&root)?;
@@ -91,13 +100,29 @@ impl Registry {
             let Ok(mut c) = serde_json::from_slice::<Container>(&bytes) else {
                 continue;
             };
-            if c.state == State::Running {
+            if c.auto_remove {
+                let _ = std::fs::remove_dir_all(&dir);
+                continue;
+            }
+            let lost = c.state == State::Running;
+            if lost {
                 c.state = State::Exited;
+                c.exit_code = Some(255);
                 c.finished = c.finished.or(Some(now()));
             }
             by_id.insert(c.id.clone(), c);
         }
-        Ok(Registry { root, by_id })
+        let registry = Registry { root, by_id };
+        let lost: Vec<String> = registry
+            .by_id
+            .values()
+            .filter(|c| c.exit_code == Some(255) && c.state == State::Exited)
+            .map(|c| c.id.clone())
+            .collect();
+        for id in lost {
+            registry.save(&id)?;
+        }
+        Ok(registry)
     }
 
     pub fn get(&self, id: &str) -> Option<&Container> {
@@ -207,12 +232,25 @@ mod tests {
     }
 
     #[test]
+    fn short_ids_are_never_all_digits() {
+        for _ in 0..2000 {
+            let id = new_id().unwrap();
+            assert!(!id.bytes().take(12).all(|b| b.is_ascii_digit()), "{id}");
+        }
+    }
+
+    #[test]
     fn containers_outlive_their_daemon_and_running_ones_end() {
         let home = temp_home("reopen");
         let mut r = Registry::open(&home).unwrap();
+        let removed = Container {
+            auto_remove: true,
+            ..container("cc", "three", State::Exited)
+        };
         for c in [
             container("aa", "one", State::Exited),
             container("bb", "two", State::Running),
+            removed,
         ] {
             let id = c.id.clone();
             r.reserve(c);
@@ -222,11 +260,18 @@ mod tests {
         assert_eq!(again.get("aa"), r.get("aa"));
         let two = again.get("bb").unwrap();
         assert_eq!(
-            two.state,
-            State::Exited,
+            (two.state, two.exit_code),
+            (State::Exited, Some(255)),
             "a run no daemon follows cannot be running"
         );
         assert!(two.finished.is_some());
+        assert!(again.get("cc").is_none(), "--rm containers go");
+        assert!(!home.join("containers/cc").exists());
+        assert_eq!(
+            Registry::open(&home).unwrap().get("bb"),
+            Some(two),
+            "the lost run's end is kept"
+        );
         assert!(again.name_taken("one").is_some());
         let mut again = again;
         assert!(again.remove("aa").unwrap().is_some());

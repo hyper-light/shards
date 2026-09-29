@@ -28,6 +28,16 @@ const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/s
 /// `docker run`'s status when it could not run the command at all.
 pub const NOT_RUN: u8 = 125;
 
+/// How `docker run` reports what its daemon said kept the container from running, and
+/// the status it exits with (docker/cli cli/command/container/run.go, withHelp and
+/// toStatusError).
+pub fn not_run(said: &str) -> (String, u8) {
+    (
+        format!("shards: Error response from daemon: {said}\n\nRun 'shards run --help' for more information"),
+        shards_cmdline::commands::run_status(said),
+    )
+}
+
 /// What `--`, `--env`, `--workdir`, `--user`, `--hostname` and `--interactive` asked for.
 #[derive(Debug, Default)]
 pub struct Options {
@@ -213,8 +223,17 @@ pub struct Asked<'a> {
     pub started: Option<&'a (dyn Fn() + Sync)>,
 }
 
-/// Serves the guest: sends the command, relays stdio, and returns the workload's exit
-/// status. Signals go through `to`, on the connection the guest makes to `signals`.
+/// How a served command ended: its exit status, and if it never ran, why not, in the
+/// guest's words.
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ended {
+    pub status: u8,
+    pub not_run: Option<String>,
+}
+
+/// Serves the guest: sends the command, relays stdio, and returns how the workload ended.
+/// Signals go through `to`, on the connection the guest makes to `signals`.
 #[cfg(unix)]
 pub fn serve(
     listener: &Listener,
@@ -222,7 +241,7 @@ pub fn serve(
     request: Request<'_>,
     to: &ToGuest,
     timing: &Timing,
-) -> Result<u8, String> {
+) -> Result<Ended, String> {
     let (mut conn, _) = listener
         .listener
         .accept()
@@ -287,15 +306,17 @@ pub fn serve(
 }
 
 /// Copies the guest's frames to shards' stdout and stderr until the exit status, and to
-/// `log` if the container's output is kept.
+/// `log` if the container's output is kept. Why a command never ran is not its output,
+/// and stays out of the log, as dockerd keeps a failed start out of `docker logs`.
 #[cfg(unix)]
 fn relay(
     conn: &mut UnixStream,
     timing: &Timing,
     log: Option<&fs::File>,
     started: Option<&(dyn Fn() + Sync)>,
-) -> Result<u8, String> {
+) -> Result<Ended, String> {
     let mut payload = Vec::new();
+    let mut not_run = None;
     // A full disk or a removed log costs the log, not the run.
     let keep = |stream: u8, bytes: &[u8]| {
         if let Some(mut file) = log {
@@ -327,18 +348,17 @@ fn relay(
                     started();
                 }
             }
-            kind::SYSTEM_ERR => {
-                let line = format!("shards: {}\n", String::from_utf8_lossy(&payload));
-                let _ = io::stderr().write_all(line.as_bytes());
-                keep(LOG_STDERR, line.as_bytes());
-            }
+            kind::SYSTEM_ERR => not_run = Some(String::from_utf8_lossy(&payload).into_owned()),
             kind::EXIT => {
                 let _ = timing.answered_us.set(shards_vmm::log::uptime_us());
                 let status: [u8; 4] = payload
                     .as_slice()
                     .try_into()
                     .map_err(|_| "malformed exit status")?;
-                return Ok(u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX));
+                return Ok(Ended {
+                    status: u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX),
+                    not_run,
+                });
             }
             _ => return Err(format!("the guest sent an unknown frame kind {which}")),
         }
@@ -390,25 +410,17 @@ fn forward_stdin(conn: &mut UnixStream) {
     let _ = send(conn, kind::STDIN, &[]);
 }
 
-/// Forwards the signals shards receives to the workload, through `to`. It blocks them in
-/// the calling thread, which every thread started later inherits, so call it before the
-/// VM starts: then only the forwarder's `sigwait` receives them. A signal that would end
-/// shards, arriving before the workload runs, ends shards as it would have. With
-/// `reads_terminal`, the terminal's job control applies to shards (shards_ipc::forwarded).
+/// Forwards the signals shards receives to the workload, through `to`, even those shards
+/// was started ignoring, as the Docker CLI does (shards_ipc::take_forwarded). It blocks
+/// them in the calling thread, which every thread started later inherits, so call it
+/// before the VM starts: then only the forwarder's `sigwait` receives them. A signal that
+/// would end shards, arriving before the workload runs, ends shards as it would have,
+/// unless it was ignored. With `reads_terminal`, the terminal's job control applies to
+/// shards (shards_ipc::forwarded).
 #[cfg(unix)]
 pub fn forward_signals(to: ToGuest, reads_terminal: bool) -> Result<(), String> {
-    // SAFETY: sigset operations on a local set, and pthread_sigmask on this thread.
-    let set = unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        for (sig, _) in shards_ipc::forwarded(reads_terminal) {
-            libc::sigaddset(&mut set, sig);
-        }
-        if libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) != 0 {
-            return Err(format!("blocking signals: {}", io::Error::last_os_error()));
-        }
-        set
-    };
+    let (set, ignored) =
+        shards_ipc::take_forwarded(reads_terminal).map_err(|e| format!("taking signals: {e}"))?;
     std::thread::Builder::new()
         .name("signals".into())
         .spawn(move || {
@@ -423,7 +435,7 @@ pub fn forward_signals(to: ToGuest, reads_terminal: bool) -> Result<(), String> 
                 };
                 let forwarded = signal_guest(&to, linux);
                 let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
-                if !forwarded && ends {
+                if !forwarded && ends && !ignored.contains(&sig) {
                     // SAFETY: the default action of a terminating signal, on this process.
                     unsafe {
                         libc::signal(sig, libc::SIG_DFL);

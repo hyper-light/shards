@@ -16,12 +16,9 @@ use shards_abi::{control, marker};
 use crate::linux::power_off;
 use crate::user::{self, ExecUser};
 
-/// `docker run`'s statuses for a command that never ran (docker/cli
-/// cli/command/container/run.go, runStartContainerErr): 127 when it was not found, 126
-/// when it is a directory or not permitted, and 125 otherwise.
+/// `docker run`'s status for a command that never ran, when nothing says more
+/// (docker/cli cli/command/container/run.go, toStatusError).
 const NOT_RUN: u32 = 125;
-const CANNOT_EXECUTE: u32 = 126;
-const NOT_FOUND: u32 = 127;
 /// Bytes buffered in each direction before init stops reading more, so backpressure
 /// reaches the writer.
 const BUFFERED: usize = 256 * 1024;
@@ -342,9 +339,14 @@ fn pipe() -> Result<(OwnedFd, OwnedFd), Failure> {
 mod step {
     pub const CHDIR: u8 = 0;
     pub const USER: u8 = 1;
+    /// execve(2) itself, or setting up the stdio before it.
     pub const EXEC: u8 = 2;
     /// No candidate on PATH was an executable file.
     pub const NOT_IN_PATH: u8 = 3;
+    /// The command, named by a path, is not there: its stat(2) failed.
+    pub const STAT: u8 = 4;
+    /// The command, named by a path, is a directory or may not be executed.
+    pub const ACCESS: u8 = 5;
 }
 
 /// A running workload and init's ends of its stdio.
@@ -493,6 +495,7 @@ impl Standby {
             // SAFETY: fchown(2) on our own pipe; gid -1 leaves the group.
             unsafe { libc::fchown(fd.as_raw_fd(), uid, u32::MAX) };
         }
+        let tried = candidates.clone();
         let orders = Orders {
             uid,
             gid,
@@ -520,12 +523,16 @@ impl Standby {
         // The error pipe closes on exec: bytes on it mean the workload never started.
         let mut report = Vec::new();
         let _ = File::from(err).read_to_end(&mut report);
-        if let [which, e0, e1, e2, e3] = report[..] {
+        if let [which, e0, e1, e2, e3, c0, c1, c2, c3] = report[..] {
             // The standby exits right after reporting.
             // SAFETY: waits for our own child.
             unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
             let errno = i32::from_be_bytes([e0, e1, e2, e3]);
-            return Err(exec_failure(which, errno, argv0, &spec.cwd, &spec.user));
+            let tried = usize::try_from(u32::from_be_bytes([c0, c1, c2, c3]))
+                .ok()
+                .and_then(|i| tried.get(i))
+                .map_or(&argv0[..], Vec::as_slice);
+            return Err(exec_failure(which, errno, argv0, tried, &spec.cwd, &spec.user));
         }
         Ok(Workload {
             pid,
@@ -910,33 +917,25 @@ fn workdir(cwd: &[u8]) -> Result<Vec<u8>, Failure> {
     }
 }
 
-/// The message and status `docker run` gives for a failed start.
-fn exec_failure(which: u8, errno: i32, argv0: &[u8], cwd: &[u8], user: &[u8]) -> Failure {
+/// Why the command did not start, in the words of runc's Go (exec.LookPath, and
+/// os.PathError for the rest), which dockerd passes on: `tried` is the file it was
+/// executing. The status is `docker run`'s for those words (shards_cmdline).
+fn exec_failure(which: u8, errno: i32, argv0: &[u8], tried: &[u8], cwd: &[u8], user: &[u8]) -> Failure {
+    use shards_cmdline::go::{linux_error, quote};
     let cmd = String::from_utf8_lossy(argv0);
-    let err = io::Error::from_raw_os_error(errno);
-    let (status, message) = match which {
-        step::NOT_IN_PATH => (
-            NOT_FOUND,
-            format!("exec: {cmd:?}: executable file not found in $PATH"),
-        ),
-        step::CHDIR => (
-            NOT_RUN,
-            format!("chdir to cwd ({:?}): {err}", String::from_utf8_lossy(cwd)),
-        ),
-        step::USER => (
-            NOT_RUN,
-            format!("setting user {:?}: {err}", String::from_utf8_lossy(user)),
-        ),
-        _ => {
-            let status = match errno {
-                libc::ENOENT => NOT_FOUND,
-                libc::EACCES | libc::EISDIR => CANNOT_EXECUTE,
-                _ => NOT_RUN,
-            };
-            (status, format!("exec: {cmd:?}: {err}"))
-        }
+    let err = linux_error(errno);
+    let message = match which {
+        step::NOT_IN_PATH => format!("exec: {}: executable file not found in $PATH", quote(&cmd)),
+        step::STAT => format!("exec: {}: stat {cmd}: {err}", quote(&cmd)),
+        step::ACCESS => format!("exec: {}: {err}", quote(&cmd)),
+        step::CHDIR => format!("chdir to cwd ({}): {err}", quote(&String::from_utf8_lossy(cwd))),
+        step::USER => format!("setting user {}: {err}", quote(&String::from_utf8_lossy(user))),
+        _ => format!("exec {}: {err}", String::from_utf8_lossy(tried)),
     };
-    Failure { status, message }
+    Failure {
+        status: u32::from(shards_cmdline::commands::run_status(&message)),
+        message,
+    }
 }
 
 /// What the child needs, built before fork.
@@ -960,22 +959,24 @@ struct Child<'a> {
 /// # Safety
 /// Only in the child of a fork of a single-threaded process; it never returns.
 unsafe fn child(c: &Child<'_>) -> ! {
-    /// Reports errno and the failed step to the parent, and exits.
+    /// Reports the failed step, errno and the candidate it was trying to the parent, and
+    /// exits.
     ///
     /// # Safety
     /// As for `child`.
-    unsafe fn fail(err: RawFd, which: u8) -> ! {
+    unsafe fn report(err: RawFd, which: u8, candidate: usize) -> ! {
         // SAFETY: async-signal-safe calls on a local buffer.
         unsafe {
             let [a, b, c, d] = (*libc::__errno_location()).to_be_bytes();
-            let report = [which, a, b, c, d];
+            let [e, f, g, h] = u32::try_from(candidate).unwrap_or(u32::MAX).to_be_bytes();
+            let report = [which, a, b, c, d, e, f, g, h];
             libc::write(err, report.as_ptr().cast(), report.len());
             libc::_exit(127)
         }
     }
     // SAFETY: async-signal-safe calls, on memory prepared before the fork.
     unsafe {
-        let fail = |which: u8| fail(c.err, which);
+        let fail = |which: u8| report(c.err, which, 0);
         // Signals as a new process has them: none blocked, none ignored. Rust ignores
         // SIGPIPE in init, and execve keeps ignored signals ignored.
         let mut none: libc::sigset_t = std::mem::zeroed();
@@ -1004,30 +1005,30 @@ unsafe fn child(c: &Child<'_>) -> ! {
         if !chdir_ok {
             fail(step::CHDIR);
         }
-        for path in c.candidates {
+        for (i, path) in c.candidates.iter().enumerate() {
             // Go's findExecutable: a file that is not a directory, executable by us.
             let mut st: libc::stat = std::mem::zeroed();
             if libc::stat(path.as_ptr(), &mut st) != 0 {
                 if c.explicit {
-                    fail(step::EXEC);
+                    fail(step::STAT);
                 }
                 continue;
             }
             if st.st_mode & libc::S_IFMT == libc::S_IFDIR {
                 if c.explicit {
                     *libc::__errno_location() = libc::EISDIR;
-                    fail(step::EXEC);
+                    fail(step::ACCESS);
                 }
                 continue;
             }
             if libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::X_OK, libc::AT_EACCESS) != 0 {
                 if c.explicit {
-                    fail(step::EXEC);
+                    fail(step::ACCESS);
                 }
                 continue;
             }
             libc::execve(path.as_ptr(), c.argv, c.envp);
-            fail(step::EXEC);
+            report(c.err, step::EXEC, i);
         }
         fail(step::NOT_IN_PATH)
     }

@@ -13,3 +13,4 @@ workspace = true
 [dependencies]
 libc = { workspace = true }
 shards-abi = { path = "../abi" }
+shards-cmdline = { path = "../cmdline" }

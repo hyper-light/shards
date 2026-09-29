@@ -282,8 +282,9 @@ Method:
 - The command is `exit 0`, in the image the E2E tests pull (`test_image` in tests/common),
   pulled once from a loopback registry into a fresh `SHARDS_HOME`.
 - Every run goes through the daemon (architecture.md D26), which the first run starts.
-- **cold**: `shards run --kernel K --init I --pull never IMAGE exit 0`: the daemon boots a
-  VM for every run.
+- **cold**: `shards run --pull never IMAGE exit 0` with `SHARDS_KERNEL` and `SHARDS_INIT`
+  set (before 2026-09-29's D27 commit, `--kernel K --init I`): the daemon boots a VM for
+  every run.
 - **template**: with the guest recorded (`shards guest use`), `shards run --pull never
   IMAGE exit 0` is served from the daemon's pool of warm VMs of the image's template
   (D25, D26).
@@ -390,6 +391,25 @@ gave 3374, 3560, 3752 and 4218 µs.
 With every CPU busy (`yes` on all 18, load 17.23), run_template took 4844, 16570, 31501
 and 46617 µs, and run_cold 36663, 58335, 80146 and 89872 µs. User-interactive QoS on
 the request path's service threads made no difference (M26).
+
+**2026-09-29, containers read as the Docker CLI reads them** · f779d1b plus D27's
+command lines, `run -d` and dockerd's words (uncommitted) · same host, OS and kernel ·
+n=300 over 10 templates, 1 vCPU, 256 MiB · load 8.30 6.02 5.31
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| run_cold | 33971 µs | 34590 µs | 35231 µs | 36686 µs |
+| **run_template** | **3518 µs** | **3727 µs** | **4121 µs** | **4814 µs** |
+| template_command | 1003 µs | 1110 µs | 1299 µs | 1402 µs |
+| template_outside | 2499 µs | 2684 µs | 2963 µs | 3694 µs |
+| run_cold_rss | 60.0 MiB | 60.0 MiB | 60.0 MiB | 60.1 MiB |
+| run_template_rss | 16.6 MiB | 16.6 MiB | 16.7 MiB | 16.7 MiB |
+| client_rss | 1.7 MiB | 1.7 MiB | 1.7 MiB | 1.7 MiB |
+
+The host's load was more than twice the last run's. An interleaved A/B against f779d1b
+from one template (platform-measurements.md M29) puts this change's cost at 17 µs of
+wall time at the median (95% [1, 37]), all of it outside the guest: most of the
+difference from the last run is the host.
 
 ## Firecracker (`crates/shards/benches/firecracker.rs`)
 

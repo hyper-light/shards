@@ -4,7 +4,8 @@
 //! command is `exit 0`, so the test guest exits at once. Every run goes through the
 //! daemon (docs/design/architecture.md D26), which the first run starts.
 //!
-//! - `run_cold`: with `--kernel` and `--init` named, the daemon boots a VM for every run.
+//! - `run_cold`: with SHARDS_KERNEL and SHARDS_INIT set, the daemon boots a VM for every
+//!   run.
 //! - `run_template`: with the guest recorded (`shards guest use`), the daemon serves each
 //!   run from its pool of warm VMs of the image's template (D25, D26). Only where this
 //!   build can snapshot. Restores cost more for some templates than others, so samples
@@ -71,12 +72,15 @@ fn main() {
         false,
         &env,
     );
-    let cold_args = strings(&[
-        "run", "--kernel", kernel, "--init", init, "--pull", "never", &image, "exit", "0",
-    ]);
-    let template_args = strings(&["run", "--pull", "never", &image, "exit", "0"]);
+    let run_args = strings(&["run", "--pull", "never", &image, "exit", "0"]);
+    let (cold_args, template_args) = (&run_args, &run_args);
+    let cold_env: Vec<(&str, &std::ffi::OsStr)> = env
+        .iter()
+        .copied()
+        .chain([("SHARDS_KERNEL", kernel.as_ref()), ("SHARDS_INIT", init.as_ref())])
+        .collect();
     for _ in 0..WARMUP {
-        run_env(&cold_args, false, &env);
+        run_env(cold_args, false, &cold_env);
     }
     let templated = shards_vmm::vm::SNAPSHOTS;
     let stop = strings(&["daemon", "stop"]);
@@ -86,13 +90,13 @@ fn main() {
             // A new daemon: its pool holds no VM of the last template.
             run_env(&stop, false, &env);
             let _ = std::fs::remove_dir_all(home.join("templates"));
-            run_env(&template_args, false, &env); // saves the template
-            run_env(&template_args, false, &env); // its first run from the pool
+            run_env(template_args, false, &env); // saves the template
+            run_env(template_args, false, &env); // its first run from the pool
         }
         for _ in 0..runs / templates + usize::from(t < runs % templates) {
-            cold.push(run_env(&cold_args, false, &env));
+            cold.push(run_env(cold_args, false, &cold_env));
             if templated {
-                template.push(run_env(&template_args, false, &env));
+                template.push(run_env(template_args, false, &env));
             }
         }
     }

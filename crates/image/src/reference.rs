@@ -151,8 +151,18 @@ pub struct Reference {
 }
 
 impl Reference {
-    /// Parses a reference as `docker pull` does.
+    /// Parses a reference as `docker pull` does: `latest` when it names no tag or digest.
     pub fn parse(s: &str) -> Result<Reference, Error> {
+        let mut reference = Reference::parse_normalized(s)?;
+        if reference.tag.is_none() && reference.digest.is_none() {
+            reference.tag = Some(DEFAULT_TAG.into());
+        }
+        Ok(reference)
+    }
+
+    /// Parses a reference as `ParseNormalizedNamed` does, with the tag or digest it names
+    /// and no other.
+    pub fn parse_normalized(s: &str) -> Result<Reference, Error> {
         if regex(&IDENTIFIER)?.is_match(s) {
             return bad(format!(
                 "invalid repository name ({s}), cannot specify 64-byte hexadecimal strings"
@@ -165,11 +175,7 @@ impl Reference {
                 "invalid reference format: repository name ({remote}) must be lowercase"
             ));
         }
-        let mut reference = parse(&format!("{domain}/{remainder}"))?;
-        if reference.tag.is_none() && reference.digest.is_none() {
-            reference.tag = Some(DEFAULT_TAG.into());
-        }
-        Ok(reference)
+        parse(&format!("{domain}/{remainder}"))
     }
 
     /// The name alone: `docker.io/library/alpine`.

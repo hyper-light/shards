@@ -170,11 +170,11 @@ SHARDS-TEST PASS
 | arm64 Linux, Intel Macs, Windows | Builds, but can't run machines yet |
 | Connect host programs to programs in a running machine (vsock) | Works |
 | Pull images from Docker Hub and other registries, as `docker pull` does | Works: `shards pull`. Your `docker login` credentials and `certs.d` certificates work as they are |
-| Run a command in an image, as `docker run` does | Works: `shards run IMAGE`, with the image's entrypoint, command, environment, directory, user and stdin (`-i`). On the Mac, repeated runs of an image are served from copies of its booted microVM that a background service restores ahead of time: about 5 ms from start to exit |
+| Run a command in an image, as `docker run` does | Works: `shards run IMAGE`, with the image's entrypoint, command, environment, directory, user and stdin (`-i`), in the background (`-d`), named (`--name`) or removed when done (`--rm`). On the Mac, repeated runs of an image are served from copies of its booted microVM that a background service restores ahead of time: about 5 ms from start to exit |
 | Build microVMs like Docker images | In progress: image layers become bootable images |
 | Run many agents on a microVM's OS, each isolated like a container | Planned |
 | Networks, files, devices and permissions per agent and per microVM | Planned |
-| Docker's commands (`run`, `build`, `ps`, `exec` and the rest) and Compose files | Planned. Today: `shards vm run` and `shards vm restore` |
+| Docker's commands and Compose files | In progress: `run`, `ps`, `wait`, `logs`, `stop`, `kill` and `rm` take `docker`'s flags and answer with its words, its `--help` included. A flag shards can't serve yet says so. `build`, `exec`, the rest and Compose are planned |
 | GPUs | Planned |
 
 The target is a usable machine within 5 ms of the request, using less memory than
@@ -186,8 +186,14 @@ Firecracker. The plan and its evidence are in
 | Command | What it does |
 |---|---|
 | `shards pull [-q] IMAGE` | Pull `IMAGE` as `docker pull` does, for this machine's architecture. Every layer is checked against its digests before it is kept |
-| `shards run [-e …] [-w …] [-u …] [-i] [--entrypoint …] [--pull …] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container. `IMAGE` is pulled first if it isn't here. It boots the guest `shards guest use` chose, or `--kernel` and `--init` (also `SHARDS_KERNEL` and `SHARDS_INIT`) |
-| `shards daemon stop` | Stop the background service (`shardsd daemon`) that `shards run` starts on its own. It keeps `SHARDS_POOL` microVMs ready for each image you run (default 2), and exits after `SHARDS_DAEMON_IDLE` seconds without a run (default 900). Runs in progress go on |
+| `shards run [OPTIONS] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container, with `-d`, `-e`, `-h`, `-i`, `-u`, `-w`, `--entrypoint`, `--name`, `--pull` and `--rm`. `IMAGE` is pulled first if it isn't here. It boots the guest `shards guest use` chose, or `SHARDS_KERNEL` and `SHARDS_INIT` |
+| `shards ps [-a] [-q] [-n N] [-l] [--no-trunc]` | List containers, as `docker ps` does: each run is one, until `shards rm` or `--rm` removes it |
+| `shards wait CONTAINER...` | Wait for containers to stop, and print their exit codes |
+| `shards logs [-f] [-t] [-n N] CONTAINER` | Print what a container wrote, stdout to stdout and stderr to stderr |
+| `shards stop [-t SECONDS] [-s SIGNAL] CONTAINER...` | Stop containers: the signal (SIGTERM), then SIGKILL after 10 s |
+| `shards kill [-s SIGNAL] CONTAINER...` | Send containers a signal (SIGKILL) |
+| `shards rm [-f] CONTAINER...` | Remove stopped containers; with `-f`, running ones too |
+| `shards daemon stop` | Stop the background service (`shardsd daemon`) that `shards run` starts on its own. It keeps `SHARDS_POOL` microVMs ready for each image you run (default 2), and exits after `SHARDS_DAEMON_IDLE` seconds without a run (default 900). Stopping it stops the containers running, as Docker's does |
 | `shards guest use --kernel FILE --init FILE` | Choose the kernel and shards-init that `shards run` boots. With them chosen, the first run of an image saves a copy of its booted microVM, and later runs start from that copy. `shards guest` shows the choice |
 | `shards vm run --kernel FILE [options]` | Boot a new machine |
 | `shards vm restore DIR [--hold]` | Start a copy of the machine saved in `DIR`. `--hold` preloads it and waits for a line on stdin |

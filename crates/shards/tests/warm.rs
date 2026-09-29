@@ -168,9 +168,10 @@ impl Warm {
     }
 
     /// The warm VM tells the daemon that its command started, if it did, and its
-    /// `status`, then ends, leaving the daemon's socket.
-    fn ends(mut self, status: u8) {
-        let started = status != 127;
+    /// `status`, with what kept it from starting if it did not (`not_run`), then ends,
+    /// leaving the daemon's socket.
+    fn ends(mut self, status: u8, not_run: Option<&str>) {
+        let started = not_run.is_none();
         let (tx, rx) = mpsc::channel();
         let pid = self.child.id() as libc::pid_t;
         std::thread::spawn(move || {
@@ -190,7 +191,9 @@ impl Warm {
         if started {
             expected.push((kind::STARTED, Vec::new()));
         }
-        expected.push((kind::DONE, vec![status]));
+        let mut done = vec![status];
+        done.extend_from_slice(not_run.unwrap_or_default().as_bytes());
+        expected.push((kind::DONE, done));
         assert_eq!(said, expected);
     }
 }
@@ -256,24 +259,32 @@ fn warm_vms_serve_one_request_on_the_clients_stdio() {
     for line in ["uid 0", "cwd /", "hostname warm", "env PATH=/bin"] {
         assert!(out.lines().any(|l| l == line), "{line}\n{out}");
     }
-    warm.ends(0);
+    warm.ends(0, None);
 
     // Exit statuses are `docker run`'s, and a command that cannot run says why on the
     // client's stderr before its status arrives.
-    for (argv, status) in [
-        (&["/bin/testguest", "exit", "7"][..], 7),
-        (&["/bin/nonexistent"][..], 127),
+    // A command that cannot start: the client hears it as `docker run` says it, and
+    // the daemon what dockerd would record.
+    let why = "exec: \"/bin/nonexistent\": stat /bin/nonexistent: no such file or directory";
+    for (argv, status, not_run) in [
+        (&["/bin/testguest", "exit", "7"][..], 7, None),
+        (&["/bin/nonexistent"][..], 127, Some(why)),
     ] {
         let mut warm = Warm::spawn(&template);
         warm.ready();
         let mut client = warm.run(argv, false);
         assert_eq!(client.exit(), status, "{argv:?}");
-        if status == 127 {
+        if let Some(why) = not_run {
             let mut err = String::new();
             client.stderr.read_to_string(&mut err).unwrap();
-            assert!(err.contains("nonexistent"), "{err}");
+            assert_eq!(
+                err,
+                format!(
+                    "shards: Error response from daemon: {why}\n\nRun 'shards run --help' for more information\n"
+                )
+            );
         }
-        warm.ends(status);
+        warm.ends(status, not_run);
     }
 
     // With -i, the client's stdin is the command's.
@@ -285,7 +296,7 @@ fn warm_vms_serve_one_request_on_the_clients_stdio() {
     drop(stdin);
     assert_eq!(client.exit(), 0);
     assert_eq!(client.stdout(), "through the warm VM\n");
-    warm.ends(0);
+    warm.ends(0, None);
 }
 
 #[test]
@@ -303,7 +314,7 @@ fn a_warm_vms_client_signals_its_command() {
     client.signal(2);
     assert_eq!(client.exit(), 0);
     assert_eq!(client.stdout(), "got 2\n");
-    warm.ends(0);
+    warm.ends(0, None);
 
     // A signal the command does not catch ends it, and the status says which.
     let mut warm = Warm::spawn(&template);
@@ -312,7 +323,7 @@ fn a_warm_vms_client_signals_its_command() {
     assert_eq!(client.line(), "ready\n");
     client.signal(15);
     assert_eq!(client.exit(), 128 + 15);
-    warm.ends(128 + 15);
+    warm.ends(128 + 15, None);
 }
 
 #[test]
@@ -362,7 +373,7 @@ fn a_warm_vm_lets_go_of_its_clients_stdio() {
     // SAFETY: as above.
     unsafe { libc::kill(pid, libc::SIGCONT) };
     assert!(ended, "the warm VM held the client's stdout past its exit status");
-    warm.ends(0);
+    warm.ends(0, None);
 
     let mut warm = Warm::spawn(&template);
     warm.ready();

@@ -59,6 +59,45 @@ pub fn forwarded(reads_terminal: bool) -> impl Iterator<Item = (libc::c_int, u32
         .filter(move |&(sig, _)| !(reads_terminal && sig == libc::SIGTTIN))
 }
 
+/// Readies this process to take the signals it forwards (`forwarded(reads_terminal)`)
+/// with sigwait(3). It blocks them in the calling thread, whose later threads inherit the
+/// mask, then makes any that this process was started ignoring default again, as Go's
+/// `signal.Notify` does for the Docker CLI's signal proxy (os/signal): XNU drops an
+/// ignored signal when it is sent, even to a thread in sigwait (bsd/kern/kern_sig.c,
+/// psignal_internal), and a non-interactive shell starts `cmd &` with SIGINT and SIGQUIT
+/// ignored (POSIX.1-2024, XCU 2.9.3.1). Returns the set to wait on, and the signals that
+/// were ignored.
+pub fn take_forwarded(reads_terminal: bool) -> io::Result<(libc::sigset_t, Vec<libc::c_int>)> {
+    // SAFETY: sigset operations on a local set, pthread_sigmask on this thread, and
+    // sigaction(2) reads and writes of dispositions, on valid structures.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for (sig, _) in forwarded(reads_terminal) {
+            libc::sigaddset(&mut set, sig);
+        }
+        if libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut ignored = Vec::new();
+        for (sig, _) in forwarded(reads_terminal) {
+            let mut was: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(sig, std::ptr::null(), &mut was) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if was.sa_sigaction == libc::SIG_IGN {
+                let mut default: libc::sigaction = std::mem::zeroed();
+                default.sa_sigaction = libc::SIG_DFL;
+                if libc::sigaction(sig, &default, std::ptr::null_mut()) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                ignored.push(sig);
+            }
+        }
+        Ok((set, ignored))
+    }
+}
+
 impl Identity {
     pub fn of(path: &Path) -> io::Result<Identity> {
         use std::os::unix::fs::MetadataExt;

@@ -59,7 +59,7 @@ pub mod kind {
     /// Warm VM → daemon: it has the run's descriptors, so the daemon may close its own.
     pub const TAKEN: u8 = 8;
     /// Warm VM → daemon: the command ended with this status (one byte), which its client
-    /// already has.
+    /// already has; then, if the command never ran, why not.
     pub const DONE: u8 = 9;
     /// Warm VM → daemon: the command is executing: it started, where `DONE` without this
     /// means it never did.
@@ -67,7 +67,8 @@ pub mod kind {
     /// Client → daemon: a container command (`ps`, `wait`, `rm`, ...) and its arguments,
     /// as a list of strings, for the daemon to run and answer with `OUT`, `ERR` and `END`.
     pub const CONTAINER: u8 = 11;
-    /// Daemon → client: bytes for the client's stdout.
+    /// Daemon → client: bytes for the client's stdout. A detached run's first is its
+    /// container's ID.
     pub const OUT: u8 = 12;
     /// Daemon → client: bytes for the client's stderr.
     pub const ERR: u8 = 13;
@@ -75,11 +76,15 @@ pub mod kind {
     pub const END: u8 = 14;
 }
 
-/// A container command as the client asks for it (`kind::CONTAINER`): its words, and the
-/// daemon binary the client would start, as in [`Run`].
+/// A container command as the client asks for it (`kind::CONTAINER`): its name and the
+/// words after it, which the client has checked; what of the client's locale shapes the
+/// answer; and the daemon binary the client would start, as in [`Run`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Command {
     pub argv: Vec<String>,
+    /// The client's locale is East Asian, where the Docker CLI counts ambiguous-width
+    /// characters as two columns (shards_cmdline::width::east_asian).
+    pub east_asian: bool,
     pub daemon: Identity,
 }
 
@@ -87,6 +92,7 @@ impl Command {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Vec::new();
         put_list(&mut w, &self.argv);
+        w.push(u8::from(self.east_asian));
         put_identity(&mut w, &self.daemon);
         w
     }
@@ -96,6 +102,7 @@ impl Command {
         let mut r = Reader(bytes);
         let command = Command {
             argv: r.list()?,
+            east_asian: r.flag()?,
             daemon: r.identity()?,
         };
         r.0.is_empty().then_some(command)
@@ -128,8 +135,8 @@ pub enum Pull {
 }
 
 /// A run as the client asks for it (`kind::START`): its command line as parsed, plus what
-/// only the client knows. Its environment gave `-e NAME` its value, and its working
-/// directory made `--kernel` and `--init` absolute.
+/// only the client knows. Its environment gave `-e NAME` its value and SHARDS_KERNEL and
+/// SHARDS_INIT, which its working directory made absolute.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Run {
     pub image: String,
@@ -368,6 +375,7 @@ mod tests {
         assert_eq!(Run::decode(&Run::default().encode()), Some(Run::default()));
         let command = Command {
             argv: vec!["ps".into(), "-a".into(), String::new()],
+            east_asian: true,
             daemon: identity,
         };
         let bytes = command.encode();

@@ -21,8 +21,9 @@ use shards_ipc::{Command, Run, SOCKET, kind, log};
 
 use crate::NOT_RUN;
 
-/// How long a started daemon may take to listen.
-const START_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a started daemon may take to listen: longer than the one it replaces may take
+/// to end its runs and exit (daemon.rs, TAKEOVER).
+const START_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Runs `request` through the daemon of `home`, whose binary is `daemon`. Every path the
 /// request holds is absolute by now (request.rs), since this process makes the home its
@@ -39,7 +40,8 @@ pub fn run(home: &Path, daemon: &Path, request: &Run) -> ExitCode {
     if let Err(e) = forward_signals(current.clone(), reads_terminal) {
         return failed(&e);
     }
-    let stdin = match command_stdin(request.interactive) {
+    // A detached run's command reads nothing: no client stays to give it input.
+    let stdin = match command_stdin(request.interactive && !request.detach) {
         Ok(stdin) => stdin,
         Err(e) => return failed(&e),
     };
@@ -73,6 +75,16 @@ pub fn run(home: &Path, daemon: &Path, request: &Run) -> ExitCode {
                     return ExitCode::from(status);
                 }
                 Ok(Some(m)) if m.kind == kind::RESTART => break,
+                // A detached run's answer: its container's ID, or why it did not start.
+                Ok(Some(m)) if m.kind == kind::OUT => {
+                    let _ = io::stdout().write_all(&m.payload);
+                }
+                Ok(Some(m)) if m.kind == kind::ERR => {
+                    let _ = io::stderr().write_all(&m.payload);
+                }
+                Ok(Some(m)) if m.kind == kind::END => {
+                    return ExitCode::from(m.payload.first().copied().unwrap_or(NOT_RUN));
+                }
                 Ok(Some(_)) => continue,
                 Ok(None) | Err(_) => {
                     return failed(&format!(
@@ -274,24 +286,16 @@ fn command_stdin(interactive: bool) -> Result<OwnedFd, String> {
     Ok(OwnedFd::from(reader))
 }
 
-/// Sends the signals `docker run` forwards to the command, over the current connection.
-/// They are blocked in the calling thread, which every thread started later inherits, so
-/// only the forwarder's `sigwait` receives them. One that would end the client, arriving
-/// with no connection to send it on, ends the client as it would have. With
-/// `reads_terminal`, the terminal's job control applies to the client (shards_ipc::forwarded).
+/// Sends the signals `docker run` forwards to the command, over the current connection,
+/// even those this process was started ignoring, as the Docker CLI does
+/// (shards_ipc::take_forwarded). They are blocked in the calling thread, which every
+/// thread started later inherits, so only the forwarder's `sigwait` receives them. One that
+/// would end the client, arriving with no connection to send it on, ends the client as it
+/// would have, unless it was ignored. With `reads_terminal`, the terminal's job control
+/// applies to the client (shards_ipc::forwarded).
 fn forward_signals(current: Arc<Mutex<Option<UnixStream>>>, reads_terminal: bool) -> Result<(), String> {
-    // SAFETY: sigset operations on a local set, and pthread_sigmask on this thread.
-    let set = unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        for (sig, _) in shards_ipc::forwarded(reads_terminal) {
-            libc::sigaddset(&mut set, sig);
-        }
-        if libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) != 0 {
-            return Err(format!("blocking signals: {}", io::Error::last_os_error()));
-        }
-        set
-    };
+    let (set, ignored) =
+        shards_ipc::take_forwarded(reads_terminal).map_err(|e| format!("taking signals: {e}"))?;
     std::thread::Builder::new()
         .name("signals".into())
         .spawn(move || {
@@ -312,7 +316,7 @@ fn forward_signals(current: Arc<Mutex<Option<UnixStream>>>, reads_terminal: bool
                         shards_ipc::send(conn, kind::SIGNAL, &linux.to_be_bytes(), &[]).is_ok()
                     });
                 let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
-                if !sent && ends {
+                if !sent && ends && !ignored.contains(&sig) {
                     // SAFETY: the default action of a terminating signal, on this process.
                     unsafe {
                         libc::signal(sig, libc::SIG_DFL);

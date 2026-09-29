@@ -202,12 +202,24 @@ fn trap(name: &str) -> i32 {
         "USR1" => libc::SIGUSR1,
         _ => return 2,
     };
-    // SAFETY: an async-signal-safe handler that only stores an atomic.
-    unsafe { libc::signal(sig, caught as extern "C" fn(libc::c_int) as libc::sighandler_t) };
+    // The signal stays blocked but while sigsuspend(2) waits for it: one that arrived
+    // between a check of CAUGHT and pause(2) would leave pause waiting for ever.
+    // SAFETY: sigset operations on locals, and an async-signal-safe handler that only
+    // stores an atomic.
+    let waiting = unsafe {
+        let mut blocked: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut blocked);
+        libc::sigaddset(&mut blocked, sig);
+        let mut before: libc::sigset_t = std::mem::zeroed();
+        libc::sigprocmask(libc::SIG_BLOCK, &blocked, &mut before);
+        libc::signal(sig, caught as extern "C" fn(libc::c_int) as libc::sighandler_t);
+        libc::sigdelset(&mut before, sig);
+        before
+    };
     let _ = writeln!(io::stdout(), "ready");
     while CAUGHT.load(Ordering::Relaxed) == 0 {
-        // SAFETY: blocks until a signal arrives.
-        unsafe { libc::pause() };
+        // SAFETY: waits with `sig` unblocked, on a valid set.
+        unsafe { libc::sigsuspend(&waiting) };
     }
     let _ = writeln!(io::stdout(), "got {}", CAUGHT.load(Ordering::Relaxed));
     0

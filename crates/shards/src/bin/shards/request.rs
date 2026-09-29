@@ -1,7 +1,10 @@
-//! `shards run IMAGE [COMMAND] [ARG...]`: runs a command in a new microVM booted into an
-//! image, as `docker run` runs one in a new container (docs/design/architecture.md D16,
-//! D24–D26). The command line becomes a request (`shards_ipc::Run`), completed with what
-//! only this process knows, for the daemon to serve (client.rs).
+//! `shards run [OPTIONS] IMAGE [COMMAND] [ARG...]`: runs a command in a new microVM booted
+//! into an image, as `docker run` runs one in a new container (docs/design/architecture.md
+//! D16, D24–D27). The command line, read as the Docker CLI reads it (shards_cmdline),
+//! becomes a request (`shards_ipc::Run`), completed with what only this process knows, for
+//! the daemon to serve (client.rs). SHARDS_KERNEL and SHARDS_INIT boot those instead of
+//! the guest `shards guest use` recorded; only the recorded guest's runs are kept as
+//! templates.
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -12,26 +15,30 @@ use std::process::ExitCode;
 use shards_ipc::Identity;
 use shards_ipc::{Pull, Run};
 
+use shards_cmdline::commands::RUN;
+use shards_cmdline::flags::{Flag, Parsed};
+
 use crate::NOT_RUN;
 
-const USAGE: &str = "usage: shards run [OPTIONS] IMAGE [COMMAND] [ARG...]
-  Runs COMMAND in a new microVM booted into IMAGE, as `docker run` runs it in a new
-  container. The image's entrypoint, command, environment, working directory and user
-  apply unless given here. IMAGE is pulled first if it is not here.
-  Options, as for `docker run`: -e NAME[=VALUE], -w DIR, -u USER[:GROUP], --hostname NAME,
-  -i, --entrypoint COMMAND, --pull missing|always|never, --name NAME, --rm.
-  --kernel FILE, --init FILE: boot these, instead of the guest `shards guest use` recorded;
-  or SHARDS_KERNEL and SHARDS_INIT. Only the recorded guest's runs are kept as templates.";
-
-pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
-    let mut request = match parse(args) {
+/// Runs the command line `args`, the words after `path` (`shards run`).
+pub fn run(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::failed(&e),
+    };
+    let parsed = match crate::read(&RUN, path, &argv, &validate_env) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    let mut request = match request(&parsed) {
         Ok(request) => request,
-        Err(e) if e.is_empty() => {
-            let _ = writeln!(std::io::stdout(), "{USAGE}");
-            return ExitCode::SUCCESS;
-        }
         Err(e) => {
-            let _ = writeln!(std::io::stderr(), "shards: {e}\n{USAGE}");
+            // As the CLI words its own objections (docker/cli run.go withHelp).
+            let _ = writeln!(
+                std::io::stderr(),
+                "shards: {e}\n\nRun 'shards run --help' for more information"
+            );
             return ExitCode::from(NOT_RUN);
         }
     };
@@ -39,13 +46,9 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         #[cfg(unix)]
         Ok((home, daemon)) => crate::client::run(&home, &daemon, &request),
         #[cfg(not(unix))]
-        Ok(_) => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "shards: running a command needs the daemon, which needs Unix sockets, which shards does not support on this platform yet"
-            );
-            ExitCode::from(NOT_RUN)
-        }
+        Ok(_) => crate::failed(
+            "running a command needs the daemon, which needs Unix sockets, which shards does not support on this platform yet",
+        ),
         Err(e) => {
             let _ = writeln!(std::io::stderr(), "shards: {e}");
             ExitCode::from(NOT_RUN)
@@ -53,27 +56,74 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
     }
 }
 
+/// `-e`'s values as the CLI's `opts.ValidateEnv` takes them: `NAME=VALUE` as given, and
+/// `NAME` alone with its value here, if it has one (docker/cli opts/env.go).
+fn validate_env(flag: &Flag, value: &str) -> Result<String, String> {
+    if flag.name != "env" {
+        return Ok(value.to_string());
+    }
+    let (name, given) = match value.split_once('=') {
+        Some((name, _)) => (name, true),
+        None => (value, false),
+    };
+    if name.is_empty() {
+        return Err(format!("invalid environment variable: {value}"));
+    }
+    if given {
+        return Ok(value.to_string());
+    }
+    match std::env::var(name) {
+        Ok(here) => Ok(format!("{name}={here}")),
+        Err(std::env::VarError::NotPresent) => Ok(value.to_string()),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err(format!("environment variable {name} is not valid UTF-8"))
+        }
+    }
+}
+
+/// The request `parsed` asks for, or what the CLI objects to before it asks the daemon
+/// (docker/cli run.go runRun, validatePullOpt).
+fn request(parsed: &Parsed) -> Result<Run, String> {
+    let pull = match parsed.string("pull") {
+        "missing" | "" => Pull::Missing,
+        "always" => Pull::Always,
+        "never" => Pull::Never,
+        other => {
+            return Err(format!(
+                "invalid pull option: '{other}': must be one of \"always\", \"missing\" or \"never\""
+            ));
+        }
+    };
+    let (image, cmd) = parsed.args.split_first().ok_or("an image is required")?;
+    let given = |name: &str| Some(parsed.string(name).to_string()).filter(|v| !v.is_empty());
+    Ok(Run {
+        image: image.clone(),
+        cmd: cmd.to_vec(),
+        env: parsed.many("env").to_vec(),
+        workdir: parsed.string("workdir").to_string(),
+        user: parsed.string("user").to_string(),
+        hostname: given("hostname"),
+        interactive: parsed.bool("interactive"),
+        // Given, the entrypoint is one word, and "" clears the image's (docker/cli
+        // cli/command/container/opts.go).
+        entrypoint: parsed
+            .changed("entrypoint")
+            .then(|| given("entrypoint").into_iter().collect()),
+        pull,
+        name: given("name"),
+        detach: parsed.bool("detach"),
+        remove: parsed.bool("rm"),
+        ..Run::default()
+    })
+}
+
 /// Completes the request with what only this process knows:
-/// - `-e NAME` takes NAME's value here, as the Docker CLI's `ValidateEnv` does (docker/cli
-///   opts/env.go); unset here, NAME stays unset in the command;
-/// - `--kernel` and `--init`, or SHARDS_KERNEL and SHARDS_INIT, made absolute;
+/// - SHARDS_KERNEL and SHARDS_INIT, made absolute;
 /// - SHARDS_TIMING;
 /// - the daemon binary it would start: `shardsd`, beside this one.
 ///
 /// Returns the home and that binary.
 fn resolve(request: &mut Run) -> Result<(PathBuf, PathBuf), String> {
-    for entry in &mut request.env {
-        if entry.contains('=') {
-            continue;
-        }
-        match std::env::var(entry.as_str()) {
-            Ok(value) => *entry = format!("{entry}={value}"),
-            Err(std::env::VarError::NotPresent) => {}
-            Err(std::env::VarError::NotUnicode(_)) => {
-                return Err(format!("environment variable {entry} is not valid UTF-8"));
-            }
-        }
-    }
     let from_env = |name: &str| {
         std::env::var_os(name)
             .filter(|v| !v.is_empty())
@@ -85,20 +135,10 @@ fn resolve(request: &mut Run) -> Result<(PathBuf, PathBuf), String> {
             .into_string()
             .map_err(|p| format!("{p:?} is not valid UTF-8"))
     };
-    let kernel = request
-        .kernel
-        .take()
-        .map(PathBuf::from)
-        .or_else(|| from_env("SHARDS_KERNEL"));
-    let init = request
-        .init
-        .take()
-        .map(PathBuf::from)
-        .or_else(|| from_env("SHARDS_INIT"));
-    request.kernel = kernel.map(absolute).transpose()?;
-    request.init = init.map(absolute).transpose()?;
+    request.kernel = from_env("SHARDS_KERNEL").map(absolute).transpose()?;
+    request.init = from_env("SHARDS_INIT").map(absolute).transpose()?;
     if request.kernel.is_some() != request.init.is_some() {
-        return Err("--kernel and --init (or SHARDS_KERNEL and SHARDS_INIT) go together".into());
+        return Err("SHARDS_KERNEL and SHARDS_INIT go together".into());
     }
     request.timing = std::env::var_os("SHARDS_TIMING").is_some();
     let daemon = crate::shardsd()?;
@@ -110,65 +150,28 @@ fn resolve(request: &mut Run) -> Result<(PathBuf, PathBuf), String> {
     Ok((shards_ipc::home()?, daemon))
 }
 
-/// Options come before the image, as `docker run` takes them; what follows the image is
-/// the command.
-fn parse(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
-    let mut args = args.map(|a| {
-        a.into_string()
-            .map_err(|a| format!("argument {a:?} is not valid UTF-8"))
-    });
-    let mut asked = Run::default();
-    while let Some(arg) = args.next() {
-        let arg = arg?;
-        let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"))?;
-        match arg.as_str() {
-            "-e" | "--env" => asked.env.push(value("--env")?),
-            "-w" | "--workdir" => asked.workdir = value("--workdir")?,
-            "-u" | "--user" => asked.user = value("--user")?,
-            "--hostname" => asked.hostname = Some(value("--hostname")?),
-            "-i" | "--interactive" => asked.interactive = true,
-            // docker/cli: a given entrypoint is one word; an empty one clears the image's.
-            "--entrypoint" => {
-                let e = value("--entrypoint")?;
-                asked.entrypoint = Some(if e.is_empty() { Vec::new() } else { vec![e] });
-            }
-            "--pull" => {
-                asked.pull = match value("--pull")?.as_str() {
-                    "missing" => Pull::Missing,
-                    "always" => Pull::Always,
-                    "never" => Pull::Never,
-                    other => return Err(format!("--pull: {other:?} is not missing, always or never")),
-                }
-            }
-            "--rm" => asked.remove = true,
-            "--name" => asked.name = Some(value("--name")?),
-            "--kernel" => asked.kernel = Some(value("--kernel")?),
-            "--init" => asked.init = Some(value("--init")?),
-            "-h" | "--help" => return Err(String::new()),
-            flag if flag.starts_with('-') => return Err(format!("unknown option {flag:?}")),
-            _ => {
-                asked.image = arg;
-                asked.cmd = args.by_ref().collect::<Result<_, _>>()?;
-                return Ok(asked);
-            }
-        }
-    }
-    Err("an image is required".into())
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use shards_cmdline::flags::{self, Outcome};
+
+    fn asked(argv: &[&str]) -> Result<Run, String> {
+        let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+        match flags::parse(&RUN, "shards run", &argv, &validate_env) {
+            Outcome::Run(parsed) => request(&parsed),
+            Outcome::Fail { text, .. } => Err(text),
+            Outcome::Help { .. } => Err("help".into()),
+        }
+    }
 
     fn strings(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
-    fn options_come_before_the_image() {
-        let args = ["-e", "A=1", "--entrypoint", "", "--rm", "alpine", "ls", "-e", "/"];
-        let asked = parse(args.iter().map(OsString::from)).unwrap();
+    fn a_command_line_becomes_a_request() {
+        let asked = asked(&["-e", "A=1", "--entrypoint", "", "--rm", "alpine", "ls", "-e", "/"]).unwrap();
         assert_eq!(asked.image, "alpine");
         assert_eq!(asked.env, strings(&["A=1"]));
         assert_eq!(asked.entrypoint, Some(Vec::new()));
@@ -177,9 +180,24 @@ mod tests {
             strings(&["ls", "-e", "/"]),
             "what follows the image is the command's"
         );
-        assert!(parse(["--pull", "sometimes", "alpine"].iter().map(OsString::from)).is_err());
+        assert!(asked.remove);
+        let combined = self::asked(&["-di", "-eA=1", "--name=web", "--pull=never", "alpine"]).unwrap();
+        assert!(combined.detach && combined.interactive);
+        assert_eq!(
+            (combined.name.as_deref(), combined.pull),
+            (Some("web"), Pull::Never)
+        );
+        let given = self::asked(&["-h", "box", "--entrypoint", "/bin/sh", "alpine"]).unwrap();
+        assert_eq!(given.hostname.as_deref(), Some("box"));
+        assert_eq!(given.entrypoint, Some(strings(&["/bin/sh"])));
+        assert_eq!(
+            self::asked(&["--pull", "sometimes", "alpine"]).unwrap_err(),
+            "invalid pull option: 'sometimes': must be one of \"always\", \"missing\" or \"never\""
+        );
         assert!(
-            parse(["-t", "alpine"].iter().map(OsString::from)).is_err(),
+            self::asked(&["-t", "alpine"])
+                .unwrap_err()
+                .contains("\"--tty\" is not supported by shards yet"),
             "no TTYs yet"
         );
     }

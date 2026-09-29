@@ -186,26 +186,48 @@ pub fn started(link: &Link) {
     let _ = shards_ipc::send(&link.daemon, kind::STARTED, &[], &[]);
 }
 
-/// Tells the client how its command ended, then the daemon. An error goes to the client's
-/// stderr first, and the VM lets go of the client's stdio before the status goes, so that
-/// both arrive before the client exits. With `timing`, the status carries the VM's timing
-/// line for the client to print.
-pub fn finish(link: &Link, client: Option<&UnixStream>, served: &Result<u8, String>, timing: Option<&str>) {
-    let status = match served {
-        Ok(status) => *status,
+/// Tells the client how its command ended, then the daemon. What kept the command from
+/// running goes to the client's stderr first, as `docker run` reports it, and the VM lets
+/// go of the client's stdio before the status goes, so that both arrive before the client
+/// exits. A detached run's client is the daemon's to tell: `DONE` carries the reason.
+/// With `timing`, the status carries the VM's timing line for the client to print.
+pub fn finish(
+    link: &Link,
+    client: Option<&UnixStream>,
+    served: &Result<workload::Ended, String>,
+    timing: Option<&str>,
+) {
+    let (mut status, not_run) = match served {
+        Ok(ended) => (ended.status, ended.not_run.as_deref()),
         Err(e) => {
             let _ = writeln!(io::stderr(), "shards: {e}");
-            NOT_RUN
+            (NOT_RUN, None)
         }
     };
+    // A command that never started: what dockerd would say, and the exit code its
+    // container keeps (shards_cmdline::commands::start_failed).
+    let failed = not_run.map(shards_cmdline::commands::start_failed);
+    let mut said_status = status;
+    if let Some((said, kept)) = &failed {
+        let (text, exits) = workload::not_run(said);
+        if client.is_some() {
+            let _ = writeln!(io::stderr(), "{text}");
+        }
+        said_status = exits;
+        status = *kept;
+    }
     let_go(&link.null);
     if let Some(client) = client {
-        let mut payload = vec![status];
+        let mut payload = vec![said_status];
         payload.extend_from_slice(timing.unwrap_or_default().as_bytes());
         let _ = shards_ipc::send(client, kind::EXIT, &payload, &[]);
     }
     // Then the daemon, which keeps the run's record.
-    let _ = shards_ipc::send(&link.daemon, kind::DONE, &[status], &[]);
+    let mut done = vec![status];
+    if let Some((said, _)) = &failed {
+        done.extend_from_slice(said.as_bytes());
+    }
+    let _ = shards_ipc::send(&link.daemon, kind::DONE, &done, &[]);
 }
 
 /// Stops using the client's stdio: this process's standard descriptors become `null`.

@@ -15,6 +15,7 @@ mod common;
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -132,6 +133,8 @@ fn parallel_runs_keep_their_own_stdio() {
     }
 }
 
+/// Signals reach the command, even when the client was started ignoring them, as a
+/// script's `shards run ... &` is: `docker run`'s signal proxy takes them all the same.
 #[test]
 fn signals_reach_a_warm_run() {
     if cannot_run_vms() || cannot_snapshot() {
@@ -139,17 +142,36 @@ fn signals_reach_a_warm_run() {
     }
     let (image, _) = served();
     let home = home("daemon-signals", &image);
-    let mut child = spawn_run(&home, &["--pull", "never", &image, "trap", "INT"]);
-    let mut out = BufReader::new(child.stdout.take().unwrap());
-    let mut line = String::new();
-    out.read_line(&mut line).unwrap();
-    assert_eq!(line, "ready\n");
-    // SAFETY: kill(2) of our own child.
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
-    let mut rest = String::new();
-    out.read_to_string(&mut rest).unwrap();
-    assert_eq!(wait(&mut child), Some(0));
-    assert_eq!(rest, "got 2\n");
+    for ignored in [false, true] {
+        let mut run = Command::new(shards());
+        run.args(["run", "--pull", "never", &image, "trap", "INT"])
+            .env("SHARDS_HOME", &*home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if ignored {
+            // As a non-interactive shell starts `cmd &` (POSIX.1-2024, XCU 2.9.3.1).
+            // SAFETY: signal(2) only, between fork and exec.
+            unsafe {
+                run.pre_exec(|| {
+                    libc::signal(libc::SIGINT, libc::SIG_IGN);
+                    libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+                    Ok(())
+                });
+            }
+        }
+        let mut child = run.spawn().unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        out.read_line(&mut line).unwrap();
+        assert_eq!(line, "ready\n");
+        // SAFETY: kill(2) of our own child.
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
+        let mut rest = String::new();
+        out.read_to_string(&mut rest).unwrap();
+        assert_eq!(wait(&mut child), Some(0), "ignored at start: {ignored}");
+        assert_eq!(rest, "got 2\n", "ignored at start: {ignored}");
+    }
 }
 
 #[test]
@@ -258,24 +280,14 @@ fn idle_daemons_exit() {
     }
     let (image, _) = served();
     let home = TempDir::new("daemon-idle");
-    let env: [(&str, &OsStr); 2] = [
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_DAEMON_IDLE", "1".as_ref()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
     ];
-    let run = run_shards_env(
-        &["run"],
-        &[
-            "--kernel".as_ref(),
-            kernel().as_os_str(),
-            "--init".as_ref(),
-            guest_init().as_os_str(),
-            image.as_ref(),
-            "exit".as_ref(),
-            "0".as_ref(),
-        ],
-        &env,
-        TIMEOUT,
-    );
+    let run = run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT);
     assert_eq!(run.status, Some(0), "{}", run.stderr);
     let daemon = daemon_pid(&home).expect("a daemon pid");
     eventually("the idle daemon did not exit", || !alive(daemon));

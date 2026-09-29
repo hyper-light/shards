@@ -9,11 +9,11 @@
 //! Once a warm VM has taken a run, it serves the client directly, and tells the daemon
 //! how the command ended. The daemon follows each run to that end, and can signal its
 //! command meanwhile. It exits after SHARDS_DAEMON_IDLE seconds (default 900) without a
-//! run or a run in progress. `shards daemon stop` ends the runs in progress first, as
-//! dockerd ends its containers when it shuts down; a daemon that another build replaces
-//! sees its runs through instead.
+//! run or a run in progress. `shards daemon stop`, and a client of another build, first
+//! end the runs in progress, as dockerd ends its containers when it shuts down; the next
+//! daemon takes the home once this one has gone.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Write};
@@ -53,14 +53,17 @@ const HANDOFF_TRIES: usize = 3;
 /// How long a warm VM may take to say it has taken a run: it does so right after it
 /// receives one.
 const TAKE_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long a daemon waits for the lock of one that is exiting.
-const TAKEOVER: Duration = Duration::from_secs(5);
+/// How long a daemon waits for the lock of one that is exiting: one ending its runs takes
+/// up to STOP_GRACE + SHUTDOWN_KILL, then its VMs end.
+const TAKEOVER: Duration = Duration::from_secs(20);
 /// How long `shards daemon stop` lets a command end after its SIGTERM, before SIGKILL:
 /// dockerd's default stop timeout (moby daemon/config/config_linux.go), which it gives
 /// each container when it shuts down.
 const STOP_GRACE: Duration = Duration::from_secs(10);
-/// How long a VM may take to end its command after that SIGKILL, before the VM goes too.
-const KILL_GRACE: Duration = Duration::from_secs(1);
+/// How long a shutting-down daemon lets a command take to end after that SIGKILL, before
+/// its VM goes too: dockerd gives up on its containers after the larger of its shutdown
+/// timeout (15 s) and the stop timeout plus 5 s (moby daemon/daemon.go, ShutdownTimeout).
+const SHUTDOWN_KILL: Duration = Duration::from_secs(5);
 /// How often the daemon looks at its clock when no client arrives.
 const TICK: libc::c_int = 250;
 
@@ -164,8 +167,11 @@ struct Daemon {
     ending: AtomicBool,
     /// Every run's container.
     containers: Mutex<Registry>,
-    /// Notified when a container ends, for `shards wait`.
-    ended: Condvar,
+    /// Who waits for each running container to end, for its exit code: `shards wait`,
+    /// `stop`, `kill`, `rm -f`. Told under the containers' lock, as the record changes.
+    waiters: Mutex<HashMap<String, Vec<mpsc::Sender<u8>>>>,
+    /// The containers `shards rm` is removing.
+    removing: Mutex<HashSet<String>>,
     /// A container's ID, directory and log, made ahead of the run that takes them.
     spare: Mutex<Option<(String, File)>>,
     /// Numbers the templates a run saves before they become the template.
@@ -229,7 +235,8 @@ fn serve(detached: bool) -> Result<(), String> {
         runs: Mutex::default(),
         ending: AtomicBool::new(false),
         containers: Mutex::new(containers),
-        ended: Condvar::new(),
+        waiters: Mutex::default(),
+        removing: Mutex::default(),
         spare: Mutex::default(),
         saved: AtomicU64::new(0),
         _lock: home_lock,
@@ -382,8 +389,8 @@ impl Daemon {
                 daemon.handle(conn)
             };
             // The client's descriptors are closed by now: its run goes on in the VM.
-            if let Some((ready, id)) = handed {
-                daemon.track(ready, &id);
+            if let Some((ready, id, detached)) = handed {
+                daemon.track(ready, &id, detached);
             }
         });
         if let Err(e) = spawned {
@@ -406,8 +413,8 @@ impl Daemon {
 
     /// Serves one client's request. A run it hands to a warm VM comes back with its
     /// container's ID, for the caller to follow once the client's descriptors here are
-    /// closed.
-    fn handle(self: &Arc<Self>, conn: UnixStream) -> Option<(Ready, String)> {
+    /// closed, and for a detached run the client's connection, still waiting.
+    fn handle(self: &Arc<Self>, conn: UnixStream) -> Option<(Ready, String, Option<UnixStream>)> {
         let conn = &conn;
         let message = match shards_ipc::recv(conn) {
             Ok(Some(m)) => m,
@@ -420,13 +427,11 @@ impl Daemon {
         match message.kind {
             kind::START => {}
             kind::STOP => {
-                self.close();
-                self.stopping.store(true, Ordering::SeqCst);
                 match conn.try_clone() {
                     Ok(held) => lock(&self.stoppers).push(held),
                     Err(e) => log(format!("holding a stopper's connection: {e}")),
                 }
-                self.stop_runs();
+                self.step_aside();
                 return None;
             }
             kind::CONTAINER => {
@@ -435,12 +440,11 @@ impl Daemon {
                     return None;
                 };
                 if command.daemon != self.identity {
-                    self.close();
-                    self.stopping.store(true, Ordering::SeqCst);
+                    self.step_aside();
                     let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
                     return None;
                 }
-                let status = self.command(&command.argv, &commands::Reply(conn));
+                let status = self.command(&command.argv, command.east_asian, &commands::Reply(conn));
                 let _ = shards_ipc::send(conn, kind::END, &[status], &[]);
                 return None;
             }
@@ -459,58 +463,80 @@ impl Daemon {
         let say = |line: &str| {
             let _ = writeln!(&err, "{line}");
         };
-        let refuse = |e: &str| {
-            say(&format!("shards: {e}"));
-            let _ = shards_ipc::send(conn, kind::EXIT, &[NOT_RUN], &[]);
+        // As `docker run` reports what its daemon refused (workload::not_run).
+        let refuse = |said: &str| {
+            let (text, status) = crate::workload::not_run(said);
+            say(&text);
+            let _ = shards_ipc::send(conn, kind::EXIT, &[status], &[]);
         };
-        let Some(run) = Run::decode(&message.payload) else {
-            refuse("a malformed request");
+        let Some(mut run) = Run::decode(&message.payload) else {
+            say("shards: a malformed request");
+            let _ = shards_ipc::send(conn, kind::EXIT, &[NOT_RUN], &[]);
             return None;
         };
         if run.daemon != self.identity {
-            // Another build asks: its own daemon serves it from here, while this one sees
-            // its runs through. The socket goes first, so that the client's next
-            // connection cannot reach this daemon.
-            self.close();
-            self.stopping.store(true, Ordering::SeqCst);
+            // Another build asks: its own daemon serves it once this one has gone. The
+            // socket goes first, so that the client's next connection cannot reach this
+            // daemon.
+            self.step_aside();
             let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
             return None;
         }
+        // The container's ID first: it names the command's host unless the run does
+        // (moby daemon/container.go).
+        let (id, container_log) = match self.new_container() {
+            Ok(new) => new,
+            Err(e) => {
+                refuse(&e);
+                return None;
+            }
+        };
+        if run.hostname.is_none() {
+            run.hostname = Some(id.get(..12).unwrap_or(&id).to_string());
+        }
+        // The next run's spare is made once this one is answered, off its path.
         let prepared = match crate::run::prepare(&run, &self.home, &say) {
             Ok(prepared) => prepared,
             Err(e) => {
                 refuse(&e);
+                self.discard(&id);
+                self.make_spare();
                 return None;
             }
         };
         // The run's container, before anything starts: its name must be free.
-        let (id, container_log) = match self.create(&run, &prepared) {
-            Ok(created) => created,
-            Err(e) => {
-                refuse(&e);
-                return None;
-            }
-        };
-        let mut flags = 0;
+        if let Err(e) = self.create(&run, &prepared, &id) {
+            refuse(&e);
+            self.discard(&id);
+            self.make_spare();
+            return None;
+        }
+        // `docker run -d` prints the ID once the container exists, before it starts.
+        if run.detach {
+            let _ = shards_ipc::send(conn, kind::OUT, format!("{id}\n").as_bytes(), &[]);
+        }
+        let mut flags = shards_ipc::RUN_LOG;
         if prepared.interactive {
             flags |= shards_ipc::RUN_INTERACTIVE;
         }
         if run.timing {
             flags |= shards_ipc::RUN_TIMING;
         }
-        if container_log.is_some() {
-            flags |= shards_ipc::RUN_LOG;
-        }
+        // A detached run's output goes only to its log; it reads nothing.
+        let mut fds = if run.detach {
+            flags |= shards_ipc::RUN_DETACHED;
+            vec![stdin.as_fd()]
+        } else {
+            vec![conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()]
+        };
+        fds.push(container_log.as_fd());
         let mut payload = vec![flags];
         payload.extend(prepared.spec.encode());
-        let mut fds = vec![conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
-        fds.extend(container_log.as_ref().map(AsFd::as_fd));
         for _ in 0..HANDOFF_TRIES {
             let ready = match self.warm_for(&prepared, &say) {
                 Ok(ready) => ready,
                 Err(e) => {
-                    self.forget(&id);
-                    refuse(&e);
+                    refuse(&self.not_started(&id, &e));
                     return None;
                 }
             };
@@ -521,31 +547,45 @@ impl Daemon {
             }
             self.make_spare();
             match handed {
-                // The warm VM serves the client from here, and ours close.
-                Ok(()) => return Some((ready, id)),
+                // The warm VM serves the client from here, and ours close. A detached
+                // client waits for the daemon to say whether its command started.
+                Ok(()) => {
+                    let detached = if run.detach { conn.try_clone().ok() } else { None };
+                    return Some((ready, id, detached));
+                }
                 Err(e) => {
                     log(format!("warm VM {} did not take a run: {e}", ready.vm.id()));
                     let _ = ready.vm.kill(libc::SIGKILL);
                 }
             }
         }
-        self.forget(&id);
-        refuse("no warm VM took the run");
+        refuse(&self.not_started(&id, "no warm VM took the run"));
         None
     }
 
-    /// The container of `run`: a new ID, and the name the run gave, or one made for it, as
-    /// dockerd names containers (moby daemon/names.go). Reserved in memory only: the run's
-    /// path writes nothing but the log it opens, unless `--rm` keeps none.
-    fn create(&self, run: &Run, prepared: &Prepared) -> Result<(String, Option<File>), String> {
-        let spare = lock(&self.spare).take();
-        let (id, spare_log) = match spare {
-            Some((id, log)) => (id, Some(log)),
-            None => (
-                containers::new_id().map_err(|e| format!("a container ID: {e}"))?,
-                None,
-            ),
-        };
+    /// A new container's ID, and its log: the spare's, made ahead, or made now.
+    fn new_container(&self) -> Result<(String, File), String> {
+        if let Some(spare) = lock(&self.spare).take() {
+            return Ok(spare);
+        }
+        let id = containers::new_id().map_err(|e| format!("a container ID: {e}"))?;
+        let dir = lock(&self.containers).dir(&id);
+        let log = new_log(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        Ok((id, log))
+    }
+
+    /// Removes what was made for container `id`, which will not be created.
+    fn discard(&self, id: &str) {
+        let dir = lock(&self.containers).dir(id);
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            log(format!("{}: {e}", dir.display()));
+        }
+    }
+
+    /// Container `id` of `run`, with the name the run gave, or one made for it, as dockerd
+    /// names containers (moby daemon/names.go). Reserved in memory only: the run's path
+    /// writes nothing but the log it opened.
+    fn create(&self, run: &Run, prepared: &Prepared, id: &str) -> Result<(), String> {
         let mut registry = lock(&self.containers);
         let name = match &run.name {
             Some(given) => {
@@ -563,19 +603,11 @@ impl Daemon {
                 }
                 name.to_string()
             }
-            None => crate::names::generate(&id, |name| registry.name_taken(name).is_some())
+            None => crate::names::generate(id, |name| registry.name_taken(name).is_some())
                 .map_err(|e| format!("a container name: {e}"))?,
         };
-        let log = match (run.remove, spare_log) {
-            (true, _) => None,
-            (false, Some(log)) => Some(log),
-            (false, None) => {
-                let dir = registry.dir(&id);
-                Some(new_log(&dir).map_err(|e| format!("{}: {e}", dir.display()))?)
-            }
-        };
         registry.reserve(Container {
-            id: id.clone(),
+            id: id.to_string(),
             name,
             image: run.image.clone(),
             command: prepared
@@ -591,7 +623,7 @@ impl Daemon {
             exit_code: None,
             auto_remove: run.remove,
         });
-        Ok((id, log))
+        Ok(())
     }
 
     /// Makes a spare container, if there is none, for the next run to take: making it
@@ -610,16 +642,29 @@ impl Daemon {
         }
     }
 
-    /// Drops the container with `id`, which never ran.
-    fn forget(&self, id: &str) {
-        if let Err(e) = lock(&self.containers).remove(id) {
+    /// Container `id` did not start, for `why`: with `--rm` it goes, and otherwise it
+    /// stays created, with the exit code dockerd gives it (moby daemon/start.go,
+    /// daemon/errors.go). Returns what dockerd would say.
+    fn not_started(&self, id: &str, why: &str) -> String {
+        let (said, code) = shards_cmdline::commands::start_failed(why);
+        let mut registry = lock(&self.containers);
+        let kept = if registry.get(id).is_some_and(|c| c.auto_remove) {
+            registry.remove(id).map(drop)
+        } else {
+            registry.update(id, |c| c.exit_code = Some(code))
+        };
+        if let Err(e) = kept {
             log(format!("container {id}: {e}"));
         }
+        said
     }
 
     /// Follows a run to its end, and keeps its container's record: running once the VM
-    /// says STARTED, exited at its DONE, or at the VM's end if the VM dies first.
-    fn track(self: &Arc<Self>, ready: Ready, id: &str) {
+    /// says STARTED, exited at its DONE, or at the VM's end if the VM dies first. A command
+    /// that never started leaves its container created, with the status that says why
+    /// (moby daemon/start.go). A detached run's client learns whether its command started,
+    /// and if not, why not, as `docker run -d` does.
+    fn track(self: &Arc<Self>, ready: Ready, id: &str, mut detached: Option<UnixStream>) {
         let pid = ready.vm.id();
         // Runs last as long as their commands.
         let _ = ready.socket.set_read_timeout(None);
@@ -637,38 +682,93 @@ impl Daemon {
             }
             Err(e) => log(format!("VM {pid}'s socket: {e}")),
         }
+        let mut started = false;
         let done = loop {
             match shards_ipc::recv(&ready.socket) {
                 Ok(Some(m)) if m.kind == kind::STARTED => {
+                    started = true;
                     self.record(id, |c| {
                         c.state = Life::Running;
                         c.started = Some(containers::now());
                     });
+                    if let Some(client) = detached.take() {
+                        let _ = shards_ipc::send(&client, kind::END, &[0], &[]);
+                    }
                 }
-                Ok(Some(m)) if m.kind == kind::DONE => break m.payload.first().copied(),
+                Ok(Some(m)) if m.kind == kind::DONE => break Some(m.payload),
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => break None,
             }
         };
-        lock(&self.runs).remove(id);
-        if done.is_none() {
-            log(format!("VM {pid} ended before its command did"));
+        // DONE carries the status, and for a command that never started what dockerd
+        // would say and the code its container keeps (warm.rs finish).
+        let (status, said) = match done.as_deref().and_then(<[u8]>::split_first) {
+            Some((&status, said)) => (
+                status,
+                (!started).then(|| String::from_utf8_lossy(said).into_owned()),
+            ),
+            // A VM that ended without a word leaves its command's status unknown: 255, as
+            // dockerd reports a container whose process it lost.
+            None if started => {
+                log(format!("VM {pid} ended before its command did"));
+                (255, None)
+            }
+            None => {
+                log(format!("VM {pid} ended before its command started"));
+                let (said, code) = shards_cmdline::commands::start_failed(
+                    "the container's microVM stopped before its command started",
+                );
+                (code, Some(said))
+            }
+        };
+        {
+            let mut registry = lock(&self.containers);
+            let removing = registry.get(id).is_some_and(|c| c.auto_remove);
+            let kept = if removing {
+                registry.remove(id).map(drop)
+            } else {
+                registry.update(id, |c| {
+                    c.exit_code = Some(status);
+                    if started {
+                        c.state = Life::Exited;
+                        c.finished = Some(containers::now());
+                    }
+                })
+            };
+            if let Err(e) = kept {
+                log(format!("container {id}: {e}"));
+            }
+            lock(&self.runs).remove(id);
+            for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
+                let _ = waiter.send(status);
+            }
         }
-        // A VM that ended without a word leaves its command's status unknown: 255, as
-        // dockerd reports a container whose process it lost.
-        let status = done.unwrap_or(255);
-        let removing = lock(&self.containers).get(id).is_some_and(|c| c.auto_remove);
-        if removing {
-            self.forget(id);
-        } else {
-            self.record(id, |c| {
-                c.state = Life::Exited;
-                c.exit_code = Some(status);
-                c.finished = Some(containers::now());
-            });
+        // A detached command that never started: why, as `docker run -d` says it.
+        if let Some(client) = detached.take() {
+            let (text, exits) = crate::workload::not_run(said.as_deref().unwrap_or_default());
+            let _ = shards_ipc::send(&client, kind::ERR, format!("{text}\n").as_bytes(), &[]);
+            let _ = shards_ipc::send(&client, kind::END, &[exits], &[]);
         }
         *lock(&self.last) = Instant::now();
-        self.ended.notify_all();
+    }
+
+    /// Waits up to `limit` (for ever if `None`, or if it is too long to count) for the
+    /// container with `id` to stop running, and returns its exit code: 0 if it never ran.
+    /// `None` if it still runs.
+    fn await_exit(&self, id: &str, limit: Option<Duration>) -> Option<u8> {
+        let told = {
+            let registry = lock(&self.containers);
+            if !lock(&self.runs).contains_key(id) {
+                return Some(registry.get(id).and_then(|c| c.exit_code).unwrap_or(0));
+            }
+            let (tell, told) = mpsc::channel();
+            lock(&self.waiters).entry(id.to_string()).or_default().push(tell);
+            told
+        };
+        match limit.filter(|l| Instant::now().checked_add(*l).is_some()) {
+            Some(limit) => told.recv_timeout(limit).ok(),
+            None => told.recv().ok(),
+        }
     }
 
     /// Changes the record of the container with `id` by `f`, and writes it.
@@ -678,11 +778,22 @@ impl Daemon {
         }
     }
 
+    /// Stops serving: removes the socket, ends the runs in progress, and exits once they
+    /// have ended, as dockerd shuts down (`shards daemon stop`, or a client of another
+    /// build, whose own daemon then takes the home).
+    fn step_aside(self: &Arc<Self>) {
+        self.close();
+        self.stopping.store(true, Ordering::SeqCst);
+        self.stop_runs();
+    }
+
     /// Ends the runs in progress as dockerd ends its containers when it shuts down: SIGTERM
     /// to each command, SIGKILL to any still running after STOP_GRACE, and the VM itself
-    /// if its command outlives even that (moby daemon/stop.go).
+    /// if its command outlives even that (moby daemon/daemon.go Shutdown, daemon/stop.go).
     fn stop_runs(self: &Arc<Self>) {
-        self.ending.store(true, Ordering::SeqCst);
+        if self.ending.swap(true, Ordering::SeqCst) {
+            return;
+        }
         let signal = |runs: &HashMap<String, Tracked>, linux: u32| {
             for t in runs.values() {
                 let _ = shards_ipc::send(&t.socket, kind::SIGNAL, &linux.to_be_bytes(), &[]);
@@ -693,7 +804,7 @@ impl Daemon {
         let escalating = std::thread::Builder::new().name("stop".into()).spawn(move || {
             std::thread::sleep(STOP_GRACE);
             signal(&lock(&daemon.runs), 9);
-            std::thread::sleep(KILL_GRACE);
+            std::thread::sleep(SHUTDOWN_KILL);
             for t in lock(&daemon.runs).values() {
                 let _ = t.vm.kill(libc::SIGKILL);
             }

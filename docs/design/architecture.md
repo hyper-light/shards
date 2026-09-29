@@ -58,7 +58,7 @@ performance and resource usage.
 | D11 | GPUs are zero-cost when unused. GPU VMs are a separate class assigned from a warm pool (VFIO via iommufd on Linux; virtio-gpu/Venus plus a remoting broker on macOS). | Assigned devices pin all RAM and break CoW; FLR ≥ 100 ms; CUDA init takes seconds [GPU §2.3, R1–R6] |
 | D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). Built (a7b32ab): guest ports map to host Unix sockets as in Firecracker (`CONNECT <port>`; the guest reaches `<path>_P`). Unlike Firecracker, host EOF is a half-close, so a guest can answer after stdin ends. Each restored copy binds its own socket. A snapshot keeps the streams the device held. The restored device resets each of them with an RST on its RX queue, ahead of every other packet, and continues host port allocation past the snapshot's, never reusing a held port. It posts no TRANSPORT_RESET: Linux handles that event in a work item apart from RX, and on one interrupt it visits RX first. So a connection made right after the restore could be established and then reset (13 of 350 restores under CPU load). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7]; macOS poll reports POLLHUP on a half-close, so the device waits with kqueue there; restores [PM M20]: Linux 7.2 net/vmw_vsock/virtio_transport.c (`event_work`, `rx_work` handles RX in order), drivers/virtio/virtio_mmio.c `vm_interrupt` over queues in setup order (virtio_ring.c `list_add_tail`); a REQUEST matching a closing socket is dropped (virtio_transport_common.c `virtio_transport_recv_disconnecting`) |
 | D26 | `shards run` is served by a per-user daemon that hands each request to a warm VM process of the image's template: resumed, connected, waiting for its command. The client's stdio and connection pass by `SCM_RIGHTS`, and the daemon keeps its copies until the warm VM has taken them. The CLI is a thin binary. | Handoff 31 µs p50; warm VM 12.3 MiB, no CPU; a thin client costs 1.4 ms against 3.5 ms for a binary linking the VMM's frameworks [PM M23]; XNU flushes a socket in flight that no process holds [PM M24]; a pooled run takes 3.4 ms at p50 and 3.9 ms at p99 with the thin client [PM M26]; pre-created VM shells [Manco17 §5.2; Wanninger22 §5.2] |
-| D27 | Every `shards run` is a container, as `docker run`'s is: an ID and a name, running until its command ends, then exited until `shards rm` or `--rm` removes it. The daemon keeps the records and answers `ps`, `wait`, `stop`, `kill`, `rm` and `logs` itself; the client forwards the command line. | dockerd's names, IDs and stop semantics [moby daemon/names.go, internal/namesgenerator/legacy, daemon/stop.go @ docker-v29.8.1]; a record costs no run anything it waits for (a spare container made ahead) |
+| D27 | Every `shards run` is a container, as `docker run`'s is: an ID and a name, running until its command ends, then exited until `shards rm` or `--rm` removes it. Command lines are read as the Docker CLI reads them, by one crate (`shards-cmdline`) in the client and the daemon: the client answers `--help` and usage mistakes itself, and the daemon keeps the records and answers `ps`, `wait`, `logs`, `stop`, `kill` and `rm`. | The Docker CLI's own answers: a differential test against docker/cli v29.8.1's command tree [scripts/docker-cli]; dockerd's names, IDs, start failures and stop semantics [moby daemon/names.go, daemon/errors.go, daemon/stop.go, daemon/kill.go @ docker-v29.8.1]; docs/research/container-lifecycle-cli.md; a record costs no run anything it waits for (a spare container made ahead) |
 
 ### Snapshots (D14)
 
@@ -236,7 +236,11 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
   - Through the daemon, a signal that arrives before the command runs waits for it
     (D26). `vm run`, whose process is the VM, ends as that signal would end it. dockerd
     instead drops a signal sent before its container starts (warm-pool-daemon.md §2.7).
-- **Not yet:** TTYs (`-t`), detached runs.
+  - A signal shards was started ignoring is forwarded too, as the Docker CLI's Go
+    runtime takes it once asked. A script's `shards run ... &` starts with SIGINT and
+    SIGQUIT ignored, and macOS drops an ignored signal even for a thread in `sigwait`
+    [PM M28].
+- **Not yet:** TTYs (`-t`). Detached runs came with containers (D27).
 - **Tests:** E2E runs a minimal image (no `/proc`, `/sys` or `/dev`). It covers users,
   groups, the environment, working directories, mounts and every exit status. It also
   sends 8 MiB through stdin and back, and reads 32 MiB of output.
@@ -619,15 +623,19 @@ for the exit status.
     holds: the client's connection then read end of stream, and 1 run in 13 to 53 never
     got its signals [PM M24]. A VM that ends before `TAKEN` is replaced.
   - A client of another build, told apart by its binary's file identity, gets
-    `RESTART`. The daemon removes its socket and exits once its runs are handed over,
-    and the client starts its own.
+    `RESTART`. The daemon removes its socket, ends its runs as `shards daemon stop`
+    does, and exits; the client starts its own, which takes the home once the old one
+    has gone (up to 20 s).
   - It follows each run to its end: once the warm VM has sent the client its status, it
     sends the daemon `DONE`. The daemon can signal a command meanwhile, on the same socket.
   - It exits after SHARDS_DAEMON_IDLE seconds (900) with no run in progress and none
     asked for. `shards daemon stop` first ends the runs in progress as dockerd ends its
     containers when it shuts down: SIGTERM to each command, then SIGKILL after 10 s
-    (moby daemon/stop.go, daemon/config/config_linux.go). A daemon that another build
-    replaces sees its runs through, so an upgrade stops no command.
+    (moby daemon/stop.go, daemon/config/config_linux.go), and ends a VM whose command
+    outlives that by 5 s, as dockerd gives up after 15 s (moby daemon/daemon.go). A
+    daemon that another build replaces does the same, as dockerd without live-restore
+    stops its containers when it restarts: two daemons never keep one home's records.
+    Keeping runs through a restart (live-restore) is a later milestone.
 - **The command's stdin** is /dev/null, or with `-i` a pipe the client fills from its
   own.
   - It ends when the client does, as `docker run -i`'s does when its client goes
@@ -686,18 +694,53 @@ for the exit status.
     pseudo-terminal stops by SIGTTIN; `stop` ends a run by SIGTERM; a killed daemon, a
     rebuilt binary and idleness each end what they should.
 
-### Containers (D27, in progress)
+### Containers (D27)
 
 A run is a container, as in Docker. The daemon names it, follows it to its end, and keeps
-its record after it, until `shards rm` removes it; `--rm` removes it at once.
+its record after it, until `shards rm` removes it; `--rm` removes it once it ends.
 
+- **Command lines** (`crates/cmdline`). `run` and the container commands (`ps`, `wait`,
+  `logs`, `rm`, `stop`, `kill`, each also under `container`) are read as docker/cli
+  v29.8.1 reads them. The thin client answers `--help` and usage mistakes itself, with
+  no daemon, as `docker` answers them without dockerd; the daemon reads the same words
+  by the same code.
+  - pflag's parsing: shorthands run together, `=` values, booleans given values, Go's
+    number syntax (`0x10`, `1_000`), `--`, and flags after arguments except in `run`.
+  - cobra's order and the CLI's words: a flag mistake exits 125 with the usage; then
+    `--help`; then a wrong count of arguments, exit 1; then flags shards does not serve,
+    exit 1. Deprecated flags print pflag's notice on stdout, where cobra prints it.
+  - `--help` is the CLI's template, its options wrapped to the width of the terminal on
+    stdin, or 80, as pflag wraps them.
+  - Every flag `docker` takes parses. Those shards does not serve yet are left out of
+    `--help`, as the CLI leaves out what its daemon cannot do, and refuse any value but
+    their default: `"--tty" is not supported by shards yet`.
+  - `-e NAME` takes the client's value, as the CLI's `ValidateEnv` does. `--init` is
+    served as given: shards-init is every command's PID 1, forwarding signals and
+    reaping as docker-init does.
+  - **Evidence:** a differential test. The real docker/cli command tree answers 110
+    command lines (scripts/docker-cli/oracle_test.go), and shards gives the same stdout,
+    stderr and status byte for byte (crates/cmdline/tests/docker_cli.rs), except where it
+    refuses a flag it does not serve, which the test checks the CLI ran.
+  - Escapes and widths come from the CLI's own code, dumped by scripts/docker-cli/generate:
+    Go 1.26.1's `strconv.IsPrint`, go-runewidth v0.0.29 for the tables it aligns, and
+    golang.org/x/text/width (Unicode 15.0.0) for the commands it cuts short. The locale's
+    East Asian widths travel from client to daemon.
+  - **Cost:** about 20 µs of a pooled run, outside the guest, most of it the larger
+    client's launch [PM M29]. `docker` flags shards does not serve are one string rather
+    than a table, whose page of pointers every parse would fault in.
+  - **Known gap:** go-runewidth counts a grapheme cluster as at most two columns; shards
+    counts its runes, which differs only for clusters of several visible runes (emoji
+    sequences, flags, Hangul jamo) in `ps`'s COMMAND column.
 - **Records** (`crates/shards/src/containers.rs`). Each has a 64-hex-digit ID from 32
   random bytes, a name, the image and command, and its life: created, running once the
   guest reports its command started, exited with its status once it ends.
+  - An ID is drawn again while its first 12 digits are all decimal: they name the
+    command's host (`hostname`, and `HOSTNAME` in its environment) unless `--hostname`
+    does (moby daemon/internal/stringid, daemon/container.go).
   - The daemon writes each to `containers/ID/config.json` in the home when it starts and
-    when it ends, so exited containers outlive the daemon. One left running by a daemon
-    that has gone is exited when the next daemon opens the records, as its end went
-    unseen.
+    when it ends, so exited containers outlive the daemon. A daemon starting finds them
+    as dockerd restores its own (moby daemon/daemon.go): one left running is exited
+    with 255, the status nobody saw, and a `--rm` one goes.
   - Names are unique. A name must match `[a-zA-Z0-9][a-zA-Z0-9_.-]+`, and a taken one
     is refused with dockerd's message (moby daemon/names.go, daemon/errors.go).
   - A run without `--name` gets one as dockerd makes them by default: an adjective and a
@@ -706,23 +749,60 @@ its record after it, until `shards rm` removes it; `--rm` removes it at once.
     own.
   - A run's request path writes nothing: it takes a spare container, an ID with its
     directory and open log, made after the last handover.
-- **Output.** A run without `--rm` also writes its output to the container's log, as
-  records of stream, time and bytes, in the order they arrived (`workload.rs`).
+- **Output.** Every run writes its output to the container's log, as records of stream,
+  time and bytes, in the order they arrived (`workload.rs`); `--rm` takes the log with
+  the container.
 - **The guest says when the command started** (`STARTED`), before any output, so a
   container is running only once its command is.
-- **Commands** (`crates/shards/src/daemon/commands.rs`). The client forwards `wait`,
-  `rm`, `stop` and `kill` with its build's identity; the daemon runs them and answers
-  with the client's stdout, stderr and status.
+- **Detached runs** (`-d`). The ID goes to stdout once the container exists, before its
+  command starts, as `docker run -d` prints it; the client exits 0 once the command has
+  started. The run's output goes only to its log, and it reads nothing.
+- **Commands that cannot start.** shards-init says why in the words of runc's Go
+  (`exec.LookPath`, `os.PathError`, Go's errno texts): `exec: "/x": stat /x: no such
+  file or directory`. The client prints `shards: Error response from daemon: …` and the
+  hint, exiting 125, 126 or 127 by the CLI's `toStatusError`; the container stays created
+  with the exit code dockerd gives it, 126, 127 or 128, from the message dockerd amends
+  (moby daemon/errors.go, setExitCodeFromError). Nothing goes to its log, as nothing
+  reaches `docker logs`. A detached client gets the same, after the ID.
+- **Commands** (`crates/shards/src/daemon/commands.rs`), answering with dockerd's and the
+  CLI's words:
   - A container is named by its ID, its name, or the start of its ID and of no other's
     (moby daemon/container.go).
-  - `stop` sends SIGTERM, or `-s`, then SIGKILL after `-t` seconds (10), as dockerd
-    stops a container (moby daemon/stop.go). `kill` sends SIGKILL, or `-s`. `rm`
-    refuses a running container unless `-f`, which kills it first.
-- **Next:** `ps`, `logs`, and detached runs (`-d`).
+  - `ps`: the CLI's table, byte for byte: tabwriter widths, go-units durations,
+    commands cut to 20 columns and quoted as Go quotes them, images by their familiar
+    name without digest; `-a`, `-q`, `--no-trunc`, `-n`, `-l` as the CLI and dockerd
+    combine them.
+  - `wait`: one container at a time, its exit code once it stops: 0 for one that never
+    started, dockerd's code for one that could not.
+  - `logs`: stdout to stdout and stderr to stderr, in the order they arrived; `-f`
+    while the container runs; `-t` with RFC 3339 times; `--tail` (not a number: all);
+    `--details` adds the space before the attributes shards' lines do not have.
+  - `stop`, `kill` and `rm` act on up to 50 containers at once. Each success prints its
+    argument once it and those before it are done, and the errors follow (docker/cli
+    parallelOperation).
+  - `stop`: the signal (SIGTERM), then after `-t` seconds (10; negative: never)
+    SIGKILL, 10 s more, the VM itself, and 2 s more (moby daemon/stop.go, kill.go). A
+    stopped container stops again without complaint, and a signal is checked only for a
+    running one.
+  - `kill`: SIGKILL, waiting for the end as `stop` does after its signal; any other
+    signal is only sent. Signals are named as moby/sys/signal names them, real-time ones
+    included, and every error names its container.
+  - `rm` trims `/` from its arguments, refuses a running container unless `-f`, which
+    kills it, says nothing of a missing one with `-f`, and removes one container at a
+    time.
+  - Whoever waits for a container is told its exit code as its record changes, under
+    the records' lock, as moby's `State.Wait` is, so `wait` never reads a record before
+    its end is written.
+- **Known gaps** (flags parsed and refused): `logs --since/--until`, `ps --format`,
+  `--filter` and `--size`, and `run`'s TTY, ports, volumes, networks, limits, restart
+  policies and `--sig-proxy=false`. `/etc/hostname`, `/etc/hosts` and
+  `/etc/resolv.conf` come with networking.
 - **Tests:** E2E with booted VMs, so they need no snapshots: a container outlives its
   run until `rm`, and `wait` reports its status; names are unique, and `--rm` leaves
   nothing; `stop` ends a command by SIGTERM (143) and `kill -s USR1` reaches it; `rm`
-  refuses a running container and `rm -f` kills it (137).
+  refuses a running container and `rm -f` kills it (137); `ps` and `logs`; `-d` prints
+  the ID and runs on, named for its ID; a command that cannot start is reported as
+  `docker run` reports it, attached and detached; usage mistakes start no daemon.
 
 ## 3. Components
 
