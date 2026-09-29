@@ -1111,6 +1111,58 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
   cap, a snapshot whose guest used more than 2 GiB in one run would fail on the Mac, as
   would a guest's block request over 2 GiB (a descriptor's length has 32 bits).
 
+### M36. What shipping the guest costs, and what `cargo install` honors
+
+- **Question.** For `shards run IMAGE` to work on first use, shards ships its kernel and
+  shards-init (docs/research/shipping-the-guest.md). How large is each? And can a build
+  script embed shards-init when shards is installed with `cargo install`?
+- **Method.** 2026-09-29, this machine: Apple M5 Max, macOS 26.4.1 (25E253), Rust
+  1.98.0; the default toolchain, `stable`, is 1.94.1, without musl targets. Each build
+  ran once, so sizes are exact and times indicative.
+  - *S1, the kernel.* The assets of release `kernel-6.18.48-1bff175d35cb` by
+    `Content-Length`, and the aarch64 kernel compressed with gzip -9 (Apple gzip 479),
+    zstd -19 (1.5.7) and xz -9e (5.8.4).
+  - *S2, shards-init* at 09a7226: `cargo build -p shards-init --profile guest --target
+    <arch>-unknown-linux-musl` into a fresh target directory.
+  - *S3, the host binaries* at 5926dc1: `cargo build --release -p shards`.
+  - *S4, `cargo install`.* `docs/research/measurements/cargo-install-guest/run.sh`
+    builds a workspace laid out like shards': `rust-toolchain.toml` pins 1.98.0 with both
+    musl targets, and `.cargo/config.toml` links musl with `rust-lld`. Its host package's
+    build script runs `cargo build -p <guest> --profile guest --target
+    <arch>-unknown-linux-musl --target-dir $OUT_DIR/…`, embeds the result with
+    `include_bytes!`, and records what it saw. The script builds and installs it six
+    ways. Three runs gave the same results.
+- **Results.**
+  - S1: `Image-6.18.48-aarch64` is 18,883,072 bytes and `vmlinux-6.18.48-x86_64`
+    27,708,976. The aarch64 kernel compresses to 8,350,871 bytes (gzip), 7,022,164 (zstd)
+    and 6,104,196 (xz).
+  - S2: shards-init is 428,912 bytes for aarch64, static and stripped (228,401 gzipped),
+    built in 3.23 s; and 481,792 for x86_64, static-pie, in 3.73 s. The aarch64 build had
+    the same SHA-256 as an earlier build in another target directory.
+  - S3: `shardsd` is 5,547,896 bytes, `shards-vm` 957,032 and `shards` 598,904.
+  - S4:
+
+| Case | Command | Outer toolchain | Repo config | Nested musl build |
+|---|---|---|---|---|
+| A | `cargo build`, inside the repo | 1.98.0 | applied | ok, 402,832 bytes embedded |
+| B | `cargo install --path host`, inside the repo | 1.98.0 | applied | ok |
+| C | `cargo install --path <repo>/host`, elsewhere | 1.94.1 | applied | `error[E0463]: can't find crate for std` |
+| D | `cargo install --git file://<repo>`, elsewhere | 1.94.1 | not applied | the same |
+| E | D with `RUSTUP_TOOLCHAIN=1.98.0` | 1.98.0 | not applied | ok |
+| F | E with the musl linker set to `cc` | 1.98.0 | not applied | ``linking with `cc` failed`` |
+
+  - In C and D the build script saw `RUSTUP_TOOLCHAIN=stable-aarch64-apple-darwin`. The
+    nested cargo ran in the checkout, beside its `rust-toolchain.toml`, and still used
+    the outer toolchain. rustup sets `RUSTUP_TOOLCHAIN` for the tool it runs, and the
+    variable outranks the file (rustup 1.29.1 src/toolchain.rs:167-183,
+    doc/user-guide/src/overrides.md:3-20).
+  - In E the nested build ran in the checkout and read its `.cargo/config.toml`, although
+    the outer build did not. F shows what it needed from that file: without `rust-lld`,
+    rustc links with `cc`, and Apple's clang cannot link a Linux ELF.
+- **Consequence.** See shipping-the-guest.md §3. A build script that embeds shards-init
+  must name the musl linker itself, and fail with a clear error when the musl standard
+  library is missing. An install from source runs inside the checkout.
+
 ## Implications for shards (macOS/HVF backend)
 
 1. **≤5 ms start cannot include a process spawn on macOS.**

@@ -1,0 +1,9 @@
+[workspace]
+resolver = "3"
+members = ["host", "guest"]
+default-members = ["host"]
+
+[profile.guest]
+inherits = "release"
+opt-level = "s"
+strip = true
