@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    # Diagnostic (branch kvm-ws-ab): ab.yml runs instead.
+    branches-ignore: [kvm-ws-ab]
   pull_request:
 
 permissions:
