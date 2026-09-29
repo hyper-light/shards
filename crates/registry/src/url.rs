@@ -120,6 +120,16 @@ impl Url {
         &self.target
     }
 
+    /// The origin as one key: scheme, host and port, the port given even when it is the
+    /// scheme's default (RFC 6454 §4).
+    pub fn origin(&self) -> String {
+        let scheme = match self.scheme {
+            Scheme::Http => "http",
+            Scheme::Https => "https",
+        };
+        format!("{scheme}://{}:{}", self.host, self.port)
+    }
+
     /// Whether `other` is the same origin: scheme, host and port (RFC 6454 §4).
     pub fn same_origin(&self, other: &Url) -> bool {
         self.scheme == other.scheme && self.host == other.host && self.port == other.port

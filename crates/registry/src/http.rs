@@ -60,6 +60,15 @@ impl std::fmt::Debug for Client {
     }
 }
 
+/// Where [`Client::follow`] may go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Redirects {
+    /// Wherever a redirect points; each hop's credentials come from `authorize`.
+    Anywhere,
+    /// Only within the first URL's origin: scheme, host and port.
+    SameOrigin,
+}
+
 pub struct Request<'a> {
     pub method: &'a str,
     pub url: &'a Url,
@@ -147,11 +156,14 @@ impl Client {
     ///
     /// Each hop's `Authorization` comes from `authorize` for that hop's URL, so credentials
     /// go only where the caller allows. Go instead copies them to the same host and its
-    /// subdomains.
+    /// subdomains. A body `authorize` cannot withhold, one that carries credentials, stays
+    /// with `redirects`: [`Redirects::SameOrigin`] refuses a redirect to any other origin,
+    /// a switch from TLS to plain HTTP included, before anything is sent there.
     pub fn follow(
         &self,
         req: &Request<'_>,
         authorize: &dyn Fn(&Url) -> Result<Option<String>, Error>,
+        redirects: Redirects,
     ) -> Result<Response, Error> {
         let mut url = req.url.clone();
         let mut method = req.method;
@@ -182,7 +194,15 @@ impl Client {
                 }
                 body = &[];
             }
-            url = url.join(&location)?;
+            let next = url.join(&location)?;
+            if redirects == Redirects::SameOrigin && !next.same_origin(req.url) {
+                return Err(Error::new(format!(
+                    "{}: redirected to {}, another origin, which a request carrying credentials may not follow",
+                    req.url.origin(),
+                    next.origin()
+                )));
+            }
+            url = next;
         }
         Err(Error::new(format!("{}: stopped after 10 redirects", req.url)))
     }

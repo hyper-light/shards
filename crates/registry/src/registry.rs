@@ -16,7 +16,7 @@ use shards_image::reference::{Algorithm, DOCKER_HUB, Digest, Reference};
 use shards_image::store::{Download, Store};
 
 use crate::auth::{Authorizer, Credentials, loopback};
-use crate::http::{Client, Request, Response};
+use crate::http::{Client, Redirects, Request, Response};
 use crate::url::Url;
 use crate::{Error, ErrorKind};
 
@@ -106,6 +106,7 @@ impl Registry {
                     body: &[],
                 },
                 &|hop| self.auth.authorization(&self.http, hop, &self.scopes),
+                Redirects::Anywhere,
             );
             let mut response = match sent {
                 Ok(response) => response,

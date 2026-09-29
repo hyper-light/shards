@@ -180,7 +180,7 @@ fn store(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// Downloads `pinned` to `path` in `dir`, from `SHARDS_KERNEL_URL` if set. The body is
 /// hashed as it arrives and kept only if it is the pinned kernel: its size and SHA-256.
 fn download(dir: &Path, path: &Path, pinned: &Pinned, say: &dyn Fn(&str)) -> Result<(), String> {
-    use shards_registry::http::{Client, Request};
+    use shards_registry::http::{Client, Redirects, Request};
     use shards_registry::{tls, url::Url};
 
     let from = std::env::var("SHARDS_KERNEL_URL")
@@ -209,7 +209,9 @@ fn download(dir: &Path, path: &Path, pinned: &Pinned, say: &dyn Fn(&str)) -> Res
         headers: &[],
         body: &[],
     };
-    let mut response = http.follow(&request, &|_| Ok(None)).map_err(|e| failed(&e))?;
+    let mut response = http
+        .follow(&request, &|_| Ok(None), Redirects::Anywhere)
+        .map_err(|e| failed(&e))?;
     if response.status != 200 {
         return Err(failed(&format!("HTTP {}", response.status)));
     }

@@ -12,6 +12,11 @@
 //! Stricter than containerd:
 //! - A realm must be `https`, unless it and the registry are both plain HTTP on loopback.
 //!   containerd sends credentials to any realm a registry names.
+//! - Challenges are answered per origin: scheme, host and port. containerd keys them by
+//!   host, so a credential a registry asked for over TLS would go to the same host over
+//!   plain HTTP.
+//! - An OAuth2 POST, whose body carries the secret, follows redirects only within its
+//!   realm's origin. Go's client replays a 307 or 308 body wherever it points.
 //! - A token lasts `expires_in`, and at least 60 s, from `issued_at` or its receipt, as
 //!   distribution's client counts. containerd keeps a token without `expires_in` forever.
 //! - A request refused twice in a row is not retried again.
@@ -27,7 +32,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::Deserialize;
 
 use crate::Error;
-use crate::http::{Client, Request, Response};
+use crate::http::{Client, Redirects, Request, Response};
 use crate::url::{Scheme as UrlScheme, Url};
 
 /// What shards names itself to token servers (`client_id`; distribution's oauth.md asks
@@ -215,7 +220,7 @@ impl Authorizer {
     }
 
     fn is_registry(&self, url: &Url) -> bool {
-        url.scheme() == self.registry.scheme() && url.authority() == self.registry.authority()
+        url.same_origin(&self.registry)
     }
 
     /// The `Authorization` value for a request to `url` that needs `scopes`, fetching a
@@ -231,7 +236,7 @@ impl Authorizer {
         }
         let handler = {
             let hosts = self.hosts.lock().unwrap_or_else(PoisonError::into_inner);
-            hosts.get(&url.authority()).cloned()
+            hosts.get(&url.origin()).cloned()
         };
         match handler.as_deref() {
             None => Ok(None),
@@ -247,7 +252,7 @@ impl Authorizer {
         if matches!(self.credentials, Credentials::RegistryToken(_)) || repeated {
             return Ok(false);
         }
-        let host = url.authority();
+        let host = url.origin();
         let mut hosts = self.hosts.lock().unwrap_or_else(PoisonError::into_inner);
         for c in challenges(response.headers("www-authenticate")) {
             match c.scheme {
@@ -276,7 +281,8 @@ impl Authorizer {
                     };
                     if username.is_empty() || secret.is_empty() {
                         return Err(Error::new(format!(
-                            "{host} asks for credentials, and there are none"
+                            "{} asks for credentials, and there are none",
+                            url.authority()
                         )));
                     }
                     let basic = format!("Basic {}", BASE64.encode(format!("{username}:{secret}")));
@@ -385,6 +391,7 @@ impl Bearer {
                 body: body.as_bytes(),
             },
             &|_| Ok(None),
+            Redirects::SameOrigin,
         )
     }
 
@@ -426,6 +433,7 @@ impl Bearer {
                 body: &[],
             },
             &|hop| Ok(basic.clone().filter(|_| hop.same_origin(realm))),
+            Redirects::Anywhere,
         )?;
         read_token(&mut response, false)
     }
@@ -560,6 +568,111 @@ mod tests {
 
     fn pull(repo: &str) -> Vec<String> {
         vec![format!("repository:{repo}:pull")]
+    }
+
+    /// A credential answers the origin that asked for it: not its host under another scheme
+    /// or port, where containerd, keying by host, would send it (audit A05).
+    #[test]
+    fn credentials_answer_the_origin_that_asked_for_them() {
+        let credentials = Credentials::Password {
+            username: "u".into(),
+            password: "p".into(),
+        };
+        let https = Url::parse("https://registry.example/v2/").unwrap();
+        let auth = Authorizer::new(&https, credentials);
+        assert!(
+            auth.challenged(&https, &refusal(r#"Basic realm="r""#), false)
+                .unwrap()
+        );
+        let client = plain();
+        let ask = |url: &str| {
+            auth.authorization(&client, &Url::parse(url).unwrap(), &[])
+                .unwrap()
+        };
+        assert_eq!(
+            ask("https://registry.example/v2/a").as_deref(),
+            Some("Basic dTpw")
+        );
+        assert_eq!(
+            ask("https://registry.example:443/v2/a").as_deref(),
+            Some("Basic dTpw")
+        );
+        for other in [
+            "http://registry.example/v2/a",
+            "http://registry.example:443/v2/a",
+            "https://registry.example:5000/v2/a",
+        ] {
+            assert_eq!(ask(other), None, "{other}");
+        }
+    }
+
+    /// A password in an OAuth2 POST goes to the realm's origin and no further: whatever
+    /// the redirect, the other origin gets nothing and the fetch fails (audit A05).
+    #[test]
+    fn oauth2_secrets_follow_no_redirect_to_another_origin() {
+        let elsewhere = token_server(&[r#"{"access_token":"stolen","expires_in":300}"#]);
+        let credentials = || Credentials::Password {
+            username: "u".into(),
+            password: "secret".into(),
+        };
+        for status in [
+            "301 Moved Permanently",
+            "302 Found",
+            "303 See Other",
+            "307 Temporary Redirect",
+            "308 Permanent Redirect",
+        ] {
+            let location = format!("Location: http://127.0.0.1:{}/token\r\n", elsewhere.port);
+            let realm = serve(None, vec![(http(status, &location, ""), After::Keep)]);
+            let auth = Authorizer::new(&registry(), credentials());
+            let challenge = format!(
+                r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
+                realm.port
+            );
+            assert!(auth.challenged(&registry(), &refusal(&challenge), false).unwrap());
+            let fetched = auth.authorization(&plain(), &registry(), &pull("a/b"));
+            let e = fetched.expect_err(status).to_string();
+            assert!(e.contains("another origin"), "{status}: {e}");
+            assert_eq!(realm.requests().len(), 1, "{status}");
+        }
+        assert_eq!(elsewhere.accepted(), 0, "{:?}", elsewhere.requests());
+    }
+
+    /// Within its origin, an OAuth2 POST follows a 307 with its body, as Go's client does.
+    #[test]
+    fn oauth2_follows_a_redirect_within_its_origin() {
+        let realm = serve(
+            None,
+            vec![
+                (
+                    http("307 Temporary Redirect", "Location: /token2\r\n", ""),
+                    After::Keep,
+                ),
+                (
+                    http("200 OK", "", r#"{"access_token":"t3","expires_in":300}"#),
+                    After::Keep,
+                ),
+            ],
+        );
+        let credentials = Credentials::Password {
+            username: "u".into(),
+            password: "p".into(),
+        };
+        let auth = Authorizer::new(&registry(), credentials);
+        let challenge = format!(
+            r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
+            realm.port
+        );
+        assert!(auth.challenged(&registry(), &refusal(&challenge), false).unwrap());
+        let value = auth.authorization(&plain(), &registry(), &pull("a/b")).unwrap();
+        assert_eq!(value.as_deref(), Some("Bearer t3"));
+        let requests = realm.requests();
+        assert!(
+            requests[1].starts_with("POST /token2 HTTP/1.1\r\n"),
+            "{}",
+            requests[1]
+        );
+        assert!(requests[1].contains("password=p"), "{}", requests[1]);
     }
 
     /// containerd's TestParseAuthHeaderBearer and TestParseAuthHeader.
