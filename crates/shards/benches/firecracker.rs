@@ -188,7 +188,7 @@ mod compare {
             .arg(kernel)
             .arg("--initrd")
             .arg(initrd)
-            .args(["--cpus", cpus, "--memory", memory, "--no-console", "--cmdline"])
+            .args(["--cpus", cpus, "--memory", memory, "--cmdline"])
             .arg(format!("{BEAT_CMDLINE} shards_snapshot={SNAPSHOT_AFTER}"))
             .arg("--snapshot-dir")
             .arg(&snapshot)
@@ -199,6 +199,13 @@ mod compare {
             "shards' snapshot: {}",
             String::from_utf8_lossy(&saved.stderr)
         );
+        // Diagnostic (branch restore-diag): the guest's mitigations under each VMM.
+        for line in String::from_utf8_lossy(&saved.stdout)
+            .lines()
+            .filter(|l| l.contains("vuln "))
+        {
+            println!("shards-guest {line}");
+        }
 
         // Firecracker: booted from its config, paused and snapshotted through its API.
         let (fc_state, fc_memory) = (dir.join("fc.state"), dir.join("fc.memory"));
@@ -222,7 +229,7 @@ mod compare {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        let (beating, _) = first_beat(booted.stdout.take().unwrap());
+        let (beating, fc_out) = first_beat(booted.stdout.take().unwrap());
         beating
             .recv_timeout(TIMEOUT)
             .expect("Firecracker's guest never beat");
@@ -239,6 +246,12 @@ mod compare {
         );
         booted.kill().unwrap();
         booted.wait().unwrap();
+        for line in String::from_utf8_lossy(&fc_out.join().unwrap())
+            .lines()
+            .filter(|l| l.contains("vuln "))
+        {
+            println!("fc-guest {line}");
+        }
 
         let load = format!(
             "{{\"snapshot_path\":{},\"mem_backend\":{{\"backend_type\":\"File\",\"backend_path\":{}}},\"resume_vm\":true}}",
