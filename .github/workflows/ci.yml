@@ -106,6 +106,11 @@ jobs:
           grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag,hpage_pmd_size}
       - name: Compare
         run: cargo bench --locked -p shards --bench firecracker -- --runs 30
+      # shards' own restores and pooled runs on this KVM host (docs/benchmarks.md).
+      - name: Restore
+        run: cargo bench --locked -p shards --bench restore -- --runs 30
+      - name: Image
+        run: cargo bench --locked -p shards --bench image -- --runs 100 --templates 5
 
   musl:
     name: ${{ matrix.target }}
