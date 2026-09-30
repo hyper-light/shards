@@ -24,3 +24,16 @@ pub fn first_mismatch(salt: u64, offset: u64, buf: &[u8]) -> Option<usize> {
         .enumerate()
         .position(|(i, &b)| b != pattern_byte(salt, offset.wrapping_add(i as u64)))
 }
+
+/// FNV-1a over `len` bytes of pattern `salt` from offset 0: CPU work whose answer the
+/// host can check (benches/workloads.rs).
+pub fn pattern_hash(salt: u64, len: u64) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut offset = 0;
+    while offset < len {
+        hash ^= u64::from(pattern_byte(salt, offset));
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        offset += 1;
+    }
+    hash
+}

@@ -68,3 +68,7 @@ harness = false
 [[bench]]
 name = "image"
 harness = false
+
+[[bench]]
+name = "workloads"
+harness = false

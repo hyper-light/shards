@@ -1830,3 +1830,28 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D06's persistent kqueue is not taken: it would save a few
   microseconds a run, 0.07%, against the stale registrations and descriptor reuse a
   fresh kqueue rules out by construction.
+
+### M51. Workloads, their output checked, and what streams cost on this host
+
+- **Question.** The audit's matrix asks for workloads whose status and output are
+  checked, not only timed. What do `true`, a line to stderr, 16 MiB out, 16 MiB in and
+  back, and 64 MiB of hashing in the guest cost a run served from its template?
+- **Method.** `cargo bench -p shards --bench workloads -- --runs 5`
+  (crates/shards/benches/workloads.rs): each run's stdout, stderr and status checked
+  byte for byte against the test guest's pattern (shards_testguest), the workloads in
+  turn after two runs each. 46c855a, 2026-09-30, this machine, load average about 6,
+  its data volume 99% full (42–68 GiB free of 7.3 TiB).
+- **Results (µs, p50 / p90 / max).** `true` 4 781 / 21 589 / 21 589; stderr 5 663 /
+  11 384 / 11 384; 16 MiB out 364 752 / 497 803 / 497 803 (44 MiB/s); 16 MiB in and back
+  321 920 / 369 728 / 369 728; hashing 64 MiB 69 662 / 72 223 / 72 223. Every output was
+  exact.
+- **Where the streams' time goes.** A sample of the serving VM while it relayed
+  `head -c 256M /dev/zero` (53 s, 4.8 MiB/s): its vCPU waited for interrupts 98% of the
+  time, and its relay thread spent 97% in the two appends that keep each frame in the
+  container's log (workload.rs, `Logger::keep`). Appends on this volume cost that much
+  from any program: 4 KiB appends took 165–185 µs each from Python, 66 µs into a
+  preallocated file, where a solid-state disk with room takes a few.
+- **Consequence.** The log is written as Docker's default `blocking` log mode writes
+  its: output waits for it. What streams cost therefore follows the disk the home is on;
+  these stream figures are this host's full volume, not shards'. The benchmark keeps
+  checking every byte.

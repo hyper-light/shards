@@ -46,6 +46,12 @@ pub fn main() -> ! {
             1
         }
         "bulk" => bulk(arg(1).parse().unwrap_or(0), arg(2).parse().unwrap_or(0)),
+        "hash" => {
+            let hash =
+                shards_testguest::pattern_hash(arg(2).parse().unwrap_or(0), arg(1).parse().unwrap_or(0));
+            let _ = writeln!(io::stdout(), "{hash:016x}");
+            0
+        }
         "orphan" => orphan(),
         "trap" => trap(arg(1)),
         "tty" => tty(arg(1)),
