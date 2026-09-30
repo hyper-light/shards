@@ -55,8 +55,11 @@ mod ifmt {
 
 pub type NodeId = usize;
 
-/// A directory entry: its name and what it names.
-type Entry = (Vec<u8>, NodeId);
+/// A directory entry: its name, borrowed from the tree, and what it names.
+type Entry<'a> = (&'a [u8], NodeId);
+
+/// Zeros to pad with: no pad is longer than a block.
+static ZEROS: [u8; BLOCK as usize] = [0; BLOCK as usize];
 
 /// Ownership, permissions, times and extended attributes of a node.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -216,10 +219,12 @@ fn xattr_index(name: &[u8]) -> Option<(u8, &[u8])> {
         .find_map(|(p, i)| name.strip_prefix(*p).map(|rest| (*i, rest)))
 }
 
-/// The inline xattr body: header, then entries in (index, name) order, each padded to 4.
-fn xattr_body(xattrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<Vec<u8>, Error> {
+/// The inline xattr body into `body`: header, then entries in (index, name) order, each
+/// padded to 4. Its length is [`xattr_len`]'s.
+fn xattr_body(xattrs: &BTreeMap<Vec<u8>, Vec<u8>>, body: &mut Vec<u8>) -> Result<(), Error> {
+    body.clear();
     if xattrs.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let mut entries = Vec::with_capacity(xattrs.len());
     for (name, value) in xattrs {
@@ -234,7 +239,7 @@ fn xattr_body(xattrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<Vec<u8>, Error> {
         entries.push((index, suffix, name_len, value_len, value));
     }
     entries.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-    let mut body = vec![0u8; XATTR_HEADER as usize];
+    body.resize(XATTR_HEADER as usize, 0);
     for (index, suffix, name_len, value_len, value) in entries {
         body.push(name_len);
         body.push(index);
@@ -243,18 +248,30 @@ fn xattr_body(xattrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<Vec<u8>, Error> {
         body.extend_from_slice(value);
         body.resize(body.len().next_multiple_of(4), 0);
     }
-    Ok(body)
+    Ok(())
+}
+
+/// The length of [`xattr_body`]'s body, which the layout needs before any is written.
+fn xattr_len(xattrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> u64 {
+    if xattrs.is_empty() {
+        return 0;
+    }
+    xattrs.iter().fold(XATTR_HEADER, |n, (name, value)| {
+        let suffix = xattr_index(name).map_or(name.len(), |(_, rest)| rest.len());
+        n + (4 + suffix + value.len()).next_multiple_of(4) as u64
+    })
 }
 
 /// One inode as laid out: everything the writer decides before writing.
 #[derive(Debug)]
-struct Inode {
+struct Inode<'a> {
     node: NodeId,
     nlink: u32,
     /// For directories: the parent's node.
     parent: NodeId,
     extended: bool,
-    xattrs: Vec<u8>,
+    /// The length of its xattr body, which is built as its record is written.
+    xattrs: u64,
     size: u64,
     /// Bytes of data kept in the inode record (FLAT_INLINE), or 0.
     tail: u64,
@@ -262,11 +279,12 @@ struct Inode {
     nid: u64,
     /// First data block, if the inode has any.
     start: Option<u64>,
-    /// Directory contents, as the directory's data bytes (dirents and names).
-    dir_blocks: Vec<Vec<Entry>>,
+    /// A directory's entries, sorted, and where each of its blocks ends among them.
+    entries: Vec<Entry<'a>>,
+    block_ends: Vec<usize>,
 }
 
-impl Inode {
+impl Inode<'_> {
     fn isize(&self) -> u64 {
         if self.extended { EXTENDED } else { COMPACT }
     }
@@ -278,36 +296,68 @@ impl Inode {
             self.size.div_ceil(BLOCK)
         }
     }
+
+    /// A directory's blocks, as runs of its entries.
+    fn dir_blocks(&self) -> impl Iterator<Item = &[Entry<'_>]> {
+        let starts = std::iter::once(0).chain(self.block_ends.iter().copied());
+        starts
+            .zip(self.block_ends.iter().copied())
+            .map(|(from, to)| self.entries.get(from..to).unwrap_or_default())
+    }
 }
 
-/// Splits sorted entries into directory blocks: each holds 12-byte dirents, then names,
-/// within one block.
-fn dir_blocks(entries: Vec<Entry>) -> (Vec<Vec<Entry>>, u64) {
-    let mut blocks: Vec<Vec<Entry>> = Vec::new();
-    let mut current: Vec<Entry> = Vec::new();
+/// Where sorted entries split into directory blocks, each holding 12-byte dirents, then
+/// names, within one block: each block's end among them, and the directory's size.
+fn dir_blocks(entries: &[Entry<'_>]) -> (Vec<usize>, u64) {
+    let mut ends = Vec::new();
     let mut used = 0u64;
-    for (name, id) in entries {
+    for (i, (name, _)) in entries.iter().enumerate() {
         let need = DIRENT + name.len() as u64;
-        if used + need > BLOCK && !current.is_empty() {
-            blocks.push(std::mem::take(&mut current));
+        if used + need > BLOCK && used > 0 {
+            ends.push(i);
             used = 0;
         }
         used += need;
-        current.push((name, id));
     }
-    let last_used = used;
-    if !current.is_empty() {
-        blocks.push(current);
+    if used > 0 {
+        ends.push(entries.len());
     }
-    let size = (blocks.len() as u64).saturating_sub(1) * BLOCK + last_used;
-    (blocks, size)
+    let size = (ends.len() as u64).saturating_sub(1) * BLOCK + used;
+    (ends, size)
+}
+
+/// Writes in order, knowing where it is: the metadata area goes out as it is laid out,
+/// its records at rising offsets, not built whole first (audit D12).
+struct Seq<'o> {
+    out: &'o mut dyn Write,
+    at: u64,
+}
+
+impl Seq<'_> {
+    /// Zeros up to `to`.
+    fn pad_to(&mut self, to: u64) -> Result<(), Error> {
+        if to < self.at {
+            return err(format!("metadata at {to} written after {}", self.at));
+        }
+        while self.at < to {
+            let n = (to - self.at).min(BLOCK);
+            self.put(ZEROS.get(..n as usize).unwrap_or_default())?;
+        }
+        Ok(())
+    }
+
+    fn put(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        self.out.write_all(bytes)?;
+        self.at += bytes.len() as u64;
+        Ok(())
+    }
 }
 
 /// Writes `tree` as an EROFS image to `out`, reading file contents from `source`.
 pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Result<Written, Error> {
     // Depth-first order from the root, children by name: every node once, at its first
     // name, so the root is first and hard links share one inode.
-    let mut order: Vec<Inode> = Vec::new();
+    let mut order: Vec<Inode<'_>> = Vec::new();
     let mut index: HashMap<NodeId, usize> = HashMap::new();
     let mut stack: Vec<(NodeId, NodeId)> = vec![(Tree::ROOT, Tree::ROOT)];
     while let Some((id, parent)) = stack.pop() {
@@ -324,13 +374,14 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
             nlink: 1,
             parent,
             extended: false,
-            xattrs: xattr_body(&node.meta.xattrs)?,
+            xattrs: xattr_len(&node.meta.xattrs),
             size: 0,
             tail: 0,
             inline: false,
             nid: 0,
             start: None,
-            dir_blocks: Vec::new(),
+            entries: Vec::new(),
+            block_ends: Vec::new(),
         });
         if let Kind::Dir(entries) = &node.kind {
             // Reverse, so the stack yields names in order.
@@ -360,13 +411,15 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
         match &node.kind {
             Kind::Dir(entries) => {
                 inode.nlink = 2 + subdirs.get(&inode.node).copied().unwrap_or(0);
-                let mut all: Vec<Entry> = entries.iter().map(|(n, &c)| (n.clone(), c)).collect();
-                all.push((b".".to_vec(), inode.node));
-                all.push((b"..".to_vec(), inode.parent));
+                let mut all: Vec<Entry<'_>> = Vec::with_capacity(entries.len() + 2);
+                all.extend(entries.iter().map(|(n, &c)| (n.as_slice(), c)));
+                all.push((b".", inode.node));
+                all.push((b"..", inode.parent));
                 // Byte order, a prefix first: the kernel's lookup (namei.c) relies on it.
-                all.sort_by(|a, b| a.0.cmp(&b.0));
-                let (blocks, size) = dir_blocks(all);
-                inode.dir_blocks = blocks;
+                all.sort_by(|a, b| a.0.cmp(b.0));
+                let (ends, size) = dir_blocks(&all);
+                inode.entries = all;
+                inode.block_ends = ends;
                 inode.size = size;
             }
             Kind::File { size, .. } => inode.size = *size,
@@ -392,7 +445,7 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
             || inode.nlink > u32::from(u16::MAX)
             || since_epoch.is_none()
             || m.mtime_nsec != 0;
-        let head = inode.isize() + inode.xattrs.len() as u64;
+        let head = inode.isize() + inode.xattrs;
         let tail = inode.size % BLOCK;
         inode.inline = tail > 0 && head + tail <= BLOCK;
         inode.tail = if inode.inline { tail } else { 0 };
@@ -421,31 +474,31 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
         u32::try_from(total_blocks).map_err(|_| Error("image too large for 32-bit block numbers".into()))?;
     let nid_of = |id: NodeId| -> u64 { index.get(&id).and_then(|&i| order.get(i)).map_or(0, |i| i.nid) };
 
-    // The metadata area: superblock, then inode records.
-    let mut meta = vec![0u8; (meta_blocks * BLOCK) as usize];
-    let mut put = |at: u64, bytes: &[u8]| -> Result<(), Error> {
-        let dst = meta
-            .get_mut(at as usize..at as usize + bytes.len())
-            .ok_or_else(|| Error("metadata out of bounds".into()))?;
-        dst.copy_from_slice(bytes);
-        Ok(())
-    };
-    let mut sb = Vec::with_capacity(SUPER_SIZE as usize);
-    sb.extend_from_slice(&MAGIC.to_le_bytes());
-    sb.extend_from_slice(&0u32.to_le_bytes()); // checksum: SB_CHKSUM is off
-    sb.extend_from_slice(&0u32.to_le_bytes()); // feature_compat
-    sb.push(BLOCK_BITS);
-    sb.push(0); // sb_extslots
-    sb.extend_from_slice(&root_nid.to_le_bytes());
-    sb.extend_from_slice(&(order.len() as u64).to_le_bytes()); // inos
-    sb.extend_from_slice(&epoch.to_le_bytes());
-    sb.extend_from_slice(&0u32.to_le_bytes()); // fixed_nsec
-    sb.extend_from_slice(&total.to_le_bytes()); // blocks_lo
-    sb.extend_from_slice(&0u32.to_le_bytes()); // meta_blkaddr
-    sb.extend_from_slice(&0u32.to_le_bytes()); // xattr_blkaddr
-    sb.resize(SUPER_SIZE as usize, 0); // uuid, volume name, features: zero
-    put(SUPER_OFFSET, &sb)?;
+    // The metadata area: superblock, then inode records, each where it was placed.
+    let mut seq = Seq { out, at: 0 };
+    let mut sb = [0u8; SUPER_SIZE as usize];
+    {
+        let mut w = &mut sb[..];
+        w.write_all(&MAGIC.to_le_bytes())?;
+        w.write_all(&0u32.to_le_bytes())?; // checksum: SB_CHKSUM is off
+        w.write_all(&0u32.to_le_bytes())?; // feature_compat
+        w.write_all(&[BLOCK_BITS, 0])?; // blkszbits, sb_extslots
+        w.write_all(&root_nid.to_le_bytes())?;
+        w.write_all(&(order.len() as u64).to_le_bytes())?; // inos
+        w.write_all(&epoch.to_le_bytes())?;
+        w.write_all(&0u32.to_le_bytes())?; // fixed_nsec
+        w.write_all(&total.to_le_bytes())?; // blocks_lo
+        w.write_all(&0u32.to_le_bytes())?; // meta_blkaddr
+        w.write_all(&0u32.to_le_bytes())?; // xattr_blkaddr
+        // uuid, volume name, features: zero
+    }
+    seq.pad_to(SUPER_OFFSET)?;
+    seq.put(&sb)?;
 
+    // One buffer for file bytes, and one for a directory block, reused throughout.
+    let mut buf = vec![0u8; 1 << 20];
+    let mut block = Vec::with_capacity(BLOCK as usize);
+    let mut xattrs = Vec::new();
     for (ino, inode) in order.iter().enumerate() {
         let node = tree
             .node(inode.node)
@@ -471,89 +524,103 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
                 None => NULL_ADDR,
             },
         };
-        let icount = if inode.xattrs.is_empty() {
+        xattr_body(&m.xattrs, &mut xattrs)?;
+        let icount = if xattrs.is_empty() {
             0u16
         } else {
-            u16::try_from(1 + (inode.xattrs.len() as u64 - XATTR_HEADER) / 4)
+            u16::try_from(1 + (xattrs.len() as u64 - XATTR_HEADER) / 4)
                 .map_err(|_| Error("too many xattrs".into()))?
         };
         let ino = u32::try_from(ino + 1).map_err(|_| Error("too many inodes".into()))?;
-        let mut rec = Vec::with_capacity(inode.isize() as usize);
-        rec.extend_from_slice(&format.to_le_bytes());
-        rec.extend_from_slice(&icount.to_le_bytes());
-        rec.extend_from_slice(&mode.to_le_bytes());
-        if inode.extended {
-            rec.extend_from_slice(&0u16.to_le_bytes()); // i_nb: nlink is below
-            rec.extend_from_slice(&inode.size.to_le_bytes());
-            rec.extend_from_slice(&i_u.to_le_bytes());
-            rec.extend_from_slice(&ino.to_le_bytes());
-            rec.extend_from_slice(&m.uid.to_le_bytes());
-            rec.extend_from_slice(&m.gid.to_le_bytes());
-            rec.extend_from_slice(&m.mtime.to_le_bytes());
-            rec.extend_from_slice(&m.mtime_nsec.to_le_bytes());
-            rec.extend_from_slice(&inode.nlink.to_le_bytes());
-            rec.resize(EXTENDED as usize, 0);
-        } else {
-            let since_epoch = (m.mtime - epoch) as u32;
-            rec.extend_from_slice(&(inode.nlink as u16).to_le_bytes());
-            rec.extend_from_slice(&(inode.size as u32).to_le_bytes());
-            rec.extend_from_slice(&since_epoch.to_le_bytes());
-            rec.extend_from_slice(&i_u.to_le_bytes());
-            rec.extend_from_slice(&ino.to_le_bytes());
-            rec.extend_from_slice(&(m.uid as u16).to_le_bytes());
-            rec.extend_from_slice(&(m.gid as u16).to_le_bytes());
-            rec.resize(COMPACT as usize, 0);
+        let mut rec = [0u8; EXTENDED as usize];
+        {
+            let mut w = &mut rec[..];
+            w.write_all(&format.to_le_bytes())?;
+            w.write_all(&icount.to_le_bytes())?;
+            w.write_all(&mode.to_le_bytes())?;
+            if inode.extended {
+                w.write_all(&0u16.to_le_bytes())?; // i_nb: nlink is below
+                w.write_all(&inode.size.to_le_bytes())?;
+                w.write_all(&i_u.to_le_bytes())?;
+                w.write_all(&ino.to_le_bytes())?;
+                w.write_all(&m.uid.to_le_bytes())?;
+                w.write_all(&m.gid.to_le_bytes())?;
+                w.write_all(&m.mtime.to_le_bytes())?;
+                w.write_all(&m.mtime_nsec.to_le_bytes())?;
+                w.write_all(&inode.nlink.to_le_bytes())?;
+            } else {
+                let since_epoch = (m.mtime - epoch) as u32;
+                w.write_all(&(inode.nlink as u16).to_le_bytes())?;
+                w.write_all(&(inode.size as u32).to_le_bytes())?;
+                w.write_all(&since_epoch.to_le_bytes())?;
+                w.write_all(&i_u.to_le_bytes())?;
+                w.write_all(&ino.to_le_bytes())?;
+                w.write_all(&(m.uid as u16).to_le_bytes())?;
+                w.write_all(&(m.gid as u16).to_le_bytes())?;
+            }
         }
-        rec.extend_from_slice(&inode.xattrs);
+        seq.pad_to(inode.nid * SLOT)?;
+        seq.put(rec.get(..inode.isize() as usize).unwrap_or_default())?;
+        seq.put(&xattrs)?;
         if inode.inline {
-            let tail = tail_bytes(tree, inode, source, &nid_of)?;
-            rec.extend_from_slice(&tail);
+            let start = inode.size - inode.tail;
+            let tail = inode.tail as usize;
+            match &node.kind {
+                Kind::Dir(_) => {
+                    let last = inode
+                        .dir_blocks()
+                        .last()
+                        .ok_or_else(|| Error("empty directory".into()))?;
+                    dir_block(last, &nid_of, tree, &mut block);
+                    seq.put(block.get(..tail).unwrap_or(&block))?;
+                }
+                Kind::File { data, .. } => {
+                    let bytes = buf.get_mut(..tail).ok_or_else(|| Error("buffer".into()))?;
+                    source.read_at(*data, start, bytes)?;
+                    seq.put(bytes)?;
+                }
+                Kind::Symlink(target) => seq.put(target.get(start as usize..).unwrap_or_default())?,
+                _ => {}
+            }
         }
-        put(inode.nid * SLOT, &rec)?;
     }
-    out.write_all(&meta)?;
+    seq.pad_to(meta_blocks * BLOCK)?;
 
     // Data blocks, in inode order.
-    let mut buf = vec![0u8; 1 << 20];
     for inode in &order {
         let Some(_) = inode.start else { continue };
         let node = tree
             .node(inode.node)
             .ok_or_else(|| Error("missing node".into()))?;
         let full = inode.data_blocks() * BLOCK;
+        let end = seq.at + full;
         match &node.kind {
             Kind::Dir(_) => {
-                for (i, block) in inode.dir_blocks.iter().enumerate() {
+                for (i, entries) in inode.dir_blocks().enumerate() {
                     if (i as u64) * BLOCK >= full {
                         break;
                     }
-                    let mut bytes = dir_block(block, &nid_of, tree);
-                    bytes.resize(BLOCK as usize, 0);
-                    out.write_all(&bytes)?;
+                    dir_block(entries, &nid_of, tree, &mut block);
+                    let to = seq.at + BLOCK;
+                    seq.put(&block)?;
+                    seq.pad_to(to)?;
                 }
             }
             Kind::File { data, .. } => {
                 let mut at = 0u64;
-                let end = full.min(inode.size);
-                while at < end {
-                    let n = (end - at).min(buf.len() as u64) as usize;
+                let stop = full.min(inode.size);
+                while at < stop {
+                    let n = (stop - at).min(buf.len() as u64) as usize;
                     let chunk = buf.get_mut(..n).ok_or_else(|| Error("buffer".into()))?;
                     source.read_at(*data, at, chunk)?;
-                    out.write_all(chunk)?;
+                    seq.put(chunk)?;
                     at += n as u64;
                 }
-                let pad = full - end;
-                if pad > 0 {
-                    out.write_all(&vec![0u8; pad as usize])?;
-                }
             }
-            Kind::Symlink(target) => {
-                let mut bytes = target.clone();
-                bytes.resize(full as usize, 0);
-                out.write_all(&bytes)?;
-            }
+            Kind::Symlink(target) => seq.put(target.get(..full as usize).unwrap_or(target))?,
             _ => {}
         }
+        seq.pad_to(end)?;
     }
     Ok(Written {
         blocks: total_blocks,
@@ -561,40 +628,9 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
     })
 }
 
-/// The bytes of an inode's last, partial block, stored inline.
-fn tail_bytes(
-    tree: &Tree,
-    inode: &Inode,
-    source: &mut dyn Source,
-    nid_of: &dyn Fn(NodeId) -> u64,
-) -> Result<Vec<u8>, Error> {
-    let node = tree
-        .node(inode.node)
-        .ok_or_else(|| Error("missing node".into()))?;
-    let start = inode.size - inode.tail;
-    Ok(match &node.kind {
-        Kind::Dir(_) => {
-            let last = inode
-                .dir_blocks
-                .last()
-                .ok_or_else(|| Error("empty directory".into()))?;
-            let mut bytes = dir_block(last, nid_of, tree);
-            bytes.truncate(inode.tail as usize);
-            bytes
-        }
-        Kind::File { data, .. } => {
-            let mut bytes = vec![0u8; inode.tail as usize];
-            source.read_at(*data, start, &mut bytes)?;
-            bytes
-        }
-        Kind::Symlink(target) => target.get(start as usize..).unwrap_or_default().to_vec(),
-        _ => Vec::new(),
-    })
-}
-
-/// One directory block: dirents, then the names, unpadded.
-fn dir_block(entries: &[Entry], nid_of: &dyn Fn(NodeId) -> u64, tree: &Tree) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(BLOCK as usize);
+/// One directory block into `bytes`: dirents, then the names, unpadded.
+fn dir_block(entries: &[Entry<'_>], nid_of: &dyn Fn(NodeId) -> u64, tree: &Tree, bytes: &mut Vec<u8>) {
+    bytes.clear();
     let mut nameoff = entries.len() as u64 * DIRENT;
     for (name, id) in entries {
         let file_type = match tree.node(*id).map(|n| &n.kind) {
@@ -616,7 +652,6 @@ fn dir_block(entries: &[Entry], nid_of: &dyn Fn(NodeId) -> u64, tree: &Tree) -> 
     for (name, _) in entries {
         bytes.extend_from_slice(name);
     }
-    bytes
 }
 
 /// The kernel's new_encode_dev, for the 12-bit majors and 20-bit minors a dev_t holds

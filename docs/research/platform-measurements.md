@@ -2087,3 +2087,32 @@ revision before comparing a changed API/implementation.
   is half of what is held, so a 256 KiB backlog written in 4 KiB pieces is moved at most
   once over, not 7.9 MiB. Its poll set is a six-slot array, and each output frame's
   header and payload are reserved together.
+
+### M60. What writing an EROFS image allocates
+
+- **Question.** Audit D12: the writer built each inode record in a vector that grew for
+  its xattrs and tail, cloned directory names, split directories into a vector a block,
+  allocated each tail and pad, and held every xattr body and the whole metadata area at
+  once. What does writing 10,000 files cost, and what after?
+- **Method.** `crates/image/tests/allocations.rs`: an allocator that counts this thread's
+  allocations, reallocations and peak requested live bytes, over `erofs::write` alone,
+  into a sink that keeps nothing but hashes it. The audit's five trees of 10,000 files.
+  Before is 5d1811f's writer, after this change's; same host, 2026-09-30.
+- **Results.**
+
+| 10,000 files | Before: allocations / reallocations / peak bytes | After |
+|---|---|---|
+| empty | 20,141 / 357 / 4,300,383 | 23 / 29 / 3,800,172 |
+| 512-byte, inline | 30,141 / 10,357 / 9,834,079 | 23 / 29 / 3,800,172 |
+| 4,095-byte, plain | 30,141 / 357 / 4,300,383 | 23 / 29 / 3,800,172 |
+| 4,096-byte, plain | 20,141 / 357 / 4,300,383 | 23 / 29 / 3,800,172 |
+| empty, a 1,024-byte xattr each | 40,141 / 40,357 / 38,496,959 | 10,024 / 32 / 3,802,290 |
+
+  Every image hashed the same before and after, as did the unit tests' sample tree of
+  every kind of node.
+- **Consequence.** The metadata area is written as it is laid out, its records at rising
+  offsets: each record is built on the stack, its xattr body in one reused buffer, and
+  its inline tail read straight out. Directories borrow their names from the tree and
+  keep their blocks as ends among their sorted entries; pads come from one static
+  block of zeros. What remains is one vector per inode with xattrs, which sorts its
+  names into EROFS's order, and the layout of the inodes themselves.
