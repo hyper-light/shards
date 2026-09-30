@@ -1,0 +1,30 @@
+diff --git a/crates/vmm/src/devices/virtio/vsock/poll.rs b/crates/vmm/src/devices/virtio/vsock/poll.rs
+index dc6fddd..6e02230 100644
+--- a/crates/vmm/src/devices/virtio/vsock/poll.rs
++++ b/crates/vmm/src/devices/virtio/vsock/poll.rs
+@@ -87,6 +87,7 @@ pub fn wait<T: Copy>(
+     out: &mut Vec<Ready<T>>,
+ ) -> io::Result<()> {
+     use std::os::fd::{FromRawFd, OwnedFd};
++    let t0 = std::time::Instant::now();
+ 
+     // SAFETY: kqueue(2) takes no arguments.
+     let kq = unsafe { libc::kqueue() };
+@@ -121,6 +122,17 @@ pub fn wait<T: Copy>(
+     let ts_ptr = ts
+         .as_ref()
+         .map_or(std::ptr::null(), |t| t as *const libc::timespec);
++    // What a persistent kqueue would not pay: the kqueue, its registrations, the arrays.
++    {
++        use std::io::Write as _;
++        let _ = writeln!(
++            std::io::stderr(),
++            "vsock-poll {} {} {}",
++            std::process::id(),
++            interests.len(),
++            t0.elapsed().as_nanos()
++        );
++    }
+     // SAFETY: both arrays are valid for their lengths; `ts_ptr` is null or a timespec.
+     let n = unsafe {
+         libc::kevent(

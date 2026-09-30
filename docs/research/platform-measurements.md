@@ -1814,3 +1814,19 @@ revision before comparing a changed API/implementation.
   of their own, and the kernel reclaims their pages as any process's.
 - **Consequence.** D26's bound holds; the default's cost, which D26 put at 320 MB from
   RSS, is 55 MiB.
+
+### M50. The vsock device's fresh kqueue per wait, in a run
+
+- **Question.** Audit D06: on macOS each wait of the vsock device makes a kqueue,
+  registers every interest, and closes it; 64 interests cost 18 µs at the median in a
+  microbenchmark. What does it cost a run?
+- **Method.** `docs/research/measurements/vsock-poll/count.patch` prints, for each wait,
+  its interests and the time from its entry to the blocking `kevent`. 30 warm runs of
+  `shards run --pull never --rm alpine true`, after three that saved and warmed the
+  template. 8c6750e, 2026-09-30, this machine, load average about 7.
+- **Results.** About 2 to 3 waits a run, with 3 to 4 interests each (the waker, the
+  listener, the run's connections); the setup took 0.5 to 3.5 µs a wait, about 1 µs
+  typically: some 3.6 µs a run, where a run takes about 5 ms (M29).
+- **Consequence.** D06's persistent kqueue is not taken: it would save a few
+  microseconds a run, 0.07%, against the stale registrations and descriptor reuse a
+  fresh kqueue rules out by construction.
