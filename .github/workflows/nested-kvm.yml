@@ -1,0 +1,30 @@
+name: nested kvm
+
+# The pinned arm64 kernel with KVM built in, as an artifact for
+# docs/research/measurements/nested-kvm: nothing is released. Runs when the experiment
+# changes, or when asked.
+on:
+  push:
+    paths:
+      - docs/research/measurements/nested-kvm/**
+      - .github/workflows/nested-kvm.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: The pinned arm64 configuration, with KVM
+        run: cat docs/research/measurements/nested-kvm/kvm.config >> resources/kernel/shards-aarch64.config
+      - name: Build in the pinned builder
+        run: scripts/build-kernel-in-builder.sh aarch64 out
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: kernel-kvm-aarch64
+          path: out/
+          if-no-files-found: error
