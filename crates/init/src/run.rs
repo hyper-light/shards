@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use shards_abi::run::{self, Size, Spec, kind};
 use shards_abi::{control, marker};
 
+use crate::frames::{Outbox, each_frame};
 use crate::linux::power_off;
 use crate::orders::{Orders, cstrings, pointers};
 use crate::user::{self, ExecUser};
@@ -700,9 +701,9 @@ impl Workload {
         }
         let mut from_host: Vec<u8> = Vec::new();
         let (mut signals_connected, mut from_signals) = (false, Vec::new());
-        let mut to_stdin: Vec<u8> = Vec::new();
+        let mut to_stdin = Outbox::default();
         let mut stdin_eof = false;
-        let mut to_host: Vec<u8> = Vec::new();
+        let mut to_host = Outbox::default();
         let mut status: Option<u32> = None;
         let mut buf = vec![0u8; CHUNK];
         loop {
@@ -714,40 +715,42 @@ impl Workload {
             {
                 break;
             }
-            let mut fds: Vec<libc::pollfd> = Vec::with_capacity(5);
-            let poll = |fds: &mut Vec<libc::pollfd>, fd: Option<RawFd>, events: libc::c_short| {
-                if let Some(fd) = fd
-                    && events != 0
-                {
-                    fds.push(libc::pollfd {
+            // SIGCHLD, the host, stdin, signals, stdout and stderr: six at most (audit D07).
+            let mut set = [libc::pollfd {
+                fd: -1,
+                events: 0,
+                revents: 0,
+            }; 6];
+            let mut used = 0;
+            let mut poll = |fd: Option<RawFd>, events: libc::c_short| {
+                if let (Some(fd), true, Some(slot)) = (fd, events != 0, set.get_mut(used)) {
+                    *slot = libc::pollfd {
                         fd,
                         events,
                         revents: 0,
-                    });
+                    };
+                    used += 1;
                 }
             };
-            poll(&mut fds, Some(self.sigchld.as_raw_fd()), libc::POLLIN);
+            poll(Some(self.sigchld.as_raw_fd()), libc::POLLIN);
             let host_events = if !exited && !stdin_eof && to_stdin.len() < BUFFERED {
                 libc::POLLIN
             } else {
                 0
             } | if to_host.is_empty() { 0 } else { libc::POLLOUT };
-            poll(&mut fds, host, host_events);
+            poll(host, host_events);
             let stdin_events = if to_stdin.is_empty() { 0 } else { libc::POLLOUT };
-            poll(
-                &mut fds,
-                self.stdin.as_ref().map(AsRawFd::as_raw_fd),
-                stdin_events,
-            );
+            poll(self.stdin.as_ref().map(AsRawFd::as_raw_fd), stdin_events);
             let signal_events = if signals_connected {
                 libc::POLLIN
             } else {
                 libc::POLLOUT
             };
-            poll(&mut fds, signals.as_ref().map(AsRawFd::as_raw_fd), signal_events);
+            poll(signals.as_ref().map(AsRawFd::as_raw_fd), signal_events);
             let out_events = if to_host.len() < BUFFERED { libc::POLLIN } else { 0 };
-            poll(&mut fds, self.stdout.as_ref().map(AsRawFd::as_raw_fd), out_events);
-            poll(&mut fds, self.stderr.as_ref().map(AsRawFd::as_raw_fd), out_events);
+            poll(self.stdout.as_ref().map(AsRawFd::as_raw_fd), out_events);
+            poll(self.stderr.as_ref().map(AsRawFd::as_raw_fd), out_events);
+            let fds = set.get_mut(..used).unwrap_or_default();
             // SAFETY: valid pollfds.
             if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) } < 0 {
                 if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
@@ -766,8 +769,8 @@ impl Workload {
                     }
                 } else if Some(fd) == host {
                     if p.revents & libc::POLLOUT != 0 {
-                        match write(fd, &to_host) {
-                            Ok(n) => drop(to_host.drain(..n)),
+                        match write(fd, to_host.pending()) {
+                            Ok(n) => to_host.written(n),
                             Err(_) => host = None,
                         }
                     }
@@ -782,7 +785,7 @@ impl Workload {
                                 let whole = each_frame(&mut from_host, |which, payload| {
                                     if which == kind::STDIN {
                                         closed |= payload.is_empty();
-                                        to_stdin.extend_from_slice(payload);
+                                        to_stdin.extend(&[payload]);
                                     }
                                 });
                                 stdin_eof |= closed || !whole;
@@ -827,8 +830,8 @@ impl Workload {
                         }
                     }
                 } else if Some(fd) == self.stdin.as_ref().map(AsRawFd::as_raw_fd) {
-                    match write(fd, &to_stdin) {
-                        Ok(n) => drop(to_stdin.drain(..n)),
+                    match write(fd, to_stdin.pending()) {
+                        Ok(n) => to_stdin.written(n),
                         // The workload closed its stdin.
                         Err(_) => {
                             self.stdin = None;
@@ -845,8 +848,8 @@ impl Workload {
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                         Ok(0) | Err(_) => *slot = None,
                         Ok(n) => {
-                            to_host.extend_from_slice(&run::header(which, n as u32));
-                            to_host.extend_from_slice(buf.get(..n).unwrap_or_default());
+                            to_host
+                                .extend(&[&run::header(which, n as u32), buf.get(..n).unwrap_or_default()]);
                         }
                     }
                 }
@@ -903,26 +906,6 @@ fn resize(fd: RawFd, size: Size) {
     };
     // SAFETY: TIOCSWINSZ reads one winsize.
     unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) };
-}
-
-/// Calls `f` with each complete frame in `buf`, removing them. Returns false if the
-/// stream is malformed, which cannot be resynchronized.
-fn each_frame(buf: &mut Vec<u8>, mut f: impl FnMut(u8, &[u8])) -> bool {
-    loop {
-        let Some(h) = buf.first_chunk::<{ run::HEADER }>() else {
-            return true;
-        };
-        let Some((which, len)) = run::parse_header(*h) else {
-            buf.clear();
-            return false;
-        };
-        let end = run::HEADER + len as usize;
-        let Some(payload) = buf.get(run::HEADER..end) else {
-            return true;
-        };
-        f(which, payload);
-        buf.drain(..end);
-    }
 }
 
 /// The working directory, made as Docker makes it (moby daemon/container/container.go,

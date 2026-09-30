@@ -2070,3 +2070,20 @@ revision before comparing a changed API/implementation.
   is reserved fallibly, as its first was. The transient buffers the prefetch builds
   (HVF's scratch code and tables, KVM's page runs) are freed before the guest runs and
   are bounded by the working set, so they are left as they are.
+
+### M59. The guest relay's frames, parsed from a cursor
+
+- **Question.** Audit D07: the relay removed each frame's bytes from the front of its
+  buffer as it parsed them, moving the rest every time. What does a batch of control
+  frames cost it, and a cursor that removes a batch's frames at once?
+- **Method.** `frames::tests::frames_cost` in crates/init (`cargo test --release -p
+  shards-init frames_cost -- --ignored --nocapture`): the audit's 65,535-byte batch,
+  5,461 signal frames and a partial header, parsed by the old parser and by
+  `each_frame`, alternating, n = 500 each. On this machine, the host's CPU, 2026-09-30.
+- **Results (µs).** Prefix removed per frame: 1,667.3 / 1,739.6 / 1,941.6 / 2,025.6
+  (p50 / p90 / p99 / max). Cursor: 3.8 / 4.0 / 8.1 / 13.6.
+- **Consequence.** The relay parses from a cursor, and the bytes it writes to the host
+  and to stdin are written from an offset. They move forward only once what is written
+  is half of what is held, so a 256 KiB backlog written in 4 KiB pieces is moved at most
+  once over, not 7.9 MiB. Its poll set is a six-slot array, and each output frame's
+  header and payload are reserved together.
