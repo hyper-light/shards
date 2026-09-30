@@ -20,6 +20,7 @@ pub fn main() {
             "storm" => storm(),
             "resume" => resume(),
             "idle" => idle(),
+            "work" => work(),
             "kmsg" => kmsg(),
             "beat" => beat(),
             "vsock" => vsock(),
@@ -935,6 +936,19 @@ fn kmsg() -> Result<(), String> {
     }
     // SAFETY: closing our own descriptor.
     unsafe { libc::close(fd) };
+    Ok(())
+}
+
+/// A fixed amount of work: `shards_work_mib` MiB of the test pattern hashed, on the boot
+/// CPU, then the hash printed. Its host CPU time, beside a run with none, is what the work
+/// cost, ticks included (PM M66).
+fn work() -> Result<(), String> {
+    let mib: u64 = std::env::var("shards_work_mib")
+        .unwrap_or_else(|_| "0".into())
+        .parse()
+        .map_err(|e| format!("shards_work_mib: {e}"))?;
+    let hash = shards_testguest::pattern_hash(1, mib << 20);
+    let _ = writeln!(io::stdout(), "SHARDS-TEST HASH {hash:016x}");
     Ok(())
 }
 
