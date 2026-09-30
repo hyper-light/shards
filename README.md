@@ -13,7 +13,8 @@
 
 Give an agent a shell and it will install packages, start servers, run builds and, sooner or
 later, break something. Shards runs your agents in microVMs: small virtual machines with their
-own Linux kernel, so nothing inside one reaches your computer.
+own Linux kernel, behind your processor's virtualization, so what runs inside one sees its
+own machine, not yours.
 
 You build a microVM like a Docker image, and it is the OS your agents run on. Many agents share
 one microVM, each isolated like a container, with its own networks, files, devices and
@@ -28,7 +29,7 @@ Your agents can:
 - Reach only the networks, files and devices you give them
 - Use the Docker commands and Compose files you already have
 - Use GPUs
-- Break anything without touching your computer
+- Break anything in their microVM without touching the rest of your computer
 
 Shards never needs root.
 
@@ -196,6 +197,7 @@ SHARDS-TEST PASS
 | Build microVMs like Docker images | In progress: image layers become bootable images |
 | Run many agents on a microVM's OS, each isolated like a container | Planned |
 | Networks, files, devices and permissions per agent and per microVM | Planned |
+| Confining shards itself | Planned. A microVM's guest runs behind the hypervisor, but the shards process that runs it has your user's permissions, as Firecracker's does without its seccomp filters and jailer: a flaw in shards' own device code could reach what you can. Syscall filters on Linux and a sandbox on macOS will narrow that |
 | Docker's commands and Compose files | In progress: `run`, `ps`, `wait`, `logs`, `stop`, `kill` and `rm` take `docker`'s flags and answer with its words, its `--help` included. A flag shards can't serve yet says so. `build`, `exec`, the rest and Compose are planned |
 | GPUs | Planned |
 
