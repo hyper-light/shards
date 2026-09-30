@@ -1855,3 +1855,37 @@ revision before comparing a changed API/implementation.
   its: output waits for it. What streams cost therefore follows the disk the home is on;
   these stream figures are this host's full volume, not shards'. The benchmark keeps
   checking every byte.
+
+### M52. Confining shards-vm: what Linux's filter and macOS's Seatbelt allow a VM
+
+- **Question.** Audit, "Security and test coverage": shards-vm runs guest-facing device
+  code with the user's permissions. On Linux, which syscalls must a seccomp filter
+  allow it; on macOS, can Hypervisor.framework run under a sandbox at all, and which?
+- **Linux, method.** `docs/research/measurements/vmm-syscalls/collect.sh` on CI's KVM
+  runner: every VM test binary under `strace -f`, each shards-vm thread's syscalls,
+  ioctl requests, socket domains, fcntl commands and prctl options (parse.py), each
+  run's trace read with state of its own. b6ef38a onward.
+- **Linux, results.** 15 thread classes; the union is 70 syscalls, 43 KVM ioctl
+  requests (all the backend defines, `hv::IOCTLS`), `FIONBIO` and the terminal's, only
+  `AF_UNIX` sockets, `PR_SET_NAME`, and threads made through `clone3`. The filter built
+  from them (confine.rs), `clone3` failed with ENOSYS so that threads come from `clone`
+  with a thread's flags, ran every VM test of the glibc build on the KVM runner with VMs
+  required (b6ef38a). musl's `open()` makes open(2), not openat(2), and its `isatty()`
+  asks `TIOCGWINSZ` (df23802).
+- **macOS, method.** An ad-hoc-signed shards-vm booting the pinned kernel and
+  shards-init: with App Sandbox's entitlement; under `sandbox-exec` profiles; and with
+  a profile it applies to itself at the start of `main` (`sandbox_init`). 2026-09-30,
+  this machine.
+- **macOS, results.**
+  - With `com.apple.security.app-sandbox`, the process ended by SIGTRAP at launch, before
+    `main`: a command-line tool is not sandboxed that way on its own.
+  - Under `sandbox-exec`, `(allow default)` with network and file writes denied booted
+    the guest; `(deny default)` with reads of the kernel, init and the system's
+    libraries allowed ended in SIGABRT before `main`, nothing logged.
+  - Applied by the process itself after it has loaded, `(deny default)` with only
+    `sysctl-read` and reads of the kernel and init booted the guest: Hypervisor.framework
+    needs no Mach service, I/O Kit connection or file beyond the entitlement.
+- **Consequence.** Linux: shards-vm installs the filter over its whole process first
+  thing (D30). macOS: a deny-by-default profile the process applies to itself can confine
+  it; which paths each of its modes reads and writes (disks, snapshot directories, vsock
+  sockets, a warm VM's log) is its design, next.
