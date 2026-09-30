@@ -429,9 +429,9 @@ struct Storm {
     progress: Vec<std::sync::atomic::AtomicU64>,
     /// Per worker, the longest time between two of its rounds, in µs.
     longest: Vec<std::sync::atomic::AtomicU64>,
-    /// Waits of the paired workers that timed out to find their turn had come: a wakeup
-    /// that never arrived.
-    missed: std::sync::atomic::AtomicU64,
+    /// Per paired worker, the longest it took to take its turn once the other gave it, in
+    /// µs: a wakeup between CPUs, from the notify to the waiter running.
+    late: Vec<std::sync::atomic::AtomicU64>,
     /// Records the writer has written, each completed.
     written: std::sync::atomic::AtomicU64,
     /// Where the writer is: 1 reading slot `written`, 2 writing it, 0 between.
@@ -462,9 +462,13 @@ const RECORD: usize = 4096;
 /// The workers' longest gaps between rounds: the median and the three longest, with their
 /// workers, in µs. `reset` starts them over.
 fn gaps(storm: &Storm, reset: bool) -> String {
+    spread(&storm.longest, reset)
+}
+
+/// The median of `values`, and the three largest, by worker; zeroed with `reset`.
+fn spread(values: &[std::sync::atomic::AtomicU64], reset: bool) -> String {
     use std::sync::atomic::Ordering;
-    let mut all: Vec<(u64, usize)> = storm
-        .longest
+    let mut all: Vec<(u64, usize)> = values
         .iter()
         .enumerate()
         .map(|(i, l)| {
@@ -518,12 +522,17 @@ fn clock_warps(cpus: usize, window: Duration) -> Result<(u64, u64), String> {
     use std::sync::{Arc, Mutex, PoisonError};
     // The last read, how many there were, and the worst step back.
     let last = Arc::new(Mutex::new((0u128, 0u64, 0u64)));
-    let until = Instant::now() + window;
+    // The window opens once every reader is on its CPU: dozens of vCPUs sharing a few
+    // host cores take a while to start them all.
+    let ready = Arc::new(std::sync::Barrier::new(cpus));
     let readers: Vec<_> = (0..cpus)
         .map(|cpu| {
-            let last = last.clone();
+            let (last, ready) = (last.clone(), ready.clone());
             thread::spawn(move || {
-                pin(cpu)?;
+                let pinned = pin(cpu);
+                ready.wait();
+                pinned?;
+                let until = Instant::now() + window;
                 while Instant::now() < until {
                     let mut l = last.lock().unwrap_or_else(PoisonError::into_inner);
                     let now = monotonic_ns();
@@ -567,9 +576,13 @@ fn clock_in_step(cpus: usize, when: &str) -> Result<(), String> {
 /// has carried a MiB.
 ///
 /// Whatever continues past the snapshot, the original or a restore, must see every worker
-/// keep going: a lost interrupt stalls one. The writer reads each slot before it writes
-/// it, and finds it empty unless some request of its own was carried out without its
-/// completion reaching the guest: every record is written exactly once.
+/// keep going: a lost interrupt stalls one. A pair's threads wait for their turns without
+/// a timeout, which would wake a CPU whose wakeup was lost and hide the loss; a lost
+/// wakeup leaves its waiter asleep, and the progress check sees the stall. How long each
+/// took to take its turn is reported: after a restore, the time until every vCPU runs
+/// again. The writer reads each slot before it writes it, and finds it empty unless some
+/// request of its own was carried out without its completion reaching the guest: every
+/// record is written exactly once.
 ///
 /// Its checks done, it says `storm checked`, and gives its verdict once the host has
 /// connected to port 1235 and sent a byte: the host stops streaming first, so every round
@@ -593,7 +606,7 @@ fn storm() -> Result<(), String> {
         failure: std::sync::Mutex::new(None),
         progress: (0..workers).map(|_| AtomicU64::new(0)).collect(),
         longest: (0..workers).map(|_| AtomicU64::new(0)).collect(),
-        missed: AtomicU64::new(0),
+        late: (0..2 * pairs.len()).map(|_| AtomicU64::new(0)).collect(),
         written: AtomicU64::new(0),
         writer_at: AtomicU64::new(0),
     });
@@ -626,40 +639,51 @@ fn storm() -> Result<(), String> {
         }));
     };
 
+    // Whose turn it is in each pair, and since when.
+    let mut balls = Vec::new();
     for (i, &(a, b)) in pairs.iter().enumerate() {
-        let ball = Arc::new((std::sync::Mutex::new(0u8), std::sync::Condvar::new()));
+        let ball = Arc::new((
+            std::sync::Mutex::new((0u8, monotonic_ns())),
+            std::sync::Condvar::new(),
+        ));
+        balls.push(ball.clone());
         for (side, cpu, other) in [(0u8, a, b), (1u8, b, a)] {
             let ball = ball.clone();
+            let slot = 2 * i + usize::from(side);
             spawn(
-                2 * i + usize::from(side),
+                slot,
                 Some(cpu),
                 format!("CPU {cpu}'s turn with CPU {other}"),
                 Box::new(move |storm| {
                     let (turn, cv) = &*ball;
                     let mut t = turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let since = Instant::now();
-                    while *t != side {
+                    while t.0 != side {
                         if storm.stopping() {
                             return Ok(());
                         }
-                        if since.elapsed() > Duration::from_secs(2) {
-                            return Err(format!("no wakeup from CPU {other} in 2 s"));
-                        }
-                        let (next, waited) = cv
-                            .wait_timeout(t, Duration::from_millis(100))
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        t = next;
-                        if waited.timed_out() && *t == side {
-                            storm.missed.fetch_add(1, Ordering::Relaxed);
-                        }
+                        t = cv.wait(t).unwrap_or_else(std::sync::PoisonError::into_inner);
                     }
-                    *t = 1 - side;
+                    let now = monotonic_ns();
+                    if let Some(l) = storm.late.get(slot) {
+                        let late = u64::try_from(now.saturating_sub(t.1) / 1000).unwrap_or(u64::MAX);
+                        l.fetch_max(late, Ordering::Relaxed);
+                    }
+                    *t = (1 - side, now);
                     cv.notify_all();
                     Ok(())
                 }),
             );
         }
     }
+    // Waiters without a timeout hear of the end only this way; the lock orders it after
+    // any waiter's look at `stop`.
+    let stop = |storm: &Storm| {
+        storm.stop.store(true, Ordering::Relaxed);
+        for ball in &balls {
+            let _held = ball.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            ball.1.notify_all();
+        }
+    };
     let timer = 2 * pairs.len();
     let mut last = monotonic_ns();
     spawn(
@@ -738,9 +762,9 @@ fn storm() -> Result<(), String> {
     thread::sleep(Duration::from_millis(env_u64("shards_storm_ms").unwrap_or(0)));
     let _ = writeln!(
         io::stdout(),
-        "SHARDS-TEST INFO longest gaps steady: {}; missed wakeups {}",
+        "SHARDS-TEST INFO longest gaps steady: {}; longest turns taken: {}",
         gaps(&storm, true),
-        storm.missed.swap(0, Ordering::Relaxed)
+        spread(&storm.late, true)
     );
     clock_in_step(cpus, "before the snapshot")?;
     let control = ControlPage::map()?;
@@ -751,8 +775,9 @@ fn storm() -> Result<(), String> {
 
     let _ = writeln!(
         io::stdout(),
-        "SHARDS-TEST INFO longest gaps before: {}",
-        gaps(&storm, true)
+        "SHARDS-TEST INFO longest gaps before: {}; longest turns taken: {}",
+        gaps(&storm, true),
+        spread(&storm.late, true)
     );
     // Every CPU's clock goes on from the snapshot in step with the others'.
     clock_in_step(cpus, "after the snapshot")?;
@@ -787,16 +812,7 @@ fn storm() -> Result<(), String> {
             ));
         }
     }
-    // A restore's clock continues from the snapshot, so no wait there times out for the
-    // pause: one that timed out to find its turn had come lost a wakeup between CPUs. The
-    // original's clock ran on through the pause, so it only reports them.
-    let missed = storm.missed.load(Ordering::Relaxed);
-    if generation > 0 && missed > 0 {
-        return Err(format!(
-            "{missed} wakeups between CPUs never arrived after the restore"
-        ));
-    }
-    storm.stop.store(true, Ordering::Relaxed);
+    stop(&storm);
     let deadline = Instant::now() + Duration::from_secs(5);
     while threads.iter().any(|t| !t.is_finished()) {
         if Instant::now() > deadline {
@@ -831,9 +847,9 @@ fn storm() -> Result<(), String> {
     let _ = writeln!(io::stdout(), "SHARDS-TEST INFO records={written}");
     let _ = writeln!(
         io::stdout(),
-        "SHARDS-TEST INFO longest gaps after: {}; missed wakeups {}",
+        "SHARDS-TEST INFO longest gaps after: {}; longest turns taken: {}",
         gaps(&storm, false),
-        storm.missed.load(Ordering::Relaxed)
+        spread(&storm.late, false)
     );
     // The verdict waits for the host to say it has stopped streaming, so every round the
     // host streamed ended with the guest alive.

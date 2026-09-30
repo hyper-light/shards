@@ -1637,6 +1637,20 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D14's phased barrier, `hv_gic_state`, and the kick check before every
   entry. The tests require restores to lose no wakeup, and let the original only report
   them.
+- **Correction (2026-09-30).** The lost-wakeup counts above measured something else.
+  - A wait counted when it timed out and then found its turn had come. But a futex wake
+    takes its waiter off the futex in guest memory whatever becomes of the interrupt that
+    should run it (Linux kernel/futex/waitwake.c, futex_wake), so a waiter whose wakeup
+    interrupt is lost returns *woken*, late, when its own timer runs its CPU: the count
+    could not see a lost interrupt, and the 100 ms timeout hid one.
+  - What it counted was a timeout that fired as the other thread, late, was taking the
+    turn. CI's x86_64 runners, 64 vCPUs on 4 cores, counted one after a restore, whose
+    vCPUs took up to 0.48 s to run again.
+  - The pairs now wait with no timeout, so a lost wakeup leaves its waiter asleep and the
+    1 s progress check fails; each worker reports how long it took to take its turn.
+    Turns after a restore on the M5 Max took at most 3.1 ms at 8 vCPUs and 165 ms at 64,
+    their threads starting again on 18 cores; in steady state at most 2.7 ms at 2 vCPUs
+    and 15 ms at 64.
 - **Open.**
   - A busy guest's 256 MiB took up to 1.5 s to save at 64 vCPUs: the scan of every page
     (audit D01) and the durable flush.
