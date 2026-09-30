@@ -158,8 +158,14 @@ impl Shared {
         if r.done {
             return;
         }
+        match machine::release_offset(&self.start) {
+            Ok(offset) => r.counter_offset = offset,
+            Err(e) => {
+                drop(r);
+                return self.stop(ExitReason::Error(format!("releasing the vCPUs: {e}")));
+            }
+        }
         r.done = true;
-        r.counter_offset = machine::release_offset(&self.start);
         let _ = self.released_at_us.set(crate::log::uptime_us());
         drop(r);
         self.release.notify_all();

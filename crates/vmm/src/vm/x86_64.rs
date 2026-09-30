@@ -51,6 +51,9 @@ pub struct Restored {
     pub working_set: Vec<hv::Touch>,
     /// How many of its pages were mapped ahead.
     pub prefetched: std::sync::OnceLock<usize>,
+    /// vCPU 0's TSC, which the release starts ([`release_offset`]), where the restore held
+    /// the vCPUs' TSCs back.
+    pub tsc: std::sync::OnceLock<hv::Tsc>,
 }
 
 /// MMIO devices and port I/O devices.
@@ -411,6 +414,7 @@ pub fn restore(
             devices: snap.devices.clone(),
             working_set,
             prefetched: std::sync::OnceLock::new(),
+            tsc: std::sync::OnceLock::new(),
         }),
         config: snap.config.clone(),
     })
@@ -545,6 +549,11 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu, 
                 .get(index)
                 .ok_or_else(|| format!("the snapshot has no vCPU {index}"))?;
             vcpu.restore_state(state).map_err(|e| e.to_string())?;
+            if index == 0
+                && let Some(tsc) = vcpu.tsc()
+            {
+                let _ = r.tsc.set(tsc);
+            }
             // After the state, which sets the paging mode KVM maps for.
             if index == 0 && !r.working_set.is_empty() {
                 let t0 = crate::log::uptime_us();
@@ -576,13 +585,23 @@ pub fn finish(vm: &hv::Vm, bus: &Bus, vmgenid: &Finish, start: &Start) -> Result
     vmgenid.new_generation()
 }
 
-/// The TSC and kvmclock come back with the state; nothing waits for the release.
-pub fn release_offset(_start: &Start) -> Option<u64> {
-    None
+/// For a restore that held the vCPUs' TSCs back: starts vCPU 0's at the value it saved,
+/// now, and returns what every vCPU adds to the offset it saved, so that each TSC goes
+/// on from the snapshot with no jump, as far from the others' as it was (as KVM documents
+/// restoring TSCs, Documentation/virt/kvm/devices/vcpu.rst §4, less the time between,
+/// which a snapshot's guest does not see). kvmclock came back with the VM's state.
+pub fn release_offset(start: &Start) -> Result<Option<u64>, String> {
+    let Start::Restore(r) = start else {
+        return Ok(None);
+    };
+    match (r.tsc.get(), r.vcpus.first()) {
+        (Some(tsc), Some(first)) => tsc.restart(first).map_err(|e| format!("the TSC: {e}")),
+        _ => Ok(None),
+    }
 }
 
-pub fn set_counter_offset(_vcpu: &mut hv::Vcpu, _offset: u64) -> Result<(), String> {
-    Ok(())
+pub fn set_counter_offset(vcpu: &mut hv::Vcpu, offset: u64) -> Result<(), String> {
+    vcpu.resume_tsc(offset).map_err(|e| format!("the TSC: {e}"))
 }
 
 /// One vCPU's contribution to a snapshot, captured on its own thread.

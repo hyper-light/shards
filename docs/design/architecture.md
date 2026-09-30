@@ -138,6 +138,17 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
     registers and before the MSRs, IA32_TSC_DEADLINE after IA32_TSC;
   - the interrupt controllers and kvmclock only once every vCPU exists, as the GIC on
     arm64; kvmclock goes on from its saved value;
+  - **the TSCs by their offsets** (Linux 5.16+, `KVM_VCPU_TSC_OFFSET`), as KVM documents
+    bringing a VM's TSCs back (Documentation/virt/kvm/devices/vcpu.rst §4): each vCPU's
+    offset from the host's TSC is saved with its state; at release, vCPU 0's TSC starts
+    at the value it saved, and every vCPU's offset becomes its saved one plus the same
+    difference, so each TSC goes on from the snapshot as far from the others' as it was,
+    and the deadlines are armed after. Writing each vCPU's IA32_TSC instead passes
+    through KVM's legacy synchronization, which matches the writes to one another only
+    on a host whose TSC it trusts; elsewhere each restored TSC keeps its own capture's
+    instant, and the guest's clock went back by up to 166 µs from one CPU to another
+    (arch/x86/kvm/x86.c, kvm_synchronize_tsc; CI's x86_64 runners). Where KVM lacks the
+    attribute, the MSRs are written as before;
   - a vCPU whose CPUID differs from the snapshot's refuses, as arm64's CPU ID does;
   - the VMGenID reaches Linux's ACPI driver (`VMGENCTR`, with its `ADDR`), and its
     interrupt a Generic Event Device (`ACPI0013`) on GSI 23 whose `_EVT` notifies it, as

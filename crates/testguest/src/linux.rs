@@ -509,6 +509,56 @@ fn pin(cpu: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// Reads CLOCK_MONOTONIC on every CPU for `window`, one read at a time under one lock, so
+/// that the reads are ordered in real time, as the kernel orders its own TSC warp check
+/// (arch/x86/kernel/tsc_sync.c, check_tsc_warp): a read below the one before it, from
+/// whichever CPU, is the clock going backwards between CPUs. How many reads there were,
+/// and how far back the worst went, in nanoseconds.
+fn clock_warps(cpus: usize, window: Duration) -> Result<(u64, u64), String> {
+    use std::sync::{Arc, Mutex, PoisonError};
+    // The last read, how many there were, and the worst step back.
+    let last = Arc::new(Mutex::new((0u128, 0u64, 0u64)));
+    let until = Instant::now() + window;
+    let readers: Vec<_> = (0..cpus)
+        .map(|cpu| {
+            let last = last.clone();
+            thread::spawn(move || {
+                pin(cpu)?;
+                while Instant::now() < until {
+                    let mut l = last.lock().unwrap_or_else(PoisonError::into_inner);
+                    let now = monotonic_ns();
+                    if now < l.0 {
+                        l.2 = l.2.max(u64::try_from(l.0 - now).unwrap_or(u64::MAX));
+                    }
+                    l.0 = now;
+                    l.1 += 1;
+                }
+                Ok::<(), String>(())
+            })
+        })
+        .collect();
+    for r in readers {
+        r.join().map_err(|_| "a clock reader panicked".to_string())??;
+    }
+    let (_, reads, worst) = *last.lock().unwrap_or_else(PoisonError::into_inner);
+    Ok((reads, worst))
+}
+
+/// [`clock_warps`], as a verdict: `when` names the moment for the log.
+fn clock_in_step(cpus: usize, when: &str) -> Result<(), String> {
+    let (reads, worst) = clock_warps(cpus, Duration::from_millis(100))?;
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST INFO clock {when}: {reads} reads in turn on {cpus} CPUs, worst step back {worst} ns"
+    );
+    if worst > 0 {
+        return Err(format!(
+            "CLOCK_MONOTONIC went back {worst} ns from one CPU to another {when}"
+        ));
+    }
+    Ok(())
+}
+
 /// A machine busy in every way at once when it asks for a snapshot (audit A02): pairs of
 /// threads on neighbouring CPUs wake each other in turn (interrupts between CPUs), one
 /// thread sleeps in short timer ticks, one reads the read-only disk and checks it, one
@@ -692,6 +742,7 @@ fn storm() -> Result<(), String> {
         gaps(&storm, true),
         storm.missed.swap(0, Ordering::Relaxed)
     );
+    clock_in_step(cpus, "before the snapshot")?;
     let control = ControlPage::map()?;
     control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
     // A restored copy continues here, as does the original, if it resumed.
@@ -703,6 +754,8 @@ fn storm() -> Result<(), String> {
         "SHARDS-TEST INFO longest gaps before: {}",
         gaps(&storm, true)
     );
+    // Every CPU's clock goes on from the snapshot in step with the others'.
+    clock_in_step(cpus, "after the snapshot")?;
     let seen: Vec<u64> = storm.progress.iter().map(|p| p.load(Ordering::Relaxed)).collect();
     // Long enough for 64 vCPUs sharing a smaller host's cores, short of what a lost
     // completion or timer would cost: those never end.

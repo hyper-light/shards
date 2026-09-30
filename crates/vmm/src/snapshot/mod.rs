@@ -51,7 +51,8 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 6: generations, each named in its state; backing files by absolute path in the OS's
 ///    own bytes, with their identities.
 /// 7: arm64's GIC as the backend's own serialization of the device, not its registers.
-const VERSION: u32 = 7;
+/// 8: x86's TSC offsets, so every vCPU's TSC comes back in step with the others'.
+const VERSION: u32 = 8;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;

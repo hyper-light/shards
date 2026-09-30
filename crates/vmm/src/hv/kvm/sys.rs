@@ -56,6 +56,8 @@ pub const KVM_SET_XCRS: u64 = 0x4188_AEA7;
 pub const KVM_KVMCLOCK_CTRL: u64 = 0xAEAD;
 pub const KVM_GET_XSAVE2: u64 = 0x9000_AECF;
 pub const KVM_PRE_FAULT_MEMORY: u64 = 0xC040_AED5;
+pub const KVM_SET_DEVICE_ATTR: u64 = 0x4018_AEE1;
+pub const KVM_GET_DEVICE_ATTR: u64 = 0x4018_AEE2;
 
 /// The sizes of the state structures above, which a snapshot keeps as their bytes.
 pub const LAPIC_SIZE: usize = 1024;
@@ -80,6 +82,8 @@ const _: () = {
     assert!(size(KVM_GET_CLOCK) == CLOCK_SIZE && size(KVM_SET_CLOCK) == CLOCK_SIZE);
     assert!(size(KVM_GET_REGS) == size_of::<kvm_regs>());
     assert!(size(KVM_PRE_FAULT_MEMORY) == size_of::<kvm_pre_fault_memory>());
+    assert!(size(KVM_GET_DEVICE_ATTR) == size_of::<kvm_device_attr>());
+    assert!(size(KVM_SET_DEVICE_ATTR) == size_of::<kvm_device_attr>());
 };
 /// `kvm_irqchip.chip_id`s.
 pub const IRQCHIP_PIC_MASTER: u32 = 0;
@@ -101,6 +105,23 @@ pub const CAP_READONLY_MEM: u64 = 81;
 pub const CAP_XSAVE2: u64 = 208;
 /// KVM_PRE_FAULT_MEMORY (Linux 6.10); x86 reports it only with two-dimensional paging.
 pub const CAP_PRE_FAULT_MEMORY: u64 = 236;
+/// vCPUs take KVM_{GET,SET,HAS}_DEVICE_ATTR (Linux 5.16), on x86 for their TSC's offset.
+pub const CAP_VCPU_ATTRIBUTES: u64 = 127;
+
+/// A device attribute: `addr` is where its value is read from or written to.
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct kvm_device_attr {
+    pub flags: u32,
+    pub group: u32,
+    pub attr: u64,
+    pub addr: u64,
+}
+
+/// A vCPU's TSC controls, and in them its offset from the host's TSC
+/// (arch/x86/include/uapi/asm/kvm.h; Documentation/virt/kvm/devices/vcpu.rst §4).
+const VCPU_TSC_CTRL: u32 = 0;
+const VCPU_TSC_OFFSET: u64 = 0;
 
 /// kvm_userspace_memory_region flags.
 pub const MEM_READONLY: u32 = 1 << 1;
@@ -494,7 +515,7 @@ impl VmFd {
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
         let run = RunMap::new(&fd, mmap_size)?;
         Ok(VcpuFd {
-            fd,
+            fd: std::sync::Arc::new(fd),
             run: std::sync::Arc::new(run),
         })
     }
@@ -607,13 +628,67 @@ pub enum RunExit<'a> {
 
 #[derive(Debug)]
 pub struct VcpuFd {
-    fd: OwnedFd,
+    fd: std::sync::Arc<OwnedFd>,
     pub run: std::sync::Arc<RunMap>,
+}
+
+/// A vCPU's descriptor as another thread holds it, for ioctls that need not come from the
+/// vCPU's own thread (api.rst 4: they work from any, at some cost); never KVM_RUN. Held
+/// weakly, it does not keep the vCPU.
+#[derive(Debug, Clone)]
+pub struct WeakVcpu(std::sync::Weak<OwnedFd>);
+
+impl WeakVcpu {
+    pub fn upgrade(&self) -> Option<VcpuControl> {
+        self.0.upgrade().map(VcpuControl)
+    }
+}
+
+/// A [`WeakVcpu`] in use.
+#[derive(Debug)]
+pub struct VcpuControl(std::sync::Arc<OwnedFd>);
+
+impl VcpuControl {
+    pub fn tsc_offset(&self) -> io::Result<u64> {
+        tsc_offset(self.0.as_raw_fd())
+    }
+
+    pub fn set_msrs(&self, entries: &[(u32, u64)]) -> io::Result<usize> {
+        set_msrs(self.0.as_raw_fd(), entries)
+    }
+}
+
+/// Writes `entries`; returns how many KVM took, stopping at the first it refused.
+fn set_msrs(fd: RawFd, entries: &[(u32, u64)]) -> io::Result<usize> {
+    let buf = msrs_buffer(entries);
+    // SAFETY: a kvm_msrs with `nmsrs` entries, which KVM reads.
+    let set = unsafe { ioctl(fd, KVM_SET_MSRS, buf.as_ptr() as libc::c_ulong) }?;
+    Ok(set.unsigned_abs() as usize)
+}
+
+/// The guest TSC's offset from the host's: the guest reads the host's TSC, scaled to its
+/// own frequency, plus this (`KVM_VCPU_TSC_OFFSET`).
+fn tsc_offset(fd: RawFd) -> io::Result<u64> {
+    let mut offset = 0u64;
+    let attr = kvm_device_attr {
+        group: VCPU_TSC_CTRL,
+        attr: VCPU_TSC_OFFSET,
+        addr: (&raw mut offset) as u64,
+        ..Default::default()
+    };
+    // SAFETY: a kvm_device_attr whose `addr` is a u64 KVM writes.
+    unsafe { ioctl(fd, KVM_GET_DEVICE_ATTR, (&raw const attr) as libc::c_ulong) }?;
+    Ok(offset)
 }
 
 impl VcpuFd {
     fn fd(&self) -> RawFd {
         self.fd.as_raw_fd()
+    }
+
+    /// This vCPU's descriptor for another thread ([`WeakVcpu`]).
+    pub fn weak(&self) -> WeakVcpu {
+        WeakVcpu(std::sync::Arc::downgrade(&self.fd))
     }
 
     pub fn set_cpuid(&self, entries: &[kvm_cpuid_entry2]) -> io::Result<()> {
@@ -681,10 +756,7 @@ impl VcpuFd {
 
     /// Writes `entries`; returns how many KVM took, stopping at the first it refused.
     pub fn set_msrs(&self, entries: &[(u32, u64)]) -> io::Result<usize> {
-        let buf = msrs_buffer(entries);
-        // SAFETY: a kvm_msrs with `nmsrs` entries, which KVM reads.
-        let set = unsafe { ioctl(self.fd(), KVM_SET_MSRS, buf.as_ptr() as libc::c_ulong) }?;
-        Ok(set.unsigned_abs() as usize)
+        set_msrs(self.fd(), entries)
     }
 
     pub fn get_mp_state(&self) -> io::Result<u32> {
@@ -709,6 +781,23 @@ impl VcpuFd {
     pub fn set_tsc_khz(&self, khz: u32) -> io::Result<()> {
         // SAFETY: the frequency by value.
         unsafe { ioctl(self.fd(), KVM_SET_TSC_KHZ, libc::c_ulong::from(khz)) }.map(drop)
+    }
+
+    /// The guest TSC's offset from the host's ([`VcpuControl::tsc_offset`]).
+    pub fn tsc_offset(&self) -> io::Result<u64> {
+        tsc_offset(self.fd())
+    }
+
+    /// Sets the offset [`tsc_offset`](Self::tsc_offset) reads, exactly.
+    pub fn set_tsc_offset(&self, offset: u64) -> io::Result<()> {
+        let attr = kvm_device_attr {
+            group: VCPU_TSC_CTRL,
+            attr: VCPU_TSC_OFFSET,
+            addr: (&raw const offset) as u64,
+            ..Default::default()
+        };
+        // SAFETY: a kvm_device_attr whose `addr` is a u64 KVM reads.
+        unsafe { ioctl(self.fd(), KVM_SET_DEVICE_ATTR, (&raw const attr) as libc::c_ulong) }.map(drop)
     }
 
     /// Maps what it can of `range` into the stage-2 tables, and advances it past that.

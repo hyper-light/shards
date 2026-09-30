@@ -23,6 +23,9 @@ pub struct VcpuState {
     pub msrs: Vec<(u32, u64)>,
     pub events: Vec<u8>,
     pub tsc_khz: u32,
+    /// The TSC's offset from the host's (KVM_VCPU_TSC_OFFSET), where KVM has it: what
+    /// keeps each vCPU's TSC as far from the others' as it was.
+    pub tsc_offset: Option<u64>,
 }
 
 /// The VM's state: the in-kernel interrupt controllers and kvmclock.
@@ -60,6 +63,13 @@ impl VcpuState {
         });
         w.bytes(&self.events);
         w.u32(self.tsc_khz);
+        match self.tsc_offset {
+            Some(offset) => {
+                w.u8(1);
+                w.u64(offset);
+            }
+            None => w.u8(0),
+        }
     }
 
     pub fn decode(r: &mut Reader<'_>) -> codec::Result<VcpuState> {
@@ -107,6 +117,11 @@ impl VcpuState {
             msrs,
             events,
             tsc_khz: r.u32()?,
+            tsc_offset: match r.u8()? {
+                0 => None,
+                1 => Some(r.u64()?),
+                other => return Err(DecodeError(format!("a TSC offset marked {other}"))),
+            },
         })
     }
 }
@@ -153,6 +168,7 @@ mod tests {
             msrs: vec![(0x10, 1 << 40), (0x6e0, 7)],
             events: vec![8; sys::VCPU_EVENTS_SIZE],
             tsc_khz: 2_400_000,
+            tsc_offset: Some(u64::MAX - 5),
         }
     }
 
@@ -182,5 +198,16 @@ mod tests {
         let mut w = Writer::default();
         short.encode(&mut w);
         assert!(VcpuState::decode(&mut Reader::new(&w.into_bytes())).is_err());
+        // A host without TSC offsets keeps none, and a marker that is neither is damage.
+        let mut old = vcpu();
+        old.tsc_offset = None;
+        let mut w = Writer::default();
+        old.encode(&mut w);
+        let mut bytes = w.into_bytes();
+        assert_eq!(VcpuState::decode(&mut Reader::new(&bytes)).unwrap(), old);
+        if let Some(marker) = bytes.last_mut() {
+            *marker = 2;
+        }
+        assert!(VcpuState::decode(&mut Reader::new(&bytes)).is_err());
     }
 }

@@ -487,11 +487,11 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu, 
 
 /// For a restore, the counter offset every vCPU applies at release, taken now so the
 /// guest counter continues from the snapshot.
-pub fn release_offset(start: &Start) -> Option<u64> {
-    match start {
+pub fn release_offset(start: &Start) -> Result<Option<u64>, String> {
+    Ok(match start {
         Start::Restore(r) => Some(hv::host_counter().wrapping_sub(r.counter)),
         Start::Boot(_) => None,
-    }
+    })
 }
 
 pub fn set_counter_offset(vcpu: &mut hv::Vcpu, offset: u64) -> Result<(), String> {

@@ -154,6 +154,9 @@ pub struct Vm {
     xsave_size: usize,
     /// Whether vCPUs can map memory ahead of the guest ([`Vcpu::pre_fault`]).
     pre_fault: bool,
+    /// Whether each vCPU's TSC offset can be read and set (Linux 5.16), which snapshots
+    /// then keep, so that every vCPU's TSC comes back in step with the others'.
+    tsc_offsets: bool,
 }
 
 impl Vm {
@@ -193,6 +196,10 @@ impl Vm {
             .check_extension(sys::CAP_PRE_FAULT_MEMORY)
             .map_err(call("KVM_CHECK_EXTENSION"))?
             > 0;
+        let tsc_offsets = fd
+            .check_extension(sys::CAP_VCPU_ATTRIBUTES)
+            .map_err(call("KVM_CHECK_EXTENSION"))?
+            > 0;
         Ok(Vm {
             fd: Arc::new(fd),
             cpuid,
@@ -203,6 +210,7 @@ impl Vm {
             msrs: Arc::new(msrs),
             xsave_size: (xsave2.unsigned_abs() as usize).max(sys::XSAVE_SIZE),
             pre_fault,
+            tsc_offsets,
         })
     }
 
@@ -311,7 +319,44 @@ impl Vm {
             msrs: self.msrs.clone(),
             xsave_size: self.xsave_size,
             pre_fault: self.pre_fault,
+            tsc_offsets: self.tsc_offsets,
+            held_tsc: None,
         })
+    }
+}
+
+/// A restored vCPU's TSC, for the thread that releases the VM: KVM's documented way to
+/// bring a VM's TSCs back is each vCPU's offset (Documentation/virt/kvm/devices/vcpu.rst
+/// §4, KVM_VCPU_TSC_OFFSET). It holds the vCPU weakly: once the vCPU is gone, there is
+/// nothing to start.
+#[derive(Debug, Clone)]
+pub struct Tsc(sys::WeakVcpu);
+
+impl Tsc {
+    /// Starts this vCPU's TSC now at the value `st` saved, and returns what every vCPU
+    /// adds to the offset `st` saved for it to stay as far from this one as it was
+    /// ([`Vcpu::resume_tsc`]). The first TSC written in a VM is taken as given, since
+    /// KVM matches a write to others only once one has been made. `None` once the vCPU
+    /// has gone.
+    pub fn restart(&self, st: &VcpuState) -> Result<Option<u64>> {
+        let Some(fd) = self.0.upgrade() else {
+            return Ok(None);
+        };
+        let (Some(offset), Some(&(_, value))) = (
+            st.tsc_offset,
+            st.msrs.iter().find(|&&(index, _)| index == MSR_IA32_TSC),
+        ) else {
+            return Err(Error::Guest("the snapshot kept no TSC to start from".into()));
+        };
+        if fd
+            .set_msrs(&[(MSR_IA32_TSC, value)])
+            .map_err(call("KVM_SET_MSRS"))?
+            != 1
+        {
+            return Err(Error::Guest(format!("KVM refused MSR {MSR_IA32_TSC:#x}")));
+        }
+        let now = fd.tsc_offset().map_err(call("KVM_GET_DEVICE_ATTR"))?;
+        Ok(Some(now.wrapping_sub(offset)))
     }
 }
 
@@ -362,12 +407,24 @@ pub struct Vcpu {
     msrs: Arc<Vec<u32>>,
     xsave_size: usize,
     pre_fault: bool,
+    tsc_offsets: bool,
+    /// A restored TSC, held back until the vCPUs are released ([`Vcpu::resume_tsc`]).
+    held_tsc: Option<HeldTsc>,
+}
+
+/// What a restore holds back of a vCPU's TSC: its offset in the snapshot, and the deadline
+/// that must be armed against the TSC once it runs.
+#[derive(Debug)]
+struct HeldTsc {
+    offset: u64,
+    deadline: Option<u64>,
 }
 
 /// IA32_TSC_DEADLINE, restored after IA32_TSC: KVM arms the deadline against the TSC, so
 /// in the other order a timer could fire at the wrong time or not at all (as Firecracker's
 /// DEFERRED_MSRS notes; arch/x86/kvm/lapic.c).
 const MSR_IA32_TSC_DEADLINE: u32 = 0x6e0;
+const MSR_IA32_TSC: u32 = 0x10;
 
 /// How far the TSC's frequency may differ from the snapshot's before a restore sets it:
 /// 250 parts per million, QEMU's tolerance, which Firecracker keeps.
@@ -392,6 +449,11 @@ impl Vcpu {
         let debugregs = get(sys::KVM_GET_DEBUGREGS, sys::DEBUGREGS_SIZE, "KVM_GET_DEBUGREGS")?;
         let lapic = get(sys::KVM_GET_LAPIC, sys::LAPIC_SIZE, "KVM_GET_LAPIC")?;
         let tsc_khz = fd.tsc_khz().map_err(call("KVM_GET_TSC_KHZ"))?;
+        let tsc_offset = if self.tsc_offsets {
+            Some(fd.tsc_offset().map_err(call("KVM_GET_DEVICE_ATTR"))?)
+        } else {
+            None
+        };
         let msrs = self.save_msrs()?;
         let events = get(
             sys::KVM_GET_VCPU_EVENTS,
@@ -410,7 +472,40 @@ impl Vcpu {
             msrs,
             events,
             tsc_khz,
+            tsc_offset,
         })
+    }
+
+    fn set_msrs(&self, msrs: &[(u32, u64)]) -> Result<()> {
+        let set = self.fd.set_msrs(msrs).map_err(call("KVM_SET_MSRS"))?;
+        match msrs.get(set) {
+            Some(&(index, _)) => Err(Error::Guest(format!("KVM refused MSR {index:#x}"))),
+            None => Ok(()),
+        }
+    }
+
+    /// The handle through which a restore starts this vCPU's TSC ([`Tsc::restart`]):
+    /// `Some` if [`restore_state`](Self::restore_state) held the TSC back. It does not
+    /// keep the vCPU.
+    pub fn tsc(&self) -> Option<Tsc> {
+        self.held_tsc.as_ref().map(|_| Tsc(self.fd.weak()))
+    }
+
+    /// Brings the TSC [`restore_state`](Self::restore_state) held back in step with the
+    /// vCPU [`Tsc::restart`] started: its offset in the snapshot plus `delta`, which
+    /// keeps every vCPU as far from the others as it was, then arms its deadline. On the
+    /// vCPU's thread, before it runs.
+    pub fn resume_tsc(&mut self, delta: u64) -> Result<()> {
+        let Some(held) = self.held_tsc.take() else {
+            return Ok(());
+        };
+        self.fd
+            .set_tsc_offset(held.offset.wrapping_add(delta))
+            .map_err(call("KVM_SET_DEVICE_ATTR"))?;
+        match held.deadline {
+            Some(deadline) => self.set_msrs(&[(MSR_IA32_TSC_DEADLINE, deadline)]),
+            None => Ok(()),
+        }
     }
 
     /// Every MSR in KVM's list that it reads for this vCPU. KVM stops at the first it
@@ -432,6 +527,13 @@ impl Vcpu {
     /// events bring it back), the LAPIC after the SREGS (which hold its base) and before
     /// the MSRs (the TSC deadline needs it). A vCPU given another CPUID refuses: the
     /// snapshot was taken on another CPU.
+    ///
+    /// Where the snapshot kept the TSC's offset and KVM can set it, the TSC and its
+    /// deadline wait for the release ([`resume_tsc`](Self::resume_tsc)): each vCPU's TSC
+    /// written on its own would pass through KVM's legacy synchronization, which matches
+    /// the writes to one another only on a host whose TSC it trusts, and otherwise leaves
+    /// each vCPU's TSC where its own capture found it, apart from the others' by however
+    /// far apart the captures were (arch/x86/kvm/x86.c, kvm_synchronize_tsc).
     pub fn restore_state(&mut self, st: &VcpuState) -> Result<()> {
         if st.cpuid != self.cpuid {
             return Err(Error::Guest(
@@ -479,11 +581,23 @@ impl Vcpu {
             .msrs
             .iter()
             .partition(|&&(index, _)| index == MSR_IA32_TSC_DEADLINE);
-        for msrs in [rest, deadline] {
-            let set = fd.set_msrs(&msrs).map_err(call("KVM_SET_MSRS"))?;
-            if let Some(&(index, _)) = msrs.get(set) {
-                return Err(Error::Guest(format!("KVM refused MSR {index:#x}")));
+        let held = st.tsc_offset.filter(|_| self.tsc_offsets);
+        let rest: Msrs = match held {
+            Some(_) => rest
+                .into_iter()
+                .filter(|&(index, _)| index != MSR_IA32_TSC)
+                .collect(),
+            None => rest,
+        };
+        self.set_msrs(&rest)?;
+        match held {
+            Some(offset) => {
+                self.held_tsc = Some(HeldTsc {
+                    offset,
+                    deadline: deadline.first().map(|&(_, value)| value),
+                });
             }
+            None => self.set_msrs(&deadline)?,
         }
         set(
             sys::KVM_SET_VCPU_EVENTS,
