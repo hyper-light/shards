@@ -39,6 +39,18 @@
 //! - `to_beat`: the host's clock from spawn until the guest's first beat after the restore
 //!   reaches the VMM's stdout: the guest running again, what a user waits for.
 //! - `overhead` and `peak_rss`, as above, while the guest beats.
+//!
+//! Then density (audit D14): `--fleet K` (16) restored VMs of one VMM held at once, all
+//! beating, then the other's, in rounds S F F S S F F S. Each VM's row pairs with the other
+//! VMM's VM of the same index in the matching round.
+//!
+//! - `fleet_pss`, `fleet_private`: each VM's proportional set size, and its private pages
+//!   (`Private_Clean` and `Private_Dirty` in smaps_rollup), with its fleet running.
+//! - `fleet_pte`: its page tables, `VmPTE` in /proc/PID/status.
+//! - `fleet_host`: the host's `MemAvailable` given up per VM, from before the round's
+//!   first spawn to all of it beating: what process accounting leaves out (KVM's and the
+//!   kernel's own memory) with what it counts, and none of the page cache, which stays
+//!   reclaimable.
 
 #![allow(
     clippy::unwrap_used,
@@ -190,12 +202,21 @@ mod compare {
                 support::stats("fc_pss_file", "MiB", mib(&fc, |s| s.pss_file_bytes)),
             ],
         );
-        restores(&firecracker, kernel, &initrd, &cpus, &memory, runs);
+        let fleet: usize = support::option("--fleet").map_or(16, |v| v.parse().expect("--fleet K"));
+        restores(&firecracker, kernel, &initrd, &cpus, &memory, runs, fleet);
     }
 
     /// The restore comparison (above): each VMM's snapshot of the beating guest, restored
     /// by fresh processes, interleaved.
-    fn restores(firecracker: &Path, kernel: &Path, initrd: &Path, cpus: &str, memory: &str, runs: usize) {
+    fn restores(
+        firecracker: &Path,
+        kernel: &Path,
+        initrd: &Path,
+        cpus: &str,
+        memory: &str,
+        runs: usize,
+        fleet: usize,
+    ) {
         let guest_bytes = memory.parse::<u64>().expect("--memory MIB") << 20;
         let dir = common::workspace().join(format!("target/bench/fc-restore-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -296,6 +317,7 @@ mod compare {
                 }
             }
         }
+        density(firecracker, &snapshot, &dir, &load, fleet, cpus, memory);
         let _ = std::fs::remove_dir_all(&dir);
         let to_beat = |v: &[Sample]| v.iter().map(|s| s.to_ready_us).collect::<Vec<_>>();
         let mib =
@@ -324,6 +346,141 @@ mod compare {
                 support::stats("fc_pss", "MiB", mib(&fc, |s| s.pss_bytes)),
                 support::stats("shards_pss_file", "MiB", mib(&shards, |s| s.pss_file_bytes)),
                 support::stats("fc_pss_file", "MiB", mib(&fc, |s| s.pss_file_bytes)),
+            ],
+        );
+    }
+
+    /// A restored VM held running: its process, and the threads that drain its output.
+    struct Held {
+        child: std::process::Child,
+        pid: libc::pid_t,
+        out: thread::JoinHandle<Vec<u8>>,
+        err: thread::JoinHandle<String>,
+    }
+
+    impl Held {
+        /// `command` spawned, `after_spawn` done (Firecracker's load), and its guest beating.
+        fn start(command: &mut Command, after_spawn: impl FnOnce()) -> Held {
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = command.spawn().expect("spawning the VMM");
+            let pid = child.id() as libc::pid_t;
+            let (beat, out) = first_beat(child.stdout.take().unwrap());
+            let mut stderr = child.stderr.take().unwrap();
+            let err = thread::spawn(move || {
+                let mut all = String::new();
+                let _ = stderr.read_to_string(&mut all);
+                all
+            });
+            after_spawn();
+            let held = Held { child, pid, out, err };
+            if beat.recv_timeout(TIMEOUT).is_err() {
+                let (out, err) = held.end();
+                panic!(
+                    "a held restore never beat\n--- stdout\n{}\n--- stderr\n{err}",
+                    String::from_utf8_lossy(&out)
+                );
+            }
+            held
+        }
+
+        fn end(mut self) -> (Vec<u8>, String) {
+            // SAFETY: the child is not yet reaped, so `pid` still names it.
+            unsafe { libc::kill(self.pid, libc::SIGKILL) };
+            self.child.wait().unwrap();
+            (self.out.join().unwrap(), self.err.join().unwrap())
+        }
+    }
+
+    /// /proc/meminfo's `field`, in bytes.
+    fn meminfo_bytes(field: &str) -> u64 {
+        let info = std::fs::read_to_string("/proc/meminfo").unwrap();
+        info.lines()
+            .find_map(|l| l.strip_prefix(field)?.strip_prefix(':'))
+            .and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
+            .expect("a /proc/meminfo field")
+            * 1024
+    }
+
+    /// The density rounds (above): `fleet` restores of each VMM's snapshot held at once.
+    fn density(
+        firecracker: &Path,
+        snapshot: &Path,
+        dir: &Path,
+        load: &str,
+        fleet: usize,
+        cpus: &str,
+        memory: &str,
+    ) {
+        let rounds = [
+            Vmm::Shards,
+            Vmm::Firecracker,
+            Vmm::Firecracker,
+            Vmm::Shards,
+            Vmm::Shards,
+            Vmm::Firecracker,
+            Vmm::Firecracker,
+            Vmm::Shards,
+        ];
+        // Per VMM: each VM's PSS, private pages and page tables, and each round's host share.
+        let mut rows: [[Vec<f64>; 4]; 2] = Default::default();
+        for (round, vmm) in rounds.into_iter().enumerate() {
+            let before = meminfo_bytes("MemAvailable");
+            let held: Vec<Held> = (0..fleet)
+                .map(|k| match vmm {
+                    Vmm::Shards => {
+                        let mut c = Command::new(common::shards_vm());
+                        c.arg("restore").arg(snapshot);
+                        Held::start(&mut c, || {})
+                    }
+                    Vmm::Firecracker => {
+                        let socket = dir.join(format!("fleet-{round}-{k}.sock"));
+                        let mut c = Command::new(firecracker);
+                        c.arg("--api-sock").arg(&socket).args(["--level", "error"]);
+                        Held::start(&mut c, || api(&socket, "PUT", "/snapshot/load", load))
+                    }
+                })
+                .collect();
+            let after = meminfo_bytes("MemAvailable");
+            let row = &mut rows[matches!(vmm, Vmm::Firecracker) as usize];
+            for h in &held {
+                let private = ["Private_Clean", "Private_Dirty"]
+                    .map(|f| rollup_bytes(h.pid, f).expect("smaps_rollup"))
+                    .iter()
+                    .sum::<u64>();
+                row[0].push(rollup_bytes(h.pid, "Pss").expect("Pss") as f64 / MIB);
+                row[1].push(private as f64 / MIB);
+                row[2].push(status_bytes(h.pid, "VmPTE").expect("VmPTE") as f64 / MIB);
+            }
+            row[3].push(before.saturating_sub(after) as f64 / fleet as f64 / MIB);
+            for h in held {
+                h.end();
+            }
+        }
+        let [shards, fc] = rows;
+        let [s_pss, s_private, s_pte, s_host] = shards;
+        let [f_pss, f_private, f_pte, f_host] = fc;
+        support::report(
+            "firecracker_density",
+            &[
+                ("fleet", fleet.to_string()),
+                ("rounds", "S F F S S F F S".to_string()),
+                ("cpus", cpus.to_string()),
+                ("memory_mib", memory.to_string()),
+                ("kernel", common::kernel_artifact().name.to_string()),
+                ("firecracker", FIRECRACKER.to_string()),
+            ],
+            &[
+                support::stats("shards_fleet_pss", "MiB", s_pss),
+                support::stats("fc_fleet_pss", "MiB", f_pss),
+                support::stats("shards_fleet_private", "MiB", s_private),
+                support::stats("fc_fleet_private", "MiB", f_private),
+                support::stats("shards_fleet_pte", "MiB", s_pte),
+                support::stats("fc_fleet_pte", "MiB", f_pte),
+                support::stats("shards_fleet_host", "MiB", s_host),
+                support::stats("fc_fleet_host", "MiB", f_host),
             ],
         );
     }
