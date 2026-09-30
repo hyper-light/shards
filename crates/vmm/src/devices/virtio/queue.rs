@@ -20,9 +20,6 @@ const DESC_F_WRITE: u16 = 2;
 const DESC_F_INDIRECT: u16 = 4;
 const AVAIL_F_NO_INTERRUPT: u16 = 1;
 const USED_F_NO_NOTIFY: u16 = 1;
-/// Upper bound on descriptors in one chain, direct and indirect together. It covers
-/// the largest request a driver can build from the segment limits we advertise.
-pub const MAX_CHAIN: usize = 4096;
 pub const MAX_QUEUE_SIZE: u16 = 32768;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,7 +50,7 @@ impl fmt::Display for QueueError {
                 write!(f, "driver published {published} new buffers on a queue of {size}")
             }
             QueueError::DescriptorIndex(i) => write!(f, "descriptor index {i} out of range"),
-            QueueError::ChainTooLong => write!(f, "descriptor chain loops or exceeds {MAX_CHAIN} entries"),
+            QueueError::ChainTooLong => write!(f, "descriptor chain loops or is longer than its queue"),
             QueueError::NestedIndirect => write!(f, "indirect descriptor inside an indirect table"),
             QueueError::IndirectNotNegotiated => {
                 write!(f, "indirect descriptor without VIRTIO_F_INDIRECT_DESC")
@@ -203,16 +200,31 @@ pub fn need_event(event: u16, new: u16, old: u16) -> bool {
 }
 
 /// Accumulates a chain while enforcing the length bound and readable-then-writable
-/// ordering (virtio 1.3 §2.7.4).
-#[derive(Default)]
+/// ordering (virtio 1.3 §2.7.4). A chain, its indirect descriptors included, is no longer
+/// than its queue: a driver must not make one longer (§2.7.5.3.1), and the devices
+/// advertise no more segments than fit (block's `seg_max` is its queue's size less two).
 struct ChainBuilder {
     descriptors: Vec<Descriptor>,
     seen_writable: bool,
+    limit: usize,
 }
 
 impl ChainBuilder {
+    fn new(limit: u16) -> ChainBuilder {
+        ChainBuilder {
+            descriptors: Vec::new(),
+            seen_writable: false,
+            limit: usize::from(limit),
+        }
+    }
+
+    /// Room left in the chain.
+    fn room(&self) -> usize {
+        self.limit.saturating_sub(self.descriptors.len())
+    }
+
     fn push(&mut self, d: &RawDesc) -> Result<(), QueueError> {
-        if self.descriptors.len() >= MAX_CHAIN {
+        if self.descriptors.len() >= self.limit {
             return Err(QueueError::ChainTooLong);
         }
         let writable = d.flags & DESC_F_WRITE != 0;
@@ -237,7 +249,8 @@ impl ChainBuilder {
 }
 
 fn walk_indirect(mem: &Access<'_>, table: &RawDesc, chain: &mut ChainBuilder) -> Result<(), QueueError> {
-    if table.len == 0 || !table.len.is_multiple_of(16) || table.len as usize / 16 > MAX_CHAIN {
+    // A table longer than the chain has room for is refused before it is read.
+    if table.len == 0 || !table.len.is_multiple_of(16) || table.len as usize / 16 > chain.room() {
         return Err(QueueError::IndirectLength(table.len));
     }
     let count = (table.len / 16) as u16;
@@ -364,7 +377,7 @@ impl Queue {
     }
 
     fn walk(&self, mem: &Access<'_>, head: u16) -> Result<Chain, QueueError> {
-        let mut chain = ChainBuilder::default();
+        let mut chain = ChainBuilder::new(self.size);
         let mut index = head;
         // A direct chain visits each table entry at most once.
         for _ in 0..self.size {
@@ -574,6 +587,61 @@ mod tests {
             q.pop(&d.mem.access().unwrap()),
             Err(QueueError::AvailIndexJump { .. })
         ));
+    }
+
+    /// A chain is no longer than its queue, indirect descriptors included (virtio 1.3
+    /// §2.7.5.3.1): one as long is taken; one longer, direct and indirect together, is
+    /// refused, an indirect table longer than the room left before any of it is read
+    /// (audit D09).
+    #[test]
+    fn chains_are_no_longer_than_their_queue() {
+        let mut d = Driver::new(8);
+        let mut q = d.queue(feature::VERSION_1 | feature::INDIRECT_DESC);
+        let table = DATA + 0x800;
+        let write_table = |d: &Driver, entries: u16| {
+            for i in 0..entries {
+                let last = i + 1 == entries;
+                let raw = RawDesc {
+                    addr: DATA + 64 * u64::from(i),
+                    len: 1,
+                    flags: if last { 0 } else { DESC_F_NEXT },
+                    next: i + 1,
+                };
+                d.mem
+                    .access()
+                    .unwrap()
+                    .write_obj(table + 16 * u64::from(i), raw)
+                    .unwrap();
+            }
+        };
+        // Two direct descriptors, then a table of six: eight, the queue's size.
+        write_table(&d, 6);
+        d.set_desc(0, DATA, 1, DESC_F_NEXT, 1);
+        d.set_desc(1, DATA + 1, 1, DESC_F_NEXT, 2);
+        d.set_desc(2, table, 6 * 16, DESC_F_INDIRECT, 0);
+        d.publish(0);
+        assert_eq!(
+            q.pop(&d.mem.access().unwrap())
+                .unwrap()
+                .unwrap()
+                .descriptors
+                .len(),
+            8
+        );
+        // The same with a table of seven: nine.
+        d.set_desc(2, table, 7 * 16, DESC_F_INDIRECT, 0);
+        d.publish(0);
+        assert_eq!(
+            q.pop(&d.mem.access().unwrap()),
+            Err(QueueError::IndirectLength(7 * 16))
+        );
+        // A table alone longer than the queue, its entries never written: refused unread.
+        d.set_desc(3, DATA + 0x10_0000, 9 * 16, DESC_F_INDIRECT, 0);
+        d.publish(3);
+        assert_eq!(
+            q.pop(&d.mem.access().unwrap()),
+            Err(QueueError::IndirectLength(9 * 16))
+        );
     }
 
     #[test]

@@ -435,7 +435,19 @@ impl TxBuf {
             self.start = 0;
         }
         let old = self.data.len();
-        self.data.resize(old + len, 0);
+        // Doubling as it grows, but never past the credit the guest has, which bounds what
+        // it may have buffered (send_host): a Vec left to itself would double past it,
+        // 65,535 bytes to 131,070 for one more (audit D09).
+        let needed = old + len;
+        if needed > self.data.capacity() {
+            let target = needed
+                .max(2 * self.data.capacity())
+                .min((BUF_ALLOC as usize).max(needed));
+            self.data
+                .try_reserve_exact(target - old)
+                .map_err(|e| io::Error::new(io::ErrorKind::OutOfMemory, e.to_string()))?;
+        }
+        self.data.resize(needed, 0);
         let tail = self.data.get_mut(old..).unwrap_or_default();
         mem.access()
             .map_err(io::Error::other)?
@@ -537,6 +549,35 @@ mod tests {
         assert_eq!(c.next_rx(&space).unwrap().op, op::RESPONSE);
         assert!(!c.has_pending_rx());
         (c, host)
+    }
+
+    /// What a connection buffers for the host never has room for more than the guest's
+    /// credit: filled a byte short, then to the brim, and in small pieces, its capacity
+    /// stays within BUF_ALLOC, where Vec's doubling would take it to twice that (audit
+    /// D09). The bytes are the guest's, in order.
+    #[test]
+    fn a_buffer_never_holds_room_past_the_credit() {
+        let g = Guest::new();
+        let full = BUF_ALLOC as usize;
+        g.mem
+            .access()
+            .unwrap()
+            .write(BASE, &(0..full).map(|i| i as u8).collect::<Vec<_>>())
+            .unwrap();
+        let mut b = TxBuf::default();
+        b.append(&g.mem, BASE, full - 1).unwrap();
+        b.append(&g.mem, BASE + full as u64 - 1, 1).unwrap();
+        assert!(b.data.capacity() <= full, "{} bytes of room", b.data.capacity());
+        assert!(b.data.iter().enumerate().all(|(i, &v)| v == i as u8));
+        let mut small = TxBuf::default();
+        for i in 0..full / 100 {
+            small.append(&g.mem, BASE + (100 * i) as u64, 100).unwrap();
+            assert!(
+                small.data.capacity() <= full,
+                "{} bytes of room",
+                small.data.capacity()
+            );
+        }
     }
 
     #[test]
