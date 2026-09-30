@@ -240,7 +240,7 @@ fn enter(home: &Path, daemon: &Path) -> Result<bool, String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("{}: {e}", home.display())),
     }
-    start(daemon)?;
+    start(daemon, home)?;
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
         match std::env::set_current_dir(home) {
@@ -266,7 +266,7 @@ fn connect(home: &Path, daemon: &Path, started: &mut bool) -> Result<UnixStream,
         Err(e) => return Err(format!("{}: {e}", home.join(SOCKET).display())),
     }
     if !*started {
-        start(daemon)?;
+        start(daemon, home)?;
         *started = true;
     }
     let deadline = Instant::now() + START_TIMEOUT;
@@ -288,16 +288,19 @@ fn connect(home: &Path, daemon: &Path, started: &mut bool) -> Result<UnixStream,
 /// the daemon creates its home and writes its messages to the log there. Of daemons
 /// started at once, one takes the home's lock and the rest exit. What the starter says
 /// when it fails, a setting the daemon cannot keep, is what this says.
-fn start(daemon: &Path) -> Result<(), String> {
+fn start(daemon: &Path, home: &Path) -> Result<(), String> {
     use std::os::fd::AsFd;
     let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
     let starting = |e: io::Error| format!("starting the daemon {}: {e}", daemon.display());
     let (mut said, speaks) = io::pipe().map_err(starting)?;
-    let starter = shards_ipc::spawn(
+    // The home this client resolved, before it made the home its working directory
+    // (audit A17).
+    let starter = shards_ipc::spawn_with(
         daemon,
         &["daemon".as_ref(), "--detached".as_ref()],
         &[(null.as_fd(), 0), (null.as_fd(), 1), (speaks.as_fd(), 2)],
         true,
+        &[(shards_ipc::HOME, home.as_os_str())],
     )
     .map_err(starting)?;
     drop(speaks);

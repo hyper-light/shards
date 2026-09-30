@@ -22,8 +22,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards_env, served, served_variant,
-    shards, shards_vm, shardsd,
+    TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards_env, run_shards_env_in, served,
+    served_variant, shards, shards_vm, shardsd,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -895,4 +895,85 @@ fn warm_vms_are_bounded_across_templates() {
         run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
         Some(0)
     );
+}
+
+/// A home named relatively is one home, wherever it is named from, however long, with
+/// spaces, or on Linux in bytes that are not UTF-8: each process resolves it before it
+/// makes the home its working directory, and hands the daemon it starts the resolved
+/// path (audit A17, whose reproduction the first run is: before, the daemon looked for
+/// its lock in the home nested in itself).
+#[test]
+fn a_home_named_relatively_is_one_home() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let base = TempDir::new("daemon-relative");
+    let (one, two) = (base.join("one"), base.join("two"));
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::create_dir_all(&two).unwrap();
+    fn with(home: &OsStr) -> Vec<(&'static str, &OsStr)> {
+        vec![
+            ("SHARDS_HOME", home),
+            ("SHARDS_KERNEL", kernel().as_os_str()),
+            ("SHARDS_INIT", guest_init().as_os_str()),
+        ]
+    }
+    let rel = OsStr::new("a home/with spaces");
+    let run = run_shards_env_in(
+        &one,
+        &["run"],
+        &["--name", "first", &image, "exit", "0"],
+        &with(rel),
+        TIMEOUT,
+    );
+    assert_eq!(run.status, Some(0), "{}", run.stderr);
+    assert!(one.join(rel).join("daemon.pid").is_file(), "not the home named");
+    assert!(!one.join(rel).join(rel).exists(), "a home nested in itself");
+    let other = OsStr::new("../one/a home/with spaces");
+    let listed = run_shards_env_in(&two, &["ps"], &["-a"], &with(other), TIMEOUT);
+    assert_eq!(listed.status, Some(0), "{}", listed.stderr);
+    assert!(
+        listed.stdout.lines().any(|l| l.ends_with(" first")),
+        "{}",
+        listed.stdout
+    );
+    let stopped = run_shards_env_in(&two, &["daemon"], &["stop"], &with(other), TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+    // A daemon started for a home that is there: its client has entered it first.
+    let again = run_shards_env_in(&two, &["run"], &[&image, "exit", "0"], &with(other), TIMEOUT);
+    assert_eq!(again.status, Some(0), "{}", again.stderr);
+    assert!(!one.join(rel).join("one").exists(), "a home nested in itself");
+    let stopped = run_shards_env_in(&two, &["daemon"], &["stop"], &with(other), TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+
+    // Longer than a socket's address (104 bytes on macOS, 108 on Linux).
+    let long = base.join("l".repeat(150)).join("home");
+    let run = run_shards_env(&["run"], &[&image, "exit", "0"], &with(long.as_os_str()), TIMEOUT);
+    assert_eq!(run.status, Some(0), "{}", run.stderr);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &with(long.as_os_str()), TIMEOUT);
+    assert_eq!(stopped.status, Some(0));
+
+    // Linux names files in bytes; macOS's filesystems in UTF-8.
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let odd = OsStr::from_bytes(b"odd-\xff-home");
+        let run = run_shards_env_in(&one, &["run"], &[&image, "exit", "0"], &with(odd), TIMEOUT);
+        assert_eq!(run.status, Some(0), "{}", run.stderr);
+        assert!(one.join(odd).join("daemon.pid").is_file());
+        let stopped = run_shards_env_in(&one, &["daemon"], &["stop"], &with(odd), TIMEOUT);
+        assert_eq!(stopped.status, Some(0));
+
+        // The XDG specification has a relative XDG_DATA_HOME ignored.
+        let user = base.join("user");
+        std::fs::create_dir_all(&user).unwrap();
+        let env: [(&str, &OsStr); 2] = [("HOME", user.as_os_str()), ("XDG_DATA_HOME", "relative".as_ref())];
+        let listed = run_shards_env_in(&one, &["ps"], &["-a"], &env, TIMEOUT);
+        assert_eq!(listed.status, Some(0), "{}", listed.stderr);
+        assert!(user.join(".local/share/shards/daemon.pid").is_file());
+        assert!(!one.join("relative").exists());
+        let stopped = run_shards_env_in(&one, &["daemon"], &["stop"], &env, TIMEOUT);
+        assert_eq!(stopped.status, Some(0));
+    }
 }

@@ -376,6 +376,17 @@ pub fn run_shards_env<S: AsRef<std::ffi::OsStr>>(
     run_shards_with(command, args, env, None, timeout)
 }
 
+/// [`run_shards_env`], in the working directory `dir`.
+pub fn run_shards_env_in<S: AsRef<std::ffi::OsStr>>(
+    dir: &Path,
+    command: &[&str],
+    args: &[S],
+    env: &[(&str, &std::ffi::OsStr)],
+    timeout: Duration,
+) -> Run {
+    run_shards_with(command, args, env, Some(dir), timeout)
+}
+
 /// [`run_shards`], in the working directory `dir`.
 pub fn run_shards_in<S: AsRef<std::ffi::OsStr>>(
     dir: &Path,

@@ -3,6 +3,7 @@
 
 use std::ffi::OsString;
 use std::io::Write;
+use std::path::Path;
 use std::process::ExitCode;
 
 use shards_image::platform;
@@ -63,7 +64,7 @@ fn usage(message: &str) -> ExitCode {
 /// - `SHARDS_KEEP_FREE`: the bytes a build leaves free on the store's filesystem: 5% of
 ///   it, as ext4 keeps 5% back by default (mke2fs(8) `-m`), but at most 10 GiB, so a large
 ///   disk that is nearly full still takes images.
-pub fn limits() -> Result<Limits, String> {
+pub fn limits(home: &Path) -> Result<Limits, String> {
     let setting = |name: &str, default: u64| match std::env::var(name) {
         Ok(v) => v
             .trim()
@@ -72,7 +73,7 @@ pub fn limits() -> Result<Limits, String> {
         Err(std::env::VarError::NotPresent) => Ok(default),
         Err(e) => Err(format!("{name}: {e}")),
     };
-    let root = shards_ipc::home()?.join("images");
+    let root = home.join("images");
     let (_, total) =
         shards_vmm::platform::disk_space(&root).map_err(|e| format!("{}: {e}", root.display()))?;
     Ok(Limits {
@@ -84,9 +85,9 @@ pub fn limits() -> Result<Limits, String> {
     })
 }
 
-/// This user's image store, `images` in [`home`], readable by this user alone.
-pub fn store() -> Result<Store, String> {
-    let root = shards_ipc::home()?.join("images");
+/// This user's image store, `images` in `home`, readable by this user alone.
+pub fn store(home: &Path) -> Result<Store, String> {
+    let root = home.join("images");
     shards_vmm::platform::create_private_dir(&root).map_err(|e| format!("{}: {e}", root.display()))?;
     Store::open(&root).map_err(|e| e.to_string())
 }
@@ -105,7 +106,9 @@ pub fn run(image: &str, quiet: bool) -> Result<(), String> {
         say("Using default tag: latest");
     }
     let downloaded = std::sync::atomic::AtomicBool::new(false);
+    let home = shards_ipc::home()?;
     let pulled = fetch(
+        &home,
         &reference,
         &|event| match event {
             Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
@@ -136,12 +139,13 @@ pub fn run(image: &str, quiet: bool) -> Result<(), String> {
 /// Pulls `reference` into the store, until `cancel`, if given, is cancelled. Returns the
 /// pull, and whether the reference already named the same manifest.
 pub fn fetch(
+    home: &Path,
     reference: &Reference,
     report: &(dyn Fn(Event<'_>) + Sync),
     say: &dyn Fn(&str),
     cancel: Option<&Cancel>,
 ) -> Result<(Pulled, bool), String> {
-    let store = store()?;
+    let store = store(home)?;
     let env = |k: &str| std::env::var(k).ok();
     let (credentials, warnings) = credentials::lookup(&reference.domain, &env).map_err(|e| e.to_string())?;
     for warning in warnings {
@@ -170,7 +174,7 @@ pub fn fetch(
         .and_then(|d| d.map(|d| d.digest()).transpose())
         .map_err(|e| e.to_string())?;
     // Layers unpack without a cap, as Docker's do; each is checked against its DiffID.
-    let limits = limits()?;
+    let limits = limits(home)?;
     let pulled = pull::pull(&registry, &store, reference, &platform::guest(), &limits, report)
         .map_err(|e| e.to_string())?;
     let same = before.as_ref() == Some(&pulled.manifest);

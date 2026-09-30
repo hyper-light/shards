@@ -12,10 +12,17 @@ use std::path::PathBuf;
 /// `~/Library/Application Support` on macOS (Apple's File System Programming Guide),
 /// `$XDG_DATA_HOME` or else `~/.local/share` on other Unix systems (XDG Base Directory
 /// Specification), `%LOCALAPPDATA%` on Windows (`FOLDERID_LocalAppData`).
+///
+/// It is absolute: a relative `SHARDS_HOME` or `HOME` is taken from this process's
+/// working directory now, since shards' processes make the home their working directory
+/// and would read it again from there (audit A17). The XDG specification has a relative
+/// `XDG_DATA_HOME` ignored. Whoever starts another shards process passes it this one
+/// ([`HOME`]).
 pub fn home() -> Result<PathBuf, String> {
     let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
-    if let Some(home) = var("SHARDS_HOME") {
-        return Ok(PathBuf::from(home));
+    let absolute = |p: PathBuf| std::path::absolute(&p).map_err(|e| format!("{}: {e}", p.display()));
+    if let Some(home) = var(HOME) {
+        return absolute(PathBuf::from(home));
     }
     let data = if cfg!(windows) {
         var("LOCALAPPDATA").map(PathBuf::from)
@@ -26,11 +33,15 @@ pub fn home() -> Result<PathBuf, String> {
         } else {
             var("XDG_DATA_HOME")
                 .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
                 .or_else(|| home.map(|h| h.join(".local").join("share")))
         }
     };
-    Ok(data.ok_or("no data directory: set SHARDS_HOME")?.join("shards"))
+    absolute(data.ok_or("no data directory: set SHARDS_HOME")?.join("shards"))
 }
+
+/// The variable that names shards' home.
+pub const HOME: &str = "SHARDS_HOME";
 
 /// Message kinds between the daemon, warm VMs and clients.
 pub mod kind {

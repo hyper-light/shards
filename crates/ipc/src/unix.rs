@@ -602,6 +602,18 @@ pub fn spawn(
     fds: &[(BorrowedFd<'_>, RawFd)],
     detach: bool,
 ) -> io::Result<Child> {
+    spawn_with(program, args, fds, detach, &[])
+}
+
+/// [`spawn`], with the variables `set` in the child's environment in place of this
+/// process's.
+pub fn spawn_with(
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedFd<'_>, RawFd)],
+    detach: bool,
+    set: &[(&str, &OsStr)],
+) -> io::Result<Child> {
     let cstring = |s: &OsStr| {
         CString::new(s.as_bytes())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in an argument"))
@@ -611,7 +623,12 @@ pub fn spawn(
     for a in args {
         argv.push(cstring(a)?);
     }
-    let env: Vec<CString> = std::env::vars_os()
+    let inherited = std::env::vars_os().filter(|(k, _)| !set.iter().any(|(name, _)| k == *name));
+    let given = set
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
+    let env: Vec<CString> = inherited
+        .chain(given)
         .map(|(k, v)| {
             let mut entry = k.as_bytes().to_vec();
             entry.push(b'=');

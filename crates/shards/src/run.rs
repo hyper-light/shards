@@ -63,11 +63,11 @@ pub fn prepare(
     };
     let asked = request;
     let reference = Reference::parse(&asked.image).map_err(|e| e.to_string())?;
-    let store = crate::pull::store()?;
+    let store = crate::pull::store(home)?;
     let found = match asked.pull {
         Pull::Always => None,
         Pull::Missing | Pull::Never => {
-            let limits = crate::pull::limits()?;
+            let limits = crate::pull::limits(home)?;
             local(&store, &reference, &platform::guest(), &limits).map_err(|e| e.to_string())?
         }
     };
@@ -89,7 +89,7 @@ pub fn prepare(
                 Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
                 Event::Manifest(..) | Event::Progress(..) | Event::Building => {}
             };
-            let (pulled, _) = crate::pull::fetch(&reference, &report, &say, Some(cancel))?;
+            let (pulled, _) = crate::pull::fetch(home, &reference, &report, &say, Some(cancel))?;
             say(&format!("Digest: {}", pulled.resolved));
             say(&format!(
                 "Status: Downloaded newer image for {}",

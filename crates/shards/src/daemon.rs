@@ -146,6 +146,15 @@ struct State {
     starting: HashMap<u32, Arc<shards_ipc::Child>>,
 }
 
+/// The spare container: none, one being made, or one made.
+#[derive(Debug, Default)]
+enum Spare {
+    #[default]
+    None,
+    Making,
+    Made(String, File),
+}
+
 /// Who a starting VM is for.
 enum For {
     Pool(PathBuf),
@@ -260,7 +269,7 @@ struct Daemon {
     /// The containers `shards rm` is removing.
     removing: Mutex<HashSet<String>>,
     /// A container's ID, directory and log, made ahead of the run that takes them.
-    spare: Mutex<Option<(String, File)>>,
+    spare: Mutex<Spare>,
     /// Numbers the templates a run saves before they become the template.
     saved: AtomicU64,
     /// The home's lock, held while this daemon lives.
@@ -947,8 +956,13 @@ impl Daemon {
 
     /// A new container's ID, and its log: the spare's, made ahead, or made now.
     fn new_container(&self) -> Result<(String, File), String> {
-        if let Some(spare) = lock(&self.spare).take() {
-            return Ok(spare);
+        {
+            let mut spare = lock(&self.spare);
+            if let Spare::Made(..) = *spare
+                && let Spare::Made(id, log) = std::mem::replace(&mut *spare, Spare::None)
+            {
+                return Ok((id, log));
+            }
         }
         let id = containers::new_id().map_err(|e| format!("a container ID: {e}"))?;
         let dir = lock(&self.containers).dir(&id);
@@ -1097,11 +1111,16 @@ impl Daemon {
         }
     }
 
-    /// Makes a spare container, if there is none, for the next run to take: making it
-    /// costs a directory and a file that no run should wait for.
+    /// Makes a spare container, if there is none and none is being made, for the next run
+    /// to take: making it costs a directory and a file that no run should wait for. One
+    /// maker at a time, so no spare is made only to be dropped (audit A20).
     fn make_spare(&self) {
-        if lock(&self.spare).is_some() {
-            return;
+        {
+            let mut spare = lock(&self.spare);
+            if !matches!(*spare, Spare::None) {
+                return;
+            }
+            *spare = Spare::Making;
         }
         let made = containers::new_id().and_then(|id| {
             // The lock only for the name: the directory and file are made without it,
@@ -1110,10 +1129,13 @@ impl Daemon {
             let log = new_log(&dir)?;
             Ok((id, log))
         });
-        match made {
-            Ok(spare) => *lock(&self.spare) = Some(spare),
-            Err(e) => log(format!("a spare container: {e}")),
-        }
+        *lock(&self.spare) = match made {
+            Ok((id, log)) => Spare::Made(id, log),
+            Err(e) => {
+                log(format!("a spare container: {e}"));
+                Spare::None
+            }
+        };
     }
 
     /// The run of container `id` will not start, for `why`: with `--rm` its container
@@ -2899,5 +2921,27 @@ mod tests {
             Some(5),
             "its record is the change's"
         );
+    }
+
+    /// Makers of the spare container at once leave one spare, and no directory besides
+    /// (audit A20).
+    #[test]
+    fn makers_at_once_leave_one_spare() {
+        let t = Test::new("spares");
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    start.wait();
+                    t.daemon.make_spare();
+                });
+            }
+        });
+        assert!(matches!(*lock(&t.daemon.spare), Spare::Made(..)));
+        let dirs = std::fs::read_dir(t.home.join("containers")).unwrap().count();
+        assert_eq!(dirs, 1, "spares made to be dropped");
+        let (id, _log) = t.daemon.new_container().unwrap();
+        assert!(t.home.join("containers").join(&id).is_dir(), "the spare taken");
+        assert!(matches!(*lock(&t.daemon.spare), Spare::None));
     }
 }
