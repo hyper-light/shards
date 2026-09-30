@@ -1946,3 +1946,38 @@ revision before comparing a changed API/implementation.
   touched little of its RAM saves in a third of the time, and costs the host its RAM's
   used pages only, 22 MB where it was 268 MB. RAM the guest used throughout saves 7%
   slower.
+
+### M55. The advice a restored guest's memory file gets, on Linux
+
+- **Question.** Audit D04: a restore maps the snapshot's memory file privately over the
+  reserved RAM, which loses the reservation's advice. Beside Firecracker, restoring the
+  same guest, shards has twice the file pages resident (18.6 against 11.6 MiB of
+  `Pss_File`, M53's run). Which madvise(2) should the mapping get?
+- **Method.** `docs/research/measurements/restore-advice/`: `advice.patch` lets
+  `SHARDS_FILE_ADVICE` choose the mapping's advice (none, `random`, `sequential`,
+  `nohuge`, `huge`), and `.github/workflows/restore-advice.yml` runs, on CI's KVM runner
+  (ubuntu-24.04 x86_64, THP `always`):
+  - the Firecracker comparison for each (n = 20 each; 7efba41, run 36697958785);
+  - the restore bench (n = 30) and the image bench (n = 60, 3 templates), for none and
+    `nohuge`, two rounds alternating (3f547b2, run 36699671580).
+- **Results (p50 / p90 / p99).**
+
+| Advice | Comparison `to_beat` | `Pss_File` | cold_restore | warm_request | run_template | its RSS |
+|---|---|---|---|---|---|---|
+| none | 8.9 / 9.1 / 9.3 ms | 18.6 MiB | 9.5 / 10.0 / 12.5 ms; 12.6 / 17.4 / 39.9 ms | 8.4 / 9.3 / 9.5 ms; 12.2 / 16.1 / 31.1 ms | 56.1 / 60.2 ms; 57.3 / 59.5 ms | 27.6; 27.4 MiB |
+| random | 9.7 / 10.0 / 10.4 ms | 18.5 MiB | | | | |
+| sequential | 9.1 / 10.1 / 13.7 ms | 18.6 MiB | | | | |
+| huge | 9.1 / 9.4 / 9.9 ms | 18.5 MiB | | | | |
+| nohuge | 12.5 / 13.2 / 13.5 ms | 8.4 MiB | 20.1 / 20.8 / 36.0 ms; 16.4 / 40.0 / 44.0 ms | 19.1 / 19.8 / 35.0 ms; 15.3 / 34.9 / 42.9 ms | 56.4 / 60.1 ms; 57.7 / 61.1 ms | 19.2; 19.3 MiB |
+
+  (Two rounds' figures are separated by a semicolon.)
+  - Readahead advice changes nothing: the file pages come in as the page cache's large
+    folios, whole, whichever is given.
+  - `nohuge` maps them page by page. It halves the resident file pages, but faults each
+    page separately, and restores and warm requests take 1.3 to 2.3 times as long.
+  - A pooled run, whose VM restored before the request, takes as long either way.
+- **Consequence.** The mapping keeps no advice. The pages `nohuge` saves are page cache,
+  shared with every VM that restores the same template; `Pss_File` divides them among
+  those VMs, and a warm request's latency is what shards is for. The Firecracker
+  envelope's `rss_file` allowance stands for this reason. Commit accounting, D04's other
+  half, is measured apart.
