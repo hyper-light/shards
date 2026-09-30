@@ -962,18 +962,25 @@ fn written(
     logs: Option<&Path>,
 ) {
     paths.write_under.extend(snapshot.map(Path::to_path_buf));
+    // Landlock holds a directory by its inode, so the one a snapshot goes to is made now,
+    // as its snapshot would make it (confine.rs, `landlock`).
+    if let Some(dir) = snapshot {
+        let _ = std::fs::create_dir_all(dir);
+    }
     paths
         .write_under
         .extend(vsock.and_then(Path::parent).map(Path::to_path_buf));
     paths.write_under.extend(logs.map(Path::to_path_buf));
 }
 
-/// Applies `paths` where the OS confines by path (macOS, D30); Linux's filter is already
-/// on the whole process.
+/// Applies `paths` where the OS confines by path: Seatbelt on macOS, Landlock on Linux
+/// (D30), beside Linux's seccomp filter, which is on the whole process already.
 fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     return crate::confine::seatbelt(paths);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    return crate::confine::landlock(paths);
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = paths;
         Ok(())

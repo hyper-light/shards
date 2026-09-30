@@ -94,6 +94,10 @@ pub fn confine() -> Result<(), String> {
         libc::SYS_sendmsg,
         libc::SYS_recvmsg,
         libc::SYS_shutdown,
+        // Landlock, applied after the filter: it can only take rights away.
+        libc::SYS_landlock_create_ruleset,
+        libc::SYS_landlock_add_rule,
+        libc::SYS_landlock_restrict_self,
     ];
     let mut rules: Vec<Rule> = any.into_iter().map(Rule::any).collect();
     // The requests' low 32 bits: the kernel's `cmd` is an unsigned int.
@@ -153,9 +157,10 @@ pub fn confine() -> Result<(), String> {
     Ok(())
 }
 
-/// The files and sockets a VM process may use on macOS, for its Seatbelt profile (D30):
-/// all it is denied besides. Paths are resolved (`/tmp` is `/private/tmp` to Seatbelt,
-/// which matches the paths of the files themselves); one not there yet, by its parent.
+/// The files and sockets a VM process may use, for its Seatbelt profile on macOS and its
+/// Landlock rules on Linux (D30): all it is denied besides. For Seatbelt, paths are
+/// resolved (`/tmp` is `/private/tmp` to it, which matches the paths of the files
+/// themselves); one not there yet, by its parent.
 #[derive(Debug, Default)]
 pub struct Paths {
     /// Files it reads.
@@ -271,6 +276,187 @@ pub fn seatbelt(paths: &Paths) -> Result<(), String> {
     Err(format!("the sandbox: {why}"))
 }
 
+/// Applies `paths` to this process with Landlock (Linux 5.13 and later;
+/// Documentation/userspace-api/landlock.rst), as Seatbelt applies them on macOS (D30):
+/// every filesystem access the kernel's Landlock ABI knows is handled, and only `paths`,
+/// with `/dev/kvm`, `/dev/null`, this process's `/proc` entry and the kernel's
+/// transparent huge page settings, are allowed. Where the ABI knows them, TCP, signals to
+/// other processes and abstract Unix sockets outside this process are refused too.
+///
+/// Rules hold inodes, not names: a directory keeps its rule when renamed, as a template's
+/// is when the daemon settles it, so a directory not yet there is left out, and one to be
+/// written in must be made before. A kernel without Landlock leaves the process to its
+/// seccomp filter alone, as it runs everywhere else (PM M66).
+#[cfg(target_os = "linux")]
+pub fn landlock(paths: &Paths) -> Result<(), String> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    // include/uapi/linux/landlock.h
+    const CREATE_RULESET_VERSION: u32 = 1;
+    const RULE_PATH_BENEATH: libc::c_long = 1;
+    const EXECUTE: u64 = 1 << 0;
+    const WRITE_FILE: u64 = 1 << 1;
+    const READ_FILE: u64 = 1 << 2;
+    const READ_DIR: u64 = 1 << 3;
+    const REMOVE_DIR: u64 = 1 << 4;
+    const REMOVE_FILE: u64 = 1 << 5;
+    const MAKE_DIR: u64 = 1 << 7;
+    const MAKE_REG: u64 = 1 << 8;
+    const MAKE_SOCK: u64 = 1 << 9;
+    const REFER: u64 = 1 << 13;
+    const TRUNCATE: u64 = 1 << 14;
+    const IOCTL_DEV: u64 = 1 << 15;
+    const NET_BIND_TCP: u64 = 1 << 0;
+    const NET_CONNECT_TCP: u64 = 1 << 1;
+    const SCOPE_ABSTRACT_UNIX_SOCKET: u64 = 1 << 0;
+    const SCOPE_SIGNAL: u64 = 1 << 1;
+    #[repr(C)]
+    struct RulesetAttr {
+        handled_access_fs: u64,
+        handled_access_net: u64,
+        scoped: u64,
+    }
+    #[repr(C, packed)]
+    struct PathBeneath {
+        allowed_access: u64,
+        parent_fd: i32,
+    }
+
+    // SAFETY: landlock_create_ruleset(2) with no attribute asks only the ABI's version.
+    let abi = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<RulesetAttr>(),
+            0usize,
+            CREATE_RULESET_VERSION,
+        )
+    };
+    if abi < 0 {
+        let e = std::io::Error::last_os_error();
+        return match e.raw_os_error() {
+            // Not built in, or not enabled at boot.
+            Some(libc::ENOSYS | libc::EOPNOTSUPP) => {
+                shards_vmm::debug!("no Landlock here ({e}): confined by the seccomp filter alone");
+                Ok(())
+            }
+            _ => Err(format!("Landlock's ABI: {e}")),
+        };
+    }
+    // Every filesystem right this ABI knows (v1: EXECUTE through MAKE_SYM), and what
+    // later ones add.
+    let mut fs = (1u64 << 13) - 1;
+    if abi >= 2 {
+        fs |= REFER;
+    }
+    if abi >= 3 {
+        fs |= TRUNCATE;
+    }
+    if abi >= 5 {
+        fs |= IOCTL_DEV;
+    }
+    let attr = RulesetAttr {
+        handled_access_fs: fs,
+        handled_access_net: if abi >= 4 {
+            NET_BIND_TCP | NET_CONNECT_TCP
+        } else {
+            0
+        },
+        scoped: if abi >= 6 {
+            SCOPE_ABSTRACT_UNIX_SOCKET | SCOPE_SIGNAL
+        } else {
+            0
+        },
+    };
+    // The attribute's size as this ABI knows it: a kernel refuses a longer one.
+    let size = match abi {
+        1..=3 => 8,
+        4 | 5 => 16,
+        _ => std::mem::size_of::<RulesetAttr>(),
+    };
+    // SAFETY: landlock_create_ruleset(2) reads `size` bytes of `attr`.
+    let ruleset = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, &raw const attr, size, 0u32) };
+    if ruleset < 0 {
+        return Err(format!("Landlock's ruleset: {}", std::io::Error::last_os_error()));
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    let ruleset = unsafe { OwnedFd::from_raw_fd(ruleset as i32) };
+    let file_rights = (EXECUTE | WRITE_FILE | READ_FILE | TRUNCATE | IOCTL_DEV) & fs;
+    let allow = |path: &std::path::Path, rights: u64| -> Result<(), String> {
+        let at = |e: std::io::Error| format!("Landlock, {}: {e}", path.display());
+        let name =
+            std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| "a path with NUL".to_string())?;
+        // SAFETY: open(2) of a NUL-terminated path, for a handle on its inode alone.
+        let fd = unsafe { libc::open(name.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+        if fd < 0 {
+            let e = std::io::Error::last_os_error();
+            // Not there yet: nothing of it to allow now (above).
+            return if e.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(at(e))
+            };
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let dir = std::fs::metadata(path).map_err(at)?.is_dir();
+        let rule = PathBeneath {
+            // A file takes only the rights a file has.
+            allowed_access: if dir { rights & fs } else { rights & file_rights },
+            parent_fd: fd.as_raw_fd(),
+        };
+        // SAFETY: landlock_add_rule(2) reads the rule, whose descriptor is open.
+        let r = unsafe {
+            libc::syscall(
+                libc::SYS_landlock_add_rule,
+                ruleset.as_raw_fd(),
+                RULE_PATH_BENEATH,
+                &raw const rule,
+                0u32,
+            )
+        };
+        if r < 0 {
+            return Err(at(std::io::Error::last_os_error()));
+        }
+        Ok(())
+    };
+    let read = READ_FILE;
+    let read_dir = READ_FILE | READ_DIR;
+    let write = READ_FILE | WRITE_FILE | TRUNCATE;
+    let write_dir =
+        read_dir | WRITE_FILE | TRUNCATE | REMOVE_DIR | REMOVE_FILE | MAKE_DIR | MAKE_REG | MAKE_SOCK | REFER;
+    allow(std::path::Path::new("/dev/kvm"), write | IOCTL_DEV)?;
+    allow(std::path::Path::new("/dev/null"), write)?;
+    allow(std::path::Path::new("/proc/self"), read_dir)?;
+    allow(
+        std::path::Path::new("/sys/kernel/mm/transparent_hugepage"),
+        read_dir,
+    )?;
+    for f in &paths.read {
+        allow(f, read)?;
+    }
+    for d in &paths.read_under {
+        allow(d, read_dir)?;
+    }
+    for f in &paths.write {
+        allow(f, write)?;
+    }
+    for d in &paths.write_under {
+        allow(d, write_dir)?;
+    }
+    // SAFETY: prctl(2) with integer arguments; landlock_restrict_self(2) on our ruleset.
+    unsafe {
+        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+            return Err(format!("no_new_privs: {}", std::io::Error::last_os_error()));
+        }
+        if libc::syscall(libc::SYS_landlock_restrict_self, ruleset.as_raw_fd(), 0u32) != 0 {
+            return Err(format!("Landlock: {}", std::io::Error::last_os_error()));
+        }
+    }
+    shards_vmm::debug!("confined by Landlock ABI {abi}");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +546,105 @@ mod tests {
             &mut std::io::stderr(),
             format!("sandbox_init took {took} µs\n").as_bytes(),
         );
+    }
+
+    /// In a child process (this test binary, told by `LANDLOCK_CHILD` where its files
+    /// are): confines itself to one file to read and one directory to write, then tries
+    /// what a VM might be made to. Prints each outcome, and the Landlock ABI.
+    #[cfg(target_os = "linux")]
+    fn landlock_child(dir: &str) -> ! {
+        use std::io::Write as _;
+        let dir = std::path::Path::new(dir);
+        // SAFETY: landlock_create_ruleset(2) asking only the ABI's version.
+        let abi = unsafe {
+            libc::syscall(
+                libc::SYS_landlock_create_ruleset,
+                std::ptr::null::<u8>(),
+                0usize,
+                1u32,
+            )
+        };
+        landlock(&Paths {
+            read: vec![dir.join("granted")],
+            write_under: vec![dir.join("out")],
+            ..Paths::default()
+        })
+        .unwrap();
+        let ok = |r: bool| if r { "ok" } else { "refused" };
+        let mut out = format!("abi: {abi}\n");
+        let tries = [
+            ("read granted", std::fs::read(dir.join("granted")).is_ok()),
+            ("read other", std::fs::read(dir.join("other")).is_ok()),
+            (
+                "write under",
+                std::fs::write(dir.join("out").join("f"), b"x").is_ok(),
+            ),
+            (
+                "make under",
+                std::fs::create_dir(dir.join("out").join("d")).is_ok(),
+            ),
+            ("write other", std::fs::write(dir.join("other2"), b"x").is_ok()),
+            ("read etc", std::fs::read("/etc/passwd").is_ok()),
+            ("tcp", std::net::TcpListener::bind("127.0.0.1:0").is_ok()),
+        ];
+        for (what, r) in tries {
+            out.push_str(&format!("{what}: {}\n", ok(r)));
+        }
+        let _ = std::io::stdout().write_all(out.as_bytes());
+        std::process::exit(0)
+    }
+
+    /// A VM process confined by Landlock reads and writes its paths, and nothing else, and
+    /// where the kernel's Landlock knows TCP, has none (D30, PM M66).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn landlock_confines_the_process_to_its_paths() {
+        if let Ok(dir) = std::env::var("LANDLOCK_CHILD") {
+            landlock_child(&dir);
+        }
+        let dir = std::env::temp_dir().join(format!("shards-landlock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("out")).unwrap();
+        std::fs::write(dir.join("granted"), b"g").unwrap();
+        std::fs::write(dir.join("other"), b"o").unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "confine::tests::landlock_confines_the_process_to_its_paths",
+                "--nocapture",
+            ])
+            .env("LANDLOCK_CHILD", &dir)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).into_owned();
+        let _ = std::fs::remove_dir_all(&dir);
+        let abi: i64 = said
+            .lines()
+            .find_map(|l| l.strip_prefix("abi: "))
+            .and_then(|a| a.trim().parse().ok())
+            .unwrap_or_else(|| panic!("{said}\n{}", String::from_utf8_lossy(&out.stderr)));
+        if abi < 1 {
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), b"SKIP: this kernel has no Landlock\n");
+            return;
+        }
+        let mut want = vec![
+            "read granted: ok",
+            "read other: refused",
+            "write under: ok",
+            "make under: ok",
+            "write other: refused",
+            "read etc: refused",
+        ];
+        if abi >= 4 {
+            want.push("tcp: refused");
+        }
+        for line in want {
+            assert!(
+                said.contains(line),
+                "{line}\n{said}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
     }
 
     #[test]
