@@ -443,3 +443,99 @@ pub fn sync_durable(file: &File) -> io::Result<()> {
     #[cfg(not(target_os = "macos"))]
     file.sync_data()
 }
+
+/// A watch on a file, for another process's appends to it: its descriptor becomes
+/// readable once the file has changed, for poll(2) to wait on beside others. kqueue's
+/// `EVFILT_VNODE` on macOS (kqueue(2)); inotify's `IN_MODIFY` on Linux (inotify(7)).
+#[derive(Debug)]
+pub struct FileWatch {
+    fd: std::os::fd::OwnedFd,
+    /// What kqueue watches, open while it does.
+    #[cfg(target_os = "macos")]
+    _file: File,
+}
+
+impl FileWatch {
+    pub fn new(path: &std::path::Path) -> io::Result<FileWatch> {
+        use std::os::fd::FromRawFd as _;
+        #[cfg(target_os = "macos")]
+        {
+            let file = File::open(path)?;
+            // SAFETY: kqueue(2) takes no arguments.
+            let kq = unsafe { libc::kqueue() };
+            if kq < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: a descriptor just made, owned by nothing else.
+            let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(kq) };
+            // SAFETY: kevent is plain data, for which all zeroes is a value.
+            let mut change: libc::kevent = unsafe { std::mem::zeroed() };
+            change.ident = file.as_raw_fd() as libc::uintptr_t;
+            change.filter = libc::EVFILT_VNODE;
+            change.flags = libc::EV_ADD | libc::EV_CLEAR;
+            change.fflags = libc::NOTE_WRITE | libc::NOTE_EXTEND | libc::NOTE_DELETE | libc::NOTE_RENAME;
+            // SAFETY: kevent(2) registering one change, and asking for no events.
+            if unsafe { libc::kevent(kq, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(FileWatch { fd, _file: file })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            // SAFETY: inotify_init1(2) with flags.
+            let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+            if raw < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: a descriptor just made, owned by nothing else.
+            let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+            let name = std::ffi::CString::new(path.as_os_str().as_bytes())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))?;
+            let mask = libc::IN_MODIFY | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF;
+            // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
+            if unsafe { libc::inotify_add_watch(raw, name.as_ptr(), mask) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(FileWatch { fd })
+        }
+    }
+
+    /// The descriptor to wait on.
+    pub fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd as _;
+        self.fd.as_fd()
+    }
+
+    /// Takes the changes seen, so the descriptor waits for the next.
+    pub fn clear(&self) {
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: kevent is plain data, for which all zeroes is a value.
+            let mut events: [libc::kevent; 8] = unsafe { std::mem::zeroed() };
+            let none = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: kevent(2) taking up to 8 events into a local, without waiting.
+            while unsafe {
+                libc::kevent(
+                    self.fd.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    events.as_mut_ptr(),
+                    8,
+                    &none,
+                )
+            } == 8
+            {}
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut buf = [0u8; 4096];
+            // SAFETY: read(2) into a local buffer of its size, from a non-blocking
+            // descriptor.
+            while unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
+        }
+    }
+}

@@ -5,6 +5,7 @@
 //! would, in the order and with the words the Docker CLI and dockerd use.
 
 use std::io;
+use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -15,6 +16,7 @@ use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
 use shards_ipc::kind;
 
+use super::logs::{self, LogFile, Piece, Reader};
 use super::{Daemon, RunState, STOP_GRACE, lock};
 use crate::containers::{Container, Removal, State as Life, now};
 use crate::spec::{LOG_STDERR, LOG_STDOUT};
@@ -630,46 +632,121 @@ impl Daemon {
                 }
             }
         }
-        let path = lock(&self.containers).dir(&id).join("log");
-        let mut log = Log::default();
-        log.read(&path);
+        let dir = lock(&self.containers).dir(&id);
+        let log = match LogFile::open(&dir) {
+            Ok(log) => log,
+            Err(e) => {
+                reply.err(&format!(
+                    "Error response from daemon: container {id}: its log: {e}"
+                ));
+                return 1;
+            }
+        };
+        // A line's window is decided at its first piece, and holds for the rest of it.
+        let mut admitted = [Admit::Pass, Admit::Pass];
+        let mut unsent: Option<io::Error> = None;
+        let mut each = |piece: Piece<'_>| -> io::Result<bool> {
+            let s = usize::from(piece.stream == LOG_STDERR);
+            let Some(decision) = admitted.get_mut(s) else {
+                return Ok(false);
+            };
+            if piece.first {
+                *decision = window.admit(piece.at);
+            }
+            match decision {
+                Admit::Skip => Ok(true),
+                Admit::Stop => Ok(false),
+                Admit::Pass => match send(reply, shown, &piece) {
+                    Ok(()) => Ok(true),
+                    Err(e) => {
+                        unsent = Some(e);
+                        Ok(false)
+                    }
+                },
+            }
+        };
         // Without -f, what is there is all there is: a line in progress too.
-        let lines = log.take_lines(!follow || !self.running(&id));
-        let skip = tail.map_or(0, |n| lines.len().saturating_sub(n));
-        for line in lines.iter().skip(skip) {
-            match window.admit(line.at) {
-                Admit::Skip => continue,
-                Admit::Stop => return 0,
-                Admit::Pass => {}
+        let ended = !follow || !self.running(&id);
+        let read = (|| -> io::Result<()> {
+            let mut reader = match tail {
+                Some(n) => Reader::from(logs::tail(&log, n as u64, ended)?),
+                None => Reader::new(),
+            };
+            if !reader.read(&log, &mut each)? {
+                return Ok(());
             }
-            if let Err(e) = line.send(reply, shown) {
-                return undelivered(&e, reply);
+            if ended {
+                reader.finish(&mut each)?;
+                return Ok(());
             }
-        }
-        if !follow {
-            return 0;
-        }
-        loop {
-            let running = self.running(&id);
-            log.read(&path);
-            // Once the container has ended, what is left of a line is all of it.
-            for line in log.take_lines(!running) {
-                match window.admit(line.at) {
-                    Admit::Skip => continue,
-                    Admit::Stop => return 0,
-                    Admit::Pass => {}
+            // Followed as it grows: woken by an append to its index, by the run's end, or
+            // by the client's hanging up, not by a timer (audit A12). The watch comes
+            // before the read, so no append between them goes unseen.
+            let watch = shards_vmm::platform::FileWatch::new(&dir.join(logs::INDEX))?;
+            let Some((number, end)) = self.wake_at_end(&id)? else {
+                reader.read(&log, &mut each)?;
+                reader.finish(&mut each)?;
+                return Ok(());
+            };
+            let followed = (|| -> io::Result<()> {
+                loop {
+                    if !reader.read(&log, &mut each)? {
+                        return Ok(());
+                    }
+                    let ready = wait_readable(&[watch.fd(), end.as_fd(), reply.0.as_fd()])?;
+                    // Once the container has ended, what is left of a line is all of it.
+                    if ready[1] {
+                        if reader.read(&log, &mut each)? {
+                            reader.finish(&mut each)?;
+                        }
+                        return Ok(());
+                    }
+                    // A client that hangs up ends its follow, output or none (audit A07).
+                    if ready[2] {
+                        return Ok(());
+                    }
+                    watch.clear();
                 }
-                if let Err(e) = line.send(reply, shown) {
-                    return undelivered(&e, reply);
-                }
-            }
-            // A client that hangs up ends its follow, output or none (audit A07).
-            if !running || super::readable(reply.0) {
-                return 0;
-            }
-            std::thread::sleep(FOLLOW_POLL);
+            })();
+            self.forget_waiter(&id, number);
+            followed
+        })();
+        if let Some(e) = unsent {
+            return undelivered(&e, reply);
         }
+        if let Err(e) = read {
+            reply.err(&format!(
+                "Error response from daemon: container {id}: its log: {e}"
+            ));
+            return 1;
+        }
+        // Output a log could not keep, it does not pretend to hold (audit A12).
+        let lost = lock(&self.containers).get(&id).map_or(0, |c| c.log_lost);
+        if lost > 0 {
+            reply.err(&format!(
+                "shards: {lost} bytes of container {id}'s output could not be kept in its log"
+            ));
+            return 1;
+        }
+        0
     }
+}
+
+/// Sends `piece` of a line to the client, after the line's prefix if it is the first.
+fn send(reply: &Reply<'_>, shown: Shown, piece: &Piece<'_>) -> io::Result<()> {
+    if !piece.first || !shown.stamps && !shown.details {
+        return reply.bytes(piece.stream, piece.bytes);
+    }
+    let mut line = Vec::with_capacity(piece.bytes.len() + 32);
+    if shown.stamps {
+        line.extend_from_slice(rfc3339_nano(piece.at).as_bytes());
+        line.push(b' ');
+    }
+    if shown.details {
+        line.push(b' ');
+    }
+    line.extend_from_slice(piece.bytes);
+    reply.bytes(piece.stream, &line)
 }
 
 #[cfg(test)]
@@ -715,30 +792,6 @@ mod tests {
             ]
         );
         assert_eq!(Window::default().admit(0), Admit::Pass);
-    }
-
-    #[test]
-    fn logs_split_into_lines_per_stream() {
-        let mut log = Log::default();
-        log.split(LOG_STDOUT, 1, b"a\nb");
-        log.split(LOG_STDERR, 2, b"e\n");
-        log.split(LOG_STDOUT, 3, b"c\n");
-        let lines = log.take_lines(false);
-        let got: Vec<(u8, u64, &[u8])> = lines
-            .iter()
-            .map(|l| (l.stream, l.at, l.bytes.as_slice()))
-            .collect();
-        assert_eq!(
-            got,
-            [
-                (LOG_STDOUT, 1, &b"a\n"[..]),
-                (LOG_STDERR, 2, b"e\n"),
-                (LOG_STDOUT, 1, b"bc\n")
-            ]
-        );
-        log.split(LOG_STDOUT, 4, b"end");
-        assert!(log.take_lines(false).is_empty());
-        assert_eq!(log.take_lines(true).len(), 1);
     }
 
     /// Every table the Docker CLI printed of the same containers (scripts/docker-cli/
@@ -1106,8 +1159,26 @@ impl Window {
     }
 }
 
-/// How often `logs -f` looks for more output.
-const FOLLOW_POLL: Duration = Duration::from_millis(20);
+/// Waits until one of `fds` is readable, or hung up; which are.
+fn wait_readable(fds: &[BorrowedFd<'_>; 3]) -> io::Result<[bool; 3]> {
+    let mut polled = fds.map(|fd| libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    });
+    loop {
+        // SAFETY: poll(2) on three pollfds of descriptors the caller holds open.
+        let n = unsafe { libc::poll(polled.as_mut_ptr(), 3, -1) };
+        if n >= 0 {
+            break;
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+    Ok(polled.map(|p| p.revents != 0))
+}
 
 /// What `docker logs` puts before each line: its time with `-t`, and with `--details` its
 /// attributes and a space.
@@ -1115,122 +1186,6 @@ const FOLLOW_POLL: Duration = Duration::from_millis(20);
 struct Shown {
     stamps: bool,
     details: bool,
-}
-
-/// A container's log as read so far (workload.rs `log_record`): the bytes not yet taken,
-/// and each stream's line in progress.
-#[derive(Default)]
-struct Log {
-    offset: u64,
-    pending: Vec<u8>,
-    partial: [Option<Line>; 2],
-    lines: Vec<Line>,
-}
-
-/// One line of output, or the last piece of one, and when its first byte arrived.
-struct Line {
-    stream: u8,
-    at: u64,
-    bytes: Vec<u8>,
-}
-
-impl Line {
-    fn send(&self, reply: &Reply<'_>, shown: Shown) -> io::Result<()> {
-        if !shown.stamps && !shown.details {
-            return reply.bytes(self.stream, &self.bytes);
-        }
-        let mut line = Vec::with_capacity(self.bytes.len() + 32);
-        if shown.stamps {
-            line.extend_from_slice(rfc3339_nano(self.at).as_bytes());
-            line.push(b' ');
-        }
-        if shown.details {
-            line.push(b' ');
-        }
-        line.extend_from_slice(&self.bytes);
-        reply.bytes(self.stream, &line)
-    }
-}
-
-impl Log {
-    /// Reads what the log at `path` holds past what was read, and splits its records
-    /// into lines. A record still being written waits for the next read.
-    fn read(&mut self, path: &std::path::Path) {
-        use std::io::{Read, Seek, SeekFrom};
-        let Ok(mut file) = std::fs::File::open(path) else {
-            return;
-        };
-        if file.seek(SeekFrom::Start(self.offset)).is_err() {
-            return;
-        }
-        let mut more = Vec::new();
-        if file.read_to_end(&mut more).is_err() {
-            return;
-        }
-        self.offset += more.len() as u64;
-        let mut pending = std::mem::take(&mut self.pending);
-        pending.extend_from_slice(&more);
-        let mut used = 0;
-        while let Some(record) = pending.get(used..) {
-            let Some((&stream, rest)) = record.split_first() else {
-                break;
-            };
-            let (Some(at), Some(len)) = (
-                rest.first_chunk::<8>(),
-                rest.get(8..).and_then(|r| r.first_chunk::<4>()),
-            ) else {
-                break;
-            };
-            let len = u32::from_be_bytes(*len) as usize;
-            let Some(bytes) = rest.get(12..12 + len) else {
-                break;
-            };
-            let at = u64::from_be_bytes(*at);
-            self.split(stream, at, bytes);
-            used += 13 + len;
-        }
-        pending.drain(..used);
-        self.pending = pending;
-    }
-
-    fn split(&mut self, stream: u8, at: u64, mut bytes: &[u8]) {
-        let slot = usize::from(stream == LOG_STDERR);
-        while !bytes.is_empty() {
-            let (piece, rest) = match bytes.iter().position(|&b| b == b'\n') {
-                Some(end) => bytes.split_at(end + 1),
-                None => (bytes, &[][..]),
-            };
-            let line = self.partial.get_mut(slot).and_then(Option::take);
-            let mut line = line.unwrap_or(Line {
-                stream: if stream == LOG_STDERR {
-                    LOG_STDERR
-                } else {
-                    LOG_STDOUT
-                },
-                at,
-                bytes: Vec::new(),
-            });
-            line.bytes.extend_from_slice(piece);
-            if piece.ends_with(b"\n") {
-                self.lines.push(line);
-            } else if let Some(partial) = self.partial.get_mut(slot) {
-                *partial = Some(line);
-            }
-            bytes = rest;
-        }
-    }
-
-    /// The whole lines read so far, and with `ended` the lines still in progress too.
-    fn take_lines(&mut self, ended: bool) -> Vec<Line> {
-        if ended {
-            for partial in &mut self.partial {
-                if let Some(line) = partial.take() {
-                    self.lines.push(line);
-                }
-            }
-        }
-        std::mem::take(&mut self.lines)
-    }
 }
 
 /// A time in nanoseconds since the Unix epoch as RFC 3339 in UTC with nine digits of

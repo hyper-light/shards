@@ -108,12 +108,26 @@ pub fn now() -> u128 {
         .map_or(0, |d| d.as_nanos())
 }
 
-/// A container's log is a sequence of records, each a stream byte ([`LOG_STDOUT`] or
-/// [`LOG_STDERR`]), the time the output arrived in nanoseconds since the Unix epoch
-/// (big-endian u64), the output's length (big-endian u32), then the output. Appends keep
-/// the streams in the order they arrived, as `docker logs` shows them.
+/// A container's log, `log` in its directory, is a sequence of records, each a stream
+/// byte ([`LOG_STDOUT`] or [`LOG_STDERR`]), the time the output arrived in nanoseconds
+/// since the Unix epoch (big-endian u64), the output's length (big-endian u32), then the
+/// output. Appends keep the streams in the order they arrived, as `docker logs` shows
+/// them.
+///
+/// `log.idx` beside it holds one big-endian u64 for each record, written once the
+/// record is whole: where the record starts, with [`INDEX_STDERR`] set for stderr's and
+/// [`INDEX_LINE`] for one whose output ends a line. Readers find records by it, so a
+/// record cut short, or bytes a guest wrote to look like one, are never taken for
+/// records, and `--tail` reads back from the end (audit A12). A log without an index is
+/// from an earlier shards, and is indexed as it is first read.
 pub const LOG_STDOUT: u8 = 1;
 pub const LOG_STDERR: u8 = 2;
+pub const INDEX_STDERR: u64 = 1 << 63;
+pub const INDEX_LINE: u64 = 1 << 62;
+/// A record's start, in an index entry.
+pub const INDEX_START: u64 = INDEX_LINE - 1;
+/// A record's bytes before its output.
+pub const LOG_HEAD: u64 = 13;
 
 /// An environment value's bytes, as the OS holds them.
 #[cfg(unix)]

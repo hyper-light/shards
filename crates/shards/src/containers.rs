@@ -36,6 +36,9 @@ pub struct Container {
     pub exit_code: Option<u8>,
     /// `--rm`: removed once it ends.
     pub auto_remove: bool,
+    /// Bytes of its output its log could not keep (audit A12).
+    #[serde(default)]
+    pub log_lost: u64,
 }
 
 pub use crate::spec::now;
@@ -527,6 +530,7 @@ mod tests {
             finished: None,
             exit_code: None,
             auto_remove: false,
+            log_lost: 0,
         }
     }
 

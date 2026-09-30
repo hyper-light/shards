@@ -977,3 +977,57 @@ fn a_home_named_relatively_is_one_home() {
         assert_eq!(stopped.status, Some(0));
     }
 }
+
+/// Followers of a quiet container cost its daemon nothing: they wait on the log, the
+/// run's end and their clients, not a timer, and all end once the container does (audit
+/// A12: before, each looked for output 50 times a second).
+#[test]
+fn idle_followers_cost_nothing_and_end_with_their_container() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home("daemon-followers", &image);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let up = run_shards_env(
+        &["run"],
+        &["-d", "--name", "up", "--pull", "never", &image, "sleep"],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(up.status, Some(0), "{}", up.stderr);
+    let mut followers: Vec<Child> = (0..100)
+        .map(|_| {
+            Command::new(shards())
+                .args(["logs", "-f", "up"])
+                .env("SHARDS_HOME", &*home)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    std::thread::sleep(Duration::from_secs(1));
+    let daemon = daemon_pid(&home).expect("a daemon pid");
+    let before = cpu_time(daemon);
+    std::thread::sleep(Duration::from_secs(3));
+    let spent = cpu_time(daemon).saturating_sub(before);
+    assert!(
+        spent < Duration::from_millis(100),
+        "100 idle followers cost {spent:?} of CPU in 3 s"
+    );
+    let killed = run_shards_env(&["kill"], &["up"], &env, TIMEOUT);
+    assert_eq!(killed.status, Some(0), "{}", killed.stderr);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    for f in &mut followers {
+        loop {
+            if let Some(status) = f.try_wait().unwrap() {
+                assert!(status.success(), "{status:?}");
+                break;
+            }
+            assert!(Instant::now() < deadline, "a follower outlived its container");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}

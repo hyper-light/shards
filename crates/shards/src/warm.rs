@@ -72,7 +72,7 @@ pub struct Request {
     /// The client asked for the timing line.
     pub timing: bool,
     /// The container's log, if its output is kept.
-    pub log: Option<File>,
+    pub log: Option<workload::Logger>,
 }
 
 /// Tells the daemon this VM is ready, then waits for its request, and tells the daemon it
@@ -114,7 +114,8 @@ pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
         (File::from(next()?), File::from(next()?))
     };
     let log = if detached || logged {
-        Some(File::from(next()?))
+        let (log, index) = (File::from(next()?), File::from(next()?));
+        Some(workload::Logger::new(log, index).map_err(|e| format!("the container's log: {e}"))?)
     } else {
         None
     };
@@ -243,6 +244,11 @@ pub fn finish(
     let mut done = vec![status];
     if let Some((said, _)) = &failed {
         done.extend_from_slice(said.as_bytes());
+    }
+    if let Ok(ended) = served
+        && ended.lost > 0
+    {
+        let _ = shards_ipc::send(&link.daemon, kind::LOST, &ended.lost.to_be_bytes(), &[]);
     }
     let _ = shards_ipc::send(&link.daemon, kind::DONE, &done, &[]);
     if let Some(client) = client {

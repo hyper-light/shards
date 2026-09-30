@@ -1729,3 +1729,27 @@ revision before comparing a changed API/implementation.
   memory at 610 B each), 64 GiB decompressed (40 times; AWS Lambda takes container
   images up to 10 GB), and 1 GiB of names, links and xattrs.
 
+### M48. `logs --tail 1` of a large log
+
+- **Question.** Audit A12: what does `logs --tail 1` of a large log cost the daemon,
+  before and after the log is read through its index?
+- **Method.** `docs/research/measurements/log-tail/tail.py`: in each build's home a
+  container's log is replaced by 2 GiB of 80-byte lines in 64 KiB records, as an earlier
+  shards wrote it (no index), and `logs --tail 1` is asked for three times, the
+  daemon's RSS sampled every 5 ms. The old build is 4a5ec9d; the new one this change.
+  2026-09-30, this machine.
+- **Results.**
+
+| Build | Attempt | Time | Daemon RSS before | At peak |
+|---|---|---|---|---|
+| 4a5ec9d | 1 | 2 025 ms | 13 MiB | 7 176 MiB |
+| | 2 | 1 767 ms | 5 151 MiB | 8 224 MiB |
+| | 3 | 1 551 ms | 5 152 MiB | 8 225 MiB |
+| this change | 1 (indexes the log) | 38 ms | 8 MiB | 8 MiB |
+| | 2 | 3 ms | 8 MiB | 8 MiB |
+| | 3 | 3 ms | 8 MiB | 8 MiB |
+
+- **Consequence.** D27: logs are read through their index, in bounded buffers, and
+  `--tail` back from the end. The old daemon held 3.5–4 times the log at its peak, and
+  kept 5 GiB after.
+

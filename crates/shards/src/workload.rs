@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use shards_abi::run::{self, Size, Spec, kind};
 
 #[cfg(unix)]
-use crate::spec::{LOG_STDERR, LOG_STDOUT, now};
+use crate::spec::{INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT, now};
 
 #[cfg(unix)]
 /// A private directory for this VM's vsock sockets, removed on drop.
@@ -126,7 +126,7 @@ pub enum Request<'a> {
 pub struct Asked<'a> {
     pub spec: Spec,
     pub interactive: bool,
-    pub log: Option<fs::File>,
+    pub log: Option<Logger>,
     pub started: Option<&'a (dyn Fn() + Sync)>,
 }
 
@@ -137,6 +137,77 @@ pub struct Asked<'a> {
 pub struct Ended {
     pub status: u8,
     pub not_run: Option<String>,
+    /// Bytes of its output its log could not keep.
+    pub lost: u64,
+}
+
+/// Keeps a container's output (spec.rs, `LOG`): each record appended to its log, then
+/// its entry to the log's index once the record is whole. A record that cannot be kept,
+/// on a full disk or a log removed, costs the log, not the run: it is taken back, so
+/// neither file holds any of it, and its bytes are counted as lost (audit A12).
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct Logger {
+    log: fs::File,
+    index: fs::File,
+    /// The log's and the index's lengths, where a record that fails is cut back to.
+    logged: u64,
+    indexed: u64,
+    lost: u64,
+}
+
+#[cfg(unix)]
+impl Logger {
+    pub fn new(log: fs::File, index: fs::File) -> io::Result<Logger> {
+        let logged = log.metadata()?.len();
+        let mut indexed = index.metadata()?.len();
+        // A partial entry an earlier writer left is not one.
+        if indexed % 8 != 0 {
+            indexed -= indexed % 8;
+            index.set_len(indexed)?;
+        }
+        Ok(Logger {
+            log,
+            index,
+            logged,
+            indexed,
+            lost: 0,
+        })
+    }
+
+    fn keep(&mut self, stream: u8, bytes: &[u8]) {
+        // Nothing is no output: a record of it would tell no stream's last byte.
+        if bytes.is_empty() {
+            return;
+        }
+        let record = log_record(stream, bytes);
+        let mut entry = self.logged & INDEX_START;
+        if stream == LOG_STDERR {
+            entry |= INDEX_STDERR;
+        }
+        if bytes.last() == Some(&b'\n') {
+            entry |= INDEX_LINE;
+        }
+        let kept = (&self.log)
+            .write_all(&record)
+            .and_then(|()| (&self.index).write_all(&entry.to_be_bytes()));
+        match kept {
+            Ok(()) => {
+                self.logged += record.len() as u64;
+                self.indexed += 8;
+            }
+            Err(_) => {
+                self.lost = self.lost.saturating_add(bytes.len() as u64);
+                let _ = self.index.set_len(self.indexed);
+                let _ = self.log.set_len(self.logged);
+            }
+        }
+    }
+
+    /// Bytes of output not kept.
+    pub fn lost(&self) -> u64 {
+        self.lost
+    }
 }
 
 /// Serves the guest: sends the command, relays stdio, and returns how the workload ended.
@@ -212,7 +283,8 @@ pub fn serve(
             }
         })
         .map_err(|e| format!("signal connection: {e}"))?;
-    let status = relay(&mut conn, timing, log.as_ref(), started);
+    let mut log = log;
+    let status = relay(&mut conn, timing, log.as_mut(), started);
     {
         let mut state = lock(to);
         *state = Signals::default();
@@ -231,17 +303,11 @@ pub fn serve(
 fn relay(
     conn: &mut UnixStream,
     timing: &Timing,
-    log: Option<&fs::File>,
+    mut log: Option<&mut Logger>,
     started: Option<&(dyn Fn() + Sync)>,
 ) -> Result<Ended, String> {
     let mut payload = Vec::new();
     let mut not_run = None;
-    // A full disk or a removed log costs the log, not the run.
-    let keep = |stream: u8, bytes: &[u8]| {
-        if let Some(mut file) = log {
-            let _ = file.write_all(&log_record(stream, bytes));
-        }
-    };
     loop {
         let mut h = [0u8; run::HEADER];
         conn.read_exact(&mut h)
@@ -255,12 +321,16 @@ fn relay(
                 let mut out = io::stdout().lock();
                 // A closed stdout drops output, as a closed pipe does for `docker run`.
                 let _ = out.write_all(&payload).and_then(|()| out.flush());
-                keep(LOG_STDOUT, &payload);
+                if let Some(log) = log.as_deref_mut() {
+                    log.keep(LOG_STDOUT, &payload);
+                }
             }
             kind::STDERR => {
                 let mut err = io::stderr().lock();
                 let _ = err.write_all(&payload).and_then(|()| err.flush());
-                keep(LOG_STDERR, &payload);
+                if let Some(log) = log.as_deref_mut() {
+                    log.keep(LOG_STDERR, &payload);
+                }
             }
             kind::STARTED => {
                 if let Some(started) = started {
@@ -277,6 +347,7 @@ fn relay(
                 return Ok(Ended {
                     status: u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX),
                     not_run,
+                    lost: log.as_deref().map_or(0, Logger::lost),
                 });
             }
             _ => return Err(format!("the guest sent an unknown frame kind {which}")),
@@ -289,7 +360,7 @@ fn relay(
 fn log_record(stream: u8, bytes: &[u8]) -> Vec<u8> {
     let at = u64::try_from(now()).unwrap_or(u64::MAX);
     let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
-    let mut record = Vec::with_capacity(13 + bytes.len());
+    let mut record = Vec::with_capacity(LOG_HEAD as usize + bytes.len());
     record.push(stream);
     record.extend_from_slice(&at.to_be_bytes());
     record.extend_from_slice(&len.to_be_bytes());
@@ -401,5 +472,73 @@ fn to_guest(to: &ToGuest, which: u8, payload: &[u8]) -> bool {
             true
         }
         (None, false) => false,
+    }
+}
+
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+
+    fn temp(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("shards-logger-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn append(path: &Path) -> fs::File {
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap()
+    }
+
+    /// A logger keeps each record whole and indexes it, with its stream and whether it
+    /// ends a line; a record that cannot be kept, in either file, is taken back from both
+    /// and counted as lost, and the next is kept whole after it (audit A12).
+    #[test]
+    fn a_logger_keeps_records_whole_or_counts_them_lost() {
+        let dir = temp("keep");
+        let (log, index) = (dir.join("log"), dir.join("log.idx"));
+        let mut logger = Logger::new(append(&log), append(&index)).unwrap();
+        logger.keep(LOG_STDOUT, b"a\n");
+        logger.keep(LOG_STDERR, b"b");
+        logger.keep(LOG_STDOUT, b"");
+        assert_eq!(logger.lost(), 0);
+        let (bytes, entries) = (fs::read(&log).unwrap(), fs::read(&index).unwrap());
+        assert_eq!(bytes.len(), 2 * 13 + 3, "no record of nothing");
+        let entry = |i: usize| u64::from_be_bytes(entries[i * 8..i * 8 + 8].try_into().unwrap());
+        assert_eq!(entries.len(), 16);
+        assert_eq!(entry(0), INDEX_LINE);
+        assert_eq!(entry(1), 15 | INDEX_STDERR);
+
+        // A log that cannot be written, then an index that cannot.
+        for broken in ["log", "index"] {
+            let (l, i) = if broken == "log" {
+                (fs::File::open(&log).unwrap(), append(&index))
+            } else {
+                (append(&log), fs::File::open(&index).unwrap())
+            };
+            let mut logger = Logger::new(l, i).unwrap();
+            logger.keep(LOG_STDOUT, b"lost\n");
+            assert_eq!(logger.lost(), 5, "{broken}");
+            assert_eq!(
+                fs::read(&log).unwrap(),
+                bytes,
+                "{broken}: a record left in the log"
+            );
+            assert_eq!(fs::read(&index).unwrap(), entries, "{broken}: an entry left");
+        }
+        let mut logger = Logger::new(append(&log), append(&index)).unwrap();
+        logger.keep(LOG_STDOUT, b"c\n");
+        assert_eq!(fs::read(&index).unwrap().len(), 24);
+        assert_eq!(
+            u64::from_be_bytes(fs::read(&index).unwrap()[16..24].try_into().unwrap()),
+            bytes.len() as u64 | INDEX_LINE,
+            "kept whole after the loss"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

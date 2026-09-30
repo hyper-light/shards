@@ -50,8 +50,8 @@ pub mod kind {
     /// Daemon → warm VM: [`RUN_INTERACTIVE`](super::RUN_INTERACTIVE) flags, then the
     /// command (`shards_abi::run::Spec`). Descriptors: the client's connection, then its
     /// stdin, stdout and stderr, then with [`RUN_LOG`](super::RUN_LOG) the container's
-    /// log. With [`RUN_DETACHED`](super::RUN_DETACHED), only the command's stdin and the
-    /// log.
+    /// log and its index. With [`RUN_DETACHED`](super::RUN_DETACHED), only the command's
+    /// stdin, the log and its index.
     pub const RUN: u8 = 2;
     /// Warm VM → client: the command's exit status, one byte, then, if the client asked
     /// for `SHARDS_TIMING`, the VM's timing line for the client to print.
@@ -91,6 +91,9 @@ pub mod kind {
     /// big-endian u16, as `docker run` resizes a TTY container's (docker/cli
     /// cli/command/container/tty.go).
     pub const RESIZE: u8 = 15;
+    /// Warm VM → daemon, before `DONE`: bytes of the command's output its container's log
+    /// could not keep, as a big-endian u64 (audit A12).
+    pub const LOST: u8 = 16;
 }
 
 /// A container command as the client asks for it (`kind::CONTAINER`): its name and the

@@ -32,6 +32,7 @@ use shards_vmm::vm::Config;
 use crate::containers::{self, Container, Registry, Removal, State as Life};
 
 mod commands;
+mod logs;
 use crate::run::{Boot, Prepared};
 use crate::spec::NOT_RUN;
 
@@ -152,7 +153,7 @@ enum Spare {
     #[default]
     None,
     Making,
-    Made(String, File),
+    Made(String, Log),
 }
 
 /// Who a starting VM is for.
@@ -198,6 +199,18 @@ struct Inbox {
 struct Waiter {
     number: u64,
     tell: mpsc::Sender<u8>,
+    /// Written to as it is told, for one that waits in poll(2): `logs -f`.
+    wake: Option<UnixStream>,
+}
+
+impl Waiter {
+    /// Tells it the container's exit code.
+    fn hear(&self, code: u8) {
+        let _ = self.tell.send(code);
+        if let Some(wake) = &self.wake {
+            let _ = (&*wake).write_all(&[code]);
+        }
+    }
 }
 
 /// The runs handed over, of `runs`.
@@ -894,7 +907,8 @@ impl Daemon {
         } else {
             vec![conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()]
         };
-        fds.push(container_log.as_fd());
+        fds.push(container_log.log.as_fd());
+        fds.push(container_log.index.as_fd());
         let mut payload = vec![flags];
         payload.extend(prepared.spec.encode());
         let detached = run.detach.then_some(conn);
@@ -955,7 +969,7 @@ impl Daemon {
     }
 
     /// A new container's ID, and its log: the spare's, made ahead, or made now.
-    fn new_container(&self) -> Result<(String, File), String> {
+    fn new_container(&self) -> Result<(String, Log), String> {
         {
             let mut spare = lock(&self.spare);
             if let Spare::Made(..) = *spare
@@ -1019,6 +1033,7 @@ impl Daemon {
             finished: None,
             exit_code: None,
             auto_remove: run.remove,
+            log_lost: 0,
         });
         // Its run is owned from the moment the container is visible.
         lock(&self.runs).insert(id.to_string(), RunState::Pending { cancelled: false });
@@ -1162,7 +1177,7 @@ impl Daemon {
         lock(&self.runs).remove(id);
         self.resolved.notify_all();
         for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
-            let _ = waiter.tell.send(code);
+            waiter.hear(code);
         }
         drop(registry);
         if let Some(removal) = removal {
@@ -1303,7 +1318,7 @@ impl Daemon {
             }
             drop(runs);
             for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
-                let _ = waiter.tell.send(0);
+                waiter.hear(0);
             }
             return registry.remove(id);
         }
@@ -1373,6 +1388,7 @@ impl Daemon {
             match shards_ipc::recv(&inbox.socket) {
                 Ok(Some(m)) if m.kind == kind::STARTED => self.run_started(id, &mut inbox),
                 Ok(Some(m)) if m.kind == kind::DONE => self.run_ended(id, &mut inbox, Some(&m.payload)),
+                Ok(Some(m)) if m.kind == kind::LOST => self.log_lost(id, &m.payload),
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => self.run_ended(id, &mut inbox, None),
             }
@@ -1395,6 +1411,20 @@ impl Daemon {
             .collect();
         for (id, inbox) in runs {
             self.take_messages(&id, &inbox);
+        }
+    }
+
+    /// Output of run `id` its log could not keep: counted on its container, for `logs` to
+    /// say (audit A12).
+    fn log_lost(&self, id: &str, payload: &[u8]) {
+        let Some(lost) = payload.first_chunk::<8>().map(|b| u64::from_be_bytes(*b)) else {
+            return;
+        };
+        log(format!(
+            "container {id}: {lost} bytes of its output could not be kept in its log"
+        ));
+        if let Err(e) = lock(&self.containers).update(id, |c| c.log_lost = c.log_lost.saturating_add(lost)) {
+            log(format!("container {id}: its record is behind: {e}"));
         }
     }
 
@@ -1455,7 +1485,7 @@ impl Daemon {
             lock(&self.runs).remove(id);
             self.resolved.notify_all();
             for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
-                let _ = waiter.tell.send(status);
+                waiter.hear(status);
             }
             removal
         };
@@ -1490,7 +1520,11 @@ impl Daemon {
             lock(&self.waiters)
                 .entry(id.to_string())
                 .or_default()
-                .push(Waiter { number, tell });
+                .push(Waiter {
+                    number,
+                    tell,
+                    wake: None,
+                });
             (number, told)
         };
         let deadline = limit.and_then(|l| Instant::now().checked_add(l));
@@ -1511,6 +1545,34 @@ impl Daemon {
                 }
             }
         }
+        self.forget_waiter(id, number);
+        // Its code may have come as it gave up.
+        told.try_recv().ok()
+    }
+
+    /// For `logs -f`: a socket readable once run `id` ends, and its waiter's number, to
+    /// forget it by; none if it does not run. Registered under the records' lock, under
+    /// which a run's end is told, so no end goes unheard.
+    pub(super) fn wake_at_end(&self, id: &str) -> io::Result<Option<(u64, UnixStream)>> {
+        let _registry = lock(&self.containers);
+        if !matches!(lock(&self.runs).get(id), Some(RunState::Tracked(_))) {
+            return Ok(None);
+        }
+        let (ours, theirs) = UnixStream::pair()?;
+        let number = self.next_waiter.fetch_add(1, Ordering::Relaxed);
+        lock(&self.waiters)
+            .entry(id.to_string())
+            .or_default()
+            .push(Waiter {
+                number,
+                tell: mpsc::channel().0,
+                wake: Some(theirs),
+            });
+        Ok(Some((number, ours)))
+    }
+
+    /// Forgets waiter `number` of container `id`, which stops waiting (audit A07).
+    pub(super) fn forget_waiter(&self, id: &str, number: u64) {
         let mut waiters = lock(&self.waiters);
         if let Some(list) = waiters.get_mut(id) {
             list.retain(|w| w.number != number);
@@ -1518,9 +1580,6 @@ impl Daemon {
                 waiters.remove(id);
             }
         }
-        drop(waiters);
-        // Its code may have come as it gave up.
-        told.try_recv().ok()
     }
 
     /// Stops serving: removes the socket, ends the runs in progress, and exits once they
@@ -1893,16 +1952,29 @@ fn hand_over(vm: &UnixStream, payload: &[u8], fds: &[BorrowedFd<'_>]) -> Result<
     }
 }
 
-/// A new container's directory `dir`, and its log there, for this user alone and written
-/// by appends.
-fn new_log(dir: &Path) -> io::Result<File> {
+/// A container's log and its index (spec.rs, `LOG_STDOUT`), for its run's VM to write.
+#[derive(Debug)]
+struct Log {
+    log: File,
+    index: File,
+}
+
+/// A new container's directory `dir`, and its log and the log's index there, for this
+/// user alone and written by appends.
+fn new_log(dir: &Path) -> io::Result<Log> {
     use std::os::unix::fs::OpenOptionsExt;
     shards_vmm::platform::create_private_dir(dir)?;
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(dir.join("log"))
+    let open = |name: &str| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(dir.join(name))
+    };
+    Ok(Log {
+        log: open(logs::LOG)?,
+        index: open(logs::INDEX)?,
+    })
 }
 
 /// Waits for a starting VM to say it is ready.
@@ -2628,22 +2700,33 @@ mod tests {
     /// A container's log line: its stream, when its first byte came, and its bytes.
     type Logged = (u8, u64, Vec<u8>);
 
-    /// Writes `lines` to container `id`'s log as a workload writes it (workload.rs,
-    /// `log_record`): records of at most 16 KiB, each its stream, its time in big-endian
-    /// nanoseconds, its length in a big-endian u32, then its bytes.
+    /// Writes `lines` to container `id`'s log as a workload's `Logger` writes it
+    /// (spec.rs, `LOG_STDOUT`): records of at most 16 KiB, each its stream, its time in
+    /// big-endian nanoseconds, its length in a big-endian u32, then its bytes, and each
+    /// record's entry in the index.
     fn write_log(t: &Test, id: &str, lines: &[Logged]) {
+        use crate::spec::{INDEX_LINE, INDEX_STDERR};
         let dir = lock(&t.daemon.containers).dir(id);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut log = Vec::new();
+        let (mut log, mut index) = (Vec::new(), Vec::new());
         for (stream, at, bytes) in lines {
             for (i, piece) in bytes.chunks(16 << 10).enumerate() {
+                let mut entry = log.len() as u64;
+                if *stream == LOG_STDERR {
+                    entry |= INDEX_STDERR;
+                }
+                if piece.last() == Some(&b'\n') {
+                    entry |= INDEX_LINE;
+                }
+                index.extend(entry.to_be_bytes());
                 log.push(*stream);
                 log.extend((at + i as u64).to_be_bytes());
                 log.extend(u32::try_from(piece.len()).unwrap().to_be_bytes());
                 log.extend(piece);
             }
         }
-        std::fs::write(dir.join("log"), log).unwrap();
+        std::fs::write(dir.join(logs::LOG), log).unwrap();
+        std::fs::write(dir.join(logs::INDEX), index).unwrap();
     }
 
     /// A line of `len` bytes numbered `n`, ending in a newline if `whole`.
@@ -2943,5 +3026,27 @@ mod tests {
         let (id, _log) = t.daemon.new_container().unwrap();
         assert!(t.home.join("containers").join(&id).is_dir(), "the spare taken");
         assert!(matches!(*lock(&t.daemon.spare), Spare::None));
+    }
+
+    /// Output a run's log could not keep is said by `logs`, which fails: the log is not
+    /// all of it; and a log that is gone is said too, not shown as nothing (audit A12).
+    #[test]
+    fn logs_say_what_they_do_not_hold() {
+        let t = Test::new("lost");
+        let (id, starting, vm) = running(&t, "racer");
+        say(&vm, kind::LOST, &7u64.to_be_bytes());
+        say(&vm, kind::DONE, &[0]);
+        drop(vm);
+        let _ = starting.run.join();
+        let (status, _, err) = ask(&t.daemon, &["logs", "racer"]);
+        assert_eq!(status, 1, "{err}");
+        assert!(err.contains("7 bytes of container"), "{err}");
+        assert_eq!(lock(&t.daemon.containers).get(&id).map(|c| c.log_lost), Some(7));
+
+        let gone = t.create("gone");
+        std::fs::remove_file(lock(&t.daemon.containers).dir(&gone).join(logs::LOG)).unwrap();
+        let (status, _, err) = ask(&t.daemon, &["logs", "gone"]);
+        assert_eq!(status, 1, "{err}");
+        assert!(err.contains("its log"), "{err}");
     }
 }

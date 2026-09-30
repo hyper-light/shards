@@ -1064,6 +1064,25 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
     timestamps (`shards_cmdline::gotime`, matched against the client's own code); the
     daemon then reads the timestamps as dockerd does, and filters the tail as dockerd's
     log forwarder does.
+  - **Logs are read in bounded memory, and followed without a timer** (audit A12;
+    `daemon/logs.rs`, spec.rs `LOG_STDOUT`, workload.rs `Logger`).
+    - Each record's start goes into an index beside the log once the record is whole,
+      with its stream and whether it ends a line. Readers find records by the index, so
+      a record cut short, or bytes a guest wrote to look like one, are never taken for
+      records. A log from an earlier shards is indexed as it is first read.
+    - A record is read in 64 KiB pieces, and a line held until it ends or reaches 16
+      KiB, moby's copier's buffer; then it goes out in pieces, its prefix before the
+      first, so the client's bytes are the whole line's.
+    - `--tail` reads the index back from the end, and only the records of the lines it
+      shows: on a 2 GiB log, 3 ms and 8 MiB of daemon, against 1.6 s and 8.2 GiB (PM
+      M48).
+    - `-f` waits on the index (kqueue on macOS, inotify on Linux), the run's end and
+      the client, not a timer: a hundred idle followers cost the daemon nothing, where
+      each looked 50 times a second.
+    - A record the log cannot keep, on a full disk or a log removed, costs the log, not
+      the run: it is taken back from both files and counted; the run's VM tells the
+      daemon, the container keeps the count, and `logs` says so and exits 1 rather than
+      show the log as all the output. A log that is gone is said, not shown as nothing.
   - `stop`, `kill` and `rm` act on up to 50 containers at once. Each success prints its
     argument once it and those before it are done, and the errors follow (docker/cli
     parallelOperation).
