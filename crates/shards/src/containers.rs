@@ -511,11 +511,33 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn temp_home(tag: &str) -> PathBuf {
+    /// A home of its own, removed when dropped, whether its test passes or panics.
+    struct TempHome(PathBuf);
+
+    impl std::ops::Deref for TempHome {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TempHome {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_home(tag: &str) -> TempHome {
         let dir = std::env::temp_dir().join(format!("shards-containers-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        TempHome(dir)
     }
 
     fn container(id: &str, name: &str, state: State) -> Container {

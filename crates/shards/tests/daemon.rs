@@ -1074,6 +1074,35 @@ fn what_a_moved_tag_named_is_collected() {
     );
 }
 
+/// A daemon whose home is removed exits, and never makes the home again: before, the
+/// spare container it made after the removal made the home's path anew, with its own
+/// directory inside.
+#[test]
+fn a_daemon_whose_home_is_removed_exits_without_making_it_again() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home("daemon-home-removed", &image);
+    let daemon = daemon_pid(&home).expect("a daemon pid");
+    let path = home.to_path_buf();
+    std::fs::remove_dir_all(&path).unwrap();
+    eventually("the daemon outlived its home", || !alive(daemon));
+    std::thread::sleep(Duration::from_millis(500));
+    let made: Vec<_> = std::fs::read_dir(&path)
+        .map(|d| d.map(|e| e.unwrap().path()).collect())
+        .unwrap_or_default();
+    let inner: Vec<_> = made
+        .iter()
+        .flat_map(|p| {
+            std::fs::read_dir(p)
+                .map(|d| d.map(|e| e.unwrap().path()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        })
+        .collect();
+    assert!(!path.exists(), "the home was made again: {made:?} {inner:?}");
+}
+
 /// A home named relatively is one home, wherever it is named from, however long, with
 /// spaces, or on Linux in bytes that are not UTF-8: each process resolves it before it
 /// makes the home its working directory, and hands the daemon it starts the resolved

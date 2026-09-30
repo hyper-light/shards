@@ -315,11 +315,26 @@ impl Store {
         if !root.is_dir() {
             return bad(format!("{}: not a directory", root.display()));
         }
-        for dir in ["blobs/sha256", "blobs/sha384", "blobs/sha512", "ingest"] {
-            fs::create_dir_all(root.join(dir))?;
+        // One level at a time, inside `root`: a store whose root was removed meanwhile is
+        // not made again, with the directories above it.
+        let refs = format!("refs/v{REFS_VERSION}");
+        let rootfs = format!("rootfs/v{ROOTFS_VERSION}");
+        for dir in [
+            "blobs",
+            "blobs/sha256",
+            "blobs/sha384",
+            "blobs/sha512",
+            "ingest",
+            "refs",
+            &refs,
+            "rootfs",
+            &rootfs,
+        ] {
+            match fs::create_dir(root.join(dir)) {
+                Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e.into()),
+                _ => {}
+            }
         }
-        fs::create_dir_all(root.join(format!("refs/v{REFS_VERSION}")))?;
-        fs::create_dir_all(root.join(format!("rootfs/v{ROOTFS_VERSION}")))?;
         Ok(Store {
             root: root.to_path_buf(),
         })
@@ -1009,11 +1024,33 @@ mod tests {
         Digest::from_hash(Algorithm::Sha256, &Sha256::digest(bytes))
     }
 
-    fn temp(name: &str) -> PathBuf {
+    /// A directory of its own, removed when dropped, whether its test passes or panics.
+    struct Temp(std::path::PathBuf);
+
+    impl std::ops::Deref for Temp {
+        type Target = std::path::Path;
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for Temp {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp(name: &str) -> Temp {
         let dir = std::env::temp_dir().join(format!("shards-store-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        dir
+        Temp(dir)
     }
 
     fn gzip(bytes: &[u8]) -> Vec<u8> {
@@ -1506,7 +1543,7 @@ mod tests {
         assert!(store.collect().unwrap().is_none());
         let (tx, rx) = std::sync::mpsc::channel();
         let waiting = {
-            let root = root.clone();
+            let root = root.to_path_buf();
             std::thread::spawn(move || {
                 let _lease = Store::open(&root).unwrap().lease().unwrap();
                 tx.send(()).unwrap();

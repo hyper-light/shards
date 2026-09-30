@@ -1834,7 +1834,8 @@ impl Daemon {
         if std::fs::remove_file(&due).is_ok() {
             self.collect.store(true, Ordering::SeqCst);
         }
-        if !self.collect.load(Ordering::SeqCst) {
+        // A stopping daemon collects nothing: its home may be gone.
+        if !self.collect.load(Ordering::SeqCst) || self.stopping.load(Ordering::SeqCst) {
             return;
         }
         match self.collect_garbage() {
@@ -1854,7 +1855,13 @@ impl Daemon {
     /// prepared, which holds the store's lease.
     fn collect_garbage(&self) -> Result<bool, String> {
         let began = Instant::now();
-        let store = crate::pull::store(&self.home)?;
+        // Opened, not made: a home without a store has nothing to collect.
+        let root = self.home.join("images");
+        if !root.is_dir() {
+            return Ok(true);
+        }
+        let store =
+            shards_image::store::Store::open(&root).map_err(|e| format!("{}: {e}", root.display()))?;
         // Held whole until the templates are done: no run begins meanwhile.
         let Some((collected, _whole)) = store.collect().map_err(|e| e.to_string())? else {
             return Ok(false);
@@ -2163,8 +2170,10 @@ struct Log {
 /// A new container's directory `dir`, with its log's first segment and that segment's
 /// index, for this user alone and written by appends.
 fn new_log(dir: &Path) -> io::Result<Log> {
-    use std::os::unix::fs::OpenOptionsExt;
-    shards_vmm::platform::create_private_dir(dir)?;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    // In the home's `containers`, which is there while the home is: a daemon whose home
+    // was removed never makes it again.
+    std::fs::DirBuilder::new().mode(0o700).create(dir)?;
     // Its log, then its index, which says the segment is there (spec.rs, `log_segment`).
     let (log, index) = log_segment(0);
     for name in [log, index] {
@@ -2840,6 +2849,17 @@ mod tests {
         drop(state);
         // Ended: its wait returns, as it would not for a sleep of 600 s.
         assert_eq!(vm.wait().unwrap(), 128 + libc::SIGKILL);
+    }
+
+    /// A collection due when the home has been removed makes nothing again: not the
+    /// home, not its store.
+    #[test]
+    fn a_collection_never_makes_a_removed_home_again() {
+        let t = Test::new("collect-removed");
+        std::fs::remove_dir_all(&t.home).unwrap();
+        t.daemon.collect.store(true, Ordering::SeqCst);
+        t.daemon.collect_if_due();
+        assert!(!t.home.exists(), "the home was made again");
     }
 
     /// A collection removes templates a daemon before this one left half saved, and ones

@@ -566,11 +566,33 @@ fn to_guest(to: &ToGuest, which: u8, payload: &[u8]) -> bool {
 mod tests {
     use super::*;
 
-    fn temp(tag: &str) -> PathBuf {
+    /// A directory of its own, removed when dropped, whether its test passes or panics.
+    struct Temp(std::path::PathBuf);
+
+    impl std::ops::Deref for Temp {
+        type Target = std::path::Path;
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for Temp {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp(tag: &str) -> Temp {
         let dir = std::env::temp_dir().join(format!("shards-logger-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        dir
+        Temp(dir)
     }
 
     fn append(path: &Path) -> fs::File {
