@@ -100,6 +100,18 @@ fn compile(root: &Path, arch: &str, target_dir: &Path, cargo: OsString) -> Resul
     for name in ["CARGO_ENCODED_RUSTFLAGS", "RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS"] {
         command.env_remove(name);
     }
+    // Its bytes name a template (run.rs, `template`), so they must not depend on where
+    // the checkout or cargo's home is: the source paths rustc embeds, in panic locations
+    // among others, are remapped to fixed names (rustc `--remap-path-prefix`). Separated by
+    // 0x1f, as CARGO_ENCODED_RUSTFLAGS takes them, so a path may hold spaces.
+    let mut remaps = vec![format!("--remap-path-prefix={}=/shards", root.display())];
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cargo")));
+    if let Some(home) = cargo_home {
+        remaps.push(format!("--remap-path-prefix={}=/cargo", home.display()));
+    }
+    command.env("CARGO_ENCODED_RUSTFLAGS", remaps.join("\x1f"));
     let output = command
         .output()
         .map_err(|e| format!("building shards-init: {e}"))?;
