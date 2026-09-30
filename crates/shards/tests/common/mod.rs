@@ -40,32 +40,42 @@ pub struct Artifact {
 /// The guest architecture: hardware virtualization runs guests of the host's own ISA.
 pub const ARCH: &str = std::env::consts::ARCH;
 
+/// Whether VM tests must run here: `SHARDS_REQUIRE_VMS=1`, which CI sets on runners that
+/// offer their backend's hypervisor, so a test that would skip fails instead.
+fn vms_required() -> bool {
+    std::env::var_os("SHARDS_REQUIRE_VMS").is_some_and(|v| v == "1")
+}
+
+/// A VM test that cannot run here: a SKIP line, or with `SHARDS_REQUIRE_VMS=1` a failure.
+fn skip(why: &str) -> bool {
+    assert!(
+        !vms_required(),
+        "SHARDS_REQUIRE_VMS=1, and this VM test cannot run: {why}"
+    );
+    // Straight to stderr: libtest captures `eprintln!`, and a passing test's captured
+    // output is never shown.
+    let _ = writeln!(std::io::stderr(), "SKIP: {why}");
+    true
+}
+
 /// Whether this host cannot run VMs: no backend for it yet, or no hardware virtualization
-/// (e.g. a CI runner that is itself a VM). VM tests then return early with a SKIP line;
+/// (e.g. a CI runner that is itself a VM). VM tests then return early with a SKIP line,
+/// or fail where `SHARDS_REQUIRE_VMS=1` says they must run;
 /// `this_host_has_its_hypervisor_backend` pins which hosts must have a backend.
 pub fn cannot_run_vms() -> bool {
     match shards_vmm::vm::check_host() {
         Ok(()) => false,
-        Err(why) => {
-            // Straight to stderr: libtest captures `eprintln!`, and a passing test's
-            // captured output is never shown.
-            let _ = writeln!(std::io::stderr(), "SKIP: {why}");
-            true
-        }
+        Err(why) => skip(&why),
     }
 }
 
 /// Snapshots exist where this build has a backend (vm::SNAPSHOTS); tests of them skip
-/// elsewhere with a SKIP line.
+/// elsewhere with a SKIP line, as [`cannot_run_vms`] does.
 pub fn cannot_snapshot() -> bool {
     if shards_vmm::vm::SNAPSHOTS {
         return false;
     }
-    let _ = writeln!(
-        std::io::stderr(),
-        "SKIP: snapshots are not supported on {ARCH} yet"
-    );
-    true
+    skip(&format!("snapshots are not supported on {ARCH} yet"))
 }
 
 /// The kernel shards pins for its guests (src/kernel.rs), which the tests boot too.
