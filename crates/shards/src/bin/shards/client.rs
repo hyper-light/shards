@@ -286,24 +286,31 @@ fn connect(home: &Path, daemon: &Path, started: &mut bool) -> Result<UnixStream,
 
 /// Runs `daemon daemon --detached`, which starts the daemon in the background and exits;
 /// the daemon creates its home and writes its messages to the log there. Of daemons
-/// started at once, one takes the home's lock and the rest exit.
+/// started at once, one takes the home's lock and the rest exit. What the starter says
+/// when it fails, a setting the daemon cannot keep, is what this says.
 fn start(daemon: &Path) -> Result<(), String> {
     use std::os::fd::AsFd;
     let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
     let starting = |e: io::Error| format!("starting the daemon {}: {e}", daemon.display());
+    let (mut said, speaks) = io::pipe().map_err(starting)?;
     let starter = shards_ipc::spawn(
         daemon,
         &["daemon".as_ref(), "--detached".as_ref()],
-        &[(null.as_fd(), 0), (null.as_fd(), 1), (null.as_fd(), 2)],
+        &[(null.as_fd(), 0), (null.as_fd(), 1), (speaks.as_fd(), 2)],
         true,
     )
     .map_err(starting)?;
-    match starter.wait().map_err(starting)? {
+    drop(speaks);
+    let status = starter.wait().map_err(starting)?;
+    let mut text = String::new();
+    let _ = (&mut said).take(64 * 1024).read_to_string(&mut text);
+    match status {
         0 => Ok(()),
-        status => Err(format!(
+        status if text.trim().is_empty() => Err(format!(
             "starting the daemon {}: exit status {status}",
             daemon.display()
         )),
+        _ => Err(text.trim().to_string()),
     }
 }
 

@@ -789,6 +789,23 @@ for the exit status.
     messages are read as they come. A run with no template boots a VM that saves one on the way, and a
     run with its own kernel and init boots every time. A template whose warm VMs fail
     three times in a row is removed and saved again.
+  - **Warm VMs are speculation, and bounded; runs are served regardless** (audit A13,
+    A14).
+    - A run that finds no VM ready has one started for it, unless one is already
+      starting for a run before it: a pool of 0 (`SHARDS_POOL=0`) keeps nothing warm and
+      restores each run's VM on demand, and a burst larger than the pool waits for no
+      refill. Before, a pool of 0 never filled, and every repeat run waited 60 s and
+      failed.
+    - All pools together keep at most `SHARDS_WARM_MAX` (16) VMs ahead of runs: a warm
+      VM holds about 20 MB, so about 320 MB, eight templates' pools at the default size.
+      A pool that would pass it first ends the ready VMs of the pools least recently
+      claimed from.
+    - Settings are counts, checked before the daemon serves: a malformed one, a pool
+      larger than all pools may keep, or more than 256 warm VMs (the clients' bound, for
+      the same threads and descriptors) stop it, and `shards daemon --detached` says
+      why to the client that started it, at once.
+    - **Not yet:** ready counts that follow demand, and collecting the templates, root
+      filesystems and blobs no tag, template or run still needs.
   - **It keeps its copies of the client's descriptors until the VM says `TAKEN`.**
     XNU's collector of in-flight descriptors flushes a socket in flight that no process
     holds: the client's connection then read end of stream, and 1 run in 13 to 53 never

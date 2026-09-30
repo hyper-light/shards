@@ -17,13 +17,13 @@ use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards_env, served, shards, shards_vm,
-    shardsd,
+    TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards_env, served, served_variant,
+    shards, shards_vm, shardsd,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -755,4 +755,144 @@ fn a_stop_cancels_the_downloads_of_runs_being_prepared() {
     let said = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(125), "{said}");
     assert!(said.contains("the daemon is shutting down"), "{said}");
+}
+
+/// A home with the guest recorded, whose daemon starts with `settings`.
+fn home_with(name: &str) -> TempDir {
+    let home = TempDir::new(name);
+    let args = [
+        "use".as_ref(),
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+        "--init".as_ref(),
+        guest_init().as_os_str(),
+    ];
+    let recorded = run_shards_env(&["guest"], &args, &[("SHARDS_HOME", home.as_os_str())], TIMEOUT);
+    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
+    home
+}
+
+/// A pool of 0 keeps no VM warm, and every run restores its own: the second run of an
+/// image, from its template, is served at once, not after the 60 s a pool that never
+/// fills would take (audit A14, whose reproduction this is).
+#[test]
+fn a_pool_of_none_serves_every_run() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home_with("daemon-pool-none");
+    let env: [(&str, &OsStr); 2] = [("SHARDS_HOME", home.as_os_str()), ("SHARDS_POOL", "0".as_ref())];
+    let templates = home.join("templates").to_string_lossy().into_owned();
+    for i in 0..3 {
+        let t0 = Instant::now();
+        let run = run_shards_env(&["run"], &[&image, "exit", "7"], &env, TIMEOUT);
+        assert_eq!(run.status, Some(7), "run {i}: {}", run.stderr);
+        if i > 0 {
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "run {i}: {:?}",
+                t0.elapsed()
+            );
+        }
+    }
+    eventually("a VM was kept warm", || processes_with(&templates).is_empty());
+    assert_eq!(
+        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
+        Some(0)
+    );
+}
+
+/// Settings a daemon cannot keep stop it before it serves, and its client says which at
+/// once (audit A14): a malformed count, a pool larger than all pools may keep, and a
+/// fleet past its bound.
+#[test]
+fn a_daemon_refuses_settings_it_cannot_keep() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    for (settings, said) in [
+        (
+            &[("SHARDS_POOL", "two")][..],
+            "SHARDS_POOL: \"two\" is not a count",
+        ),
+        (&[("SHARDS_POOL", "-1")][..], "SHARDS_POOL: \"-1\" is not a count"),
+        (
+            &[("SHARDS_POOL", "5"), ("SHARDS_WARM_MAX", "4")][..],
+            "SHARDS_POOL: 5 is more than",
+        ),
+        (
+            &[("SHARDS_WARM_MAX", "100000")][..],
+            "SHARDS_WARM_MAX: 100000 is more than",
+        ),
+        (&[("SHARDS_DAEMON_IDLE", "soon")][..], "SHARDS_DAEMON_IDLE"),
+    ] {
+        let home = TempDir::new("daemon-settings");
+        let mut env: Vec<(&str, &OsStr)> = vec![("SHARDS_HOME", home.as_os_str())];
+        env.extend(settings.iter().map(|(k, v)| (*k, v.as_ref())));
+        let t0 = Instant::now();
+        let run = run_shards_env(&["run"], &[&image, "exit", "0"], &env, TIMEOUT);
+        assert_ne!(run.status, Some(0), "{settings:?}");
+        assert!(run.stderr.contains(said), "{settings:?}: {}", run.stderr);
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "{settings:?}: {:?}",
+            t0.elapsed()
+        );
+        assert!(
+            daemon_pid(&home).is_none_or(|pid| !alive(pid)),
+            "{settings:?}: it serves"
+        );
+    }
+}
+
+/// Warm VMs kept ahead of runs are bounded all pools together (audit A13): with room
+/// for two, a second template's pool takes the first's, least recently claimed from, and
+/// the first is still served, on demand.
+#[test]
+fn warm_vms_are_bounded_across_templates() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (first, _) = served();
+    let second = served_variant(b"second");
+    let home = home_with("daemon-warm-max");
+    let env: [(&str, &OsStr); 3] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_POOL", "2".as_ref()),
+        ("SHARDS_WARM_MAX", "2".as_ref()),
+    ];
+    let templates = home.join("templates");
+    let warm = |template: &Path| processes_with(&template.to_string_lossy()).len();
+    let run = |image: &str| {
+        let run = run_shards_env(&["run"], &[image, "exit", "0"], &env, TIMEOUT);
+        assert_eq!(run.status, Some(0), "{image}: {}", run.stderr);
+    };
+    run(&first);
+    run(&first);
+    eventually("the first pool did not fill", || warm(&templates) == 2);
+    run(&second);
+    run(&second);
+    let dirs: Vec<PathBuf> = std::fs::read_dir(&templates)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_none())
+        .collect();
+    assert_eq!(dirs.len(), 2, "{dirs:?}");
+    let newest = dirs
+        .iter()
+        .max_by_key(|d| std::fs::metadata(d).unwrap().modified().unwrap())
+        .unwrap();
+    eventually("the second pool did not take the room", || {
+        warm(newest) == 2 && warm(&templates) == 2
+    });
+    // Never more than the bound, as the first is served again.
+    run(&first);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(warm(&templates) <= 2, "{} warm VMs", warm(&templates));
+    assert_eq!(
+        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
+        Some(0)
+    );
 }

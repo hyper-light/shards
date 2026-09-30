@@ -49,6 +49,13 @@ const READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// A template whose warm VMs fail this many times in a row is removed and saved again.
 const MAX_FAILURES: u32 = 3;
 const DEFAULT_POOL: usize = 2;
+/// Warm VMs kept ahead of runs, all pools together, unless `SHARDS_WARM_MAX` says (audit
+/// A13): a warm VM holds about 20 MB (its timing line's `rss_kib`), so the default holds
+/// about 320 MB, eight templates' pools at the default size.
+const DEFAULT_WARM_MAX: usize = 16;
+/// The most `SHARDS_WARM_MAX` may be: each warm VM holds a thread and descriptors of the
+/// daemon, whose clients are capped at `MAX_CLIENTS` for the same reason.
+const MAX_WARM_MAX: usize = MAX_CLIENTS;
 const DEFAULT_IDLE: Duration = Duration::from_secs(900);
 /// Warm VMs a run may try: one can end while it waits, or before it has taken the run.
 const HANDOFF_TRIES: usize = 3;
@@ -126,6 +133,10 @@ struct Pool {
     starting: usize,
     /// Warm VMs in a row that never became ready.
     failures: u32,
+    /// Runs waiting for a VM of it.
+    waiting: usize,
+    /// When a run last took one of its VMs, for eviction: least recently first.
+    claimed: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -203,6 +214,8 @@ struct Daemon {
     /// The socket, relative to the working directory, the home.
     socket: &'static Path,
     target: usize,
+    /// Warm VMs kept ahead of runs, all pools together ([`DEFAULT_WARM_MAX`]).
+    warm_max: usize,
     idle: Duration,
     /// How long a client may take to send its request ([`REQUEST_TIMEOUT`]).
     request_timeout: Duration,
@@ -278,6 +291,8 @@ impl Drop for Busy<'_> {
 fn detach() -> Result<(), String> {
     use std::os::fd::AsFd;
     use std::os::unix::fs::OpenOptionsExt;
+    // Settings it cannot keep are its starter's to hear, at once.
+    settings()?;
     let home = shards_ipc::home()?;
     shards_vmm::platform::create_private_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
     let path = shards_ipc::log(&home);
@@ -356,7 +371,54 @@ fn max_files_per_process() -> Option<libc::rlim_t> {
     libc::rlim_t::try_from(per_process).ok()
 }
 
+/// A count from the setting `name`, or `default`: a malformed one is refused, not taken
+/// for the default (audit A14).
+fn count(name: &str, default: u64) -> Result<u64, String> {
+    match std::env::var(name) {
+        Ok(v) => v
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("{name}: {v:?} is not a count")),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(e) => Err(format!("{name}: {e}")),
+    }
+}
+
+/// A daemon's settings.
+#[derive(Debug, Clone, Copy)]
+struct Settings {
+    /// Warm VMs kept ahead of runs for each template: `SHARDS_POOL`. With 0 each run
+    /// restores its own.
+    pool: usize,
+    /// Warm VMs kept ahead of runs, all pools together: `SHARDS_WARM_MAX`.
+    warm_max: usize,
+    /// How long it stays with nothing to do: `SHARDS_DAEMON_IDLE`, in seconds.
+    idle: Duration,
+}
+
+/// The daemon's settings, checked before it serves: a malformed or excessive one stops it
+/// (audit A14).
+fn settings() -> Result<Settings, String> {
+    let as_usize = |name: &str, n: u64| usize::try_from(n).map_err(|_| format!("{name}: {n} is too many"));
+    let warm_max = as_usize(
+        "SHARDS_WARM_MAX",
+        count("SHARDS_WARM_MAX", DEFAULT_WARM_MAX as u64)?,
+    )?;
+    if warm_max > MAX_WARM_MAX {
+        return Err(format!("SHARDS_WARM_MAX: {warm_max} is more than {MAX_WARM_MAX}"));
+    }
+    let pool = as_usize("SHARDS_POOL", count("SHARDS_POOL", DEFAULT_POOL as u64)?)?;
+    if pool > warm_max {
+        return Err(format!(
+            "SHARDS_POOL: {pool} is more than the {warm_max} warm VMs all pools may keep (SHARDS_WARM_MAX)"
+        ));
+    }
+    let idle = Duration::from_secs(count("SHARDS_DAEMON_IDLE", DEFAULT_IDLE.as_secs())?);
+    Ok(Settings { pool, warm_max, idle })
+}
+
 fn serve() -> Result<(), String> {
+    let settings = settings()?;
     let descriptors = raise_descriptor_limit();
     let home = shards_ipc::home()?;
     shards_vmm::platform::create_private_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
@@ -380,18 +442,9 @@ fn serve() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     let identity = Identity::of_build(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
     let vm = shards_ipc::vm_binary(&exe);
-    let setting = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
     let containers = Registry::open(&home, &mut |note| log(note))
         .map_err(|e| format!("{}: {e}", home.join("containers").display()))?;
-    let daemon = Arc::new(Daemon::new(
-        home,
-        vm,
-        identity,
-        setting("SHARDS_POOL").map_or(DEFAULT_POOL, |n| usize::try_from(n).unwrap_or(DEFAULT_POOL)),
-        setting("SHARDS_DAEMON_IDLE").map_or(DEFAULT_IDLE, Duration::from_secs),
-        containers,
-        home_lock,
-    ));
+    let daemon = Arc::new(Daemon::new(home, vm, identity, settings, containers, home_lock));
     daemon.make_spare();
     log(format!(
         "serving {} on {}, with up to {} descriptors open",
@@ -461,8 +514,7 @@ impl Daemon {
         home: PathBuf,
         vm: PathBuf,
         identity: Identity,
-        target: usize,
-        idle: Duration,
+        settings: Settings,
         containers: Registry,
         home_lock: File,
     ) -> Daemon {
@@ -471,8 +523,9 @@ impl Daemon {
             vm,
             identity,
             socket: Path::new(shards_ipc::SOCKET),
-            target,
-            idle,
+            target: settings.pool,
+            warm_max: settings.warm_max,
+            idle: settings.idle,
             request_timeout: REQUEST_TIMEOUT,
             state: Mutex::default(),
             changed: Condvar::new(),
@@ -1531,10 +1584,18 @@ impl Daemon {
         ready
     }
 
-    /// A waiting warm VM of the template in `dir`, once one is ready.
+    /// A warm VM of the template in `dir`, once one is ready: one waiting, or one started
+    /// for this run where none is starting for it, so a run is served whatever its pool
+    /// keeps, and a burst waits for no refill (audit A13, A14).
     fn claim(self: &Arc<Self>, dir: &Path) -> Result<Ready, Claim> {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut state = lock(&self.state);
+        let mut waiting = false;
+        let leave = |state: &mut State, waiting: bool| {
+            if waiting && let Some(pool) = state.pools.get_mut(dir) {
+                pool.waiting = pool.waiting.saturating_sub(1);
+            }
+        };
         loop {
             let pool = state.pools.entry(dir.to_path_buf()).or_default();
             if pool.failures >= MAX_FAILURES {
@@ -1543,15 +1604,23 @@ impl Daemon {
             }
             // Its pool refills once it has its run (handle).
             if let Some(ready) = pool.ready.pop_front() {
+                pool.claimed = Some(Instant::now());
+                leave(&mut state, waiting);
                 return Ok(ready);
             }
             // A stopping daemon starts no run: no use waiting for a VM to start one.
             if self.stopping.load(Ordering::SeqCst) {
+                leave(&mut state, waiting);
                 return Err(Claim::Failed("the daemon is shutting down".into()));
+            }
+            if !waiting {
+                pool.waiting += 1;
+                waiting = true;
             }
             self.refill(&mut state, dir);
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
+                leave(&mut state, waiting);
                 return Err(Claim::Failed(format!(
                     "no warm VM of {} was ready in {READY_TIMEOUT:?}",
                     dir.display()
@@ -1565,16 +1634,28 @@ impl Daemon {
         }
     }
 
-    /// Starts warm VMs of the template in `dir` until its pool will hold `target`.
+    /// Starts warm VMs of the template in `dir`: one for each run waiting that none is
+    /// starting for, and until its pool will hold `target`, as far as `warm_max` allows,
+    /// all pools together, after evicting the ready VMs of the pools least recently
+    /// claimed from.
     fn refill(self: &Arc<Self>, state: &mut State, dir: &Path) {
+        let (for_runs, ahead) = {
+            let pool = state.pools.entry(dir.to_path_buf()).or_default();
+            if pool.failures >= MAX_FAILURES {
+                return;
+            }
+            let have = pool.ready.len() + pool.starting;
+            let for_runs = pool.waiting.saturating_sub(pool.starting);
+            let ahead = self.target.saturating_sub(have + for_runs);
+            (for_runs, ahead)
+        };
+        let ahead = ahead.min(self.room(state, dir, ahead));
         let State { pools, starting } = state;
-        let pool = pools.entry(dir.to_path_buf()).or_default();
-        let want = self.target.saturating_sub(pool.ready.len() + pool.starting);
-        if pool.failures >= MAX_FAILURES {
+        let Some(pool) = pools.get_mut(dir) else {
             return;
-        }
+        };
         let args: Vec<OsString> = vec!["restore".into(), dir.into(), "--warm".into(), "3".into()];
-        for _ in 0..want {
+        for _ in 0..for_runs + ahead {
             match self.start(&args, For::Pool(dir.to_path_buf())) {
                 Ok(vm) => {
                     pool.starting += 1;
@@ -1587,6 +1668,39 @@ impl Daemon {
                 }
             }
         }
+    }
+
+    /// Room for up to `want` more warm VMs ahead of runs beside `dir`'s: within
+    /// `warm_max`, all pools together, made by ending the ready VMs of other pools, least
+    /// recently claimed from first.
+    fn room(&self, state: &mut State, dir: &Path, want: usize) -> usize {
+        let held = |state: &State| {
+            state
+                .pools
+                .values()
+                .map(|p| p.ready.len() + p.starting)
+                .sum::<usize>()
+        };
+        while held(state) + want > self.warm_max {
+            let coldest = state
+                .pools
+                .iter_mut()
+                .filter(|(d, p)| d.as_path() != dir && !p.ready.is_empty())
+                .min_by_key(|(_, p)| p.claimed);
+            let Some((cold, pool)) = coldest else {
+                break;
+            };
+            if let Some(evicted) = pool.ready.pop_back() {
+                log(format!(
+                    "ending warm VM {} of {}: {} warm VMs are kept at most (SHARDS_WARM_MAX)",
+                    evicted.vm.id(),
+                    cold.display(),
+                    self.warm_max
+                ));
+                let _ = evicted.vm.kill(libc::SIGKILL);
+            }
+        }
+        self.warm_max.saturating_sub(held(state)).min(want)
     }
 
     /// A VM booted for one run, from `cfg` into `rootfs`, saving a template to `save` on
@@ -1905,8 +2019,11 @@ mod tests {
                 home.clone(),
                 PathBuf::from("shards-vm"),
                 Identity::default(),
-                0,
-                DEFAULT_IDLE,
+                Settings {
+                    pool: 0,
+                    warm_max: DEFAULT_WARM_MAX,
+                    idle: DEFAULT_IDLE,
+                },
                 containers,
                 home_lock,
             );

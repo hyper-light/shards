@@ -697,20 +697,30 @@ pub fn serve_file(body: Vec<u8>) -> (String, Arc<AtomicUsize>) {
 /// The test image: the test guest as its entrypoint, with `report` as its command, run as
 /// `app` in `/work`, with its own environment. Returns its manifest and blobs.
 pub fn test_image() -> (Vec<u8>, Vec<Vec<u8>>) {
+    test_image_with(None)
+}
+
+/// The test image, with `variant` in `/etc/variant` if given: a layer, and a template, of
+/// its own.
+pub fn test_image_with(variant: Option<&[u8]>) -> (Vec<u8>, Vec<Vec<u8>>) {
     let guest = std::fs::read(test_guest()).unwrap();
     let passwd = b"root:x:0:0:root:/root:/bin/sh\napp:x:1000:1000:app:/home/app:/bin/sh\n";
     let group = b"root:x:0:\napp:x:1000:\nstaff:x:50:app\n";
-    let layer = tar(&[
+    let mut files = vec![
         ("bin", 0o755, 0, None),
-        ("bin/testguest", 0o755, 0, Some(&guest)),
+        ("bin/testguest", 0o755, 0, Some(&guest[..])),
         ("etc", 0o755, 0, None),
-        ("etc/passwd", 0o644, 0, Some(passwd)),
-        ("etc/group", 0o644, 0, Some(group)),
+        ("etc/passwd", 0o644, 0, Some(&passwd[..])),
+        ("etc/group", 0o644, 0, Some(&group[..])),
         ("home", 0o755, 0, None),
         ("home/app", 0o755, 1000, None),
         ("tmp", 0o1777, 0, None),
         ("work", 0o755, 1000, None),
-    ]);
+    ];
+    if let Some(v) = variant {
+        files.push(("etc/variant", 0o644, 0, Some(v)));
+    }
+    let layer = tar(&files);
     let arch = match std::env::consts::ARCH {
         "aarch64" => "arm64",
         "x86_64" => "amd64",
@@ -730,6 +740,14 @@ pub fn test_image() -> (Vec<u8>, Vec<Vec<u8>>) {
     )
     .into_bytes();
     (manifest, vec![config, layer])
+}
+
+/// Serves the test image with `variant` ([`test_image_with`]) at
+/// `127.0.0.1:<port>/test/image:v1`.
+pub fn served_variant(variant: &[u8]) -> String {
+    let (manifest, blobs) = test_image_with(Some(variant));
+    let (port, _) = registry(manifest, blobs);
+    format!("127.0.0.1:{port}/test/image:v1")
 }
 
 /// Serves the test image at `127.0.0.1:<port>/test/image:v1`.
