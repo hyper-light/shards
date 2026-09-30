@@ -802,7 +802,8 @@ for the exit status.
       refill. Before, a pool of 0 never filled, and every repeat run waited 60 s and
       failed.
     - All pools together keep at most `SHARDS_WARM_MAX` (16) VMs ahead of runs: a warm
-      VM holds about 20 MB, so about 320 MB, eight templates' pools at the default size.
+      VM's own memory is 3.4 MiB, so about 55 MiB; RSS, about 20 MB a VM, counts the
+      template's pages it shares in full (PM M49).
       A pool that would pass it first ends the ready VMs of the pools least recently
       claimed from. Only a ready VM can be ended, so once a pool's VM becomes ready, the
       pools claimed from since that are short refill again, and it gives way to them.
@@ -847,7 +848,11 @@ for the exit status.
       - It runs on the thread that accepts clients, which wait in the backlog meanwhile,
         and not while clients wait for descriptors: a file it opened as an accept found
         none would drop that client on macOS. Beside the accepts it did, 1 time in 20.
-    - **Not yet:** measuring fleets of 1 to 1,000 templates under bursts and low memory.
+    - Measured with 1, 10 and 100 templates [PM M49]: 100 keep 16 warm VMs, 54.5 MiB of
+      their own; a template without one restores on demand, p50 16 ms against 5 ms
+      warm; bursts of 8 find two ready and restore the rest, p50 about 16 ms; every
+      run succeeded, and `daemon stop` left no VM. Not measured: 1,000 templates, whose
+      35 GiB of templates this machine cannot spare, and low host memory.
   - **It keeps its copies of the client's descriptors until the VM says `TAKEN`.**
     XNU's collector of in-flight descriptors flushes a socket in flight that no process
     holds: the client's connection then read end of stream, and 1 run in 13 to 53 never

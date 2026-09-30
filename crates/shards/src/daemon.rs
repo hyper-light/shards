@@ -54,8 +54,8 @@ const READY_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_FAILURES: u32 = 3;
 const DEFAULT_POOL: usize = 2;
 /// Warm VMs kept ahead of runs, all pools together, unless `SHARDS_WARM_MAX` says (audit
-/// A13): a warm VM holds about 20 MB (its timing line's `rss_kib`), so the default holds
-/// about 320 MB, eight templates' pools at the default size.
+/// A13): a warm VM's own memory is 3.4 MiB, the rest of its RSS its template's pages it
+/// shares, so the default holds about 55 MiB (PM M49).
 const DEFAULT_WARM_MAX: usize = 16;
 /// The most `SHARDS_WARM_MAX` may be: each warm VM holds a thread and descriptors of the
 /// daemon, whose clients are capped at `MAX_CLIENTS` for the same reason.

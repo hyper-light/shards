@@ -1753,3 +1753,64 @@ revision before comparing a changed API/implementation.
   `--tail` back from the end. The old daemon held 3.5–4 times the log at its peak, and
   kept 5 GiB after.
 
+
+### M49. A daemon's fleet: 1 to 100 templates, bursts, and stop
+
+- **Question.** Audit A13: what do warm VMs cost a daemon serving many templates, with
+  pools that keep what their runs need (D26) and at most `SHARDS_WARM_MAX` (16) warm VMs
+  all together; what does a run wait when its template has none; how do bursts past a
+  pool fare; and what is left after `daemon stop`?
+- **Method.** `docs/research/measurements/fleet/fleet.rs`, an ignored test
+  (`FLEET_SIZES=1,10,100 cargo test --release -p shards --test fleet -- --ignored
+  --nocapture`). For each size N, a home of its own with default settings and N
+  distinct test images, each from a loopback registry: every image run once (pulled,
+  booted, its template saved), then again (restored); with the fleet settled for 2 s,
+  the warm VMs' and the daemon's own memory (`footprint`'s physical footprint: private
+  dirty and compressed pages, page tables included) and each warm VM's CPU time
+  (`proc_pid_rusage`, which is its restore, since it has done nothing else); one
+  image's runs one at a time, 200 ms apart, then 20 bursts of 8 at once; `daemon
+  stop`'s wall clock. Client wall clock per run, spawn to reap. ceb1f0d, 2026-09-30,
+  this machine (Darwin 25.4.0 arm64), load average 6–9.
+- **Results.** All 1 × 2 + 10 × 2 + 100 × 2 image runs and 3 × 180 later runs succeeded.
+
+| N | Pass | n | p50 | p90 | p99 | max (ms) |
+|---|---|---|---|---|---|---|
+| 1 | first (pull, boot, save) | 1 | 181.9 | 181.9 | 181.9 | 181.9 |
+| 1 | second (restore) | 1 | 10.3 | 10.3 | 10.3 | 10.3 |
+| 10 | first | 10 | 176.6 | 178.9 | 185.2 | 185.2 |
+| 10 | second | 10 | 5.2 | 5.8 | 8.7 | 8.7 |
+| 100 | first | 100 | 221.7 | 238.2 | 307.3 | 336.3 |
+| 100 | second | 100 | 16.2 | 23.2 | 32.0 | 32.1 |
+
+| N | Warm VMs | Their memory | Daemon | Warm VM restore CPU p50 / max | Templates on disk |
+|---|---|---|---|---|---|
+| 1 | 1 | 3.4 MiB | 4.7 MiB | 7.7 / 7.7 ms | 35.0 MiB |
+| 10 | 10 | 33.3 MiB | 5.6 MiB | 7.3 / 8.1 ms | 350.4 MiB |
+| 100 | 16 | 54.5 MiB | 6.2 MiB | 9.2 / 9.8 ms | 3 500.6 MiB |
+
+| N | One image's runs | n | p50 | p90 | p99 | max (ms) |
+|---|---|---|---|---|---|---|
+| 1 | one at a time | 20 | 6.7 | 8.4 | 9.8 | 9.8 |
+| 1 | bursts of 8 | 160 | 17.0 | 20.8 | 32.2 | 36.3 |
+| 10 | one at a time | 20 | 5.7 | 6.2 | 6.4 | 6.4 |
+| 10 | bursts of 8 | 160 | 17.1 | 23.5 | 33.1 | 33.6 |
+| 100 | one at a time | 20 | 5.8 | 6.2 | 13.6 | 13.6 |
+| 100 | bursts of 8 | 160 | 15.1 | 17.1 | 18.0 | 18.1 |
+
+  `daemon stop` took 253–259 ms and left no VM each time.
+- **Findings.**
+  - Warm VMs stop at the bound: 100 templates keep 16, whose own memory is 54.5 MiB,
+    3.4 MiB each. A warm VM's RSS, about 20 MB, counts in full the snapshot pages it
+    shares with its template's file; its own cost is a sixth of that.
+  - A run whose template keeps no warm VM restores one on demand: at 100 templates the
+    second pass's p50 is 16.2 ms against 5.2 ms at 10, where every template kept one.
+  - A burst of 8 finds at most `SHARDS_POOL` (2) ready and restores the rest on demand:
+    p50 about 16 ms against 6 ms for runs one at a time.
+  - A restore costs its VM 7–10 ms of CPU.
+  - Each template takes 35 MiB of disk.
+- **Not measured.** 1,000 templates: they would take 35 GiB, more than this machine's
+  68 GiB free can spare; the warm VMs stay at 16 whatever N, and the daemon's own memory
+  grew 1.5 MiB from 1 to 100. Low host memory: speculation is bounded at 16 VMs' 55 MiB
+  of their own, and the kernel reclaims their pages as any process's.
+- **Consequence.** D26's bound holds; the default's cost, which D26 put at 320 MB from
+  RSS, is 55 MiB.
