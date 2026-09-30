@@ -220,6 +220,11 @@ jobs:
               cargo build --locked --release -p shards --target "$TARGET"
             '
           sudo chown -R "$(id -u):$(id -g)" target
+      # A process the seccomp filter ended with its SIGSYS blocked says nothing; the kernel
+      # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG).
+      - name: What the kernel logged of seccomp refusals
+        if: failure()
+        run: sudo dmesg | grep -iE 'seccomp|type=1326' | tail -40 || true
       - name: The executable is static
         run: |
           bin="target/$TARGET/release/shards"

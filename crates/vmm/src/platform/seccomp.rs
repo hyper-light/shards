@@ -178,21 +178,32 @@ pub fn install(filter: &Filter, all_threads: bool) -> io::Result<()> {
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    let flags = if all_threads {
+    let tsync = if all_threads {
         libc::SECCOMP_FILTER_FLAG_TSYNC
     } else {
         0
     };
-    // SAFETY: seccomp(2) reading the program `prog` points at, which `filter` keeps alive
-    // for the call; the kernel copies it.
-    let r = unsafe {
-        libc::syscall(
-            libc::SYS_seccomp,
-            libc::SECCOMP_SET_MODE_FILTER,
-            flags,
-            &raw const prog,
-        )
+    let set = |flags: libc::c_ulong| {
+        // SAFETY: seccomp(2) reading the program `prog` points at, which `filter` keeps
+        // alive for the call; the kernel copies it.
+        unsafe {
+            libc::syscall(
+                libc::SYS_seccomp,
+                libc::SECCOMP_SET_MODE_FILTER,
+                flags,
+                &raw const prog,
+            )
+        }
     };
+    // LOG: the kernel logs each refusal, the syscall's number with it (seccomp(2)). A
+    // refusal while SIGSYS is blocked, as in a thread's exit, ends the process with the
+    // signal's default action before any handler can name it; the log still does. A
+    // kernel before 4.14 knows no LOG, and refuses it with EINVAL: the filter goes on
+    // without it.
+    let mut r = set(libc::SECCOMP_FILTER_FLAG_LOG | tsync);
+    if r < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
+        r = set(tsync);
+    }
     match r {
         0 => Ok(()),
         // With TSYNC, a positive result is a thread that could not take the filter.
