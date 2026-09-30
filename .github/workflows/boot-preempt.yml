@@ -1,6 +1,7 @@
 name: boot preempt
 
-# The pinned arm64 kernel built with its preemption model chosen at boot, as an artifact
+# The pinned arm64 kernel built with its preemption model chosen at boot, and ticking at
+# 1,000 Hz, as artifacts
 # for docs/research/measurements/boot-preempt: nothing is released. Runs when the
 # experiment changes, or when asked.
 on:
@@ -15,16 +16,19 @@ permissions:
 
 jobs:
   build:
+    strategy:
+      matrix:
+        variant: [preempt, hz]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7.0.1
-      - name: The pinned configuration, its model chosen at boot
-        run: cat docs/research/measurements/boot-preempt/preempt.config >> resources/kernel/shards.config
+      - name: The pinned configuration, with the variant's changes
+        run: cat docs/research/measurements/boot-preempt/${{ matrix.variant }}.config >> resources/kernel/shards.config
       - name: Build in the pinned builder
         run: scripts/build-kernel-in-builder.sh aarch64 out
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: kernel-preempt-aarch64
+          name: kernel-${{ matrix.variant }}-aarch64
           path: out/
           if-no-files-found: error

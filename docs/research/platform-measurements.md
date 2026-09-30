@@ -2225,3 +2225,27 @@ revision before comparing a changed API/implementation.
   its snapshot file's pages, which the page cache holds once for every VM of the
   template. The envelope's single-restore allowances now say so. The benchmark keeps
   measuring density, so a regression fails CI as the other rows do.
+
+### M65. Which preemption model gives PID 1 its CPU back from the crypto self-tests
+
+- **Question.** M39: in about 30% of cold arm64 boots PID 1 waits a tick, 10 ms, for
+  the crypto self-tests' kthreads to give up the one vCPU; the kernel is `PREEMPT_NONE`.
+  Does voluntary or full preemption give it back sooner?
+- **Method.** `docs/research/measurements/boot-preempt/`: the pinned kernel built in the
+  pinned builder with `CONFIG_PREEMPT_DYNAMIC` (run 36711540724), booted by
+  `kernel-ab/ab.py` against itself, `preempt=none` against `preempt=voluntary`, then
+  against `preempt=full`, alternating, n = 100 each. ecdaa64, 2026-09-30, this machine.
+- **Results (µs, p50 / p90 / p99 / max).**
+
+| Arm | boot_kernel | restore |
+|---|---|---|
+| none | 16237 / 26492 / 27325 / 27449 | 6654 / 7092 / 7622 / 7720 |
+| voluntary | 26126 / 26401 / 27007 / 27775 | 6536 / 7067 / 7622 / 7746 |
+| none | 16181 / 26285 / 26422 / 26461 | 6580 / 7308 / 8128 / 8378 |
+| full | 26048 / 26248 / 26460 / 27045 | 6501 / 7185 / 7807 / 8358 |
+
+- **Consequence.** Preemption makes it worse: the self-tests' kthreads, able to take the
+  CPU from PID 1, take it in nearly every boot, and PID 1 waits the tick almost always,
+  where without preemption it waits in about a third. Restores, which never run the
+  self-tests (M38), are unchanged. The kernel stays `PREEMPT_NONE`; the tick's length,
+  `HZ`, is measured next (hz.config).
