@@ -204,7 +204,10 @@ Networks between agents need more than the directives:
   (`crates/registry`) and build a root filesystem from their layers (`crates/image`).
   There is no `shards build` yet.
 - **Networking.** No network device exists. A microVM is reached only over vsock, so it is
-  airgapped today, the default this spec keeps.
+  airgapped today, the default this spec keeps. `EXPOSE`, `NETWORK`, `CONNECT` and remote
+  `MCP` servers will reach the network through a network process of the microVM's own, never
+  through the VM process, which stays confined without TCP; that process holds the policy
+  they declare (architecture.md D31).
 - **Agents' workspaces.** The containerd-like runtime inside each microVM runs many agents
   per VM, each isolated as a container would be, without being containers. It is where the
   workloads/workspaces of §4.2 live. Mounts go to one workload, some or all, attached once

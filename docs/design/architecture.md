@@ -172,6 +172,10 @@ the guest arch is always the host arch.
 | Windows | x86_64 / amd64 | Windows Hypervisor Platform | planned |
 | Windows | aarch64 / arm64 | Windows Hypervisor Platform (arm64) | planned |
 
+A Linux host runs VMs on Linux 6.10 or later with Landlock enabled (its `lsm=` list), whose
+ABI v5 is the first to govern `/dev/kvm`'s ioctls: a VM process starts under no weaker
+confinement (D30). macOS runs them under App Sandbox (D30).
+
 Every target builds and passes the lints. Until a target's backend lands, `vm run` there
 fails with an explanation (`vm::check_host`), as it does where the OS reports no hardware
 virtualization, such as hosted CI runners without nested virtualization.
@@ -1368,27 +1372,99 @@ audit's "Security and test coverage").
     traps; a SIGSYS handler names it and the thread, and the process exits 159.
   - Every VM test runs under it on CI's KVM runners, glibc and musl, with VMs required.
   - One filter for every thread: the lists are the union. Per-thread filters, as
-    Firecracker keeps, would narrow a vCPU thread to its KVM ioctls; they are the next
-    step, as is Landlock for the files it may open.
-- **macOS: a Seatbelt profile the process applies to itself** [PM M52, M53], just before
-  its VM starts (`vm_run.rs`, `start` and `restore_vm`; `sandbox_init`). App Sandbox does
-  not take a command-line tool on its own, and a profile applied before exec stops dyld.
-  - Denied by default. Allowed: sysctl reads, signals to itself, files' metadata (a path
-    is resolved by stating the directories above it), `/dev/null`, and the logging
-    daemon's lookup, whose denial cost each process about 10 ms as it ended.
-  - Reads: its kernel, initrd, init, pmem and read-only disks, a restore's snapshot
-    directory and the files the snapshot records. Reads and writes: its read-write
-    disks; and under the snapshot directory it saves, the directory its template is
-    moved to once saved (`--settles-to`), its vsock sockets' directory, and a warm VM's
-    container logs (`--logs-in`), the ancestors of these made if they are not there.
-    Unix sockets only in those directories; no other network.
-  - Paths are made whole first: Seatbelt matches a file opened by a relative path as
-    named.
-  - Compiling the profile takes about 3.7 ms, whatever it holds; applying it, tens of
-    microseconds (M53). A VM made ready ahead pays it before its run; a restore in a new
-    process and a cold boot pay it on their way. Compiling in the daemon while a VM
-    restores, and handing it the result, would take it off the VM's way.
+    Firecracker keeps, would narrow a vCPU thread to its KVM ioctls: the next step
+    (rootless-security.md R3).
+  - `tkill(2)`, obsolete beside `tgkill(2)` [man: tkill(2)] and musl's `pthread_kill`, is
+    refused: a vCPU's kick is `tgkill` to its own thread, and `tgkill` is allowed only
+    within the process. `prctl` names threads and sets no_new_privs, nothing else.
+- **Linux: Landlock, failing closed** (`confine.rs`, `landlock`), applied just before the
+  VM starts (rootless-security.md R3; [Documentation/userspace-api/landlock.rst]).
+  - Every filesystem right Landlock's ABI v5 knows is handled, TCP bind and connect are
+    refused, and on ABI v6 signals and abstract Unix sockets outside the process are too.
+    Allowed: its kernel, initrd, init, pmem and disks, a restore's snapshot and the files it
+    records, the snapshot directory it saves and a warm VM's container logs, sockets made
+    only in its vsock directory, `/dev/null`, its own `/proc` entry, and `/dev/kvm` and the
+    huge page settings where the host has them. No directory may take a file from another
+    (`REFER`). Rules hold inodes: a template keeps its rule when the daemon renames it.
+  - It fails closed: a kernel without Landlock, or whose ABI is older than v5 (Linux 6.10,
+    the first to govern device ioctls), starts no VM, as does a path it must allow that is
+    not there. rootless-security.md R7 forbids weakening a policy silently; Landlock's
+    maintainer asks that the version be read from the kernel, never from its release
+    (firecracker-microvm/firecracker#5771).
+  - Still to do, per R3: a user and mount namespace with `pivot_root` into an empty
+    tmpfs, `CLONE_INTO_CGROUP`, rlimits; UDP (ABI v10) and pathname Unix socket (ABI v9)
+    rules where the kernel has them; and the jail's cost on the start path (R4 Q1).
+- **macOS: App Sandbox, replacing the Seatbelt profile** (docs/research/
+  macos-confinement.md, [PM M67]). The profile was applied with `sandbox_init`, which the
+  SDK marks deprecated and no longer supported [sandbox.h:7,45]; shards uses no deprecated
+  or unsupported interface, so it goes, in the change that brings App Sandbox.
+  - `shards-vm` is signed with App Sandbox, the hypervisor entitlement and Hardened Runtime,
+    with its identity in an Info.plist linked into it. It reaches nothing but what its
+    spawner grants: files and directories by bookmark, the vsock device's listening socket
+    by descriptor, and connections to host ports dialled by the spawner and handed over.
+  - It costs about 3.1 ms at launch (M67), before a warm VM's request, as the profile's
+    compiling cost 3.7 ms (M53).
 - **Windows:** nothing yet.
+
+### Networking: a network process per VM (D31, design)
+
+A VM process stays airgapped: its seccomp filter allows Unix sockets alone, its Landlock
+rules refuse TCP, and on macOS its sandbox reaches no socket outside what it is handed
+(D30). A VM with a network gets it from a second process of its own, the network process,
+which holds the VM's only way out. rootless-security.md R4.16 ("run … the user-mode network
+stack in separate sandboxed processes") and R6 decide this; networking.md R1, which put the
+stack inside the VMM, is superseded by it.
+
+- **Why a process, not a thread of the VMM.**
+  - A flaw in the network stack, which parses whatever the guest and the Internet send,
+    reaches only that process: not the guest's memory, not the VM's disks, not /dev/kvm.
+    User-mode network stacks have a CVE history of their own [rootless-security.md R4.16:
+    CVE-2019-6778, CVE-2021-3546, CVE-2025-2509].
+  - The VM process keeps confinement that TCP would break, and the network process keeps
+    confinement that a VM would break: no filesystem at all, sockets only where the policy
+    says.
+- **One network process per VM, rootless, on both OSes.** Per VM, so that one VM's stack,
+  compromised or overloaded, reaches no other VM, and a clone gets its own NAT identity
+  (networking.md R3, [firecracker network-for-clones.md]). No TAP, no host namespace, no
+  vmnet: the only design with no root and no restricted entitlement on macOS [Apple: vmnet,
+  com.apple.vm.networking] that creates no host-namespace churn [Oakes18 §2.2; Thomas20
+  §2.3].
+- **What it does.** It terminates the guest's L2 and speaks L4 to the host, as passt does
+  [man: passt(1)], written in-repo because passt does not run on Darwin [passt: about]:
+  - Egress: each guest flow becomes a host socket, opened only after the policy allows its
+    5-tuple, after reassembly (RFC 1858, RFC 3128) — the one enforcement point a compromised
+    guest kernel cannot pass (networking.md R7).
+  - DNS: a resolver answering the guest, which forwards upstream and enforces name rules with
+    the protections networking.md §2.6 lists (TTL capped, CNAME chains, TCP, rebinding to RFC
+    6890 ranges refused, DoT/DoQ refused, SVCB hints stripped).
+  - Published ports (`EXPOSE … ingress`, `-p`): host listeners in the network process,
+    routed to the guest (networking.md R5); privileged ports as the host OS allows them.
+  - No host loopback by default (rootless-security.md R4.16; passt's default mapping is the
+    anti-pattern [man: passt(1)]).
+- **Its confinement (D30's rules, its own lists).** Linux: seccomp allowing its sockets and
+  no filesystem calls it does not need; Landlock handling every filesystem right and
+  allowing none, and TCP bind and connect only on the ports the policy names (Landlock ABI
+  v4 network rules) — the IP part of a policy is its own code's. macOS: App Sandbox with the
+  network client and server entitlements and no file access (docs/research/
+  macos-confinement.md).
+- **The guest's side.** A virtio-net device in the VM process, configured before the
+  template is saved, with a static address and no DHCP or duplicate-address detection, so
+  restores do no network work (networking.md R3; [RFC 2131 §4.4.1; RFC 4862 §5.4]). A VM
+  with no network gets no device (networking.md R7: absent device, no attack surface).
+- **Open, measured before it is built** (networking.md §4):
+  - *The data path between the two processes* (E2). Frames over a connected datagram socket,
+    batched, as Apple's own model for third-party stacks carries them
+    [VZFileHandleNetworkDeviceAttachment.h:13-49], against a vhost-user backend reading the
+    virtqueues from shared guest memory, which passt reports as "maximum one copy" [passt:
+    about] but which gives the network process the guest's memory. Throughput at MTU
+    1500/9000/65520, CPU per byte, and p99 of TCP_RR decide it, with TSO/GSO and a large MTU
+    in both [Cai21 §3.1].
+  - *Its cost per VM* (E2, D14): RSS idle and with 1k and 10k connections, beside a VM's
+    own (M64), and the start: the network process is spawned and paired with a warm VM
+    before its request, and must cost a restore nothing (E1).
+  - *Enforcement overhead* (E5) at 0, 100 and 10k rules, and the DNS conformance suite (E6).
+- **Not now:** a VM-to-VM switch (networking.md R8; VMs reach each other through published
+  ports first), an administrator-provisioned TAP tier (R2), GPU networking (R9).
 
 ## 3. Components
 
