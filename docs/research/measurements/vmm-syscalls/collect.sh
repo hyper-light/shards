@@ -20,3 +20,6 @@ for l in sys.stdin:
   SHARDS_REQUIRE_VMS=1 strace -f -qq -o "$out/$test.trace" -s 64 "$bin" --test-threads 4 >"$out/$test.log" 2>&1 || echo "   (some tests failed under strace: $out/$test.log)"
 done
 python3 "$(dirname "$0")/parse.py" "$out"/*.trace
+# What a filter refused, as strace reports the SIGSYS it raised.
+echo "## refused"
+grep -h -o 'SIGSYS {[^}]*si_syscall=[^,}]*' "$out"/*.trace | grep -o 'si_syscall=[^,}]*' | sort | uniq -c || echo "none"
