@@ -19,5 +19,4 @@ for l in sys.stdin:
   echo "== $test"
   SHARDS_REQUIRE_VMS=1 strace -f -qq -o "$out/$test.trace" -s 64 "$bin" --test-threads 4 >"$out/$test.log" 2>&1 || echo "   (some tests failed under strace: $out/$test.log)"
 done
-cat "$out"/*.trace > "$out/all.trace"
-python3 "$(dirname "$0")/parse.py" "$out/all.trace"
+python3 "$(dirname "$0")/parse.py" "$out"/*.trace

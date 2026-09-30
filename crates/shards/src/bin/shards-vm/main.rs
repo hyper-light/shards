@@ -8,6 +8,8 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+#[path = "../../confine.rs"]
+mod confine;
 #[path = "../../spec.rs"]
 mod spec;
 #[path = "../../terminal.rs"]
@@ -22,6 +24,11 @@ mod workload;
 
 fn main() -> ExitCode {
     shards_vmm::log::init();
+    // Before it reads anything: its arguments name files it has yet to open.
+    if let Err(e) = confine::confine() {
+        let _ = writeln!(std::io::stderr(), "shards-vm: {e}");
+        return ExitCode::from(125);
+    }
     let mut args = std::env::args_os().skip(1);
     match args.next().as_ref().and_then(|c| c.to_str()) {
         Some("run") => vm_run::run(args),

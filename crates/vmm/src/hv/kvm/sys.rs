@@ -11,6 +11,54 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 pub const API_VERSION: i32 = 12;
 
+/// Every ioctl request shards makes of KVM: what its seccomp filter allows
+/// (docs/research/rootless-security.md R3).
+pub const IOCTLS: &[u64] = &[
+    KVM_GET_API_VERSION,
+    KVM_CREATE_VM,
+    KVM_CHECK_EXTENSION,
+    KVM_GET_VCPU_MMAP_SIZE,
+    KVM_GET_SUPPORTED_CPUID,
+    KVM_CREATE_VCPU,
+    KVM_SET_USER_MEMORY_REGION,
+    KVM_SET_TSS_ADDR,
+    KVM_SET_IDENTITY_MAP_ADDR,
+    KVM_CREATE_IRQCHIP,
+    KVM_IRQ_LINE,
+    KVM_RUN,
+    KVM_SET_REGS,
+    KVM_GET_SREGS,
+    KVM_SET_SREGS,
+    KVM_SET_CPUID2,
+    KVM_GET_MSR_INDEX_LIST,
+    KVM_GET_IRQCHIP,
+    KVM_SET_IRQCHIP,
+    KVM_SET_CLOCK,
+    KVM_GET_CLOCK,
+    KVM_GET_REGS,
+    KVM_GET_MSRS,
+    KVM_SET_MSRS,
+    KVM_GET_LAPIC,
+    KVM_SET_LAPIC,
+    KVM_GET_MP_STATE,
+    KVM_SET_MP_STATE,
+    KVM_GET_VCPU_EVENTS,
+    KVM_SET_VCPU_EVENTS,
+    KVM_GET_DEBUGREGS,
+    KVM_SET_DEBUGREGS,
+    KVM_SET_TSC_KHZ,
+    KVM_GET_TSC_KHZ,
+    KVM_GET_XSAVE,
+    KVM_SET_XSAVE,
+    KVM_GET_XCRS,
+    KVM_SET_XCRS,
+    KVM_KVMCLOCK_CTRL,
+    KVM_GET_XSAVE2,
+    KVM_PRE_FAULT_MEMORY,
+    KVM_SET_DEVICE_ATTR,
+    KVM_GET_DEVICE_ATTR,
+];
+
 pub const KVM_GET_API_VERSION: u64 = 0xAE00;
 pub const KVM_CREATE_VM: u64 = 0xAE01;
 pub const KVM_CHECK_EXTENSION: u64 = 0xAE03;

@@ -36,22 +36,39 @@ const RET_K: u16 = (libc::BPF_RET | libc::BPF_K) as u16;
 /// process SIGSYS ended.
 pub const REFUSED: i32 = 128 + libc::SIGSYS;
 
-/// A syscall a filter allows: always, or when its argument `arg` is one of `values`.
+/// A syscall a filter allows: always, or when its argument `arg` is one of `values`; or,
+/// with `errno`, one it answers with that error instead of trapping, as Firecracker
+/// answers `clone3` with ENOSYS so that the C library falls back to `clone`, whose flags a
+/// filter can read.
 #[derive(Debug, Clone)]
 pub struct Rule {
     pub syscall: libc::c_long,
     pub arg: Allowed,
+    pub errno: Option<u16>,
 }
 
 impl Rule {
     pub fn any(syscall: libc::c_long) -> Rule {
-        Rule { syscall, arg: None }
+        Rule {
+            syscall,
+            arg: None,
+            errno: None,
+        }
     }
 
     pub fn with(syscall: libc::c_long, arg: u32, values: &[u32]) -> Rule {
         Rule {
             syscall,
             arg: Some((arg, values.to_vec())),
+            errno: None,
+        }
+    }
+
+    pub fn fails(syscall: libc::c_long, errno: u16) -> Rule {
+        Rule {
+            syscall,
+            arg: None,
+            errno: Some(errno),
         }
     }
 }
@@ -72,7 +89,20 @@ fn op(code: u16, jt: u8, jf: u8, k: u32) -> libc::sock_filter {
 /// reach.
 pub fn compile(rules: &[Rule]) -> Result<Filter, String> {
     let mut merged: Vec<(libc::c_long, Allowed)> = Vec::new();
+    let mut failing: Vec<(libc::c_long, u16)> = Vec::new();
     for rule in rules {
+        if let Some(errno) = rule.errno {
+            if merged.iter().any(|(s, _)| *s == rule.syscall)
+                || failing.iter().any(|(s, _)| *s == rule.syscall)
+            {
+                return Err(format!("syscall {}: allowed and failed", rule.syscall));
+            }
+            failing.push((rule.syscall, errno));
+            continue;
+        }
+        if failing.iter().any(|(s, _)| *s == rule.syscall) {
+            return Err(format!("syscall {}: allowed and failed", rule.syscall));
+        }
         match merged.iter_mut().find(|(s, _)| *s == rule.syscall) {
             None => merged.push((rule.syscall, rule.arg.clone())),
             Some((_, have)) => match (have.as_mut(), &rule.arg) {
@@ -92,6 +122,11 @@ pub fn compile(rules: &[Rule]) -> Result<Filter, String> {
         op(RET_K, 0, 0, libc::SECCOMP_RET_KILL_PROCESS),
         op(LD_W_ABS, 0, 0, NR),
     ];
+    for (syscall, errno) in &failing {
+        let nr = u32::try_from(*syscall).map_err(|_| format!("syscall {syscall}: not a number"))?;
+        prog.push(op(JEQ_K, 0, 1, nr));
+        prog.push(op(RET_K, 0, 0, libc::SECCOMP_RET_ERRNO | u32::from(*errno)));
+    }
     for (syscall, arg) in &merged {
         let nr = u32::try_from(*syscall).map_err(|_| format!("syscall {syscall}: not a number"))?;
         let block: Vec<libc::sock_filter> = match arg {
@@ -313,6 +348,51 @@ mod tests {
                 assert!(stderr.contains("in thread "), "{case}: {stderr}");
             }
         }
+    }
+
+    /// A syscall a rule fails returns its error to the caller, and the process goes on.
+    fn failing_child() -> ! {
+        name_refusals().unwrap();
+        let mut rules = base();
+        rules.push(Rule::fails(libc::SYS_getppid, libc::ENOSYS as u16));
+        install(&compile(&rules).unwrap(), true).unwrap();
+        // SAFETY: syscalls with integer arguments.
+        unsafe {
+            let r = libc::syscall(libc::SYS_getppid);
+            let errno = *libc::__errno_location();
+            libc::syscall(
+                libc::SYS_exit_group,
+                if r == -1 && errno == libc::ENOSYS { 0 } else { 1 },
+            );
+        }
+        loop {
+            std::hint::spin_loop();
+        }
+    }
+
+    #[test]
+    fn a_failed_syscall_returns_its_error() {
+        if std::env::var_os("SECCOMP_FAILING_CHILD").is_some() {
+            failing_child();
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "platform::seccomp::tests::a_failed_syscall_returns_its_error",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env("SECCOMP_FAILING_CHILD", "1")
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(compile(&[Rule::fails(1, 38), Rule::any(1)]).is_err());
     }
 
     #[test]

@@ -12,7 +12,10 @@ under `unnamed`.
 For each class it prints the syscalls, with how many calls, and the ioctl requests,
 socket domains, fcntl commands and prctl options they used.
 
-    python3 parse.py TRACE
+Thread ids are reused from one strace run to the next, so each trace is read with state
+of its own, and the counts are added up.
+
+    python3 parse.py TRACE...
 """
 import collections, re, sys
 
@@ -79,23 +82,25 @@ def record(tid, call, args, result):
         detail[c]["prctl"][first_arg(args)] += 1
 
 
-for line in open(sys.argv[1], errors="replace"):
-    m = LINE.match(line.rstrip("\n"))
-    if not m:
-        continue
-    tid = int(m.group(1))
-    tgid.setdefault(tid, tid)
-    if m.group(2):
-        call, args = pending.pop(tid, (m.group(2), ""))
-        rest = m.group(3)
-    else:
-        call, rest = m.group(4), m.group(5)
-        if rest.endswith("<unfinished ...>"):
-            pending[tid] = (call, rest[: -len("<unfinished ...>")].rstrip())
-            continue
-        args = rest
-    found = RESULT.search(rest)
-    record(tid, call, args if m.group(4) else args + rest, int(found.group(1)) if found else None)
+for trace in sys.argv[1:]:
+  tgid.clear(); exe.clear(); name.clear(); pending.clear()
+  for line in open(trace, errors="replace"):
+      m = LINE.match(line.rstrip("\n"))
+      if not m:
+          continue
+      tid = int(m.group(1))
+      tgid.setdefault(tid, tid)
+      if m.group(2):
+          call, args = pending.pop(tid, (m.group(2), ""))
+          rest = m.group(3)
+      else:
+          call, rest = m.group(4), m.group(5)
+          if rest.endswith("<unfinished ...>"):
+              pending[tid] = (call, rest[: -len("<unfinished ...>")].rstrip())
+              continue
+          args = rest
+      found = RESULT.search(rest)
+      record(tid, call, args if m.group(4) else args + rest, int(found.group(1)) if found else None)
 
 for c in sorted(calls):
     print(f"## {c}\n")

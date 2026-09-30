@@ -8,6 +8,7 @@ mod state;
 mod sys;
 
 pub use state::{VcpuState, VmState};
+pub use sys::IOCTLS;
 
 use std::fmt;
 use std::io;
