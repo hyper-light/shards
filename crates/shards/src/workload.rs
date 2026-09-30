@@ -201,11 +201,9 @@ impl Logger {
         if bytes.is_empty() {
             return;
         }
-        let record = log_record(stream, bytes);
-        if self.logged > 0
-            && self.logged + record.len() as u64 > self.retention.size
-            && self.rotate().is_err()
-        {
+        let head = log_head(stream, bytes);
+        let record_len = LOG_HEAD + bytes.len() as u64;
+        if self.logged > 0 && self.logged + record_len > self.retention.size && self.rotate().is_err() {
             // A log that cannot go on within its bound keeps nothing more.
             self.lost = self.lost.saturating_add(bytes.len() as u64);
             return;
@@ -217,12 +215,11 @@ impl Logger {
         if bytes.last() == Some(&b'\n') {
             entry |= INDEX_LINE;
         }
-        let kept = (&self.log)
-            .write_all(&record)
+        let kept = write_parts(&self.log, &mut [io::IoSlice::new(&head), io::IoSlice::new(bytes)])
             .and_then(|()| (&self.index).write_all(&entry.to_be_bytes()));
         match kept {
             Ok(()) => {
-                self.logged += record.len() as u64;
+                self.logged += record_len;
                 self.indexed += 8;
             }
             Err(_) => {
@@ -392,30 +389,38 @@ fn relay(
     mut log: Option<&mut Logger>,
     started: Option<&(dyn Fn() + Sync)>,
 ) -> Result<Ended, String> {
-    let mut payload = Vec::new();
+    // Grown to the longest frame yet, at most MAX_PAYLOAD, and never shrunk: a frame
+    // longer than any before zeroes only its new bytes before they are read over (audit
+    // D08).
+    let mut frame = Vec::new();
     let mut not_run = None;
     loop {
         let mut h = [0u8; run::HEADER];
         conn.read_exact(&mut h)
             .map_err(|e| format!("the guest stopped before the command ended: {e}"))?;
         let (which, len) = run::parse_header(h).ok_or("the guest sent a malformed frame")?;
-        payload.resize(len as usize, 0);
-        conn.read_exact(&mut payload)
+        let len = len as usize;
+        if frame.len() < len {
+            frame.resize(len, 0);
+        }
+        let payload = frame.get_mut(..len).ok_or("a frame past its buffer")?;
+        conn.read_exact(payload)
             .map_err(|e| format!("the guest stopped mid-frame: {e}"))?;
+        let payload = &*payload;
         match which {
             kind::STDOUT => {
                 let mut out = io::stdout().lock();
                 // A closed stdout drops output, as a closed pipe does for `docker run`.
-                let _ = out.write_all(&payload).and_then(|()| out.flush());
+                let _ = out.write_all(payload).and_then(|()| out.flush());
                 if let Some(log) = log.as_deref_mut() {
-                    log.keep(LOG_STDOUT, &payload);
+                    log.keep(LOG_STDOUT, payload);
                 }
             }
             kind::STDERR => {
                 let mut err = io::stderr().lock();
-                let _ = err.write_all(&payload).and_then(|()| err.flush());
+                let _ = err.write_all(payload).and_then(|()| err.flush());
                 if let Some(log) = log.as_deref_mut() {
-                    log.keep(LOG_STDERR, &payload);
+                    log.keep(LOG_STDERR, payload);
                 }
             }
             kind::STARTED => {
@@ -423,13 +428,10 @@ fn relay(
                     started();
                 }
             }
-            kind::SYSTEM_ERR => not_run = Some(String::from_utf8_lossy(&payload).into_owned()),
+            kind::SYSTEM_ERR => not_run = Some(String::from_utf8_lossy(payload).into_owned()),
             kind::EXIT => {
                 let _ = timing.answered_us.set(shards_vmm::log::uptime_us());
-                let status: [u8; 4] = payload
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| "malformed exit status")?;
+                let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;
                 return Ok(Ended {
                     status: u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX),
                     not_run,
@@ -441,17 +443,28 @@ fn relay(
     }
 }
 
-/// One log record for `bytes` on `stream`, stamped now.
+/// The head of a log record for `bytes` on `stream`, stamped now: its bytes follow it.
 #[cfg(unix)]
-fn log_record(stream: u8, bytes: &[u8]) -> Vec<u8> {
-    let at = u64::try_from(now()).unwrap_or(u64::MAX);
-    let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
-    let mut record = Vec::with_capacity(LOG_HEAD as usize + bytes.len());
-    record.push(stream);
-    record.extend_from_slice(&at.to_be_bytes());
-    record.extend_from_slice(&len.to_be_bytes());
-    record.extend_from_slice(bytes);
-    record
+fn log_head(stream: u8, bytes: &[u8]) -> [u8; LOG_HEAD as usize] {
+    let [t0, t1, t2, t3, t4, t5, t6, t7] = u64::try_from(now()).unwrap_or(u64::MAX).to_be_bytes();
+    let [l0, l1, l2, l3] = u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_be_bytes();
+    [stream, t0, t1, t2, t3, t4, t5, t6, t7, l0, l1, l2, l3]
+}
+
+/// Writes `parts` in order with as few writes as they take, a short or interrupted one
+/// going on from where it stopped: a log record's head and bytes, without copying the
+/// bytes after their head (audit D08).
+#[cfg(unix)]
+fn write_parts(mut w: impl Write, mut rest: &mut [io::IoSlice<'_>]) -> io::Result<()> {
+    while !rest.is_empty() {
+        match w.write_vectored(rest) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => io::IoSlice::advance_slices(&mut rest, n),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -718,5 +731,54 @@ mod tests {
         assert_eq!(fs::read(dir.join("log.11")).unwrap().len(), 73);
         assert!(!dir.join("log.8.idx").exists() && !dir.join("log.8").exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Takes at most five bytes a call, and is interrupted every third.
+    struct Grudging {
+        got: Vec<u8>,
+        calls: usize,
+    }
+
+    impl Write for Grudging {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.write_vectored(&[io::IoSlice::new(buf)])
+        }
+
+        fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+            self.calls += 1;
+            if self.calls.is_multiple_of(3) {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            let mut n = 0;
+            for b in bufs {
+                let take = b.len().min(5 - n);
+                self.got.extend_from_slice(&b[..take]);
+                n += take;
+                if n == 5 {
+                    break;
+                }
+            }
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A record's head and bytes go out whole and in order through short and interrupted
+    /// writes, with its length in its head.
+    #[test]
+    fn records_are_written_whole_through_short_writes() {
+        let bytes = b"one line of output\n";
+        let head = log_head(LOG_STDERR, bytes);
+        assert_eq!(head[0], LOG_STDERR);
+        assert_eq!(head[9..], (bytes.len() as u32).to_be_bytes());
+        let mut w = Grudging {
+            got: Vec::new(),
+            calls: 0,
+        };
+        write_parts(&mut w, &mut [io::IoSlice::new(&head), io::IoSlice::new(bytes)]).unwrap();
+        assert_eq!(w.got, [&head[..], bytes].concat());
     }
 }

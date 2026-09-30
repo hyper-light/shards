@@ -340,11 +340,14 @@ fn command_stdin(interactive: bool, mut proxy: Option<EscapeProxy>) -> Result<Ow
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                     Err(_) => return,
                 };
-                let typed = match proxy.as_mut() {
-                    Some(proxy) => proxy.read(read),
-                    None => Typed::Input(read.to_vec()),
+                // Without a proxy, what was read goes on as it is, uncopied (audit D08).
+                let Some(proxy) = proxy.as_mut() else {
+                    if writer.write_all(read).is_err() {
+                        return;
+                    }
+                    continue;
                 };
-                let (input, detached) = match typed {
+                let (input, detached) = match proxy.read(read) {
                     Typed::Input(input) => (input, false),
                     Typed::Detach(before) => (before, true),
                 };
