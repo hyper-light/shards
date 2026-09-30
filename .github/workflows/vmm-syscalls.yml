@@ -27,3 +27,24 @@ jobs:
       - run: sudo apt-get install -y strace
       - run: sudo chmod 666 /dev/kvm
       - run: docs/research/measurements/vmm-syscalls/collect.sh target/vmm-syscalls
+
+  # musl's C library makes some calls glibc does not (open(2) for open(), TIOCGWINSZ for
+  # isatty()): the same collection, in the Alpine image CI's musl jobs build in.
+  collect-musl:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      MUSL_IMAGE: rust:1.98.0-alpine@sha256:a10e64dd139b7387337c7fbe8aca31b959b57b2fd4c8ae20a02cf1d6ea424dce
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: sudo chmod 666 /dev/kvm
+      - name: Collect, in Alpine
+        run: |
+          # strace needs ptrace inside the container.
+          docker run --rm --device /dev/kvm --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
+            -v "$PWD:/work" -w /work \
+            -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
+            "$MUSL_IMAGE" sh -eu -c '
+              apk add --no-cache build-base strace python3
+              docs/research/measurements/vmm-syscalls/collect.sh target/vmm-syscalls
+            '
