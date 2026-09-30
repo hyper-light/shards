@@ -49,12 +49,28 @@ const RESTORE_USAGE: &str = "usage: shards vm restore DIR [--hold] [--vsock PATH
           of the client it is for, from the daemon on the Unix socket at descriptor FD.
   Console escape: Ctrl-A x stops the VM.";
 
-/// Arguments as UTF-8 strings, with an error naming the first one that is not.
-fn utf8(args: impl Iterator<Item = OsString>) -> impl Iterator<Item = Result<String, String>> {
-    args.map(|a| {
-        a.into_string()
-            .map_err(|a| format!("argument {a:?} is not valid UTF-8"))
-    })
+/// An argument that is text, with an error naming it if it is not UTF-8. Paths are taken
+/// as the OS gives them: a home's may be any bytes on Linux.
+fn text(arg: OsString) -> Result<String, String> {
+    arg.into_string()
+        .map_err(|a| format!("argument {a:?} is not valid UTF-8"))
+}
+
+/// A `--disk` value: its path, and whether it ends in `:ro`.
+fn disk(spec: OsString) -> Disk {
+    let bytes = spec.as_encoded_bytes();
+    match bytes.strip_suffix(b":ro") {
+        Some(path) => Disk {
+            // SAFETY: split just before `:ro`, a non-empty UTF-8 substring, which
+            // `OsStr::from_encoded_bytes_unchecked` documents as a valid boundary.
+            path: PathBuf::from(unsafe { std::ffi::OsStr::from_encoded_bytes_unchecked(path) }),
+            read_only: true,
+        },
+        None => Disk {
+            path: PathBuf::from(spec),
+            read_only: false,
+        },
+    }
 }
 
 /// Options `run` and `restore` share.
@@ -84,24 +100,24 @@ impl Common {
     fn option(
         &mut self,
         arg: &str,
-        value: &mut dyn FnMut(&str) -> Result<String, String>,
+        value: &mut dyn FnMut(&str) -> Result<OsString, String>,
     ) -> Result<bool, String> {
         let w = &mut self.workload;
         match arg {
             "--no-console" => self.console = Console::Discard,
             "--snapshot-dir" => self.snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
             "--snapshot-then" => {
-                self.then = match value("--snapshot-then")?.as_str() {
+                self.then = match text(value("--snapshot-then")?)?.as_str() {
                     "stop" => AfterSnapshot::Stop,
                     "resume" => AfterSnapshot::Resume,
                     other => return Err(format!("--snapshot-then: {other:?} is not stop or resume")),
                 }
             }
             "--vsock" => self.vsock = Some(PathBuf::from(value("--vsock")?)),
-            "-e" | "--env" => w.env.push(value("--env")?),
-            "-w" | "--workdir" => w.workdir = value("--workdir")?,
-            "-u" | "--user" => w.user = value("--user")?,
-            "--hostname" => w.hostname = Some(value("--hostname")?),
+            "-e" | "--env" => w.env.push(text(value("--env")?)?),
+            "-w" | "--workdir" => w.workdir = text(value("--workdir")?)?,
+            "-u" | "--user" => w.user = text(value("--user")?)?,
+            "--hostname" => w.hostname = Some(text(value("--hostname")?)?),
             "-i" | "--interactive" => w.interactive = true,
             _ => return Ok(false),
         }
@@ -150,13 +166,13 @@ struct Run {
 }
 
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
-    let mut args = utf8(args);
+    let mut args = args;
     let mut rootfs = None;
     let mut cfg = Config::new(PathBuf::new(), None);
     let (mut kernel, mut common, mut warm) = (None, Common::new(), None);
     while let Some(arg) = args.next() {
-        let arg = arg?;
-        let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"))?;
+        let arg = text(arg)?;
+        let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         if common.option(&arg, &mut value)? {
             continue;
         }
@@ -164,33 +180,29 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             "--kernel" => kernel = Some(PathBuf::from(value("--kernel")?)),
             "--initrd" => cfg.initrd = Some(PathBuf::from(value("--initrd")?)),
             "--init" => cfg.init = Some(PathBuf::from(value("--init")?)),
-            "--cmdline" => cfg.cmdline = value("--cmdline")?,
-            "--cpus" => cfg.vcpus = value("--cpus")?.parse().map_err(|e| format!("--cpus: {e}"))?,
+            "--cmdline" => cfg.cmdline = text(value("--cmdline")?)?,
+            "--cpus" => {
+                cfg.vcpus = text(value("--cpus")?)?
+                    .parse()
+                    .map_err(|e| format!("--cpus: {e}"))?
+            }
             "--memory" => {
-                cfg.memory_mib = value("--memory")?.parse().map_err(|e| format!("--memory: {e}"))?
+                cfg.memory_mib = text(value("--memory")?)?
+                    .parse()
+                    .map_err(|e| format!("--memory: {e}"))?
             }
-            "--disk" => {
-                let spec = value("--disk")?;
-                let (path, read_only) = match spec.strip_suffix(":ro") {
-                    Some(path) => (path, true),
-                    None => (spec.as_str(), false),
-                };
-                cfg.disks.push(Disk {
-                    path: PathBuf::from(path),
-                    read_only,
-                });
-            }
+            "--disk" => cfg.disks.push(disk(value("--disk")?)),
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
             "--warm" => {
-                let fd = value("--warm")?;
+                let fd = text(value("--warm")?)?;
                 warm = Some(
                     fd.parse::<i32>()
                         .map_err(|_| format!("--warm: {fd:?} is not a descriptor"))?,
                 );
             }
             "--" => {
-                common.workload.argv = args.by_ref().collect::<Result<_, _>>()?;
+                common.workload.argv = args.by_ref().map(text).collect::<Result<_, _>>()?;
                 break;
             }
             "-h" | "--help" => return Err(String::new()),
@@ -244,31 +256,38 @@ struct Restore {
 }
 
 fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String> {
-    let mut args = utf8(args);
+    let mut args = args;
     let (mut dir, mut common, mut hold, mut warm) = (None, Common::new(), false, None);
     while let Some(arg) = args.next() {
-        let arg = arg?;
-        let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"))?;
-        if common.option(&arg, &mut value)? {
+        // The snapshot directory is a path, in whatever bytes; every option is text.
+        let Some(flag) = arg.to_str().map(str::to_owned) else {
+            if dir.is_some() {
+                return Err(format!("unexpected argument {arg:?}"));
+            }
+            dir = Some(PathBuf::from(arg));
+            continue;
+        };
+        let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
+        if common.option(&flag, &mut value)? {
             continue;
         }
-        match arg.as_str() {
+        match flag.as_str() {
             "-h" | "--help" => return Err(String::new()),
             "--hold" => hold = true,
             "--warm" => {
-                let fd = value("--warm")?;
+                let fd = text(value("--warm")?)?;
                 warm = Some(
                     fd.parse::<i32>()
                         .map_err(|_| format!("--warm: {fd:?} is not a descriptor"))?,
                 );
             }
             "--" => {
-                common.workload.argv = args.by_ref().collect::<Result<_, _>>()?;
+                common.workload.argv = args.by_ref().map(text).collect::<Result<_, _>>()?;
                 break;
             }
             flag if flag.starts_with('-') => return Err(format!("unknown argument {flag:?}")),
-            _ if dir.is_some() => return Err(format!("unexpected argument {arg:?}")),
-            _ => dir = Some(PathBuf::from(arg)),
+            _ if dir.is_some() => return Err(format!("unexpected argument {flag:?}")),
+            _ => dir = Some(PathBuf::from(flag)),
         }
     }
     common.check_workload()?;
@@ -854,5 +873,72 @@ fn supervise(started: Result<(Handle, Running), String>, console: Console, templ
             report(e);
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    fn args(list: &[&[u8]]) -> impl Iterator<Item = OsString> {
+        list.iter()
+            .map(|a| std::ffi::OsStr::from_bytes(a).to_os_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    /// Paths reach a VM in whatever bytes the OS gave them, as a home on Linux may be
+    /// named: the daemon passes its templates' and images' paths under it. Options that
+    /// are text must be UTF-8.
+    #[test]
+    fn paths_are_taken_in_any_bytes() {
+        let run = parse_run(args(&[
+            b"--kernel",
+            b"/h\xff/k",
+            b"--init",
+            b"/h\xff/i",
+            b"--disk",
+            b"/h\xff/d:ro",
+            b"--disk",
+            b"/h\xff/e",
+            b"--rootfs",
+            b"/h\xff/r",
+            b"--snapshot-dir",
+            b"/h\xff/t",
+            b"--warm",
+            b"3",
+        ]))
+        .unwrap();
+        let bytes = |p: &std::path::Path| p.as_os_str().as_bytes().to_vec();
+        assert_eq!(bytes(&run.cfg.kernel), b"/h\xff/k");
+        assert_eq!(bytes(run.cfg.init.as_deref().unwrap()), b"/h\xff/i");
+        let disks: Vec<(Vec<u8>, bool)> = run
+            .cfg
+            .disks
+            .iter()
+            .map(|d| (bytes(&d.path), d.read_only))
+            .collect();
+        assert_eq!(
+            disks,
+            [(b"/h\xff/d".to_vec(), true), (b"/h\xff/e".to_vec(), false)]
+        );
+        assert_eq!(bytes(&run.cfg.snapshot.unwrap().dir), b"/h\xff/t");
+        let Mode::Warm { rootfs, fd: 3 } = run.mode else {
+            panic!("not a warm VM");
+        };
+        assert_eq!(bytes(&rootfs), b"/h\xff/r");
+
+        let restore = parse_restore(args(&[b"/h\xff/t", b"--vsock", b"/h\xff/v"])).unwrap();
+        assert_eq!(bytes(&restore.cfg.dir), b"/h\xff/t");
+        assert_eq!(bytes(restore.cfg.vsock.as_deref().unwrap()), b"/h\xff/v");
+
+        let e = parse_run(args(&[b"--kernel", b"/k", b"--cpus", b"\xff"]))
+            .err()
+            .unwrap();
+        assert!(e.contains("not valid UTF-8"), "{e}");
+        let e = parse_restore(args(&[b"/t", b"/\xff"])).err().unwrap();
+        assert!(e.contains("unexpected argument"), "{e}");
     }
 }
