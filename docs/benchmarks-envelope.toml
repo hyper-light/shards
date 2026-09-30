@@ -1,0 +1,5 @@
+# Where shards may, for now, be worse than Firecracker in the comparison CI runs
+# (scripts/bench-envelope): each allowance names the metric as bench/metric, why, and the
+# date it lapses, after which the check fails until the gap is closed or the allowance
+# decided again.
+allow = []

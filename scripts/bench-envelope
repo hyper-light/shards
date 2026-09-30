@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""The Firecracker comparison's acceptance envelope: shards no worse than Firecracker on
+any measured axis, under the same guest and the same host (docs/audit/2026-09-29_audit.md,
+"a Pareto improvement").
+
+Reads the raw samples the benchmarks write where SHARDS_BENCH_SAMPLES says
+(benches/support, `report`). Each `shards_X` row pairs with `fc_X` by index: the two VMMs
+ran interleaved, alternating which went first, so each pair saw the same host. For each
+metric, the median of the paired differences (shards minus Firecracker) with a bootstrap
+95% interval, 10,000 resamples, seeded: shards is worse when the whole interval is above
+zero, better when it is below, and tied otherwise. Every metric is lower-is-better.
+
+A metric shards is worse on fails the check unless docs/benchmarks-envelope.toml allows
+it: each allowance names the metric (`bench/metric`), why, and the date it lapses.
+
+Python 3.11 or later (tomllib).
+
+    scripts/bench-envelope SAMPLES_DIR [ENVELOPE_TOML]
+"""
+import datetime, glob, json, os, random, statistics, sys, tomllib
+
+samples_dir = sys.argv[1]
+envelope = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "docs", "benchmarks-envelope.toml")
+with open(envelope, "rb") as f:
+    allowances = tomllib.load(f).get("allow", [])
+today = datetime.date.today()
+allowed = {}
+failed = False
+for a in allowances:
+    expires = a.get("expires")
+    if not isinstance(expires, datetime.date) or not a.get("reason") or not a.get("metric"):
+        print(f"{envelope}: an allowance names its metric, reason and expiry date: {a}")
+        failed = True
+    elif expires < today:
+        print(f"{envelope}: the allowance for {a['metric']} lapsed on {expires}")
+        failed = True
+    else:
+        allowed[a["metric"]] = a["reason"]
+
+
+def interval(diffs, rng):
+    medians = sorted(statistics.median(rng.choices(diffs, k=len(diffs))) for _ in range(10_000))
+    return medians[249], medians[9_749]
+
+
+rng = random.Random(20260929)
+files = sorted(glob.glob(os.path.join(samples_dir, "*.json")))
+if not files:
+    print(f"{samples_dir}: no samples")
+    sys.exit(1)
+for path in files:
+    with open(path) as f:
+        report = json.load(f)
+    bench, rows = report["bench"], report["samples"]
+    print(f"{bench} ({report['revision']}, {report['host']}, load {report['load']})")
+    for name in sorted(rows):
+        if not name.startswith("shards_") or "fc_" + name[len("shards_"):] not in rows:
+            continue
+        metric = name[len("shards_"):]
+        ours, theirs = rows[name]["values"], rows["fc_" + metric]["values"]
+        if len(ours) != len(theirs) or not ours:
+            print(f"  {metric}: {len(ours)} samples against {len(theirs)}: not paired")
+            failed = True
+            continue
+        diffs = [a - b for a, b in zip(ours, theirs)]
+        low, high = interval(diffs, rng)
+        verdict = "worse" if low > 0 else "better" if high < 0 else "tied"
+        unit = rows[name]["unit"]
+        line = (f"  {metric:<10} shards {statistics.median(ours):.1f} {unit}, Firecracker "
+                f"{statistics.median(theirs):.1f} {unit}: median difference "
+                f"{statistics.median(diffs):+.1f} [{low:+.1f}, {high:+.1f}], {verdict}")
+        key = f"{bench}/{metric}"
+        if verdict == "worse":
+            if key in allowed:
+                line += f" (allowed: {allowed[key]})"
+            else:
+                line += " (outside the envelope)"
+                failed = True
+        print(line)
+sys.exit(1 if failed else 0)

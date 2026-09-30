@@ -153,13 +153,33 @@ jobs:
         run: |
           nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
           grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag,hpage_pmd_size}
+      # Every sample, in the order taken, for the envelope and the artifact below.
       - name: Compare
+        env:
+          SHARDS_BENCH_SAMPLES: ${{ github.workspace }}/target/bench-samples
         run: cargo bench --locked -p shards --bench firecracker -- --runs 30
+      # shards no worse than Firecracker on any axis, pair by pair (scripts/bench-envelope,
+      # docs/benchmarks-envelope.toml).
+      - name: Envelope
+        run: scripts/bench-envelope target/bench-samples
       # shards' own restores and pooled runs on this KVM host (docs/benchmarks.md).
       - name: Restore
+        if: always()
+        env:
+          SHARDS_BENCH_SAMPLES: ${{ github.workspace }}/target/bench-samples
         run: cargo bench --locked -p shards --bench restore -- --runs 30
       - name: Image
+        if: always()
+        env:
+          SHARDS_BENCH_SAMPLES: ${{ github.workspace }}/target/bench-samples
         run: cargo bench --locked -p shards --bench image -- --runs 100 --templates 5
+      - name: Raw samples
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: bench-samples-${{ github.sha }}
+          path: target/bench-samples/
+          if-no-files-found: warn
 
   musl:
     name: ${{ matrix.target }}

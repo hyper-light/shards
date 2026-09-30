@@ -90,8 +90,17 @@ fn percentile(v: &[f64], p: f64) -> f64 {
     v[rank.min(v.len()) - 1]
 }
 
+/// Every row's samples, in the order they were taken, for [`report`] to write when
+/// `SHARDS_BENCH_SAMPLES` names a directory: runs interleaved with another VMM's pair up by
+/// their index.
+static SAMPLES: std::sync::Mutex<Vec<(String, String, Vec<f64>)>> = std::sync::Mutex::new(Vec::new());
+
 /// One result row: `(table line, JSON member)`.
 pub fn stats(name: &str, unit: &str, mut v: Vec<f64>) -> (String, String) {
+    SAMPLES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push((name.to_string(), unit.to_string(), v.clone()));
     v.sort_by(f64::total_cmp);
     let (p50, p90, p99, max) = (
         percentile(&v, 50.0),
@@ -202,6 +211,37 @@ pub fn report(bench: &str, params: &[(&str, String)], rows: &[(String, String)])
         json_params.join(","),
         json_rows.join(",")
     );
+    let samples = std::mem::take(&mut *SAMPLES.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    if let Some(dir) = std::env::var_os("SHARDS_BENCH_SAMPLES") {
+        let rows: Vec<String> = samples
+            .iter()
+            .map(|(name, unit, values)| {
+                let values: Vec<String> = values.iter().map(|v| format!("{v:.1}")).collect();
+                format!(
+                    "\"{name}\":{{\"unit\":\"{unit}\",\"values\":[{}]}}",
+                    values.join(",")
+                )
+            })
+            .collect();
+        let json = format!(
+            "{{\"bench\":\"{bench}\",{},\"host\":\"{host}\",\"os\":\"{os}\",\"revision\":\"{rev}\",\"load\":\"{load}\",\"samples\":{{{}}}}}\n",
+            json_params.join(","),
+            rows.join(",")
+        );
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // One file per report: a bench may report more than once (boots, then restores).
+        let mut n = 0;
+        let path = loop {
+            let path = dir.join(format!("{bench}-{n}.json"));
+            if !path.exists() {
+                break path;
+            }
+            n += 1;
+        };
+        std::fs::write(&path, json).unwrap();
+        println!("samples: {}", path.display());
+    }
 }
 
 /// Microsecond samples of one field of every run.
