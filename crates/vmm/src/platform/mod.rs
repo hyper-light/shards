@@ -18,6 +18,9 @@ pub use windows::*;
 #[cfg(target_os = "macos")]
 mod macos_thread;
 
+#[cfg(target_os = "linux")]
+pub mod seccomp;
+
 /// Applies the scheduling policy measured to give vCPUs precise timer wake-ups. Only
 /// macOS has a measured policy (docs/research/platform-measurements.md M8, M10); on other
 /// hosts this is a no-op until one is measured.
