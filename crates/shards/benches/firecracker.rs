@@ -16,7 +16,10 @@
 //!   starts from this harness's own peak: exec keeps the peak of the address space it
 //!   replaces, the spawner's under `posix_spawn` (fs/exec.c `exec_mmap`).
 //! - `rss_anon`, `rss_file`: the VMM's anonymous and file-backed resident memory at the
-//!   same moment, `RssAnon` and `RssFile` in /proc/PID/status. A restored guest's memory is
+//!   same moment, `RssAnon` and `RssFile` in /proc/PID/status.
+//! - `pss`, `pss_file`: its proportional set size then, all and file-backed, `Pss` and
+//!   `Pss_File` in /proc/PID/smaps_rollup: shared pages charged in proportion to their
+//!   sharers, what a fleet pays per VM. A restored guest's memory is
 //!   a private mapping of its snapshot file: the pages it only reads are the file's, in the
 //!   page cache every VM restored from that snapshot shares, and a page it writes becomes
 //!   an anonymous copy of its own.
@@ -104,6 +107,8 @@ mod compare {
         peak_rss_bytes: u64,
         rss_anon_bytes: u64,
         rss_file_bytes: u64,
+        pss_bytes: u64,
+        pss_file_bytes: u64,
     }
 
     pub fn main() {
@@ -179,6 +184,10 @@ mod compare {
                 support::stats("fc_rss_anon", "MiB", mib(&fc, |s| s.rss_anon_bytes)),
                 support::stats("shards_rss_file", "MiB", mib(&shards, |s| s.rss_file_bytes)),
                 support::stats("fc_rss_file", "MiB", mib(&fc, |s| s.rss_file_bytes)),
+                support::stats("shards_pss", "MiB", mib(&shards, |s| s.pss_bytes)),
+                support::stats("fc_pss", "MiB", mib(&fc, |s| s.pss_bytes)),
+                support::stats("shards_pss_file", "MiB", mib(&shards, |s| s.pss_file_bytes)),
+                support::stats("fc_pss_file", "MiB", mib(&fc, |s| s.pss_file_bytes)),
             ],
         );
         restores(&firecracker, kernel, &initrd, &cpus, &memory, runs);
@@ -311,6 +320,10 @@ mod compare {
                 support::stats("fc_rss_anon", "MiB", mib(&fc, |s| s.rss_anon_bytes)),
                 support::stats("shards_rss_file", "MiB", mib(&shards, |s| s.rss_file_bytes)),
                 support::stats("fc_rss_file", "MiB", mib(&fc, |s| s.rss_file_bytes)),
+                support::stats("shards_pss", "MiB", mib(&shards, |s| s.pss_bytes)),
+                support::stats("fc_pss", "MiB", mib(&fc, |s| s.pss_bytes)),
+                support::stats("shards_pss_file", "MiB", mib(&shards, |s| s.pss_file_bytes)),
+                support::stats("fc_pss_file", "MiB", mib(&fc, |s| s.pss_file_bytes)),
             ],
         );
     }
@@ -377,6 +390,11 @@ mod compare {
                 .unwrap_or(0)
         });
         let [peak, anon, file] = ["VmHWM", "RssAnon", "RssFile"].map(|field| status_bytes(pid, field));
+        let [pss, pss_file] = ["Pss", "Pss_File"].map(|field| rollup_bytes(pid, field));
+        describe_mappings(
+            pid,
+            &format!("{} restore", command.get_program().to_string_lossy()),
+        );
         // SAFETY: the child is not yet reaped, so `pid` still names it.
         unsafe { libc::kill(pid, libc::SIGKILL) };
         child.wait().unwrap();
@@ -393,6 +411,8 @@ mod compare {
             peak_rss_bytes: peak.expect("the VMM's VmHWM"),
             rss_anon_bytes: anon.expect("the VMM's RssAnon"),
             rss_file_bytes: file.expect("the VMM's RssFile"),
+            pss_bytes: pss.expect("the VMM's Pss"),
+            pss_file_bytes: pss_file.expect("the VMM's Pss_File"),
         }
     }
 
@@ -554,6 +574,8 @@ mod compare {
         });
         // The guest has idled through the readings: its peak so far is its peak.
         let [peak, anon, file] = ["VmHWM", "RssAnon", "RssFile"].map(|field| status_bytes(pid, field));
+        let [pss, pss_file] = ["Pss", "Pss_File"].map(|field| rollup_bytes(pid, field));
+        describe_mappings(pid, &format!("{} boot", command.get_program().to_string_lossy()));
         // SAFETY: the child is not yet reaped, so `pid` still names it.
         unsafe { libc::kill(pid, libc::SIGKILL) };
         let mut status = 0;
@@ -570,11 +592,29 @@ mod compare {
             peak_rss_bytes: peak.expect("the VMM's VmHWM"),
             rss_anon_bytes: anon.expect("the VMM's RssAnon"),
             rss_file_bytes: file.expect("the VMM's RssFile"),
+            pss_bytes: pss.expect("the VMM's Pss"),
+            pss_file_bytes: pss_file.expect("the VMM's Pss_File"),
         }
     }
 
     /// A size in `pid`'s /proc/PID/status (proc(5)): `VmHWM`, its peak resident set so
     /// far, or `RssAnon` and `RssFile`, its anonymous and file-backed resident memory now.
+    /// A field of /proc/PID/smaps_rollup, in bytes: `Pss` charges each shared page to the
+    /// processes that map it in proportion (proc(5)), so pages a VM shares through the page
+    /// cache with others restored from the same snapshot cost it its share of them, not all.
+    fn rollup_bytes(pid: libc::pid_t, field: &str) -> Option<u64> {
+        let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok()?;
+        let kib: u64 = rollup
+            .lines()
+            .find_map(|l| l.strip_prefix(field)?.strip_prefix(':'))?
+            .trim()
+            .strip_suffix("kB")?
+            .trim()
+            .parse()
+            .ok()?;
+        Some(kib * 1024)
+    }
+
     fn status_bytes(pid: libc::pid_t, field: &str) -> Option<u64> {
         let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
         let kib: u64 = status
@@ -591,6 +631,54 @@ mod compare {
     /// Resident bytes of `pid` outside guest memory, by Firecracker's rule
     /// (tests/host_tools/memory.py, `MemoryMonitor`): sum `Rss` over every mapping except
     /// those sized like guest memory.
+    /// Once per VMM and phase: each mapping's resident bytes at the reading, the largest
+    /// first, by what backs it, on stderr. What the totals are made of.
+    fn describe_mappings(pid: libc::pid_t, vmm: &str) {
+        static SHOWN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let key = vmm.to_string();
+        {
+            let mut shown = SHOWN.lock().unwrap();
+            if shown.contains(&key) {
+                return;
+            }
+            shown.push(key);
+        }
+        let smaps = std::fs::read_to_string(format!("/proc/{pid}/smaps")).unwrap_or_default();
+        let mut rows: Vec<(String, u64, u64, u64)> = Vec::new();
+        let (mut name, mut size) = (String::new(), 0);
+        for line in smaps.lines() {
+            let mut fields = line.split_whitespace();
+            let Some(first) = fields.next() else { continue };
+            if let Some((start, end)) = first.split_once('-')
+                && let (Ok(start), Ok(end)) = (u64::from_str_radix(start, 16), u64::from_str_radix(end, 16))
+            {
+                size = end - start;
+                name = line
+                    .split_whitespace()
+                    .nth(5)
+                    .unwrap_or("[anonymous]")
+                    .to_string();
+            } else if first == "Rss:" {
+                let kib: u64 = fields.next().unwrap().parse().unwrap();
+                rows.push((name.clone(), size, kib * 1024, 0));
+            } else if first == "Anonymous:" {
+                let kib: u64 = fields.next().unwrap().parse().unwrap();
+                if let Some(last) = rows.last_mut() {
+                    last.3 = kib * 1024;
+                }
+            }
+        }
+        rows.sort_by_key(|r| std::cmp::Reverse(r.2));
+        let mut out = format!("{vmm} (pid {pid}) mappings by resident bytes:\n");
+        for (name, size, rss, anon) in rows.iter().take(12) {
+            out.push_str(&format!(
+                "  rss {:>9} anon {:>9} size {:>11}  {name}\n",
+                rss, anon, size
+            ));
+        }
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), out.as_bytes());
+    }
+
     fn overhead_bytes(pid: libc::pid_t, guest_bytes: u64) -> u64 {
         let smaps = std::fs::read_to_string(format!("/proc/{pid}/smaps"))
             .unwrap_or_else(|e| panic!("reading /proc/{pid}/smaps: {e}"));

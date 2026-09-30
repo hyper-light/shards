@@ -2,4 +2,23 @@
 # (scripts/bench-envelope): each allowance names the metric as bench/metric, why, and the
 # date it lapses, after which the check fails until the gap is closed or the allowance
 # decided again.
-allow = []
+
+[[allow]]
+metric = "firecracker/peak_rss"
+reason = "0.4 MiB above Firecracker at boot (398e540); its file-backed part, below, is being traced by mapping"
+expires = 2026-10-31
+
+[[allow]]
+metric = "firecracker/rss_file"
+reason = "0.5 MiB more file-backed memory at boot (398e540): shards-vm's resident binary, traced by mapping"
+expires = 2026-10-31
+
+[[allow]]
+metric = "firecracker_restore/peak_rss"
+reason = "4.6 MiB above Firecracker after a restore (398e540), all of it file-backed: shards' private memory is 4.3 MiB below; traced by mapping"
+expires = 2026-10-31
+
+[[allow]]
+metric = "firecracker_restore/rss_file"
+reason = "8.9 MiB more file-backed pages after a restore (398e540), with 4.3 MiB less anonymous memory; traced by mapping"
+expires = 2026-10-31
