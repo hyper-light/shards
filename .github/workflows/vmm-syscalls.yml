@@ -45,6 +45,6 @@ jobs:
             -v "$PWD:/work" -w /work \
             -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             "$MUSL_IMAGE" sh -eu -c '
-              apk add --no-cache build-base strace python3
+              apk add --no-cache build-base curl strace python3
               docs/research/measurements/vmm-syscalls/collect.sh target/vmm-syscalls
             '
