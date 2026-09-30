@@ -304,8 +304,13 @@ impl Vm {
                 })
                 .collect();
         fd.set_cpuid(&leaves).map_err(call("KVM_SET_CPUID2"))?;
-        // SAFETY: pthread_self has no preconditions.
-        let thread = Arc::new(Mutex::new(Some(Thread(unsafe { libc::pthread_self() }))));
+        // This vCPU's thread: it creates, runs and drops the vCPU.
+        let thread = Arc::new(Mutex::new(Some(Thread {
+            // SAFETY: getpid(2) and gettid(2) have no preconditions.
+            tgid: unsafe { libc::getpid() },
+            // SAFETY: as above.
+            tid: unsafe { libc::gettid() },
+        })));
         Ok(Vcpu {
             kicker: Kicker {
                 run: fd.run.clone(),
@@ -741,15 +746,12 @@ impl Drop for Vcpu {
     }
 }
 
-/// A thread handle. `pthread_t` is an opaque id meant for use from other threads (it is
-/// a pointer on musl, an integer on glibc).
+/// A thread, as tgkill(2) names it: its process and its own ID.
 #[derive(Debug, Clone, Copy)]
-struct Thread(libc::pthread_t);
-
-// SAFETY: a pthread_t names a thread; pthread_kill may be called with it from any thread.
-unsafe impl Send for Thread {}
-// SAFETY: as above.
-unsafe impl Sync for Thread {}
+struct Thread {
+    tgid: libc::pid_t,
+    tid: libc::pid_t,
+}
 
 /// Interrupts a vCPU's `run` from any thread (research doc §1.6): `immediate_exit`
 /// covers a vCPU about to enter the guest, the signal one inside it.
@@ -762,10 +764,13 @@ pub struct Kicker {
 impl Kicker {
     pub fn kick(&self) {
         let thread = lock(&self.thread);
-        if let Some(Thread(t)) = *thread {
+        if let Some(Thread { tgid, tid }) = *thread {
             self.run.immediate_exit().store(1, Ordering::SeqCst);
-            // SAFETY: `t` runs this vCPU until the Vcpu drops, which waits for this lock.
-            unsafe { libc::pthread_kill(t, libc::SIGRTMIN()) };
+            // tgkill(2) itself: musl's pthread_kill is tkill(2), which the VM process's
+            // seccomp filter refuses, as it refuses a tgkill of any process but its own.
+            // SAFETY: `tid` runs this vCPU until the Vcpu drops, which waits for this lock;
+            // `tgid` keeps a reused ID in another process from being signalled.
+            unsafe { libc::syscall(libc::SYS_tgkill, tgid, tid, libc::SIGRTMIN()) };
         }
     }
 }

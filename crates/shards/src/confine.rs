@@ -79,7 +79,6 @@ pub fn confine() -> Result<(), String> {
         libc::SYS_arch_prctl,
         libc::SYS_exit,
         libc::SYS_exit_group,
-        libc::SYS_tgkill,
         libc::SYS_poll,
         libc::SYS_ppoll,
         libc::SYS_pipe2,
@@ -116,6 +115,10 @@ pub fn confine() -> Result<(), String> {
         libc::F_SETFL,
     ];
     rules.push(Rule::with(libc::SYS_fcntl, 1, &commands.map(|c| c as u32)));
+    // Signals to this process's own threads alone: a vCPU's kick, and glibc's raise(3).
+    // SAFETY: getpid(2) has no preconditions.
+    let pid = unsafe { libc::getpid() };
+    rules.push(Rule::with(libc::SYS_tgkill, 0, &[pid as u32]));
     rules.push(Rule::with(libc::SYS_socket, 0, &[libc::AF_UNIX as u32]));
     rules.push(Rule::with(libc::SYS_socketpair, 0, &[libc::AF_UNIX as u32]));
     rules.push(Rule::with(
