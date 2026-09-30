@@ -7,13 +7,12 @@
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle, Thread};
 
-use super::queue::{Chain, Descriptor, Queue, with};
+use super::queue::{Chain, Descriptor, Queue};
+use super::worker::Worker;
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
 use crate::memory::{Access, GuestMemory};
-use crate::{debug, platform, warn};
+use crate::{debug, platform};
 
 pub const DEVICE_ID: u32 = 2;
 const SECTOR: u64 = 512;
@@ -47,12 +46,6 @@ struct Backend {
 
 /// The worker thread returns its queue when stopped, or nothing if a malformed ring
 /// failed the device.
-struct Worker {
-    thread: JoinHandle<Option<Queue>>,
-    waker: Thread,
-    stop: Arc<AtomicBool>,
-}
-
 pub struct Block {
     backend: Arc<Backend>,
     /// What a worker needs besides its queue, from activation until reset.
@@ -110,30 +103,15 @@ impl Block {
             .context
             .clone()
             .ok_or("virtio-blk started before activation")?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let backend = self.backend.clone();
-        let stop_flag = stop.clone();
-        let thread = thread::Builder::new()
-            .name("virtio-blk".into())
-            .spawn(move || serve(queue, &memory, &interrupt, &backend, &stop_flag))
-            .map_err(|e| format!("spawning virtio-blk worker: {e}"))?;
-        let waker = thread.thread().clone();
-        self.worker = Some(Worker { thread, waker, stop });
+        let (backend, mem) = (self.backend.clone(), memory.clone());
+        let answer = move |chain: &Chain| handle(chain, &mem, &backend);
+        self.worker = Some(Worker::start("virtio-blk", queue, memory, interrupt, answer)?);
         Ok(())
     }
 
     /// Stops the worker after the request it is executing; returns its queue.
     fn stop(&mut self) -> Option<Queue> {
-        let w = self.worker.take()?;
-        w.stop.store(true, Ordering::Release);
-        w.waker.unpark();
-        match w.thread.join() {
-            Ok(queue) => queue,
-            Err(_) => {
-                warn!("virtio-blk worker ended abnormally");
-                None
-            }
-        }
+        self.worker.take()?.stop()
     }
 }
 
@@ -190,7 +168,7 @@ impl VirtioDevice for Block {
 
     fn notify(&self, _queue: u16) {
         if let Some(w) = &self.worker {
-            w.waker.unpark();
+            w.notify();
         }
     }
 
@@ -200,8 +178,8 @@ impl VirtioDevice for Block {
         self.context = None;
     }
 
-    /// With vCPUs stopped the available ring holds still, so the worker's current
-    /// drain finishes and the queue comes back consistent with guest memory.
+    /// The worker stops after the request it is answering. Whatever the driver published
+    /// and it did not answer stays in the ring, for the worker that resumes.
     fn pause(&mut self) -> Vec<super::QueueState> {
         if let Some(queue) = self.stop() {
             self.paused = Some(queue);
@@ -221,50 +199,6 @@ impl VirtioDevice for Block {
 impl Drop for Block {
     fn drop(&mut self) {
         self.reset();
-    }
-}
-
-/// Drains the queue whenever notified, until stopped. A malformed ring marks the device
-/// as needing reset and stops processing (virtio 1.3 §2.1.2).
-fn serve(
-    mut queue: Queue,
-    mem: &GuestMemory,
-    irq: &DeviceInterrupt,
-    backend: &Backend,
-    stop: &AtomicBool,
-) -> Option<Queue> {
-    while !stop.load(Ordering::Acquire) {
-        if let Err(e) = drain(&mut queue, mem, irq, backend) {
-            warn!("virtio-blk: {e}; device needs reset");
-            irq.fail();
-            return None;
-        }
-        thread::park();
-    }
-    Some(queue)
-}
-
-fn drain(
-    queue: &mut Queue,
-    mem: &GuestMemory,
-    irq: &DeviceInterrupt,
-    backend: &Backend,
-) -> Result<(), String> {
-    let e = |e: super::queue::QueueError| e.to_string();
-    loop {
-        with(mem, |a| queue.disable_notification(a)).map_err(e)?;
-        let mut completed = false;
-        while let Some(chain) = with(mem, |a| queue.pop(a)).map_err(e)? {
-            let written = handle(&chain, mem, backend);
-            with(mem, |a| queue.add_used(a, chain.head, written)).map_err(e)?;
-            completed = true;
-        }
-        if completed && with(mem, |a| queue.needs_interrupt(a)).map_err(e)? {
-            irq.used_buffer();
-        }
-        if !with(mem, |a| queue.enable_notification(a)).map_err(e)? {
-            return Ok(());
-        }
     }
 }
 

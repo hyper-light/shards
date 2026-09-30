@@ -8,13 +8,13 @@
 use std::fs::File;
 use std::path::Path;
 use std::ptr::NonNull;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use super::queue::{Chain, Queue, QueueError, with};
+use super::queue::{Chain, Queue};
+use super::worker::Worker;
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
 use crate::memory::{Access, GuestMemory};
-use crate::sync::lock;
-use crate::{platform, warn};
+use crate::platform;
 
 pub const DEVICE_ID: u32 = 27;
 const QUEUE_SIZE: u16 = 64;
@@ -96,17 +96,15 @@ impl Drop for Region {
     }
 }
 
-struct Active {
-    queue: Queue,
-    memory: Arc<GuestMemory>,
-    interrupt: Arc<DeviceInterrupt>,
-}
-
 pub struct Pmem {
     region: Arc<Region>,
     /// Where the guest sees the region.
     gpa: u64,
-    active: Mutex<Option<Active>>,
+    /// What a worker needs besides its queue, from activation until reset.
+    context: Option<(Arc<GuestMemory>, Arc<DeviceInterrupt>)>,
+    worker: Option<Worker>,
+    /// The queue while paused.
+    paused: Option<Queue>,
 }
 
 impl std::fmt::Debug for Pmem {
@@ -124,8 +122,26 @@ impl Pmem {
         Pmem {
             region,
             gpa,
-            active: Mutex::new(None),
+            context: None,
+            worker: None,
+            paused: None,
         }
+    }
+
+    fn start(&mut self, queue: Queue) -> Result<(), String> {
+        let (memory, interrupt) = self
+            .context
+            .clone()
+            .ok_or("virtio-pmem started before activation")?;
+        let mem = memory.clone();
+        let answering = move |chain: &Chain| mem.access().map_or(0, |a| answer(chain, &a));
+        self.worker = Some(Worker::start("virtio-pmem", queue, memory, interrupt, answering)?);
+        Ok(())
+    }
+
+    /// Stops the worker after the request it is answering; returns its queue.
+    fn stop(&mut self) -> Option<Queue> {
+        self.worker.take()?.stop()
     }
 }
 
@@ -168,58 +184,46 @@ impl VirtioDevice for Pmem {
             ..
         } = activation;
         let queue = queues.pop().ok_or("virtio-pmem activated without a queue")?;
-        *lock(&self.active) = Some(Active {
-            queue,
-            memory,
-            interrupt,
-        });
-        Ok(())
+        self.context = Some((memory, interrupt));
+        self.start(queue)
     }
 
-    /// Flushes of a read-only region complete at once, on the notifying vCPU thread:
-    /// there is nothing to write back, so nothing can block.
+    /// Flushes are answered on the device's worker, never on the notifying vCPU's thread,
+    /// which a driver refilling the queue from another CPU could otherwise keep from the
+    /// guest and from stopping (audit A09).
     fn notify(&self, _queue: u16) {
-        let mut active = lock(&self.active);
-        let Some(a) = active.as_mut() else {
-            return;
-        };
-        if let Err(e) = drain(&mut a.queue, &a.memory, &a.interrupt) {
-            warn!("virtio-pmem: {e}; device needs reset");
-            a.interrupt.fail();
-            *active = None;
+        if let Some(w) = &self.worker {
+            w.notify();
         }
     }
 
     fn reset(&mut self) {
-        *lock(&self.active) = None;
+        self.stop();
+        self.paused = None;
+        self.context = None;
     }
 
+    /// As block's: the worker stops after the request it is answering, and what it left
+    /// stays in the ring for the worker that resumes.
     fn pause(&mut self) -> Vec<super::QueueState> {
-        lock(&self.active).iter().map(|a| a.queue.state()).collect()
+        if let Some(queue) = self.stop() {
+            self.paused = Some(queue);
+        }
+        self.paused.iter().map(Queue::state).collect()
     }
 
     fn resume(&mut self) -> Result<(), String> {
-        Ok(())
+        match self.paused.take() {
+            Some(queue) => self.start(queue),
+            None => Ok(()),
+        }
     }
 }
 
-/// Answers each request under an access of its own, so other devices' threads get guest
-/// memory between them.
-fn drain(queue: &mut Queue, mem: &GuestMemory, irq: &DeviceInterrupt) -> Result<(), QueueError> {
-    let mut used = false;
-    loop {
-        let a = mem.access()?;
-        let Some(chain) = queue.pop(&a)? else {
-            break;
-        };
-        let written = answer(&chain, &a);
-        queue.add_used(&a, chain.head, written)?;
-        used = true;
+impl Drop for Pmem {
+    fn drop(&mut self) {
+        self.reset();
     }
-    if used && with(mem, |a| queue.needs_interrupt(a))? {
-        irq.used_buffer();
-    }
-    Ok(())
 }
 
 /// Reads `struct virtio_pmem_req { le32 type; }` and writes `struct virtio_pmem_resp

@@ -10,9 +10,9 @@
 
 use std::fmt;
 use std::num::Wrapping;
-use std::sync::atomic::{Ordering, fence};
+use std::sync::atomic::{AtomicBool, Ordering, fence};
 
-use super::feature;
+use super::{DeviceInterrupt, feature};
 use crate::memory::{Access, GuestMemory, OutOfBounds, Pod, Reentered};
 
 const DESC_F_NEXT: u16 = 1;
@@ -88,6 +88,55 @@ pub fn with<R>(
     f: impl FnOnce(&Access<'_>) -> Result<R, QueueError>,
 ) -> Result<R, QueueError> {
     f(&mem.access()?)
+}
+
+/// What a round of serving a queue left ([`serve_round`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Round {
+    /// The queue is empty and the driver's notifications are re-armed: the driver notifies
+    /// for what it adds next.
+    Idle,
+    /// Requests may remain, with the driver's notifications still off: the device comes
+    /// back for them without waiting to be notified, which the driver, told not to, will
+    /// not do.
+    More,
+}
+
+/// Serves one round of `queue`: answers its requests with `answer`, which returns the bytes
+/// it wrote into each, a ring's worth at most and none once `stop` is set, then interrupts
+/// the driver if it wants to hear of them. A driver refilling the ring from another CPU
+/// cannot keep the device from its other work, from stopping, or itself from hearing of
+/// completions (audit A09).
+pub fn serve_round(
+    queue: &mut Queue,
+    mem: &GuestMemory,
+    irq: &DeviceInterrupt,
+    stop: &AtomicBool,
+    answer: &mut dyn FnMut(&Chain) -> u32,
+) -> Result<Round, QueueError> {
+    let budget = usize::from(queue.size);
+    let mut served = 0;
+    let round = 'round: loop {
+        with(mem, |a| queue.disable_notification(a))?;
+        loop {
+            if served == budget || stop.load(Ordering::Acquire) {
+                break 'round Round::More;
+            }
+            let Some(chain) = with(mem, |a| queue.pop(a))? else {
+                break;
+            };
+            let written = answer(&chain);
+            with(mem, |a| queue.add_used(a, chain.head, written))?;
+            served += 1;
+        }
+        if !with(mem, |a| queue.enable_notification(a))? {
+            break Round::Idle;
+        }
+    };
+    if served > 0 && with(mem, |a| queue.needs_interrupt(a))? {
+        irq.used_buffer();
+    }
+    Ok(round)
 }
 
 /// A queue as the driver programmed it through the transport.
@@ -405,7 +454,7 @@ mod tests {
 
     /// A minimal, deliberately hostile-capable driver.
     struct Driver {
-        mem: GuestMemory,
+        mem: std::sync::Arc<GuestMemory>,
         size: u16,
         avail_idx: u16,
     }
@@ -413,7 +462,7 @@ mod tests {
     impl Driver {
         fn new(size: u16) -> Driver {
             let p = crate::platform::page_size().unwrap();
-            let mem = GuestMemory::anonymous(&[(BASE, 8 * p)]).unwrap();
+            let mem = std::sync::Arc::new(GuestMemory::anonymous(&[(BASE, 8 * p)]).unwrap());
             Driver {
                 mem,
                 size,
@@ -614,6 +663,249 @@ mod tests {
         d.set_desc(4, DATA, 8, 0, 0);
         d.publish(4);
         assert!(q.enable_notification(&d.mem.access().unwrap()).unwrap());
+    }
+
+    /// An interrupt line that counts its edges.
+    #[derive(Default)]
+    struct Edges(std::sync::atomic::AtomicUsize);
+
+    impl crate::devices::Interrupt for Edges {
+        fn set_level(&self, level: bool) {
+            if level {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    fn interrupt() -> (std::sync::Arc<DeviceInterrupt>, std::sync::Arc<Edges>) {
+        let edges = std::sync::Arc::new(Edges::default());
+        let irq = std::sync::Arc::new(DeviceInterrupt::new(edges.clone()));
+        (irq, edges)
+    }
+
+    /// A round answers a ring's worth of requests at most, then says whether requests may
+    /// remain, with the driver's notifications left off only then; the driver hears of
+    /// each round's completions (audit A09).
+    #[test]
+    fn a_round_answers_a_ring_at_most() {
+        let mut d = Driver::new(8);
+        let mut q = d.queue(feature::VERSION_1);
+        let (irq, edges) = interrupt();
+        let stop = AtomicBool::new(false);
+        for i in 0..8 {
+            d.set_desc(i, DATA + 64 * u64::from(i), 8, DESC_F_WRITE, 0);
+            d.publish(i);
+        }
+        let answered = std::cell::RefCell::new(Vec::new());
+        let mut answer = |c: &Chain| {
+            answered.borrow_mut().push(c.head);
+            1
+        };
+        let flags = |d: &Driver| d.mem.access().unwrap().read_obj::<u16>(USED).unwrap();
+        assert_eq!(
+            serve_round(&mut q, &d.mem, &irq, &stop, &mut answer).unwrap(),
+            Round::More
+        );
+        assert_eq!(flags(&d), USED_F_NO_NOTIFY);
+        assert_eq!(edges.0.load(Ordering::SeqCst), 1);
+        // Four more, answered in the next round, which finds the queue empty after them.
+        for i in 0..4 {
+            d.publish(i);
+        }
+        assert_eq!(
+            serve_round(&mut q, &d.mem, &irq, &stop, &mut answer).unwrap(),
+            Round::Idle
+        );
+        assert_eq!(
+            flags(&d),
+            0,
+            "notifications left off with nothing to come back for"
+        );
+        assert_eq!(edges.0.load(Ordering::SeqCst), 2);
+        assert_eq!(*answered.borrow(), [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3]);
+        // An idle round interrupts nobody.
+        assert_eq!(
+            serve_round(&mut q, &d.mem, &irq, &stop, &mut answer).unwrap(),
+            Round::Idle
+        );
+        assert_eq!(edges.0.load(Ordering::SeqCst), 2);
+    }
+
+    /// A stop ends a round between requests: what it did not answer stays in the ring, and
+    /// the round after the stop answers it, each request once.
+    #[test]
+    fn a_stop_ends_a_round_between_requests() {
+        let mut d = Driver::new(8);
+        let mut q = d.queue(feature::VERSION_1 | feature::EVENT_IDX);
+        let (irq, _) = interrupt();
+        let stop = AtomicBool::new(false);
+        for i in 0..6 {
+            d.set_desc(i, DATA + 64 * u64::from(i), 8, DESC_F_WRITE, 0);
+            d.publish(i);
+        }
+        let mut answered = Vec::new();
+        let mut answer = |c: &Chain| {
+            answered.push(c.head);
+            // Asked to stop as it answers the second.
+            if answered.len() == 2 {
+                stop.store(true, Ordering::Release);
+            }
+            0
+        };
+        assert_eq!(
+            serve_round(&mut q, &d.mem, &irq, &stop, &mut answer).unwrap(),
+            Round::More
+        );
+        assert_eq!(answered, [0, 1]);
+        stop.store(false, Ordering::Release);
+        let mut rest = Vec::new();
+        let mut answer = |c: &Chain| {
+            rest.push(c.head);
+            0
+        };
+        assert_eq!(
+            serve_round(&mut q, &d.mem, &irq, &stop, &mut answer).unwrap(),
+            Round::Idle
+        );
+        assert_eq!(rest, [2, 3, 4, 5]);
+        assert_eq!(d.mem.access().unwrap().read_obj::<u16>(USED + 2).unwrap(), 6);
+    }
+
+    /// A driver that recycles every request the moment it completes, from another thread,
+    /// holds the worker neither from stopping nor from telling it of its completions, past
+    /// the 16-bit indices' wrap, with EVENT_IDX. No request is answered twice, and a
+    /// resumed worker re-arms the driver's notifications once it has caught up, so what
+    /// the driver adds next is heard of (audit A09).
+    #[test]
+    fn a_driver_recycling_the_ring_cannot_hold_its_worker() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::time::{Duration, Instant};
+
+        use super::super::worker::Worker;
+
+        const SIZE: u16 = 16;
+        let mut d = Driver::new(SIZE);
+        let q = d.queue(feature::VERSION_1 | feature::EVENT_IDX);
+        for i in 0..SIZE {
+            d.set_desc(i, DATA + 64 * u64::from(i), 8, DESC_F_WRITE, 0);
+            d.publish(i);
+        }
+        let (irq, edges) = interrupt();
+        let answered = Arc::new(AtomicUsize::new(0));
+        let counted = answered.clone();
+        let worker = Worker::start("test-queue", q, d.mem.clone(), irq.clone(), move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            0
+        })
+        .unwrap();
+        worker.notify();
+        let mut driver = Recycler {
+            avail: SIZE,
+            seen: 0,
+            outstanding: [true; SIZE as usize],
+        };
+        let waker = worker.waker();
+        let recycling = AtomicBool::new(true);
+        let mut worker = Some(worker);
+        std::thread::scope(|s| {
+            let (mem, recycling, waker) = (&d.mem, &recycling, waker.clone());
+            let recycler = s.spawn(move || {
+                while recycling.load(Ordering::Acquire) {
+                    driver.recycle(mem, &|| waker.unpark());
+                    std::thread::yield_now();
+                }
+                driver
+            });
+            // Past the indices' wrap, then a stop in the middle of it.
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while answered.load(Ordering::SeqCst) < 70_000 {
+                assert!(Instant::now() < deadline, "the worker stalled at {answered:?}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let t0 = Instant::now();
+            let stopped = worker.take().unwrap().stop();
+            let took = t0.elapsed();
+            recycling.store(false, Ordering::Release);
+            let mut driver = recycler.join().unwrap();
+            assert!(took < Duration::from_millis(500), "stopping took {took:?}");
+            assert!(edges.0.load(Ordering::SeqCst) > 0, "no completion was signalled");
+            // Resumed with what the stop left: it catches up, re-arms, and hears of the
+            // next request.
+            let q = stopped.expect("a queue back from the stop");
+            let counted = answered.clone();
+            let resumed = Worker::start("test-queue", q, d.mem.clone(), irq.clone(), move |_| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                0
+            })
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while d
+                .mem
+                .access()
+                .unwrap()
+                .load_u16(USED + 2, Ordering::Acquire)
+                .unwrap()
+                != driver.avail
+            {
+                assert!(Instant::now() < deadline, "the resumed worker never caught up");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let before = answered.load(Ordering::SeqCst);
+            let waker = resumed.waker();
+            driver.recycle(&d.mem, &|| waker.unpark());
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while answered.load(Ordering::SeqCst) == before {
+                assert!(
+                    Instant::now() < deadline,
+                    "a request after the catch-up went unheard"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(!irq.failed(), "the ring was taken for malformed");
+            let _ = resumed.stop();
+        });
+    }
+
+    /// A driver that publishes every request again as soon as it is used, and notifies as
+    /// EVENT_IDX tells it to.
+    struct Recycler {
+        avail: u16,
+        seen: u16,
+        /// Per request, whether it is published and not yet used.
+        outstanding: [bool; 16],
+    }
+
+    impl Recycler {
+        fn recycle(&mut self, mem: &GuestMemory, notify: &dyn Fn()) {
+            const SIZE: u16 = 16;
+            let avail_event = USED + 4 + 8 * u64::from(SIZE);
+            let used_event = AVAIL + 4 + 2 * u64::from(SIZE);
+            let a = mem.access().unwrap();
+            let used = a.load_u16(USED + 2, Ordering::Acquire).unwrap();
+            while self.seen != used {
+                let slot = u64::from(self.seen % SIZE);
+                let head = a.read_obj::<u32>(USED + 4 + 8 * slot).unwrap() as u16;
+                assert!(
+                    std::mem::replace(&mut self.outstanding[usize::from(head)], false),
+                    "request {head} answered twice"
+                );
+                self.seen = self.seen.wrapping_add(1);
+                a.write_obj(AVAIL + 4 + 2 * u64::from(self.avail % SIZE), head)
+                    .unwrap();
+                let old = self.avail;
+                self.avail = self.avail.wrapping_add(1);
+                a.store_u16(AVAIL + 2, self.avail, Ordering::Release).unwrap();
+                self.outstanding[usize::from(head)] = true;
+                // Interrupt me after the next completion.
+                a.write_obj(used_event, self.seen).unwrap();
+                fence(Ordering::SeqCst);
+                let event = a.read_obj::<u16>(avail_event).unwrap();
+                if need_event(event, self.avail, old) {
+                    notify();
+                }
+            }
+        }
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub mod pmem;
 pub mod queue;
 #[cfg(unix)]
 pub mod vsock;
+mod worker;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
