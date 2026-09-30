@@ -292,6 +292,19 @@ mod storm {
         rounds
     }
 
+    /// The guest compared its clock across all its CPUs `when`, many times: a check that
+    /// never ran, or barely did, proves nothing. Whether it found the clock in step is the
+    /// guest's own verdict.
+    fn clock_checked(said: &str, when: &str, what: &str) {
+        let reads: u64 = said
+            .lines()
+            .find_map(|l| l.split(&format!("clock {when}: ")).nth(1))
+            .and_then(|rest| rest.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("{what}: no clock check {when}:\n{said}"));
+        assert!(reads >= 100, "{what}: {reads} clock reads {when}:\n{said}");
+    }
+
     /// Every round came back whole, but for connections refused before the guest listened,
     /// and at least `least` did.
     fn all_whole(rounds: &[Result<(), String>], least: usize, what: &str) {
@@ -361,6 +374,7 @@ mod storm {
                 assert_eq!(code, Some(0), "{what}: {said}");
                 assert!(said.contains("SHARDS-TEST PASS"), "{what}: {said}");
                 assert!(said.contains("generation=1"), "{what}: {said}");
+                clock_checked(&said, "after the snapshot", &what);
                 all_whole(&rounds, 1, &what);
             }
         }
@@ -387,6 +401,10 @@ mod storm {
             assert_eq!(code, Some(0), "{cpus} vCPUs: {said}");
             assert!(said.contains("SHARDS-TEST PASS"), "{cpus} vCPUs: {said}");
             assert!(said.contains("generation=0"), "{cpus} vCPUs: {said}");
+            // What the guest wrote as it asked for the snapshot reaches the console only
+            // from a machine that goes on, as this one does.
+            clock_checked(&said, "before the snapshot", &format!("{cpus} vCPUs"));
+            clock_checked(&said, "after the snapshot", &format!("{cpus} vCPUs"));
             all_whole(&rounds, 2, &format!("{cpus} vCPUs"));
         }
     }
