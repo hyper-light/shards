@@ -53,7 +53,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install nightly-2026-09-05 --profile minimal
-      - run: cargo +nightly-2026-09-05 install --locked cargo-fuzz --version 0.13.1
+      # Built with the pinned stable toolchain: on nightly its locked rustix takes
+      # compiler-internal attributes this nightly no longer has.
+      - run: rustup toolchain install "$TOOLCHAIN" --profile minimal
+      - run: cargo +"$TOOLCHAIN" install --locked cargo-fuzz --version 0.13.1
       - run: cargo +nightly-2026-09-05 fuzz build
       - name: Fuzz, 60 s a target
         run: |
