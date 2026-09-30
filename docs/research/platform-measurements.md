@@ -1657,3 +1657,31 @@ revision before comparing a changed API/implementation.
   - A resumed original sees its snapshot's pause as time gone by, where a restore's clock
     continues. Whether to hide it, and how the guest's wall clock would then be kept
     right, is open.
+
+### M46. What publishing a container's record costs, by how durably
+
+- **Question.** Audit A15: what does each level of durability cost a container's record
+  (`containers/ID/config.json`), and which can the run's start path afford?
+- **Method.** `docs/research/measurements/record-sync/run.sh`: a 420-byte record written
+  to a temporary sibling and renamed over the last, n = 1000 per level. Each level runs
+  alone, in blocks of 500, in two rounds of opposite order: levels that took turns publish
+  by publish measured each other, since a drive flush delays the next writes (plain renames
+  then had a p90 of 8.8 ms). 2026-09-29, this machine (Darwin 25.4.0, arm64, APFS),
+  revision b271e75, with another VM busy on 2 CPUs; two runs, in the home and in `$TMPDIR`.
+  An earlier run, with two orphaned test processes spinning, had tails 10–50× longer.
+- **Results** (µs; the two runs):
+
+| Level | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| write, rename | 90–97 | 129–169 | 161–3 972 | 308–5 817 |
+| `fsync`, rename | 104–122 | 149–150 | 191–776 | 4 026–6 365 |
+| `F_BARRIERFSYNC`, rename | 376–382 | 598–671 | 2 179–12 108 | 10 125–214 562 |
+| `F_FULLFSYNC`, rename | 4 267–4 424 | 7 550–12 860 | 16 974–26 458 | 170 126–282 421 |
+| `F_FULLFSYNC`, rename, directory synced | 8 546–8 555 | 15 916–16 008 | 25 407–31 064 | 29 824–266 921 |
+| a new directory and record, all synced | 8 554–8 682 | 15 976–20 317 | 25 487–37 210 | 36 152–226 825 |
+| a directory renamed aside, parent synced, removed | 4 266–4 284 | 7 303–8 199 | 8 768–14 954 | 15 804–26 912 |
+
+- **Consequence.** A record durable at once costs 8.5 ms at the median, 2.5 times a whole
+  pooled run (M26, 3.4 ms); a barrier alone costs 0.3 ms and a tail of milliseconds. The
+  start path can afford a write and a rename (0.1 ms). Linux is not measured yet. The
+  durability contract A15 asks for is to be set from these numbers.
