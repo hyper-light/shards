@@ -178,8 +178,12 @@ impl Reference {
         parse(&format!("{domain}/{remainder}"))
     }
 
-    /// The name alone: `docker.io/library/alpine`.
+    /// The name alone: `docker.io/library/alpine`; the path alone for a name with no
+    /// domain, as `repository.Name` prints it (distribution/reference reference.go).
     pub fn name(&self) -> String {
+        if self.domain.is_empty() {
+            return self.path.clone();
+        }
         format!("{}/{}", self.domain, self.path)
     }
 
@@ -194,7 +198,7 @@ impl Reference {
             {
                 path = rest;
             }
-        } else {
+        } else if !self.domain.is_empty() {
             out.push_str(&self.domain);
             out.push('/');
         }
@@ -478,6 +482,18 @@ mod tests {
         ] {
             assert!(Reference::parse(input).is_err(), "{input:?} parsed");
         }
+    }
+
+    /// A first component with a dot but not a domain's characters is a path component,
+    /// as distribution/reference's regexp takes it: the name has no domain, and prints as
+    /// its path alone, which parses to the same (found by fuzz/fuzz_targets/reference.rs).
+    #[test]
+    fn a_name_without_a_domain_prints_as_its_path() {
+        let r = Reference::parse("zz-zz-4z.z4_zz/9").unwrap();
+        assert_eq!((r.domain.as_str(), r.path.as_str()), ("", "zz-zz-4z.z4_zz/9"));
+        assert_eq!(r.to_string(), "zz-zz-4z.z4_zz/9:latest");
+        assert_eq!(r.familiar(), "zz-zz-4z.z4_zz/9:latest");
+        assert_eq!(Reference::parse(&r.to_string()).unwrap(), r);
     }
 
     #[test]

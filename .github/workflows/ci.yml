@@ -45,6 +45,25 @@ jobs:
       - run: scripts/advisory-exceptions
       - run: cargo deny --locked check advisories
 
+  # The parsers of what registries, images, guests and users send, fuzzed for a bounded
+  # time each (fuzz/Cargo.toml). A crash fails the job and prints its input.
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install nightly-2026-09-05 --profile minimal
+      - run: cargo +nightly-2026-09-05 install --locked cargo-fuzz --version 0.13.1
+      - run: cargo +nightly-2026-09-05 fuzz build
+      - name: Fuzz, 60 s a target
+        run: |
+          for target in $(cargo +nightly-2026-09-05 fuzz list); do
+            if ! cargo +nightly-2026-09-05 fuzz run "$target" -- -max_total_time=60 -rss_limit_mb=2048 -max_len=65536; then
+              for crash in fuzz/artifacts/"$target"/*; do echo "$crash:"; xxd "$crash" | head -64; done
+              exit 1
+            fi
+          done
+
   # Host threads reach guest memory one at a time (docs/design/architecture.md D29):
   # ThreadSanitizer and Miri check the tests where they share it. Both need nightly.
   memory-model:

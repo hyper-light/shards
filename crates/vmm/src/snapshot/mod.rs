@@ -244,6 +244,13 @@ struct Decoded {
     identities: Vec<Identity>,
 }
 
+/// Decodes a state file's bytes, as a restore does, and says only whether they decode:
+/// for fuzzing (fuzz/fuzz_targets/snapshot-state.rs).
+#[doc(hidden)]
+pub fn decodes(bytes: &[u8]) -> bool {
+    decode(bytes).is_ok()
+}
+
 fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let mut r = Reader::new(bytes);
     let mut magic = [0u8; 8];

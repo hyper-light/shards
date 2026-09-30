@@ -1,0 +1,92 @@
+# Fuzz targets for the parsers that take what a registry, an image, a guest or a user
+# sends (docs/audit/2026-09-29_audit.md, "Missing coverage"). cargo-fuzz builds them on
+# nightly: `cargo +nightly fuzz run TARGET` from the repository's root; CI runs each for a
+# bounded time (.github/workflows/ci.yml, `fuzz`). A workspace of its own, patched as
+# shards' is.
+[package]
+name = "shards-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+shards-cmdline = { path = "../crates/cmdline" }
+shards-image = { path = "../crates/image" }
+shards-registry = { path = "../crates/registry" }
+shards-vmm = { path = "../crates/vmm" }
+
+[workspace]
+
+[patch.crates-io]
+aws-lc-rs = { path = "../vendor/aws-lc-rs" }
+aws-lc-sys = { path = "../vendor/aws-lc-sys" }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "tar"
+path = "fuzz_targets/tar.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "layers"
+path = "fuzz_targets/layers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "oci"
+path = "fuzz_targets/oci.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "reference"
+path = "fuzz_targets/reference.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "url"
+path = "fuzz_targets/url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "auth"
+path = "fuzz_targets/auth.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gotime"
+path = "fuzz_targets/gotime.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cmdline"
+path = "fuzz_targets/cmdline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snapshot-state"
+path = "fuzz_targets/snapshot-state.rs"
+test = false
+doc = false
+bench = false
