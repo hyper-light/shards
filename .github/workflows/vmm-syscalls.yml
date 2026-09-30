@@ -1,0 +1,29 @@
+name: vmm syscalls
+
+# What shards-vm asks of the kernel, by thread, on a KVM host: the evidence for its
+# seccomp filters (docs/research/measurements/vmm-syscalls). Runs when the harness
+# changes, or when asked.
+on:
+  push:
+    paths:
+      - docs/research/measurements/vmm-syscalls/**
+      - .github/workflows/vmm-syscalls.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.0 # keep in sync with rust-toolchain.toml
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - run: sudo apt-get install -y strace
+      - run: sudo chmod 666 /dev/kvm
+      - run: docs/research/measurements/vmm-syscalls/collect.sh target/vmm-syscalls
