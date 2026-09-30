@@ -894,7 +894,7 @@ fn start(cfg: &Config, logs: Option<&Path>, settles_to: Option<&Path>) -> Result
     let logs = logs.map(absolute).transpose()?;
     let (cfg, logs) = (&cfg, logs.as_deref());
     let mut paths = crate::confine::Paths::default();
-    paths.write_under.extend(settles_to.map(absolute).transpose()?);
+    paths.write_later.extend(settles_to.map(absolute).transpose()?);
     paths.read.push(cfg.kernel.clone());
     paths.read.extend(cfg.initrd.iter().cloned());
     paths.read.extend(cfg.init.iter().cloned());
@@ -953,8 +953,8 @@ fn absolute(path: &Path) -> Result<PathBuf, String> {
     std::path::absolute(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The directories a VM writes in: the snapshot it saves, its vsock sockets', and a warm
-/// VM's container logs.
+/// The directories a VM writes in: the snapshot it saves and a warm VM's container logs;
+/// and the one it makes its vsock sockets in.
 fn written(
     paths: &mut crate::confine::Paths,
     snapshot: Option<&Path>,
@@ -968,7 +968,7 @@ fn written(
         let _ = std::fs::create_dir_all(dir);
     }
     paths
-        .write_under
+        .sockets_under
         .extend(vsock.and_then(Path::parent).map(Path::to_path_buf));
     paths.write_under.extend(logs.map(Path::to_path_buf));
 }
