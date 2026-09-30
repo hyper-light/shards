@@ -1,0 +1,254 @@
+# Agentfile: OCI-compliant microVM builds, and directives for agents
+
+**Status:** requirements, as stated on 2026-09-29. They are to be examined for gaps and
+designed once the fixes from the 2026-09-29 audit are done. Nothing here is built yet.
+Open questions noticed while recording them are listed at the end, for that review. The
+design decisions that follow will go in `docs/design/architecture.md`, each with its
+evidence.
+
+shards microVMs build on Firecracker's model, and they must be OCI objects like any other.
+A spec-compliant Dockerfile builds one. A small set of added directives declares the agents
+a microVM runs, their skills and MCP servers, their volumes, and the networks between them.
+Everything is denied by default.
+
+## 1. OCI compliance
+
+- A shards microVM is fully OCI compliant. It is stored, recalled and managed as any other
+  OCI container object: pushed to and pulled from registries, tagged, inspected.
+- shards microVMs work in any OCI-compliant environment: Docker, Docker Compose, Kubernetes
+  and the like.
+- They work with OCI-compliant facilities such as OCI volumes.
+
+## 2. Builds: `shards build` and the full Dockerfile vocabulary
+
+- A user writes a fully spec-compliant Dockerfile, and shards ingests it and creates the
+  VM from it. Of extreme importance.
+- `shards build` builds microVMs as Docker builds images:
+  - layered;
+  - cacheable, both by layer and as a whole image;
+  - over the full Dockerfile vocabulary.
+- The directives below extend that vocabulary.
+
+## 3. Default deny
+
+A microVM without `EXPOSE` directives is intentionally airgapped and isolated. By default it
+exposes no ports: a user exposes one with the CLI or with `EXPOSE`.
+
+Today's microVMs already fit this: they have no network device at all. The host reaches the
+guest over vsock alone (architecture.md D12).
+
+## 4. Directives
+
+### 4.1 `EXPOSE`, with `FOR INGRESS` and `FOR EGRESS`
+
+```
+EXPOSE <port> [FOR INGRESS | FOR EGRESS]
+```
+
+| Directive | Opens port 3000 for |
+|---|---|
+| `EXPOSE 3000` | incoming and outgoing traffic |
+| `EXPOSE 3000 FOR INGRESS` | incoming traffic only |
+| `EXPOSE 3000 FOR EGRESS` | outgoing traffic only |
+
+This extension is intentional, and part of the default deny.
+
+### 4.2 `AGENT`
+
+```
+AGENT <name> FROM <registry>[:<tag>] [TO <path>]
+```
+
+- `AS` is optional.
+- `<name>` is required. It names the agent, as a build stage's alias names an image.
+  `AGENT main FROM some.registry.com/claude-opus-5-5` declares an agent called `main`.
+- `<registry>` must name, in a valid OCI-compliant registry, a tarball that contains the
+  agent. How that tarball is laid out is still to be specified.
+- When a build meets an `AGENT` directive, it downloads the tarball and decompresses it to:
+  - `TO <path>`, if given;
+  - otherwise `/agents/<name>[_<tag>]`.
+- Declaring an agent also means the build prepares the agent's workload/workspace in the
+  VM: the containerd-like environment shards runs its agents in (see §6).
+- A workspace is entirely isolated by default. This restrictive set is intentional:
+  - no network egress or ingress;
+  - no access to any volume, or any path, outside its own directory and that
+    directory's subdirectories;
+  - read-only permissions.
+
+### 4.3 `SKILL`
+
+```
+SKILL [OPTIONS...] <path_or_link> [<dest_path>] [FOR <agent_name>]
+```
+
+- `SKILL` acts much like `ADD` by default. It finds and copies only valid skill markdown
+  files, writing them to the destination path.
+- Its options are every option `ADD` supports. For example, `--from` copies a skill added in
+  an earlier stage or layer.
+- It detects the kind of source as `ADD` does, and supports:
+  - git repositories;
+  - OCI tarballs, decompressed to the output path;
+  - http(s) endpoints;
+  - local paths.
+- By default a skill is available to every workspace and every agent, in each agent's
+  `/agent/<name>[_<tag>]/skills/`.
+- `FOR <agent_name>` makes the skill available to that agent alone. For example, with
+  `AGENT main FROM some.registry.com/claude-opus-5-5`, the directive
+  `SKILL ./my_skill.md FOR main` gives the skill to `main` and no other agent.
+
+### 4.4 `MCP`
+
+```
+MCP <name>[:<tag>] FROM <path | uri | url | git | oci_artifact>[:<port>] [FOR <agent_name>]
+```
+
+`MCP` declares an MCP server, local or remote, that the agents connect to.
+
+**A URL or URI** is a remote server:
+- Without a port, the port is 8000. HTTPS is respected.
+- The agents' workloads/workspaces are opened to receive traffic on that port, and so is
+  the microVM: exposed for ingress and egress.
+
+**A path, git URL or OCI artifact** is a server spoken to over stdio. Agents are opened to
+send and receive its messages over stdio. The server is fetched as its source says:
+- a git URL is cloned;
+- an OCI artifact is downloaded and decompressed;
+- a path is copied from the build host's files, as `COPY` copies.
+
+Where each goes, and who may use it:
+
+| | Without `FOR` | With `FOR <agent_name>` |
+|---|---|---|
+| Path, git or OCI server | `/mcp/<name>[:<tag>]`; every agent, workload and workspace | `/agent/<agent_name>[_<tag>]/mcp/<mcp_name>[_<tag>]`; stdio for that agent alone |
+| Remote server | every agent | network access for that agent's workspace (and, necessarily, the microVM) alone |
+
+With `FOR` on a remote server, an agent not named gets no network access to that server, its
+ports or its network locations. Networking stays granular and tightly scoped.
+
+### 4.5 `VOLUME`, with options and `FOR`
+
+```
+VOLUME [OPTIONS...] <path> [<dest>] [FOR <agent_name>]
+```
+
+- Without `FOR`, the volume, mount point or path is available to every workspace and agent.
+- With `FOR <agent_name>`, it is available to that agent's workload/workspace alone.
+- Options:
+  - `--chown=<agent_name>/<user_id>/...`;
+  - `--chmod=<permissions>`.
+
+### 4.6 `NETWORK`
+
+```
+NETWORK [OPTIONS...] <name> [FOR <agent_name_a> <agent_name_b> ...]
+```
+
+- It creates a network with the given configuration and name, as Docker Compose creates
+  its networks.
+- Its options are every option a Docker Compose network supports: driver, IPv4, IPv6,
+  subnet and so on. Each option's default matches Compose's, functionally and in effect.
+- Three more options open ports, on the microVM and on the network:
+
+  | Option | Opens the port for |
+  |---|---|
+  | `--expose <port>` | ingress and egress |
+  | `--ingress <port>` | ingress only |
+  | `--egress <port>` | egress only |
+
+- Without `FOR`, every agent may attach to the network. Agents attached may communicate
+  with one another, and reach whatever ports the network's ingress and egress allow.
+- With `FOR`, only the agents named may attach.
+- **Declaring a network attaches no agent**, named or not. It creates the network, exposes
+  the ports, and sets which agents may attach.
+
+### 4.7 `CONNECT`
+
+```
+CONNECT [OPTIONS...] <agent> [<agent> ...]
+    (WITH <agent> [<agent> ...] | TO <agent> [<agent> ...])
+    ON <network> [<network> ...]
+```
+
+- Exactly one of `WITH` and `TO` is required.
+- Several agents may follow `CONNECT`, `WITH` and `TO`, and several networks may follow
+  `ON`.
+- `WITH` connects them both ways, for every agent attached to the networks: each may send
+  requests to the others and answer theirs.
+- `TO` still attaches every agent named to the networks, but only one way:
+  - agents after `CONNECT` may send requests to agents after `TO`, and receive their
+    responses;
+  - agents after `TO` may not send requests to agents after `CONNECT`; they may only
+    respond.
+
+## 5. Communication between agents in a microVM
+
+Networks between agents need more than the directives:
+
+- The microVM must let workspaces communicate readily, and make its agents aware of how.
+- The design must be deny-by-default and encrypted.
+- Ideally each microVM runs a small server for this, and its agents are made aware of the
+  server and of how to use it.
+- A code-mode MCP server may be ideal for that: every agent declared with `AGENT` discovers
+  it by default.
+
+## 6. Relation to what exists
+
+- **Images.** `shards pull` and `shards run IMAGE` take OCI images from registries
+  (`crates/registry`) and build a root filesystem from their layers (`crates/image`).
+  There is no `shards build` yet.
+- **Networking.** No network device exists. A microVM is reached only over vsock, so it is
+  airgapped today, the default this spec keeps.
+- **Agents' workspaces.** The containerd-like runtime inside each microVM runs many agents
+  per VM, each isolated as a container would be, without being containers. It is where the
+  workloads/workspaces of §4.2 live. Mounts go to one workload, some or all, attached once
+  (architecture.md D17). That is how `VOLUME ... FOR`, `SKILL ... FOR` and `MCP ... FOR`
+  would reach their agents.
+- **Isolation per agent and per microVM**, of network, devices and permissions, is already
+  a requirement of that runtime, and `EXPOSE`, `NETWORK` and `CONNECT` extend it.
+
+## 7. Open questions, for the review
+
+Recorded as found; none is answered here.
+
+1. **The agent tarball.** Its layout was to be explained, and has not been yet: what it
+   holds, how shards runs what is in it, and how it relates to an OCI image or artifact.
+2. **`AS` in `AGENT`.** Where does the optional `AS` go: `AGENT [AS] <name> FROM ...`, or
+   `AGENT FROM <registry> AS <name>`, as `FROM ... AS` names a stage?
+3. **`/agents` or `/agent`.** An agent unpacks to `/agents/<name>[_<tag>]`, but its skills
+   and MCP servers go under `/agent/<name>[_<tag>]/`.
+4. **`:` or `_` in MCP paths.** Unscoped servers go to `/mcp/<name>[:<tag>]`, a colon in a
+   path, and scoped ones to `.../mcp/<mcp_name>[_<tag>]`.
+5. **"A local remote MCP server that all agents must connect to."** Must every agent in
+   scope connect to it, or may they? And are local and remote servers both meant?
+6. **MCP ports.** Is port 8000 the default for `https://` URLs too, or does HTTPS keep 443?
+   What does `[:<port>]` mean after a path, git URL or OCI artifact?
+7. **`EXPOSE ... FOR EGRESS`.** Is the port the destination port of outgoing connections,
+   to any destination? How do `FOR` and Docker's protocol suffix (`EXPOSE 3000/udp`)
+   combine? And how does `docker run -p` map onto ingress and egress?
+8. **`NETWORK`'s port options.** The text named `--egress` for "both egress and ingress"
+   and again for "egress only". §4.6 reads the first as `--expose`.
+9. **A workspace's "read-only permissions".** Read-only everywhere, its own directory
+   included? Where may an agent write, and how is that granted?
+10. **`VOLUME <path> [<dest>]`.** A Dockerfile's `VOLUME` names a mount point in the image;
+    its source comes at run time (`-v`, Compose `volumes:`). What is `<path>` beside
+    `<dest>`: a build-time source, a named volume, a host path? How does it map to OCI
+    volumes, and to Kubernetes volumes?
+11. **`--chown=<agent_name>/<user_id>/...`.** What is its grammar, beside Docker's
+    `--chown=<user>:<group>`?
+12. **"Valid skill markdown files."** What makes a skill valid: a `SKILL.md` with its
+    frontmatter, as in Anthropic's Agent Skills format, or another rule? Are a skill's
+    other files copied with it?
+13. **`CONNECT`'s options.** Which are they?
+14. **`CONNECT ... TO` and a network's `FOR`.** If agents after `TO` are attached, must the
+    network's `FOR` list allow them? What happens when it does not?
+15. **Docker, Compose and Kubernetes.** Running "in any OCI-compliant environment" could
+    mean images that other engines run as ordinary containers, a shards OCI runtime that
+    they run as microVMs (a Kubernetes RuntimeClass, as Kata Containers provides), or
+    both. And how do the added directives' results travel in an OCI image, as config,
+    annotations or artifacts, so that other tools keep them?
+16. **Building with Docker.** A file using the added directives is no longer a Dockerfile
+    `docker build` accepts. Is it called an Agentfile? Should `docker build` build it too,
+    through a BuildKit frontend named by a `# syntax=` line?
+17. **The in-VM server.** What identities and keys encrypt and authorize its traffic?
+    How is its reach tied to `NETWORK`, `CONNECT`, `MCP ... FOR` and `EXPOSE`? What does
+    "code-mode" MCP mean exactly, and from which source?
