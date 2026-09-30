@@ -210,6 +210,57 @@ pub fn run(cfg: &Config) -> Result<ExitReason, String> {
     Ok(running.wait())
 }
 
+/// The initrd a machine boots: `--initrd`'s file, or an initramfs holding `--init`'s. Its
+/// file is read only once its length is seen to fit the `room` bytes of RAM there are for
+/// it, and an init is read straight into its place in the archive (audit D13).
+#[cfg(hv)]
+fn initrd(cfg: &Config, room: u64) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read as _;
+    let open = |p: &PathBuf| -> Result<(std::fs::File, usize), String> {
+        let at = |e: std::io::Error| format!("{}: {e}", p.display());
+        let file = std::fs::File::open(p).map_err(at)?;
+        let len = file.metadata().map_err(at)?.len();
+        let len = usize::try_from(len).map_err(|_| format!("{}: {len} bytes", p.display()))?;
+        Ok((file, len))
+    };
+    let fits = |p: &PathBuf, len: usize| {
+        if len as u64 > room {
+            return Err(format!(
+                "{}: {len} bytes, more than the {room} the guest's RAM has room for",
+                p.display()
+            ));
+        }
+        Ok(())
+    };
+    match (&cfg.initrd, &cfg.init) {
+        (Some(_), Some(_)) => Err("--initrd and --init are mutually exclusive".into()),
+        (Some(p), None) => {
+            let (file, len) = open(p)?;
+            fits(p, len)?;
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(len)
+                .map_err(|e| format!("{}: {e}", p.display()))?;
+            // Only the length that was seen to fit, though the file grow meanwhile.
+            file.take(len as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("{}: {e}", p.display()))?;
+            if bytes.len() != len {
+                return Err(format!("{}: shorter than its {len} bytes", p.display()));
+            }
+            Ok(Some(bytes))
+        }
+        (None, Some(p)) => {
+            let (mut file, len) = open(p)?;
+            fits(p, crate::initramfs::archive_len(len))?;
+            crate::initramfs::with_init_from(&mut file, len)
+                .map(Some)
+                .map_err(|e| format!("{}: {e}", p.display()))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
 #[cfg(all(test, hv))]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -234,6 +285,29 @@ mod tests {
         assert_eq!(machine.pmem, vec![absolute]);
         cfg.pmem = vec![PathBuf::from("no-such-file")];
         assert!(machine_config(&cfg).unwrap_err().starts_with("no-such-file: "));
+    }
+
+    /// An init or initrd is read only if it fits where it goes: one longer than the room
+    /// is refused, saying so; one that fits becomes the archive, or the initrd, whole
+    /// (audit D13). `Cargo.toml` stands in for either.
+    #[test]
+    fn an_initrd_is_read_only_if_it_fits() {
+        let len = std::fs::metadata("Cargo.toml").unwrap().len() as usize;
+        let mut cfg = Config::new(PathBuf::from("kernel"), Some(PathBuf::from("Cargo.toml")));
+        let archive = crate::initramfs::archive_len(len) as u64;
+        let e = initrd(&cfg, archive - 1).unwrap_err();
+        assert!(e.contains("room for"), "{e}");
+        let built = initrd(&cfg, archive).unwrap().unwrap();
+        assert_eq!(
+            built,
+            crate::initramfs::with_init(&std::fs::read("Cargo.toml").unwrap())
+        );
+        cfg.init = None;
+        cfg.initrd = Some(PathBuf::from("Cargo.toml"));
+        assert!(initrd(&cfg, len as u64 - 1).unwrap_err().contains("room for"));
+        assert_eq!(initrd(&cfg, len as u64).unwrap().unwrap().len(), len);
+        cfg.init = Some(PathBuf::from("Cargo.toml"));
+        assert!(initrd(&cfg, u64::MAX).is_err(), "both at once");
     }
 
     /// A working set naming a page the guest does not have is not prefetched at all

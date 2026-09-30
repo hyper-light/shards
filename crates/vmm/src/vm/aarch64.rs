@@ -3,7 +3,7 @@
 
 use std::fs::File;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use super::{Config, Console};
@@ -20,7 +20,7 @@ use crate::hv::{self, Gic, GicLayout};
 use crate::memory::GuestMemory;
 use crate::snapshot::codec::{Reader, Writer};
 use crate::snapshot::{MachineConfig, Snapshot};
-use crate::{debug, initramfs, platform, warn};
+use crate::{debug, platform, warn};
 
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
@@ -289,13 +289,9 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     a.vmgenid.write_new_id()?;
 
     let fdt_addr = layout::DRAM_BASE + ram - boot::FDT_MAX;
-    let read = |p: &PathBuf| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
-    let initrd_bytes = match (&cfg.initrd, &cfg.init) {
-        (Some(_), Some(_)) => return Err("--initrd and --init are mutually exclusive".into()),
-        (Some(p), None) => Some(read(p)?),
-        (None, Some(p)) => Some(initramfs::with_init(&read(p)?)),
-        (None, None) => None,
-    };
+    // Between the kernel, at the next 2 MiB, and the device tree (boot.rs, load_initrd).
+    let room = fdt_addr.saturating_sub(kernel.end.next_multiple_of(2 << 20));
+    let initrd_bytes = super::initrd(cfg, room)?;
     let initrd = match initrd_bytes {
         None => None,
         Some(bytes) => {
