@@ -23,6 +23,14 @@ pub fn check_host() -> Result<(), String> {
     Err(no_backend())
 }
 
+pub fn accept_working_set(_dir: &std::path::Path, _name: &str, _bytes: &[u8]) -> Result<usize, String> {
+    Err(no_backend())
+}
+
+pub fn working_set_limit(_dir: &std::path::Path) -> Result<u64, String> {
+    Err(no_backend())
+}
+
 pub fn max_vcpus() -> Result<u32, String> {
     Err(no_backend())
 }
@@ -74,7 +82,11 @@ impl Handle {
         match self.0 {}
     }
 
-    pub fn save_working_set(&self) -> Result<usize, String> {
+    pub fn end_recording(&self) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn take_working_set(&self) -> Result<Option<(String, Vec<u8>)>, String> {
         match self.0 {}
     }
 

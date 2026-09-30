@@ -132,6 +132,9 @@ struct Ready {
     socket: UnixStream,
     /// The template whose pool it came from.
     pool: Option<PathBuf>,
+    /// The template the working set it records goes with: its pool's, or the one it saves.
+    /// The daemon writes it there; no VM may write a template (D30).
+    records: Option<PathBuf>,
 }
 
 /// The warm VMs of one template.
@@ -201,6 +204,89 @@ struct Inbox {
     /// A detached run's client, until the daemon tells it whether its command started.
     detached: Option<UnixStream>,
     ended: bool,
+    /// The template its working set goes with, and the parts of it that have come.
+    records: Option<PathBuf>,
+    working_set: WorkingSet,
+    /// The most bytes it may take, read from the template at its first part.
+    working_set_limit: Option<u64>,
+}
+
+/// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
+/// daemon writes with the template it goes with once the last has come: only as much as
+/// that template's guest can hold, and only if the template is still at the generation it
+/// was recorded from (`shards_vmm::vm::accept_working_set`). A VM that sends more, or for
+/// no template, loses its prefetch and nothing else.
+fn working_set_part(id: &str, inbox: &mut Inbox, payload: &[u8]) {
+    let Some(dir) = inbox.records.clone() else {
+        return;
+    };
+    let limit = match inbox.working_set_limit {
+        Some(limit) => limit,
+        None => match shards_vmm::vm::working_set_limit(&dir) {
+            Ok(limit) => *inbox.working_set_limit.insert(limit),
+            Err(e) => {
+                log(format!("container {id}: its working set: {e}"));
+                inbox.records = None;
+                return;
+            }
+        },
+    };
+    match gather(&mut inbox.working_set, limit, payload) {
+        Gathered::More => {}
+        Gathered::Refused(why) => {
+            log(format!("container {id}: its working set: {why}"));
+            inbox.records = None;
+            inbox.working_set = WorkingSet::default();
+        }
+        Gathered::Whole(name, set) => {
+            inbox.records = None;
+            match shards_vmm::vm::accept_working_set(&dir, &name, &set) {
+                Ok(0) => {}
+                Ok(n) => log(format!("{}: a working set of {n} pages", dir.display())),
+                Err(e) => log(format!("{}: its working set: {e}", dir.display())),
+            }
+        }
+    }
+}
+
+/// A working set coming in parts: the generation they name, and what has come of it.
+#[derive(Debug, Default)]
+struct WorkingSet {
+    name: Option<String>,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Gathered {
+    /// More parts are to come.
+    More,
+    /// The last has come: the generation, and the whole set.
+    Whole(String, Vec<u8>),
+    /// Malformed, past `limit` bytes, or naming another generation than the parts before.
+    Refused(String),
+}
+
+/// Adds the `kind::WORKING_SET` message `payload` to `set`, which holds at most `limit`
+/// bytes, each part reserved fallibly.
+fn gather(set: &mut WorkingSet, limit: u64, payload: &[u8]) -> Gathered {
+    let Some((flags, name, part)) = shards_ipc::working_set_part(payload) else {
+        return Gathered::Refused("a malformed part".into());
+    };
+    match &set.name {
+        Some(first) if first != name => return Gathered::Refused(format!("parts of {first} and {name}")),
+        Some(_) => {}
+        None => set.name = Some(name.to_string()),
+    }
+    let fits = (set.bytes.len() as u64).saturating_add(part.len() as u64) <= limit;
+    if !fits || set.bytes.try_reserve(part.len()).is_err() {
+        return Gathered::Refused(format!("more than its template's {limit} bytes"));
+    }
+    set.bytes.extend_from_slice(part);
+    if flags & shards_ipc::WORKING_SET_LAST == 0 {
+        return Gathered::More;
+    }
+    let taken = std::mem::take(set);
+    Gathered::Whole(taken.name.unwrap_or_default(), taken.bytes)
 }
 
 /// One waiting for a container to end ([`Daemon::await_exit`]), by its number.
@@ -1405,6 +1491,9 @@ impl Daemon {
             started: false,
             detached,
             ended: false,
+            records: ready.records,
+            working_set: WorkingSet::default(),
+            working_set_limit: None,
         }));
         let tracked = Tracked {
             socket,
@@ -1451,6 +1540,7 @@ impl Daemon {
                 Ok(Some(m)) if m.kind == kind::STARTED => self.run_started(id, &mut inbox),
                 Ok(Some(m)) if m.kind == kind::DONE => self.run_ended(id, &mut inbox, Some(&m.payload)),
                 Ok(Some(m)) if m.kind == kind::LOST => self.log_lost(id, &m.payload),
+                Ok(Some(m)) if m.kind == kind::WORKING_SET => working_set_part(id, &mut inbox, &m.payload),
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => self.run_ended(id, &mut inbox, None),
             }
@@ -1719,7 +1809,12 @@ impl Daemon {
         // first.
         let n = self.saved.fetch_add(1, Ordering::Relaxed);
         let fresh = dir.with_extension(format!("new-{}-{n}", std::process::id()));
-        let ready = self.cold(&cfg, &prepared.rootfs, Some((&fresh, &dir)));
+        let mut ready = self.cold(&cfg, &prepared.rootfs, Some(&fresh));
+        // What its run touches is the template's working set, which the daemon writes once
+        // the template is settled.
+        if let Ok(r) = &mut ready {
+            r.records = Some(dir.clone());
+        }
         if ready.is_ok()
             && let Err(e) = crate::run::Origin::of(guest, &prepared.rootfs).write(&fresh)
         {
@@ -1999,12 +2094,7 @@ impl Daemon {
     /// A VM booted for one run, from `cfg` into `rootfs`, saving a template to `save` on
     /// the way.
     /// `save` is where it saves the template, and where the template goes once saved.
-    fn cold(
-        self: &Arc<Self>,
-        cfg: &Config,
-        rootfs: &Path,
-        save: Option<(&Path, &Path)>,
-    ) -> Result<Ready, String> {
+    fn cold(self: &Arc<Self>, cfg: &Config, rootfs: &Path, save: Option<&Path>) -> Result<Ready, String> {
         let mut args: Vec<OsString> = vec![
             "run".into(),
             "--kernel".into(),
@@ -2021,13 +2111,8 @@ impl Daemon {
         if let Some(init) = &cfg.init {
             args.extend(["--init".into(), init.into()]);
         }
-        if let Some((fresh, settled)) = save {
-            args.extend([
-                "--snapshot-dir".into(),
-                fresh.into(),
-                "--settles-to".into(),
-                settled.into(),
-            ]);
+        if let Some(fresh) = save {
+            args.extend(["--snapshot-dir".into(), fresh.into()]);
         }
         args.extend([
             "--warm".into(),
@@ -2103,6 +2188,7 @@ impl Daemon {
                             vm: child.clone(),
                             socket,
                             pool: Some(dir.clone()),
+                            records: Some(dir.clone()),
                         });
                         self.rebalance(&mut state, dir);
                     }
@@ -2120,6 +2206,7 @@ impl Daemon {
                         vm: child.clone(),
                         socket,
                         pool: None,
+                        records: None,
                     }));
                 }
                 Err(e) => {
@@ -2384,6 +2471,7 @@ mod tests {
                 vm,
                 socket: ours,
                 pool: pool.map(PathBuf::from),
+                records: None,
             };
             (ready, theirs)
         }
@@ -2903,6 +2991,42 @@ mod tests {
     /// A collection removes templates a daemon before this one left half saved, and ones
     /// that record no origin; it keeps the one this daemon is saving, and does nothing
     /// while a run is being prepared (audit A13).
+    /// A working set comes whole from its parts, however many; parts past the template's
+    /// bound, parts of two generations, or a malformed one, are refused.
+    #[test]
+    fn working_sets_are_gathered_whole_and_bounded() {
+        let set: Vec<u8> = (0..(shards_ipc::MAX_PAYLOAD * 2 + 5)).map(|i| i as u8).collect();
+        let parts = shards_ipc::working_set_parts("g-1", &set);
+        assert_eq!(parts.len(), 3);
+        let mut gathering = WorkingSet::default();
+        let limit = set.len() as u64;
+        assert_eq!(gather(&mut gathering, limit, &parts[0]), Gathered::More);
+        assert_eq!(gather(&mut gathering, limit, &parts[1]), Gathered::More);
+        assert_eq!(
+            gather(&mut gathering, limit, &parts[2]),
+            Gathered::Whole("g-1".into(), set.clone())
+        );
+        // One byte short of room.
+        let mut short = WorkingSet::default();
+        let refused = parts
+            .iter()
+            .map(|p| gather(&mut short, limit - 1, p))
+            .find(|g| *g != Gathered::More);
+        assert!(matches!(refused, Some(Gathered::Refused(_))), "{refused:?}");
+        // Another generation's part in the middle.
+        let mut mixed = WorkingSet::default();
+        let other = shards_ipc::working_set_parts("g-2", &set);
+        assert_eq!(gather(&mut mixed, limit, &parts[0]), Gathered::More);
+        assert!(matches!(
+            gather(&mut mixed, limit, &other[1]),
+            Gathered::Refused(_)
+        ));
+        assert!(matches!(
+            gather(&mut WorkingSet::default(), limit, &[1]),
+            Gathered::Refused(_)
+        ));
+    }
+
     #[test]
     fn collections_remove_templates_nothing_can_use() {
         let t = Test::new("collect-templates");

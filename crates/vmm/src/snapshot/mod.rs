@@ -42,7 +42,7 @@ const WORKING_SET_MAGIC: [u8; 8] = *b"SHRDWSET";
 const WORKING_SET_VERSION: u32 = 1;
 /// A working set's bytes before its entries: magic, version, architecture, page size
 /// and count, with room to spare.
-const WORKING_SET_HEADER: u64 = 64;
+pub const WORKING_SET_HEADER: u64 = 64;
 const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 2: MachineConfig records whether the machine has a vsock device.
 /// 3: and its virtio-pmem files.
@@ -97,6 +97,9 @@ pub struct Pinned {
     pub snapshot: Snapshot,
     pub memory: File,
     pub generation: File,
+    /// The generation's name, which a working set recorded from it names (runtime.rs,
+    /// `accept_working_set`).
+    pub name: String,
 }
 
 /// Enough of a backing file's identity to refuse a restore against another file without
@@ -499,6 +502,11 @@ fn stage_with(
 }
 
 impl Staged {
+    /// The generation's name, once it is in place.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// The generation's directory, held open: it stays the generation's once the commit
     /// renames it into place.
     pub fn generation(&self) -> Result<File, String> {
@@ -626,10 +634,11 @@ fn open(dir: &Path, name: &str) -> Result<Pinned, Open> {
         snapshot,
         memory,
         generation,
+        name: name.to_string(),
     })
 }
 
-fn encode_working_set(pages: &[Touch], page: u64) -> Vec<u8> {
+pub fn encode_working_set(pages: &[Touch], page: u64) -> Vec<u8> {
     let mut w = Writer::default();
     WORKING_SET_MAGIC.iter().for_each(|&b| w.u8(b));
     w.u32(WORKING_SET_VERSION);
@@ -698,6 +707,43 @@ pub fn write_working_set(generation: &File, pages: &[Touch], page: u64) -> Resul
 /// The working set saved with the generation `generation` holds open, if it has one
 /// recorded at stage-2 pages of `page` bytes. It holds at most `max_pages` pages, as many
 /// as the guest has; a file too long for that is not read.
+/// The working set `bytes` holds, as [`encode_working_set`] wrote it and as a restore
+/// would take it: its pages aligned, distinct and no more than `max_pages`; `None` for one
+/// recorded at another page size.
+pub fn decode_working_set_bytes(
+    bytes: &[u8],
+    page: u64,
+    max_pages: u64,
+) -> Result<Option<Vec<Touch>>, String> {
+    let at = |e: &dyn std::fmt::Display| format!("the working set: {e}");
+    let max_pages = usize::try_from(max_pages).map_err(|e| at(&e))?;
+    decode_working_set(bytes, page, max_pages).map_err(|e| at(&e))
+}
+
+/// Writes the working set a VM recorded from generation `name` of the snapshot in `dir`
+/// (the daemon's: no VM writes a snapshot it restores, D30). Taken only if `name` is still
+/// the generation `dir` is at, and only as a restore would take it: recorded at `page`
+/// bytes, its pages aligned, distinct and no more than `max_pages` of the snapshot's guest.
+/// Returns how many pages it wrote: 0 for a set recorded from a generation since replaced,
+/// or at another page size.
+pub fn accept_working_set(
+    dir: &Path,
+    name: &str,
+    bytes: &[u8],
+    page: u64,
+    max_pages: impl FnOnce(&Snapshot) -> u64,
+) -> Result<usize, String> {
+    let pinned = read(dir)?;
+    if pinned.name != name {
+        return Ok(0);
+    }
+    let Some(pages) = decode_working_set_bytes(bytes, page, max_pages(&pinned.snapshot))? else {
+        return Ok(0);
+    };
+    write_working_set(&pinned.generation, &pages, page)?;
+    Ok(pages.len())
+}
+
 pub fn read_working_set(generation: &File, page: u64, max_pages: u64) -> Result<Option<Vec<Touch>>, String> {
     let at = |e: &dyn std::fmt::Display| format!("the working set: {e}");
     let max_bytes = max_pages
@@ -1159,6 +1205,35 @@ mod tests {
 
         /// A working set goes with the generation it was recorded from, wherever its
         /// directory has gone: the one a write returns, or a read pins.
+        /// A working set a VM sends is written only as a restore would read it: for the
+        /// generation it names while that is current, at this page size, within the guest.
+        #[test]
+        fn a_sent_working_set_is_written_only_as_a_restore_would_take_it() {
+            let s = Scratch::new("accept");
+            let dir = s.0.join("snap");
+            write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
+            let name = read(&dir).unwrap().name;
+            let (page, max) = (0x4000, 64);
+            let set = touches(&[0x8000_0000, 0x8000_4000, 0x8000_c000]);
+            let bytes = encode_working_set(&set, page);
+            let stored = || read_working_set(&read(&dir).unwrap().generation, page, max).unwrap();
+            // Another generation's, or recorded at another page size: nothing is written.
+            assert_eq!(
+                accept_working_set(&dir, "g-not-this", &bytes, page, |_| max),
+                Ok(0)
+            );
+            let other_page = encode_working_set(&set, page * 2);
+            assert_eq!(accept_working_set(&dir, &name, &other_page, page, |_| max), Ok(0));
+            assert_eq!(stored(), None);
+            // Past the guest, or not a working set: refused, and nothing is written.
+            assert!(accept_working_set(&dir, &name, &bytes, page, |_| 2).is_err());
+            assert!(accept_working_set(&dir, &name, b"not a working set", page, |_| max).is_err());
+            assert_eq!(stored(), None);
+            // The set that fits: written, and read back as sent.
+            assert_eq!(accept_working_set(&dir, &name, &bytes, page, |_| max), Ok(3));
+            assert_eq!(stored(), Some(set));
+        }
+
         #[test]
         fn working_sets_land_in_their_generation() {
             let pages = touches(&[0x8000_4000]);

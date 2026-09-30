@@ -81,9 +81,6 @@ struct Common {
     vsock: Option<PathBuf>,
     /// `--logs-in DIR`: where a warm VM's container logs are, which it may write in.
     logs_in: Option<PathBuf>,
-    /// `--settles-to DIR`: where the template it saves is moved once saved, in which it
-    /// then writes the working set it records.
-    settles_to: Option<PathBuf>,
     workload: Options,
     /// Whether a workload option was given.
     workload_options: bool,
@@ -97,7 +94,6 @@ impl Common {
             then: AfterSnapshot::Stop,
             vsock: None,
             logs_in: None,
-            settles_to: None,
             workload: Options::default(),
             workload_options: false,
         }
@@ -122,7 +118,6 @@ impl Common {
             }
             "--vsock" => self.vsock = Some(PathBuf::from(value("--vsock")?)),
             "--logs-in" => self.logs_in = Some(PathBuf::from(value("--logs-in")?)),
-            "--settles-to" => self.settles_to = Some(PathBuf::from(value("--settles-to")?)),
             "-e" | "--env" => w.env.push(text(value("--env")?)?),
             "-w" | "--workdir" => w.workdir = text(value("--workdir")?)?,
             "-u" | "--user" => w.user = text(value("--user")?)?,
@@ -173,7 +168,6 @@ struct Run {
     mode: Mode,
     workload: Options,
     logs_in: Option<PathBuf>,
-    settles_to: Option<PathBuf>,
 }
 
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
@@ -244,7 +238,6 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             mode: Mode::Warm { rootfs, fd },
             workload: common.workload,
             logs_in: common.logs_in,
-            settles_to: common.settles_to,
         });
     }
     let mode = match rootfs {
@@ -259,7 +252,6 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         mode,
         workload: common.workload,
         logs_in: common.logs_in,
-        settles_to: common.settles_to,
     })
 }
 
@@ -395,7 +387,7 @@ pub fn run_in(mut cfg: Config, rootfs: PathBuf, workload: &Options) -> ExitCode 
     };
     serve_workload(cfg.vsock.clone(), source, move |vsock| {
         cfg.vsock = Some(vsock);
-        start(&cfg, None, None)
+        start(&cfg, None)
     })
 }
 
@@ -418,23 +410,22 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         mode,
         workload,
         logs_in,
-        settles_to,
     } = match parsed(parse_run(args), RUN_USAGE) {
         Ok(run) => run,
         Err(code) => return code,
     };
     match mode {
-        Mode::Plain => supervise(start(&cfg, None, None), cfg.console, false),
+        Mode::Plain => supervise(start(&cfg, None), cfg.console, false),
         Mode::Template(rootfs) => {
             boot_into(&mut cfg, rootfs, true);
             with_vsock(cfg.vsock.clone(), |vsock| {
                 // Restored copies dial the host through this device.
                 cfg.vsock = Some(vsock);
-                supervise(start(&cfg, None, None), cfg.console, true)
+                supervise(start(&cfg, None), cfg.console, true)
             })
         }
         Mode::Workload(rootfs) => run_in(cfg, rootfs, &workload),
-        Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd, logs_in, settles_to),
+        Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd, logs_in),
     }
 }
 
@@ -541,13 +532,7 @@ fn warm_restore(_: RestoreConfig, _: i32, _: Option<PathBuf>) -> ExitCode {
 
 /// A warm VM's boot: `vm run --rootfs IMAGE [--snapshot-dir DIR] --warm FD`.
 #[cfg(unix)]
-fn warm_boot(
-    mut cfg: Config,
-    rootfs: PathBuf,
-    fd: i32,
-    logs: Option<PathBuf>,
-    settles_to: Option<PathBuf>,
-) -> ExitCode {
+fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: i32, logs: Option<PathBuf>) -> ExitCode {
     let daemon = match crate::warm::Link::new(fd) {
         Ok(link) => link,
         Err(e) => {
@@ -560,12 +545,12 @@ fn warm_boot(
     cfg.console = Console::Discard;
     serve_workload(None, Source::Warm(daemon), move |vsock| {
         cfg.vsock = Some(vsock);
-        start(&cfg, logs.as_deref(), settles_to.as_deref())
+        start(&cfg, logs.as_deref())
     })
 }
 
 #[cfg(not(unix))]
-fn warm_boot(_: Config, _: PathBuf, _: i32, _: Option<PathBuf>, _: Option<PathBuf>) -> ExitCode {
+fn warm_boot(_: Config, _: PathBuf, _: i32, _: Option<PathBuf>) -> ExitCode {
     report("warm VMs need Unix sockets, which shards does not support on this platform yet");
     ExitCode::from(125)
 }
@@ -710,8 +695,20 @@ fn serve_workload(
                                     .asked
                                     .load(std::sync::atomic::Ordering::Relaxed)
                                     .then(|| timing_json(&stopper, Some(&served_timing)));
-                                crate::warm::finish(&link, connection.as_ref(), &served, timing.as_deref());
-                                save_working_set(&stopper);
+                                // What the run touched goes to the daemon with its end, for the
+                                // template it was restored from, which no VM writes (D30). A
+                                // failure costs later runs their prefetch, and nothing else.
+                                let working_set = stopper.take_working_set().unwrap_or_else(|e| {
+                                    shards_vmm::debug!("{e}");
+                                    None
+                                });
+                                crate::warm::finish(
+                                    &link,
+                                    connection.as_ref(),
+                                    &served,
+                                    timing.as_deref(),
+                                    working_set.as_ref(),
+                                );
                                 (served, true)
                             }
                             // The daemon went without a request: nobody will ever send one.
@@ -795,21 +792,12 @@ fn end_recording_in(handle: &Handle, after: std::time::Duration) {
         .name("working-set".into())
         .spawn(move || {
             std::thread::sleep(after);
-            save_working_set(&handle);
+            if let Err(e) = handle.end_recording() {
+                shards_vmm::debug!("{e}");
+            }
         });
     if let Err(e) = spawned {
         shards_vmm::debug!("the working set's timer: {e}");
-    }
-}
-
-/// Saves the working set the VM records, if any. A failure costs later runs their
-/// prefetch, and nothing else: it goes to the debug log, never to a command's stderr.
-#[cfg(unix)]
-fn save_working_set(handle: &Handle) {
-    match handle.save_working_set() {
-        Ok(0) => {}
-        Ok(n) => shards_vmm::debug!("saved a working set of {n} pages"),
-        Err(e) => shards_vmm::debug!("{e}"),
     }
 }
 
@@ -877,7 +865,7 @@ fn max_rss_kib() -> u64 {
 /// Starts the VM `cfg` describes, once this process has confined itself to the files it
 /// names, the snapshot directory it saves to, its vsock sockets' directory and `logs`
 /// (D30).
-fn start(cfg: &Config, logs: Option<&Path>, settles_to: Option<&Path>) -> Result<(Handle, Running), String> {
+fn start(cfg: &Config, logs: Option<&Path>) -> Result<(Handle, Running), String> {
     // Whole paths: Seatbelt matches a file opened by a relative path against its rules
     // as named, and a snapshot records its files by absolute path anyway.
     let mut cfg = cfg.clone();
@@ -894,7 +882,6 @@ fn start(cfg: &Config, logs: Option<&Path>, settles_to: Option<&Path>) -> Result
     let logs = logs.map(absolute).transpose()?;
     let (cfg, logs) = (&cfg, logs.as_deref());
     let mut paths = crate::confine::Paths::default();
-    paths.write_later.extend(settles_to.map(absolute).transpose()?);
     paths.read.push(cfg.kernel.clone());
     paths.read.extend(cfg.initrd.iter().cloned());
     paths.read.extend(cfg.init.iter().cloned());
@@ -913,6 +900,9 @@ fn start(cfg: &Config, logs: Option<&Path>, settles_to: Option<&Path>) -> Result
         cfg.vsock.as_deref(),
         logs,
     );
+    // A host that runs no VM says so, before its files are confined: the check reads no
+    // input of the VM's.
+    vm::check_host()?;
     confine(&paths)?;
     vm::start(cfg)
 }
@@ -944,6 +934,9 @@ fn restore_vm(cfg: &RestoreConfig, logs: Option<&Path>) -> Result<(Handle, Runni
         cfg.vsock.as_deref(),
         logs,
     );
+    // A host that runs no VM says so, before its files are confined: the check reads no
+    // input of the VM's.
+    vm::check_host()?;
     confine(&paths)?;
     vm::restore(cfg)
 }

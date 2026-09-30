@@ -28,12 +28,16 @@ mod barrier;
 #[cfg(hv)]
 mod runtime;
 #[cfg(hv)]
-pub use runtime::{Handle, Running, check_host, max_vcpus, restore, start};
+pub use runtime::{
+    Handle, Running, accept_working_set, check_host, max_vcpus, restore, start, working_set_limit,
+};
 
 #[cfg(not(hv))]
 mod unsupported;
 #[cfg(not(hv))]
-pub use unsupported::{Handle, Running, check_host, max_vcpus, restore, start};
+pub use unsupported::{
+    Handle, Running, accept_working_set, check_host, max_vcpus, restore, start, working_set_limit,
+};
 
 /// A snapshot's vsock device and the restore's socket path come together or not at all.
 #[cfg(hv)]

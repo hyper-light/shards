@@ -86,11 +86,11 @@ the median, as the Seatbelt profile's compiling cost 3.7 ms [PM M53].
 - **Cost:** about 3.1 ms at launch, before a warm VM's request; on a cold `shards vm
   restore`, on its way, as Seatbelt's was.
 - **Open, to measure before relying on it:** that a guest-initiated vsock connection brokered
-  by descriptor meets the latency of a direct `connect`; that a bookmark to a directory
-  created after the grant's parent (the template's final name, D30 `--settles-to`) is not
-  needed, since the snapshot directory is granted before its rename; how the container prompt
-  behaves for a binary signed by another identity than the last (an upgrade from a release
-  to a local build).
+  by descriptor meets the latency of a direct `connect`; how the container prompt behaves
+  for a binary signed by another identity than the last (an upgrade from a release to a
+  local build). A working set is no longer the VM's to write: the VM sends it to the
+  daemon, which writes it with the template, so no grant for the template's final name is
+  needed (D30).
 
 ## 4. What Linux has, for comparison
 

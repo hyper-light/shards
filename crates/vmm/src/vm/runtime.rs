@@ -1,7 +1,7 @@
 //! vCPU threads and the VM lifecycle, on any backend and architecture: boot or restore,
 //! run, snapshot, stop.
 
-use std::fs::File;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 use std::thread::JoinHandle;
@@ -93,17 +93,26 @@ impl Handle {
         lock(&self.shared.recording).is_some()
     }
 
-    /// Stops recording the working set, and saves it with the snapshot the VM resumed
-    /// from. Returns how many pages it holds: 0 when nothing was being recorded.
-    pub fn save_working_set(&self) -> Result<usize, String> {
-        let Some((recorder, dir)) = lock(&self.shared.recording).take() else {
-            return Ok(0);
+    /// Stops recording the working set, and keeps what it recorded for
+    /// [`take_working_set`](Handle::take_working_set). The VM writes nothing of it: its
+    /// snapshot is a template other VMs restore, and no VM may write one (D30); the daemon
+    /// takes it and writes it ([`accept_working_set`]).
+    pub fn end_recording(&self) -> Result<(), String> {
+        let Some((recorder, name)) = lock(&self.shared.recording).take() else {
+            return Ok(());
         };
         let pages = machine::recorded(&recorder)?;
         if !pages.is_empty() {
-            snapshot::write_working_set(&dir, &pages, machine::PAGE)?;
+            *lock(&self.shared.recorded) = Some((name, snapshot::encode_working_set(&pages, machine::PAGE)));
         }
-        Ok(pages.len())
+        Ok(())
+    }
+
+    /// The working set recorded, encoded, and the name of the generation it goes with;
+    /// `None` if nothing was. Recording ends first, if it has not.
+    pub fn take_working_set(&self) -> Result<Option<(String, Vec<u8>)>, String> {
+        self.end_recording()?;
+        Ok(lock(&self.shared.recorded).take())
     }
 
     /// How many pages of its snapshot's working set this VM prefetched before it ran.
@@ -135,7 +144,10 @@ struct Shared {
     released_at_us: OnceLock<u128>,
     /// While a working set is recorded: what records it, and the directory of the
     /// snapshot it goes with, held open since the daemon may rename it.
-    recording: Mutex<Option<(machine::Recorder, File)>>,
+    recording: Mutex<Option<(machine::Recorder, String)>>,
+    /// What a recording that ended recorded, for the daemon: the generation's name and the
+    /// encoded working set.
+    recorded: Mutex<Option<(String, Vec<u8>)>>,
     /// Whether a snapshot is being taken, from its vCPUs parking to its commit: the guest
     /// runs again before the commit ends (PM M63).
     committing: Mutex<bool>,
@@ -165,6 +177,7 @@ impl Shared {
             kept: OnceLock::new(),
             released_at_us: OnceLock::new(),
             recording: Mutex::new(None),
+            recorded: Mutex::new(None),
             committing: Mutex::new(false),
             committed: Condvar::new(),
         }
@@ -347,6 +360,7 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
         snapshot: snap,
         memory: memory_file,
         generation,
+        name,
     } = snapshot::read(&cfg.dir)?;
     check_vcpus(snap.config.vcpus)?;
     let mut working_set = if cfg.prefetch {
@@ -373,7 +387,7 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     )?;
     // A working set is saved into the generation it was recorded from.
     let recorder = if recording {
-        machine::recorder(&machine).map(|r| (r, generation))
+        machine::recorder(&machine).map(|r| (r, name))
     } else {
         None
     };
@@ -387,6 +401,23 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
         *lock(&handle.shared.recording) = recorder;
     }
     Ok((handle, running))
+}
+
+/// The most bytes a working set of the snapshot in `dir` can take encoded: its header and
+/// 8 bytes for each page its guest has ([`guest_pages`]). The daemon takes no more of one.
+pub fn working_set_limit(dir: &Path) -> Result<u64, String> {
+    let pinned = snapshot::read(dir)?;
+    guest_pages(&pinned.snapshot)
+        .checked_mul(8)
+        .and_then(|b| b.checked_add(snapshot::WORKING_SET_HEADER))
+        .ok_or_else(|| format!("{}: a guest too large to bound", dir.display()))
+}
+
+/// Writes the working set a VM recorded from generation `name` of the snapshot in `dir`,
+/// for the daemon (`snapshot::accept_working_set`): at this host's page size, within the
+/// snapshot's guest ([`guest_pages`]).
+pub fn accept_working_set(dir: &Path, name: &str, bytes: &[u8]) -> Result<usize, String> {
+    snapshot::accept_working_set(dir, name, bytes, machine::PAGE, guest_pages)
 }
 
 /// Starts the machine's vCPUs; with `hold`, they wait for [`Handle::release`].
@@ -610,10 +641,7 @@ impl Coordinator {
         );
         if let AfterSnapshot::Resume = self.policy.then {
             if self.policy.working_set {
-                match staged.generation() {
-                    Ok(generation) => self.record(generation),
-                    Err(e) => warn!("not recording a working set: {e}"),
-                }
+                self.record(staged.name().to_string());
             }
             if let Err(e) = self.bus.resume() {
                 return failed(format!("resuming devices: {e}"));
@@ -640,7 +668,7 @@ impl Coordinator {
     /// Starts recording the working set of `generation`, the snapshot just written, with
     /// every vCPU parked, unless one is being recorded already. Without one, restores just
     /// run.
-    fn record(&self, generation: File) {
+    fn record(&self, generation: String) {
         let mut recording = lock(&self.sh.recording);
         if recording.is_some() {
             return;

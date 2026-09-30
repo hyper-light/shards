@@ -177,11 +177,6 @@ pub struct Paths {
     pub write: Vec<std::path::PathBuf>,
     /// Directories it may make, and in which it reads and writes anything.
     pub write_under: Vec<std::path::PathBuf>,
-    /// As `write_under`, for a directory not there when the VM starts, which a directory
-    /// it writes in becomes: the template the daemon renames its snapshot to. Seatbelt
-    /// matches it by name; Landlock needs no rule for it, since its snapshot directory's
-    /// rule holds the inode that becomes it.
-    pub write_later: Vec<std::path::PathBuf>,
     /// Directories it binds and dials Unix sockets in: its vsock device's.
     pub sockets_under: Vec<std::path::PathBuf>,
 }
@@ -249,7 +244,7 @@ pub fn profile(paths: &Paths) -> String {
             d,
         ));
     }
-    for d in paths.write_under.iter().chain(&paths.write_later) {
+    for d in &paths.write_under {
         p.push_str(&rule("file-read* file-write*", "subpath", d));
         // Its ancestors not there yet, which making it makes first: made, nothing more.
         let mut above = d.parent();
@@ -307,7 +302,8 @@ pub fn seatbelt(paths: &Paths) -> Result<(), String> {
 /// Landlock's maintainer asks (firecracker-microvm/firecracker#5771).
 ///
 /// Rules hold inodes, not names: a directory keeps its rule when renamed, as a template's
-/// is when the daemon settles it (`write_later`).
+/// is when the daemon settles it. What is written with a template after that, its working
+/// set, the daemon writes: no VM may write a template.
 #[cfg(target_os = "linux")]
 pub fn landlock(paths: &Paths) -> Result<(), String> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -399,7 +395,8 @@ pub fn landlock(paths: &Paths) -> Result<(), String> {
     let ruleset = unsafe { OwnedFd::from_raw_fd(ruleset as i32) };
     let file_rights = EXECUTE | WRITE_FILE | READ_FILE | TRUNCATE | IOCTL_DEV;
     let allow = |path: &std::path::Path, rights: u64| -> Result<(), String> {
-        let at = |e: std::io::Error| format!("Landlock, {}: {e}", path.display());
+        // As opening it would report it: a missing kernel reads as one.
+        let at = |e: std::io::Error| format!("{}: {e}", path.display());
         let name =
             std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| "a path with NUL".to_string())?;
         // SAFETY: open(2) of a NUL-terminated path, for a handle on its inode alone.

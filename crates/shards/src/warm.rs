@@ -227,12 +227,14 @@ pub fn started(link: &Link) {
 /// `docker run` reports it, and the VM lets go of the client's stdio before the status
 /// goes, so that both arrive before the client exits. A detached run's client is the
 /// daemon's to tell: `DONE` carries the reason. With `timing`, the status carries the
-/// VM's timing line for the client to print.
+/// VM's timing line for the client to print. A `working_set` the VM recorded, with the name
+/// of its generation, goes to the daemon before `DONE`, which ends what it reads of the run.
 pub fn finish(
     link: &Link,
     client: Option<&UnixStream>,
     served: &Result<workload::Ended, String>,
     timing: Option<&str>,
+    working_set: Option<&(String, Vec<u8>)>,
 ) {
     let (mut status, not_run) = match served {
         Ok(ended) => (ended.status, ended.not_run.as_deref()),
@@ -262,6 +264,13 @@ pub fn finish(
         && ended.lost > 0
     {
         let _ = shards_ipc::send(&link.daemon, kind::LOST, &ended.lost.to_be_bytes(), &[]);
+    }
+    if let Some((name, set)) = working_set {
+        for part in shards_ipc::working_set_parts(name, set) {
+            if shards_ipc::send(&link.daemon, kind::WORKING_SET, &part, &[]).is_err() {
+                break;
+            }
+        }
     }
     let _ = shards_ipc::send(&link.daemon, kind::DONE, &done, &[]);
     if let Some(client) = client {

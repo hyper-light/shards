@@ -95,6 +95,12 @@ pub mod kind {
     /// Warm VM → daemon, before `DONE`: bytes of the command's output its container's log
     /// could not keep, as a big-endian u64 (audit A12).
     pub const LOST: u8 = 16;
+    /// Warm VM → daemon, before `DONE`: the working set it recorded, for the daemon to
+    /// write with its template, which no VM may write (D30), in as many of these as its
+    /// size takes. Each is a flags byte ([`WORKING_SET_LAST`] on the last), a u8 length
+    /// and the name of the generation it was recorded from, then the next part of the
+    /// working set as the snapshot encodes it (vmm `snapshot::encode_working_set`).
+    pub const WORKING_SET: u8 = 17;
 }
 
 /// A container command as the client asks for it (`kind::CONTAINER`): its name and the
@@ -370,6 +376,45 @@ pub const RUN_DETACHED: u8 = 8;
 
 /// The largest payload a message may carry.
 pub const MAX_PAYLOAD: usize = 1 << 20;
+
+/// `kind::WORKING_SET`'s flag on the last part.
+pub const WORKING_SET_LAST: u8 = 1;
+
+/// A working set recorded from generation `name`, as the `kind::WORKING_SET` messages
+/// that carry it, each within [`MAX_PAYLOAD`]; none for a name longer than 255 bytes, which
+/// no generation's is.
+pub fn working_set_parts(name: &str, set: &[u8]) -> Vec<Vec<u8>> {
+    let Ok(len) = u8::try_from(name.len()) else {
+        return Vec::new();
+    };
+    let room = MAX_PAYLOAD - 2 - name.len();
+    let chunks: Vec<&[u8]> = if set.is_empty() {
+        vec![&[][..]]
+    } else {
+        set.chunks(room).collect()
+    };
+    let last = chunks.len() - 1;
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(i, chunk)| {
+            let mut part = Vec::with_capacity(2 + name.len() + chunk.len());
+            part.push(if i == last { WORKING_SET_LAST } else { 0 });
+            part.push(len);
+            part.extend_from_slice(name.as_bytes());
+            part.extend_from_slice(chunk);
+            part
+        })
+        .collect()
+}
+
+/// One `kind::WORKING_SET` message's flags, generation name and part.
+pub fn working_set_part(payload: &[u8]) -> Option<(u8, &str, &[u8])> {
+    let (&flags, rest) = payload.split_first()?;
+    let (&len, rest) = rest.split_first()?;
+    let (name, part) = rest.split_at_checked(usize::from(len))?;
+    Some((flags, std::str::from_utf8(name).ok()?, part))
+}
 /// The most descriptors a message may carry.
 pub const MAX_FDS: usize = 8;
 
@@ -382,6 +427,35 @@ pub use unix::*;
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    /// A working set goes in parts each within a message's payload, and comes back whole,
+    /// the last part alone flagged so; an empty one is one part, and a name too long for
+    /// its length byte sends nothing.
+    #[test]
+    fn working_sets_cross_in_parts_and_come_back_whole() {
+        let name = "g-0000000000000000000000ff-1f-0";
+        for len in [
+            0,
+            1,
+            MAX_PAYLOAD - 2 - name.len(),
+            MAX_PAYLOAD,
+            3 * MAX_PAYLOAD + 7,
+        ] {
+            let set: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            let parts = working_set_parts(name, &set);
+            let mut back = Vec::new();
+            for (i, part) in parts.iter().enumerate() {
+                assert!(part.len() <= MAX_PAYLOAD, "{len}: part {i}");
+                let (flags, got, bytes) = working_set_part(part).unwrap();
+                assert_eq!(got, name);
+                assert_eq!(flags == WORKING_SET_LAST, i == parts.len() - 1, "{len}: part {i}");
+                back.extend_from_slice(bytes);
+            }
+            assert_eq!(back, set, "{len}");
+        }
+        assert!(working_set_parts(&"g".repeat(256), b"x").is_empty());
+        assert!(working_set_part(&[0, 9, b'a']).is_none(), "a name past its end");
+    }
 
     #[test]
     fn runs_round_trip_and_nothing_else_decodes() {
