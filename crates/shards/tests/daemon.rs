@@ -259,7 +259,7 @@ fn a_dead_daemons_waiting_vms_end() {
     let (image, _) = served();
     let home = home("daemon-killed", &image);
     let templates = home.join("templates").to_string_lossy().into_owned();
-    eventually("the pool did not fill", || processes_with(&templates).len() >= 2);
+    eventually("the pool did not fill", || !processes_with(&templates).is_empty());
     let daemon = daemon_pid(&home).expect("a daemon pid");
     // SAFETY: kill(2) of the daemon this test's run started.
     unsafe { libc::kill(daemon, libc::SIGKILL) };
@@ -331,6 +331,19 @@ fn interactive_stdin_ends_with_its_client() {
     let (image, _) = served();
     let home = home("daemon-stdin", &image);
     let templates = home.join("templates").to_string_lossy().into_owned();
+    // The warm VMs one of which serves the run, once the VMs of the runs before have
+    // gone: the same for 300 ms.
+    let mut waiting = processes_with(&templates);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut since = Instant::now();
+    while waiting.is_empty() || since.elapsed() < Duration::from_millis(300) {
+        assert!(Instant::now() < deadline, "the pool did not settle: {waiting:?}");
+        std::thread::sleep(Duration::from_millis(20));
+        let now = processes_with(&templates);
+        if now != waiting {
+            (waiting, since) = (now, Instant::now());
+        }
+    }
     let mut client = Command::new(shards())
         .args(["run", "-i", "--pull", "never", &image, "cat"])
         .env("SHARDS_HOME", &*home)
@@ -345,14 +358,16 @@ fn interactive_stdin_ends_with_its_client() {
     let mut line = String::new();
     out.read_line(&mut line).unwrap();
     assert_eq!(line, "through the client\n");
-    // The pool refills while the run goes on: two waiting, one serving.
+    // The pool refills while the run goes on: one waiting, besides the one serving.
     eventually("the pool did not refill", || {
-        processes_with(&templates).len() == 3
+        processes_with(&templates).len() > waiting.len()
     });
     client.kill().unwrap();
     client.wait().unwrap();
+    // The VM that served it ends; those still waiting stay.
     eventually("the run outlived its client's stdin", || {
-        processes_with(&templates).len() == 2
+        let now = processes_with(&templates);
+        waiting.iter().filter(|pid| now.contains(pid)).count() == waiting.len() - 1
     });
 }
 
@@ -860,7 +875,7 @@ fn a_daemon_refuses_settings_it_cannot_keep() {
 }
 
 /// Warm VMs kept ahead of runs are bounded all pools together (audit A13): with room
-/// for two, a second template's pool takes the first's, least recently claimed from, and
+/// for one, a second template's pool takes the first's, least recently claimed from, and
 /// the first is still served, on demand.
 #[test]
 fn warm_vms_are_bounded_across_templates() {
@@ -872,8 +887,8 @@ fn warm_vms_are_bounded_across_templates() {
     let home = home_with("daemon-warm-max");
     let env: [(&str, &OsStr); 3] = [
         ("SHARDS_HOME", home.as_os_str()),
-        ("SHARDS_POOL", "2".as_ref()),
-        ("SHARDS_WARM_MAX", "2".as_ref()),
+        ("SHARDS_POOL", "1".as_ref()),
+        ("SHARDS_WARM_MAX", "1".as_ref()),
     ];
     let templates = home.join("templates");
     let warm = |template: &Path| processes_with(&template.to_string_lossy()).len();
@@ -883,7 +898,7 @@ fn warm_vms_are_bounded_across_templates() {
     };
     run(&first);
     run(&first);
-    eventually("the first pool did not fill", || warm(&templates) == 2);
+    eventually("the first pool did not fill", || warm(&templates) == 1);
     run(&second);
     run(&second);
     let dirs: Vec<PathBuf> = std::fs::read_dir(&templates)
@@ -897,12 +912,84 @@ fn warm_vms_are_bounded_across_templates() {
         .max_by_key(|d| std::fs::metadata(d).unwrap().modified().unwrap())
         .unwrap();
     eventually("the second pool did not take the room", || {
-        warm(newest) == 2 && warm(&templates) == 2
+        warm(newest) == 1 && warm(&templates) == 1
     });
     // Never more than the bound, as the first is served again.
     run(&first);
     std::thread::sleep(Duration::from_millis(500));
-    assert!(warm(&templates) <= 2, "{} warm VMs", warm(&templates));
+    assert!(warm(&templates) <= 1, "{} warm VMs", warm(&templates));
+    assert_eq!(
+        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
+        Some(0)
+    );
+}
+
+/// A pool keeps what its runs need while they come (audit A13): runs well apart keep one
+/// warm VM, not the most a pool may keep; runs at once keep more, up to that most; and a
+/// pool unclaimed past `SHARDS_POOL_KEEP` keeps none. The next run is served all the
+/// same, and its pool keeps VMs again.
+#[test]
+fn pools_keep_what_their_runs_need_while_they_come() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home_with("daemon-demand");
+    let env: [(&str, &OsStr); 3] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_POOL", "3".as_ref()),
+        ("SHARDS_POOL_KEEP", "4".as_ref()),
+    ];
+    let templates = home.join("templates");
+    let warm = || processes_with(&templates.to_string_lossy()).len();
+    let settled = |what: &str, want: &dyn Fn(usize) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !want(warm()) {
+            assert!(
+                Instant::now() < deadline,
+                "{what}: {} warm\n{}",
+                warm(),
+                std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let args = [image.as_str(), "exit", "0"];
+    let run = || {
+        let run = run_shards_env(&["run"], &args, &env, TIMEOUT);
+        assert_eq!(run.status, Some(0), "{}", run.stderr);
+    };
+    // Runs a second apart, far past a refill: each is served by the one VM refilled for
+    // the run before.
+    for _ in 0..4 {
+        run();
+        settled("one run at a time", &|n| n == 1);
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    // Three at once: the pool keeps more for the next burst, never past its most.
+    let burst: Vec<_> = (0..3)
+        .map(|_| {
+            let env: Vec<(String, std::ffi::OsString)> = env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_os_string()))
+                .collect();
+            let image = image.clone();
+            std::thread::spawn(move || {
+                let env: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
+                run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT).status
+            })
+        })
+        .collect();
+    for b in burst {
+        assert_eq!(b.join().unwrap(), Some(0));
+    }
+    settled("a burst of three", &|n| n >= 2);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(warm() <= 3, "{} warm, past the pool's most", warm());
+    // Unclaimed past its keep-alive: nothing, until the next run.
+    settled("past the keep-alive", &|n| n == 0);
+    run();
+    settled("after the keep-alive", &|n| n >= 1);
     assert_eq!(
         run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
         Some(0)

@@ -788,8 +788,8 @@ for the exit status.
     - It raises its soft limit on descriptors to its hard one, capped at
       `kern.maxfilesperproc` on macOS, as Go's runtime raises its own (go1.25.0
       src/syscall/rlimit.go, after go.dev/issue/46279): macOS starts a process with 256.
-  - It keeps SHARDS_POOL warm VMs (default 2) of each template it has served. A pool
-    refills once its VM has taken its run, since starting the next VM on the request's
+  - It keeps up to SHARDS_POOL warm VMs (default 2) of each template it has served, as
+    many as its runs need (below). A pool refills once its VM has taken its run, since starting the next VM on the request's
     path cost 200–600 µs [PM M26], and on a thread of its own, so that the run's own
     messages are read as they come. A run with no template boots a VM that saves one on the way, and a
     run with its own kernel and init boots every time. A template whose warm VMs fail
@@ -809,8 +809,23 @@ for the exit status.
       larger than all pools may keep, or more than 256 warm VMs (the clients' bound, for
       the same threads and descriptors) stop it, and `shards daemon --detached` says
       why to the client that started it, at once.
-    - **Not yet:** ready counts that follow demand, and collecting the templates, root
-      filesystems and blobs no tag, template or run still needs.
+    - **A pool keeps what its runs need while they come** (`daemon/demand.rs`).
+      - Its size is the largest burst of runs seen within its keep-alive, at least one
+        and at most SHARDS_POOL. A burst is the runs that arrive within one refill of
+        each other, the refill's time, from a warm VM's start to its `READY`, estimated
+        as TCP estimates a round trip's, and its window that estimate's retransmission
+        timeout, SRTT + 4·RTTVAR (RFC 6298 §2; its 1 s initial RTO until the first
+        refill is timed): runs closer together than that may wait for a refill.
+      - A pool unclaimed for SHARDS_POOL_KEEP seconds (600) ends its ready VMs and keeps
+        none until its next run, which is served all the same: a fixed keep-alive, as
+        AWS keeps an idle function 10 minutes and Azure 20 (Shahrad et al., "Serverless
+        in the Wild", USENIX ATC 2020, §1). Their hybrid histogram policy, which sets
+        each application's keep-alive and pre-warming from its inter-arrival times, is
+        not taken: the thresholds that say when its histogram is representative are not
+        published, and no traces of agents' runs exist here to set them.
+    - **Not yet:** collecting the templates, root filesystems and blobs no tag, template
+      or run still needs; and measuring fleets of 1 to 1,000 templates under bursts and
+      low memory.
   - **It keeps its copies of the client's descriptors until the VM says `TAKEN`.**
     XNU's collector of in-flight descriptors flushes a socket in flight that no process
     holds: the client's connection then read end of stream, and 1 run in 13 to 53 never

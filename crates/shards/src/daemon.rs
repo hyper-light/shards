@@ -32,6 +32,7 @@ use shards_vmm::vm::Config;
 use crate::containers::{self, Container, Registry, Removal, State as Life};
 
 mod commands;
+mod demand;
 mod logs;
 use crate::run::{Boot, Prepared};
 use crate::spec::{LogRetention, NOT_RUN, log_segment};
@@ -42,7 +43,9 @@ const USAGE: &str = "usage: shards daemon [--detached | stop]
   --detached: run it in the background, writing messages to daemon.log in SHARDS_HOME, as
     `shards run` starts it.
   stop: have the running daemon end its runs, as dockerd ends containers, and exit.
-  SHARDS_POOL: warm microVMs kept for each image (default 2).";
+  SHARDS_POOL: the most warm microVMs kept for each image (default 2): as many as its
+    runs have come at once, while it is used.
+  SHARDS_POOL_KEEP: seconds an image's warm microVMs are kept after its last run (600).";
 
 /// How long a VM may take to be ready: a restore takes milliseconds, a boot that saves a
 /// template tens of them.
@@ -58,6 +61,10 @@ const DEFAULT_WARM_MAX: usize = 16;
 /// daemon, whose clients are capped at `MAX_CLIENTS` for the same reason.
 const MAX_WARM_MAX: usize = MAX_CLIENTS;
 const DEFAULT_IDLE: Duration = Duration::from_secs(900);
+/// How long a pool keeps warm VMs after its last claim unless `SHARDS_POOL_KEEP` says: as
+/// AWS keeps an idle function, 10 minutes (Shahrad et al., "Serverless in the Wild",
+/// USENIX ATC 2020, §1).
+const DEFAULT_KEEP: Duration = Duration::from_secs(600);
 /// Warm VMs a run may try: one can end while it waits, or before it has taken the run.
 const HANDOFF_TRIES: usize = 3;
 /// How long a warm VM may take to say it has taken a run: it does so right after it
@@ -136,8 +143,9 @@ struct Pool {
     failures: u32,
     /// Runs waiting for a VM of it.
     waiting: usize,
-    /// When a run last took one of its VMs, for eviction: least recently first.
-    claimed: Option<Instant>,
+    /// Its runs' arrivals and its refills' times, which say how many VMs it keeps; its
+    /// last claim orders eviction, least recent first.
+    demand: demand::Demand,
 }
 
 #[derive(Default)]
@@ -235,10 +243,13 @@ struct Daemon {
     identity: Identity,
     /// The socket, relative to the working directory, the home.
     socket: &'static Path,
+    /// The most warm VMs a template's pool keeps ([`demand`]).
     target: usize,
     /// Warm VMs kept ahead of runs, all pools together ([`DEFAULT_WARM_MAX`]).
     warm_max: usize,
     idle: Duration,
+    /// How long a pool keeps warm VMs after its last claim ([`DEFAULT_KEEP`]).
+    keep: Duration,
     /// How much of each container's output its log keeps.
     logs: LogRetention,
     /// How long a client may take to send its request ([`REQUEST_TIMEOUT`]).
@@ -426,6 +437,9 @@ struct Settings {
     warm_max: usize,
     /// How long it stays with nothing to do: `SHARDS_DAEMON_IDLE`, in seconds.
     idle: Duration,
+    /// How long a template's pool keeps warm VMs after its last claim:
+    /// `SHARDS_POOL_KEEP`, in seconds.
+    keep: Duration,
     /// How much of each container's output its log keeps: `SHARDS_LOG_MAX_SIZE` and
     /// `SHARDS_LOG_MAX_FILE`.
     logs: LogRetention,
@@ -449,6 +463,7 @@ fn settings() -> Result<Settings, String> {
         ));
     }
     let idle = Duration::from_secs(count("SHARDS_DAEMON_IDLE", DEFAULT_IDLE.as_secs())?);
+    let keep = Duration::from_secs(count("SHARDS_POOL_KEEP", DEFAULT_KEEP.as_secs())?);
     let logs = LogRetention {
         size: count("SHARDS_LOG_MAX_SIZE", DEFAULT_LOGS.size)?,
         files: count("SHARDS_LOG_MAX_FILE", DEFAULT_LOGS.files)?,
@@ -463,6 +478,7 @@ fn settings() -> Result<Settings, String> {
         pool,
         warm_max,
         idle,
+        keep,
         logs,
     })
 }
@@ -576,6 +592,7 @@ impl Daemon {
             target: settings.pool,
             warm_max: settings.warm_max,
             idle: settings.idle,
+            keep: settings.keep,
             logs: settings.logs,
             request_timeout: REQUEST_TIMEOUT,
             state: Mutex::default(),
@@ -677,6 +694,7 @@ impl Daemon {
                     }
                 }
             }
+            self.age_pools();
             let quiet = self.busy.load(Ordering::SeqCst) == 0 && lock(&self.runs).is_empty();
             let idle = quiet && lock(&self.last).elapsed() >= self.idle;
             if !self.closed.load(Ordering::SeqCst) && (self.stopping.load(Ordering::SeqCst) || idle) {
@@ -1713,9 +1731,11 @@ impl Daemon {
                 state.pools.remove(dir);
                 return Err(Claim::Broken);
             }
+            if !waiting {
+                pool.demand.claimed(Instant::now(), self.target);
+            }
             // Its pool refills once it has its run (handle).
             if let Some(ready) = pool.ready.pop_front() {
-                pool.claimed = Some(Instant::now());
                 leave(&mut state, waiting);
                 return Ok(ready);
             }
@@ -1755,9 +1775,12 @@ impl Daemon {
             if pool.failures >= MAX_FAILURES {
                 return;
             }
+            let now = Instant::now();
+            pool.demand.begin(now);
+            let target = pool.demand.target(now, self.target, self.keep);
             let have = pool.ready.len() + pool.starting;
             let for_runs = pool.waiting.saturating_sub(pool.starting);
-            let ahead = self.target.saturating_sub(have + for_runs);
+            let ahead = target.saturating_sub(have + for_runs);
             (for_runs, ahead)
         };
         let ahead = ahead.min(self.room(state, dir, ahead));
@@ -1781,6 +1804,28 @@ impl Daemon {
         }
     }
 
+    /// Ends the ready VMs of pools unclaimed past their keep-alive, and forgets the pools
+    /// that hold nothing (audit A13).
+    fn age_pools(&self) {
+        let now = Instant::now();
+        let mut state = lock(&self.state);
+        state.pools.retain(|dir, pool| {
+            if pool.waiting > 0 || !pool.demand.expired(now, self.keep) {
+                return true;
+            }
+            for aged in pool.ready.drain(..) {
+                log(format!(
+                    "ending warm VM {} of {}: unclaimed for {:?} (SHARDS_POOL_KEEP)",
+                    aged.vm.id(),
+                    dir.display(),
+                    self.keep
+                ));
+                let _ = aged.vm.kill(libc::SIGKILL);
+            }
+            pool.starting > 0
+        });
+    }
+
     /// Room for up to `want` more warm VMs ahead of runs beside `dir`'s: within
     /// `warm_max`, all pools together, made by ending the ready VMs of other pools, least
     /// recently claimed from first.
@@ -1797,7 +1842,7 @@ impl Daemon {
                 .pools
                 .iter_mut()
                 .filter(|(d, p)| d.as_path() != dir && !p.ready.is_empty())
-                .min_by_key(|(_, p)| p.claimed);
+                .min_by_key(|(_, p)| p.demand.last());
             let Some((cold, pool)) = coldest else {
                 break;
             };
@@ -1889,6 +1934,7 @@ impl Daemon {
     /// end. A pooled VM that ends while waiting leaves its pool, which refills.
     fn watch(self: &Arc<Self>, child: &Arc<shards_ipc::Child>, socket: UnixStream, dest: For) {
         let pid = child.id();
+        let began = Instant::now();
         let ready = ready(&socket, pid);
         match &dest {
             For::Pool(dir) => {
@@ -1899,6 +1945,7 @@ impl Daemon {
                 match ready {
                     Ok(()) => {
                         pool.failures = 0;
+                        pool.demand.refilled(began.elapsed());
                         pool.ready.push_back(Ready {
                             vm: child.clone(),
                             socket,
@@ -2152,6 +2199,7 @@ mod tests {
                     pool: 0,
                     warm_max: DEFAULT_WARM_MAX,
                     idle: DEFAULT_IDLE,
+                    keep: DEFAULT_KEEP,
                     logs: DEFAULT_LOGS,
                 },
                 containers,
@@ -2624,6 +2672,60 @@ mod tests {
         assert!(!lock(&t.daemon.waiters).contains_key(&id), "a waiter left behind");
         say(&vm, kind::DONE, &[143]);
         joined(starting.run).unwrap();
+    }
+
+    /// A pool unclaimed past its keep-alive ends its ready VMs and is forgotten; one
+    /// claimed within it, or with a run waiting, keeps them (audit A13).
+    #[test]
+    fn pools_unclaimed_past_their_keep_alive_end_their_vms() {
+        let mut t = Test::new("aging");
+        Arc::get_mut(&mut t.daemon).unwrap().keep = Duration::from_millis(100);
+        let t0 = Instant::now();
+        let mut vms = Vec::new();
+        {
+            let mut state = lock(&t.daemon.state);
+            for (dir, waiting) in [("cold", 0), ("warm", 0), ("waited", 1)] {
+                let (ready, theirs) = t.warm_vm(Some(dir));
+                vms.push((dir, ready.vm.clone(), theirs));
+                let pool = state.pools.entry(PathBuf::from(dir)).or_default();
+                pool.demand.begin(t0);
+                pool.waiting = waiting;
+                pool.ready.push_back(ready);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        lock(&t.daemon.state)
+            .pools
+            .get_mut(Path::new("warm"))
+            .unwrap()
+            .demand
+            .claimed(Instant::now(), 2);
+        t.daemon.age_pools();
+        let state = lock(&t.daemon.state);
+        assert!(
+            !state.pools.contains_key(Path::new("cold")),
+            "an aged pool is forgotten"
+        );
+        assert_eq!(state.pools[Path::new("warm")].ready.len(), 1);
+        assert_eq!(state.pools[Path::new("waited")].ready.len(), 1);
+        drop(state);
+        // Whether a VM has ended, without reaping it.
+        let ended = |vm: &shards_ipc::Child| {
+            // SAFETY: an all-zero siginfo_t is valid; waitid(2) fills it for our child.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+            // SAFETY: as above, for a child of this process.
+            assert_eq!(unsafe { libc::waitid(libc::P_PID, vm.id(), &mut info, flags) }, 0);
+            // SAFETY: waitid filled `info`, whose pid is 0 while the child runs.
+            let pid = unsafe { info.si_pid() };
+            pid != 0
+        };
+        let deadline = Instant::now() + PATIENCE;
+        while !ended(&vms[0].1) {
+            assert!(Instant::now() < deadline, "the aged VM goes on");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!ended(&vms[1].1) && !ended(&vms[2].1), "a kept VM ended");
     }
 
     /// A warm VM that ends before it says TAKEN surely never had the run, even once its
