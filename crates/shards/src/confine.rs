@@ -28,6 +28,10 @@ pub fn confine() -> Result<(), String> {
         libc::SYS_newfstatat,
         libc::SYS_statx,
         libc::SYS_openat,
+        // musl's `open`, `stat` and `lstat`, where glibc's make the *at calls.
+        libc::SYS_open,
+        libc::SYS_stat,
+        libc::SYS_lstat,
         libc::SYS_access,
         libc::SYS_faccessat2,
         libc::SYS_getdents64,
@@ -95,7 +99,13 @@ pub fn confine() -> Result<(), String> {
     let mut rules: Vec<Rule> = any.into_iter().map(Rule::any).collect();
     // The requests' low 32 bits: the kernel's `cmd` is an unsigned int.
     let mut requests: Vec<u32> = shards_vmm::hv::IOCTLS.iter().map(|&r| r as u32).collect();
-    requests.extend([libc::FIONBIO as u32, libc::TCGETS as u32, libc::TCSETS as u32]);
+    // `isatty` asks TCGETS in glibc and TIOCGWINSZ in musl.
+    requests.extend([
+        libc::FIONBIO as u32,
+        libc::TCGETS as u32,
+        libc::TCSETS as u32,
+        libc::TIOCGWINSZ as u32,
+    ]);
     rules.push(Rule::with(libc::SYS_ioctl, 1, &requests));
     let commands = [
         libc::F_DUPFD,
