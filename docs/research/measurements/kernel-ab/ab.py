@@ -2,10 +2,13 @@
 """Two guest kernels, A and B, booted and restored on this host in turn.
 
     ab.py --bin DIR --init FILE --guest FILE --a KERNEL --b KERNEL [--runs N]
+          [--a-cmdline ARGS] [--b-cmdline ARGS]
 
 --bin is a directory holding shards, shardsd and shards-vm (on macOS, signed copies such
 as the E2E tests' target/e2e/shards-*). --init is shards-init, which boots; --guest is
 the test guest (crates/testguest), whose `resume` mode takes the snapshot restored.
+--a-cmdline and --b-cmdline add to each arm's kernel command line, so one kernel can be
+set against itself booted another way (`preempt=full`).
 
 Each sample is a fresh shards process. Pairs run in the order A B, then B A, and so on,
 so drift on the host falls on both kernels alike. After 3 warm-ups of each, it reports
@@ -60,19 +63,19 @@ def shards(bin_dir, *args):
     return timing(r.stderr)
 
 
-def boot(bin_dir, kernel, init):
+def boot(bin_dir, kernel, init, extra):
     t = shards(
         bin_dir, "vm", "run", "--kernel", kernel, "--init", init, "--cpus", "1",
-        "--memory", "256", "--cmdline", "quiet panic=-1", "--no-console",
+        "--memory", "256", "--cmdline", f"quiet panic=-1 {extra}".strip(), "--no-console",
     )
     init_us = marker(t, INIT_STARTED)
     return {"boot_kernel": init_us - t["entry_us"], "boot_to_init": init_us}
 
 
-def snapshot(bin_dir, kernel, guest, dir):
+def snapshot(bin_dir, kernel, guest, dir, extra):
     shards(
         bin_dir, "vm", "run", "--kernel", kernel, "--init", guest, "--cpus", "1",
-        "--memory", "256", "--cmdline", "quiet panic=-1 shards_test=resume",
+        "--memory", "256", "--cmdline", f"quiet panic=-1 shards_test=resume {extra}".strip(),
         "--no-console", "--snapshot-dir", dir,
     )
 
@@ -92,18 +95,21 @@ def main():
     for flag in ("--bin", "--init", "--guest", "--a", "--b"):
         ap.add_argument(flag, required=True)
     ap.add_argument("--runs", type=int, default=100)
+    ap.add_argument("--a-cmdline", default="")
+    ap.add_argument("--b-cmdline", default="")
     args = ap.parse_args()
     kernels = {"A": args.a, "B": args.b}
+    extras = {"A": args.a_cmdline, "B": args.b_cmdline}
     work = tempfile.mkdtemp(prefix="kernel-ab-")
     try:
         snaps = {}
         for name, kernel in kernels.items():
             snaps[name] = os.path.join(work, name)
-            snapshot(args.bin, kernel, args.guest, snaps[name])
+            snapshot(args.bin, kernel, args.guest, snaps[name], extras[name])
         samples = {name: {} for name in kernels}
 
         def one(name, keep):
-            got = boot(args.bin, kernels[name], args.init)
+            got = boot(args.bin, kernels[name], args.init, extras[name])
             got.update(restore(args.bin, snaps[name]))
             if keep:
                 for metric, us in got.items():
@@ -120,7 +126,7 @@ def main():
     ).stdout.strip()
     print(f"host {platform.machine()} {platform.platform()} · revision {rev} · n={args.runs}")
     for name, kernel in kernels.items():
-        print(f"{name}: {os.path.basename(kernel)}")
+        print(f"{name}: {os.path.basename(kernel)} {extras[name]}".rstrip())
     print(f"{'metric':<14} {'kernel':<6} {'p50':>8} {'p90':>8} {'p99':>8} {'max':>8}  (us)")
     for metric in samples["A"]:
         for name in kernels:
