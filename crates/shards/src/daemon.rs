@@ -1964,6 +1964,11 @@ enum Untaken {
 fn hand_over(vm: &UnixStream, payload: &[u8], fds: &[BorrowedFd<'_>]) -> Result<(), Untaken> {
     // A request cut short is no request: the VM never had all of it.
     shards_ipc::send(vm, kind::RUN, payload, fds).map_err(|e| Untaken::Surely(e.to_string()))?;
+    taken(vm)
+}
+
+/// Waits for a warm VM sent a run to say it has taken it.
+fn taken(vm: &UnixStream) -> Result<(), Untaken> {
     // macOS refuses options on a socket its peer has closed (EINVAL, xnu sosetoptlock):
     // the read then finds the end at once.
     match vm.set_read_timeout(Some(TAKE_TIMEOUT)) {
@@ -2619,6 +2624,27 @@ mod tests {
         assert!(!lock(&t.daemon.waiters).contains_key(&id), "a waiter left behind");
         say(&vm, kind::DONE, &[143]);
         joined(starting.run).unwrap();
+    }
+
+    /// A warm VM that ends before it says TAKEN surely never had the run, even once its
+    /// socket is closed before the daemon waits, when macOS refuses the wait's timeout
+    /// (EINVAL); one that said TAKEN and ended has it, and one that said anything else may
+    /// (audit A06).
+    #[test]
+    fn a_vm_gone_before_the_wait_surely_never_took_the_run() {
+        let (daemon_end, vm) = UnixStream::pair().unwrap();
+        drop(vm);
+        assert_eq!(taken(&daemon_end), Err(Untaken::Surely("it ended first".into())));
+
+        let (daemon_end, vm) = UnixStream::pair().unwrap();
+        say(&vm, kind::TAKEN, &[]);
+        drop(vm);
+        assert_eq!(taken(&daemon_end), Ok(()));
+
+        let (daemon_end, vm) = UnixStream::pair().unwrap();
+        say(&vm, kind::STARTED, &[]);
+        drop(vm);
+        assert!(matches!(taken(&daemon_end), Err(Untaken::Unknown(_))));
     }
 
     /// A client that sends no request, or trickles one out, is let go once its time is up,
