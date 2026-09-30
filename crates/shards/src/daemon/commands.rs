@@ -4,6 +4,7 @@
 //! (shards_cmdline); the daemon reads it again by the same rules, and does what dockerd
 //! would, in the order and with the words the Docker CLI and dockerd use.
 
+use std::io;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -33,22 +34,46 @@ pub(super) struct Reply<'a>(pub &'a UnixStream);
 
 impl Reply<'_> {
     fn out(&self, line: &str) {
-        let _ = shards_ipc::send(self.0, kind::OUT, format!("{line}\n").as_bytes(), &[]);
+        let _ = self.bytes(LOG_STDOUT, format!("{line}\n").as_bytes());
     }
 
     fn err(&self, line: &str) {
-        let _ = shards_ipc::send(self.0, kind::ERR, format!("{line}\n").as_bytes(), &[]);
+        let _ = self.bytes(LOG_STDERR, format!("{line}\n").as_bytes());
     }
 
-    /// Bytes for the client's stdout (`stream` 1) or stderr, as they are.
-    fn bytes(&self, stream: u8, bytes: &[u8]) -> bool {
+    /// Bytes for the client's stdout (`stream` 1) or stderr, as they are, in messages of
+    /// at most what one may carry: a line of any length arrives whole, and the client
+    /// writes the pieces as they come (audit A08). An error means the client did not get
+    /// them all.
+    fn bytes(&self, stream: u8, bytes: &[u8]) -> io::Result<()> {
         let which = if stream == LOG_STDERR {
             kind::ERR
         } else {
             kind::OUT
         };
-        shards_ipc::send(self.0, which, bytes, &[]).is_ok()
+        for piece in bytes.chunks(shards_ipc::MAX_PAYLOAD) {
+            shards_ipc::send(self.0, which, piece, &[])?;
+        }
+        Ok(())
     }
+}
+
+/// What `logs` answers when its output did not all reach the client: status 1. A client
+/// that hung up is nobody's to tell; anything else is said on stderr, if that still
+/// arrives, and in the daemon's log.
+fn undelivered(e: &io::Error, reply: &Reply<'_>) -> u8 {
+    let hung_up = matches!(
+        e.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::NotConnected
+    );
+    if !hung_up {
+        super::log(format!("sending a container's logs: {e}"));
+        reply.err(&format!("shards: sending the logs: {e}"));
+    }
+    1
 }
 
 /// Linux's signals by name, as dockerd takes them (moby/sys/signal v0.7.1,
@@ -158,7 +183,7 @@ impl Daemon {
             Outcome::Run(parsed) => parsed,
             // The client answers these itself; this is what it would have said.
             Outcome::Help { .. } => {
-                reply.bytes(LOG_STDOUT, flags::help(command, path, 80).as_bytes());
+                let _ = reply.bytes(LOG_STDOUT, flags::help(command, path, 80).as_bytes());
                 return 0;
             }
             Outcome::Fail { text, status, .. } => {
@@ -609,8 +634,8 @@ impl Daemon {
                 Admit::Stop => return 0,
                 Admit::Pass => {}
             }
-            if !line.send(reply, shown) {
-                return 0;
+            if let Err(e) = line.send(reply, shown) {
+                return undelivered(&e, reply);
             }
         }
         if !follow {
@@ -626,8 +651,8 @@ impl Daemon {
                     Admit::Stop => return 0,
                     Admit::Pass => {}
                 }
-                if !line.send(reply, shown) {
-                    return 0;
+                if let Err(e) = line.send(reply, shown) {
+                    return undelivered(&e, reply);
                 }
             }
             // A client that hangs up ends its follow, output or none (audit A07).
@@ -1102,7 +1127,7 @@ struct Line {
 }
 
 impl Line {
-    fn send(&self, reply: &Reply<'_>, shown: Shown) -> bool {
+    fn send(&self, reply: &Reply<'_>, shown: Shown) -> io::Result<()> {
         if !shown.stamps && !shown.details {
             return reply.bytes(self.stream, &self.bytes);
         }
@@ -1202,7 +1227,7 @@ impl Log {
 
 /// A time in nanoseconds since the Unix epoch as RFC 3339 in UTC with nine digits of
 /// fraction, as `docker logs -t` prints it (moby jsonmessage.RFC3339NanoFixed).
-fn rfc3339_nano(ns: u64) -> String {
+pub(super) fn rfc3339_nano(ns: u64) -> String {
     let secs = ns / 1_000_000_000;
     let (days, day) = (secs / 86_400, secs % 86_400);
     // Days since 1970-01-01 to a civil date (Howard Hinnant, "chrono-Compatible Low-Level

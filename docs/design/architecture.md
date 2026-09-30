@@ -993,7 +993,9 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
     combine them.
   - `wait`: one container at a time, its exit code once it stops: 0 for one that never
     started, dockerd's code for one that could not.
-  - `logs`: stdout to stdout and stderr to stderr, in the order they arrived; `-f`
+  - `logs`: stdout to stdout and stderr to stderr, in the order they arrived; a line
+    of any length arrives whole, in messages of at most 1 MiB, and output that does not
+    all reach the client fails the command (audit A08); `-f`
     while the container runs; `-t` with RFC 3339 times; `--tail` (not a number: all);
     `--details` adds the space before the attributes shards' lines do not have.
     `--since` and `--until` are read as the Docker client reads them, on the client's

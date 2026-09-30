@@ -2314,6 +2314,142 @@ mod tests {
         joined(starting.run).unwrap();
     }
 
+    /// `shards ARGS` as its client asks the daemon, reading as the daemon answers: status,
+    /// stdout and stderr, as bytes.
+    fn ask_bytes(daemon: &Arc<Daemon>, args: &[&str]) -> (u8, Vec<u8>, Vec<u8>) {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let reader = std::thread::spawn(move || {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            while let Ok(Some(m)) = shards_ipc::recv(&theirs) {
+                match m.kind {
+                    kind::OUT => out.extend(m.payload),
+                    kind::ERR => err.extend(m.payload),
+                    _ => {}
+                }
+            }
+            (out, err)
+        });
+        let argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+        let asker = commands::Asker {
+            east_asian: false,
+            now: 0,
+            utc_offset: 0,
+        };
+        let status = daemon.command(&argv, &asker, &commands::Reply(&ours));
+        drop(ours);
+        let (out, err) = joined(reader);
+        (status, out, err)
+    }
+
+    use crate::spec::{LOG_STDERR, LOG_STDOUT};
+
+    /// A container's log line: its stream, when its first byte came, and its bytes.
+    type Logged = (u8, u64, Vec<u8>);
+
+    /// Writes `lines` to container `id`'s log as a workload writes it (workload.rs,
+    /// `log_record`): records of at most 16 KiB, each its stream, its time in big-endian
+    /// nanoseconds, its length in a big-endian u32, then its bytes.
+    fn write_log(t: &Test, id: &str, lines: &[Logged]) {
+        let dir = lock(&t.daemon.containers).dir(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut log = Vec::new();
+        for (stream, at, bytes) in lines {
+            for (i, piece) in bytes.chunks(16 << 10).enumerate() {
+                log.push(*stream);
+                log.extend((at + i as u64).to_be_bytes());
+                log.extend(u32::try_from(piece.len()).unwrap().to_be_bytes());
+                log.extend(piece);
+            }
+        }
+        std::fs::write(dir.join("log"), log).unwrap();
+    }
+
+    /// A line of `len` bytes numbered `n`, ending in a newline if `whole`.
+    fn line_of(n: u8, len: usize, whole: bool) -> Vec<u8> {
+        let mut bytes: Vec<u8> = (0..len)
+            .map(|i| match (i * 7 + usize::from(n)) % 251 {
+                10 => b'x',
+                b => u8::try_from(b).unwrap(),
+            })
+            .collect();
+        if whole && let Some(last) = bytes.last_mut() {
+            *last = b'\n';
+        }
+        bytes
+    }
+
+    /// Lines of every length about the largest message the daemon may send reach
+    /// `shards logs` whole, byte for byte, on their own streams, with and without their
+    /// prefixes, and so do lines several times that, and the last line a container left
+    /// unfinished. A client that hangs up is told nothing, and the command fails: its
+    /// output did not all arrive (audit A08: a line past 1 MiB was dropped, status 0).
+    #[test]
+    fn logs_deliver_lines_of_any_length() {
+        let t = Test::new("long-lines");
+        let id = t.create("racer");
+        let cap = shards_ipc::MAX_PAYLOAD;
+        let lines: Vec<Logged> = vec![
+            (LOG_STDOUT, 1_000, line_of(1, 6, true)),
+            (LOG_STDOUT, 2_000_000_001, line_of(2, cap - 1, true)),
+            (LOG_STDOUT, 3_000_000_002, line_of(3, cap, true)),
+            (LOG_STDERR, 4_000_000_003, line_of(4, 3 * cap + 5, true)),
+            (LOG_STDOUT, 5_000_000_004, line_of(5, cap + 1, true)),
+            (LOG_STDOUT, 6_000_000_005, line_of(6, cap + 7, false)),
+        ];
+        write_log(&t, &id, &lines);
+        let shown = |stamps: bool, details: bool, which: u8, from: usize| -> Vec<u8> {
+            let mut all = Vec::new();
+            for (stream, at, bytes) in lines.iter().skip(from) {
+                if *stream != which {
+                    continue;
+                }
+                if stamps {
+                    all.extend(commands::rfc3339_nano(*at).into_bytes());
+                    all.push(b' ');
+                }
+                if details {
+                    all.push(b' ');
+                }
+                all.extend(bytes);
+            }
+            all
+        };
+        for (args, stamps, details, from) in [
+            (&["logs", "racer"][..], false, false, 0),
+            (&["logs", "-t", "racer"], true, false, 0),
+            (&["logs", "--details", "racer"], false, true, 0),
+            (&["logs", "-t", "--details", "racer"], true, true, 0),
+            (&["logs", "--tail", "2", "racer"], false, false, 4),
+            (&["logs", "-f", "racer"], false, false, 0),
+        ] {
+            let (status, out, err) = ask_bytes(&t.daemon, args);
+            assert_eq!(status, 0, "{args:?}: {}", String::from_utf8_lossy(&err));
+            assert!(
+                out == shown(stamps, details, LOG_STDOUT, from),
+                "{args:?}: stdout differs"
+            );
+            assert!(
+                err == shown(stamps, details, LOG_STDERR, from),
+                "{args:?}: stderr differs"
+            );
+        }
+        // A client that hangs up after one message.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let daemon = t.daemon.clone();
+        let asking = std::thread::spawn(move || {
+            let argv = vec!["logs".to_string(), "racer".to_string()];
+            let asker = commands::Asker {
+                east_asian: false,
+                now: 0,
+                utc_offset: 0,
+            };
+            daemon.command(&argv, &asker, &commands::Reply(&ours))
+        });
+        drop(shards_ipc::recv(&theirs));
+        drop(theirs);
+        assert_eq!(joined(asking), 1, "undelivered logs answered as delivered");
+    }
+
     /// How many messages the daemon sends a warm VM before it lets go of its socket.
     fn heard_nothing(vm: &UnixStream) -> usize {
         let mut n = 0;

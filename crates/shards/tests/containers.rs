@@ -700,3 +700,52 @@ fn a_stopping_daemon_starts_no_pending_run() {
     assert_eq!(gated.shards(&home, &["rm", "racer"]).status, Some(0));
     assert_eq!(gated.shards(&home, &["daemon", "stop"]).status, Some(0));
 }
+
+/// A container's log line past the largest message the daemon may send reaches the
+/// terminal whole, byte for byte, through the real client, with its timestamp: before, it
+/// was dropped and `logs` still said 0 (audit A08). The container is one a daemon left in
+/// the home; no VM runs.
+#[test]
+fn logs_carry_lines_longer_than_a_message() {
+    let home = TempDir::new("containers-long-line");
+    let id = "c0ffee00".repeat(8);
+    let dir = home.join("containers").join(&id);
+    std::fs::create_dir_all(&dir).unwrap();
+    let record = format!(
+        "{{\"id\":\"{id}\",\"name\":\"long\",\"image\":\"test\",\"command\":[\"x\"],\"created\":1,\"state\":\"exited\",\"started\":2,\"finished\":3,\"exit_code\":0,\"auto_remove\":false}}"
+    );
+    std::fs::write(dir.join("config.json"), record).unwrap();
+    // 3 MiB and 5 bytes, then a newline, in 16 KiB records, as a workload writes them.
+    let mut line: Vec<u8> = (0..(3 << 20) + 5).map(|i| b'a' + (i % 26) as u8).collect();
+    line.push(b'\n');
+    let at: u64 = 1_700_000_000_123_456_789;
+    let mut log = Vec::new();
+    for (i, piece) in line.chunks(16 << 10).enumerate() {
+        log.push(1u8);
+        log.extend((at + i as u64).to_be_bytes());
+        log.extend(u32::try_from(piece.len()).unwrap().to_be_bytes());
+        log.extend(piece);
+    }
+    std::fs::write(dir.join("log"), log).unwrap();
+    let out = Command::new(shards())
+        .args(["logs", "-t", "long"])
+        .env("SHARDS_HOME", &*home)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut want = b"2023-11-14T22:13:20.123456789Z ".to_vec();
+    want.extend(&line);
+    assert!(
+        out.stdout == want,
+        "{} bytes, not {}",
+        out.stdout.len(),
+        want.len()
+    );
+    assert_eq!(without_vms(&home, &["daemon", "stop"]).status, Some(0));
+}
