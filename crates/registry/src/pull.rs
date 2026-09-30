@@ -94,13 +94,25 @@ pub fn pull(
     };
     let manifest_digest = manifest_desc.digest()?;
     contents(&name, &manifest)?;
+    // Layers compress what they hold: more of them than the image may decompress to is
+    // refused before anything is downloaded (audit A10).
+    let compressed = manifest
+        .layers
+        .iter()
+        .try_fold(0u64, |n, l| l.size().map(|s| n.saturating_add(s)))?;
+    if compressed > limits.bytes {
+        return Err(Error::new(format!(
+            "{name}: its layers are {compressed} bytes, more than the {} it may take (SHARDS_MAX_IMAGE_BYTES)",
+            limits.bytes
+        )));
+    }
     report(Event::Manifest(&manifest_digest, &manifest.layers));
 
-    registry.fetch_blob(store, &manifest.config, &|_| {})?;
+    registry.fetch_blob(store, &manifest.config, limits, &|_| {})?;
     let config = stored(store, &name, &manifest.config, oci::MAX_CONFIG)?;
     let (config, layers) = checked(&name, &manifest_desc, &manifest, &config, targets)?;
 
-    fetch_layers(registry, store, &manifest, report)?;
+    fetch_layers(registry, store, &manifest, limits, report)?;
     report(Event::Building);
     let rootfs = store.rootfs(&layers, limits)?;
     let mut contents = vec![manifest_digest.clone(), manifest.config.digest()?];
@@ -234,6 +246,7 @@ fn fetch_layers(
     registry: &Registry,
     store: &Store,
     manifest: &Manifest,
+    limits: &Limits,
     report: &(dyn Fn(Event<'_>) + Sync),
 ) -> Result<(), Error> {
     let next = AtomicUsize::new(0);
@@ -249,7 +262,7 @@ fn fetch_layers(
                     report(Event::Present(&digest));
                     return Ok(());
                 }
-                registry.fetch_blob(store, layer, &|n| report(Event::Progress(&digest, n)))?;
+                registry.fetch_blob(store, layer, limits, &|n| report(Event::Progress(&digest, n)))?;
                 report(Event::Layer(&digest));
                 Ok(())
             });
@@ -1013,5 +1026,34 @@ mod tests {
             assert!(e.contains(found), "{why}, found: {e}");
             let _ = std::fs::remove_dir_all(&root);
         }
+    }
+
+    /// An image whose layers are larger than it may decompress to is refused before any
+    /// of them is downloaded (audit A10).
+    #[test]
+    fn an_image_past_its_bytes_downloads_nothing() {
+        // Bytes gzip cannot shrink: a xorshift's.
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let big: Vec<u8> = (0..300_000)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+        let fake = fake(image("arm64", &[("big", &big)], true), None);
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
+        let root = temp("past-bytes");
+        let store = Store::open(&root).unwrap();
+        let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
+        let limits = Limits {
+            bytes: 100_000,
+            ..Limits::none()
+        };
+        let e = pull(&registry, &store, &reference, &arm64(), &limits, &|_| {}).unwrap_err();
+        assert!(e.to_string().contains("(SHARDS_MAX_IMAGE_BYTES)"), "{e}");
+        assert!(fake.cdn.requests().is_empty(), "{:?}", fake.cdn.requests());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

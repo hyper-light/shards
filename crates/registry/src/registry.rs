@@ -13,7 +13,7 @@ use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use shards_image::oci::{Descriptor, MAX_MANIFEST, media};
 use shards_image::reference::{Algorithm, DOCKER_HUB, Digest, Reference};
-use shards_image::store::{Download, Store};
+use shards_image::store::{Download, Limits, Store};
 
 use crate::auth::{Authorizer, Credentials, loopback};
 use crate::http::{Client, Redirects, Request, Response};
@@ -251,11 +251,17 @@ impl Registry {
     /// `Range: bytes=<offset>-`, as containerd's resumes do. A server that ignores the
     /// range sends the whole blob, and the download starts over. `progress` is told the
     /// bytes as they arrive.
-    pub fn fetch_blob(&self, store: &Store, desc: &Descriptor, progress: &dyn Fn(u64)) -> Result<(), Error> {
+    pub fn fetch_blob(
+        &self,
+        store: &Store,
+        desc: &Descriptor,
+        limits: &Limits,
+        progress: &dyn Fn(u64),
+    ) -> Result<(), Error> {
         let digest = desc.digest().map_err(|e| Error::new(e.to_string()))?;
         let size = desc.size().map_err(|e| Error::new(e.to_string()))?;
         let Some(mut download) = store
-            .download(&digest, size)
+            .download(&digest, size, limits)
             .map_err(|e| Error::new(e.to_string()))?
         else {
             return Ok(());

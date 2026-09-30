@@ -166,6 +166,8 @@ pub struct Download {
     digest: Digest,
     size: u64,
     target: PathBuf,
+    /// The room the store's filesystem has for it (audit A10).
+    room: Room,
 }
 
 impl std::fmt::Debug for Download {
@@ -190,6 +192,7 @@ impl Download {
         if offset > self.size {
             return bad(format!("{}: more than its {} bytes", self.digest, self.size));
         }
+        self.room.wrote(bytes.len())?;
         self.file.write_all(bytes)?;
         self.hasher.update(bytes);
         self.offset = offset;
@@ -218,6 +221,7 @@ impl Download {
             digest,
             size,
             target,
+            room: _,
         } = self;
         if offset != size {
             return bad(format!("{digest}: {offset} of its {size} bytes"));
@@ -333,7 +337,9 @@ impl Store {
     /// attempt left are hashed again, so the blob is verified whole when it is committed.
     /// Waits while another process downloads the same blob, and gives `None` if that left
     /// it stored.
-    pub fn download(&self, digest: &Digest, size: u64) -> Result<Option<Download>, Error> {
+    /// It is refused if what is left of it would leave the store's filesystem less free
+    /// than `limits` keep, and stops once it would as it goes (audit A10).
+    pub fn download(&self, digest: &Digest, size: u64, limits: &Limits) -> Result<Option<Download>, Error> {
         let path =
             self.root
                 .join("ingest")
@@ -365,6 +371,19 @@ impl Store {
             hasher.update(buf.get(..n).unwrap_or_default());
             offset = offset.saturating_add(n as u64);
         }
+        let ingest = self.root.join("ingest");
+        let free = (limits.available)(&ingest)?;
+        let left = size.saturating_sub(offset);
+        if free < limits.keep_free.saturating_add(left) {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                format!(
+                    "{digest}: {left} more bytes, with {free} free and {} to be left (SHARDS_KEEP_FREE)",
+                    limits.keep_free
+                ),
+            )
+            .into());
+        }
         let mut download = Download {
             path,
             file: BufWriter::with_capacity(CHUNK, file),
@@ -373,6 +392,7 @@ impl Store {
             digest: digest.clone(),
             size,
             target: self.blob_path(digest),
+            room: Room::new(&ingest, limits)?,
         };
         // More than the blob holds can only be wrong.
         if offset > size {
@@ -885,10 +905,10 @@ mod tests {
         let blob: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
         let d = sha256(&blob);
         let size = blob.len() as u64;
-        let mut first = store.download(&d, size).unwrap().unwrap();
+        let mut first = store.download(&d, size, &Limits::none()).unwrap().unwrap();
         first.write(&blob[..40_000]).unwrap();
         drop(first);
-        let mut second = store.download(&d, size).unwrap().unwrap();
+        let mut second = store.download(&d, size, &Limits::none()).unwrap().unwrap();
         assert_eq!(second.offset(), 40_000, "the first attempt's bytes are kept");
         assert!(
             second.write(&vec![0u8; 60_001]).is_err(),
@@ -897,14 +917,24 @@ mod tests {
         second.write(&blob[40_000..]).unwrap();
         let path = second.commit().unwrap();
         assert_eq!(fs::read(path).unwrap(), blob);
-        assert!(store.download(&d, size).unwrap().is_none(), "already stored");
+        assert!(
+            store.download(&d, size, &Limits::none()).unwrap().is_none(),
+            "already stored"
+        );
         // Wrong bytes are thrown away, so the next attempt starts clean.
         let other = sha256(b"other");
-        let mut wrong = store.download(&other, 5).unwrap().unwrap();
+        let mut wrong = store.download(&other, 5, &Limits::none()).unwrap().unwrap();
         wrong.write(b"wrong").unwrap();
         assert!(wrong.commit().is_err());
-        assert_eq!(store.download(&other, 5).unwrap().unwrap().offset(), 0);
-        let mut again = store.download(&other, 5).unwrap().unwrap();
+        assert_eq!(
+            store
+                .download(&other, 5, &Limits::none())
+                .unwrap()
+                .unwrap()
+                .offset(),
+            0
+        );
+        let mut again = store.download(&other, 5, &Limits::none()).unwrap().unwrap();
         again.write(b"wro").unwrap();
         again.restart().unwrap();
         assert_eq!(again.offset(), 0);
@@ -918,11 +948,14 @@ mod tests {
         let store = Store::open(&root).unwrap();
         let blob = b"shared blob".to_vec();
         let d = sha256(&blob);
-        let mut holder = store.download(&d, blob.len() as u64).unwrap().unwrap();
+        let mut holder = store
+            .download(&d, blob.len() as u64, &Limits::none())
+            .unwrap()
+            .unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let (store2, d2, n) = (Store::open(&root).unwrap(), d.clone(), blob.len() as u64);
         let waiter = std::thread::spawn(move || {
-            let _ = tx.send(store2.download(&d2, n).map(|d| d.is_none()));
+            let _ = tx.send(store2.download(&d2, n, &Limits::none()).map(|d| d.is_none()));
         });
         // While the holder has the blob's lock, the other download waits.
         assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err());
@@ -1325,6 +1358,43 @@ mod tests {
         });
         assert!(paths.windows(2).all(|w| w[0] == w[1]));
         assert_eq!(LOOKS.load(Ordering::SeqCst), 1, "built more than once");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A download is refused if what is left of it would leave the store's filesystem
+    /// less free than its limits keep, and stops as it goes once it would (audit A10).
+    #[test]
+    fn a_download_leaves_the_room_it_must() {
+        let root = temp("download-room");
+        let store = Store::open(&root).unwrap();
+        let blob = vec![7u8; 96 << 20];
+        let d = sha256(&blob);
+        let tight = Limits {
+            keep_free: 1 << 30,
+            available: |_| Ok((1 << 30) + (64 << 20)),
+            ..Limits::none()
+        };
+        let e = store.download(&d, blob.len() as u64, &tight).unwrap_err();
+        assert!(e.to_string().contains("to be left (SHARDS_KEEP_FREE)"), "{e}");
+        static LOOKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let shrinking = Limits {
+            keep_free: 1 << 30,
+            available: |_| match LOOKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 | 1 => Ok(u64::MAX),
+                _ => Ok(0),
+            },
+            ..Limits::none()
+        };
+        let mut download = store
+            .download(&d, blob.len() as u64, &shrinking)
+            .unwrap()
+            .unwrap();
+        let written = blob.chunks(1 << 20).try_for_each(|c| download.write(c));
+        let e = written.unwrap_err();
+        assert!(e.to_string().contains("0 bytes free"), "{e}");
+        assert!(download.offset() < blob.len() as u64, "it stopped");
+        drop(download);
+        assert!(!store.has(&d));
         let _ = fs::remove_dir_all(&root);
     }
 }

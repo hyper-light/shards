@@ -419,7 +419,10 @@ The store keeps what a pull fetches and what guests boot from. The code is
   - `SHARDS_KEEP_FREE`: what it leaves free on the store's filesystem, looked at as it
     starts and every 64 MiB it writes: 5% of the filesystem, as ext4 keeps back by
     default (mke2fs(8) `-m`), at most 10 GiB, so a large disk nearly full still takes
-    images.
+    images. Downloads keep it too: one whose declared size would not leave it is refused
+    before it starts, and one stops as it goes once it would.
+  - An image whose layers, as its manifest declares them, are larger than it may
+    decompress to is refused before any is downloaded.
   - The unpacked tars exist only while it is built.
   - Its directory is versioned, and the version is bumped whenever the EROFS writer's
     output changes.
