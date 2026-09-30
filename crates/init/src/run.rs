@@ -14,6 +14,7 @@ use shards_abi::run::{self, Size, Spec, kind};
 use shards_abi::{control, marker};
 
 use crate::linux::power_off;
+use crate::orders::{Orders, cstrings, pointers};
 use crate::user::{self, ExecUser};
 
 /// `docker run`'s status for a command that never ran, when nothing says more
@@ -629,92 +630,6 @@ impl Standby {
     }
 }
 
-/// What the standby execs, and as whom: built by init, which reports any error in it.
-struct Orders {
-    uid: u32,
-    gid: u32,
-    groups: Vec<u32>,
-    cwd: Vec<u8>,
-    explicit: bool,
-    candidates: Vec<Vec<u8>>,
-    argv: Vec<Vec<u8>>,
-    env: Vec<Vec<u8>>,
-    /// The terminal the workload opens as its stdio, or empty for the standby's pipes.
-    tty: Vec<u8>,
-}
-
-impl Orders {
-    fn encode(&self) -> Vec<u8> {
-        fn list(w: &mut Vec<u8>, items: &[Vec<u8>]) {
-            w.extend_from_slice(&u32::try_from(items.len()).unwrap_or(u32::MAX).to_be_bytes());
-            for item in items {
-                w.extend_from_slice(&u32::try_from(item.len()).unwrap_or(u32::MAX).to_be_bytes());
-                w.extend_from_slice(item);
-            }
-        }
-        let mut w = Vec::new();
-        w.extend_from_slice(&self.uid.to_be_bytes());
-        w.extend_from_slice(&self.gid.to_be_bytes());
-        w.extend_from_slice(&u32::try_from(self.groups.len()).unwrap_or(u32::MAX).to_be_bytes());
-        for g in &self.groups {
-            w.extend_from_slice(&g.to_be_bytes());
-        }
-        list(&mut w, std::slice::from_ref(&self.cwd));
-        w.push(u8::from(self.explicit));
-        list(&mut w, &self.candidates);
-        list(&mut w, &self.argv);
-        list(&mut w, &self.env);
-        list(&mut w, std::slice::from_ref(&self.tty));
-        w
-    }
-
-    /// `None` for anything but a whole message `encode` wrote.
-    fn decode(mut r: &[u8]) -> Option<Orders> {
-        fn u32(r: &mut &[u8]) -> Option<u32> {
-            let (head, rest) = r.split_first_chunk::<4>()?;
-            *r = rest;
-            Some(u32::from_be_bytes(*head))
-        }
-        fn list(r: &mut &[u8]) -> Option<Vec<Vec<u8>>> {
-            let n = u32(r)? as usize;
-            // Each item takes at least its 4-byte length.
-            if n > r.len() / 4 {
-                return None;
-            }
-            (0..n)
-                .map(|_| {
-                    let len = u32(r)? as usize;
-                    let (item, rest) = (r.get(..len)?, r.get(len..)?);
-                    *r = rest;
-                    Some(item.to_vec())
-                })
-                .collect()
-        }
-        let uid = u32(&mut r)?;
-        let gid = u32(&mut r)?;
-        let n = u32(&mut r)? as usize;
-        if n > r.len() / 4 {
-            return None;
-        }
-        let groups = (0..n).map(|_| u32(&mut r)).collect::<Option<Vec<u32>>>()?;
-        let cwd = list(&mut r)?.pop()?;
-        let (&explicit, rest) = r.split_first()?;
-        r = rest;
-        let orders = Orders {
-            uid,
-            gid,
-            groups,
-            cwd,
-            explicit: explicit != 0,
-            candidates: list(&mut r)?,
-            argv: list(&mut r)?,
-            env: list(&mut r)?,
-            tty: list(&mut r)?.pop()?,
-        };
-        r.is_empty().then_some(orders)
-    }
-}
-
 /// The standby's side of the fork: it closes init's ends, waits for its orders, and runs
 /// them as `child` does. The standby is single-threaded, as init was when it forked, so
 /// it may allocate.
@@ -729,20 +644,18 @@ fn standby(ends: Ends) -> ! {
     let mut bytes = Vec::new();
     let got = File::from(orders).read_to_end(&mut bytes);
     let decoded = got.ok().and_then(|_| Orders::decode(&bytes));
-    let built = decoded.and_then(|o| {
-        let cstrings = |items: &[Vec<u8>]| -> Option<Vec<CString>> {
-            items.iter().map(|b| CString::new(b.clone()).ok()).collect()
-        };
-        let tty = if o.tty.is_empty() {
+    let built = decoded.and_then(|mut o| {
+        let tty = std::mem::take(&mut o.tty);
+        let tty = if tty.is_empty() {
             None
         } else {
-            Some(CString::new(o.tty.clone()).ok()?)
+            Some(CString::new(tty).ok()?)
         };
         Some((
-            cstrings(&o.candidates)?,
-            cstrings(&o.argv)?,
-            cstrings(&o.env)?,
-            CString::new(o.cwd.clone()).ok()?,
+            cstrings(std::mem::take(&mut o.candidates))?,
+            cstrings(std::mem::take(&mut o.argv))?,
+            cstrings(std::mem::take(&mut o.env))?,
+            CString::new(std::mem::take(&mut o.cwd)).ok()?,
             tty,
             o,
         ))
@@ -752,10 +665,7 @@ fn standby(ends: Ends) -> ! {
         // SAFETY: ends this process without running atexit handlers inherited from init.
         unsafe { libc::_exit(NOT_RUN as libc::c_int) }
     };
-    let mut argv_ptrs: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
-    argv_ptrs.push(std::ptr::null());
-    let mut envp_ptrs: Vec<*const libc::c_char> = envp.iter().map(|e| e.as_ptr()).collect();
-    envp_ptrs.push(std::ptr::null());
+    let (argv_ptrs, envp_ptrs) = (pointers(&argv), pointers(&envp));
     let [stdin, stdout, stderr] = &stdio;
     // SAFETY: this process is the child of a fork of single-threaded init, and `child`
     // runs on data built above.

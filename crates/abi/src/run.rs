@@ -102,22 +102,46 @@ impl Spec {
     /// Lists are a big-endian u32 count, then their strings; each string is a big-endian
     /// u32 length, then its bytes. A terminal follows as a 1 and its size; without one,
     /// nothing follows, so an init from before terminals still reads the spec.
+    ///
+    /// Callers see [`encoded_len`](Spec::encoded_len) within [`MAX_PAYLOAD`] first: past
+    /// it, a length would not fit its u32.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
+        self.encode_into(&mut out);
+        out
+    }
+
+    /// [`encode`](Spec::encode), appended to `out`, which grows once, by exactly the
+    /// spec's length (audit D10).
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        out.reserve_exact(self.encoded_len().unwrap_or(0));
         for list in [&self.argv, &self.env] {
-            put(&mut out, list.len());
+            put(out, list.len());
             for s in list {
-                put_bytes(&mut out, s);
+                put_bytes(out, s);
             }
         }
         for s in [&self.cwd, &self.user, &self.hostname] {
-            put_bytes(&mut out, s);
+            put_bytes(out, s);
         }
         if let Some(size) = self.tty {
             out.push(1);
             out.extend_from_slice(&size.encode());
         }
-        out
+    }
+
+    /// The bytes [`encode`](Spec::encode) writes, or `None` past `usize`: measured without
+    /// encoding, so a spec's size is checked before it is built (audit D10).
+    pub fn encoded_len(&self) -> Option<usize> {
+        let strings = |list: &[Vec<u8>]| {
+            list.iter()
+                .try_fold(4usize, |n, s| n.checked_add(4)?.checked_add(s.len()))
+        };
+        let mut n = strings(&self.argv)?.checked_add(strings(&self.env)?)?;
+        for s in [&self.cwd, &self.user, &self.hostname] {
+            n = n.checked_add(4)?.checked_add(s.len())?;
+        }
+        n.checked_add(if self.tty.is_some() { 5 } else { 0 })
     }
 
     /// The spec in `bytes`, or `None` unless they hold exactly one.
@@ -173,7 +197,12 @@ impl Cursor<'_> {
         if n > self.0.len() / 4 {
             return None;
         }
-        (0..n).map(|_| self.bytes()).collect()
+        // Sized once: collecting through Option would grow it from empty (audit D10).
+        let mut list = Vec::with_capacity(n);
+        for _ in 0..n {
+            list.push(self.bytes()?);
+        }
+        Some(list)
     }
 }
 

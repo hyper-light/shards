@@ -2,6 +2,8 @@
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod orders;
 #[cfg(target_os = "linux")]
 mod run;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

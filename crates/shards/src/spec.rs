@@ -94,7 +94,7 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
         hostname: hostname.into_bytes(),
         tty: o.tty,
     };
-    if spec.encode().len() > run::MAX_PAYLOAD as usize {
+    if spec.encoded_len().is_none_or(|n| n > run::MAX_PAYLOAD as usize) {
         return Err("the command and its environment are too large".into());
     }
     Ok(spec)

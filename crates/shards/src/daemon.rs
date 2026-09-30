@@ -964,10 +964,12 @@ impl Daemon {
             vec![conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()]
         };
         fds.push(container_log.dir.as_fd());
-        let mut payload = vec![flags];
+        // The flags, the retention's two u64s, then the spec, in one allocation (audit D10).
+        let mut payload = Vec::with_capacity(17 + prepared.spec.encoded_len().unwrap_or(0));
+        payload.push(flags);
         payload.extend(self.logs.size.to_be_bytes());
         payload.extend(self.logs.files.to_be_bytes());
-        payload.extend(prepared.spec.encode());
+        prepared.spec.encode_into(&mut payload);
         let detached = run.detach.then_some(conn);
         let started = self.start_run(&id, &payload, &fds, detached, || self.warm_for(&prepared, &say));
         // Its VM has its root filesystem, or never will.

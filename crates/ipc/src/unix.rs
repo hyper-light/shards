@@ -248,9 +248,18 @@ pub fn send(sock: &UnixStream, kind: u8, payload: &[u8], fds: &[BorrowedFd<'_>])
     };
     // The descriptors went with the first byte; the rest follows as plain bytes.
     if sent < total {
-        let mut rest = Vec::with_capacity(total - sent);
-        rest.extend(header.iter().chain(payload).skip(sent));
-        (&*sock).write_all(&rest)?;
+        write_rest(&mut &*sock, [&header, payload], sent)?;
+    }
+    Ok(())
+}
+
+/// Writes what follows the first `sent` bytes of `parts`, from where they are, where a
+/// signal cut a `sendmsg` short (audit D10).
+fn write_rest(w: &mut impl Write, parts: [&[u8]; 2], sent: usize) -> io::Result<()> {
+    let mut skip = sent;
+    for part in parts {
+        w.write_all(part.get(skip.min(part.len())..).unwrap_or_default())?;
+        skip = skip.saturating_sub(part.len());
     }
     Ok(())
 }
@@ -826,6 +835,18 @@ mod tests {
         (&a).write_all(&[3, 0, 0, 0, 10, b'x']).unwrap();
         drop(a);
         assert_eq!(recv(&b).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    /// A send cut short anywhere, in its header or its payload, is finished byte for byte.
+    #[test]
+    fn a_send_cut_short_is_finished_from_where_it_stopped() {
+        let (header, payload) = ([9u8, 0, 0, 0, 7], b"payload".as_slice());
+        let whole = [&header[..], payload].concat();
+        for sent in 0..whole.len() {
+            let mut rest = Vec::new();
+            write_rest(&mut rest, [&header, payload], sent).unwrap();
+            assert_eq!(rest, whole[sent..], "cut at {sent}");
+        }
     }
 
     #[test]
