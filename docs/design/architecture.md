@@ -1345,6 +1345,39 @@ devices. The code is `crates/vmm/src/memory.rs`.
   `queue::tests::queues_laid_over_each_other_work_on_two_threads`, under
   `access-guard/check.sh` too; every E2E test runs its devices through the guard.
 
+### Confining the VM process (D30)
+
+shards-vm runs the device code a guest drives, parses snapshots it may have been given,
+and holds the user's permissions. A flaw in it would reach what the user can, so it
+narrows itself to what a VM process does (docs/research/rootless-security.md R3; the
+audit's "Security and test coverage").
+
+- **Linux: a seccomp filter over the whole process, first thing in `main`**
+  (`confine.rs`, `platform::seccomp`), before it reads its arguments' files.
+  - Its lists are what a VM process was seen to make over every VM test on a KVM host
+    [PM M52]: 70 syscalls; ioctl requests only the KVM backend's own (`hv::IOCTLS`),
+    `FIONBIO`, and the terminal's `TCGETS`, `TCSETS` and `TIOCGWINSZ`; only Unix
+    sockets; `prctl` only to name threads.
+  - It makes threads and nothing else: `clone3`, whose flags a filter cannot read, fails
+    with ENOSYS, as Firecracker's filters have it, so the C library falls back to
+    `clone`, which must carry a thread's flags (glibc's or musl's). No exec, no fork,
+    no network.
+  - Compiled to classic BPF: the architecture first, then each syscall's block behind
+    a jump, arguments compared in their low 32 bits (the ones filtered are `int`s to
+    the kernel, and musl passes ioctl's request sign-extended). A refused syscall
+    traps; a SIGSYS handler names it and the thread, and the process exits 159.
+  - Every VM test runs under it on CI's KVM runners, glibc and musl, with VMs required.
+  - One filter for every thread: the lists are the union. Per-thread filters, as
+    Firecracker keeps, would narrow a vCPU thread to its KVM ioctls; they are the next
+    step, as is Landlock for the files it may open.
+- **macOS: a Seatbelt profile the process applies to itself** [PM M52]. App Sandbox
+  does not take a command-line tool on its own, and a profile applied before exec stops
+  dyld; applied by the process after it has loaded, a deny-by-default profile with only
+  sysctl reads and reads of the kernel and init boots a guest. **Not yet:** the profile
+  for each mode: the files it reads (its arguments', a snapshot's backing files), the
+  ones it writes (disks, snapshot directories, a warm VM's log), and its Unix sockets.
+- **Windows:** nothing yet.
+
 ## 3. Components
 
 ```
