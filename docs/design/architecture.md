@@ -727,6 +727,21 @@ for the exit status.
     0.4–1.3 ms to look up [PM M26].
   - It admits only clients of its own user (`getpeereid`, `SO_PEERCRED`): a home in a
     shared directory must not let another user run commands as this one [PM M25].
+  - **Its clients are bounded (audit A07).**
+    - A client has 10 s to send its whole request. The deadline bounds the message, not
+      each read, so a client trickling it out a byte at a time gains nothing
+      (`shards_ipc::recv_by`).
+    - It holds at most 256 clients at once, each a thread and up to six descriptors;
+      past that, connections wait in the listener's backlog.
+    - Out of descriptors, it waits for room rather than spin on a listener that stays
+      readable, and accepts again only once a descriptor is free: an accept that fails
+      for want of one leaves the client queued on Linux (net/socket.c,
+      `__sys_accept4_file`) but drops it on macOS ("Don't put this back on the socket
+      like we used to, that just causes the client to spin. Drop the socket.",
+      xnu-11417.101.15 bsd/kern/uipc_syscalls.c).
+    - It raises its soft limit on descriptors to its hard one, capped at
+      `kern.maxfilesperproc` on macOS, as Go's runtime raises its own (go1.25.0
+      src/syscall/rlimit.go, after go.dev/issue/46279): macOS starts a process with 256.
   - It keeps SHARDS_POOL warm VMs (default 2) of each template it has served. A pool
     refills once its VM has taken its run, since starting the next VM on the request's
     path cost 200–600 µs [PM M26], and on a thread of its own, so that the run's own
@@ -764,6 +779,17 @@ for the exit status.
     once the daemon has let go of its home: the daemon unlocks it and closes the stop
     connections itself, last, since the kernel closes an exiting process's descriptors
     in no order to rely on (XNU `fdt_invalidate` closes the highest first).
+  - **A stop waits for nothing it can end (audit A07).** It shuts down the connections of
+    clients still sending their requests and of container commands, so their reads and
+    writes fail and their threads return, and cancels what runs being prepared are
+    downloading, images or the guest kernel (`shards_registry::http::Cancel`, which shuts
+    down the connections in use, as cancelling Go's request context ends them). A run
+    waiting for a warm VM gives up; the run is refused, "the daemon is shutting down".
+    Runs already handed over end as above.
+  - A `wait` ends when its client hangs up, as moby's `ContainerWait` ends with its
+    request's context, and forgets its registration; so does a `logs -f`, output or
+    none. `stop`, `kill` and `rm -f` go on regardless: "Cancelling the request should
+    not cancel the stop" (moby docker-v29.8.1 daemon/stop.go).
 - **The command's stdin** is /dev/null, or with `-i` a pipe the client fills from its
   own. Under `-t` it feeds the guest's pty, which never closes (D16).
   - It ends when the client does, as `docker run -i`'s does when its client goes

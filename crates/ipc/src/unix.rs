@@ -21,6 +21,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
+use std::time::Instant;
 
 use crate::{Identity, MAX_FDS, MAX_PAYLOAD};
 
@@ -259,9 +260,20 @@ pub fn send(sock: &UnixStream, kind: u8, payload: &[u8], fds: &[BorrowedFd<'_>])
 /// Every read is a `recvmsg` with room for all the descriptors a kernel passes at once, so
 /// descriptors arriving with any part of a message become this process's to close.
 pub fn recv(sock: &UnixStream) -> io::Result<Option<Message>> {
+    recv_until(sock, None)
+}
+
+/// [`recv`], if all of the message arrives by `deadline`; `TimedOut` then otherwise. A
+/// peer that sends nothing, or a message a byte at a time, gains nothing by it: the
+/// deadline bounds the whole message, where a timeout would bound each read.
+pub fn recv_by(sock: &UnixStream, deadline: Instant) -> io::Result<Option<Message>> {
+    recv_until(sock, Some(deadline))
+}
+
+fn recv_until(sock: &UnixStream, deadline: Option<Instant>) -> io::Result<Option<Message>> {
     let mut fds = Vec::new();
     let mut header = [0u8; HEADER];
-    let got = recv_part(sock, &mut header, &mut fds)?;
+    let got = recv_part(sock, &mut header, &mut fds, deadline)?;
     if got == 0 {
         return if fds.is_empty() {
             Ok(None)
@@ -269,7 +281,12 @@ pub fn recv(sock: &UnixStream) -> io::Result<Option<Message>> {
             Err(io::ErrorKind::UnexpectedEof.into())
         };
     }
-    fill(sock, header.get_mut(got..).unwrap_or_default(), &mut fds)?;
+    fill(
+        sock,
+        header.get_mut(got..).unwrap_or_default(),
+        &mut fds,
+        deadline,
+    )?;
     let [kind, l0, l1, l2, l3] = header;
     let len = u32::from_be_bytes([l0, l1, l2, l3]) as usize;
     if len > MAX_PAYLOAD {
@@ -279,7 +296,7 @@ pub fn recv(sock: &UnixStream) -> io::Result<Option<Message>> {
         ));
     }
     let mut payload = vec![0u8; len];
-    fill(sock, &mut payload, &mut fds)?;
+    fill(sock, &mut payload, &mut fds, deadline)?;
     if fds.len() > MAX_FDS {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -290,9 +307,14 @@ pub fn recv(sock: &UnixStream) -> io::Result<Option<Message>> {
 }
 
 /// Reads exactly `buf.len()` more bytes of a message.
-fn fill(sock: &UnixStream, mut buf: &mut [u8], fds: &mut Vec<OwnedFd>) -> io::Result<()> {
+fn fill(
+    sock: &UnixStream,
+    mut buf: &mut [u8],
+    fds: &mut Vec<OwnedFd>,
+    deadline: Option<Instant>,
+) -> io::Result<()> {
     while !buf.is_empty() {
-        let n = recv_part(sock, buf, fds)?;
+        let n = recv_part(sock, buf, fds, deadline)?;
         if n == 0 {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
@@ -301,9 +323,47 @@ fn fill(sock: &UnixStream, mut buf: &mut [u8], fds: &mut Vec<OwnedFd>) -> io::Re
     Ok(())
 }
 
-/// One `recvmsg` into `buf`. Returns the bytes read, and adds the descriptors that came
-/// with them to `fds`, owned and close-on-exec.
-fn recv_part(sock: &UnixStream, buf: &mut [u8], fds: &mut Vec<OwnedFd>) -> io::Result<usize> {
+/// Waits until `sock` has something to read, or has ended; `TimedOut` at `deadline`.
+fn await_readable(sock: &UnixStream, deadline: Instant) -> io::Result<()> {
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        // Rounded up: a wait of 0 ms would return at once, and spin.
+        let ms = libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX);
+        let mut pfd = libc::pollfd {
+            fd: sock.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll(2) on one valid pollfd.
+        match unsafe { libc::poll(&mut pfd, 1, ms) } {
+            // Data, its end or an error: the read says which.
+            n if n > 0 => return Ok(()),
+            0 => {}
+            _ => {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+    }
+}
+
+/// One `recvmsg` into `buf`, once something arrives, by `deadline` if there is one.
+/// Returns the bytes read, and adds the descriptors that came with them to `fds`, owned
+/// and close-on-exec.
+fn recv_part(
+    sock: &UnixStream,
+    buf: &mut [u8],
+    fds: &mut Vec<OwnedFd>,
+    deadline: Option<Instant>,
+) -> io::Result<usize> {
+    if let Some(deadline) = deadline {
+        await_readable(sock, deadline)?;
+    }
     let mut control = Control::new();
     let mut iov = libc::iovec {
         iov_base: buf.as_mut_ptr().cast(),
@@ -683,6 +743,64 @@ mod tests {
             recv(&b).unwrap().is_none(),
             "a close between messages is a clean end"
         );
+    }
+
+    /// A deadline bounds the whole message: a peer that says nothing, or trickles a
+    /// message out a byte at a time faster than any one read would time out, is let go at
+    /// the deadline; a message sent in time arrives whole, however it is split.
+    #[test]
+    fn a_deadline_bounds_the_whole_message() {
+        use std::time::Duration;
+        let window = Duration::from_millis(200);
+        let (_silent, b) = UnixStream::pair().unwrap();
+        let start = Instant::now();
+        assert_eq!(
+            recv_by(&b, start + window).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        let waited = start.elapsed();
+        assert!(waited >= window && waited < 10 * window, "{waited:?}");
+
+        let (a, b) = UnixStream::pair().unwrap();
+        let trickle = std::thread::spawn(move || {
+            // The header, then a payload that would take 2 s at a byte per 20 ms.
+            for byte in [4, 0, 0, 0, 100].into_iter().chain([b'x'; 100]) {
+                if (&a).write_all(&[byte]).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let start = Instant::now();
+        assert_eq!(
+            recv_by(&b, start + window).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        let waited = start.elapsed();
+        assert!(waited >= window && waited < 10 * window, "{waited:?}");
+        drop(b);
+        trickle.join().unwrap();
+
+        let (a, b) = UnixStream::pair().unwrap();
+        let (_r, w) = pipe();
+        let split = std::thread::spawn(move || {
+            let mut whole = vec![5u8, 0, 0, 0, 3];
+            whole.extend_from_slice(b"abc");
+            send(&a, 5, b"abc", &[w.as_fd()]).unwrap();
+            // And a second, a byte at a time, well within its deadline.
+            for byte in whole {
+                (&a).write_all(&[byte]).unwrap();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            a
+        });
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let m = recv_by(&b, deadline).unwrap().unwrap();
+        assert_eq!((m.kind, m.payload.as_slice(), m.fds.len()), (5, &b"abc"[..], 1));
+        let m = recv_by(&b, deadline).unwrap().unwrap();
+        assert_eq!((m.kind, m.payload.as_slice(), m.fds.len()), (5, &b"abc"[..], 0));
+        drop(split.join().unwrap());
+        assert!(recv_by(&b, deadline).unwrap().is_none(), "a clean end");
     }
 
     #[test]

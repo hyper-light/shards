@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use shards_image::platform;
 use shards_image::reference::Reference;
 use shards_image::store::Store;
-use shards_registry::http::Client;
+use shards_registry::http::{Cancel, Client};
 use shards_registry::pull::{self, Event, Pulled};
 use shards_registry::registry::{self, Registry};
 use shards_registry::{certs, credentials, tls};
@@ -82,6 +82,7 @@ pub fn run(image: &str, quiet: bool) -> Result<(), String> {
             Event::Manifest(..) | Event::Progress(..) | Event::Building => {}
         },
         &|line| say(line),
+        None,
     )?;
     say(&format!("Digest: {}", pulled.0.resolved));
     // Docker's: up to date when the tag already named this image, or when a digest's
@@ -98,12 +99,13 @@ pub fn run(image: &str, quiet: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Pulls `reference` into the store. Returns the pull, and whether the reference already
-/// named the same manifest.
+/// Pulls `reference` into the store, until `cancel`, if given, is cancelled. Returns the
+/// pull, and whether the reference already named the same manifest.
 pub fn fetch(
     reference: &Reference,
     report: &(dyn Fn(Event<'_>) + Sync),
     say: &dyn Fn(&str),
+    cancel: Option<&Cancel>,
 ) -> Result<(Pulled, bool), String> {
     let store = store()?;
     let env = |k: &str| std::env::var(k).ok();
@@ -119,6 +121,10 @@ pub fn fetch(
         Box::new(move |_| Ok(config.clone())),
         &format!("shards/{}", env!("CARGO_PKG_VERSION")),
     );
+    let http = match cancel {
+        Some(cancel) => http.cancelled_by(cancel.clone()),
+        None => http,
+    };
     let registry = Registry::new(http, reference, credentials).map_err(|e| e.to_string())?;
     let object = match &reference.digest {
         Some(d) => d.to_string(),

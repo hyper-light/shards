@@ -30,6 +30,8 @@ pub enum ErrorKind {
     Transient,
     /// The registry has no such content (404).
     NotFound,
+    /// The request was cancelled ([`http::Cancel`]): nothing tries it again.
+    Cancelled,
     Other,
 }
 

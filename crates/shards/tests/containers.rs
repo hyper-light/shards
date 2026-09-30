@@ -541,10 +541,12 @@ impl Gated {
             }
         }
         let vm = dir.join("shards-vm");
+        // It gives up once the test's directory has gone.
         let script = format!(
-            "#!/bin/sh\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nexec '{}' \"$@\"\n",
-            dir.join("open").display(),
-            shards_vm().display()
+            "#!/bin/sh\nwhile [ ! -e '{open}' ]; do [ -d '{dir}' ] || exit 1; sleep 0.01; done\nexec '{vm}' \"$@\"\n",
+            open = dir.join("open").display(),
+            dir = dir.display(),
+            vm = shards_vm().display()
         );
         std::fs::write(&vm, script).unwrap();
         std::fs::set_permissions(&vm, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -594,10 +596,6 @@ struct Going {
 }
 
 impl Going {
-    fn finished(&mut self) -> bool {
-        self.child.try_wait().unwrap().is_some()
-    }
-
     fn finish(mut self) -> Run {
         let start = Instant::now();
         let status = exit(&mut self.child);
@@ -670,8 +668,9 @@ fn rm_cancels_a_run_whose_vm_is_not_ready() {
     assert_eq!(gated.shards(&home, &["daemon", "stop"]).status, Some(0));
 }
 
-/// A daemon told to stop starts no run still pending: it ends once the run has been
-/// refused, and the run's container stays, created, with the code of a start that failed.
+/// A daemon told to stop starts no run still pending, and waits for no VM to boot for
+/// one (audit A07): the run is refused at once, the daemon ends, and the run's container
+/// stays, created, with the code of a start that failed.
 #[test]
 fn a_stopping_daemon_starts_no_pending_run() {
     let Some((home, image)) = home("containers-stop-pending") else {
@@ -682,10 +681,8 @@ fn a_stopping_daemon_starts_no_pending_run() {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let run = gated.start(&home, &args);
     let id = created(&gated, &home);
-    let mut stopping = gated.start(&home, &["daemon", "stop"]);
-    std::thread::sleep(Duration::from_millis(300));
-    assert!(!stopping.finished(), "the daemon ended with a run pending");
-    gated.open();
+    // Every VM still waits at the gate.
+    let stopping = gated.start(&home, &["daemon", "stop"]);
     let run = run.finish();
     assert_eq!(run.status, Some(125), "{run}");
     assert_eq!(
@@ -695,6 +692,7 @@ fn a_stopping_daemon_starts_no_pending_run() {
     );
     let stopped = stopping.finish();
     assert_eq!(stopped.status, Some(0), "{stopped}");
+    gated.open();
     // The next daemon finds the container as the last one left it.
     let listed = gated.shards(&home, &["ps", "-a", "-q", "--no-trunc"]);
     assert_eq!(listed.stdout, format!("{id}\n"), "{listed}");

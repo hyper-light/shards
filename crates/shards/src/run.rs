@@ -17,6 +17,7 @@ use shards_abi::run::Spec;
 use shards_image::oci::RunConfig;
 use shards_image::reference::Reference;
 use shards_ipc::{Pull, Run};
+use shards_registry::http::Cancel;
 use shards_registry::pull::{Event, local};
 use shards_vmm::vm::Config;
 
@@ -42,14 +43,20 @@ pub struct Prepared {
 
 /// The daemon's half: finds the request's image in `home`, pulling it as `docker run`
 /// does with its messages through `say`, and merges its settings under the request's.
-pub fn prepare(request: &Run, home: &Path, say: &(dyn Fn(&str) + Sync)) -> Result<Prepared, String> {
+/// Whatever it downloads, `cancel` stops.
+pub fn prepare(
+    request: &Run,
+    home: &Path,
+    say: &(dyn Fn(&str) + Sync),
+    cancel: &Cancel,
+) -> Result<Prepared, String> {
     let boot = match (&request.kernel, &request.init) {
         (Some(kernel), Some(init)) => {
             Boot::Given(Config::new(PathBuf::from(kernel), Some(PathBuf::from(init))))
         }
         (None, None) => Boot::Stored(match crate::guest::current(home)? {
             Some(recorded) => recorded,
-            None => crate::guest::default(home, say)?,
+            None => crate::guest::default(home, say, Some(cancel))?,
         }),
         _ => return Err("--kernel and --init (or SHARDS_KERNEL and SHARDS_INIT) go together".into()),
     };
@@ -78,7 +85,7 @@ pub fn prepare(request: &Run, home: &Path, say: &(dyn Fn(&str) + Sync)) -> Resul
                 Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
                 Event::Manifest(..) | Event::Progress(..) | Event::Building => {}
             };
-            let (pulled, _) = crate::pull::fetch(&reference, &report, &say)?;
+            let (pulled, _) = crate::pull::fetch(&reference, &report, &say, Some(cancel))?;
             say(&format!("Digest: {}", pulled.resolved));
             say(&format!(
                 "Status: Downloaded newer image for {}",

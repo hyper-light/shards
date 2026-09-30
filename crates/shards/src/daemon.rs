@@ -26,6 +26,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use shards_ipc::{Identity, Run, kind};
+use shards_registry::http::Cancel;
 use shards_vmm::vm::Config;
 
 use crate::containers::{self, Container, Registry, State as Life};
@@ -67,6 +68,16 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 const SHUTDOWN_KILL: Duration = Duration::from_secs(5);
 /// How often the daemon looks at its clock when no client arrives.
 const TICK: libc::c_int = 250;
+/// [`TICK`], as a duration: how often a waiting command looks at its client.
+const TICK_TIME: Duration = Duration::from_millis(TICK.unsigned_abs() as u64);
+/// How long a client may take to send its whole request (audit A07). One sends it as it
+/// connects; one that has not by now is broken, or trickling it out.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// Clients in hand at once (audit A07). Each holds a thread and up to six descriptors
+/// (its connection, its stdio, its container's log and a VM's socket) until its run is
+/// handed over or its command answered; beyond this many, connections wait in the
+/// listener's backlog.
+const MAX_CLIENTS: usize = 256;
 
 pub fn daemon(args: impl Iterator<Item = OsString>) -> ExitCode {
     let args: Vec<OsString> = args.collect();
@@ -163,6 +174,12 @@ struct Inbox {
     ended: bool,
 }
 
+/// One waiting for a container to end ([`Daemon::await_exit`]), by its number.
+struct Waiter {
+    number: u64,
+    tell: mpsc::Sender<u8>,
+}
+
 /// The runs handed over, of `runs`.
 fn tracked(runs: &HashMap<String, RunState>) -> impl Iterator<Item = &Tracked> {
     runs.values().filter_map(|r| match r {
@@ -187,10 +204,21 @@ struct Daemon {
     socket: &'static Path,
     target: usize,
     idle: Duration,
+    /// How long a client may take to send its request ([`REQUEST_TIMEOUT`]).
+    request_timeout: Duration,
     state: Mutex<State>,
     changed: Condvar,
     /// Clients connected and not yet handed over.
     busy: AtomicUsize,
+    /// The connections of clients in hand whose threads the daemon's shutdown ends, by
+    /// number: those still sending their request, and those of container commands. A run's
+    /// connection is its command's once its request is read, and leaves here then.
+    clients: Mutex<HashMap<u64, Arc<UnixStream>>>,
+    next_client: AtomicU64,
+    /// A client left: another may be taken.
+    admitted: Condvar,
+    /// What runs still being prepared are downloading, by client: a shutdown cancels it.
+    preparing: Mutex<HashMap<u64, Cancel>>,
     last: Mutex<Instant>,
     stopping: AtomicBool,
     /// The socket is gone: no client arrives from here on.
@@ -208,7 +236,9 @@ struct Daemon {
     containers: Mutex<Registry>,
     /// Who waits for each running container to end, for its exit code: `shards wait`,
     /// `stop`, `kill`, `rm -f`. Told under the containers' lock, as the record changes.
-    waiters: Mutex<HashMap<String, Vec<mpsc::Sender<u8>>>>,
+    /// Each waiter has a number, by which it goes if it stops waiting first.
+    waiters: Mutex<HashMap<String, Vec<Waiter>>>,
+    next_waiter: AtomicU64,
     /// The containers `shards rm` is removing.
     removing: Mutex<HashSet<String>>,
     /// A container's ID, directory and log, made ahead of the run that takes them.
@@ -219,13 +249,19 @@ struct Daemon {
     home_lock: File,
 }
 
-/// A client in hand: counted until its run is handed over or refused.
-struct Busy<'a>(&'a Daemon);
+/// A client in hand, by its number: counted until its run is handed over or refused, or
+/// its command answered.
+struct Busy<'a>(&'a Daemon, u64);
 
 impl Drop for Busy<'_> {
     fn drop(&mut self) {
         *lock(&self.0.last) = Instant::now();
+        // Under the lock the listener waits with, so its wakeup is not lost.
+        let mut clients = lock(&self.0.clients);
+        clients.remove(&self.1);
         self.0.busy.fetch_sub(1, Ordering::SeqCst);
+        drop(clients);
+        self.0.admitted.notify_all();
     }
 }
 
@@ -258,7 +294,65 @@ fn detach() -> Result<(), String> {
     .map_err(|e| format!("starting the daemon {}: {e}", exe.display()))
 }
 
+/// Raises this process's soft limit on open descriptors to its hard limit, as Go's runtime
+/// raises its own (go1.25.0 src/syscall/rlimit.go, after go.dev/issue/46279): the daemon
+/// holds a socket for each warm VM and each run, and each client in hand holds several
+/// more, where macOS starts a process with a soft limit of 256. macOS refuses more than
+/// `kern.maxfilesperproc` (src/syscall/rlimit_darwin.go). The hard limit is for whoever
+/// starts the daemon to set. Returns the limit it has.
+fn raise_descriptor_limit() -> Option<libc::rlim_t> {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) into a local.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+        return None;
+    }
+    if lim.rlim_cur >= lim.rlim_max {
+        return Some(lim.rlim_cur);
+    }
+    let raised = lim.rlim_max;
+    #[cfg(target_os = "macos")]
+    let raised = raised.min(max_files_per_process().unwrap_or(raised));
+    if raised > lim.rlim_cur {
+        let before = lim.rlim_cur;
+        lim.rlim_cur = raised;
+        // SAFETY: setrlimit(2) from a local.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } != 0 {
+            log(format!(
+                "raising the descriptor limit to {raised}: {}",
+                io::Error::last_os_error()
+            ));
+            return Some(before);
+        }
+    }
+    Some(lim.rlim_cur)
+}
+
+/// `kern.maxfilesperproc`: how many descriptors macOS lets one process open.
+#[cfg(target_os = "macos")]
+fn max_files_per_process() -> Option<libc::rlim_t> {
+    let mut per_process: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    // SAFETY: sysctlbyname(3) reading one int into a local of its size.
+    let read = unsafe {
+        libc::sysctlbyname(
+            c"kern.maxfilesperproc".as_ptr(),
+            (&raw mut per_process).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if read != 0 {
+        return None;
+    }
+    libc::rlim_t::try_from(per_process).ok()
+}
+
 fn serve() -> Result<(), String> {
+    let descriptors = raise_descriptor_limit();
     let home = shards_ipc::home()?;
     shards_vmm::platform::create_private_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
     // The socket's name is relative to the home (shards_ipc::SOCKET). The home is the
@@ -295,12 +389,25 @@ fn serve() -> Result<(), String> {
     ));
     daemon.make_spare();
     log(format!(
-        "serving {} on {}",
+        "serving {} on {}, with up to {} descriptors open",
         daemon.home.display(),
-        daemon.home.join(daemon.socket).display()
+        daemon.home.join(daemon.socket).display(),
+        descriptors.map_or_else(|| "an unknown number of".to_string(), |n| n.to_string())
     ));
     daemon.listen(listener);
     Ok(())
+}
+
+/// Whether this process could open another descriptor now: one duplicated and closed.
+fn descriptor_free(any: &impl AsRawFd) -> bool {
+    // SAFETY: fcntl(2) duplicating a descriptor we hold; the copy is closed at once.
+    let copy = unsafe { libc::fcntl(any.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+    if copy < 0 {
+        return false;
+    }
+    // SAFETY: closing the copy just made, which nothing else holds.
+    unsafe { libc::close(copy) };
+    true
 }
 
 /// Whether `socket` has something to read now: a message, or its end.
@@ -361,9 +468,14 @@ impl Daemon {
             socket: Path::new(shards_ipc::SOCKET),
             target,
             idle,
+            request_timeout: REQUEST_TIMEOUT,
             state: Mutex::default(),
             changed: Condvar::new(),
             busy: AtomicUsize::new(0),
+            clients: Mutex::default(),
+            next_client: AtomicU64::new(0),
+            admitted: Condvar::new(),
+            preparing: Mutex::default(),
             last: Mutex::new(Instant::now()),
             stopping: AtomicBool::new(false),
             closed: AtomicBool::new(false),
@@ -373,6 +485,7 @@ impl Daemon {
             ending: AtomicBool::new(false),
             containers: Mutex::new(containers),
             waiters: Mutex::default(),
+            next_waiter: AtomicU64::new(0),
             removing: Mutex::default(),
             spare: Mutex::default(),
             saved: AtomicU64::new(0),
@@ -391,6 +504,8 @@ impl Daemon {
     /// removes the socket, so no client arrives after, serves any that already did, and
     /// exits.
     fn listen(self: &Arc<Self>, mut listener: UnixListener) {
+        // Out of descriptors, since when: said once, not every tick.
+        let mut starved_since: Option<Instant> = None;
         loop {
             let closing = self.closed.load(Ordering::SeqCst);
             // A daemon whose home is gone has nothing left to serve.
@@ -411,11 +526,40 @@ impl Daemon {
                     Err(e) => log(format!("{}: {e}", self.home.join(self.socket).display())),
                 }
             }
-            loop {
+            let mut starved = false;
+            while self.busy.load(Ordering::SeqCst) < MAX_CLIENTS {
+                // Once starved, it accepts only when a descriptor is free: an accept that
+                // fails for want of one leaves the client queued on Linux (net/socket.c,
+                // __sys_accept4_file) but drops it on macOS (xnu-11417.101.15
+                // bsd/kern/uipc_syscalls.c, accept_nocancel).
+                if starved_since.is_some() && !descriptor_free(&listener) {
+                    starved = true;
+                    break;
+                }
                 match listener.accept() {
-                    Ok((conn, _)) => self.take(conn),
+                    Ok((conn, _)) => {
+                        if let Some(since) = starved_since.take() {
+                            log(format!("accepting again, after {:?}", since.elapsed()));
+                        }
+                        self.take(conn);
+                    }
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    // Out of descriptors or memory: the listener stays readable, so it waits
+                    // for room (below) rather than spin.
+                    Err(e)
+                        if matches!(
+                            e.raw_os_error(),
+                            Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+                        ) =>
+                    {
+                        if starved_since.is_none() {
+                            log(format!("accepting: {e}; clients wait until the daemon has room"));
+                            starved_since = Some(Instant::now());
+                        }
+                        starved = true;
+                        break;
+                    }
                     Err(e) => {
                         log(format!("accepting: {e}"));
                         break;
@@ -432,6 +576,18 @@ impl Daemon {
             if self.closed.load(Ordering::SeqCst) && quiet {
                 self.exit();
             }
+            // At the cap, or starved, the listener would be readable at once: wait for a
+            // client to leave instead, or a tick.
+            let clients = lock(&self.clients);
+            if starved || self.busy.load(Ordering::SeqCst) >= MAX_CLIENTS {
+                drop(
+                    self.admitted
+                        .wait_timeout(clients, TICK_TIME)
+                        .unwrap_or_else(PoisonError::into_inner),
+                );
+                continue;
+            }
+            drop(clients);
             let mut pfd = libc::pollfd {
                 fd: listener.as_raw_fd(),
                 events: libc::POLLIN,
@@ -462,14 +618,19 @@ impl Daemon {
             log(format!("a client's connection: {e}"));
             return;
         }
+        let number = self.next_client.fetch_add(1, Ordering::Relaxed);
+        // Shared rather than duplicated: a descriptor short, the daemon would drop
+        // clients it could otherwise take.
+        let conn = Arc::new(conn);
+        lock(&self.clients).insert(number, conn.clone());
         self.busy.fetch_add(1, Ordering::SeqCst);
         let daemon = self.clone();
         let spawned = std::thread::Builder::new().name("run".into()).spawn(move || {
             // A run handed over is registered before the client stops counting as busy,
             // so shutdown never sees neither (audit A06).
             let handed = {
-                let _busy = Busy(&daemon);
-                daemon.handle(conn)
+                let _busy = Busy(&daemon, number);
+                daemon.handle(conn, number)
             };
             // The client's descriptors are closed by now: its run goes on in the VM.
             if let Some((id, inbox)) = handed {
@@ -477,8 +638,26 @@ impl Daemon {
             }
         });
         if let Err(e) = spawned {
+            lock(&self.clients).remove(&number);
             self.busy.fetch_sub(1, Ordering::SeqCst);
             log(format!("a client's thread: {e}"));
+        }
+    }
+
+    /// Client `number`'s connection is no longer the daemon's to end: a run's, or one the
+    /// daemon answers as it steps aside.
+    fn release_client(&self, number: u64) {
+        lock(&self.clients).remove(&number);
+    }
+
+    /// Ends the clients in hand that a shutdown would otherwise wait for: shut down, their
+    /// connections fail every read and write, and their threads return (audit A07).
+    fn end_clients(&self) {
+        for conn in lock(&self.clients).values() {
+            let _ = conn.shutdown(std::net::Shutdown::Both);
+        }
+        for cancel in lock(&self.preparing).values() {
+            cancel.cancel();
         }
     }
 
@@ -503,19 +682,25 @@ impl Daemon {
     /// Serves one client's request. A run it hands to a warm VM, registered, comes back
     /// with its container's ID, for the caller to follow once the client's descriptors
     /// here are closed.
-    fn handle(self: &Arc<Self>, conn: UnixStream) -> Option<(String, Arc<Mutex<Inbox>>)> {
-        let conn = &conn;
-        let message = match shards_ipc::recv(conn) {
+    fn handle(self: &Arc<Self>, conn: Arc<UnixStream>, number: u64) -> Option<(String, Arc<Mutex<Inbox>>)> {
+        let conn = &*conn;
+        let message = match shards_ipc::recv_by(conn, Instant::now() + self.request_timeout) {
             Ok(Some(m)) => m,
             Ok(None) => return None,
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+                log(format!("a client sent no request in {:?}", self.request_timeout));
+                return None;
+            }
             Err(e) => {
                 log(format!("a client's request: {e}"));
                 return None;
             }
         };
         match message.kind {
-            kind::START => {}
+            // Its connection is its run's from here, and passes to the VM.
+            kind::START => self.release_client(number),
             kind::STOP => {
+                self.release_client(number);
                 match conn.try_clone() {
                     Ok(held) => lock(&self.stoppers).push(held),
                     Err(e) => log(format!("holding a stopper's connection: {e}")),
@@ -529,6 +714,7 @@ impl Daemon {
                     return None;
                 };
                 if command.daemon != self.identity {
+                    self.release_client(number);
                     self.step_aside();
                     let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
                     return None;
@@ -588,11 +774,24 @@ impl Daemon {
         if run.hostname.is_none() {
             run.hostname = Some(id.get(..12).unwrap_or(&id).to_string());
         }
-        // The next run's spare is made once this one is answered, off its path.
-        let prepared = match crate::run::prepare(&run, &self.home, &say) {
+        // The next run's spare is made once this one is answered, off its path. What it
+        // downloads, a shutdown cancels: registered, then checked, so a shutdown either
+        // finds it or came before (`end_clients`).
+        let cancel = Cancel::new();
+        lock(&self.preparing).insert(number, cancel.clone());
+        if self.stopping.load(Ordering::SeqCst) {
+            cancel.cancel();
+        }
+        let prepared = crate::run::prepare(&run, &self.home, &say, &cancel);
+        lock(&self.preparing).remove(&number);
+        let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(e) => {
-                refuse(&e);
+                refuse(if cancel.is_cancelled() {
+                    "the daemon is shutting down"
+                } else {
+                    &e
+                });
                 self.discard(&id);
                 self.make_spare();
                 return None;
@@ -816,7 +1015,7 @@ impl Daemon {
         lock(&self.runs).remove(id);
         self.resolved.notify_all();
         for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
-            let _ = waiter.send(code);
+            let _ = waiter.tell.send(code);
         }
         drop(registry);
         said
@@ -911,7 +1110,7 @@ impl Daemon {
             }
             drop(runs);
             for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
-                let _ = waiter.send(0);
+                let _ = waiter.tell.send(0);
             }
             return registry.remove(id).map(|_| true);
         }
@@ -1059,7 +1258,7 @@ impl Daemon {
             lock(&self.runs).remove(id);
             self.resolved.notify_all();
             for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
-                let _ = waiter.send(status);
+                let _ = waiter.tell.send(status);
             }
         }
         // A detached command that never started: why, as `docker run -d` says it.
@@ -1073,9 +1272,10 @@ impl Daemon {
 
     /// Waits up to `limit` (for ever if `None`, or if it is too long to count) for the
     /// container with `id` to stop running, and returns its exit code: 0 if it never ran.
-    /// `None` if it still runs.
-    fn await_exit(&self, id: &str, limit: Option<Duration>) -> Option<u8> {
-        let told = {
+    /// `None` if it still runs, or if `client`, the connection of the command that waits,
+    /// has hung up. A waiter that stops waiting is forgotten (audit A07).
+    fn await_exit(&self, id: &str, limit: Option<Duration>, client: Option<&UnixStream>) -> Option<u8> {
+        let (number, told) = {
             let registry = lock(&self.containers);
             // A run `rm` cancelled will never run.
             if matches!(
@@ -1085,13 +1285,41 @@ impl Daemon {
                 return Some(registry.get(id).and_then(|c| c.exit_code).unwrap_or(0));
             }
             let (tell, told) = mpsc::channel();
-            lock(&self.waiters).entry(id.to_string()).or_default().push(tell);
-            told
+            let number = self.next_waiter.fetch_add(1, Ordering::Relaxed);
+            lock(&self.waiters)
+                .entry(id.to_string())
+                .or_default()
+                .push(Waiter { number, tell });
+            (number, told)
         };
-        match limit.filter(|l| Instant::now().checked_add(*l).is_some()) {
-            Some(limit) => told.recv_timeout(limit).ok(),
-            None => told.recv().ok(),
+        let deadline = limit.and_then(|l| Instant::now().checked_add(l));
+        loop {
+            let step = deadline.map_or(TICK_TIME, |d| {
+                d.saturating_duration_since(Instant::now()).min(TICK_TIME)
+            });
+            match told.recv_timeout(step) {
+                Ok(code) => return Some(code),
+                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let over = deadline.is_some_and(|d| Instant::now() >= d);
+                    // A command's client sends nothing after its request: anything to
+                    // read is its end.
+                    if over || client.is_some_and(readable) {
+                        break;
+                    }
+                }
+            }
         }
+        let mut waiters = lock(&self.waiters);
+        if let Some(list) = waiters.get_mut(id) {
+            list.retain(|w| w.number != number);
+            if list.is_empty() {
+                waiters.remove(id);
+            }
+        }
+        drop(waiters);
+        // Its code may have come as it gave up.
+        told.try_recv().ok()
     }
 
     /// Changes the record of the container with `id` by `f`, and writes it.
@@ -1108,6 +1336,11 @@ impl Daemon {
         self.close();
         self.stopping.store(true, Ordering::SeqCst);
         self.stop_runs();
+        self.end_clients();
+        // Runs waiting for a warm VM look at `stopping` again; the lock orders the wakeup
+        // after their last look.
+        drop(lock(&self.state));
+        self.changed.notify_all();
     }
 
     /// Ends the runs in progress as dockerd ends its containers when it shuts down: SIGTERM
@@ -1193,6 +1426,10 @@ impl Daemon {
             if let Some(ready) = pool.ready.pop_front() {
                 return Ok(ready);
             }
+            // A stopping daemon starts no run: no use waiting for a VM to start one.
+            if self.stopping.load(Ordering::SeqCst) {
+                return Err(Claim::Failed("the daemon is shutting down".into()));
+            }
             self.refill(&mut state, dir);
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -1258,8 +1495,19 @@ impl Daemon {
         args.extend(["--warm".into(), "3".into()]);
         let (tx, rx) = mpsc::channel();
         self.start(&args, For::Run(tx))?;
-        rx.recv()
-            .map_err(|_| "the VM's watcher ended without a word".to_string())?
+        // A VM given up on ends as its socket closes, the daemon's end dropped with it.
+        loop {
+            match rx.recv_timeout(TICK_TIME) {
+                Ok(ready) => return ready,
+                Err(mpsc::RecvTimeoutError::Timeout) if self.stopping.load(Ordering::SeqCst) => {
+                    return Err("the daemon is shutting down".into());
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("the VM's watcher ended without a word".into());
+                }
+            }
+        }
     }
 
     /// Starts shards-vm with `args` as a warm VM whose daemon socket is its descriptor 3,
@@ -1917,6 +2165,153 @@ mod tests {
         assert_eq!(heard_nothing(&vm), 0);
         let record = t.record(&id).unwrap();
         assert_eq!((record.state, record.exit_code), (Life::Exited, Some(143)));
+    }
+
+    /// A client that has sent container command `args`: the daemon's end of its
+    /// connection, for [`Daemon::take`], and its own.
+    fn commanding(args: &[&str]) -> (UnixStream, UnixStream) {
+        let (daemon, client) = UnixStream::pair().unwrap();
+        let command = shards_ipc::Command {
+            argv: args.iter().map(|a| (*a).to_string()).collect(),
+            east_asian: false,
+            now: 0,
+            utc_offset: 0,
+            daemon: Identity::default(),
+        };
+        shards_ipc::send(&client, kind::CONTAINER, &command.encode(), &[]).unwrap();
+        (daemon, client)
+    }
+
+    /// Starts container `name`'s run on a warm VM the test plays, and has it running.
+    fn running(t: &Test, name: &str) -> (String, Starting, UnixStream) {
+        let id = t.create(name);
+        let starting = t.start(&id);
+        let (ready, vm) = t.warm_vm(None);
+        starting.warm.send(ready).unwrap();
+        assert_eq!(heard(&vm).0, kind::RUN);
+        say(&vm, kind::TAKEN, &[]);
+        say(&vm, kind::STARTED, &[]);
+        t.until("the run started", |d| {
+            lock(&d.containers)
+                .get(&id)
+                .is_some_and(|c| c.state == Life::Running)
+        });
+        (id, starting, vm)
+    }
+
+    /// A daemon told to stop ends the clients it would otherwise wait for: one that never
+    /// sends its request, and container commands waiting on a run that ignores its
+    /// SIGTERM, whose connections are shut down. The audit's reproduction (A07): before,
+    /// the daemon waited for the first until its client closed.
+    #[test]
+    fn a_stopping_daemon_ends_the_clients_it_would_wait_for() {
+        let t = Test::new("stop-clients");
+        let (id, starting, vm) = running(&t, "racer");
+        let (idle, idle_client) = UnixStream::pair().unwrap();
+        t.daemon.take(idle);
+        let (waiting, waiting_client) = commanding(&["wait", "racer"]);
+        t.daemon.take(waiting);
+        let (following, following_client) = commanding(&["logs", "-f", "racer"]);
+        t.daemon.take(following);
+        t.until("three clients in hand, one waiting", |d| {
+            d.busy.load(Ordering::SeqCst) == 3 && lock(&d.waiters).contains_key(&id)
+        });
+        let t0 = Instant::now();
+        t.daemon.step_aside();
+        // The run hears its SIGTERM, and goes on regardless.
+        assert_eq!(heard(&vm), signal(15));
+        t.until("clients still in hand", |d| d.busy.load(Ordering::SeqCst) == 0);
+        assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+        for client in [&idle_client, &waiting_client, &following_client] {
+            // macOS refuses options on a socket shut down both ways (EINVAL): this one's
+            // end has nothing more to wait for anyway.
+            let _ = client.set_read_timeout(Some(PATIENCE));
+            assert!(
+                matches!(shards_ipc::recv(client), Ok(None)),
+                "a client was not let go"
+            );
+        }
+        assert!(!lock(&t.daemon.waiters).contains_key(&id), "a waiter left behind");
+        say(&vm, kind::DONE, &[143]);
+        joined(starting.run).unwrap();
+    }
+
+    /// A client that sends no request, or trickles one out, is let go once its time is up,
+    /// however many bytes it sends meanwhile (audit A07).
+    #[test]
+    fn a_client_is_let_go_if_its_request_is_late() {
+        let mut t = Test::new("late-request");
+        Arc::get_mut(&mut t.daemon).unwrap().request_timeout = Duration::from_millis(200);
+        let (silent, silent_client) = UnixStream::pair().unwrap();
+        let (trickling, trickling_client) = UnixStream::pair().unwrap();
+        let t0 = Instant::now();
+        t.daemon.take(silent);
+        t.daemon.take(trickling);
+        let trickle = std::thread::spawn(move || {
+            for byte in [kind::CONTAINER, 0, 0, 0, 200].into_iter().chain([0u8; 200]) {
+                if (&trickling_client).write_all(&[byte]).is_err() {
+                    return trickling_client;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            trickling_client
+        });
+        t.until("clients still in hand", |d| d.busy.load(Ordering::SeqCst) == 0);
+        let took = t0.elapsed();
+        assert!(
+            took >= Duration::from_millis(200) && took < Duration::from_secs(3),
+            "{took:?}"
+        );
+        // Disconnected, macOS refuses the option (EINVAL), and the read ends at once anyway.
+        let _ = silent_client.set_read_timeout(Some(PATIENCE));
+        assert!(matches!(shards_ipc::recv(&silent_client), Ok(None)));
+        drop(joined(trickle));
+    }
+
+    /// A waiter that stops waiting is forgotten: one whose time is up, and a `wait` or a
+    /// `logs -f` whose client hangs up, which ends them as soon as it does (audit A07).
+    #[test]
+    fn a_waiter_that_stops_waiting_is_forgotten() {
+        let t = Test::new("waiters");
+        let (id, starting, vm) = running(&t, "racer");
+        assert_eq!(
+            t.daemon.await_exit(&id, Some(Duration::from_millis(20)), None),
+            None
+        );
+        assert!(!lock(&t.daemon.waiters).contains_key(&id));
+        for args in [&["wait", "racer"][..], &["logs", "-f", "racer"]] {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            let daemon = t.daemon.clone();
+            let argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+            let asking = std::thread::spawn(move || {
+                let asker = commands::Asker {
+                    east_asian: false,
+                    now: 0,
+                    utc_offset: 0,
+                };
+                daemon.command(&argv, &asker, &commands::Reply(&ours))
+            });
+            if args[0] == "wait" {
+                t.until("wait waits", |d| lock(&d.waiters).contains_key(&id));
+            } else {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert!(!asking.is_finished(), "{args:?} did not wait");
+            let t0 = Instant::now();
+            drop(theirs);
+            joined(asking);
+            assert!(
+                t0.elapsed() < Duration::from_secs(2),
+                "{args:?}: {:?}",
+                t0.elapsed()
+            );
+            assert!(
+                !lock(&t.daemon.waiters).contains_key(&id),
+                "{args:?}: a waiter left behind"
+            );
+        }
+        say(&vm, kind::DONE, &[0]);
+        joined(starting.run).unwrap();
     }
 
     /// How many messages the daemon sends a warm VM before it lets go of its socket.

@@ -15,6 +15,7 @@ mod common;
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -468,4 +469,289 @@ fn shell(args: &OsStr) {
     let _ = writeln!(std::io::stdout(), "{report}");
     client.kill().unwrap();
     client.wait().unwrap();
+}
+
+/// Starts `home`'s daemon with `shards ps`, which needs no VM, under a limit of `limit`
+/// open descriptors if one is given, which the daemon inherits; its pid.
+fn start_daemon(home: &Path, limit: Option<u32>) -> i32 {
+    let mut cmd = match limit {
+        Some(n) => {
+            let mut sh = Command::new("/bin/sh");
+            sh.arg("-c")
+                .arg(format!("ulimit -n {n} && exec \"$0\" ps"))
+                .arg(shards());
+            sh
+        }
+        None => {
+            let mut plain = Command::new(shards());
+            plain.arg("ps");
+            plain
+        }
+    };
+    let out = cmd
+        .env("SHARDS_HOME", home)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    daemon_pid(home).expect("a daemon pid")
+}
+
+/// Raises this process's soft limit on open descriptors as far as it goes, up to macOS's
+/// OPEN_MAX: a test holding hundreds of connections needs more than the 256 macOS starts
+/// a process with.
+fn more_descriptors() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) and setrlimit(2) on locals.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim), 0);
+        lim.rlim_cur = lim.rlim_max.min(10240);
+        assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &lim), 0);
+    }
+}
+
+/// A connection to the daemon at `sock`, patient as the client is: macOS refuses
+/// connections past a listener's backlog (at most kern.ipc.somaxconn, 128), where Linux
+/// makes them wait.
+fn connect_patiently(sock: &Path) -> UnixStream {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match UnixStream::connect(sock) {
+            Ok(conn) => return conn,
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(e) => panic!("{}: {e}", sock.display()),
+        }
+    }
+}
+
+/// The CPU time process `pid` has used: from /proc on Linux, from `ps` elsewhere.
+fn cpu_time(pid: i32) -> Duration {
+    if cfg!(target_os = "linux") {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        // After the command's closing parenthesis come the state (field 3) and the rest:
+        // utime and stime are fields 14 and 15, in clock ticks.
+        let fields: Vec<u64> = stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .skip(1)
+            .map(|f| f.parse().unwrap_or(0))
+            .collect();
+        // SAFETY: sysconf(3) takes no pointers.
+        let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).unwrap();
+        return Duration::from_millis((fields[10] + fields[11]) * 1000 / hz);
+    }
+    let out = Command::new("ps")
+        .args(["-o", "time=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    // [[hours:]minutes:]seconds.hundredths
+    let text = String::from_utf8_lossy(&out.stdout);
+    let seconds = text.trim().split(':').fold(0.0, |total: f64, part| {
+        total * 60.0 + part.parse::<f64>().unwrap()
+    });
+    Duration::from_secs_f64(seconds)
+}
+
+/// A daemon raises its soft limit on open descriptors to its hard limit, as Go's runtime
+/// raises its own: macOS starts processes with 256 (audit A07). No VM needed.
+#[test]
+fn a_daemon_raises_its_descriptor_limit() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) into a local.
+    assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) }, 0);
+    if lim.rlim_max <= 256 {
+        eprintln!(
+            "SKIP: a hard limit of {} descriptors leaves nothing to raise",
+            lim.rlim_max
+        );
+        return;
+    }
+    let home = TempDir::new("daemon-limit");
+    let out = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("ulimit -S -n 256 && exec \"$0\" ps")
+        .arg(shards())
+        .env("SHARDS_HOME", &*home)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
+    let limit: u64 = log
+        .lines()
+        .find_map(|l| l.split(", with up to ").nth(1))
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no descriptor limit in the daemon's log:\n{log}"));
+    assert!(limit > 256, "the daemon kept a limit of {limit} descriptors");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    assert_eq!(
+        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
+        Some(0)
+    );
+}
+
+/// A client that connects and says nothing holds up no shutdown: the daemon ends it as it
+/// stops. The audit's reproduction (A07): before, `daemon stop` waited until the client
+/// closed. No VM needed.
+#[test]
+fn a_client_that_says_nothing_holds_up_no_stop() {
+    let home = TempDir::new("daemon-silent");
+    let daemon = start_daemon(&home, None);
+    let silent = UnixStream::connect(home.join("daemon.sock")).unwrap();
+    let t0 = Instant::now();
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    // Short of the daemon's 10 s deadline for a request, which would end it too.
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, Duration::from_secs(8));
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    eventually("the daemon outlived its stop", || !alive(daemon));
+    let mut byte = [0u8; 1];
+    assert_eq!(
+        (&silent).read(&mut byte).unwrap_or(0),
+        0,
+        "the client was not let go"
+    );
+}
+
+/// Past its cap of 256 clients in hand, the daemon leaves connections in its backlog, and
+/// takes the next as soon as one in hand leaves (audit A07). No VM needed.
+#[test]
+fn clients_past_the_cap_wait_their_turn() {
+    more_descriptors();
+    let home = TempDir::new("daemon-cap");
+    let daemon = start_daemon(&home, None);
+    // Its soft limit on descriptors is raised to its hard limit, where Linux shows it.
+    if let Ok(limits) = std::fs::read_to_string(format!("/proc/{daemon}/limits")) {
+        let line = limits.lines().find(|l| l.starts_with("Max open files")).unwrap();
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(fields[3], fields[4], "{line}");
+    }
+    let sock = home.join("daemon.sock");
+    let mut silent: Vec<UnixStream> = (0..256).map(|_| connect_patiently(&sock)).collect();
+    let mut listing = Command::new(shards())
+        .arg("ps")
+        .env("SHARDS_HOME", &*home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // Well within the 10 s the silent ones have to send their requests.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        listing.try_wait().unwrap().is_none(),
+        "a client past the cap was taken"
+    );
+    let t0 = Instant::now();
+    drop(silent.pop());
+    assert_eq!(wait(&mut listing), Some(0));
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    drop(silent);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    assert_eq!(
+        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
+        Some(0)
+    );
+}
+
+/// A daemon out of descriptors leaves connections in its backlog and waits for room,
+/// rather than spinning on a listener that stays readable (Linux), or dropping them one
+/// by one as its accepts fail (macOS), and serves again once clients leave (audit A07).
+/// No VM needed.
+#[test]
+fn a_daemon_out_of_descriptors_waits_for_room() {
+    let home = TempDir::new("daemon-starved");
+    let daemon = start_daemon(&home, Some(48));
+    let sock = home.join("daemon.sock");
+    let log = home.join("daemon.log");
+    let silent: Vec<UnixStream> = (0..64).map(|_| connect_patiently(&sock)).collect();
+    eventually("the daemon never ran out of descriptors", || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("accepting: Too many open files")
+    });
+    let before = cpu_time(daemon);
+    std::thread::sleep(Duration::from_secs(1));
+    let spent = cpu_time(daemon).saturating_sub(before);
+    assert!(
+        spent < Duration::from_millis(300),
+        "the daemon spun: {spent:?} of CPU in 1 s"
+    );
+    // Held by the daemon, or waiting in its backlog, a connection has nothing to read; one
+    // dropped reads its end. macOS drops the one whose accept found no descriptor.
+    let dropped = silent
+        .iter()
+        .filter(|conn| {
+            let mut pfd = libc::pollfd {
+                fd: std::os::fd::AsRawFd::as_raw_fd(*conn),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: poll(2) on one valid pollfd, without waiting.
+            unsafe { libc::poll(&mut pfd, 1, 0) > 0 }
+        })
+        .count();
+    assert!(dropped <= 1, "{dropped} waiting clients were dropped");
+    drop(silent);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let listed = run_shards_env(&["ps"], &[] as &[&str], &env, TIMEOUT);
+    assert_eq!(listed.status, Some(0), "{listed}");
+    assert_eq!(
+        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
+        Some(0)
+    );
+}
+
+/// A daemon told to stop cancels what its runs are downloading: here a pull from a
+/// registry that accepts connections and never answers, which would hold the stop for
+/// 30 s a try. The run is refused as the daemon shuts down (audit A07). No VM needed.
+#[test]
+fn a_stop_cancels_the_downloads_of_runs_being_prepared() {
+    use std::net::TcpListener;
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = silent.local_addr().unwrap().port();
+    let accepted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    {
+        let accepted = accepted.clone();
+        std::thread::spawn(move || {
+            for conn in silent.incoming().flatten() {
+                accepted.lock().unwrap().push(conn);
+            }
+        });
+    }
+    let home = TempDir::new("daemon-pulling");
+    let image = format!("127.0.0.1:{port}/silent:latest");
+    let run = Command::new(shards())
+        .args(["run", "--pull", "always", &image, "exit", "0"])
+        .env("SHARDS_HOME", &*home)
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    eventually("the pull never reached the registry", || {
+        !accepted.lock().unwrap().is_empty()
+    });
+    let t0 = Instant::now();
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, Duration::from_secs(20));
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    let out = run.wait_with_output().unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(125), "{said}");
+    assert!(said.contains("the daemon is shutting down"), "{said}");
 }

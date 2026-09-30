@@ -16,9 +16,13 @@
 //! - at most 10 idle connections, each kept for 30 s.
 //!
 //! A body that makes no progress for 30 s fails too, where Go would wait on its context.
+//! That context's cancellation is a [`Cancel`]: every request of a client it cancels
+//! fails, at once.
 
+use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
@@ -30,6 +34,8 @@ use crate::{Error, ErrorKind};
 
 const CONNECT: Duration = Duration::from_secs(30);
 const RACE: Duration = Duration::from_millis(300);
+/// How often a dial waiting on its attempts looks for a cancel.
+const DIAL_POLL: Duration = Duration::from_millis(100);
 const HANDSHAKE: Duration = Duration::from_secs(10);
 const HEAD: Duration = Duration::from_secs(30);
 const STALL: Duration = Duration::from_secs(30);
@@ -50,6 +56,82 @@ pub struct Client {
     tls: Box<TlsFor>,
     pool: Arc<Pool>,
     user_agent: String,
+    cancel: Option<Cancel>,
+}
+
+/// Stops a client's requests from another thread, as cancelling Go's request context
+/// does: once cancelled, a request fails before it is sent, and every connection in use
+/// is shut down, so that a read or write waiting on one fails at once (audit A07).
+#[derive(Debug, Clone, Default)]
+pub struct Cancel(Arc<Cancelling>);
+
+#[derive(Debug, Default)]
+struct Cancelling {
+    /// Set under `live`'s lock, so a connection is watched or sees it.
+    cancelled: AtomicBool,
+    /// The connections in use, by number, and the next number.
+    live: Mutex<(u64, HashMap<u64, TcpStream>)>,
+}
+
+impl Cancel {
+    pub fn new() -> Cancel {
+        Cancel::default()
+    }
+
+    pub fn cancel(&self) {
+        let live = self.0.live.lock().unwrap_or_else(PoisonError::into_inner);
+        self.0.cancelled.store(true, Ordering::SeqCst);
+        for tcp in live.1.values() {
+            let _ = tcp.shutdown(Shutdown::Both);
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.cancelled.load(Ordering::SeqCst)
+    }
+
+    fn check(&self) -> Result<(), Error> {
+        if self.is_cancelled() {
+            return Err(Error::of(ErrorKind::Cancelled, "cancelled"));
+        }
+        Ok(())
+    }
+
+    /// Watches `tcp` while the returned guard lives: a cancel shuts it down, as it does at
+    /// once one already made. A connection that cannot be watched still fails within
+    /// [`STALL`].
+    fn watch(&self, tcp: &TcpStream) -> Watch {
+        let mut live = self.0.live.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.is_cancelled() {
+            let _ = tcp.shutdown(Shutdown::Both);
+            return Watch(None);
+        }
+        let Ok(copy) = tcp.try_clone() else {
+            return Watch(None);
+        };
+        let n = live.0;
+        live.0 = n.wrapping_add(1);
+        live.1.insert(n, copy);
+        Watch(Some((self.clone(), n)))
+    }
+}
+
+/// A connection a [`Cancel`] watches, until this drops.
+#[derive(Debug)]
+struct Watch(Option<(Cancel, u64)>);
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        if let Some((cancel, n)) = self.0.take() {
+            cancel
+                .0
+                .live
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .1
+                .remove(&n);
+        }
+    }
 }
 
 impl std::fmt::Debug for Client {
@@ -129,16 +211,41 @@ impl Client {
             tls,
             pool: Arc::new(Pool::default()),
             user_agent: user_agent.to_string(),
+            cancel: None,
         }
+    }
+
+    /// This client, its requests failing once `cancel` is cancelled.
+    pub fn cancelled_by(mut self, cancel: Cancel) -> Client {
+        self.cancel = Some(cancel);
+        self
     }
 
     /// Sends `req` and reads the response head. A GET or HEAD that fails on a reused
     /// connection before any response arrived is sent once more on a new one, as Go
     /// retries replayable requests.
     pub fn send(&self, req: &Request<'_>) -> Result<Response, Error> {
+        self.checked(self.send_now(req))
+    }
+
+    /// `result`, unless the client was cancelled: then that, whatever the failure it made.
+    fn checked<T>(&self, result: Result<T, Error>) -> Result<T, Error> {
+        match (&self.cancel, result) {
+            (Some(cancel), Err(e)) if cancel.is_cancelled() => {
+                Err(Error::of(ErrorKind::Cancelled, format!("cancelled: {e}")))
+            }
+            (_, result) => result,
+        }
+    }
+
+    fn send_now(&self, req: &Request<'_>) -> Result<Response, Error> {
+        if let Some(cancel) = &self.cancel {
+            cancel.check()?;
+        }
         let head = self.head(req)?;
         let key = Key::of(req.url);
-        if let Some(conn) = self.pool.take(&key) {
+        if let Some(mut conn) = self.pool.take(&key) {
+            conn.watch = self.cancel.as_ref().map(|c| c.watch(conn.io.get_ref().tcp()));
             match self.exchange(conn, req, &head) {
                 // The server may have closed it while it sat idle.
                 Err(Failure::BeforeResponse(_)) if matches!(req.method, "GET" | "HEAD") => {}
@@ -281,8 +388,10 @@ impl Client {
     }
 
     fn connect(&self, url: &Url, key: Key) -> Result<Conn, Error> {
-        let tcp = dial(url)?;
+        let tcp = dial(url, self.cancel.as_ref())?;
         let _ = tcp.set_nodelay(true);
+        // Watched from here, the TLS handshake included.
+        let watch = self.cancel.as_ref().map(|c| c.watch(&tcp));
         let stream = match url.scheme() {
             Scheme::Http => Stream::Plain(tcp),
             Scheme::Https => {
@@ -314,6 +423,7 @@ impl Client {
         Ok(Conn {
             key,
             io: BufReader::with_capacity(64 << 10, stream),
+            watch,
         })
     }
 }
@@ -334,7 +444,8 @@ impl Failure {
 
 /// Connects to `url`'s host, racing its addresses as RFC 8305 §5 describes: families
 /// interleaved, the next attempt started 300 ms after the last or as soon as it fails.
-fn dial(url: &Url) -> Result<TcpStream, Error> {
+/// Gives up at once if `cancel` is cancelled; the attempts under way end on their own.
+fn dial(url: &Url, cancel: Option<&Cancel>) -> Result<TcpStream, Error> {
     let host = url.host().trim_start_matches('[').trim_end_matches(']');
     let found: Vec<SocketAddr> = (host, url.port())
         .to_socket_addrs()
@@ -375,8 +486,11 @@ fn dial(url: &Url) -> Result<TcpStream, Error> {
         let started = Instant::now();
         while let Some(limit) = RACE.checked_sub(started.elapsed()) {
             let before = pending;
-            if let Some(stream) = wait(&mut pending, &mut last, limit) {
+            if let Some(stream) = wait(&mut pending, &mut last, limit.min(DIAL_POLL)) {
                 return Ok(stream);
+            }
+            if let Some(cancel) = cancel {
+                cancel.check()?;
             }
             // An attempt failed: start the next one now.
             if pending < before {
@@ -388,8 +502,11 @@ fn dial(url: &Url) -> Result<TcpStream, Error> {
         let Some(left) = deadline.checked_duration_since(Instant::now()) else {
             break;
         };
-        if let Some(stream) = wait(&mut pending, &mut last, left) {
+        if let Some(stream) = wait(&mut pending, &mut last, left.min(DIAL_POLL)) {
             return Ok(stream);
+        }
+        if let Some(cancel) = cancel {
+            cancel.check()?;
         }
     }
     Err(match last {
@@ -838,6 +955,8 @@ impl Write for Stream {
 struct Conn {
     key: Key,
     io: BufReader<Stream>,
+    /// While the connection is in use: idle, it is no request's to cancel.
+    watch: Option<Watch>,
 }
 
 impl Conn {
@@ -878,7 +997,8 @@ impl Pool {
         Some(idle.remove(i).1)
     }
 
-    fn put(&self, conn: Conn) {
+    fn put(&self, mut conn: Conn) {
+        conn.watch = None;
         let mut idle = self.idle.lock().unwrap_or_else(PoisonError::into_inner);
         idle.push((Instant::now(), conn));
         if idle.len() > MAX_IDLE {
@@ -1019,6 +1139,51 @@ mod tests {
         // Go takes both framings, and the chunks win.
         let both = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
         assert_eq!(outcome(both).unwrap(), b"hello");
+    }
+
+    /// A cancel ends a request at once, whatever it waits for: a head that never comes, a
+    /// body that stops halfway; and a cancelled client connects nowhere (audit A07). Each
+    /// wait would otherwise last 30 s.
+    #[test]
+    fn a_cancel_ends_requests_at_once() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = at("http", "127.0.0.1", port);
+        let server = std::thread::spawn(move || {
+            // The first says nothing; the second sends a head and 10 of its 1000 bytes.
+            let (silent, _) = listener.accept().unwrap();
+            let (mut halfway, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = halfway.read(&mut request);
+            halfway
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n0123456789")
+                .unwrap();
+            listener.set_nonblocking(true).unwrap();
+            (silent, halfway, listener)
+        });
+        let cancelled_within = |client: &Client, cancel: &Cancel| {
+            std::thread::scope(|scope| {
+                let asked = scope.spawn(|| fetch(client, "GET", &url));
+                std::thread::sleep(Duration::from_millis(100));
+                let t0 = Instant::now();
+                cancel.cancel();
+                let e = asked.join().unwrap().unwrap_err();
+                (e, t0.elapsed())
+            })
+        };
+        let cancel = Cancel::new();
+        let (e, took) = cancelled_within(&plain().cancelled_by(cancel.clone()), &cancel);
+        assert_eq!(e.kind(), ErrorKind::Cancelled, "{e}");
+        assert!(took < Duration::from_secs(2), "{took:?}");
+        let cancel = Cancel::new();
+        let (e, took) = cancelled_within(&plain().cancelled_by(cancel.clone()), &cancel);
+        assert!(took < Duration::from_secs(2), "{took:?}: {e}");
+        let (_silent, _halfway, listener) = server.join().unwrap();
+        // Cancelled already: nothing is sent, and no connection made.
+        let e = fetch(&plain().cancelled_by(cancel), "GET", &url).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::Cancelled, "{e}");
+        assert!(listener.accept().is_err(), "a cancelled client connected");
     }
 
     #[test]

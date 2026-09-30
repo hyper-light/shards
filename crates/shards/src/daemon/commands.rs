@@ -230,7 +230,9 @@ impl Daemon {
     /// Ends the command of the running container with `id` as dockerd does (moby
     /// daemon/stop.go containerStop, daemon/kill.go kill): signal `linux`, then wait up to
     /// `grace` (for ever if `None`, 2 s if the signal could not be sent), then SIGKILL and
-    /// up to 10 s more, then the VM itself and 2 s more. Whether the command ended.
+    /// up to 10 s more, then the VM itself and 2 s more. Whether the command ended. Its
+    /// client hanging up changes nothing: "Cancelling the request should not cancel the
+    /// stop" (moby daemon/stop.go, containerStop).
     fn end(&self, id: &str, linux: u32, grace: Option<Duration>) -> bool {
         if linux != 9 {
             let grace = if self.signal(id, linux) {
@@ -238,18 +240,18 @@ impl Daemon {
             } else {
                 Some(UNSENT_WAIT)
             };
-            if self.await_exit(id, grace).is_some() {
+            if self.await_exit(id, grace, None).is_some() {
                 return true;
             }
         }
         self.signal(id, 9);
-        if self.await_exit(id, Some(KILL_WAIT)).is_some() {
+        if self.await_exit(id, Some(KILL_WAIT), None).is_some() {
             return true;
         }
         if let Some(RunState::Tracked(t)) = lock(&self.runs).get(id) {
             let _ = t.vm.kill(libc::SIGKILL);
         }
-        self.await_exit(id, Some(LAST_WAIT)).is_some()
+        self.await_exit(id, Some(LAST_WAIT), None).is_some()
     }
 
     /// Runs `op` for each of `args`, up to 50 at once and in their order, and answers as
@@ -326,7 +328,10 @@ impl Daemon {
         for reference in references {
             match self.resolve(reference) {
                 Ok(id) => {
-                    let code = self.await_exit(&id, None).unwrap_or(0);
+                    // Its client may hang up first: then nobody reads the rest.
+                    let Some(code) = self.await_exit(&id, None, Some(reply.0)) else {
+                        return 1;
+                    };
                     reply.out(&code.to_string());
                 }
                 Err(e) => errors.push(e),
@@ -625,7 +630,8 @@ impl Daemon {
                     return 0;
                 }
             }
-            if !running {
+            // A client that hangs up ends its follow, output or none (audit A07).
+            if !running || super::readable(reply.0) {
                 return 0;
             }
             std::thread::sleep(FOLLOW_POLL);

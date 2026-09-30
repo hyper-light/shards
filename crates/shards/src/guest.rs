@@ -15,6 +15,7 @@ use std::process::ExitCode;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use sha2::{Digest as _, Sha256};
+use shards_registry::http::Cancel;
 
 use crate::kernel::{KERNEL, Pinned};
 
@@ -108,7 +109,7 @@ const NO_KERNEL: &str =
 
 /// The default guest in `home`'s store: the pinned kernel, downloaded if it is not there
 /// yet, with what the download does said through `say`; and this build's init.
-pub fn default(home: &Path, say: &dyn Fn(&str)) -> Result<Guest, String> {
+pub fn default(home: &Path, say: &dyn Fn(&str), cancel: Option<&Cancel>) -> Result<Guest, String> {
     let pinned = KERNEL.ok_or(NO_KERNEL)?;
     let dir = home.join("guest");
     let init_digest = init_digest()?;
@@ -139,7 +140,7 @@ pub fn default(home: &Path, say: &dyn Fn(&str)) -> Result<Guest, String> {
         store(&dir, &guest.init, init_bytes()?)?;
     }
     if !guest.kernel.is_file() {
-        download(&dir, &guest.kernel, &pinned, say)?;
+        download(&dir, &guest.kernel, &pinned, say, cancel)?;
     }
     Ok(guest)
 }
@@ -179,7 +180,13 @@ fn store(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 /// Downloads `pinned` to `path` in `dir`, from `SHARDS_KERNEL_URL` if set. The body is
 /// hashed as it arrives and kept only if it is the pinned kernel: its size and SHA-256.
-fn download(dir: &Path, path: &Path, pinned: &Pinned, say: &dyn Fn(&str)) -> Result<(), String> {
+fn download(
+    dir: &Path,
+    path: &Path,
+    pinned: &Pinned,
+    say: &dyn Fn(&str),
+    cancel: Option<&Cancel>,
+) -> Result<(), String> {
     use shards_registry::http::{Client, Redirects, Request};
     use shards_registry::{tls, url::Url};
 
@@ -203,6 +210,10 @@ fn download(dir: &Path, path: &Path, pinned: &Pinned, say: &dyn Fn(&str)) -> Res
         Box::new(move |_| Ok(config.clone())),
         &format!("shards/{}", env!("CARGO_PKG_VERSION")),
     );
+    let http = match cancel {
+        Some(cancel) => http.cancelled_by(cancel.clone()),
+        None => http,
+    };
     let request = Request {
         method: "GET",
         url: &url,
