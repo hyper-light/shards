@@ -375,8 +375,10 @@ The store keeps what a pull fetches and what guests boot from. The code is
   - A small blob (a manifest, index or config) is checked again whenever it is read
     (`Store::content`; audit A11). It is read whole under its limit and hashed, and then
     its length is compared with its descriptor's: content of another length is not to
-    be trusted (image-spec descriptor.md). A stored copy that has changed is refused, by
-    name, so the user knows what to remove.
+    be trusted (image-spec descriptor.md). A stored copy that has changed is refused
+    from the store alone, by name; a pull fetches it again and renames it into its
+    place, so readers find the old file or the new one, never none. `run --pull
+    missing` pulls again for it, saying why; `--pull never` refuses.
 - **References** record the descriptor their manifest was chosen by: its media type, size
   and any platform an index labelled it with. Finding the image again then checks what
   pulling it checked (audit A11). Their directory is versioned like the root

@@ -89,8 +89,9 @@ fn images_run_from_a_registry_as_docker_run_runs_them() {
         "the stored image served the second run"
     );
 
-    // The stored config changed under its digest, to run `exit 9`: the next run refuses
-    // it rather than run a spec nobody pulled, whether or not it may pull (audit A11).
+    // The stored config changed under its digest, to run `exit 9`: a run that may not
+    // pull refuses it rather than run a spec nobody pulled; one that may pulls it again,
+    // and runs what was pulled (audit A11).
     let (_, blobs) = test_image();
     let config = &blobs[0];
     let digest = sha256_digest(config);
@@ -102,15 +103,30 @@ fn images_run_from_a_registry_as_docker_run_runs_them() {
     let changed = text.replace(r#""Cmd":["report"]"#, r#""Cmd":["exit","9"]"#);
     assert_ne!(changed, text);
     std::fs::write(&stored, changed).unwrap();
-    for pull in ["never", "missing"] {
-        let refused = run_shards_env(&["run"], &["--pull", pull, image.as_str()], &env, TIMEOUT);
-        let shown = format!("--- stdout\n{}\n--- stderr\n{}", refused.stdout, refused.stderr);
-        assert_eq!(refused.status, Some(125), "--pull {pull}\n{shown}");
-        assert!(
-            refused.stderr.contains("the stored copy has changed"),
-            "--pull {pull}\n{shown}"
-        );
-    }
+    let refused = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", refused.stdout, refused.stderr);
+    assert_eq!(refused.status, Some(125), "{shown}");
+    assert!(
+        refused.stderr.contains(&format!(
+            "the stored copy has changed; pull '{image}' again to mend it"
+        )),
+        "{shown}"
+    );
+    let mended = run_shards_env(&["run"], &["--pull", "missing", image.as_str()], &env, TIMEOUT);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", mended.stdout, mended.stderr);
+    assert_eq!(mended.status, Some(0), "{shown}");
+    assert!(
+        mended.stdout.lines().any(|l| l == "uid 1000"),
+        "the pulled command ran\n{shown}"
+    );
+    assert!(
+        mended
+            .stderr
+            .contains(&format!("the stored copy has changed; pulling '{image}' again")),
+        "{shown}"
+    );
+    assert!(!mended.stderr.contains("Unable to find image"), "{shown}");
+    assert_eq!(&std::fs::read(&stored).unwrap(), config, "the stored copy mended");
 }
 
 /// An image whose root filesystem would take more than the daemon's limits allow is

@@ -18,6 +18,7 @@ use shards_image::oci::RunConfig;
 use shards_image::platform;
 use shards_image::reference::Reference;
 use shards_ipc::{Pull, Run};
+use shards_registry::ErrorKind;
 use shards_registry::http::Cancel;
 use shards_registry::pull::{Event, local};
 use shards_vmm::vm::Config;
@@ -64,11 +65,23 @@ pub fn prepare(
     let asked = request;
     let reference = Reference::parse(&asked.image).map_err(|e| e.to_string())?;
     let store = crate::pull::store(home)?;
+    let mut changed = false;
     let found = match asked.pull {
         Pull::Always => None,
         Pull::Missing | Pull::Never => {
             let limits = crate::pull::limits(home)?;
-            local(&store, &reference, &platform::guest(), &limits).map_err(|e| e.to_string())?
+            match local(&store, &reference, &platform::guest(), &limits) {
+                // A stored copy that has changed is fetched again, as a pull mends it.
+                Err(e) if e.kind() == ErrorKind::Changed && asked.pull == Pull::Missing => {
+                    say(&format!("{e}; pulling '{}' again", reference.familiar()));
+                    changed = true;
+                    None
+                }
+                Err(e) if e.kind() == ErrorKind::Changed => {
+                    return Err(format!("{e}; pull '{}' again to mend it", reference.familiar()));
+                }
+                found => found.map_err(|e| e.to_string())?,
+            }
         }
     };
     let image = match found {
@@ -78,7 +91,7 @@ pub fn prepare(
         }
         None => {
             // `docker run` pulls as `docker pull` does, on stderr.
-            if asked.pull == Pull::Missing {
+            if asked.pull == Pull::Missing && !changed {
                 say(&format!(
                     "Unable to find image '{}' locally",
                     reference.familiar()

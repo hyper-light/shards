@@ -74,6 +74,18 @@ impl Hasher {
     }
 }
 
+/// What the store holds of a small blob ([`Store::held`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Held {
+    /// Nothing under its digest.
+    Missing,
+    /// A copy that is not what its digest names any more, and why: a pull fetches it
+    /// again in its place.
+    Changed(String),
+    /// Its bytes, checked.
+    Whole(Vec<u8>),
+}
+
 /// A file being written under `ingest/`, removed unless committed.
 struct Partial {
     path: PathBuf,
@@ -166,6 +178,8 @@ pub struct Download {
     digest: Digest,
     size: u64,
     target: PathBuf,
+    /// Whether it replaces a stored copy that has changed.
+    replace: bool,
     /// The room the store's filesystem has for it (audit A10).
     room: Room,
 }
@@ -221,6 +235,7 @@ impl Download {
             digest,
             size,
             target,
+            replace,
             room: _,
         } = self;
         if offset != size {
@@ -235,7 +250,7 @@ impl Download {
         }
         file.sync_all()?;
         // Moved while still locked: a download waiting on the lock must find the blob.
-        if target.is_file() {
+        if target.is_file() && !replace {
             let _ = fs::remove_file(&path);
         } else {
             fs::rename(&path, &target)?;
@@ -299,8 +314,25 @@ impl Store {
     }
 
     /// Stores the `size`-byte blob `digest` from `src`: hashed as it is written, and
-    /// committed only if exactly `size` bytes arrived and they hash to `digest`.
+    /// committed only if exactly `size` bytes arrived and they hash to `digest`. A copy
+    /// there is kept.
     pub fn ingest(&self, digest: &Digest, size: u64, src: &mut dyn Read) -> Result<PathBuf, Error> {
+        self.ingest_as(digest, size, src, false)
+    }
+
+    /// [`ingest`](Self::ingest), in place of a stored copy that has changed
+    /// ([`Held::Changed`]).
+    pub fn ingest_again(&self, digest: &Digest, size: u64, src: &mut dyn Read) -> Result<PathBuf, Error> {
+        self.ingest_as(digest, size, src, true)
+    }
+
+    fn ingest_as(
+        &self,
+        digest: &Digest,
+        size: u64,
+        src: &mut dyn Read,
+        replace: bool,
+    ) -> Result<PathBuf, Error> {
         let mut partial = Partial::create(&self.root.join("ingest"))?;
         let mut hasher = Hasher::new(digest.algorithm());
         let mut taken = src.take(size.saturating_add(1));
@@ -329,7 +361,11 @@ impl Store {
             return bad(format!("{digest}: the content hashes to {actual}"));
         }
         let path = self.blob_path(digest);
-        partial.commit(&path)?;
+        if replace {
+            partial.replace(&path)?;
+        } else {
+            partial.commit(&path)?;
+        }
         Ok(path)
     }
 
@@ -340,6 +376,27 @@ impl Store {
     /// It is refused if what is left of it would leave the store's filesystem less free
     /// than `limits` keep, and stops once it would as it goes (audit A10).
     pub fn download(&self, digest: &Digest, size: u64, limits: &Limits) -> Result<Option<Download>, Error> {
+        self.download_as(digest, size, limits, false)
+    }
+
+    /// [`download`](Self::download), in place of a stored copy that has changed
+    /// ([`Held::Changed`]).
+    pub fn download_again(
+        &self,
+        digest: &Digest,
+        size: u64,
+        limits: &Limits,
+    ) -> Result<Option<Download>, Error> {
+        self.download_as(digest, size, limits, true)
+    }
+
+    fn download_as(
+        &self,
+        digest: &Digest,
+        size: u64,
+        limits: &Limits,
+        replace: bool,
+    ) -> Result<Option<Download>, Error> {
         let path =
             self.root
                 .join("ingest")
@@ -353,7 +410,7 @@ impl Store {
         file.lock()?;
         // The lock may have been released by a download that finished. Its file has moved,
         // and what is at `path` now is an empty file this call made.
-        if self.has(digest) {
+        if self.has(digest) && !replace {
             drop(file);
             let _ = fs::remove_file(&path);
             return Ok(None);
@@ -392,6 +449,7 @@ impl Store {
             digest: digest.clone(),
             size,
             target: self.blob_path(digest),
+            replace,
             room: Room::new(&ingest, limits)?,
         };
         // More than the blob holds can only be wrong.
@@ -451,6 +509,16 @@ impl Store {
     /// checked again against the digest and then the size. Content whose length is not its
     /// descriptor's is not trusted (image-spec descriptor.md).
     pub fn content(&self, desc: &Descriptor, max: u64) -> Result<Option<Vec<u8>>, Error> {
+        match self.held(desc, max)? {
+            Held::Missing => Ok(None),
+            Held::Changed(why) => Err(Error(why)),
+            Held::Whole(bytes) => Ok(Some(bytes)),
+        }
+    }
+
+    /// What the store holds of the small blob `desc` describes, read as
+    /// [`content`](Self::content) reads it.
+    pub fn held(&self, desc: &Descriptor, max: u64) -> Result<Held, Error> {
         let digest = desc.digest()?;
         let size = desc.size()?;
         if size > max {
@@ -459,21 +527,19 @@ impl Store {
         let path = self.blob_path(&digest);
         let file = match File::open(&path) {
             Ok(file) => file,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Held::Missing),
             Err(e) => return Err(e.into()),
         };
         let mut bytes = Vec::new();
         file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > max {
-            return bad(format!("{}: over the {max}-byte limit", path.display()));
-        }
+        // Past the limit its descriptor is within, it is not what it was stored as.
         let mut hasher = Hasher::new(digest.algorithm());
         hasher.update(&bytes);
-        if hasher.finish() != digest {
-            return bad(format!(
-                "{}: the stored copy has changed; remove it to fetch it again",
+        if bytes.len() as u64 > max || hasher.finish() != digest {
+            return Ok(Held::Changed(format!(
+                "{}: the stored copy has changed",
                 path.display()
-            ));
+            )));
         }
         if bytes.len() as u64 != size {
             return bad(format!(
@@ -481,7 +547,7 @@ impl Store {
                 bytes.len()
             ));
         }
-        Ok(Some(bytes))
+        Ok(Held::Whole(bytes))
     }
 
     /// Decompresses a layer's blob into a file under `ingest/`, removed when dropped. Its
@@ -1039,19 +1105,29 @@ mod tests {
         assert_eq!(store.content(&desc, 1024).unwrap(), Some(blob.to_vec()));
 
         // The stored copy changed under its name: as valid JSON of the same length,
-        // truncated, or grown.
+        // truncated, grown, or grown past the limit its descriptor is within. Each is a
+        // changed copy, which a pull fetches again.
         let path = store.blob_path(&d);
         let same_length = String::from_utf8(blob.to_vec()).unwrap().replace('7', "9");
         let cases = [
-            (same_length.into_bytes(), "has changed"),
-            (blob[..blob.len() - 1].to_vec(), "has changed"),
-            ([&blob[..], b" "].concat(), "has changed"),
-            (vec![b' '; 2048], "over the 1024-byte limit"),
+            same_length.into_bytes(),
+            blob[..blob.len() - 1].to_vec(),
+            [&blob[..], b" "].concat(),
+            vec![b' '; 2048],
         ];
-        for (bytes, why) in cases {
+        for bytes in cases {
             fs::write(&path, &bytes).unwrap();
             let e = store.content(&desc, 1024).unwrap_err().to_string();
-            assert!(e.contains(why), "{why}: {e}");
+            assert!(
+                e.contains("the stored copy has changed"),
+                "{} bytes: {e}",
+                bytes.len()
+            );
+            assert!(
+                matches!(store.held(&desc, 1024).unwrap(), Held::Changed(_)),
+                "{} bytes",
+                bytes.len()
+            );
         }
         fs::write(&path, blob).unwrap();
 

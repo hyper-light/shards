@@ -32,6 +32,8 @@ pub enum ErrorKind {
     NotFound,
     /// The request was cancelled ([`http::Cancel`]): nothing tries it again.
     Cancelled,
+    /// A stored copy is not what its digest names any more: a pull fetches it again.
+    Changed,
     Other,
 }
 

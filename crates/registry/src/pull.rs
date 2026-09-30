@@ -15,10 +15,10 @@ use std::sync::{Mutex, PoisonError};
 use shards_image::oci::{self, Descriptor, Document, ImageConfig, Manifest, Platform};
 use shards_image::platform::{self, Target};
 use shards_image::reference::{Digest, Reference};
-use shards_image::store::{Layer, Limits, Store};
+use shards_image::store::{Held, Layer, Limits, Store};
 
-use crate::Error;
 use crate::registry::Registry;
+use crate::{Error, ErrorKind};
 
 /// Layers fetched at once: dockerd's default `max-concurrent-downloads`.
 const CONCURRENT: usize = 3;
@@ -109,7 +109,14 @@ pub fn pull(
     report(Event::Manifest(&manifest_digest, &manifest.layers));
 
     registry.fetch_blob(store, &manifest.config, limits, &|_| {})?;
-    let config = stored(store, &name, &manifest.config, oci::MAX_CONFIG)?;
+    // A stored config that has changed is fetched again in its place.
+    let config = match stored(store, &name, &manifest.config, oci::MAX_CONFIG) {
+        Err(e) if e.kind() == ErrorKind::Changed => {
+            registry.fetch_blob_again(store, &manifest.config, limits, &|_| {})?;
+            stored(store, &name, &manifest.config, oci::MAX_CONFIG)?
+        }
+        read => read?,
+    };
     let (config, layers) = checked(&name, &manifest_desc, &manifest, &config, targets)?;
 
     fetch_layers(registry, store, &manifest, limits, report)?;
@@ -228,11 +235,14 @@ fn checked(
 }
 
 /// The bytes of the small blob `desc` describes, from the store alone, checked again
-/// against its digest and size (`Store::content`).
+/// against its digest and size (`Store::held`). A copy that has changed is an error of its
+/// own kind, [`ErrorKind::Changed`], which a pull mends.
 fn stored(store: &Store, name: &str, desc: &Descriptor, max: u64) -> Result<Vec<u8>, Error> {
-    store
-        .content(desc, max)?
-        .ok_or_else(|| Error::new(format!("{name}: {} is not in the store", desc.digest)))
+    match store.held(desc, max)? {
+        Held::Whole(bytes) => Ok(bytes),
+        Held::Changed(why) => Err(Error::of(ErrorKind::Changed, why)),
+        Held::Missing => Err(Error::new(format!("{name}: {} is not in the store", desc.digest))),
+    }
 }
 
 /// An index or manifest, fetched and parsed by its descriptor's media type.
@@ -726,10 +736,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
     /// The audit's A11: an image found in the store again is checked as its pull checked
-    /// it. A config or manifest changed under its digest is refused, by the next run and
-    /// by the next pull alike, until the stored copy is as it was.
+    /// it. A config or manifest changed under its digest is refused from the store alone,
+    /// as a changed copy of its own kind, and the next pull fetches it again in its place.
     #[test]
-    fn a_stored_image_whose_documents_changed_is_refused() {
+    fn a_stored_image_whose_documents_changed_is_refused_then_mended() {
         let fake = fake(image("arm64", &[("a", b"a")], true), None);
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
         let root = temp("changed");
@@ -778,15 +788,19 @@ mod tests {
         for (path, changed, why) in cases {
             let original = std::fs::read(path).unwrap();
             std::fs::write(path, changed).unwrap();
-            let e = local(&store, &reference, &arm64(), &Limits::none())
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains("the stored copy has changed"), "{why}: {e}");
-            let e = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {})
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains("the stored copy has changed"), "{why}: {e}");
-            std::fs::write(path, original).unwrap();
+            let e = local(&store, &reference, &arm64(), &Limits::none()).unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::Changed, "{why}: {e}");
+            assert!(
+                e.to_string().contains("the stored copy has changed"),
+                "{why}: {e}"
+            );
+            let mended = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
+            assert_eq!(mended.config, pulled.config, "{why}");
+            assert_eq!(std::fs::read(path).unwrap(), original, "{why}: not mended");
+            let found = local(&store, &reference, &arm64(), &Limits::none())
+                .unwrap()
+                .unwrap();
+            assert_eq!(found.config, pulled.config, "{why}");
         }
         assert!(
             local(&store, &reference, &arm64(), &Limits::none())

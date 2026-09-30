@@ -13,7 +13,7 @@ use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use shards_image::oci::{Descriptor, MAX_MANIFEST, media};
 use shards_image::reference::{Algorithm, DOCKER_HUB, Digest, Reference};
-use shards_image::store::{Download, Limits, Store};
+use shards_image::store::{Download, Held, Limits, Store};
 
 use crate::auth::{Authorizer, Credentials, loopback};
 use crate::http::{Client, Redirects, Request, Response};
@@ -219,16 +219,19 @@ impl Registry {
     }
 
     /// An index or manifest by digest: from the store if it is there, else fetched and
-    /// kept. Either way it is checked against the descriptor's digest and size.
+    /// kept, in place of a stored copy that has changed. Either way it is checked against
+    /// the descriptor's digest and size.
     pub fn fetch_document(&self, store: &Store, desc: &Descriptor) -> Result<Vec<u8>, Error> {
         let digest = desc.digest().map_err(|e| Error::new(e.to_string()))?;
         let size = desc.size().map_err(|e| Error::new(e.to_string()))?;
         if size > MAX_MANIFEST {
             return Err(Error::new(format!("{digest}: rejecting a {size}-byte manifest")));
         }
-        if let Some(bytes) = store.content(desc, MAX_MANIFEST)? {
-            return Ok(bytes);
-        }
+        let changed = match store.held(desc, MAX_MANIFEST)? {
+            Held::Whole(bytes) => return Ok(bytes),
+            Held::Missing => false,
+            Held::Changed(_) => true,
+        };
         let url = self.base.join(&format!("manifests/{digest}"))?;
         let accept = accept(&desc.media_type);
         let (mut response, _) = self.request(
@@ -239,9 +242,12 @@ impl Registry {
         if !(200..300).contains(&response.status) {
             return Err(refused(response, &digest));
         }
-        store
-            .ingest(&digest, size, &mut response)
-            .map_err(|e| Error::new(e.to_string()))?;
+        let ingested = if changed {
+            store.ingest_again(&digest, size, &mut response)
+        } else {
+            store.ingest(&digest, size, &mut response)
+        };
+        ingested.map_err(|e| Error::new(e.to_string()))?;
         store
             .content(desc, MAX_MANIFEST)?
             .ok_or_else(|| Error::new(format!("{digest}: gone from the store")))
@@ -258,12 +264,36 @@ impl Registry {
         limits: &Limits,
         progress: &dyn Fn(u64),
     ) -> Result<(), Error> {
+        self.fetch_blob_as(store, desc, limits, progress, false)
+    }
+
+    /// [`fetch_blob`](Self::fetch_blob), in place of a stored copy that has changed.
+    pub fn fetch_blob_again(
+        &self,
+        store: &Store,
+        desc: &Descriptor,
+        limits: &Limits,
+        progress: &dyn Fn(u64),
+    ) -> Result<(), Error> {
+        self.fetch_blob_as(store, desc, limits, progress, true)
+    }
+
+    fn fetch_blob_as(
+        &self,
+        store: &Store,
+        desc: &Descriptor,
+        limits: &Limits,
+        progress: &dyn Fn(u64),
+        again: bool,
+    ) -> Result<(), Error> {
         let digest = desc.digest().map_err(|e| Error::new(e.to_string()))?;
         let size = desc.size().map_err(|e| Error::new(e.to_string()))?;
-        let Some(mut download) = store
-            .download(&digest, size, limits)
-            .map_err(|e| Error::new(e.to_string()))?
-        else {
+        let started = if again {
+            store.download_again(&digest, size, limits)
+        } else {
+            store.download(&digest, size, limits)
+        };
+        let Some(mut download) = started.map_err(|e| Error::new(e.to_string()))? else {
             return Ok(());
         };
         let url = self.base.join(&format!("blobs/{digest}"))?;
