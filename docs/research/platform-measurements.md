@@ -2249,3 +2249,25 @@ revision before comparing a changed API/implementation.
   where without preemption it waits in about a third. Restores, which never run the
   self-tests (M38), are unchanged. The kernel stays `PREEMPT_NONE`; the tick's length,
   `HZ`, is measured next (hz.config).
+
+### M67. What a command-line tool may do in App Sandbox, and what it costs
+
+- **Question.** D30's macOS confinement used `sandbox_init`, which the SDK marks deprecated
+  and "No longer supported" [sandbox.h:7,45]. Can App Sandbox, the supported sandbox, confine
+  a VM process started from the command line, and give it the files and sockets a VM needs?
+- **Method.** `docs/research/measurements/app-sandbox/`: a C probe signed ad hoc with App
+  Sandbox, the hypervisor entitlement and Hardened Runtime, its Info.plist linked into
+  `__TEXT,__info_plist`, run from an unsandboxed parent that passes descriptors and bookmarks
+  (`bookmark.c`); `cost.py` times its launch against the same binary without App Sandbox,
+  alternating, n = 200 each. macOS 26.4.1, Apple M5 Max, 2026-09-30, load average about 16.
+- **Results.** docs/research/macos-confinement.md §2 lists every trial. In short: without an
+  embedded Info.plist the tool is killed at launch; with one it runs in its own container and
+  creates VMs. It cannot open, create or dial anything it was not given, nor bind TCP. It uses
+  descriptors it inherits and files and directories granted by bookmark, but not `openat`
+  under a passed directory descriptor, and cannot bind or dial Unix sockets outside its
+  container even in a granted directory; it can accept on a listener its parent bound. A
+  rebuild with another CDHash used the same container without a prompt. Launch to exit:
+  sandboxed p50 7,200 / p90 8,106 / p99 8,594 / max 8,867 µs; unsandboxed 4,115 / 4,793 /
+  5,075 / 5,501 µs.
+- **Consequence.** App Sandbox replaces the Seatbelt profile (macos-confinement.md §3): files
+  by bookmark, sockets by descriptor, about 3.1 ms at launch.
