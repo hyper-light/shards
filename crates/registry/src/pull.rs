@@ -6,9 +6,8 @@
 //! 5. build the image's root filesystem and record the reference.
 //!
 //! Nothing counts as pulled until every size and digest, and every layer's DiffID, has
-//! been checked.
+//! been checked. An image found in the store again is checked as its pull checked it.
 
-use std::fs::File;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
@@ -94,38 +93,104 @@ pub fn pull(
         }
     };
     let manifest_digest = manifest_desc.digest()?;
+    contents(&name, &manifest)?;
+    report(Event::Manifest(&manifest_digest, &manifest.layers));
+
+    registry.fetch_blob(store, &manifest.config, &|_| {})?;
+    let config = stored(store, &name, &manifest.config, oci::MAX_CONFIG)?;
+    let (config, layers) = checked(&name, &manifest_desc, &manifest, &config, targets)?;
+
+    fetch_layers(registry, store, &manifest, report)?;
+    report(Event::Building);
+    let rootfs = store.rootfs(&layers, max_layer)?;
+    store.tag(&reference.to_string(), &manifest_desc)?;
+    Ok(Pulled {
+        resolved,
+        manifest: manifest_digest,
+        config,
+        rootfs,
+    })
+}
+
+/// The image `reference` names, if it has been pulled for one of `targets`: from the
+/// store alone, and checked as its pull checked it. Its root filesystem is built again if
+/// it has gone.
+pub fn local(
+    store: &Store,
+    reference: &Reference,
+    targets: &[Target],
+    max_layer: u64,
+) -> Result<Option<Pulled>, Error> {
+    let Some(manifest_desc) = store.tagged(&reference.to_string())? else {
+        return Ok(None);
+    };
+    let name = reference.familiar();
+    let manifest_digest = manifest_desc.digest()?;
+    let bytes = stored(store, &name, &manifest_desc, oci::MAX_MANIFEST)?;
+    let Document::Manifest(manifest) = oci::parse_document(&bytes, &manifest_desc.media_type)? else {
+        return Err(Error::new(format!("{name}: its record names an index")));
+    };
+    contents(&name, &manifest)?;
+    let config = stored(store, &name, &manifest.config, oci::MAX_CONFIG)?;
+    let (config, layers) = checked(&name, &manifest_desc, &manifest, &config, targets)?;
+    let rootfs = store.rootfs(&layers, max_layer)?;
+    Ok(Some(Pulled {
+        resolved: manifest_digest.clone(),
+        manifest: manifest_digest,
+        config,
+        rootfs,
+    }))
+}
+
+/// What a manifest names, checked before any of it is read: the config of a runnable
+/// image, small enough to read whole, and layers of types we unpack.
+fn contents(name: &str, manifest: &Manifest) -> Result<(), Error> {
     if !CONFIGS.contains(&manifest.config.media_type.as_str()) {
         return Err(Error::new(format!(
             "{name}: not a container image: its config is {:?}",
             manifest.config.media_type
         )));
     }
+    let size = manifest.config.size()?;
+    if size > oci::MAX_CONFIG {
+        return Err(Error::new(format!(
+            "{name}: its {size}-byte config is over the {}-byte limit",
+            oci::MAX_CONFIG
+        )));
+    }
     for layer in &manifest.layers {
         oci::layer_compression(&layer.media_type)?;
     }
-    report(Event::Manifest(&manifest_digest, &manifest.layers));
+    Ok(())
+}
 
-    registry.fetch_blob(store, &manifest.config, &|_| {})?;
-    let config_digest = manifest.config.digest()?;
-    let config = oci::read_config(File::open(store.blob_path(&config_digest))?)?;
-    // An unlabelled manifest is checked by its config, as containerd checks it.
-    if manifest_desc.platform.is_none() {
-        let own = platform::normalize(&Platform {
-            architecture: config.architecture.clone(),
-            os: config.os.clone(),
-            variant: config.variant.clone(),
-            os_features: Vec::new(),
-        });
-        if !targets.contains(&own) {
-            return Err(Error::new(format!(
-                "{name} is for {}/{}, not {}",
-                config.os,
-                config.architecture,
-                wanted(targets)
-            )));
-        }
+/// The config and layers of the image `manifest` describes, checked, where `chosen` is
+/// the descriptor the manifest was chosen by and `config` its config's checked bytes. The
+/// image must be for one of `targets`: by the platform an index labelled it with, or by
+/// its config's own when nothing labelled it, as containerd checks it. Its config must
+/// describe layers, one DiffID for each of the manifest's (image-spec config.md).
+fn checked(
+    name: &str,
+    chosen: &Descriptor,
+    manifest: &Manifest,
+    config: &[u8],
+    targets: &[Target],
+) -> Result<(ImageConfig, Vec<Layer>), Error> {
+    let config = oci::parse_config(config)?;
+    let platform = chosen.platform.clone().unwrap_or_else(|| Platform {
+        architecture: config.architecture.clone(),
+        os: config.os.clone(),
+        variant: config.variant.clone(),
+        os_features: Vec::new(),
+    });
+    if !platform::runs(&platform, targets) {
+        return Err(Error::new(format!(
+            "{name} is for {}/{}, not {}",
+            platform.os,
+            platform.architecture,
+            wanted(targets)
+        )));
     }
-    // image-spec config.md: one DiffID per layer.
     if config.rootfs.diff_ids.len() != manifest.layers.len() {
         return Err(Error::new(format!(
             "{name}: {} layers but {} DiffIDs",
@@ -145,52 +210,15 @@ pub fn pull(
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-
-    fetch_layers(registry, store, &manifest, report)?;
-    report(Event::Building);
-    let rootfs = store.rootfs(&layers, max_layer)?;
-    store.tag(&reference.to_string(), &manifest_digest)?;
-    Ok(Pulled {
-        resolved,
-        manifest: manifest_digest,
-        config,
-        rootfs,
-    })
+    Ok((config, layers))
 }
 
-/// The image `reference` names, if it has been pulled: from the store alone. Its root
-/// filesystem is built again if it has gone.
-pub fn local(store: &Store, reference: &Reference, max_layer: u64) -> Result<Option<Pulled>, Error> {
-    let Some(manifest_digest) = store.tagged(&reference.to_string())? else {
-        return Ok(None);
-    };
-    let bytes = store.read(&manifest_digest, oci::MAX_MANIFEST)?;
-    let Document::Manifest(manifest) = oci::parse_document(&bytes, "")? else {
-        return Err(Error::new(format!(
-            "{}: its record names an index",
-            reference.familiar()
-        )));
-    };
-    let config = oci::read_config(File::open(store.blob_path(&manifest.config.digest()?))?)?;
-    let layers = manifest
-        .layers
-        .iter()
-        .zip(&config.rootfs.diff_ids)
-        .map(|(d, id)| {
-            Ok(Layer {
-                blob: d.digest()?,
-                media_type: d.media_type.clone(),
-                diff_id: Digest::parse(id)?,
-            })
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
-    let rootfs = store.rootfs(&layers, max_layer)?;
-    Ok(Some(Pulled {
-        resolved: manifest_digest.clone(),
-        manifest: manifest_digest,
-        config,
-        rootfs,
-    }))
+/// The bytes of the small blob `desc` describes, from the store alone, checked again
+/// against its digest and size (`Store::content`).
+fn stored(store: &Store, name: &str, desc: &Descriptor, max: u64) -> Result<Vec<u8>, Error> {
+    store
+        .content(desc, max)?
+        .ok_or_else(|| Error::new(format!("{name}: {} is not in the store", desc.digest)))
 }
 
 /// An index or manifest, fetched and parsed by its descriptor's media type.
@@ -333,6 +361,11 @@ mod tests {
 
     /// An image for `arch` (and one for s390x beside it), with `files` as its layers.
     fn image(arch: &str, files: &[(&str, &[u8])], diff_ids_right: bool) -> Image {
+        labelled(arch, arch, files, diff_ids_right)
+    }
+
+    /// An image an index labels for `arch`, whose config says `config_arch`.
+    fn labelled(arch: &str, config_arch: &str, files: &[(&str, &[u8])], diff_ids_right: bool) -> Image {
         let mut blobs = HashMap::new();
         let mut layer_descs = Vec::new();
         let mut diff_ids = Vec::new();
@@ -350,7 +383,7 @@ mod tests {
             blobs.insert(sha256(&gz), gz);
         }
         let config = format!(
-            r#"{{"architecture":"{arch}","os":"linux","config":{{"Cmd":["/bin/sh"]}},"rootfs":{{"type":"layers","diff_ids":[{}]}}}}"#,
+            r#"{{"architecture":"{config_arch}","os":"linux","config":{{"Cmd":["/bin/sh"]}},"rootfs":{{"type":"layers","diff_ids":[{}]}}}}"#,
             diff_ids.iter().map(|d| format!("\"{d}\"")).collect::<Vec<_>>().join(",")
         )
         .into_bytes();
@@ -493,6 +526,14 @@ mod tests {
         }]
     }
 
+    fn riscv64() -> Vec<Target> {
+        vec![Target {
+            os: "linux".into(),
+            architecture: "riscv64".into(),
+            variant: String::new(),
+        }]
+    }
+
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("shards-pull-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -534,9 +575,12 @@ mod tests {
             u32::from_le_bytes(image_bytes[1024..1028].try_into().unwrap()),
             0xE0F5_E1E2
         );
+        // The record keeps the descriptor the index chose the manifest by.
+        let recorded = store.tagged(&reference.to_string()).unwrap().unwrap();
+        assert_eq!(recorded.digest().unwrap(), pulled.manifest);
         assert_eq!(
-            store.tagged(&reference.to_string()).unwrap(),
-            Some(pulled.manifest.clone())
+            recorded.platform.map(|p| p.architecture),
+            Some("arm64".to_string())
         );
         assert_eq!(
             pulled.config.config.unwrap().cmd,
@@ -591,12 +635,7 @@ mod tests {
         let root = temp("platform");
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
-        let riscv = [Target {
-            os: "linux".into(),
-            architecture: "riscv64".into(),
-            variant: String::new(),
-        }];
-        let e = pull(&registry, &store, &reference, &riscv, 1 << 30, &|_| {}).unwrap_err();
+        let e = pull(&registry, &store, &reference, &riscv64(), 1 << 30, &|_| {}).unwrap_err();
         assert!(
             e.to_string()
                 .contains("no manifest for linux/riscv64 among [linux/s390x, linux/arm64]"),
@@ -662,5 +701,295 @@ mod tests {
         assert!(e.to_string().contains("hashes to"), "{e}");
         assert!(!store.has(&Digest::parse(&layer).unwrap()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+    /// The audit's A11: an image found in the store again is checked as its pull checked
+    /// it. A config or manifest changed under its digest is refused, by the next run and
+    /// by the next pull alike, until the stored copy is as it was.
+    #[test]
+    fn a_stored_image_whose_documents_changed_is_refused() {
+        let fake = fake(image("arm64", &[("a", b"a")], true), None);
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
+        let root = temp("changed");
+        let store = Store::open(&root).unwrap();
+        let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
+        let pulled = pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {}).unwrap();
+        let found = local(&store, &reference, &arm64(), 1 << 30).unwrap().unwrap();
+        assert_eq!(
+            (&found.manifest, &found.config, &found.rootfs),
+            (&pulled.manifest, &pulled.config, &pulled.rootfs)
+        );
+        // Its index labelled it for arm64, and guests of another platform do not run it.
+        let e = local(&store, &reference, &riscv64(), 1 << 30).unwrap_err();
+        assert!(
+            e.to_string().contains("is for linux/arm64, not linux/riscv64"),
+            "{e}"
+        );
+
+        let recorded = store.tagged(&reference.to_string()).unwrap().unwrap();
+        let manifest = store.content(&recorded, oci::MAX_MANIFEST).unwrap().unwrap();
+        let Document::Manifest(parsed) = oci::parse_document(&manifest, "").unwrap() else {
+            panic!("an index");
+        };
+        let config_path = store.blob_path(&parsed.config.digest().unwrap());
+        let manifest_path = store.blob_path(&recorded.digest().unwrap());
+        let config = String::from_utf8(std::fs::read(&config_path).unwrap()).unwrap();
+        let text = String::from_utf8(manifest.clone()).unwrap();
+        let mut truncated = config.clone();
+        truncated.pop();
+        let cases = [
+            (
+                &config_path,
+                config.replace("/bin/sh", "/bin/xx"),
+                "a config's valid JSON changed",
+            ),
+            (&config_path, truncated, "a config truncated"),
+            (&config_path, format!("{config} "), "a config grown"),
+            (
+                &manifest_path,
+                text.replace("\"schemaVersion\":2", "\"schemaVersion\":3"),
+                "a manifest changed",
+            ),
+        ];
+        for (path, changed, why) in cases {
+            let original = std::fs::read(path).unwrap();
+            std::fs::write(path, changed).unwrap();
+            let e = local(&store, &reference, &arm64(), 1 << 30)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("the stored copy has changed"), "{why}: {e}");
+            let e = pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {})
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("the stored copy has changed"), "{why}: {e}");
+            std::fs::write(path, original).unwrap();
+        }
+        assert!(local(&store, &reference, &arm64(), 1 << 30).unwrap().is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An index's label outranks the platform its manifest's config names, as containerd
+    /// ranks them, when the image is found again too.
+    #[test]
+    fn an_index_label_decides_the_platform_of_a_stored_image_too() {
+        let fake = fake(labelled("arm64", "amd64", &[("a", b"a")], true), None);
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
+        let root = temp("labelled");
+        let store = Store::open(&root).unwrap();
+        let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
+        pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {}).unwrap();
+        assert!(local(&store, &reference, &arm64(), 1 << 30).unwrap().is_some());
+        let e = local(&store, &reference, &riscv64(), 1 << 30).unwrap_err();
+        assert!(e.to_string().contains("is for linux/arm64, not"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A manifest that names no media type of its own is read again as the type the
+    /// registry served it as.
+    #[test]
+    fn a_stored_manifest_is_read_as_the_type_it_was_served_as() {
+        let layer = gzip(&tar("a", b"a"));
+        let config = format!(
+            r#"{{"architecture":"arm64","os":"linux","rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+            sha256(&tar("a", b"a"))
+        )
+        .into_bytes();
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"config":{},"layers":[{}]}}"#,
+            descriptor(CONFIGS[0], &config),
+            descriptor(&format!("{}+gzip", oci::media::OCI_LAYER), &layer)
+        )
+        .into_bytes();
+        let fake = fake(unindexed(manifest, &[&config, &layer]), None);
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
+        let root = temp("untyped");
+        let store = Store::open(&root).unwrap();
+        let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
+        let pulled = pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {}).unwrap();
+        let found = local(&store, &reference, &arm64(), 1 << 30).unwrap().unwrap();
+        assert_eq!(found.manifest, pulled.manifest);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An image made of `manifest` and `blobs`, tagged `v1` with no index above it.
+    fn unindexed(manifest: Vec<u8>, blobs: &[&[u8]]) -> Image {
+        let mut manifests = HashMap::new();
+        for key in [sha256(&manifest), "v1".to_string()] {
+            manifests.insert(key, (manifest.clone(), oci::media::OCI_MANIFEST.to_string()));
+        }
+        Image {
+            manifests,
+            blobs: blobs.iter().map(|b| (sha256(b), b.to_vec())).collect(),
+            layers: Vec::new(),
+        }
+    }
+
+    /// Stores `manifest` and `blobs` and records `reference` as naming the manifest, as a
+    /// pull that did not check them would have.
+    fn record(store: &Store, reference: &Reference, manifest: &[u8], blobs: &[&[u8]]) {
+        for blob in blobs.iter().chain([&manifest]) {
+            let digest = Digest::parse(&sha256(blob)).unwrap();
+            store.ingest(&digest, blob.len() as u64, &mut &blob[..]).unwrap();
+        }
+        let desc = Descriptor {
+            media_type: oci::media::OCI_MANIFEST.into(),
+            digest: sha256(manifest),
+            size: i64::try_from(manifest.len()).unwrap(),
+            platform: None,
+        };
+        store.tag(&reference.to_string(), &desc).unwrap();
+    }
+
+    /// The audit's A11: what a pull refuses, a stored image is refused for too, with the
+    /// same words: layer and DiffID counts that differ, DiffIDs that are not digests, a
+    /// config of the wrong type, platform or rootfs type, or past the limit, and layers
+    /// of no layer type. A config whose descriptor is wrong about its size cannot be
+    /// downloaded, and is refused when stored.
+    #[test]
+    fn stored_images_are_refused_what_a_pull_refuses() {
+        let layer = gzip(&tar("a", b"a"));
+        let diff_id = sha256(&tar("a", b"a"));
+        let gzip_layer = format!("{}+gzip", oci::media::OCI_LAYER);
+        let config = |arch: &str, kind: &str, ids: &[&str]| {
+            let ids: Vec<String> = ids.iter().map(|id| format!("\"{id}\"")).collect();
+            format!(
+                r#"{{"architecture":"{arch}","os":"linux","rootfs":{{"type":"{kind}","diff_ids":[{}]}}}}"#,
+                ids.join(",")
+            )
+            .into_bytes()
+        };
+        let manifest = |config: &str, layers: &[String]| {
+            format!(
+                r#"{{"schemaVersion":2,"mediaType":"{}","config":{config},"layers":[{}]}}"#,
+                oci::media::OCI_MANIFEST,
+                layers.join(",")
+            )
+            .into_bytes()
+        };
+        let one = [descriptor(&gzip_layer, &layer)];
+        let two = [descriptor(&gzip_layer, &layer), descriptor(&gzip_layer, &layer)];
+        let right = config("arm64", "layers", &[&diff_id]);
+        let over = descriptor(CONFIGS[0], &right).replace(
+            &format!("\"size\":{}", right.len()),
+            &format!("\"size\":{}", oci::MAX_CONFIG + 1),
+        );
+        let wrong_size = descriptor(CONFIGS[0], &right).replace(
+            &format!("\"size\":{}", right.len()),
+            &format!("\"size\":{}", right.len() + 1),
+        );
+        /// A stored image with one defect, and what a pull and a lookup of it say.
+        struct Case {
+            why: &'static str,
+            config: Vec<u8>,
+            manifest: Vec<u8>,
+            pulled: &'static str,
+            found: &'static str,
+        }
+        let cases = [
+            Case {
+                why: "two layers, one DiffID",
+                config: right.clone(),
+                manifest: manifest(&descriptor(CONFIGS[0], &right), &two),
+                pulled: "2 layers but 1 DiffIDs",
+                found: "2 layers but 1 DiffIDs",
+            },
+            Case {
+                why: "one layer, two DiffIDs",
+                config: config("arm64", "layers", &[&diff_id, &diff_id]),
+                manifest: manifest(
+                    &descriptor(CONFIGS[0], &config("arm64", "layers", &[&diff_id, &diff_id])),
+                    &one,
+                ),
+                pulled: "1 layers but 2 DiffIDs",
+                found: "1 layers but 2 DiffIDs",
+            },
+            Case {
+                why: "a DiffID that is not a digest",
+                config: config("arm64", "layers", &["sha256:abc"]),
+                manifest: manifest(
+                    &descriptor(CONFIGS[0], &config("arm64", "layers", &["sha256:abc"])),
+                    &one,
+                ),
+                pulled: "invalid checksum digest",
+                found: "invalid checksum digest",
+            },
+            Case {
+                why: "a rootfs that is not layers",
+                config: config("arm64", "other", &[&diff_id]),
+                manifest: manifest(
+                    &descriptor(CONFIGS[0], &config("arm64", "other", &[&diff_id])),
+                    &one,
+                ),
+                pulled: "is not \"layers\"",
+                found: "is not \"layers\"",
+            },
+            Case {
+                why: "an image for another platform",
+                config: config("s390x", "layers", &[&diff_id]),
+                manifest: manifest(
+                    &descriptor(CONFIGS[0], &config("s390x", "layers", &[&diff_id])),
+                    &one,
+                ),
+                pulled: "is for linux/s390x, not linux/arm64",
+                found: "is for linux/s390x, not linux/arm64",
+            },
+            Case {
+                why: "a config that is not an image's",
+                config: right.clone(),
+                manifest: manifest(&descriptor("application/vnd.example+json", &right), &one),
+                pulled: "not a container image",
+                found: "not a container image",
+            },
+            Case {
+                why: "a config past the limit",
+                config: right.clone(),
+                manifest: manifest(&over, &one),
+                pulled: "config is over the 4194304-byte limit",
+                found: "config is over the 4194304-byte limit",
+            },
+            Case {
+                why: "a layer of no layer type",
+                config: right.clone(),
+                manifest: manifest(
+                    &descriptor(CONFIGS[0], &right),
+                    &[descriptor("application/octet-stream", &layer)],
+                ),
+                pulled: "not a layer",
+                found: "not a layer",
+            },
+            Case {
+                why: "a config whose descriptor is wrong about its size",
+                config: right.clone(),
+                manifest: manifest(&wrong_size, &one),
+                pulled: "without progress",
+                found: "where its descriptor says",
+            },
+        ];
+        for Case {
+            why,
+            config,
+            manifest,
+            pulled,
+            found,
+        } in cases
+        {
+            let fake = fake(unindexed(manifest.clone(), &[&config, &layer]), None);
+            let reference =
+                Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
+            let root = temp("refused");
+            let store = Store::open(&root).unwrap();
+            let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
+            let e = pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {})
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(pulled), "{why}, pulled: {e}");
+            assert_eq!(store.tagged(&reference.to_string()).unwrap(), None, "{why}");
+
+            record(&store, &reference, &manifest, &[&config, &layer]);
+            let e = local(&store, &reference, &arm64(), 1 << 30)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(found), "{why}, found: {e}");
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 }

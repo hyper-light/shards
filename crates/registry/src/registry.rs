@@ -218,32 +218,33 @@ impl Registry {
         Err(Error::of(ErrorKind::NotFound, format!("{name}: not found")))
     }
 
-    /// An index or manifest by digest: from the store if it is there, else fetched,
-    /// checked against the descriptor's size and digest, and kept.
+    /// An index or manifest by digest: from the store if it is there, else fetched and
+    /// kept. Either way it is checked against the descriptor's digest and size.
     pub fn fetch_document(&self, store: &Store, desc: &Descriptor) -> Result<Vec<u8>, Error> {
         let digest = desc.digest().map_err(|e| Error::new(e.to_string()))?;
         let size = desc.size().map_err(|e| Error::new(e.to_string()))?;
         if size > MAX_MANIFEST {
             return Err(Error::new(format!("{digest}: rejecting a {size}-byte manifest")));
         }
-        if !store.has(&digest) {
-            let url = self.base.join(&format!("manifests/{digest}"))?;
-            let accept = accept(&desc.media_type);
-            let (mut response, _) = self.request(
-                "GET",
-                &url,
-                &[("Accept", &accept), ("Accept-Encoding", "identity")],
-            )?;
-            if !(200..300).contains(&response.status) {
-                return Err(refused(response, &digest));
-            }
-            store
-                .ingest(&digest, size, &mut response)
-                .map_err(|e| Error::new(e.to_string()))?;
+        if let Some(bytes) = store.content(desc, MAX_MANIFEST)? {
+            return Ok(bytes);
+        }
+        let url = self.base.join(&format!("manifests/{digest}"))?;
+        let accept = accept(&desc.media_type);
+        let (mut response, _) = self.request(
+            "GET",
+            &url,
+            &[("Accept", &accept), ("Accept-Encoding", "identity")],
+        )?;
+        if !(200..300).contains(&response.status) {
+            return Err(refused(response, &digest));
         }
         store
-            .read(&digest, MAX_MANIFEST)
-            .map_err(|e| Error::new(e.to_string()))
+            .ingest(&digest, size, &mut response)
+            .map_err(|e| Error::new(e.to_string()))?;
+        store
+            .content(desc, MAX_MANIFEST)?
+            .ok_or_else(|| Error::new(format!("{digest}: gone from the store")))
     }
 
     /// A blob by digest into the store, verified. An interrupted download resumes with

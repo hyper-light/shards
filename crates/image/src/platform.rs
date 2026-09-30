@@ -70,17 +70,29 @@ pub fn guest() -> Vec<Target> {
 /// `wanted`, keeping the index's order among equals, and an entry without a platform
 /// only when nothing labelled matches. Its config must then be checked instead.
 pub fn select<'a>(index: &'a Index, wanted: &[Target]) -> Option<&'a Descriptor> {
-    let rank = |d: &Descriptor| match &d.platform {
+    let order = |d: &Descriptor| match &d.platform {
         None => Some(wanted.len()),
-        Some(p) if !p.os_features.is_empty() => None,
-        Some(p) => wanted.iter().position(|w| *w == normalize(p)),
+        Some(p) => rank(p, wanted),
     };
     index
         .manifests
         .iter()
-        .filter_map(|d| rank(d).map(|r| (r, d)))
+        .filter_map(|d| order(d).map(|r| (r, d)))
         .min_by_key(|(r, _)| *r)
         .map(|(_, d)| d)
+}
+
+/// Whether an image for `p` runs as one of `wanted`.
+pub fn runs(p: &Platform, wanted: &[Target]) -> bool {
+    rank(p, wanted).is_some()
+}
+
+/// Where an image for `p` ranks in `wanted`, if it runs as one of them.
+fn rank(p: &Platform, wanted: &[Target]) -> Option<usize> {
+    if !p.os_features.is_empty() {
+        return None;
+    }
+    wanted.iter().position(|w| *w == normalize(p))
 }
 
 #[cfg(test)]

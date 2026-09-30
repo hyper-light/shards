@@ -15,12 +15,15 @@ use sha2::{Digest as _, Sha256, Sha384, Sha512};
 
 use crate::erofs;
 use crate::layer::{self, Archives};
-use crate::oci;
+use crate::oci::{self, Descriptor};
 use crate::reference::{Algorithm, Digest};
 use crate::{Error, bad};
 
 /// Bumped whenever the EROFS writer's output changes, so older root filesystems are rebuilt.
 const ROOTFS_VERSION: u32 = 1;
+/// Bumped whenever a reference's record changes shape: records of an older shape are not
+/// read, and the images they name are pulled again.
+const REFS_VERSION: u32 = 1;
 const CHUNK: usize = 1 << 20;
 /// The largest zstd window decoded: klauspost/compress v1.20.0's `MaxWindowSize`, in the
 /// decoder containerd uses.
@@ -135,11 +138,12 @@ impl Partial {
     }
 }
 
-/// What `refs/` records for a reference.
+/// What `refs/` records for a reference: the manifest it names, by the descriptor it was
+/// chosen by, so that finding the image again checks what pulling it checked.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Tag {
     reference: String,
-    manifest: String,
+    manifest: Descriptor,
 }
 
 /// A blob being downloaded (`Store::download`). Its file under `ingest/` stays locked for
@@ -260,9 +264,10 @@ impl Store {
         if !root.is_dir() {
             return bad(format!("{}: not a directory", root.display()));
         }
-        for dir in ["blobs/sha256", "blobs/sha384", "blobs/sha512", "ingest", "refs"] {
+        for dir in ["blobs/sha256", "blobs/sha384", "blobs/sha512", "ingest"] {
             fs::create_dir_all(root.join(dir))?;
         }
+        fs::create_dir_all(root.join(format!("refs/v{REFS_VERSION}")))?;
         fs::create_dir_all(root.join(format!("rootfs/v{ROOTFS_VERSION}")))?;
         Ok(Store {
             root: root.to_path_buf(),
@@ -367,11 +372,12 @@ impl Store {
         Ok(Some(download))
     }
 
-    /// Records that `reference` names the manifest `manifest`, replacing what it named.
-    pub fn tag(&self, reference: &str, manifest: &Digest) -> Result<(), Error> {
+    /// Records that `reference` names the manifest `manifest` describes, replacing what it
+    /// named.
+    pub fn tag(&self, reference: &str, manifest: &Descriptor) -> Result<(), Error> {
         let record = serde_json::to_vec(&Tag {
             reference: reference.to_string(),
-            manifest: manifest.to_string(),
+            manifest: manifest.clone(),
         })
         .map_err(|e| Error(e.to_string()))?;
         let mut partial = Partial::create(&self.root.join("ingest"))?;
@@ -379,8 +385,8 @@ impl Store {
         partial.replace(&self.tag_path(reference))
     }
 
-    /// The manifest `reference` names, if it has been pulled.
-    pub fn tagged(&self, reference: &str) -> Result<Option<Digest>, Error> {
+    /// The descriptor of the manifest `reference` names, if it has been pulled.
+    pub fn tagged(&self, reference: &str) -> Result<Option<Descriptor>, Error> {
         let bytes = match fs::read(self.tag_path(reference)) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -390,30 +396,50 @@ impl Store {
         if tag.reference != reference {
             return bad(format!("{reference}: its record names {}", tag.reference));
         }
-        Digest::parse(&tag.manifest).map(Some)
+        Ok(Some(tag.manifest))
     }
 
     /// References can be long and hold `/` and `:`, so records are named by their hash.
     fn tag_path(&self, reference: &str) -> PathBuf {
         let name = Digest::from_hash(Algorithm::Sha256, &Sha256::digest(reference.as_bytes()));
-        self.root.join("refs").join(name.hex())
+        self.root.join(format!("refs/v{REFS_VERSION}")).join(name.hex())
     }
 
-    /// A small blob's bytes, at most `max`, checked against its digest again.
-    pub fn read(&self, digest: &Digest, max: u64) -> Result<Vec<u8>, Error> {
+    /// The bytes of the small blob `desc` describes, if it is stored: at most `max`, and
+    /// checked again against the digest and then the size. Content whose length is not its
+    /// descriptor's is not trusted (image-spec descriptor.md).
+    pub fn content(&self, desc: &Descriptor, max: u64) -> Result<Option<Vec<u8>>, Error> {
+        let digest = desc.digest()?;
+        let size = desc.size()?;
+        if size > max {
+            return bad(format!("{digest}: {size} bytes is over the {max}-byte limit"));
+        }
+        let path = self.blob_path(&digest);
+        let file = match File::open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
         let mut bytes = Vec::new();
-        File::open(self.blob_path(digest))?
-            .take(max.saturating_add(1))
-            .read_to_end(&mut bytes)?;
+        file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
         if bytes.len() as u64 > max {
-            return bad(format!("{digest}: over {max} bytes"));
+            return bad(format!("{}: over the {max}-byte limit", path.display()));
         }
         let mut hasher = Hasher::new(digest.algorithm());
         hasher.update(&bytes);
-        if hasher.finish() != *digest {
-            return bad(format!("{digest}: the stored bytes changed"));
+        if hasher.finish() != digest {
+            return bad(format!(
+                "{}: the stored copy has changed; remove it to fetch it again",
+                path.display()
+            ));
         }
-        Ok(bytes)
+        if bytes.len() as u64 != size {
+            return bad(format!(
+                "{digest}: {} bytes, where its descriptor says {size}",
+                bytes.len()
+            ));
+        }
+        Ok(Some(bytes))
     }
 
     /// Decompresses a layer's blob into a file under `ingest/`, removed when dropped. Its
@@ -590,6 +616,16 @@ mod tests {
         e.finish().unwrap()
     }
 
+    /// A descriptor of `size` bytes named `digest`.
+    fn described(digest: &Digest, size: usize) -> Descriptor {
+        Descriptor {
+            media_type: oci::media::OCI_MANIFEST.into(),
+            digest: digest.to_string(),
+            size: i64::try_from(size).unwrap(),
+            platform: None,
+        }
+    }
+
     #[test]
     fn blobs_are_committed_only_when_they_match() {
         let root = temp("ingest");
@@ -599,7 +635,10 @@ mod tests {
         let d = sha256(blob);
         let path = store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
         assert_eq!(fs::read(&path).unwrap(), blob);
-        assert_eq!(store.read(&d, 100).unwrap(), blob);
+        assert_eq!(
+            store.content(&described(&d, blob.len()), 100).unwrap(),
+            Some(blob.to_vec())
+        );
         // Fetched again, the stored copy stays.
         assert_eq!(store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap(), path);
         let other = sha256(b"other");
@@ -732,14 +771,74 @@ mod tests {
     fn references_record_their_manifest() {
         let root = temp("tags");
         let store = Store::open(&root).unwrap();
-        let (a, b) = (sha256(b"a"), sha256(b"b"));
+        let a = described(&sha256(b"a"), 1);
+        let b = Descriptor {
+            platform: Some(oci::Platform {
+                architecture: "arm64".into(),
+                os: "linux".into(),
+                ..oci::Platform::default()
+            }),
+            ..described(&sha256(b"b"), 1)
+        };
         let name = "docker.io/library/alpine:latest";
         assert_eq!(store.tagged(name).unwrap(), None);
         store.tag(name, &a).unwrap();
-        assert_eq!(store.tagged(name).unwrap(), Some(a));
+        assert_eq!(store.tagged(name).unwrap(), Some(a.clone()));
         store.tag(name, &b).unwrap();
         assert_eq!(store.tagged(name).unwrap(), Some(b));
         assert_eq!(store.tagged("docker.io/library/alpine:3").unwrap(), None);
+        // A record of the shape before descriptors is not read: the image is pulled again.
+        let old = root
+            .join("refs")
+            .join(Digest::from_hash(Algorithm::Sha256, &Sha256::digest(b"docker.io/library/alpine:3")).hex());
+        fs::write(
+            &old,
+            format!(
+                r#"{{"reference":"docker.io/library/alpine:3","manifest":"{}"}}"#,
+                a.digest
+            ),
+        )
+        .unwrap();
+        assert_eq!(store.tagged("docker.io/library/alpine:3").unwrap(), None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn small_blobs_are_checked_again_whenever_they_are_read() {
+        let root = temp("content");
+        let store = Store::open(&root).unwrap();
+        let blob = br#"{"config":{"Cmd":["exit","7"]}}"#;
+        let d = sha256(blob);
+        let desc = described(&d, blob.len());
+        assert_eq!(store.content(&desc, 1024).unwrap(), None, "not stored");
+        store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
+        assert_eq!(store.content(&desc, 1024).unwrap(), Some(blob.to_vec()));
+
+        // The stored copy changed under its name: as valid JSON of the same length,
+        // truncated, or grown.
+        let path = store.blob_path(&d);
+        let same_length = String::from_utf8(blob.to_vec()).unwrap().replace('7', "9");
+        let cases = [
+            (same_length.into_bytes(), "has changed"),
+            (blob[..blob.len() - 1].to_vec(), "has changed"),
+            ([&blob[..], b" "].concat(), "has changed"),
+            (vec![b' '; 2048], "over the 1024-byte limit"),
+        ];
+        for (bytes, why) in cases {
+            fs::write(&path, &bytes).unwrap();
+            let e = store.content(&desc, 1024).unwrap_err().to_string();
+            assert!(e.contains(why), "{why}: {e}");
+        }
+        fs::write(&path, blob).unwrap();
+
+        // The descriptor is wrong about the content: its size, or a size past the limit.
+        let e = store
+            .content(&described(&d, blob.len() + 1), 1024)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("where its descriptor says"), "{e}");
+        let e = store.content(&desc, 8).unwrap_err().to_string();
+        assert!(e.contains("over the 8-byte limit"), "{e}");
         let _ = fs::remove_dir_all(&root);
     }
 

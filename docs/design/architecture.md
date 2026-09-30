@@ -372,6 +372,15 @@ The store keeps what a pull fetches and what guests boot from. The code is
   - Commit is fsync, then rename, so a crash never leaves a torn file under a verified
     name. A name that exists already holds the same bytes, so it is kept; it may be
     mapped by a running VM.
+  - A small blob (a manifest, index or config) is checked again whenever it is read
+    (`Store::content`; audit A11). It is read whole under its limit and hashed, and then
+    its length is compared with its descriptor's: content of another length is not to
+    be trusted (image-spec descriptor.md). A stored copy that has changed is refused, by
+    name, so the user knows what to remove.
+- **References** record the descriptor their manifest was chosen by: its media type, size
+  and any platform an index labelled it with. Finding the image again then checks what
+  pulling it checked (audit A11). Their directory is versioned like the root
+  filesystems': a record of an older shape is not read, and its image is pulled again.
 - **Layers unpack as containerd unpacks them** (registry-pull §5, rows 6 and "Layer media
   types"):
   - **Media type.** It decides whether compression is sniffed (`DiffCompression`,
@@ -541,9 +550,21 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
     one by its config;
   - refuses anything but an image config, and any layer type it cannot read, before
     downloading;
+  - reads the config whole, and at most 4 MiB of it, as containers/image v5.36.2 reads
+    configs for Podman, CRI-O and skopeo (`MaxConfigBodySize` in
+    `internal/iolimits/iolimits.go`, read in `ConfigBlob`, `internal/image/oci.go`);
   - requires one DiffID per layer.
   - Layers download 3 at a time, dockerd's default. Every size, digest and DiffID is
     checked before the EROFS image is built and the reference recorded.
+- **Found again** (`local`), an image is checked as its pull checked it (audit A11). Its
+  recorded manifest and its config come through the store's checks (D18). One function
+  checks both paths:
+  - the config's type and size, and the layers' types;
+  - the platform, by the index's label, else by the config's own;
+  - the rootfs type;
+  - one DiffID per layer.
+
+  A changed spec is refused rather than run, and no layer stack is built short.
 - **Resuming.** A blob downloads into `ingest/`, one file per digest.
   - The file is locked (`File::lock`) while in use, so one process at a time downloads
     a blob. Its commit renames it before the lock is released.
@@ -557,7 +578,9 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   cut in half. They check:
   - the whole pull, and that a second pull costs one HEAD;
   - platforms our guests can't run, DiffID mismatches and tampered bytes, all refused;
-  - rate limits reported, not retried.
+  - rate limits reported, not retried;
+  - stored documents changed under their digests, and every check a pull makes,
+    refused when the image is found again too.
 
 ### Credentials, certificates and `shards pull` (D23)
 

@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest as _, Sha256};
 use shards_abi::run::Spec;
 use shards_image::oci::RunConfig;
+use shards_image::platform;
 use shards_image::reference::Reference;
 use shards_ipc::{Pull, Run};
 use shards_registry::http::Cancel;
@@ -65,7 +66,9 @@ pub fn prepare(
     let store = crate::pull::store()?;
     let found = match asked.pull {
         Pull::Always => None,
-        Pull::Missing | Pull::Never => local(&store, &reference, u64::MAX).map_err(|e| e.to_string())?,
+        Pull::Missing | Pull::Never => {
+            local(&store, &reference, &platform::guest(), u64::MAX).map_err(|e| e.to_string())?
+        }
     };
     let image = match found {
         Some(image) => image,

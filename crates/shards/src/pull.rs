@@ -131,7 +131,10 @@ pub fn fetch(
         None => reference.tag.clone().unwrap_or_else(|| "latest".into()),
     };
     say(&format!("{object}: Pulling from {}", reference.path));
-    let before = store.tagged(&reference.to_string()).map_err(|e| e.to_string())?;
+    let before = store
+        .tagged(&reference.to_string())
+        .and_then(|d| d.map(|d| d.digest()).transpose())
+        .map_err(|e| e.to_string())?;
     // Layers unpack without a cap, as Docker's do; each is checked against its DiffID.
     let pulled = pull::pull(&registry, &store, reference, &platform::guest(), u64::MAX, report)
         .map_err(|e| e.to_string())?;
