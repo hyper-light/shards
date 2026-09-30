@@ -2271,3 +2271,33 @@ revision before comparing a changed API/implementation.
   5,075 / 5,501 µs.
 - **Consequence.** App Sandbox replaces the Seatbelt profile (macos-confinement.md §3): files
   by bookmark, sockets by descriptor, about 3.1 ms at launch.
+
+### M66. What ticking at 1,000 Hz costs a VM's host, and what it buys a cold boot
+
+- **Question.** M65 left the tick's length: at `CONFIG_HZ=100` a cold arm64 boot that loses
+  the CPU to the crypto self-tests waits 10 ms for it. At 1,000 Hz the wait is 1 ms, but a
+  busy vCPU takes ten times the timer interrupts. What does each cost, measured?
+- **Method.** `docs/research/measurements/boot-preempt/`: the pinned kernel, and the same
+  built with `hz.config` (`CONFIG_HZ=1000`, run 36712388813), both `PREEMPT_NONE` and
+  tickless when idle (`NO_HZ_IDLE`). `tick-cost.py` runs the test guest's `work` mode
+  (hashing 1 GiB) and a boot with no work, alternating kernels, n = 100 pairs, and reports
+  the VM process's host CPU time from wait4(2) and the median of the paired differences with
+  a bootstrap 95% interval; an earlier run of n = 50 gave idle guests held 10 s. Boots:
+  `kernel-ab/ab.py`, n = 200 each. de378dd and cb60bec, 2026-09-30, this machine, load
+  average 13 to 20 from another VM running beside.
+- **Results.**
+  - Idle, 10 s (host CPU, p50 / p90 / p99 / max): 100 Hz 50.4 / 53.2 / 56.6 / 56.6 ms;
+    1,000 Hz 50.3 / 53.0 / 55.9 / 55.9 ms. No cost: an idle vCPU does not tick.
+  - Busy, 1 GiB hashed, host CPU less a boot's: 100 Hz 1,308.6 / 1,467.5 / 1,489.3 /
+    1,512.2 ms; 1,000 Hz 1,316.6 / 1,487.9 / 1,509.7 / 1,532.8 ms. Paired, 1,000 Hz costs
+    +9.3 ms [+4.8, +17.4], +0.71% [+0.37%, +1.33%] of the busy CPU. Wall time: +3.9 ms
+    [−0.8, +19.3], not distinguishable.
+  - A boot's host CPU: −7.5 ms [−8.3, −0.2] at 1,000 Hz.
+  - Cold boot, guest entry to PID 1 (µs, p50 / p90 / p99 / max): 100 Hz 26,152 / 26,833 /
+    27,418 / 28,937; 1,000 Hz 17,964 / 19,463 / 21,275 / 23,391. Under this load the 100 Hz
+    kernel lost the tick in nearly every boot (M39 saw about a third, unloaded).
+  - Restores (µs, p50): 7,718 and 7,784, the same: they never run the self-tests (M38).
+- **Consequence.** Measured, not decided: 1,000 Hz makes a cold boot about 8 ms faster and
+  costs a busy vCPU 0.4% to 1.3% more host CPU; idle VMs and restores are unaffected. The
+  kernel is not changed without the user's decision, since the change also publishes a
+  kernel release.

@@ -12,9 +12,11 @@ wait4(2)) and wall time:
 - idle: `idle`, held --idle-s seconds (10) after it says it is ready, then killed.
 
 It reports n, p50, p90, p99 and max of each, and of work less boot: what the work itself
-cost the host. The boots' own time is kernel-ab/ab.py's, which boots shards-init.
+cost the host. Samples of one iteration are paired, A's with B's: for each metric, the
+median of the paired differences B - A with a bootstrap 95% interval (10,000 resamples,
+seeded), as scripts/bench-envelope computes them. --only boot,work,idle runs some. The boots' own time is kernel-ab/ab.py's, which boots shards-init.
 """
-import argparse, math, os, platform, subprocess, time
+import argparse, math, os, platform, random, statistics, subprocess, time
 
 
 def sample(bin_dir, kernel, guest, cmdline, idle_s=None):
@@ -58,22 +60,27 @@ def main():
     ap.add_argument("--runs", type=int, default=30)
     ap.add_argument("--mib", type=int, default=1024)
     ap.add_argument("--idle-s", type=float, default=10)
+    ap.add_argument("--only", default="boot,work,idle")
     a = ap.parse_args()
     kernels = {"A": a.a, "B": a.b}
     rows = {k: {} for k in kernels}
     add = lambda k, m, x: rows[k].setdefault(m, []).append(x)
     for i in range(1 + a.runs):
         for k in ("A", "B") if i % 2 == 0 else ("B", "A"):
-            boot = sample(a.bin, kernels[k], a.guest, "shards_test=work shards_work_mib=0")
-            work = sample(a.bin, kernels[k], a.guest, f"shards_test=work shards_work_mib={a.mib}")
-            idle = sample(a.bin, kernels[k], a.guest, "shards_test=idle", a.idle_s)
+            only = a.only.split(",")
+            boot = sample(a.bin, kernels[k], a.guest, "shards_test=work shards_work_mib=0") if "boot" in only or "work" in only else None
+            work = sample(a.bin, kernels[k], a.guest, f"shards_test=work shards_work_mib={a.mib}") if "work" in only else None
+            idle = sample(a.bin, kernels[k], a.guest, "shards_test=idle", a.idle_s) if "idle" in only else None
             if i == 0:
                 continue  # warm-up
-            add(k, "boot_cpu_ms", boot["cpu_ms"])
-            add(k, "work_cpu_ms", work["cpu_ms"])
-            add(k, "work_wall_ms", work["wall_ms"])
-            add(k, "work_less_boot_cpu_ms", work["cpu_ms"] - boot["cpu_ms"])
-            add(k, "idle_cpu_ms", idle["cpu_ms"])
+            if boot:
+                add(k, "boot_cpu_ms", boot["cpu_ms"])
+            if work:
+                add(k, "work_cpu_ms", work["cpu_ms"])
+                add(k, "work_wall_ms", work["wall_ms"])
+                add(k, "work_less_boot_cpu_ms", work["cpu_ms"] - boot["cpu_ms"])
+            if idle:
+                add(k, "idle_cpu_ms", idle["cpu_ms"])
     rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
     print(f"host {platform.machine()} {platform.platform()} · revision {rev} · n={a.runs} · "
           f"work {a.mib} MiB · idle {a.idle_s} s")
@@ -84,6 +91,12 @@ def main():
         for k in kernels:
             v = rows[k][metric]
             print(f"{metric:<24} {k:<6} " + " ".join(f"{pct(v, p):>9.1f}" for p in (50, 90, 99, 100)))
+    rng = random.Random(20260929)
+    print(f"{'paired B - A':<24} {'median':>9} {'95% interval':>22}")
+    for metric in rows["A"]:
+        diffs = [b - x for x, b in zip(rows["A"][metric], rows["B"][metric])]
+        meds = sorted(statistics.median(rng.choices(diffs, k=len(diffs))) for _ in range(10_000))
+        print(f"{metric:<24} {statistics.median(diffs):>9.1f} [{meds[249]:>9.1f}, {meds[9749]:>9.1f}]")
 
 
 if __name__ == "__main__":
