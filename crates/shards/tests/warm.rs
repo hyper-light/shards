@@ -144,6 +144,9 @@ impl Warm {
         } else {
             0
         }];
+        // The log's retention, which a run without a log has no use for.
+        payload.extend((20u64 << 20).to_be_bytes());
+        payload.extend(5u64.to_be_bytes());
         payload.extend(spec.encode());
         shards_ipc::send(
             &self.daemon,

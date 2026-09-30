@@ -1076,9 +1076,24 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
     - `--tail` reads the index back from the end, and only the records of the lines it
       shows: on a 2 GiB log, 3 ms and 8 MiB of daemon, against 1.6 s and 8.2 GiB (PM
       M48).
-    - `-f` waits on the index (kqueue on macOS, inotify on Linux), the run's end and
+    - `-f` waits on the log (kqueue on macOS, inotify on Linux), the run's end and
       the client, not a timer: a hundred idle followers cost the daemon nothing, where
       each looked 50 times a second.
+    - **A log keeps only its newest output**, as Docker's `local` driver keeps it:
+      segments of `SHARDS_LOG_MAX_SIZE` bytes (20 MiB), at most `SHARDS_LOG_MAX_FILE`
+      of them (5), the oldest removed as the next begins (docs.docker.com
+      engine/logging/drivers/local: `max-size` 20m, `max-file` 5). The daemon checks
+      them before it serves and sends them with each run; the run's VM writes the
+      segments in the container's directory, which it is given open.
+      - Segments are numbered, `log`, `log.1`, …, and never renamed, so a reader never
+        pairs one segment's log with another's index. A segment is there once its index
+        is: made after its log, removed before it. A later segment there says one is
+        whole, and a reader asks that before it counts the records.
+      - A reader reads on in a segment removed under it, and past those removed before
+        it reached them; lines in segments gone are gone, as rotated lines are from
+        Docker's. `--tail` reads back through only the segments its lines are in. `-f`
+        watches the directory for segments coming, and the segment it reads for
+        appends.
     - A record the log cannot keep, on a full disk or a log removed, costs the log, not
       the run: it is taken back from both files and counted; the run's VM tells the
       daemon, the container keeps the count, and `logs` says so and exits 1 rather than

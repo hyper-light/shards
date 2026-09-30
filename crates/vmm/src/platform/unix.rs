@@ -444,23 +444,93 @@ pub fn sync_durable(file: &File) -> io::Result<()> {
     file.sync_data()
 }
 
-/// A watch on a file, for another process's appends to it: its descriptor becomes
-/// readable once the file has changed, for poll(2) to wait on beside others. kqueue's
-/// `EVFILT_VNODE` on macOS (kqueue(2)); inotify's `IN_MODIFY` on Linux (inotify(7)).
+/// The names in the directory `dir` holds open, but for `.` and `..`, wherever it has gone
+/// (fdopendir(3), readdir(3)).
+pub fn names_in(dir: &File) -> io::Result<Vec<std::ffi::OsString>> {
+    use std::os::unix::ffi::OsStrExt as _;
+    // A descriptor of its own for the stream, which closedir(3) closes: the directory's
+    // own stays open, and reads from its start.
+    // SAFETY: openat(2) of the directory itself, relative to a directory we hold open.
+    let fd = unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            c".".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fdopendir(3) of a directory descriptor we just opened; on success the
+    // stream owns it.
+    let stream = unsafe { libc::fdopendir(fd) };
+    if stream.is_null() {
+        let e = io::Error::last_os_error();
+        // SAFETY: close(2) of the descriptor fdopendir did not take.
+        unsafe { libc::close(fd) };
+        return Err(e);
+    }
+    let mut names = Vec::new();
+    let read = loop {
+        // readdir(3) says the end and an error apart only by errno.
+        clear_errno();
+        // SAFETY: readdir(3) on the stream opened above, not yet closed.
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            let e = io::Error::last_os_error();
+            break if e.raw_os_error() == Some(0) {
+                Ok(())
+            } else {
+                Err(e)
+            };
+        }
+        // SAFETY: readdir's entry holds a NUL-terminated name, valid until the next call.
+        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if !matches!(name.to_bytes(), b"." | b"..") {
+            names.push(std::ffi::OsStr::from_bytes(name.to_bytes()).to_os_string());
+        }
+    };
+    // SAFETY: closedir(3) of the stream opened above, once.
+    unsafe { libc::closedir(stream) };
+    read.map(|()| names)
+}
+
+/// Sets errno to 0, for calls that say an error only by it.
+fn clear_errno() {
+    // SAFETY: the calling thread's errno, which is writable.
+    #[cfg(target_os = "macos")]
+    unsafe {
+        *libc::__error() = 0;
+    }
+    // SAFETY: the calling thread's errno, which is writable.
+    #[cfg(not(target_os = "macos"))]
+    unsafe {
+        *libc::__errno_location() = 0;
+    }
+}
+
+/// A watch on a directory, for other processes' changes to it: its descriptor becomes
+/// readable once a name in it has come or gone, or a file of it that is watched has been
+/// written, for poll(2) to wait on beside others. kqueue's `EVFILT_VNODE` on macOS, on the
+/// directory and on each file watched (kqueue(2)); inotify on Linux, whose watch on a
+/// directory sees its files' writes too (inotify(7)).
 #[derive(Debug)]
 pub struct FileWatch {
     fd: std::os::fd::OwnedFd,
     /// What kqueue watches, open while it does.
     #[cfg(target_os = "macos")]
-    _file: File,
+    _dir: File,
+    #[cfg(target_os = "macos")]
+    file: Option<File>,
 }
 
 impl FileWatch {
-    pub fn new(path: &std::path::Path) -> io::Result<FileWatch> {
+    /// A watch on the directory `dir` holds open, wherever it goes.
+    pub fn new(dir: &File) -> io::Result<FileWatch> {
         use std::os::fd::FromRawFd as _;
         #[cfg(target_os = "macos")]
         {
-            let file = File::open(path)?;
+            let opened = dir.try_clone()?;
             // SAFETY: kqueue(2) takes no arguments.
             let kq = unsafe { libc::kqueue() };
             if kq < 0 {
@@ -468,21 +538,16 @@ impl FileWatch {
             }
             // SAFETY: a descriptor just made, owned by nothing else.
             let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(kq) };
-            // SAFETY: kevent is plain data, for which all zeroes is a value.
-            let mut change: libc::kevent = unsafe { std::mem::zeroed() };
-            change.ident = file.as_raw_fd() as libc::uintptr_t;
-            change.filter = libc::EVFILT_VNODE;
-            change.flags = libc::EV_ADD | libc::EV_CLEAR;
-            change.fflags = libc::NOTE_WRITE | libc::NOTE_EXTEND | libc::NOTE_DELETE | libc::NOTE_RENAME;
-            // SAFETY: kevent(2) registering one change, and asking for no events.
-            if unsafe { libc::kevent(kq, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) } < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(FileWatch { fd, _file: file })
+            let watch = FileWatch {
+                fd,
+                _dir: opened,
+                file: None,
+            };
+            watch.register(&watch._dir)?;
+            Ok(watch)
         }
         #[cfg(not(target_os = "macos"))]
         {
-            use std::os::unix::ffi::OsStrExt as _;
             // SAFETY: inotify_init1(2) with flags.
             let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
             if raw < 0 {
@@ -490,15 +555,64 @@ impl FileWatch {
             }
             // SAFETY: a descriptor just made, owned by nothing else.
             let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
-            let name = std::ffi::CString::new(path.as_os_str().as_bytes())
+            // The directory itself, through its descriptor's link in /proc (proc(5)),
+            // which inotify follows.
+            let name = std::ffi::CString::new(format!("/proc/self/fd/{}", dir.as_raw_fd()))
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))?;
-            let mask = libc::IN_MODIFY | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF;
+            let mask = libc::IN_MODIFY
+                | libc::IN_CREATE
+                | libc::IN_DELETE
+                | libc::IN_MOVED_TO
+                | libc::IN_MOVED_FROM
+                | libc::IN_DELETE_SELF
+                | libc::IN_MOVE_SELF
+                | libc::IN_ONLYDIR;
             // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
             if unsafe { libc::inotify_add_watch(raw, name.as_ptr(), mask) } < 0 {
                 return Err(io::Error::last_os_error());
             }
             Ok(FileWatch { fd })
         }
+    }
+
+    /// Watches `file`, one in the directory, for writes, in place of the one watched
+    /// before. On Linux the directory's watch sees them already.
+    pub fn file(&mut self, file: &File) -> io::Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            let file = file.try_clone()?;
+            self.register(&file)?;
+            // The one before leaves kqueue as its descriptor closes (kqueue(2)).
+            self.file = Some(file);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = file;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn register(&self, file: &File) -> io::Result<()> {
+        // SAFETY: kevent is plain data, for which all zeroes is a value.
+        let mut change: libc::kevent = unsafe { std::mem::zeroed() };
+        change.ident = file.as_raw_fd() as libc::uintptr_t;
+        change.filter = libc::EVFILT_VNODE;
+        change.flags = libc::EV_ADD | libc::EV_CLEAR;
+        change.fflags = libc::NOTE_WRITE | libc::NOTE_EXTEND | libc::NOTE_DELETE | libc::NOTE_RENAME;
+        // SAFETY: kevent(2) registering one change, and asking for no events.
+        if unsafe {
+            libc::kevent(
+                self.fd.as_raw_fd(),
+                &change,
+                1,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            )
+        } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     /// The descriptor to wait on.

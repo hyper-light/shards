@@ -679,10 +679,12 @@ impl Daemon {
                 reader.finish(&mut each)?;
                 return Ok(());
             }
-            // Followed as it grows: woken by an append to its index, by the run's end, or
-            // by the client's hanging up, not by a timer (audit A12). The watch comes
-            // before the read, so no append between them goes unseen.
-            let watch = shards_vmm::platform::FileWatch::new(&dir.join(logs::INDEX))?;
+            // Followed as it grows: woken by an append to the segment it is read from, by
+            // a segment's coming, by the run's end, or by the client's hanging up, not by
+            // a timer (audit A12). Each watch comes before a read, so no append between
+            // them goes unseen.
+            let mut watch = shards_vmm::platform::FileWatch::new(log.dir())?;
+            let mut watched = None;
             let Some((number, end)) = self.wake_at_end(&id)? else {
                 reader.read(&log, &mut each)?;
                 reader.finish(&mut each)?;
@@ -692,6 +694,13 @@ impl Daemon {
                 loop {
                     if !reader.read(&log, &mut each)? {
                         return Ok(());
+                    }
+                    if let Some(segment) = reader.segment()
+                        && watched != Some(segment.seq())
+                    {
+                        watch.file(segment.index())?;
+                        watched = Some(segment.seq());
+                        continue;
                     }
                     let ready = wait_readable(&[watch.fd(), end.as_fd(), reply.0.as_fd()])?;
                     // Once the container has ended, what is left of a line is all of it.

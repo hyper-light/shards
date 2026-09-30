@@ -827,6 +827,18 @@ fn a_daemon_refuses_settings_it_cannot_keep() {
             "SHARDS_WARM_MAX: 100000 is more than",
         ),
         (&[("SHARDS_DAEMON_IDLE", "soon")][..], "SHARDS_DAEMON_IDLE"),
+        (
+            &[("SHARDS_LOG_MAX_SIZE", "20m")][..],
+            "SHARDS_LOG_MAX_SIZE: \"20m\" is not a count",
+        ),
+        (
+            &[("SHARDS_LOG_MAX_SIZE", "0")][..],
+            "SHARDS_LOG_MAX_SIZE: a log keeps at least a byte",
+        ),
+        (
+            &[("SHARDS_LOG_MAX_FILE", "0")][..],
+            "SHARDS_LOG_MAX_FILE: a log keeps at least one file",
+        ),
     ] {
         let home = TempDir::new("daemon-settings");
         let mut env: Vec<(&str, &OsStr)> = vec![("SHARDS_HOME", home.as_os_str())];

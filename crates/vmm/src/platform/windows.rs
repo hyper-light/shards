@@ -155,6 +155,14 @@ pub fn open_in(_dir: &File, _name: &str) -> io::Result<File> {
     ))
 }
 
+/// The names in the directory `dir` holds open. No container logs are kept on Windows.
+pub fn names_in(_dir: &File) -> io::Result<Vec<std::ffi::OsString>> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "listing an open directory is not supported on Windows",
+    ))
+}
+
 /// Creates `name` in the directory `dir` holds open. No snapshots are written on Windows.
 pub fn write_in(_dir: &File, _name: &str, _bytes: &[u8]) -> io::Result<()> {
     Err(io::Error::new(

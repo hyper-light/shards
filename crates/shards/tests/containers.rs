@@ -748,6 +748,170 @@ fn a_stopping_daemon_starts_no_pending_run() {
     assert_eq!(gated.shards(&home, &["daemon", "stop"]).status, Some(0));
 }
 
+/// `shards ARGS` in `home` whose daemon keeps logs in three segments of 100,000 bytes,
+/// its output as bytes.
+fn retained(home: &Path) -> Command {
+    let mut command = Command::new(shards());
+    command
+        .env("SHARDS_HOME", home)
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .env("SHARDS_LOG_MAX_SIZE", "100000")
+        .env("SHARDS_LOG_MAX_FILE", "3");
+    command
+}
+
+fn retained_output(home: &Path, args: &[&str]) -> Vec<u8> {
+    let out = retained(home).args(args).stdin(Stdio::null()).output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
+}
+
+/// A container's log keeps only its newest output: at most SHARDS_LOG_MAX_FILE segments of
+/// SHARDS_LOG_MAX_SIZE bytes, as Docker's `local` driver keeps `max-file` of `max-size`.
+/// `logs` shows what is kept, `--tail` its last lines, and a follower gets every byte once
+/// as segments come and go under it (audit A12).
+#[test]
+fn a_log_keeps_its_newest_output_within_its_retention() {
+    let Some((home, image)) = home("containers-log-retention") else {
+        return;
+    };
+    // The daemon the next command starts has the retention.
+    assert_eq!(without_vms(&home, &["daemon", "stop"]).status, Some(0));
+    let wrote = retained_output(
+        &home,
+        &[
+            "run", "--name", "big", "--pull", "never", &image, "bulk", "1000000", "7",
+        ],
+    );
+    assert_eq!(wrote.len(), 1_000_000);
+    let kept = retained_output(&home, &["logs", "big"]);
+    assert!(
+        wrote.ends_with(&kept),
+        "{} bytes kept, not the newest",
+        kept.len()
+    );
+
+    // On disk: three segments, the newest, each within its size, holding what `logs` shows.
+    let dir = std::fs::read_dir(home.join("containers"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|d| {
+            std::fs::read_to_string(d.join("config.json")).is_ok_and(|c| c.contains("\"name\":\"big\""))
+        })
+        .unwrap();
+    let mut seqs: Vec<u64> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            let seq = name.strip_prefix("log.")?.strip_suffix(".idx")?;
+            seq.parse().ok()
+        })
+        .collect();
+    seqs.sort_unstable();
+    assert_eq!(seqs.len(), 3, "{seqs:?}");
+    assert!(
+        seqs[0] >= 1 && seqs[1] == seqs[0] + 1 && seqs[2] == seqs[1] + 1,
+        "{seqs:?}"
+    );
+    assert!(!dir.join("log").exists() && !dir.join("log.idx").exists());
+    let mut payload = 0u64;
+    for seq in &seqs {
+        let log = std::fs::metadata(dir.join(format!("log.{seq}"))).unwrap().len();
+        let records = std::fs::metadata(dir.join(format!("log.{seq}.idx")))
+            .unwrap()
+            .len()
+            / 8;
+        assert!(
+            log <= 100_000 || records == 1,
+            "segment {seq}: {log} bytes in {records} records"
+        );
+        payload += log - 13 * records;
+    }
+    assert_eq!(payload, kept.len() as u64);
+
+    let last = retained_output(&home, &["logs", "--tail", "1", "big"]);
+    assert_eq!(last, kept.split_inclusive(|&b| b == b'\n').next_back().unwrap());
+
+    // A follower of a container writing lines.
+    let mut run = retained(&home)
+        .args(["run", "-i", "--name", "fol", "--pull", "never", &image, "cat"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // Only a running container's log is followed, as dockerd follows only a running
+    // container's (moby daemon/logs.go, `cLogCreated`).
+    eventually("the container to run", || {
+        retained_output(&home, &["ps", "-q", "--no-trunc"]).len() == 65
+    });
+    let mut follower = retained(&home)
+        .args(["logs", "-f", "fol"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let received = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut out = follower.stdout.take().unwrap();
+    let reading = {
+        let received = received.clone();
+        std::thread::spawn(move || {
+            use std::io::Read as _;
+            let mut all = Vec::new();
+            let mut buf = vec![0u8; 64 << 10];
+            loop {
+                let n = out.read(&mut buf).unwrap();
+                if n == 0 {
+                    return all;
+                }
+                all.extend_from_slice(&buf[..n]);
+                received.store(all.len(), std::sync::atomic::Ordering::Release);
+            }
+        })
+    };
+    let mut sent = Vec::new();
+    {
+        use std::io::Write as _;
+        let mut stdin = run.stdin.take().unwrap();
+        for chunk in 0..40 {
+            let lines: String = (0..1000)
+                .map(|line| format!("chunk {chunk} line {line}\n"))
+                .collect();
+            stdin.write_all(lines.as_bytes()).unwrap();
+            sent.extend_from_slice(lines.as_bytes());
+            let deadline = Instant::now() + TIMEOUT;
+            // Each chunk is followed before the next is written: only a follower woken by
+            // appends, not only by segments' coming, gets there.
+            while received.load(std::sync::atomic::Ordering::Acquire) < sent.len() {
+                assert!(
+                    Instant::now() < deadline,
+                    "the follower has {} bytes of {} at chunk {chunk}",
+                    received.load(std::sync::atomic::Ordering::Acquire),
+                    sent.len()
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+    assert_eq!(exit(&mut run), Some(0));
+    let followed = reading.join().unwrap();
+    assert_eq!(follower.wait().unwrap().code(), Some(0));
+    assert!(sent.len() > 3 * 100_000, "the log rotated past its retention");
+    assert!(
+        followed == sent,
+        "{} bytes followed of {}",
+        followed.len(),
+        sent.len()
+    );
+    assert_eq!(without_vms(&home, &["daemon", "stop"]).status, Some(0));
+}
+
 /// A container's log line past the largest message the daemon may send reaches the
 /// terminal whole, byte for byte, through the real client, with its timestamp: before, it
 /// was dropped and `logs` still said 0 (audit A08). The container is one a daemon left in

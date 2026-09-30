@@ -112,6 +112,60 @@ mod tests {
         (path, file)
     }
 
+    /// Whether `fd` is readable now.
+    #[cfg(unix)]
+    fn readable(fd: std::os::fd::BorrowedFd<'_>) -> bool {
+        use std::os::fd::AsRawFd as _;
+        let mut poll = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll(2) of one descriptor, without waiting.
+        let ready = unsafe { libc::poll(&mut poll, 1, 0) };
+        ready == 1
+    }
+
+    /// A watch on a directory wakes for a name's coming and going there, and for writes
+    /// to the file it watches in it, only that file's, and waits again once cleared;
+    /// all wherever the directory goes.
+    #[cfg(unix)]
+    #[test]
+    fn a_watch_sees_a_directory_and_its_file_change() {
+        let dir = std::env::temp_dir().join(format!("shards-platform-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let append = |name: &str| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join(name))
+                .unwrap()
+        };
+        let (mut a, mut b) = (append("a"), append("b"));
+        let opened = open_dir(&dir).unwrap();
+        let mut watch = FileWatch::new(&opened).unwrap();
+        assert!(!readable(watch.fd()));
+        watch.file(&File::open(dir.join("a")).unwrap()).unwrap();
+        a.write_all(b"x").unwrap();
+        assert!(readable(watch.fd()), "a write to the file watched");
+        watch.clear();
+        assert!(!readable(watch.fd()));
+        append("c");
+        assert!(readable(watch.fd()), "a name come");
+        watch.clear();
+        watch.file(&File::open(dir.join("b")).unwrap()).unwrap();
+        b.write_all(b"y").unwrap();
+        assert!(readable(watch.fd()), "a write to the file watched now");
+        watch.clear();
+        let moved = dir.with_extension("moved");
+        std::fs::rename(&dir, &moved).unwrap();
+        watch.clear();
+        std::fs::remove_file(moved.join("c")).unwrap();
+        assert!(readable(watch.fd()), "a name gone, the directory moved");
+        std::fs::remove_dir_all(&moved).unwrap();
+    }
+
     #[test]
     fn reservations_are_zeroed_writable_and_page_aligned() {
         let page = page_size().unwrap();

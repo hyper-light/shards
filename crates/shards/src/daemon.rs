@@ -34,7 +34,7 @@ use crate::containers::{self, Container, Registry, Removal, State as Life};
 mod commands;
 mod logs;
 use crate::run::{Boot, Prepared};
-use crate::spec::NOT_RUN;
+use crate::spec::{LogRetention, NOT_RUN, log_segment};
 
 const USAGE: &str = "usage: shards daemon [--detached | stop]
   Serves `shards run` from warm microVMs; `shards run` starts one when none is running.
@@ -239,6 +239,8 @@ struct Daemon {
     /// Warm VMs kept ahead of runs, all pools together ([`DEFAULT_WARM_MAX`]).
     warm_max: usize,
     idle: Duration,
+    /// How much of each container's output its log keeps.
+    logs: LogRetention,
     /// How long a client may take to send its request ([`REQUEST_TIMEOUT`]).
     request_timeout: Duration,
     state: Mutex<State>,
@@ -406,6 +408,14 @@ fn count(name: &str, default: u64) -> Result<u64, String> {
     }
 }
 
+/// How much of a container's output its log keeps unless the settings say otherwise: as
+/// Docker's `local` log driver keeps it, five files of 20 MiB (its `max-size` of 20m and
+/// `max-file` of 5, docs.docker.com engine/logging/drivers/local).
+const DEFAULT_LOGS: LogRetention = LogRetention {
+    size: 20 << 20,
+    files: 5,
+};
+
 /// A daemon's settings.
 #[derive(Debug, Clone, Copy)]
 struct Settings {
@@ -416,6 +426,9 @@ struct Settings {
     warm_max: usize,
     /// How long it stays with nothing to do: `SHARDS_DAEMON_IDLE`, in seconds.
     idle: Duration,
+    /// How much of each container's output its log keeps: `SHARDS_LOG_MAX_SIZE` and
+    /// `SHARDS_LOG_MAX_FILE`.
+    logs: LogRetention,
 }
 
 /// The daemon's settings, checked before it serves: a malformed or excessive one stops it
@@ -436,7 +449,22 @@ fn settings() -> Result<Settings, String> {
         ));
     }
     let idle = Duration::from_secs(count("SHARDS_DAEMON_IDLE", DEFAULT_IDLE.as_secs())?);
-    Ok(Settings { pool, warm_max, idle })
+    let logs = LogRetention {
+        size: count("SHARDS_LOG_MAX_SIZE", DEFAULT_LOGS.size)?,
+        files: count("SHARDS_LOG_MAX_FILE", DEFAULT_LOGS.files)?,
+    };
+    if logs.size == 0 {
+        return Err("SHARDS_LOG_MAX_SIZE: a log keeps at least a byte".into());
+    }
+    if logs.files == 0 {
+        return Err("SHARDS_LOG_MAX_FILE: a log keeps at least one file".into());
+    }
+    Ok(Settings {
+        pool,
+        warm_max,
+        idle,
+        logs,
+    })
 }
 
 fn serve() -> Result<(), String> {
@@ -548,6 +576,7 @@ impl Daemon {
             target: settings.pool,
             warm_max: settings.warm_max,
             idle: settings.idle,
+            logs: settings.logs,
             request_timeout: REQUEST_TIMEOUT,
             state: Mutex::default(),
             changed: Condvar::new(),
@@ -907,9 +936,10 @@ impl Daemon {
         } else {
             vec![conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()]
         };
-        fds.push(container_log.log.as_fd());
-        fds.push(container_log.index.as_fd());
+        fds.push(container_log.dir.as_fd());
         let mut payload = vec![flags];
+        payload.extend(self.logs.size.to_be_bytes());
+        payload.extend(self.logs.files.to_be_bytes());
         payload.extend(prepared.spec.encode());
         let detached = run.detach.then_some(conn);
         match self.start_run(&id, &payload, &fds, detached, || self.warm_for(&prepared, &say)) {
@@ -1952,28 +1982,28 @@ fn hand_over(vm: &UnixStream, payload: &[u8], fds: &[BorrowedFd<'_>]) -> Result<
     }
 }
 
-/// A container's log and its index (spec.rs, `LOG_STDOUT`), for its run's VM to write.
+/// A container's directory, where its run's VM writes its log (spec.rs, `LOG_STDOUT`).
 #[derive(Debug)]
 struct Log {
-    log: File,
-    index: File,
+    dir: File,
 }
 
-/// A new container's directory `dir`, and its log and the log's index there, for this
-/// user alone and written by appends.
+/// A new container's directory `dir`, with its log's first segment and that segment's
+/// index, for this user alone and written by appends.
 fn new_log(dir: &Path) -> io::Result<Log> {
     use std::os::unix::fs::OpenOptionsExt;
     shards_vmm::platform::create_private_dir(dir)?;
-    let open = |name: &str| {
+    // Its log, then its index, which says the segment is there (spec.rs, `log_segment`).
+    let (log, index) = log_segment(0);
+    for name in [log, index] {
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
-            .open(dir.join(name))
-    };
+            .open(dir.join(name))?;
+    }
     Ok(Log {
-        log: open(logs::LOG)?,
-        index: open(logs::INDEX)?,
+        dir: File::open(dir)?,
     })
 }
 
@@ -2117,6 +2147,7 @@ mod tests {
                     pool: 0,
                     warm_max: DEFAULT_WARM_MAX,
                     idle: DEFAULT_IDLE,
+                    logs: DEFAULT_LOGS,
                 },
                 containers,
                 home_lock,

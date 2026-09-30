@@ -88,7 +88,20 @@ pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
     if request.kind != kind::RUN {
         return Err(format!("expected a request, got message kind {}", request.kind));
     }
-    let (flags, spec) = request.payload.split_first().ok_or("an empty request")?;
+    let (flags, rest) = request.payload.split_first().ok_or("an empty request")?;
+    let (size, rest) = rest
+        .split_first_chunk::<8>()
+        .ok_or("a request without its log's retention")?;
+    let (files, spec) = rest
+        .split_first_chunk::<8>()
+        .ok_or("a request without its log's retention")?;
+    let retention = crate::spec::LogRetention {
+        size: u64::from_be_bytes(*size),
+        files: u64::from_be_bytes(*files),
+    };
+    if retention.size == 0 || retention.files == 0 {
+        return Err("a request whose log keeps nothing".into());
+    }
     let spec = Spec::decode(spec).ok_or("a malformed command")?;
     let (detached, logged) = (
         flags & shards_ipc::RUN_DETACHED != 0,
@@ -114,8 +127,8 @@ pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
         (File::from(next()?), File::from(next()?))
     };
     let log = if detached || logged {
-        let (log, index) = (File::from(next()?), File::from(next()?));
-        Some(workload::Logger::new(log, index).map_err(|e| format!("the container's log: {e}"))?)
+        let dir = File::from(next()?);
+        Some(workload::Logger::new(dir, retention).map_err(|e| format!("the container's log: {e}"))?)
     } else {
         None
     };

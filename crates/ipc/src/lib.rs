@@ -47,11 +47,12 @@ pub const HOME: &str = "SHARDS_HOME";
 pub mod kind {
     /// Warm VM → daemon: the guest is connected and waiting for its command.
     pub const READY: u8 = 1;
-    /// Daemon → warm VM: [`RUN_INTERACTIVE`](super::RUN_INTERACTIVE) flags, then the
-    /// command (`shards_abi::run::Spec`). Descriptors: the client's connection, then its
-    /// stdin, stdout and stderr, then with [`RUN_LOG`](super::RUN_LOG) the container's
-    /// log and its index. With [`RUN_DETACHED`](super::RUN_DETACHED), only the command's
-    /// stdin, the log and its index.
+    /// Daemon → warm VM: [`RUN_INTERACTIVE`](super::RUN_INTERACTIVE) flags, the most
+    /// bytes a segment of the container's log holds and the most segments it keeps (each
+    /// a big-endian u64), then the command (`shards_abi::run::Spec`). Descriptors: the
+    /// client's connection, then its stdin, stdout and stderr, then with
+    /// [`RUN_LOG`](super::RUN_LOG) the container's directory, where its log is. With
+    /// [`RUN_DETACHED`](super::RUN_DETACHED), only the command's stdin and the directory.
     pub const RUN: u8 = 2;
     /// Warm VM → client: the command's exit status, one byte, then, if the client asked
     /// for `SHARDS_TIMING`, the VM's timing line for the client to print.
