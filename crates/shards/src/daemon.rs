@@ -2340,7 +2340,11 @@ mod tests {
 
         /// A daemon whose containers are kept on `disk`.
         fn on(tag: &str, disk: Arc<dyn Disk>) -> Test {
-            let home = std::env::temp_dir().join(format!("shards-daemon-{tag}-{}", std::process::id()));
+            // A home of its own: a daemon's refill thread may still make a spare container
+            // as its test ends, and must not make it in another test's home.
+            static HOMES: AtomicUsize = AtomicUsize::new(0);
+            let n = HOMES.fetch_add(1, Ordering::Relaxed);
+            let home = std::env::temp_dir().join(format!("shards-daemon-{tag}-{}-{n}", std::process::id()));
             let _ = std::fs::remove_dir_all(&home);
             std::fs::create_dir_all(&home).unwrap();
             let containers =
@@ -2474,7 +2478,14 @@ mod tests {
                 let _ = vm.kill(libc::SIGKILL);
                 let _ = vm.wait();
             }
-            let _ = std::fs::remove_dir_all(&self.home);
+            // A spare being made as the home is removed fails its removal (ENOTEMPTY); once
+            // the home is gone, none is made in it, as a daemon never recreates its home.
+            for _ in 0..1000 {
+                match std::fs::remove_dir_all(&self.home) {
+                    Err(e) if e.kind() != io::ErrorKind::NotFound => std::thread::yield_now(),
+                    _ => break,
+                }
+            }
         }
     }
 
