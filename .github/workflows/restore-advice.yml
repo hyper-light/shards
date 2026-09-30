@@ -1,0 +1,37 @@
+name: restore advice
+
+# Which madvise(2) keeps a restored guest's memory file small without slowing its first
+# beat (docs/research/measurements/restore-advice). Runs when the experiment changes, or
+# when asked.
+on:
+  push:
+    paths:
+      - docs/research/measurements/restore-advice/**
+      - .github/workflows/restore-advice.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.0 # keep in sync with rust-toolchain.toml
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - run: sudo chmod 666 /dev/kvm
+      - run: git apply docs/research/measurements/restore-advice/advice.patch
+      - name: Each advice, the Firecracker comparison
+        run: |
+          grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag} || true
+          findmnt -no FSTYPE -T target || true
+          for advice in none random sequential nohuge huge; do
+            echo "=== SHARDS_FILE_ADVICE=$advice"
+            SHARDS_FILE_ADVICE=$advice cargo bench --locked -p shards --bench firecracker -- --runs 20 2>&1 |
+              awk '/^firecracker_restore:/{p=1} p && /^(shards|fc)_(to_beat|rss_file|pss_file|pss|rss_anon) /'
+          done

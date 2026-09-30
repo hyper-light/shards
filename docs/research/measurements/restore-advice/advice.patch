@@ -1,0 +1,26 @@
+diff --git a/crates/vmm/src/platform/unix.rs b/crates/vmm/src/platform/unix.rs
+index f57db10..3a55ad3 100644
+--- a/crates/vmm/src/platform/unix.rs
++++ b/crates/vmm/src/platform/unix.rs
+@@ -153,6 +153,21 @@ pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull
+     if p != at.as_ptr().cast() {
+         return Err(io::Error::other("mmap(MAP_FIXED) placed the mapping elsewhere"));
+     }
++    // Experiment (docs/research/measurements/restore-advice): the advice the snapshot's
++    // mapping gets.
++    let advice = match std::env::var("SHARDS_FILE_ADVICE").as_deref() {
++        Ok("random") => Some(libc::MADV_RANDOM),
++        Ok("sequential") => Some(libc::MADV_SEQUENTIAL),
++        #[cfg(target_os = "linux")]
++        Ok("nohuge") => Some(libc::MADV_NOHUGEPAGE),
++        #[cfg(target_os = "linux")]
++        Ok("huge") => Some(libc::MADV_HUGEPAGE),
++        _ => None,
++    };
++    if let Some(advice) = advice {
++        // SAFETY: advice on the mapping just made.
++        unsafe { libc::madvise(at.as_ptr().cast(), len, advice) };
++    }
+     Ok(())
+ }
+ 
