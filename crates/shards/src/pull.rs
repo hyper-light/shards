@@ -7,7 +7,12 @@ use std::process::ExitCode;
 
 use shards_image::platform;
 use shards_image::reference::Reference;
-use shards_image::store::Store;
+use shards_image::store::{Limits, Store};
+
+/// The defaults of [`limits`], PM M47.
+const MAX_IMAGE_BYTES: u64 = 64 << 30;
+const MAX_IMAGE_ENTRIES: u64 = 4 << 20;
+const MAX_IMAGE_METADATA: u64 = 1 << 30;
 use shards_registry::http::{Cancel, Client};
 use shards_registry::pull::{self, Event, Pulled};
 use shards_registry::registry::{self, Registry};
@@ -48,6 +53,35 @@ pub fn pull(args: impl Iterator<Item = OsString>) -> ExitCode {
 fn usage(message: &str) -> ExitCode {
     let _ = writeln!(std::io::stderr(), "shards: {message}\n{USAGE}");
     ExitCode::from(2)
+}
+
+/// What building an image's root filesystem may take (audit A10; D18): each setting a
+/// count of bytes or entries, or its default.
+/// - `SHARDS_MAX_IMAGE_BYTES`: what its layers decompress to, together.
+/// - `SHARDS_MAX_IMAGE_ENTRIES` and `SHARDS_MAX_IMAGE_METADATA`: its entries, and the bytes
+///   of their names, links and xattrs, all held in memory as it is built.
+/// - `SHARDS_KEEP_FREE`: the bytes a build leaves free on the store's filesystem: 5% of
+///   it, as ext4 keeps 5% back by default (mke2fs(8) `-m`), but at most 10 GiB, so a large
+///   disk that is nearly full still takes images.
+pub fn limits() -> Result<Limits, String> {
+    let setting = |name: &str, default: u64| match std::env::var(name) {
+        Ok(v) => v
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("{name}: {v:?} is not a count")),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(e) => Err(format!("{name}: {e}")),
+    };
+    let root = shards_ipc::home()?.join("images");
+    let (_, total) =
+        shards_vmm::platform::disk_space(&root).map_err(|e| format!("{}: {e}", root.display()))?;
+    Ok(Limits {
+        bytes: setting("SHARDS_MAX_IMAGE_BYTES", MAX_IMAGE_BYTES)?,
+        entries: setting("SHARDS_MAX_IMAGE_ENTRIES", MAX_IMAGE_ENTRIES)?,
+        metadata: setting("SHARDS_MAX_IMAGE_METADATA", MAX_IMAGE_METADATA)?,
+        keep_free: setting("SHARDS_KEEP_FREE", (total / 20).min(10 << 30))?,
+        available: |path| shards_vmm::platform::disk_space(path).map(|(available, _)| available),
+    })
 }
 
 /// This user's image store, `images` in [`home`], readable by this user alone.
@@ -136,7 +170,8 @@ pub fn fetch(
         .and_then(|d| d.map(|d| d.digest()).transpose())
         .map_err(|e| e.to_string())?;
     // Layers unpack without a cap, as Docker's do; each is checked against its DiffID.
-    let pulled = pull::pull(&registry, &store, reference, &platform::guest(), u64::MAX, report)
+    let limits = limits()?;
+    let pulled = pull::pull(&registry, &store, reference, &platform::guest(), &limits, report)
         .map_err(|e| e.to_string())?;
     let same = before.as_ref() == Some(&pulled.manifest);
     Ok((pulled, same))

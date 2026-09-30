@@ -67,7 +67,8 @@ pub fn prepare(
     let found = match asked.pull {
         Pull::Always => None,
         Pull::Missing | Pull::Never => {
-            local(&store, &reference, &platform::guest(), u64::MAX).map_err(|e| e.to_string())?
+            let limits = crate::pull::limits()?;
+            local(&store, &reference, &platform::guest(), &limits).map_err(|e| e.to_string())?
         }
     };
     let image = match found {

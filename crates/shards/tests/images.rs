@@ -113,6 +113,41 @@ fn images_run_from_a_registry_as_docker_run_runs_them() {
     }
 }
 
+/// An image whose root filesystem would take more than the daemon's limits allow is
+/// refused, as `docker run` refuses what its daemon cannot do, and nothing of it is built
+/// (audit A10): here it has more entries than `SHARDS_MAX_IMAGE_ENTRIES`.
+#[test]
+fn an_image_past_its_limits_is_refused() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("images-limits");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_MAX_IMAGE_ENTRIES", "3".as_ref()),
+    ];
+    let refused = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", refused.stdout, refused.stderr);
+    assert_eq!(refused.status, Some(125), "{shown}");
+    assert!(
+        refused
+            .stderr
+            .contains("more than 3 entries (SHARDS_MAX_IMAGE_ENTRIES)"),
+        "{shown}"
+    );
+    let built = std::fs::read_dir(home.join("images/rootfs/v1"))
+        .unwrap()
+        .filter(|e| !e.as_ref().unwrap().file_name().to_string_lossy().starts_with('.'))
+        .count();
+    assert_eq!(built, 0, "{shown}");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0));
+}
+
 /// With the recorded guest, the first run of an image boots and saves a template, and the
 /// next restores it: no `INIT_STARTED` marker, since init started in the template. The
 /// restored run has the image's settings and the host's clock.

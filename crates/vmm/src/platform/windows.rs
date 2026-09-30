@@ -6,7 +6,7 @@ use std::ptr::NonNull;
 use windows_sys::Win32::Foundation::ERROR_HANDLE_EOF;
 use windows_sys::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_FLAG_BACKUP_SEMANTICS, FlushFileBuffers, ReadFile, WriteFile,
+    FILE_FLAG_BACKUP_SEMANTICS, FlushFileBuffers, GetDiskFreeSpaceExW, ReadFile, WriteFile,
 };
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Memory::{
@@ -170,4 +170,17 @@ pub fn sync_durable(file: &File) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// The volume holding `path`: the bytes this user may still write there, and its size
+/// (GetDiskFreeSpaceExW's counts for the caller, which honor quotas).
+pub fn disk_space(path: &std::path::Path) -> io::Result<(u64, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let (mut available, mut total) = (0u64, 0u64);
+    // SAFETY: a NUL-terminated wide path, and locals for the two counts asked for.
+    if unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, &mut total, std::ptr::null_mut()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((available, total))
 }

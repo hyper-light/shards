@@ -405,7 +405,21 @@ The store keeps what a pull fetches and what guests boot from. The code is
     the tar's end (`core/diff/apply/apply.go` reads those too). It must also stay under a
     size cap.
 - **Root filesystems by ChainID.** An image's EROFS (D15) is built once and kept by
-  ChainID, so images with the same layer stack share one.
+  ChainID, so images with the same layer stack share one. One build at a time goes on in
+  a store, under its lock, whichever process asks, and a second build of an image finds
+  the first's (audit A10).
+- **Limits** (audit A10). A build refuses, and leaves nothing, once it would take more
+  than its limits allow; it reads and writes in proportion to them, so they bound its
+  time too. Each is a setting of the daemon:
+  - `SHARDS_MAX_IMAGE_BYTES` (64 GiB): what its layers decompress to, together, which
+    `ingest/` holds while it builds. A compression bomb stops there.
+  - `SHARDS_MAX_IMAGE_ENTRIES` (4 Mi) and `SHARDS_MAX_IMAGE_METADATA` (1 GiB): its
+    entries, about 610 bytes of memory each as it builds, and the bytes of their names,
+    links and xattrs. Real images hold about 34 000 entries (PM M47).
+  - `SHARDS_KEEP_FREE`: what it leaves free on the store's filesystem, looked at as it
+    starts and every 64 MiB it writes: 5% of the filesystem, as ext4 keeps back by
+    default (mke2fs(8) `-m`), at most 10 GiB, so a large disk nearly full still takes
+    images.
   - The unpacked tars exist only while it is built.
   - Its directory is versioned, and the version is bumped whenever the EROFS writer's
     output changes.

@@ -3,6 +3,27 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::ptr::NonNull;
 
+/// The filesystem holding `path`: the bytes this user may still write there, and its size
+/// (statvfs(3); what a filesystem keeps for root is not available).
+pub fn disk_space(path: &std::path::Path) -> io::Result<(u64, u64)> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))?;
+    // SAFETY: statvfs is plain data, for which all zeroes is a value.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: statvfs(3) with a NUL-terminated path, into a local it fills.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut st) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    #[allow(clippy::unnecessary_cast, clippy::useless_conversion)]
+    let (frsize, avail, blocks) = (
+        u64::from(st.f_frsize),
+        u64::from(st.f_bavail),
+        u64::from(st.f_blocks),
+    );
+    Ok((avail.saturating_mul(frsize), blocks.saturating_mul(frsize)))
+}
+
 /// Makes `dir`, and its missing parents, readable by this user alone (0700). An existing
 /// `dir` is made 0700 too, as containerd makes its root.
 pub fn create_private_dir(dir: &std::path::Path) -> io::Result<()> {

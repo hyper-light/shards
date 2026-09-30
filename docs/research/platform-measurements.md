@@ -1699,3 +1699,33 @@ revision before comparing a changed API/implementation.
   container records are written and renamed, not synced, and never on a run's path: a
   metadata write there takes the filesystem's tail, not its median. A removal, off the
   path, is synced. Linux is not measured yet. D27, "Durability".
+
+### M47. What an image's build holds, and what real images hold
+
+- **Question.** Audit A10: what does building a root filesystem cost per entry, and how
+  large are real images, to set its default limits against?
+- **Method.**
+  - `docs/research/measurements/image-budgets/run.sh`: the peak RSS of applying one
+    layer of N empty files, 1000 to a directory, and writing its EROFS image.
+  - `count.py` over a store holding `node:22`, `python:3.12` and `rust:1` (linux/arm64),
+    pulled on 2026-09-30: entries, uncompressed bytes, and bytes of names, links and
+    xattrs. `tensorflow/tensorflow:latest` has no arm64 image.
+  - This machine, revision dc28003.
+- **Results.**
+
+| Entries | Applied | Written | Per entry |
+|---|---|---|---|
+| 100 000 | +40 MiB | +56 MiB | 589 B |
+| 400 000 | +158 MiB | +252 MiB | 660 B |
+| 1 000 000 | +443 MiB | +582 MiB | 610 B |
+
+| Image | Layers | Entries | Uncompressed | Names, links, xattrs |
+|---|---|---|---|---|
+| node:22 | 8 | 34 129 | 1.07 GiB | 1.5 MiB |
+| python:3.12 | 7 | 33 774 | 1.06 GiB | 1.4 MiB |
+| rust:1 | 5 | 31 460 | 1.47 GiB | 1.3 MiB |
+
+- **Consequence.** D18's defaults: 4 Mi entries (120 times these images, and 2.5 GiB of
+  memory at 610 B each), 64 GiB decompressed (40 times; AWS Lambda takes container
+  images up to 10 GB), and 1 GiB of names, links and xattrs.
+

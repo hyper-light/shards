@@ -15,7 +15,7 @@ use std::sync::{Mutex, PoisonError};
 use shards_image::oci::{self, Descriptor, Document, ImageConfig, Manifest, Platform};
 use shards_image::platform::{self, Target};
 use shards_image::reference::{Digest, Reference};
-use shards_image::store::{Layer, Store};
+use shards_image::store::{Layer, Limits, Store};
 
 use crate::Error;
 use crate::registry::Registry;
@@ -55,14 +55,14 @@ pub enum Event<'a> {
     Building,
 }
 
-/// Pulls `reference` for the platforms `targets` into `store`. A layer may unpack to at
-/// most `max_layer` bytes.
+/// Pulls `reference` for the platforms `targets` into `store`, its root filesystem built
+/// within `limits`.
 pub fn pull(
     registry: &Registry,
     store: &Store,
     reference: &Reference,
     targets: &[Target],
-    max_layer: u64,
+    limits: &Limits,
     report: &(dyn Fn(Event<'_>) + Sync),
 ) -> Result<Pulled, Error> {
     let name = reference.familiar();
@@ -102,7 +102,7 @@ pub fn pull(
 
     fetch_layers(registry, store, &manifest, report)?;
     report(Event::Building);
-    let rootfs = store.rootfs(&layers, max_layer)?;
+    let rootfs = store.rootfs(&layers, limits)?;
     let mut contents = vec![manifest_digest.clone(), manifest.config.digest()?];
     contents.extend(layers.iter().map(|l| l.blob.clone()));
     store.tag(&reference.to_string(), &manifest_desc, &contents)?;
@@ -121,7 +121,7 @@ pub fn local(
     store: &Store,
     reference: &Reference,
     targets: &[Target],
-    max_layer: u64,
+    limits: &Limits,
 ) -> Result<Option<Pulled>, Error> {
     let Some(manifest_desc) = store.tagged(&reference.to_string())? else {
         return Ok(None);
@@ -135,7 +135,7 @@ pub fn local(
     contents(&name, &manifest)?;
     let config = stored(store, &name, &manifest.config, oci::MAX_CONFIG)?;
     let (config, layers) = checked(&name, &manifest_desc, &manifest, &config, targets)?;
-    let rootfs = store.rootfs(&layers, max_layer)?;
+    let rootfs = store.rootfs(&layers, limits)?;
     Ok(Some(Pulled {
         resolved: manifest_digest.clone(),
         manifest: manifest_digest,
@@ -566,7 +566,7 @@ mod tests {
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
         let events = Mutex::new(Vec::new());
-        let pulled = pull(&registry, &store, &reference, &arm64(), 1 << 30, &|e| {
+        let pulled = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|e| {
             if let Event::Layer(d) = e {
                 events.lock().unwrap().push(d.to_string());
             }
@@ -619,7 +619,7 @@ mod tests {
 
         // Pulling again finds everything stored: it only resolves the tag.
         let before = server.requests().len();
-        pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {}).unwrap();
+        pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
         let again: Vec<String> = server.requests()[before..].to_vec();
         assert!(
             again
@@ -637,7 +637,15 @@ mod tests {
         let root = temp("platform");
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
-        let e = pull(&registry, &store, &reference, &riscv64(), 1 << 30, &|_| {}).unwrap_err();
+        let e = pull(
+            &registry,
+            &store,
+            &reference,
+            &riscv64(),
+            &Limits::none(),
+            &|_| {},
+        )
+        .unwrap_err();
         assert!(
             e.to_string()
                 .contains("no manifest for linux/riscv64 among [linux/s390x, linux/arm64]"),
@@ -653,7 +661,7 @@ mod tests {
         let root = temp("diffid");
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
-        let e = pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {}).unwrap_err();
+        let e = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap_err();
         assert!(e.to_string().contains("DiffID"), "{e}");
         assert_eq!(
             store.tagged(&reference.to_string()).unwrap(),
@@ -678,7 +686,7 @@ mod tests {
         let root = temp("ratelimit");
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
-        let e = pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {}).unwrap_err();
+        let e = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap_err();
         let shown = e.to_string();
         assert!(shown.contains("limit 100 per 21600 s; 0 left"), "{shown}");
         assert!(
@@ -699,7 +707,7 @@ mod tests {
         let root = temp("digest");
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
-        let e = pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {}).unwrap_err();
+        let e = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap_err();
         assert!(e.to_string().contains("hashes to"), "{e}");
         assert!(!store.has(&Digest::parse(&layer).unwrap()));
         let _ = std::fs::remove_dir_all(&root);
@@ -714,14 +722,16 @@ mod tests {
         let root = temp("changed");
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
-        let pulled = pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {}).unwrap();
-        let found = local(&store, &reference, &arm64(), 1 << 30).unwrap().unwrap();
+        let pulled = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
+        let found = local(&store, &reference, &arm64(), &Limits::none())
+            .unwrap()
+            .unwrap();
         assert_eq!(
             (&found.manifest, &found.config, &found.rootfs),
             (&pulled.manifest, &pulled.config, &pulled.rootfs)
         );
         // Its index labelled it for arm64, and guests of another platform do not run it.
-        let e = local(&store, &reference, &riscv64(), 1 << 30).unwrap_err();
+        let e = local(&store, &reference, &riscv64(), &Limits::none()).unwrap_err();
         assert!(
             e.to_string().contains("is for linux/arm64, not linux/riscv64"),
             "{e}"
@@ -755,17 +765,21 @@ mod tests {
         for (path, changed, why) in cases {
             let original = std::fs::read(path).unwrap();
             std::fs::write(path, changed).unwrap();
-            let e = local(&store, &reference, &arm64(), 1 << 30)
+            let e = local(&store, &reference, &arm64(), &Limits::none())
                 .unwrap_err()
                 .to_string();
             assert!(e.contains("the stored copy has changed"), "{why}: {e}");
-            let e = pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {})
+            let e = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {})
                 .unwrap_err()
                 .to_string();
             assert!(e.contains("the stored copy has changed"), "{why}: {e}");
             std::fs::write(path, original).unwrap();
         }
-        assert!(local(&store, &reference, &arm64(), 1 << 30).unwrap().is_some());
+        assert!(
+            local(&store, &reference, &arm64(), &Limits::none())
+                .unwrap()
+                .is_some()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -778,9 +792,13 @@ mod tests {
         let root = temp("labelled");
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
-        pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {}).unwrap();
-        assert!(local(&store, &reference, &arm64(), 1 << 30).unwrap().is_some());
-        let e = local(&store, &reference, &riscv64(), 1 << 30).unwrap_err();
+        pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
+        assert!(
+            local(&store, &reference, &arm64(), &Limits::none())
+                .unwrap()
+                .is_some()
+        );
+        let e = local(&store, &reference, &riscv64(), &Limits::none()).unwrap_err();
         assert!(e.to_string().contains("is for linux/arm64, not"), "{e}");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -806,8 +824,10 @@ mod tests {
         let root = temp("untyped");
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
-        let pulled = pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {}).unwrap();
-        let found = local(&store, &reference, &arm64(), 1 << 30).unwrap().unwrap();
+        let pulled = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
+        let found = local(&store, &reference, &arm64(), &Limits::none())
+            .unwrap()
+            .unwrap();
         assert_eq!(found.manifest, pulled.manifest);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -980,14 +1000,14 @@ mod tests {
             let root = temp("refused");
             let store = Store::open(&root).unwrap();
             let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
-            let e = pull(&registry, &store, &reference, &arm64(), 1 << 30, &|_| {})
+            let e = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {})
                 .unwrap_err()
                 .to_string();
             assert!(e.contains(pulled), "{why}, pulled: {e}");
             assert_eq!(store.tagged(&reference.to_string()).unwrap(), None, "{why}");
 
             record(&store, &reference, &manifest, &[&config, &layer]);
-            let e = local(&store, &reference, &arm64(), 1 << 30)
+            let e = local(&store, &reference, &arm64(), &Limits::none())
                 .unwrap_err()
                 .to_string();
             assert!(e.contains(found), "{why}, found: {e}");

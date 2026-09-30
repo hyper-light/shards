@@ -43,11 +43,18 @@ pub fn root() -> Tree {
 }
 
 /// Applies a layer's uncompressed archive to `tree`. Files keep `source` in their
-/// [`DataRef`], to be read back from the archive by it.
-pub fn apply(tree: &mut Tree, source: u32, archive: impl Read) -> Result<(), Error> {
+/// [`DataRef`], to be read back from the archive by it. `each` sees every entry as it is
+/// read, before it is kept, and may refuse it.
+pub fn apply(
+    tree: &mut Tree,
+    source: u32,
+    archive: impl Read,
+    each: &mut dyn FnMut(&Entry) -> Result<(), Error>,
+) -> Result<(), Error> {
     let mut entries = Vec::new();
     let mut reader = tar::Reader::new(archive);
     while let Some(entry) = reader.next_entry()? {
+        each(&entry)?;
         entries.push(entry);
     }
     let mut layer = Layer {
@@ -395,7 +402,7 @@ mod tests {
                 w.member(*m);
             }
             let archive = w.finish();
-            apply(&mut tree, i as u32, archive.as_slice())?;
+            apply(&mut tree, i as u32, archive.as_slice(), &mut |_| Ok(()))?;
             archives.push(Cursor::new(archive));
         }
         Ok((tree, Archives(archives)))
@@ -742,7 +749,7 @@ mod tests {
             ..file(b"suid", b"s")
         });
         let mut tree = root();
-        apply(&mut tree, 0, w.finish().as_slice()).unwrap();
+        apply(&mut tree, 0, w.finish().as_slice(), &mut |_| Ok(())).unwrap();
         let meta = |path: &str| tree.node(find(&tree, path).unwrap()).unwrap().meta.clone();
         let names = |m: &Meta| {
             m.xattrs
@@ -777,7 +784,7 @@ mod tests {
             .member(file(b"n", b""))
             .finish();
         assert!(
-            apply(&mut root(), 0, long.as_slice()).is_err(),
+            apply(&mut root(), 0, long.as_slice(), &mut |_| Ok(())).is_err(),
             "a name longer than 255 bytes"
         );
     }

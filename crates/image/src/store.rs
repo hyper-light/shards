@@ -469,7 +469,13 @@ impl Store {
     /// whole decompressed stream, bytes after the tar's end included, must match the
     /// DiffID, as containerd's applier checks it (`core/diff/apply/apply.go`), and must
     /// not pass `max` bytes.
-    fn unpack(&self, layer: &Layer, max: u64) -> Result<Partial, Error> {
+    fn unpack(
+        &self,
+        layer: &Layer,
+        bytes: &mut u64,
+        limits: &Limits,
+        room: &mut Room,
+    ) -> Result<Partial, Error> {
         let how = oci::layer_compression(&layer.media_type)?;
         let mut file = File::open(self.blob_path(&layer.blob))?;
         let mut head = Vec::with_capacity(8);
@@ -481,9 +487,12 @@ impl Store {
         let mut partial = Partial::create(&self.root.join("ingest"))?;
         let mut sink = Sink {
             hasher: Hasher::new(layer.diff_id.algorithm()),
-            out: &mut partial,
-            written: 0,
-            max,
+            out: Checked {
+                out: &mut partial,
+                room,
+            },
+            written: bytes,
+            max: limits.bytes,
         };
         match compression(&head) {
             Compression::None => {
@@ -507,8 +516,10 @@ impl Store {
 
     /// The EROFS root filesystem of `layers`, built on first use: each layer is unpacked
     /// and checked, the layers are stacked (layer.rs), and the tree is written once. It is
-    /// kept by ChainID; the unpacked tars go when it is done.
-    pub fn rootfs(&self, layers: &[Layer], max: u64) -> Result<PathBuf, Error> {
+    /// kept by ChainID; the unpacked tars go when it is done. Building it takes no more
+    /// than `limits` allow (audit A10), and one build at a time goes on in a store,
+    /// whichever process asks: a second of the same image finds the first's.
+    pub fn rootfs(&self, layers: &[Layer], limits: &Limits) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let chain = oci::chain_id(&diff_ids).ok_or_else(|| Error("an image with no layers".into()))?;
         let path = self.root.join(format!("rootfs/v{ROOTFS_VERSION}")).join(format!(
@@ -519,40 +530,178 @@ impl Store {
         if path.is_file() {
             return Ok(path);
         }
+        let building = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(format!("rootfs/v{ROOTFS_VERSION}/.building")))?;
+        building.lock()?;
+        if path.is_file() {
+            return Ok(path);
+        }
+        let ingest = self.root.join("ingest");
+        let mut room = Room::new(&ingest, limits)?;
+        let (mut bytes, mut entries, mut metadata) = (0u64, 0u64, 0u64);
         let mut tree = layer::root();
         let mut tars = Vec::with_capacity(layers.len());
         for (i, l) in layers.iter().enumerate() {
-            let tar = self.unpack(l, max)?;
+            let tar = self.unpack(l, &mut bytes, limits, &mut room)?;
             let source = u32::try_from(i).map_err(|_| Error("too many layers".into()))?;
             let file = File::open(&tar.path)?;
-            layer::apply(&mut tree, source, BufReader::with_capacity(CHUNK, file))?;
+            let mut count = |e: &crate::tar::Entry| {
+                entries += 1;
+                let held = e.path.len() + e.link.len();
+                let held = e.xattrs.iter().fold(held, |n, (k, v)| n + k.len() + v.len());
+                metadata = metadata.saturating_add(held as u64);
+                if entries > limits.entries {
+                    return bad(format!(
+                        "the image has more than {} entries (SHARDS_MAX_IMAGE_ENTRIES)",
+                        limits.entries
+                    ));
+                }
+                if metadata > limits.metadata {
+                    return bad(format!(
+                        "the image's names, links and xattrs pass {} bytes (SHARDS_MAX_IMAGE_METADATA)",
+                        limits.metadata
+                    ));
+                }
+                Ok(())
+            };
+            layer::apply(
+                &mut tree,
+                source,
+                BufReader::with_capacity(CHUNK, file),
+                &mut count,
+            )?;
             tars.push(tar);
         }
         let files = tars
             .iter()
             .map(|t| File::open(&t.path))
             .collect::<io::Result<Vec<_>>>()?;
-        let mut out = Partial::create(&self.root.join("ingest"))?;
+        let mut partial = Partial::create(&ingest)?;
+        let mut out = Checked {
+            out: &mut partial,
+            room: &mut room,
+        };
         erofs::write(&tree, &mut Archives(files), &mut out)?;
-        out.commit(&path)?;
+        partial.commit(&path)?;
+        drop(building);
         Ok(path)
     }
 }
 
-/// Where decompressed layer bytes go: hashed, counted against the cap, and written.
+/// What preparing one image's root filesystem may take, its layers together (audit A10).
+/// The work is linear in what it reads, so these bound its time too.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// Bytes its layers decompress to, which `ingest/` holds while it is built.
+    pub bytes: u64,
+    /// Entries in its layers, each held in memory while it is built.
+    pub entries: u64,
+    /// Bytes of its entries' names, link targets and xattrs, held in memory too.
+    pub metadata: u64,
+    /// Bytes to leave free on the store's filesystem: a build stops short of them.
+    pub keep_free: u64,
+    /// The bytes free now on the filesystem holding a path.
+    pub available: fn(&Path) -> io::Result<u64>,
+}
+
+impl Limits {
+    /// No limits, and room for anything.
+    pub fn none() -> Limits {
+        Limits {
+            bytes: u64::MAX,
+            entries: u64::MAX,
+            metadata: u64::MAX,
+            keep_free: 0,
+            available: |_| Ok(u64::MAX),
+        }
+    }
+}
+
+/// How much a build writes before it looks again at what is left free.
+const LOOK_EVERY: u64 = 64 << 20;
+
+/// The room a build has on its filesystem: looked at as it starts, and again every
+/// `LOOK_EVERY` bytes written, so it stops before it would leave less than `keep_free`,
+/// give or take what it wrote since.
+struct Room {
+    dir: PathBuf,
+    keep_free: u64,
+    available: fn(&Path) -> io::Result<u64>,
+    since: u64,
+}
+
+impl Room {
+    fn new(dir: &Path, limits: &Limits) -> io::Result<Room> {
+        let mut room = Room {
+            dir: dir.to_path_buf(),
+            keep_free: limits.keep_free,
+            available: limits.available,
+            since: 0,
+        };
+        room.look()?;
+        Ok(room)
+    }
+
+    fn look(&mut self) -> io::Result<()> {
+        self.since = 0;
+        let free = (self.available)(&self.dir)?;
+        if free < self.keep_free.saturating_add(LOOK_EVERY) {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                format!(
+                    "{}: {free} bytes free, and {} are to be left (SHARDS_KEEP_FREE)",
+                    self.dir.display(),
+                    self.keep_free
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn wrote(&mut self, n: usize) -> io::Result<()> {
+        self.since = self.since.saturating_add(n as u64);
+        if self.since >= LOOK_EVERY {
+            self.look()?;
+        }
+        Ok(())
+    }
+}
+
+/// A file being written, within the room its build has.
+struct Checked<'a> {
+    out: &'a mut Partial,
+    room: &'a mut Room,
+}
+
+impl Write for Checked<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.room.wrote(buf.len())?;
+        self.out.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
+/// Where decompressed layer bytes go: hashed, counted against the image's budget, and
+/// written.
 struct Sink<'a> {
     hasher: Hasher,
-    out: &'a mut Partial,
-    written: u64,
+    out: Checked<'a>,
+    written: &'a mut u64,
     max: u64,
 }
 
 impl Write for Sink<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.written = self.written.saturating_add(buf.len() as u64);
-        if self.written > self.max {
+        *self.written = self.written.saturating_add(buf.len() as u64);
+        if *self.written > self.max {
             return Err(io::Error::other(format!(
-                "a layer decompresses to more than {} bytes",
+                "the image decompresses to more than {} bytes (SHARDS_MAX_IMAGE_BYTES)",
                 self.max
             )));
         }
@@ -705,7 +854,7 @@ mod tests {
                 media_type: oci::media::DOCKER_LAYER_GZIP.into(),
                 diff_id: diff_id.clone(),
             };
-            let out = store.unpack(&layer, 1 << 20).unwrap();
+            let out = unpack_within(&store, &layer, 1 << 20).unwrap();
             assert_eq!(fs::read(&out.path).unwrap(), tar);
             drop(out);
             // A wrong DiffID, or a cap below the size, and nothing is kept.
@@ -713,8 +862,8 @@ mod tests {
                 diff_id: sha256(b"x"),
                 ..layer.clone()
             };
-            assert!(store.unpack(&wrong, 1 << 20).is_err());
-            assert!(store.unpack(&layer, 100).is_err());
+            assert!(unpack_within(&store, &wrong, 1 << 20).is_err());
+            assert!(unpack_within(&store, &layer, 100).is_err());
             assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
         }
         // OCI's plain tar type is read as it is, whatever its bytes look like.
@@ -723,8 +872,8 @@ mod tests {
             media_type: oci::media::OCI_LAYER.into(),
             diff_id,
         };
-        assert!(store.unpack(&raw(diff_id.clone()), 1 << 20).is_err());
-        let out = store.unpack(&raw(sha256(&gz)), 1 << 20).unwrap();
+        assert!(unpack_within(&store, &raw(diff_id.clone()), 1 << 20).is_err());
+        let out = unpack_within(&store, &raw(sha256(&gz)), 1 << 20).unwrap();
         assert_eq!(fs::read(&out.path).unwrap(), gz);
         let _ = fs::remove_dir_all(&root);
     }
@@ -929,7 +1078,7 @@ mod tests {
         store
             .ingest(&layer.blob, blob.len() as u64, &mut &blob[..])
             .unwrap();
-        let out = store.unpack(&layer, 1 << 20).unwrap();
+        let out = unpack_within(&store, &layer, 1 << 20).unwrap();
         assert_eq!(fs::read(&out.path).unwrap(), tar);
         // The frame decodes, but its last 4 bytes, the checksum, disagree.
         let mut blob = compress_to_vec(&tar[..], CompressionLevel::Fastest);
@@ -944,7 +1093,7 @@ mod tests {
         store
             .ingest(&layer.blob, blob.len() as u64, &mut &blob[..])
             .unwrap();
-        assert!(store.unpack(&layer, 1 << 20).is_err());
+        assert!(unpack_within(&store, &layer, 1 << 20).is_err());
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -969,19 +1118,213 @@ mod tests {
         store
             .ingest(&layer.blob, blob.len() as u64, &mut &blob[..])
             .unwrap();
-        let path = store.rootfs(std::slice::from_ref(&layer), 1 << 20).unwrap();
+        let path = store
+            .rootfs(std::slice::from_ref(&layer), &Limits::none())
+            .unwrap();
         let image = fs::read(&path).unwrap();
         assert_eq!(
             u32::from_le_bytes(image[1024..1028].try_into().unwrap()),
             0xE0F5_E1E2
         );
-        let again = store.rootfs(&[layer], 1 << 20).unwrap();
+        let again = store.rootfs(&[layer], &Limits::none()).unwrap();
         assert_eq!(again, path);
         assert_eq!(
             fs::read_dir(root.join("ingest")).unwrap().count(),
             0,
             "unpacked tars are gone"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Unpacks `layer` alone, within `max` bytes.
+    fn unpack_within(store: &Store, layer: &Layer, max: u64) -> Result<Partial, Error> {
+        let limits = Limits {
+            bytes: max,
+            ..Limits::none()
+        };
+        let mut room = Room::new(&store.root.join("ingest"), &limits)?;
+        store.unpack(layer, &mut 0, &limits, &mut room)
+    }
+
+    /// Stores `tar`, gzipped, as a layer.
+    fn stored_layer(store: &Store, tar: &[u8]) -> Layer {
+        let blob = gzip(tar);
+        let layer = Layer {
+            blob: sha256(&blob),
+            media_type: format!("{}+gzip", oci::media::OCI_LAYER),
+            diff_id: sha256(tar),
+        };
+        store
+            .ingest(&layer.blob, blob.len() as u64, &mut &blob[..])
+            .unwrap();
+        layer
+    }
+
+    /// A build refused leaves nothing: no root filesystem, nothing in `ingest/`, and the
+    /// store free to build again.
+    fn refused(store: &Store, root: &Path, layer: &Layer, limits: &Limits, why: &str) {
+        let e = store
+            .rootfs(std::slice::from_ref(layer), limits)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains(why), "{e}");
+        let built = fs::read_dir(root.join(format!("rootfs/v{ROOTFS_VERSION}")))
+            .unwrap()
+            .filter(|e| !e.as_ref().unwrap().file_name().to_string_lossy().starts_with('.'))
+            .count();
+        assert_eq!(built, 0, "{why}: a root filesystem was left");
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0, "{why}");
+    }
+
+    /// Building a root filesystem takes no more than its limits allow (audit A10): a
+    /// layer that decompresses past the image's bytes, as a compression bomb does; more
+    /// entries, or bytes of names and xattrs, than the image may hold in memory; or a
+    /// filesystem whose room would fall below what is to be left free. Within them it is
+    /// built, after every refusal.
+    #[test]
+    fn a_build_takes_no_more_than_its_limits() {
+        let root = temp("limits");
+        let store = Store::open(&root).unwrap();
+        // 64 MiB of zeroes, which gzip to 64 KiB.
+        let zeroes = vec![0u8; 64 << 20];
+        let bomb = stored_layer(
+            &store,
+            &Writer::default()
+                .member(Member {
+                    name: b"zeroes",
+                    data: &zeroes,
+                    ..Member::default()
+                })
+                .finish(),
+        );
+        let bytes = Limits {
+            bytes: 32 << 20,
+            ..Limits::none()
+        };
+        refused(
+            &store,
+            &root,
+            &bomb,
+            &bytes,
+            "decompresses to more than 33554432 bytes",
+        );
+
+        let mut many = Writer::default();
+        for i in 0..100u32 {
+            let name = format!("f{i}");
+            many.member(Member {
+                name: name.as_bytes(),
+                ..Member::default()
+            });
+        }
+        let many = stored_layer(&store, &many.finish());
+        let entries = Limits {
+            entries: 99,
+            ..Limits::none()
+        };
+        refused(&store, &root, &many, &entries, "more than 99 entries");
+
+        let big = vec![b'x'; 60_000];
+        let xattr = stored_layer(
+            &store,
+            &Writer::default()
+                .pax(&[("SCHILY.xattr.user.big", &big)])
+                .member(Member {
+                    name: b"f",
+                    ..Member::default()
+                })
+                .finish(),
+        );
+        let metadata = Limits {
+            metadata: 50_000,
+            ..Limits::none()
+        };
+        refused(&store, &root, &xattr, &metadata, "pass 50000 bytes");
+
+        let full = Limits {
+            keep_free: 1 << 30,
+            available: |_| Ok((1 << 30) + (32 << 20)),
+            ..Limits::none()
+        };
+        refused(&store, &root, &bomb, &full, "are to be left (SHARDS_KEEP_FREE)");
+        // Room enough as it starts, and none once the layer's 64 MiB are written.
+        static LOOKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let filling = Limits {
+            keep_free: 1 << 30,
+            available: |_| match LOOKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 => Ok(u64::MAX),
+                _ => Ok(0),
+            },
+            ..Limits::none()
+        };
+        refused(&store, &root, &bomb, &filling, "0 bytes free");
+        // Room for the unpacked layer, as the build starts and once it is written, and
+        // none as the image is written.
+        static LATER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let late = Limits {
+            keep_free: 1 << 30,
+            available: |_| match LATER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 | 1 => Ok(u64::MAX),
+                _ => Ok(0),
+            },
+            ..Limits::none()
+        };
+        refused(&store, &root, &bomb, &late, "0 bytes free");
+        assert!(
+            LATER.load(std::sync::atomic::Ordering::SeqCst) > 2,
+            "refused as it unpacked"
+        );
+
+        for layer in [&bomb, &many, &xattr] {
+            store
+                .rootfs(std::slice::from_ref(layer), &Limits::none())
+                .unwrap();
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Builds of one image at once, from two stores on one directory, as two processes
+    /// would have: one builds it, and the other finds it built (audit A10).
+    #[test]
+    fn an_image_is_built_once_however_many_ask_at_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static LOOKS: AtomicUsize = AtomicUsize::new(0);
+        let root = temp("singleflight");
+        let store = Store::open(&root).unwrap();
+        let layer = stored_layer(
+            &store,
+            &Writer::default()
+                .member(Member {
+                    name: b"f",
+                    data: b"x",
+                    ..Member::default()
+                })
+                .finish(),
+        );
+        // A build looks at its room as it starts: the number of looks is the number of
+        // builds.
+        let counting = Limits {
+            available: |_| {
+                LOOKS.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                Ok(u64::MAX)
+            },
+            ..Limits::none()
+        };
+        let paths: Vec<PathBuf> = std::thread::scope(|s| {
+            let builds: Vec<_> = (0..4)
+                .map(|_| {
+                    let (root, layer) = (&root, &layer);
+                    s.spawn(move || {
+                        let store = Store::open(root).unwrap();
+                        store.rootfs(std::slice::from_ref(layer), &counting).unwrap()
+                    })
+                })
+                .collect();
+            builds.into_iter().map(|b| b.join().unwrap()).collect()
+        });
+        assert!(paths.windows(2).all(|w| w[0] == w[1]));
+        assert_eq!(LOOKS.load(Ordering::SeqCst), 1, "built more than once");
         let _ = fs::remove_dir_all(&root);
     }
 }
