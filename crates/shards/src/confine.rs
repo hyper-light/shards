@@ -125,10 +125,16 @@ pub fn confine() -> Result<(), String> {
     rules.push(Rule::with(libc::SYS_tgkill, 0, &[pid as u32]));
     rules.push(Rule::with(libc::SYS_socket, 0, &[libc::AF_UNIX as u32]));
     rules.push(Rule::with(libc::SYS_socketpair, 0, &[libc::AF_UNIX as u32]));
+    // Naming threads; and no_new_privs, which Landlock needs set and which only takes
+    // privilege away.
     rules.push(Rule::with(
         libc::SYS_prctl,
         0,
-        &[libc::PR_SET_NAME as u32, libc::PR_GET_NAME as u32],
+        &[
+            libc::PR_SET_NAME as u32,
+            libc::PR_GET_NAME as u32,
+            libc::PR_SET_NO_NEW_PRIVS as u32,
+        ],
     ));
     // A thread's flags, glibc's (nptl `create_thread`) and musl's (`pthread_create`),
     // which adds CLONE_DETACHED.
@@ -430,13 +436,20 @@ pub fn landlock(paths: &Paths) -> Result<(), String> {
     let write_dir = read_dir | WRITE_FILE | TRUNCATE | REMOVE_DIR | REMOVE_FILE | MAKE_DIR | MAKE_REG;
     // A socket bound, and removed once done; dialling one is not Landlock's to govern.
     let sockets_dir = MAKE_SOCK | REMOVE_FILE;
-    allow(std::path::Path::new("/dev/kvm"), write | IOCTL_DEV)?;
+    // The host's own files, where it has them: a host without /dev/kvm runs no VM, which
+    // the KVM backend says itself, and a kernel built without transparent huge pages has
+    // no settings for them. Nothing absent can be reached, rule or not.
+    for (host, rights) in [
+        ("/dev/kvm", write | IOCTL_DEV),
+        ("/sys/kernel/mm/transparent_hugepage", read_dir),
+    ] {
+        let host = std::path::Path::new(host);
+        if host.exists() {
+            allow(host, rights)?;
+        }
+    }
     allow(std::path::Path::new("/dev/null"), write)?;
     allow(std::path::Path::new("/proc/self"), read_dir)?;
-    allow(
-        std::path::Path::new("/sys/kernel/mm/transparent_hugepage"),
-        read_dir,
-    )?;
     for f in &paths.read {
         allow(f, read)?;
     }
