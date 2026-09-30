@@ -775,7 +775,9 @@ mod tests {
     /// holds the worker neither from stopping nor from telling it of its completions, past
     /// the 16-bit indices' wrap, with EVENT_IDX. No request is answered twice, and a
     /// resumed worker re-arms the driver's notifications once it has caught up, so what
-    /// the driver adds next is heard of (audit A09).
+    /// the driver adds next is heard of (audit A09). The indices start 40 short of the
+    /// wrap, as a restored queue's may, so that Miri, which interprets every step, crosses
+    /// it too (access-guard/check.sh).
     #[test]
     fn a_driver_recycling_the_ring_cannot_hold_its_worker() {
         use std::sync::Arc;
@@ -785,8 +787,20 @@ mod tests {
         use super::super::worker::Worker;
 
         const SIZE: u16 = 16;
+        const START: u16 = u16::MAX - 40;
         let mut d = Driver::new(SIZE);
-        let q = d.queue(feature::VERSION_1 | feature::EVENT_IDX);
+        let mut q = d.queue(feature::VERSION_1 | feature::EVENT_IDX);
+        q.set_state(QueueState {
+            next_avail: START,
+            next_used: START,
+            signalled_used: None,
+        });
+        d.avail_idx = START;
+        d.mem
+            .access()
+            .unwrap()
+            .store_u16(USED + 2, START, Ordering::Release)
+            .unwrap();
         for i in 0..SIZE {
             d.set_desc(i, DATA + 64 * u64::from(i), 8, DESC_F_WRITE, 0);
             d.publish(i);
@@ -801,8 +815,8 @@ mod tests {
         .unwrap();
         worker.notify();
         let mut driver = Recycler {
-            avail: SIZE,
-            seen: 0,
+            avail: START.wrapping_add(SIZE),
+            seen: START,
             outstanding: [true; SIZE as usize],
         };
         let waker = worker.waker();
@@ -817,9 +831,11 @@ mod tests {
                 }
                 driver
             });
-            // Past the indices' wrap, then a stop in the middle of it.
-            let deadline = Instant::now() + Duration::from_secs(20);
-            while answered.load(Ordering::SeqCst) < 70_000 {
+            // Past the indices' wrap, then a stop in the middle of it. Miri's clock is its
+            // own, and slow.
+            let (enough, patience) = if cfg!(miri) { (100, 3600) } else { (5_000, 20) };
+            let deadline = Instant::now() + Duration::from_secs(patience);
+            while answered.load(Ordering::SeqCst) < enough {
                 assert!(Instant::now() < deadline, "the worker stalled at {answered:?}");
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -828,7 +844,10 @@ mod tests {
             let took = t0.elapsed();
             recycling.store(false, Ordering::Release);
             let mut driver = recycler.join().unwrap();
-            assert!(took < Duration::from_millis(500), "stopping took {took:?}");
+            assert!(
+                cfg!(miri) || took < Duration::from_millis(500),
+                "stopping took {took:?}"
+            );
             assert!(edges.0.load(Ordering::SeqCst) > 0, "no completion was signalled");
             // Resumed with what the stop left: it catches up, re-arms, and hears of the
             // next request.
