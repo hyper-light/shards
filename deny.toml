@@ -1,0 +1,8 @@
+# The dependency graph against RustSec's advisories (github.com/rustsec/advisory-db),
+# checked in CI (`cargo deny check advisories`). An exception names the advisory, why it
+# does not apply or cannot be fixed yet, and when it lapses, as "Expires YYYY-MM-DD." at
+# the end of its reason: scripts/advisory-exceptions fails once one has, or has none.
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
