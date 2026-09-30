@@ -110,15 +110,9 @@ const NO_KERNEL: &str =
 /// The default guest in `home`'s store: the pinned kernel, downloaded if it is not there
 /// yet, with what the download does said through `say`; and this build's init.
 pub fn default(home: &Path, say: &dyn Fn(&str), cancel: Option<&Cancel>) -> Result<Guest, String> {
-    let pinned = KERNEL.ok_or(NO_KERNEL)?;
+    let guest = pinned(home)?;
     let dir = home.join("guest");
-    let init_digest = init_digest()?;
-    let guest = Guest {
-        kernel: dir.join(format!("sha256-{}", pinned.sha256)),
-        init: dir.join(init_digest.replacen(':', "-", 1)),
-        kernel_digest: format!("sha256:{}", pinned.sha256),
-        init_digest: init_digest.to_string(),
-    };
+    let pinned = KERNEL.ok_or(NO_KERNEL)?;
     if guest.kernel.is_file() && guest.init.is_file() {
         return Ok(guest);
     }
@@ -274,6 +268,30 @@ fn download(
 }
 
 /// The guest recorded under `home`, if any.
+/// The pinned kernel and the shards-init this build carries, where [`default`] stores
+/// them in `home`, stored or not.
+fn pinned(home: &Path) -> Result<Guest, String> {
+    let pinned = KERNEL.ok_or(NO_KERNEL)?;
+    let dir = home.join("guest");
+    let init_digest = init_digest()?;
+    Ok(Guest {
+        kernel: dir.join(format!("sha256-{}", pinned.sha256)),
+        init: dir.join(init_digest.replacen(':', "-", 1)),
+        kernel_digest: format!("sha256:{}", pinned.sha256),
+        init_digest: init_digest.to_string(),
+    })
+}
+
+/// The guest runs of `home` boot: the one recorded, else the pinned one; `None` where
+/// there is neither.
+#[cfg(unix)]
+pub fn in_use(home: &Path) -> Result<Option<Guest>, String> {
+    match current(home)? {
+        Some(recorded) => Ok(Some(recorded)),
+        None => Ok(pinned(home).ok()),
+    }
+}
+
 pub fn current(home: &Path) -> Result<Option<Guest>, String> {
     let record = home.join("guest").join("current");
     let text = match fs::read_to_string(&record) {

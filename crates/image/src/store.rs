@@ -7,6 +7,7 @@
 //! descriptor, and a layer only counts once its decompressed bytes match its DiffID
 //! (docs/research/registry-pull.md §5, rows 4 and 6).
 
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -72,6 +73,28 @@ impl Hasher {
             Hasher::Sha512(h) => Digest::from_hash(Algorithm::Sha512, &h.finalize()),
         }
     }
+}
+
+/// A hold on a store's content ([`Store::lease`]), let go when dropped.
+#[derive(Debug)]
+pub struct Lease {
+    _file: File,
+}
+
+/// A store held whole by a collection ([`Store::collect`]): no lease is given meanwhile.
+#[derive(Debug)]
+pub struct Whole {
+    _file: File,
+}
+
+/// What a collection removed ([`Store::collect`]).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Collected {
+    pub blobs: u64,
+    pub rootfs: u64,
+    /// Files left in `ingest/`.
+    pub ingest: u64,
+    pub bytes: u64,
 }
 
 /// What the store holds of a small blob ([`Store::held`]).
@@ -499,6 +522,137 @@ impl Store {
         Ok(Some(tag.manifest))
     }
 
+    /// Where the root filesystem of the layers with `diff_ids` is kept: by their ChainID.
+    fn rootfs_path(&self, diff_ids: &[Digest]) -> Result<PathBuf, Error> {
+        let chain = oci::chain_id(diff_ids).ok_or_else(|| Error("an image with no layers".into()))?;
+        Ok(self.root.join(format!("rootfs/v{ROOTFS_VERSION}")).join(format!(
+            "{}-{}.erofs",
+            chain.algorithm().name(),
+            chain.hex()
+        )))
+    }
+
+    /// A hold on the store's content for as long as it is kept, by whoever writes content
+    /// not yet recorded by a reference, or reads what a run is about to use: a collection
+    /// ([`collect`](Self::collect)) never runs while one is held, in any process.
+    pub fn lease(&self) -> Result<Lease, Error> {
+        let file = self.lease_file()?;
+        file.lock_shared()?;
+        Ok(Lease { _file: file })
+    }
+
+    fn lease_file(&self) -> Result<File, Error> {
+        Ok(File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(".lease"))?)
+    }
+
+    /// Removes what no reference needs (audit A13): the blobs its manifest, config and
+    /// layers are not, the root filesystems of no reference's layers, records and root
+    /// filesystems of older versions, and what `ingest/` holds. The roots are the
+    /// references alone; content being written or read for a run is under a
+    /// [`lease`](Self::lease), and while any is held nothing is collected: `None`.
+    /// Files a running VM holds open stay its own until it closes them. The store stays
+    /// held whole until the [`Whole`] returned is dropped, for its caller to collect what
+    /// depends on it.
+    pub fn collect(&self) -> Result<Option<(Collected, Whole)>, Error> {
+        let whole = self.lease_file()?;
+        match whole.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => return Ok(None),
+            Err(fs::TryLockError::Error(e)) => return Err(e.into()),
+        }
+        let (blobs, rootfs) = self.roots()?;
+        let mut collected = Collected::default();
+        let mut remove = |path: &Path, count: &mut u64| {
+            let len = fs::symlink_metadata(path).map_or(0, |m| m.len());
+            if fs::remove_file(path).is_ok() {
+                *count += 1;
+                collected.bytes = collected.bytes.saturating_add(len);
+            }
+        };
+        for algorithm in ["sha256", "sha384", "sha512"] {
+            for entry in fs::read_dir(self.root.join("blobs").join(algorithm))? {
+                let path = entry?.path();
+                if !blobs.contains(&path) {
+                    remove(&path, &mut collected.blobs);
+                }
+            }
+        }
+        let current = format!("v{ROOTFS_VERSION}");
+        for entry in fs::read_dir(self.root.join("rootfs"))? {
+            let entry = entry?;
+            if entry.file_name() != current.as_str() {
+                let _ = fs::remove_dir_all(entry.path());
+                continue;
+            }
+            for built in fs::read_dir(entry.path())? {
+                let path = built?.path();
+                if path.extension().is_some_and(|e| e == "erofs") && !rootfs.contains(&path) {
+                    remove(&path, &mut collected.rootfs);
+                }
+            }
+        }
+        let current = format!("v{REFS_VERSION}");
+        for entry in fs::read_dir(self.root.join("refs"))? {
+            let entry = entry?;
+            if entry.file_name() != current.as_str() {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+        // Nothing writes there while the store is held whole: what is there was left.
+        for entry in fs::read_dir(self.root.join("ingest"))? {
+            remove(&entry?.path(), &mut collected.ingest);
+        }
+        Ok(Some((collected, Whole { _file: whole })))
+    }
+
+    /// The blobs and root filesystems the references need: each one's manifest, config
+    /// and layers, and the root filesystem of its layers. A record that cannot be read,
+    /// or names what is not whole, holds only what it names that is.
+    fn roots(&self) -> Result<(HashSet<PathBuf>, HashSet<PathBuf>), Error> {
+        let (mut blobs, mut rootfs) = (HashSet::new(), HashSet::new());
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            let bytes = fs::read(entry?.path())?;
+            let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) else {
+                continue;
+            };
+            let Ok(digest) = tag.manifest.digest() else {
+                continue;
+            };
+            blobs.insert(self.blob_path(&digest));
+            let Held::Whole(bytes) = self.held(&tag.manifest, oci::MAX_MANIFEST)? else {
+                continue;
+            };
+            let Ok(oci::Document::Manifest(manifest)) = oci::parse_document(&bytes, &tag.manifest.media_type)
+            else {
+                continue;
+            };
+            for desc in std::iter::once(&manifest.config).chain(&manifest.layers) {
+                if let Ok(digest) = desc.digest() {
+                    blobs.insert(self.blob_path(&digest));
+                }
+            }
+            let Held::Whole(config) = self.held(&manifest.config, oci::MAX_CONFIG)? else {
+                continue;
+            };
+            let Ok(config) = oci::parse_config(&config) else {
+                continue;
+            };
+            let diff_ids: Result<Vec<Digest>, _> =
+                config.rootfs.diff_ids.iter().map(|d| Digest::parse(d)).collect();
+            if let Ok(path) = diff_ids
+                .map_err(|e| Error(e.to_string()))
+                .and_then(|d| self.rootfs_path(&d))
+            {
+                rootfs.insert(path);
+            }
+        }
+        Ok((blobs, rootfs))
+    }
+
     /// References can be long and hold `/` and `:`, so records are named by their hash.
     fn tag_path(&self, reference: &str) -> PathBuf {
         let name = Digest::from_hash(Algorithm::Sha256, &Sha256::digest(reference.as_bytes()));
@@ -607,12 +761,7 @@ impl Store {
     /// whichever process asks: a second of the same image finds the first's.
     pub fn rootfs(&self, layers: &[Layer], limits: &Limits) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
-        let chain = oci::chain_id(&diff_ids).ok_or_else(|| Error("an image with no layers".into()))?;
-        let path = self.root.join(format!("rootfs/v{ROOTFS_VERSION}")).join(format!(
-            "{}-{}.erofs",
-            chain.algorithm().name(),
-            chain.hex()
-        ));
+        let path = self.rootfs_path(&diff_ids)?;
         if path.is_file() {
             return Ok(path);
         }
@@ -1267,6 +1416,137 @@ mod tests {
             .ingest(&layer.blob, blob.len() as u64, &mut &blob[..])
             .unwrap();
         layer
+    }
+
+    /// An image of `tars`, one layer each, stored and tagged `reference` as a pull leaves
+    /// it, its root filesystem built; its manifest's digest, its blobs and its root
+    /// filesystem.
+    fn tagged(store: &Store, reference: &str, tars: &[&[u8]]) -> (Vec<PathBuf>, PathBuf) {
+        let layers: Vec<Layer> = tars.iter().map(|t| stored_layer(store, t)).collect();
+        let diff_ids: Vec<String> = layers.iter().map(|l| l.diff_id.to_string()).collect();
+        let config = serde_json::json!({
+            "architecture": "arm64", "os": "linux",
+            "rootfs": {"type": "layers", "diff_ids": diff_ids},
+        })
+        .to_string()
+        .into_bytes();
+        let config_digest = sha256(&config);
+        store
+            .ingest(&config_digest, config.len() as u64, &mut &config[..])
+            .unwrap();
+        let layer_descs: Vec<serde_json::Value> = layers
+            .iter()
+            .map(|l| {
+                let size = fs::metadata(store.blob_path(&l.blob)).unwrap().len();
+                serde_json::json!({"mediaType": l.media_type, "digest": l.blob.to_string(), "size": size})
+            })
+            .collect();
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": oci::media::OCI_MANIFEST,
+            "config": {"mediaType": "application/vnd.oci.image.config.v1+json",
+                       "digest": config_digest.to_string(), "size": config.len()},
+            "layers": layer_descs,
+        })
+        .to_string()
+        .into_bytes();
+        let manifest_digest = sha256(&manifest);
+        store
+            .ingest(&manifest_digest, manifest.len() as u64, &mut &manifest[..])
+            .unwrap();
+        let rootfs = store.rootfs(&layers, &Limits::none()).unwrap();
+        let mut contents = vec![manifest_digest.clone(), config_digest.clone()];
+        contents.extend(layers.iter().map(|l| l.blob.clone()));
+        store
+            .tag(reference, &described(&manifest_digest, manifest.len()), &contents)
+            .unwrap();
+        (contents.iter().map(|d| store.blob_path(d)).collect(), rootfs)
+    }
+
+    fn tar_of(name: &[u8], data: &[u8]) -> Vec<u8> {
+        Writer::default()
+            .member(Member {
+                name,
+                data,
+                mode: 0o644,
+                ..Member::default()
+            })
+            .finish()
+    }
+
+    /// A collection keeps what the references need, their manifests, configs, layers and
+    /// root filesystems, shared ones once; removes the rest, blobs, root filesystems,
+    /// older versions' directories and what `ingest/` holds; and does nothing while any
+    /// process holds the store's lease (audit A13).
+    #[test]
+    fn a_collection_keeps_what_references_need_and_nothing_else() {
+        let root = temp("collect");
+        let store = Store::open(&root).unwrap();
+        let (a, b, c) = (tar_of(b"a", b"a"), tar_of(b"b", b"b"), tar_of(b"c", b"c"));
+        // What `one` named before it was tagged anew.
+        let (old_blobs, old_rootfs) = tagged(&store, "one:v1", &[&c]);
+        let (first_blobs, first_rootfs) = tagged(&store, "one:v1", &[&a, &b]);
+        let (second_blobs, second_rootfs) = tagged(&store, "two:v1", &[&a, &c]);
+        let orphan = b"nobody's";
+        let orphan_digest = sha256(orphan);
+        store
+            .ingest(&orphan_digest, orphan.len() as u64, &mut &orphan[..])
+            .unwrap();
+        fs::write(root.join("ingest/left-behind"), b"x").unwrap();
+        fs::create_dir_all(root.join("rootfs/v0")).unwrap();
+        fs::write(root.join("rootfs/v0/old.erofs"), b"x").unwrap();
+        fs::create_dir_all(root.join("refs/v0")).unwrap();
+
+        let lease = store.lease().unwrap();
+        assert!(store.collect().unwrap().is_none(), "collected under a lease");
+        assert!(store.blob_path(&orphan_digest).is_file());
+        drop(lease);
+        let (collected, whole) = store.collect().unwrap().unwrap();
+        // Held whole until let go: a lease waits, and another collection gets nothing.
+        assert!(store.collect().unwrap().is_none());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiting = {
+            let root = root.clone();
+            std::thread::spawn(move || {
+                let _lease = Store::open(&root).unwrap().lease().unwrap();
+                tx.send(()).unwrap();
+            })
+        };
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
+            "leased while held whole"
+        );
+        drop(whole);
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        waiting.join().unwrap();
+
+        let kept: Vec<&PathBuf> = first_blobs.iter().chain(&second_blobs).collect();
+        for path in &kept {
+            assert!(path.is_file(), "{} collected", path.display());
+        }
+        assert!(first_rootfs.is_file() && second_rootfs.is_file());
+        // The old manifest and config of `one` go; its layer `c` is `two`'s too.
+        let gone: Vec<&PathBuf> = old_blobs.iter().filter(|p| !kept.contains(p)).collect();
+        assert_eq!(gone.len(), 2, "{gone:?}");
+        for path in &gone {
+            assert!(!path.exists(), "{} kept", path.display());
+        }
+        assert!(!old_rootfs.exists(), "an old root filesystem kept");
+        assert!(!store.blob_path(&orphan_digest).exists());
+        assert!(!root.join("rootfs/v0").exists() && !root.join("refs/v0").exists());
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+        assert_eq!(
+            (collected.blobs, collected.rootfs, collected.ingest),
+            (3, 1, 1),
+            "{collected:?}"
+        );
+        // What is kept is whole: the images are found again as they were.
+        assert!(store.tagged("one:v1").unwrap().is_some() && store.tagged("two:v1").unwrap().is_some());
+        assert_eq!(
+            store.collect().unwrap().map(|(c, _)| c),
+            Some(Collected::default())
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// A build refused leaves nothing: no root filesystem, nothing in `ingest/`, and the

@@ -22,8 +22,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards_env, run_shards_env_in, served,
-    served_variant, shards, shards_vm, shardsd,
+    TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, registry_of, run_shards_env,
+    run_shards_env_in, served, served_variant, shards, shards_vm, shardsd, test_image, test_image_with,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -911,9 +911,17 @@ fn warm_vms_are_bounded_across_templates() {
         .iter()
         .max_by_key(|d| std::fs::metadata(d).unwrap().modified().unwrap())
         .unwrap();
-    eventually("the second pool did not take the room", || {
-        warm(newest) == 1 && warm(&templates) == 1
-    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !(warm(newest) == 1 && warm(&templates) == 1) {
+        assert!(
+            Instant::now() < deadline,
+            "the second pool did not take the room: {} of {} warm, of {dirs:?}\n{}",
+            warm(newest),
+            warm(&templates),
+            std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     // Never more than the bound, as the first is served again.
     run(&first);
     std::thread::sleep(Duration::from_millis(500));
@@ -990,6 +998,76 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     settled("past the keep-alive", &|n| n == 0);
     run();
     settled("after the keep-alive", &|n| n >= 1);
+    assert_eq!(
+        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
+        Some(0)
+    );
+}
+
+/// What no reference needs is collected (audit A13): once `shards pull` moves a tag to
+/// another image, the daemon removes the old image's blobs, root filesystem and template,
+/// ending its warm VMs, and keeps the new one's, which runs from a template of its own.
+#[test]
+fn what_a_moved_tag_named_is_collected() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (port, _, serving) = registry_of(std::sync::Arc::new(std::sync::Mutex::new(test_image())));
+    let image = format!("127.0.0.1:{port}/test/image:v1");
+    let home = home_with("daemon-collect");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let run = || {
+        let run = run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT);
+        assert_eq!(run.status, Some(0), "{}", run.stderr);
+    };
+    run();
+    run();
+    let listed = |dir: &str| -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(home.join(dir))
+            .map(|d| d.map(|e| e.unwrap().path()).collect())
+            .unwrap_or_default();
+        paths.retain(|p| {
+            let name = p.file_name().unwrap().to_string_lossy();
+            !name.starts_with('.') && !name.contains(".new-")
+        });
+        paths.sort();
+        paths
+    };
+    let (blobs, rootfs, templates) = (
+        listed("images/blobs/sha256"),
+        listed("images/rootfs/v1"),
+        listed("templates"),
+    );
+    assert_eq!(
+        (rootfs.len(), templates.len()),
+        (1, 1),
+        "{rootfs:?} {templates:?}"
+    );
+    let template = templates[0].to_string_lossy().into_owned();
+    eventually("no warm VM", || !processes_with(&template).is_empty());
+
+    *serving.lock().unwrap() = test_image_with(Some(b"moved"));
+    let pulled = run_shards_env(&["pull"], &[image.as_str()], &env, TIMEOUT);
+    assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
+    eventually("the old image was not collected", || {
+        blobs.iter().all(|b| !b.exists()) && !rootfs[0].exists() && !templates[0].exists()
+    });
+    eventually("the old template's VMs outlived it", || {
+        processes_with(&template).is_empty()
+    });
+    let (now_blobs, now_rootfs) = (listed("images/blobs/sha256"), listed("images/rootfs/v1"));
+    assert_eq!(
+        (now_blobs.len(), now_rootfs.len()),
+        (blobs.len(), 1),
+        "{now_blobs:?}"
+    );
+    run();
+    run();
+    assert_eq!(listed("templates").len(), 1, "the new image's template");
+    assert!(
+        listed("images/rootfs/v1") == now_rootfs,
+        "the new image's root filesystem kept"
+    );
     assert_eq!(
         run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
         Some(0)

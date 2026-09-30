@@ -804,7 +804,8 @@ for the exit status.
     - All pools together keep at most `SHARDS_WARM_MAX` (16) VMs ahead of runs: a warm
       VM holds about 20 MB, so about 320 MB, eight templates' pools at the default size.
       A pool that would pass it first ends the ready VMs of the pools least recently
-      claimed from.
+      claimed from. Only a ready VM can be ended, so once a pool's VM becomes ready, the
+      pools claimed from since that are short refill again, and it gives way to them.
     - Settings are counts, checked before the daemon serves: a malformed one, a pool
       larger than all pools may keep, or more than 256 warm VMs (the clients' bound, for
       the same threads and descriptors) stop it, and `shards daemon --detached` says
@@ -823,9 +824,30 @@ for the exit status.
         each application's keep-alive and pre-warming from its inter-arrival times, is
         not taken: the thresholds that say when its histogram is representative are not
         published, and no traces of agents' runs exist here to set them.
-    - **Not yet:** collecting the templates, root filesystems and blobs no tag, template
-      or run still needs; and measuring fleets of 1 to 1,000 templates under bursts and
-      low memory.
+    - **What nothing needs is collected** (`Store::collect`, daemon.rs
+      `collect_garbage`), at the daemon's start and once a pull, by a run or by `shards
+      pull`, has moved a reference (it leaves `images/collect-due`, which the daemon's
+      tick takes).
+      - The roots are the references: each one's manifest, config and layers, and the
+        root filesystem of its layers' ChainID. Every other blob and root filesystem
+        goes, with older versions' records and root filesystems and what `ingest/`
+        holds.
+      - Content in flight is under the store's lease, a shared `flock` of
+        `images/.lease` (flock(2)): a pull holds it until it has recorded its
+        reference, `local` while it may build a root filesystem, and a run's
+        preparation until its VM has its root filesystem. A collection takes it
+        exclusively or not at all, and stays due; it holds the store until it has
+        collected the templates too, so no run begins meanwhile.
+      - A template records its origin, its root filesystem and guest (`origin.json`).
+        One whose root filesystem has gone, that another guest saved, that records no
+        origin, or that a daemon before this one left half saved is removed, and its
+        pool's VMs ended; one this daemon is saving stays.
+      - A running VM keeps what it has open or mapped: removing a file removes its
+        name, not the file (unlink(2)).
+      - It runs on the thread that accepts clients, which wait in the backlog meanwhile,
+        and not while clients wait for descriptors: a file it opened as an accept found
+        none would drop that client on macOS. Beside the accepts it did, 1 time in 20.
+    - **Not yet:** measuring fleets of 1 to 1,000 templates under bursts and low memory.
   - **It keeps its copies of the client's descriptors until the VM says `TAKEN`.**
     XNU's collector of in-flight descriptors flushes a socket in flight that no process
     holds: the client's connection then read end of stream, and 1 run in 13 to 53 never

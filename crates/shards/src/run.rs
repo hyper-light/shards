@@ -17,6 +17,7 @@ use shards_abi::run::Spec;
 use shards_image::oci::RunConfig;
 use shards_image::platform;
 use shards_image::reference::Reference;
+use shards_image::store::Lease;
 use shards_ipc::{Pull, Run};
 use shards_registry::ErrorKind;
 use shards_registry::http::Cancel;
@@ -41,6 +42,9 @@ pub struct Prepared {
     pub spec: Spec,
     /// The command reads the client's stdin.
     pub interactive: bool,
+    /// The image store's lease, held until the run's VM has its root filesystem: no
+    /// collection removes it meanwhile, whatever its reference names by then.
+    pub lease: Option<Lease>,
 }
 
 /// The daemon's half: finds the request's image in `home`, pulling it as `docker run`
@@ -65,6 +69,7 @@ pub fn prepare(
     let asked = request;
     let reference = Reference::parse(&asked.image).map_err(|e| e.to_string())?;
     let store = crate::pull::store(home)?;
+    let lease = store.lease().map_err(|e| e.to_string())?;
     let mut changed = false;
     let found = match asked.pull {
         Pull::Always => None,
@@ -120,6 +125,7 @@ pub fn prepare(
         rootfs: image.rootfs,
         spec,
         interactive: options.interactive,
+        lease: Some(lease),
     })
 }
 
@@ -141,6 +147,46 @@ pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> Path
         .map(|b| format!("{b:02x}"))
         .collect();
     home.join("templates").join(hex)
+}
+
+/// What a template was saved from, recorded in it: its root filesystem and its guest. It
+/// is live while that root filesystem is there and that guest is the current one
+/// (daemon.rs, `collect_garbage`).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct Origin {
+    rootfs: PathBuf,
+    kernel_digest: String,
+    init_digest: String,
+}
+
+impl Origin {
+    const FILE: &str = "origin.json";
+
+    pub fn of(guest: &Guest, rootfs: &Path) -> Origin {
+        Origin {
+            rootfs: rootfs.to_path_buf(),
+            kernel_digest: guest.kernel_digest.clone(),
+            init_digest: guest.init_digest.clone(),
+        }
+    }
+
+    /// Records it in the template `dir`.
+    pub fn write(&self, dir: &Path) -> Result<(), String> {
+        let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(Self::FILE), bytes).map_err(|e| e.to_string())
+    }
+
+    /// What the template `dir` records, if it records it whole.
+    pub fn read(dir: &Path) -> Option<Origin> {
+        let bytes = std::fs::read(dir.join(Self::FILE)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    pub fn live(&self, guest: Option<&Guest>) -> bool {
+        self.rootfs.is_file()
+            && guest
+                .is_some_and(|g| g.kernel_digest == self.kernel_digest && g.init_digest == self.init_digest)
+    }
 }
 
 /// Makes a freshly saved template the template, unless another run's got there first; a

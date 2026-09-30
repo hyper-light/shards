@@ -598,17 +598,28 @@ pub fn tar(entries: &[(&str, u32, u32, Option<&[u8]>)]) -> Vec<u8> {
     out
 }
 
+/// An image a registry serves: its manifest, and its blobs.
+pub type Served = Arc<std::sync::Mutex<(Vec<u8>, Vec<Vec<u8>>)>>;
+
 /// A registry that serves `test/image:v1` (manifest, config, layer) over plain HTTP, and
 /// counts the requests it answers.
 pub fn registry(manifest: Vec<u8>, blobs: Vec<Vec<u8>>) -> (u16, Arc<AtomicUsize>) {
+    let (port, served, _) = registry_of(Arc::new(std::sync::Mutex::new((manifest, blobs))));
+    (port, served)
+}
+
+/// [`registry`], serving what `image` holds whenever it is asked: a test may replace it,
+/// and the tag names another image.
+pub fn registry_of(image: Served) -> (u16, Arc<AtomicUsize>, Served) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let served = Arc::new(AtomicUsize::new(0));
     let count = served.clone();
+    let serving = image.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { return };
-            let (manifest, blobs, count) = (manifest.clone(), blobs.clone(), count.clone());
+            let (image, count) = (serving.clone(), count.clone());
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut out = stream;
@@ -622,6 +633,7 @@ pub fn registry(manifest: Vec<u8>, blobs: Vec<Vec<u8>>) -> (u16, Arc<AtomicUsize
                         header.clear();
                     }
                     count.fetch_add(1, Ordering::SeqCst);
+                    let (manifest, blobs) = image.lock().unwrap().clone();
                     let mut parts = line.split(' ');
                     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
                     let body = if path == "/v2/test/image/manifests/v1"
@@ -655,7 +667,7 @@ pub fn registry(manifest: Vec<u8>, blobs: Vec<Vec<u8>>) -> (u16, Arc<AtomicUsize
             });
         }
     });
-    (port, served)
+    (port, served, image)
 }
 
 /// Serves `body` over plain HTTP on loopback at `/file`, and a redirect to it at

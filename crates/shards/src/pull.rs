@@ -85,6 +85,11 @@ pub fn limits(home: &Path) -> Result<Limits, String> {
     })
 }
 
+/// The file whose being there says a collection is due: a pull moved a reference.
+pub fn collect_due(home: &Path) -> std::path::PathBuf {
+    home.join("images").join("collect-due")
+}
+
 /// This user's image store, `images` in `home`, readable by this user alone.
 pub fn store(home: &Path) -> Result<Store, String> {
     let root = home.join("images");
@@ -178,6 +183,12 @@ pub fn fetch(
     let pulled = pull::pull(&registry, &store, reference, &platform::guest(), &limits, report)
         .map_err(|e| e.to_string())?;
     let same = before.as_ref() == Some(&pulled.manifest);
+    // What the reference named before may be needed by nothing now: the daemon collects
+    // it (daemon.rs, `collect_garbage`).
+    if !same {
+        let due = collect_due(home);
+        std::fs::write(&due, b"").map_err(|e| format!("{}: {e}", due.display()))?;
+    }
     Ok((pulled, same))
 }
 

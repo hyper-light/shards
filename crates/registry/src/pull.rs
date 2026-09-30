@@ -66,6 +66,8 @@ pub fn pull(
     report: &(dyn Fn(Event<'_>) + Sync),
 ) -> Result<Pulled, Error> {
     let name = reference.familiar();
+    // What it writes is recorded only at its end: no collection runs meanwhile.
+    let _lease = store.lease()?;
     let top = registry.resolve(store, reference)?;
     let resolved = top.digest()?;
     let (manifest_desc, manifest) = match document(registry, store, &top)? {
@@ -142,6 +144,8 @@ pub fn local(
     targets: &[Target],
     limits: &Limits,
 ) -> Result<Option<Pulled>, Error> {
+    // A root filesystem it builds again is its reference's: no collection runs meanwhile.
+    let _lease = store.lease()?;
     let Some(manifest_desc) = store.tagged(&reference.to_string())? else {
         return Ok(None);
     };

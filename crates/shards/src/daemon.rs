@@ -298,6 +298,8 @@ struct Daemon {
     spare: Mutex<Spare>,
     /// Numbers the templates a run saves before they become the template.
     saved: AtomicU64,
+    /// A collection is due: at start, and once a pull has moved a reference (audit A13).
+    collect: AtomicBool,
     /// The home's lock, held while this daemon lives.
     home_lock: File,
 }
@@ -617,6 +619,7 @@ impl Daemon {
             removing: Mutex::default(),
             spare: Mutex::default(),
             saved: AtomicU64::new(0),
+            collect: AtomicBool::new(true),
             home_lock,
         }
     }
@@ -695,6 +698,12 @@ impl Daemon {
                 }
             }
             self.age_pools();
+            // A collection opens files: not while clients wait for descriptors, whose
+            // accept macOS drops if one is taken meanwhile. On this thread, so no accept
+            // runs beside it: a client arriving waits in the backlog.
+            if starved_since.is_none() {
+                self.collect_if_due();
+            }
             let quiet = self.busy.load(Ordering::SeqCst) == 0 && lock(&self.runs).is_empty();
             let idle = quiet && lock(&self.last).elapsed() >= self.idle;
             if !self.closed.load(Ordering::SeqCst) && (self.stopping.load(Ordering::SeqCst) || idle) {
@@ -913,7 +922,7 @@ impl Daemon {
         }
         let prepared = crate::run::prepare(&run, &self.home, &say, &cancel);
         lock(&self.preparing).remove(&number);
-        let prepared = match prepared {
+        let mut prepared = match prepared {
             Ok(prepared) => prepared,
             Err(e) => {
                 refuse(if cancel.is_cancelled() {
@@ -960,7 +969,10 @@ impl Daemon {
         payload.extend(self.logs.files.to_be_bytes());
         payload.extend(prepared.spec.encode());
         let detached = run.detach.then_some(conn);
-        match self.start_run(&id, &payload, &fds, detached, || self.warm_for(&prepared, &say)) {
+        let started = self.start_run(&id, &payload, &fds, detached, || self.warm_for(&prepared, &say));
+        // Its VM has its root filesystem, or never will.
+        drop(prepared.lease.take());
+        match started {
             Ok(inbox) => Some((id, inbox)),
             Err(said) => {
                 refuse(&said);
@@ -1706,6 +1718,11 @@ impl Daemon {
         let n = self.saved.fetch_add(1, Ordering::Relaxed);
         let fresh = dir.with_extension(format!("new-{}-{n}", std::process::id()));
         let ready = self.cold(&cfg, &prepared.rootfs, Some(&fresh));
+        if ready.is_ok()
+            && let Err(e) = crate::run::Origin::of(guest, &prepared.rootfs).write(&fresh)
+        {
+            log(format!("{}: {e}", fresh.display()));
+        }
         crate::run::settle(&fresh, &dir);
         if ready.is_ok() && shards_vmm::snapshot::exists(&dir) {
             self.refill(&mut lock(&self.state), &dir);
@@ -1770,6 +1787,11 @@ impl Daemon {
     /// all pools together, after evicting the ready VMs of the pools least recently
     /// claimed from.
     fn refill(self: &Arc<Self>, state: &mut State, dir: &Path) {
+        // A template collected is restored no more.
+        if !shards_vmm::snapshot::exists(dir) {
+            state.pools.remove(dir);
+            return;
+        }
         let (for_runs, ahead) = {
             let pool = state.pools.entry(dir.to_path_buf()).or_default();
             if pool.failures >= MAX_FAILURES {
@@ -1804,6 +1826,85 @@ impl Daemon {
         }
     }
 
+    /// Collects if a collection is due: it stays due until one has run, which it cannot
+    /// while any run is being prepared.
+    fn collect_if_due(&self) {
+        // A pull, here or by `shards pull`, says so (pull.rs, `collect_due`).
+        let due = crate::pull::collect_due(&self.home);
+        if std::fs::remove_file(&due).is_ok() {
+            self.collect.store(true, Ordering::SeqCst);
+        }
+        if !self.collect.load(Ordering::SeqCst) {
+            return;
+        }
+        match self.collect_garbage() {
+            Ok(true) => self.collect.store(false, Ordering::SeqCst),
+            Ok(false) => {}
+            Err(e) => {
+                log(format!("collecting: {e}"));
+                self.collect.store(false, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Removes what nothing needs (audit A13): the image store's content no reference
+    /// needs (`Store::collect`), then the templates whose root filesystem has gone, that
+    /// another guest saved, or that record no origin, ending their pools, and templates a
+    /// daemon before this one left half saved. Whether it ran: not while a run is being
+    /// prepared, which holds the store's lease.
+    fn collect_garbage(&self) -> Result<bool, String> {
+        let began = Instant::now();
+        let store = crate::pull::store(&self.home)?;
+        // Held whole until the templates are done: no run begins meanwhile.
+        let Some((collected, _whole)) = store.collect().map_err(|e| e.to_string())? else {
+            return Ok(false);
+        };
+        if collected != shards_image::store::Collected::default() {
+            log(format!(
+                "collected {} blobs, {} root filesystems and {} files left in ingest/: {} bytes, in {:?}",
+                collected.blobs,
+                collected.rootfs,
+                collected.ingest,
+                collected.bytes,
+                began.elapsed()
+            ));
+        }
+        let guest = crate::guest::in_use(&self.home)?;
+        let templates = self.home.join("templates");
+        let entries = match std::fs::read_dir(&templates) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
+            Err(e) => return Err(format!("{}: {e}", templates.display())),
+        };
+        let ours = format!(".new-{}-", std::process::id());
+        for entry in entries {
+            let dir = entry.map_err(|e| format!("{}: {e}", templates.display()))?.path();
+            let name = dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let live = if name.contains(".new-") {
+                // Being saved by this daemon, or left by one before it.
+                name.contains(&ours)
+            } else {
+                crate::run::Origin::read(&dir).is_some_and(|o| o.live(guest.as_ref()))
+            };
+            if live {
+                continue;
+            }
+            if let Some(mut pool) = lock(&self.state).pools.remove(&dir) {
+                for ready in pool.ready.drain(..) {
+                    let _ = ready.vm.kill(libc::SIGKILL);
+                }
+            }
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => log(format!("collected template {}", dir.display())),
+                Err(e) => log(format!("collecting {}: {e}", dir.display())),
+            }
+        }
+        Ok(true)
+    }
+
     /// Ends the ready VMs of pools unclaimed past their keep-alive, and forgets the pools
     /// that hold nothing (audit A13).
     fn age_pools(&self) {
@@ -1824,6 +1925,24 @@ impl Daemon {
             }
             pool.starting > 0
         });
+    }
+
+    /// Refills the pools claimed from more recently than `dir`'s, whose VM has just become
+    /// ready: one that found no room while `dir`'s was starting, when only ready VMs can
+    /// be ended, takes it now.
+    fn rebalance(self: &Arc<Self>, state: &mut State, dir: &Path) {
+        let Some(since) = state.pools.get(dir).map(|p| p.demand.last()) else {
+            return;
+        };
+        let hotter: Vec<PathBuf> = state
+            .pools
+            .iter()
+            .filter(|(d, p)| d.as_path() != dir && p.demand.last() > since)
+            .map(|(d, _)| d.clone())
+            .collect();
+        for hot in hotter {
+            self.refill(state, &hot);
+        }
     }
 
     /// Room for up to `want` more warm VMs ahead of runs beside `dir`'s: within
@@ -1951,6 +2070,7 @@ impl Daemon {
                             socket,
                             pool: Some(dir.clone()),
                         });
+                        self.rebalance(&mut state, dir);
                     }
                     Err(e) => {
                         log(&e);
@@ -2253,6 +2373,7 @@ mod tests {
                     ..Default::default()
                 },
                 interactive: false,
+                lease: None,
             };
             self.daemon.create(&run, &prepared, &id).unwrap();
             self.daemon.record_arrival(&id);
@@ -2672,6 +2793,75 @@ mod tests {
         assert!(!lock(&t.daemon.waiters).contains_key(&id), "a waiter left behind");
         say(&vm, kind::DONE, &[143]);
         joined(starting.run).unwrap();
+    }
+
+    /// A pool that found no room while a colder pool's VM was starting takes it once that
+    /// VM is ready: only ready VMs can be ended, and the colder one's then is (audit A13).
+    #[test]
+    fn a_colder_pools_vm_ready_gives_way_to_a_hotter_pool() {
+        let mut t = Test::new("rebalance");
+        {
+            let daemon = Arc::get_mut(&mut t.daemon).unwrap();
+            daemon.target = 1;
+            daemon.warm_max = 1;
+        }
+        // Templates of their own, so their pools refill.
+        let (cold, hot) = (t.home.join("cold"), t.home.join("hot"));
+        for dir in [&cold, &hot] {
+            std::fs::create_dir_all(dir.join("g-1")).unwrap();
+            std::fs::write(dir.join("current"), b"g-1\n").unwrap();
+            std::fs::write(dir.join("g-1").join("state"), b"").unwrap();
+        }
+        assert!(
+            shards_vmm::snapshot::exists(&cold),
+            "not a template to the daemon"
+        );
+        let t0 = Instant::now();
+        let (ready, _theirs) = t.warm_vm(Some(cold.to_str().unwrap()));
+        let vm = ready.vm.clone();
+        {
+            let mut state = lock(&t.daemon.state);
+            let pool = state.pools.entry(cold.clone()).or_default();
+            pool.demand.claimed(t0, 1);
+            pool.ready.push_back(ready);
+            state
+                .pools
+                .entry(hot.clone())
+                .or_default()
+                .demand
+                .claimed(t0 + Duration::from_millis(1), 1);
+        }
+        t.daemon.rebalance(&mut lock(&t.daemon.state), &cold);
+        let state = lock(&t.daemon.state);
+        assert!(
+            state.pools[&cold].ready.is_empty(),
+            "the colder pool kept the room"
+        );
+        drop(state);
+        // Ended: its wait returns, as it would not for a sleep of 600 s.
+        assert_eq!(vm.wait().unwrap(), 128 + libc::SIGKILL);
+    }
+
+    /// A collection removes templates a daemon before this one left half saved, and ones
+    /// that record no origin; it keeps the one this daemon is saving, and does nothing
+    /// while a run is being prepared (audit A13).
+    #[test]
+    fn collections_remove_templates_nothing_can_use() {
+        let t = Test::new("collect-templates");
+        let templates = t.home.join("templates");
+        let ours = templates.join(format!("abc.new-{}-0", std::process::id()));
+        let left = templates.join("abc.new-1-0");
+        let unknown = templates.join("def");
+        for dir in [&ours, &left, &unknown] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let lease = crate::pull::store(&t.home).unwrap().lease().unwrap();
+        assert_eq!(t.daemon.collect_garbage(), Ok(false), "collected under a lease");
+        assert!(left.exists() && unknown.exists());
+        drop(lease);
+        assert_eq!(t.daemon.collect_garbage(), Ok(true));
+        assert!(ours.exists(), "a template being saved was collected");
+        assert!(!left.exists() && !unknown.exists());
     }
 
     /// A pool unclaimed past its keep-alive ends its ready VMs and is forgotten; one
