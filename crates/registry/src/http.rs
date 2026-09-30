@@ -82,7 +82,7 @@ impl Cancel {
         let live = self.0.live.lock().unwrap_or_else(PoisonError::into_inner);
         self.0.cancelled.store(true, Ordering::SeqCst);
         for tcp in live.1.values() {
-            let _ = tcp.shutdown(Shutdown::Both);
+            end(tcp);
         }
     }
 
@@ -103,7 +103,7 @@ impl Cancel {
     fn watch(&self, tcp: &TcpStream) -> Watch {
         let mut live = self.0.live.lock().unwrap_or_else(PoisonError::into_inner);
         if self.is_cancelled() {
-            let _ = tcp.shutdown(Shutdown::Both);
+            end(tcp);
             return Watch(None);
         }
         let Ok(copy) = tcp.try_clone() else {
@@ -113,6 +113,27 @@ impl Cancel {
         live.0 = n.wrapping_add(1);
         live.1.insert(n, copy);
         Watch(Some((self.clone(), n)))
+    }
+}
+
+/// Ends `tcp`'s reads and writes, whichever thread waits in them. A shutdown wakes a read
+/// another thread waits in on Linux and macOS, where Winsock's leaves it waiting (the
+/// cancel test took the 30 s read timeout on Windows), so there the socket's I/O is
+/// cancelled too: `CancelIoEx` cancels a handle's I/O whichever thread issued it, and a
+/// base provider's socket handle is a file handle.
+fn end(tcp: &TcpStream) {
+    let _ = tcp.shutdown(Shutdown::Both);
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        // SAFETY: CancelIoEx on a socket handle `tcp` holds open, with no OVERLAPPED:
+        // it only marks the I/O pending on it cancelled.
+        unsafe {
+            windows_sys::Win32::System::IO::CancelIoEx(
+                tcp.as_raw_socket() as windows_sys::Win32::Foundation::HANDLE,
+                std::ptr::null(),
+            );
+        }
     }
 }
 

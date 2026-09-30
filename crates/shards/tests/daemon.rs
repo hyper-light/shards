@@ -676,10 +676,11 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
     let sock = home.join("daemon.sock");
     let log = home.join("daemon.log");
     let silent: Vec<UnixStream> = (0..64).map(|_| connect_patiently(&sock)).collect();
+    // The daemon's own words: EMFILE's text is the C library's, and musl's differs.
     eventually("the daemon never ran out of descriptors", || {
         std::fs::read_to_string(&log)
             .unwrap_or_default()
-            .contains("accepting: Too many open files")
+            .contains("clients wait until the daemon has room")
     });
     let before = cpu_time(daemon);
     std::thread::sleep(Duration::from_secs(1));
