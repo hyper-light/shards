@@ -12,7 +12,9 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
 - **Base configuration:** `firecracker-x86_64-6.18.config` and
   `firecracker-aarch64-6.18.config`, Firecracker's microVM CI configs at commit
   6f82ac4cf331, unmodified. Crypto self-tests stay on (`CONFIG_CRYPTO_SELFTESTS=y`).
-- **Our changes:** `shards.config`, merged on top. Each line says why. The build fails if
+- **Our changes:** `shards.config`, merged on top, then the architecture's own
+  `shards-<arch>.config` where there is one (`shards-aarch64.config`: a 1,000 Hz tick, PM
+  M66); no option is named by both. Each line says why. The build fails if
   any of them does not survive `make olddefconfig`.
 - **Patches:** `patches/*.patch`, applied in order with no fuzz. Each says what it fixes
   and why:

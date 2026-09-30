@@ -47,19 +47,29 @@ for p in "$repo"/resources/kernel/patches/*.patch; do
     patch -d "$src" -p1 --forward --batch --fuzz=0 --no-backup-if-mismatch <"$p"
 done
 
-fragment=$repo/resources/kernel/shards.config
+# Ours for every architecture, then the architecture's own, if it has one. No option is
+# named by both: each says one thing, and says why where it is.
+fragments=("$repo/resources/kernel/shards.config")
+if [ -e "$repo/resources/kernel/shards-$arch.config" ]; then
+    fragments+=("$repo/resources/kernel/shards-$arch.config")
+fi
+named=$(sed -nE 's/^(CONFIG_[A-Za-z0-9_]+)=.*/\1/p; s/^# (CONFIG_[A-Za-z0-9_]+) is not set$/\1/p' "${fragments[@]}" | sort | uniq -d)
+if [ -n "$named" ]; then
+    echo "named by more than one fragment: $named" >&2
+    exit 1
+fi
 cp "$repo/resources/kernel/firecracker-$arch-6.18.config" "$src/.config"
-(cd "$src" && ARCH=$karch scripts/kconfig/merge_config.sh -m .config "$fragment" >/dev/null)
+(cd "$src" && ARCH=$karch scripts/kconfig/merge_config.sh -m .config "${fragments[@]}" >/dev/null)
 make -C "$src" ARCH=$karch olddefconfig >/dev/null
 
-# Every option the fragment asks for must be in the final config, exactly.
+# Every option the fragments ask for must be in the final config, exactly.
 missing=0
 while IFS= read -r line; do
     case $line in
     CONFIG_*=*) grep -qxF -- "$line" "$src/.config" || { echo "not in .config: $line" >&2; missing=1; } ;;
     "# CONFIG_"*" is not set") grep -qxF -- "$line" "$src/.config" || { echo "not in .config: $line" >&2; missing=1; } ;;
     esac
-done <"$fragment"
+done < <(cat "${fragments[@]}")
 [ $missing -eq 0 ]
 
 # Fixed build metadata, so the same inputs produce the same bytes.

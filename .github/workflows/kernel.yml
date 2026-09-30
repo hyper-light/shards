@@ -78,4 +78,4 @@ jobs:
             exit 0
           fi
           gh release create "$tag" out/* --prerelease --target "$GITHUB_SHA" --title "$tag" --notes \
-            "Linux $version for shards guests: Firecracker's 6.18 microVM configs with resources/kernel/shards.config and the patches in resources/kernel/patches, built at $GITHUB_SHA by scripts/build-kernel-in-builder.sh in the builder resources/kernel/builder.env pins, twice on separate runners with the same result. Toolchains are in toolchain-*.txt; checksums in SHA256SUMS."
+            "Linux $version for shards guests: Firecracker's 6.18 microVM configs with resources/kernel/shards.config, the architecture's shards-<arch>.config and the patches in resources/kernel/patches, built at $GITHUB_SHA by scripts/build-kernel-in-builder.sh in the builder resources/kernel/builder.env pins, twice on separate runners with the same result. Toolchains are in toolchain-*.txt; checksums in SHA256SUMS."
