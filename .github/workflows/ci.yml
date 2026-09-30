@@ -176,6 +176,13 @@ jobs:
         env:
           SHARDS_BENCH_SAMPLES: ${{ github.workspace }}/target/bench-samples
         run: cargo bench --locked -p shards --bench image -- --runs 100 --templates 5
+      # Requests arriving at rising rates, open loop, past what the host serves
+      # (benches/arrival.rs): latency from when each was due, failures, and throughput.
+      - name: Arrival
+        if: always()
+        env:
+          SHARDS_BENCH_SAMPLES: ${{ github.workspace }}/target/bench-samples
+        run: cargo bench --locked -p shards --bench arrival -- --rates 2,5,10,20,40 --secs 10
       - name: Raw samples
         if: always()
         uses: actions/upload-artifact@v7.0.1
