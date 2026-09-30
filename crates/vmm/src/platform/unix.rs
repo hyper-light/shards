@@ -44,19 +44,23 @@ pub fn page_size() -> io::Result<usize> {
     }
 }
 
+/// MAP_NORESERVE, but for Miri, which checks the memory tests' accesses
+/// (docs/research/measurements/access-guard): it maps only plain private anonymous
+/// memory, and has no swap to reserve.
+const fn noreserve() -> libc::c_int {
+    if cfg!(miri) { 0 } else { libc::MAP_NORESERVE }
+}
+
 /// Reserves `len` bytes of zero-filled read/write memory. Pages are materialized on
 /// first touch, so reserved-but-untouched guest RAM costs no host memory.
 pub fn reserve(len: usize) -> io::Result<NonNull<u8>> {
-    // Miri, which checks the memory tests' accesses (docs/research/measurements/
-    // access-guard), maps only plain private anonymous memory, and has no swap to reserve.
-    let noreserve = if cfg!(miri) { 0 } else { libc::MAP_NORESERVE };
     // SAFETY: fresh private anonymous mapping; the caller owns it until `release`.
     let p = unsafe {
         libc::mmap(
             std::ptr::null_mut(),
             len,
             libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | libc::MAP_ANON | noreserve,
+            libc::MAP_PRIVATE | libc::MAP_ANON | noreserve(),
             -1,
             0,
         )
@@ -269,6 +273,11 @@ pub unsafe fn untouched(ptr: *const u8, len: usize, page: usize) -> io::Result<O
 /// `offset`. Pages come from the page cache on first touch; a write copies only the page
 /// written.
 ///
+/// Reserving no commit, as the RAM it replaces reserved none: Linux charges a private
+/// writable mapping at its whole size, so each restored VM was charged its whole RAM
+/// where it had written little, and strict overcommit (mode 2) ignores the flag and keeps
+/// charging it (overcommit-accounting.rst; PM M56).
+///
 /// # Safety
 /// `at..at+len` must be page-aligned, inside a reservation from [`reserve`] that no
 /// hypervisor maps and nothing references yet; `offset` must be page-aligned.
@@ -280,7 +289,7 @@ pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull
             at.as_ptr().cast(),
             len,
             libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | libc::MAP_FIXED,
+            libc::MAP_PRIVATE | libc::MAP_FIXED | noreserve(),
             file.as_raw_fd(),
             offset,
         )

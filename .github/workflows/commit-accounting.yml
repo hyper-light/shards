@@ -3,6 +3,8 @@ name: commit accounting
 # What restored VMs are charged against Linux's commit limit, under each overcommit mode,
 # as shards maps a template's memory today and with MAP_NORESERVE
 # (docs/research/measurements/commit). Runs when the experiment changes, or when asked.
+# The mapping took MAP_NORESERVE after M56: `noreserve.patch` applies to 137afef, where
+# the comparison was made; since then both arms measure the flag.
 on:
   push:
     paths:
@@ -30,7 +32,7 @@ jobs:
       - run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
       - run: sudo chmod 666 /dev/kvm
       - if: matrix.mapping == 'noreserve'
-        run: git apply docs/research/measurements/commit/noreserve.patch
+        run: git apply docs/research/measurements/commit/noreserve.patch || echo 'the mapping has the flag already'
       # Built before any mode changes, so that only the measurement runs under each.
       - run: cargo test --locked --release -p shards --test commit --no-run
       - name: Each overcommit mode

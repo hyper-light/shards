@@ -2011,3 +2011,39 @@ revision before comparing a changed API/implementation.
     the same CPU. Linux's poll(2) has no object to keep; its `pollfd` array is now kept.
   - D05 is not taken: the allocations cost 1.8% of the busy thread, below what reworking
     every device's queue loop would buy.
+
+### M56. What restored VMs are charged against Linux's commit limit
+
+- **Question.** Audit D04: a restore maps its template's memory file private and
+  writable, and Linux accounts such a mapping at its whole size (overcommit-accounting.rst),
+  while a boot's anonymous RAM is mapped MAP_NORESERVE. What does a host of restored VMs
+  get charged, under each overcommit mode, and what would MAP_NORESERVE on the file
+  mapping change?
+- **Method.** `docs/research/measurements/commit/` (`commit.rs`, run as the ignored test
+  `crates/shards/tests/commit.rs`): one template of the `resume` test guest with 256 MiB
+  of RAM, then up to 64 restores held before their start requests. After each,
+  `Committed_AS`; of each, its template mappings' size, resident and private pages, and
+  `VmFlags`. `.github/workflows/commit-accounting.yml` runs it under
+  `vm.overcommit_memory` 0, 1 and 2 (ratio 50), as mapped at 137afef and with
+  `noreserve.patch`. CI's ubuntu-24.04 x86_64 runner: 15,988 MiB of RAM, 3,071 MiB of swap,
+  CommitLimit 11,066 MiB. Runs 36702507669 and its rerun, 2026-09-30.
+- **Results.**
+
+| Mapping | Mode | Held | Commit per VM (MiB, p50 / p99 / max, n) | `VmFlags` | The refusal |
+|---|---|---|---|---|---|
+| as mapped | 0 | 64 of 64 | 258.6 / 258.7 / 258.7, 64 | `ac` | none; Committed_AS 18,523 MiB, over the limit |
+| as mapped | 1 | 64 of 64 | 258.6 / 258.8 / 258.8, 64 | `ac` | none |
+| as mapped | 2 | 34 | 258.7 / 258.8 / 258.8, 34 | `ac` | the 35th: `snapshot memory: ENOMEM` |
+| MAP_NORESERVE | 0 | 64 of 64 | 2.6 / 2.7 / 2.7, 64 | `nr` | none; Committed_AS +171 MiB |
+| MAP_NORESERVE | 1 | 64 of 64 | 2.6 / 2.8 / 2.8, 64 | `nr` | none |
+| MAP_NORESERVE | 2 | 35 | 258.7 / 258.8 / 258.8, 35 | `ac` | the 36th: its fork, ENOMEM |
+
+  Every held VM had 20 KiB of its template's memory resident.
+- **Consequence.** A restore's file mapping is MAP_NORESERVE, as a boot's RAM is:
+  - Under modes 0 and 1, a restored VM is charged its process's own 2.6 MiB where it was
+    charged its whole RAM. Committed_AS no longer runs past the limit on a host that has
+    nearly all of its memory free.
+  - Mode 2 ignores the flag, so a host that asked for strict accounting still has each
+    VM's RAM charged, and refused at the limit.
+  - As for booted VMs, a guest that writes more RAM than the host has meets the OOM
+    killer instead of a refused start: admission by memory is D14's budgets.

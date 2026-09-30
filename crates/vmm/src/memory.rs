@@ -933,6 +933,35 @@ mod tests {
         }
     }
 
+    /// Restored RAM reserves no commit, as booted RAM reserves none: Linux would charge a
+    /// private writable mapping its whole size (PM M56). Strict overcommit, mode 2,
+    /// charges it all the same.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn restored_ram_reserves_no_commit() {
+        let len = 64 << 20;
+        let file = tempfile("noreserve");
+        file.set_len(len as u64).unwrap();
+        let r = GuestMemory::from_file(&[(0, len)], &file).unwrap();
+        assert!(r.file_backed);
+        let start = format!("{:x}-", r.regions[0].host.as_ptr() as usize);
+        let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
+        let entry = smaps.split_inclusive('\n').skip_while(|l| !l.starts_with(&start));
+        let flags = entry
+            .filter_map(|l| l.strip_prefix("VmFlags:"))
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        let strict = std::fs::read_to_string("/proc/sys/vm/overcommit_memory")
+            .unwrap()
+            .trim()
+            == "2";
+        if !strict {
+            assert!(flags.contains(&"nr") && !flags.contains(&"ac"), "{flags:?}");
+        }
+    }
+
     fn tempfile(tag: &str) -> std::fs::File {
         let path = std::env::temp_dir().join(format!("shards-mem-{tag}-{}", std::process::id()));
         let file = std::fs::OpenOptions::new()
