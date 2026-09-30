@@ -100,6 +100,44 @@ fn writev(fd: RawFd, spans: &[Span], max: usize) -> io::Result<usize> {
     }
 }
 
+/// A pipe, close-on-exec and non-blocking: its read end, then its write end. Linux makes
+/// it so at once with pipe2(2), which the seccomp filter allows where musl's pipe() would
+/// be pipe(2), which it does not.
+#[cfg(target_os = "linux")]
+fn nonblocking_pipe() -> io::Result<[OwnedFd; 2]> {
+    let mut fds = [0; 2];
+    // SAFETY: pipe2(2) fills both descriptors on success.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fresh descriptors that nothing else owns.
+    Ok(fds.map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }))
+}
+
+/// A pipe, close-on-exec and non-blocking: macOS has no pipe2(2), so its flags are set
+/// after.
+#[cfg(not(target_os = "linux"))]
+fn nonblocking_pipe() -> io::Result<[OwnedFd; 2]> {
+    let mut fds = [0; 2];
+    // SAFETY: pipe(2) fills both descriptors on success.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fresh descriptors that nothing else owns.
+    let owned = fds.map(|fd| unsafe { OwnedFd::from_raw_fd(fd) });
+    for fd in fds {
+        // SAFETY: fcntl(2) on our own descriptors.
+        let ok = unsafe {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == 0
+                && libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) == 0
+        };
+        if !ok {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(owned)
+}
+
 /// A self-pipe: vCPU threads write a byte to wake the worker out of poll(2).
 #[derive(Debug)]
 struct Waker {
@@ -109,24 +147,7 @@ struct Waker {
 
 impl Waker {
     fn new() -> io::Result<Waker> {
-        let mut fds = [0; 2];
-        // SAFETY: pipe(2) fills both descriptors on success.
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let [r, w] = fds;
-        // SAFETY: fresh descriptors that nothing else owns.
-        let (read, write) = unsafe { (OwnedFd::from_raw_fd(r), OwnedFd::from_raw_fd(w)) };
-        for fd in [r, w] {
-            // SAFETY: fcntl(2) on our own descriptors.
-            let ok = unsafe {
-                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == 0
-                    && libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) == 0
-            };
-            if !ok {
-                return Err(io::Error::last_os_error());
-            }
-        }
+        let [read, write] = nonblocking_pipe()?;
         Ok(Waker { read, write })
     }
 
