@@ -333,22 +333,36 @@ impl Vm {
 #[derive(Debug, Clone)]
 pub struct Tsc(sys::WeakVcpu);
 
+/// Where a restored TSC starts: its offset and value in a vCPU's saved state, all a
+/// release needs of it once the state is restored (audit D03).
+#[derive(Debug, Clone, Copy)]
+pub struct TscStart {
+    offset: u64,
+    value: u64,
+}
+
+impl VcpuState {
+    /// Where this vCPU's TSC starts, if the snapshot kept it.
+    pub fn tsc_start(&self) -> Option<TscStart> {
+        let &(_, value) = self.msrs.iter().find(|&&(index, _)| index == MSR_IA32_TSC)?;
+        Some(TscStart {
+            offset: self.tsc_offset?,
+            value,
+        })
+    }
+}
+
 impl Tsc {
-    /// Starts this vCPU's TSC now at the value `st` saved, and returns what every vCPU
-    /// adds to the offset `st` saved for it to stay as far from this one as it was
+    /// Starts this vCPU's TSC now at the value `start` saved, and returns what every vCPU
+    /// adds to the offset it saved for it to stay as far from this one as it was
     /// ([`Vcpu::resume_tsc`]). The first TSC written in a VM is taken as given, since
     /// KVM matches a write to others only once one has been made. `None` once the vCPU
     /// has gone.
-    pub fn restart(&self, st: &VcpuState) -> Result<Option<u64>> {
+    pub fn restart(&self, start: TscStart) -> Result<Option<u64>> {
         let Some(fd) = self.0.upgrade() else {
             return Ok(None);
         };
-        let (Some(offset), Some(&(_, value))) = (
-            st.tsc_offset,
-            st.msrs.iter().find(|&&(index, _)| index == MSR_IA32_TSC),
-        ) else {
-            return Err(Error::Guest("the snapshot kept no TSC to start from".into()));
-        };
+        let TscStart { offset, value } = start;
         if fd
             .set_msrs(&[(MSR_IA32_TSC, value)])
             .map_err(call("KVM_SET_MSRS"))?

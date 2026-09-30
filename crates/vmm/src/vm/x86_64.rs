@@ -524,11 +524,47 @@ pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
 }
 
 /// How many pages of its working set a restored machine mapped ahead.
-pub fn prefetched(start: &Start) -> usize {
+/// What a machine keeps of its [`Start`] once its vCPUs are set up, for its release and
+/// its diagnostics; the rest is dropped (audit D03).
+#[derive(Debug)]
+pub struct Kept {
+    /// A restore's: vCPU 0's TSC, and where the snapshot has it start.
+    tsc: Option<(hv::Tsc, Option<hv::TscStart>)>,
+    prefetched: usize,
+}
+
+/// What `start` leaves the running machine, once every vCPU is set up.
+pub fn keep(start: &Start) -> Kept {
     match start {
-        Start::Restore(r) => r.prefetched.get().copied().unwrap_or(0),
-        Start::Boot(_) => 0,
+        Start::Restore(r) => Kept {
+            tsc: r
+                .tsc
+                .get()
+                .map(|tsc| (tsc.clone(), r.vcpus.first().and_then(hv::VcpuState::tsc_start))),
+            prefetched: r.prefetched.get().copied().unwrap_or(0),
+        },
+        Start::Boot(_) => Kept {
+            tsc: None,
+            prefetched: 0,
+        },
     }
+}
+
+/// The bytes a restore's start holds, by part: its vCPU states (their inline size),
+/// its interrupt controller and device state, and its working set.
+pub fn start_bytes(start: &Start) -> Option<[usize; 3]> {
+    let Start::Restore(r) = start else {
+        return None;
+    };
+    Some([
+        r.vcpus.capacity() * std::mem::size_of::<hv::VcpuState>(),
+        r.devices.capacity(),
+        r.working_set.capacity() * std::mem::size_of::<hv::Touch>(),
+    ])
+}
+
+pub fn prefetched(kept: &Kept) -> usize {
+    kept.prefetched
 }
 
 /// Creates vCPU `index` and puts it where `start` says: the boot protocol's registers for
@@ -588,13 +624,11 @@ pub fn finish(vm: &hv::Vm, bus: &Bus, vmgenid: &Finish, start: &Start) -> Result
 /// on from the snapshot with no jump, as far from the others' as it was (as KVM documents
 /// restoring TSCs, Documentation/virt/kvm/devices/vcpu.rst §4, less the time between,
 /// which a snapshot's guest does not see). kvmclock came back with the VM's state.
-pub fn release_offset(start: &Start) -> Result<Option<u64>, String> {
-    let Start::Restore(r) = start else {
-        return Ok(None);
-    };
-    match (r.tsc.get(), r.vcpus.first()) {
-        (Some(tsc), Some(first)) => tsc.restart(first).map_err(|e| format!("the TSC: {e}")),
-        _ => Ok(None),
+pub fn release_offset(kept: &Kept) -> Result<Option<u64>, String> {
+    match &kept.tsc {
+        Some((tsc, Some(start))) => tsc.restart(*start).map_err(|e| format!("the TSC: {e}")),
+        Some((_, None)) => Err("the TSC: the snapshot kept no TSC to start from".into()),
+        None => Ok(None),
     }
 }
 

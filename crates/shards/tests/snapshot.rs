@@ -80,6 +80,17 @@ fn restore(dir: &Path) -> Run {
     run_shards(&["vm", "restore"], &[dir.to_str().unwrap()], TIMEOUT)
 }
 
+/// [`restore`], logging at `info`, which says what the restore dropped once set up.
+fn restore_logged(dir: &Path) -> Run {
+    let info = std::ffi::OsStr::new("info");
+    common::run_shards_env(
+        &["vm", "restore"],
+        &[dir.to_str().unwrap()],
+        &[("SHARDS_LOG", info)],
+        TIMEOUT,
+    )
+}
+
 #[test]
 fn every_restore_continues_the_guest_where_it_asked_for_the_snapshot() {
     if cannot_run_vms() || cannot_snapshot() {
@@ -100,8 +111,13 @@ fn every_restore_continues_the_guest_where_it_asked_for_the_snapshot() {
 
     let mut randoms = Vec::new();
     for i in 0..3 {
-        let r = restore(&s.snapshot());
+        let r = restore_logged(&s.snapshot());
         assert_eq!(r.status, Some(0), "restore {i}: {r}");
+        // What only setting the vCPUs up needs goes before the guest runs (audit D03).
+        assert!(
+            r.stderr.contains("dropped the restore's state"),
+            "restore {i}: {r}"
+        );
         assert!(r.stdout.contains("generation=1"), "restore {i}: {r}");
         assert!(r.stdout.contains("SHARDS-TEST PASS"), "restore {i}: {r}");
         assert!(r.marker_us(RESUMED).is_some(), "restore {i}: {r}");

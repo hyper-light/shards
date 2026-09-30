@@ -363,11 +363,44 @@ pub fn recorder(_m: &Machine) -> Option<Recorder> {
 }
 
 /// How many pages of its working set a restored machine prefetched.
-pub fn prefetched(start: &Start) -> usize {
+/// What a machine keeps of its [`Start`] once its vCPUs are set up, for its release and
+/// its diagnostics; the rest is dropped (audit D03).
+#[derive(Debug)]
+pub struct Kept {
+    /// A restore's guest counter at its snapshot.
+    counter: Option<u64>,
+    prefetched: usize,
+}
+
+/// What `start` leaves the running machine, once every vCPU is set up.
+pub fn keep(start: &Start) -> Kept {
     match start {
-        Start::Restore(r) => r.prefetched.get().copied().unwrap_or(0),
-        Start::Boot(_) => 0,
+        Start::Restore(r) => Kept {
+            counter: Some(r.counter),
+            prefetched: r.prefetched.get().copied().unwrap_or(0),
+        },
+        Start::Boot(_) => Kept {
+            counter: None,
+            prefetched: 0,
+        },
     }
+}
+
+/// The bytes a restore's start holds, by part: its vCPU states (their inline size),
+/// its interrupt controller and device state, and its working set.
+pub fn start_bytes(start: &Start) -> Option<[usize; 3]> {
+    let Start::Restore(r) = start else {
+        return None;
+    };
+    Some([
+        r.vcpus.capacity() * std::mem::size_of::<VcpuState>(),
+        r.gic.capacity() + r.devices.capacity(),
+        r.working_set.capacity() * std::mem::size_of::<hv::Touch>(),
+    ])
+}
+
+pub fn prefetched(kept: &Kept) -> usize {
+    kept.prefetched
 }
 
 /// A machine that resumes `snap`, with guest RAM mapped copy-on-write from `memory_file`,
@@ -483,11 +516,10 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu, 
 
 /// For a restore, the counter offset every vCPU applies at release, taken now so the
 /// guest counter continues from the snapshot.
-pub fn release_offset(start: &Start) -> Result<Option<u64>, String> {
-    Ok(match start {
-        Start::Restore(r) => Some(hv::host_counter().wrapping_sub(r.counter)),
-        Start::Boot(_) => None,
-    })
+pub fn release_offset(kept: &Kept) -> Result<Option<u64>, String> {
+    Ok(kept
+        .counter
+        .map(|counter| hv::host_counter().wrapping_sub(counter)))
 }
 
 pub fn set_counter_offset(vcpu: &mut hv::Vcpu, offset: u64) -> Result<(), String> {

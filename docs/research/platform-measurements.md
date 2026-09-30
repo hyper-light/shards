@@ -2047,3 +2047,26 @@ revision before comparing a changed API/implementation.
     VM's RAM charged, and refused at the limit.
   - As for booted VMs, a guest that writes more RAM than the host has meets the OOM
     killer instead of a refused start: admission by memory is D14's budgets.
+
+### M58. What a restore holds only to set its vCPUs up
+
+- **Question.** Audit D03: a restored machine kept its whole start, vCPU states,
+  interrupt-controller and device state, and working set, for as long as it ran; every
+  warm VM in a pool held it. How much is it, and what does dropping it give back?
+- **Method.** The start is dropped once every vCPU is set up and the machine finished,
+  and a restore at `info` reports its parts' capacities, checking that nothing holds it
+  still. A template of the `resume` test guest (256 MiB, 1 vCPU, no working set) was
+  restored 3 times. Then 5 held restores from each of the builds before and after this
+  change, alternating: their `footprint -p` phys_footprint. 2026-09-30, this machine.
+- **Results.**
+  - Each restore dropped 864 bytes of vCPU state (its inline size) and 126,453 bytes of
+    interrupt-controller and device state. A working set adds 16 bytes an entry: about
+    62 KB for M33's sets of 3,500 to 3,900.
+  - Held footprint (KB): before 5,232 / 5,281 / 5,569 / 5,841 / 5,969; after 5,296 /
+    5,328 / 5,520 / 5,616 / 5,937. The medians differ by 49 KB, within the spread.
+- **Consequence.** The start's state is freed before the guest runs, so the VM's own
+  later allocations reuse it; malloc keeps its pages rather than returning them, so a
+  held VM's footprint does not visibly shrink. The working-set decoder's second vector
+  is reserved fallibly, as its first was. The transient buffers the prefetch builds
+  (HVF's scratch code and tables, KVM's page runs) are freed before the guest runs and
+  are bounded by the working set, so they are left as they are.

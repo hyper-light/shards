@@ -592,7 +592,11 @@ fn decode_working_set(bytes: &[u8], page: u64, max_pages: usize) -> codec::Resul
     })?;
     r.finish()?;
     let aligned = pages.iter().all(|t| page.is_power_of_two() && t.gpa % page == 0);
-    let mut gpas: Vec<u64> = pages.iter().map(|t| t.gpa).collect();
+    // Reserved as the entries were: a set the host cannot hold is refused, not an abort.
+    let mut gpas: Vec<u64> = Vec::new();
+    gpas.try_reserve_exact(pages.len())
+        .map_err(|e| DecodeError(format!("a working set of {} pages: {e}", pages.len())))?;
+    gpas.extend(pages.iter().map(|t| t.gpa));
     gpas.sort_unstable();
     let distinct = gpas.windows(2).all(|w| matches!(w, [a, b] if a != b));
     if !aligned || !distinct {
