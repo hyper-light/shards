@@ -104,11 +104,14 @@ pub struct Node {
     pub meta: Meta,
 }
 
-/// A directory tree to write. Nodes removed from it stay in the arena but are not
-/// written: only what the root reaches is.
+/// A directory tree to write. Nodes removed from it stay in the arena, unwritten, until
+/// [`Tree::compact`]: only what the root reaches is written.
 #[derive(Debug, Clone)]
 pub struct Tree {
     nodes: Vec<Node>,
+    /// Entries replaced or removed since the last compaction: what may have left nodes
+    /// unreachable.
+    dropped: usize,
 }
 
 fn check_name(name: &[u8]) -> Result<(), Error> {
@@ -136,6 +139,63 @@ impl Tree {
                 kind: Kind::Dir(BTreeMap::new()),
                 meta: root,
             }],
+            dropped: 0,
+        }
+    }
+
+    /// How many nodes the arena holds, reachable or not.
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    /// Drops the nodes the root no longer reaches, and renumbers the rest from the root,
+    /// depth first, so ids held from before mean nothing after. A node with several
+    /// names, a hard link, stays one node (audit D11). Nothing is done if no entry was
+    /// replaced or removed since the last compaction.
+    pub fn compact(&mut self) {
+        if self.dropped == 0 {
+            return;
+        }
+        self.dropped = 0;
+        const NONE: NodeId = NodeId::MAX;
+        let mut new_id = vec![NONE; self.nodes.len()];
+        let mut order: Vec<NodeId> = Vec::new();
+        let mut stack = vec![Tree::ROOT];
+        while let Some(id) = stack.pop() {
+            match new_id.get_mut(id) {
+                Some(slot) if *slot == NONE => *slot = order.len(),
+                _ => continue,
+            }
+            order.push(id);
+            if let Some(Node {
+                kind: Kind::Dir(entries),
+                ..
+            }) = self.nodes.get(id)
+            {
+                stack.extend(entries.values().rev().copied());
+            }
+        }
+        let mut old = std::mem::take(&mut self.nodes);
+        self.nodes.reserve_exact(order.len());
+        for id in order {
+            let Some(slot) = old.get_mut(id) else { continue };
+            let mut node = std::mem::replace(
+                slot,
+                Node {
+                    kind: Kind::Fifo,
+                    meta: Meta::default(),
+                },
+            );
+            if let Kind::Dir(entries) = &mut node.kind {
+                for child in entries.values_mut() {
+                    *child = new_id.get(*child).copied().unwrap_or(NONE);
+                }
+            }
+            self.nodes.push(node);
         }
     }
 
@@ -168,7 +228,9 @@ impl Tree {
         let id = self.nodes.len();
         self.entries_mut(dir)?;
         self.nodes.push(node);
-        self.entries_mut(dir)?.insert(name.to_vec(), id);
+        if self.entries_mut(dir)?.insert(name.to_vec(), id).is_some() {
+            self.dropped += 1;
+        }
         Ok(id)
     }
 
@@ -180,19 +242,25 @@ impl Tree {
             Some(Kind::Dir(_)) => return err("hard link to a directory"),
             Some(_) => {}
         }
-        self.entries_mut(dir)?.insert(name.to_vec(), target);
+        if self.entries_mut(dir)?.insert(name.to_vec(), target).is_some() {
+            self.dropped += 1;
+        }
         Ok(())
     }
 
     /// Removes the entry `name` from `dir`, returning what it named.
     pub fn remove(&mut self, dir: NodeId, name: &[u8]) -> Option<NodeId> {
-        self.entries_mut(dir).ok()?.remove(name)
+        let removed = self.entries_mut(dir).ok()?.remove(name);
+        self.dropped += usize::from(removed.is_some());
+        removed
     }
 
     /// Removes every entry of `dir`.
     pub fn clear(&mut self, dir: NodeId) {
         if let Ok(entries) = self.entries_mut(dir) {
+            let n = entries.len();
             entries.clear();
+            self.dropped += n;
         }
     }
 }
@@ -1098,6 +1166,49 @@ mod tests {
         assert!(after.len() < before, "a removed 1 MiB file still takes space");
         let r = Reader::open(&after);
         assert!(r.dir(&r.lookup("etc")).iter().all(|(n, _, _)| n != b"f1048581"));
+    }
+
+    /// Compacting drops only what the root no longer reaches: the image is the same
+    /// bytes, the arena holds its reachable nodes alone, and a node that loses one of its
+    /// two names keeps the other (audit D11).
+    #[test]
+    fn compaction_drops_history_and_keeps_the_image() {
+        let (mut tree, mut mem) = sample();
+        let reachable = tree.len();
+        // Nothing replaced or removed: nothing to do, and ids still hold.
+        let etc = tree.child(Tree::ROOT, b"etc").unwrap();
+        tree.compact();
+        assert_eq!(
+            (tree.len(), tree.child(Tree::ROOT, b"etc")),
+            (reachable, Some(etc))
+        );
+        // Replaced four times over, and a file removed.
+        for generation in 0..4u8 {
+            let node = Node {
+                kind: Kind::Symlink(vec![b'a' + generation; 100]),
+                meta: meta(0o777),
+            };
+            tree.insert(Tree::ROOT, b"again", node).unwrap();
+        }
+        let before = image(&tree, &mut mem);
+        assert_eq!(tree.len(), reachable + 4);
+        tree.compact();
+        // Four symlinks in, three of them replaced.
+        assert_eq!(tree.len(), reachable + 1);
+        assert_eq!(image(&tree, &mut mem), before, "compaction changed the image");
+        // Ids are renumbered: `etc` is found again.
+        let etc = tree.child(Tree::ROOT, b"etc").unwrap();
+        tree.remove(etc, b"f1").unwrap();
+        tree.compact();
+        assert_eq!(tree.len(), reachable);
+        // The hard link's other name keeps its node.
+        let etc = tree.child(Tree::ROOT, b"etc").unwrap();
+        tree.remove(etc, b"f4097").unwrap();
+        tree.compact();
+        let after = image(&tree, &mut mem);
+        let r = Reader::open(&after);
+        let hard = r.lookup("hardlink");
+        assert_eq!((hard.nlink, r.data(&hard).len()), (1, 4097));
     }
 
     #[test]

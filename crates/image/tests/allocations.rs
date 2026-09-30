@@ -170,3 +170,52 @@ fn what_writing_ten_thousand_files_allocates() {
         );
     }
 }
+
+/// What a tree retains of its history (audit D11): 10,000 files with a 1,024-byte xattr
+/// each, inserted once, then over themselves four times, as layers replacing them would;
+/// the requested live bytes before and after compacting, beside one generation's.
+#[test]
+fn a_compacted_tree_holds_the_image_not_its_history() {
+    let live = || LIVE.with(Cell::get);
+    let build = |generations: usize| {
+        let mut t = tree(10_000, 0, 1024);
+        let dir = t.child(Tree::ROOT, b"files").unwrap();
+        for _ in 1..generations {
+            for i in 0..10_000 {
+                let mut m = Meta {
+                    mode: 0o644,
+                    ..Meta::default()
+                };
+                m.xattrs.insert(b"user.big".to_vec(), vec![7; 1024]);
+                let data = DataRef { source: 0, offset: 0 };
+                t.insert(
+                    dir,
+                    format!("file-{i:05}").as_bytes(),
+                    Node {
+                        kind: Kind::File { size: 0, data },
+                        meta: m,
+                    },
+                )
+                .unwrap();
+            }
+        }
+        t
+    };
+    LIVE.with(|c| c.set(0));
+    COUNTING.with(|c| c.set(true));
+    let one = build(1);
+    let one_live = live();
+    drop(one);
+    let base = live();
+    let mut five = build(5);
+    let before = live() - base;
+    five.compact();
+    let after = live() - base;
+    COUNTING.with(|c| c.set(false));
+    println!("one generation {one_live} bytes; five: {before} before compacting, {after} after");
+    assert!(
+        after <= one_live + one_live / 10,
+        "{after} bytes kept of {one_live}"
+    );
+    assert!(before > 4 * one_live, "the history was not there to drop");
+}

@@ -2116,3 +2116,20 @@ revision before comparing a changed API/implementation.
   keep their blocks as ends among their sorted entries; pads come from one static
   block of zeros. What remains is one vector per inode with xattrs, which sorts its
   names into EROFS's order, and the layout of the inodes themselves.
+
+### M61. What an image's tree holds of the layers that replaced it
+
+- **Question.** Audit D11: the tree's arena only grew. Nodes that a later layer replaced
+  or whited out stayed allocated, with their names, xattrs and link targets, while the
+  writer wrote only what the root reaches. How much does that hold, and what does
+  compacting between layers give back?
+- **Method.** `crates/image/tests/allocations.rs`,
+  `a_compacted_tree_holds_the_image_not_its_history`: requested live bytes, counted on
+  this thread, of a tree of 10,000 files with a 1,024-byte xattr each. It is built once,
+  and then inserted over itself four more times, as layers replacing the files would;
+  `Tree::compact` follows. 2026-09-30, this machine.
+- **Results.** One generation: 17,807,029 bytes. Five: 84,779,189 before compacting,
+  17,296,469 after.
+- **Consequence.** The store compacts the tree after each layer. Compaction keeps what
+  the root reaches, a hard-linked node once, renumbered from the root. It costs a walk of
+  the tree, and nothing when the layer replaced or removed nothing.

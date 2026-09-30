@@ -823,6 +823,9 @@ impl Store {
                 BufReader::with_capacity(CHUNK, file),
                 &mut count,
             )?;
+            // What this layer replaced or whited out goes before the next is read, so
+            // the tree holds the image, not its history (audit D11).
+            tree.compact();
             tars.push(tar);
         }
         let files = tars
