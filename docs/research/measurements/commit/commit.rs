@@ -60,7 +60,8 @@ fn hold(snapshot: &Path) -> Result<Child, String> {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap();
+        // At the limit, what fails first is whichever asks first: this process's fork too.
+        .map_err(|e| format!("spawning the restore: {e}"))?;
     let stderr = child.stderr.take().unwrap();
     let (tx, rx) = mpsc::channel();
     // A small stack: under mode 2, near the limit, a restore's RAM is refused well before
@@ -79,7 +80,11 @@ fn hold(snapshot: &Path) -> Result<Child, String> {
         }
         let _ = tx.send(Err(said));
     });
-    reader.unwrap();
+    if let Err(e) = reader {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("its reader thread: {e}"));
+    }
     match rx.recv_timeout(TIMEOUT) {
         Ok(Ok(())) => Ok(child),
         failed => {
