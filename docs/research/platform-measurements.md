@@ -2195,3 +2195,33 @@ revision before comparing a changed API/implementation.
   before. `Handle::wait_for_snapshot` waits for the commit: a warm VM that saved a
   template tells the daemon it is ready, and the daemon settles the template, only after
   it.
+
+### M64. Fleets of restored VMs beside Firecracker's: what each VM costs the host
+
+- **Question.** Audit D14 asks density to be measured as a fleet pays for it, the kernel
+  included, where a lone VM's accounting charges it all the page cache its template
+  shares. What does each of 16 restored VMs held at once cost, shards' against
+  Firecracker's?
+- **Method.** The Firecracker comparison's density rounds (`benches/firecracker.rs`,
+  `density`): 16 restores of each VMM's snapshot of the beating test guest (128 MiB, 1
+  vCPU) held at once, in rounds S F F S S F F S. Each VM gives its PSS, private pages and
+  page tables with its fleet running. Each round gives the host's MemAvailable given up
+  per VM, which counts the kernel's and KVM's memory and leaves out the reclaimable page
+  cache. The envelope pairs each shards VM with the Firecracker VM of the same index in
+  the matching round. CI's ubuntu-24.04 x86_64 runner (AMD EPYC 7763), 3d222b4, run
+  36708222649, 2026-09-30.
+- **Results (per VM; p50, and the envelope's paired median difference with its 95%
+  interval).**
+
+| | shards | Firecracker | shards − Firecracker |
+|---|---|---|---|
+| PSS | 1.9 MiB | 5.7 MiB | −3.8 [−3.8, −3.8] |
+| private pages | 0.7 MiB | 5.0 MiB | −4.3 [−4.3, −4.3] |
+| page tables | 0.1 MiB | 0.2 MiB | −0.1 [−0.1, −0.1] |
+| host MemAvailable given up | 0.2 MiB | 2.5 MiB (3.1 paired) | −2.8 [−3.6, −1.9] |
+
+- **Consequence.** A fleet of shards VMs costs its host less per VM than Firecracker's,
+  on every axis measured. A lone restore's PSS is 2.6 MiB above Firecracker's (M53):
+  its snapshot file's pages, which the page cache holds once for every VM of the
+  template. The envelope's single-restore allowances now say so. The benchmark keeps
+  measuring density, so a regression fails CI as the other rows do.
