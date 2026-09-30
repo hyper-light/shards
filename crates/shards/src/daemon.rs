@@ -1717,7 +1717,7 @@ impl Daemon {
         // first.
         let n = self.saved.fetch_add(1, Ordering::Relaxed);
         let fresh = dir.with_extension(format!("new-{}-{n}", std::process::id()));
-        let ready = self.cold(&cfg, &prepared.rootfs, Some(&fresh));
+        let ready = self.cold(&cfg, &prepared.rootfs, Some((&fresh, &dir)));
         if ready.is_ok()
             && let Err(e) = crate::run::Origin::of(guest, &prepared.rootfs).write(&fresh)
         {
@@ -1810,7 +1810,16 @@ impl Daemon {
         let Some(pool) = pools.get_mut(dir) else {
             return;
         };
-        let args: Vec<OsString> = vec!["restore".into(), dir.into(), "--warm".into(), "3".into()];
+        // Its container logs are the only files of the home it writes (D30).
+        let logs = self.home.join("containers");
+        let args: Vec<OsString> = vec![
+            "restore".into(),
+            dir.into(),
+            "--warm".into(),
+            "3".into(),
+            "--logs-in".into(),
+            logs.into(),
+        ];
         for _ in 0..for_runs + ahead {
             match self.start(&args, For::Pool(dir.to_path_buf())) {
                 Ok(vm) => {
@@ -1987,7 +1996,13 @@ impl Daemon {
 
     /// A VM booted for one run, from `cfg` into `rootfs`, saving a template to `save` on
     /// the way.
-    fn cold(self: &Arc<Self>, cfg: &Config, rootfs: &Path, save: Option<&Path>) -> Result<Ready, String> {
+    /// `save` is where it saves the template, and where the template goes once saved.
+    fn cold(
+        self: &Arc<Self>,
+        cfg: &Config,
+        rootfs: &Path,
+        save: Option<(&Path, &Path)>,
+    ) -> Result<Ready, String> {
         let mut args: Vec<OsString> = vec![
             "run".into(),
             "--kernel".into(),
@@ -2004,10 +2019,20 @@ impl Daemon {
         if let Some(init) = &cfg.init {
             args.extend(["--init".into(), init.into()]);
         }
-        if let Some(dir) = save {
-            args.extend(["--snapshot-dir".into(), dir.into()]);
+        if let Some((fresh, settled)) = save {
+            args.extend([
+                "--snapshot-dir".into(),
+                fresh.into(),
+                "--settles-to".into(),
+                settled.into(),
+            ]);
         }
-        args.extend(["--warm".into(), "3".into()]);
+        args.extend([
+            "--warm".into(),
+            "3".into(),
+            "--logs-in".into(),
+            self.home.join("containers").into(),
+        ]);
         let (tx, rx) = mpsc::channel();
         self.start(&args, For::Run(tx))?;
         // A VM given up on ends as its socket closes, the daemon's end dropped with it.

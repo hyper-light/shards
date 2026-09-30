@@ -158,6 +158,16 @@ impl Identity {
     }
 }
 
+/// The files the snapshot in `dir` restores against, disks then pmem, each with whether
+/// the guest only reads it: what a restore will open, for a sandbox to allow before it
+/// does (shards confine.rs).
+pub fn backing_files(dir: &Path) -> Result<Vec<(PathBuf, bool)>, String> {
+    let pinned = read(dir)?;
+    Ok(backing(&pinned.snapshot.config)
+        .map(|(path, read_only)| (path.to_path_buf(), read_only))
+        .collect())
+}
+
 /// The files backing `config`, disks then pmem, each with whether the guest only reads it.
 fn backing(config: &MachineConfig) -> impl Iterator<Item = (&Path, bool)> {
     config

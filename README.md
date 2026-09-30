@@ -256,6 +256,10 @@ Details are in [docs/benchmarks.md](docs/benchmarks.md).
 | Restore, in a new process | 794 µs | 1.7 ms |
 | Cold boot, to PID 1 | 21.2 ms | 22.2 ms |
 
+Since then every microVM's process confines itself before it starts (on macOS, a sandbox
+that takes about 3.7 ms to set up): a restore in a new process and a cold boot take that
+much longer. A preloaded restore, and a run served by a microVM made ready ahead, do not.
+
 Running a command in an image you have run before takes **3.0 ms** at p50 and 3.4 ms at
 p99, start to exit (`shards run IMAGE exit 0`), where a boot takes 34.8 ms. That is 300
 runs over 10 saved copies, on a Mac running other VMs. Over a third of it is starting the

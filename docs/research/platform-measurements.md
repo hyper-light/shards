@@ -1889,3 +1889,30 @@ revision before comparing a changed API/implementation.
   thing (D30). macOS: a deny-by-default profile the process applies to itself can confine
   it; which paths each of its modes reads and writes (disks, snapshot directories, vsock
   sockets, a warm VM's log) is its design, next.
+
+### M53. What confining a VM process with Seatbelt costs
+
+- **Question.** D30 has each VM process on macOS apply a Seatbelt profile to itself
+  before its VM starts. What does it cost, and where?
+- **Method.** A C program timing libsandbox's `sandbox_compile_string` and
+  `sandbox_apply` apart, and `sandbox_init`, each in a fresh process, for the profile
+  shards builds, a minimal `(deny default)` and `(allow default)`, and five compiles in
+  one process; `confine::tests::a_profile_confines_the_process_to_its_paths` timing
+  `sandbox_init` in 8 processes; `cargo bench --bench restore -- --runs 20` and `--bench
+  image -- --runs 20 --templates 2`, with shards' profile. 2026-09-30, this machine, load
+  about 6.
+- **Results.**
+  - Compiling took 3.5–4.1 ms whatever the profile held, even `(allow default)`, and
+    2.9 ms again in the same process: the cost is the interpreter's. Applying the
+    compiled profile took 22–69 µs. `sandbox_init`, both: 3 984–4 300 µs over 8
+    processes.
+  - With the profile, and the logging daemon's lookup denied: a restore in a new
+    process 5 967 µs at p50 (2 464 µs without, earlier the same day), spawn to exit 19 648
+    µs (6 286 µs). Allowing that one lookup: spawn to exit 9 935 µs, restore 5 941 µs.
+  - Unchanged: a warm VM's request, 164 µs at p50 (160 µs), and a run served from a
+    template, 3 282 µs.
+- **Consequence.** D30 allows the logging daemon's lookup, and applies the profile
+  before a VM starts, which a VM made ready ahead does before its run. A restore in a new
+  process and a cold boot pay the compile, about 3.7 ms. Compiling once in the daemon
+  and applying in the VM would cost the VM tens of microseconds; each VM's profile names
+  its own socket directory, so each still needs a compile of its own.

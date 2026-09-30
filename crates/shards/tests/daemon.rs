@@ -1086,7 +1086,11 @@ fn a_daemon_whose_home_is_removed_exits_without_making_it_again() {
     let home = home("daemon-home-removed", &image);
     let daemon = daemon_pid(&home).expect("a daemon pid");
     let path = home.to_path_buf();
-    std::fs::remove_dir_all(&path).unwrap();
+    // The daemon may be writing in it as it goes, a spare container or a refill: removed
+    // again until it is gone.
+    eventually("the home could not be removed", || {
+        matches!(std::fs::remove_dir_all(&path), Ok(())) || !path.exists()
+    });
     eventually("the daemon outlived its home", || !alive(daemon));
     std::thread::sleep(Duration::from_millis(500));
     let made: Vec<_> = std::fs::read_dir(&path)

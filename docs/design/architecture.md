@@ -1370,12 +1370,24 @@ audit's "Security and test coverage").
   - One filter for every thread: the lists are the union. Per-thread filters, as
     Firecracker keeps, would narrow a vCPU thread to its KVM ioctls; they are the next
     step, as is Landlock for the files it may open.
-- **macOS: a Seatbelt profile the process applies to itself** [PM M52]. App Sandbox
-  does not take a command-line tool on its own, and a profile applied before exec stops
-  dyld; applied by the process after it has loaded, a deny-by-default profile with only
-  sysctl reads and reads of the kernel and init boots a guest. **Not yet:** the profile
-  for each mode: the files it reads (its arguments', a snapshot's backing files), the
-  ones it writes (disks, snapshot directories, a warm VM's log), and its Unix sockets.
+- **macOS: a Seatbelt profile the process applies to itself** [PM M52, M53], just before
+  its VM starts (`vm_run.rs`, `start` and `restore_vm`; `sandbox_init`). App Sandbox does
+  not take a command-line tool on its own, and a profile applied before exec stops dyld.
+  - Denied by default. Allowed: sysctl reads, signals to itself, files' metadata (a path
+    is resolved by stating the directories above it), `/dev/null`, and the logging
+    daemon's lookup, whose denial cost each process about 10 ms as it ended.
+  - Reads: its kernel, initrd, init, pmem and read-only disks, a restore's snapshot
+    directory and the files the snapshot records. Reads and writes: its read-write
+    disks; and under the snapshot directory it saves, the directory its template is
+    moved to once saved (`--settles-to`), its vsock sockets' directory, and a warm VM's
+    container logs (`--logs-in`), the ancestors of these made if they are not there.
+    Unix sockets only in those directories; no other network.
+  - Paths are made whole first: Seatbelt matches a file opened by a relative path as
+    named.
+  - Compiling the profile takes about 3.7 ms, whatever it holds; applying it, tens of
+    microseconds (M53). A VM made ready ahead pays it before its run; a restore in a new
+    process and a cold boot pay it on their way. Compiling in the daemon while a VM
+    restores, and handing it the result, would take it off the VM's way.
 - **Windows:** nothing yet.
 
 ## 3. Components

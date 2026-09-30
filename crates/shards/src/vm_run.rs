@@ -7,7 +7,7 @@
 use std::ffi::OsString;
 use std::fmt::Display;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use shards_vmm::vm::{
@@ -79,6 +79,11 @@ struct Common {
     snapshot_dir: Option<PathBuf>,
     then: AfterSnapshot,
     vsock: Option<PathBuf>,
+    /// `--logs-in DIR`: where a warm VM's container logs are, which it may write in.
+    logs_in: Option<PathBuf>,
+    /// `--settles-to DIR`: where the template it saves is moved once saved, in which it
+    /// then writes the working set it records.
+    settles_to: Option<PathBuf>,
     workload: Options,
     /// Whether a workload option was given.
     workload_options: bool,
@@ -91,6 +96,8 @@ impl Common {
             snapshot_dir: None,
             then: AfterSnapshot::Stop,
             vsock: None,
+            logs_in: None,
+            settles_to: None,
             workload: Options::default(),
             workload_options: false,
         }
@@ -114,6 +121,8 @@ impl Common {
                 }
             }
             "--vsock" => self.vsock = Some(PathBuf::from(value("--vsock")?)),
+            "--logs-in" => self.logs_in = Some(PathBuf::from(value("--logs-in")?)),
+            "--settles-to" => self.settles_to = Some(PathBuf::from(value("--settles-to")?)),
             "-e" | "--env" => w.env.push(text(value("--env")?)?),
             "-w" | "--workdir" => w.workdir = text(value("--workdir")?)?,
             "-u" | "--user" => w.user = text(value("--user")?)?,
@@ -163,6 +172,8 @@ struct Run {
     cfg: Config,
     mode: Mode,
     workload: Options,
+    logs_in: Option<PathBuf>,
+    settles_to: Option<PathBuf>,
 }
 
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
@@ -232,6 +243,8 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             cfg,
             mode: Mode::Warm { rootfs, fd },
             workload: common.workload,
+            logs_in: common.logs_in,
+            settles_to: common.settles_to,
         });
     }
     let mode = match rootfs {
@@ -245,6 +258,8 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         cfg,
         mode,
         workload: common.workload,
+        logs_in: common.logs_in,
+        settles_to: common.settles_to,
     })
 }
 
@@ -253,6 +268,7 @@ struct Restore {
     workload: Options,
     /// `--warm FD`: the daemon's socket.
     warm: Option<i32>,
+    logs_in: Option<PathBuf>,
 }
 
 fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String> {
@@ -315,6 +331,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         cfg,
         workload: common.workload,
         warm,
+        logs_in: common.logs_in,
     })
 }
 
@@ -378,7 +395,7 @@ pub fn run_in(mut cfg: Config, rootfs: PathBuf, workload: &Options) -> ExitCode 
     };
     serve_workload(cfg.vsock.clone(), source, move |vsock| {
         cfg.vsock = Some(vsock);
-        vm::start(&cfg)
+        start(&cfg, None, None)
     })
 }
 
@@ -400,22 +417,24 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         mut cfg,
         mode,
         workload,
+        logs_in,
+        settles_to,
     } = match parsed(parse_run(args), RUN_USAGE) {
         Ok(run) => run,
         Err(code) => return code,
     };
     match mode {
-        Mode::Plain => supervise(vm::start(&cfg), cfg.console, false),
+        Mode::Plain => supervise(start(&cfg, None, None), cfg.console, false),
         Mode::Template(rootfs) => {
             boot_into(&mut cfg, rootfs, true);
             with_vsock(cfg.vsock.clone(), |vsock| {
                 // Restored copies dial the host through this device.
                 cfg.vsock = Some(vsock);
-                supervise(vm::start(&cfg), cfg.console, true)
+                supervise(start(&cfg, None, None), cfg.console, true)
             })
         }
         Mode::Workload(rootfs) => run_in(cfg, rootfs, &workload),
-        Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd),
+        Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd, logs_in, settles_to),
     }
 }
 
@@ -424,12 +443,13 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         mut cfg,
         workload,
         warm,
+        logs_in,
     } = match parsed(parse_restore(args), RESTORE_USAGE) {
         Ok(restore) => restore,
         Err(code) => return code,
     };
     if let Some(fd) = warm {
-        return warm_restore(cfg, fd);
+        return warm_restore(cfg, fd, logs_in);
     }
     if !workload.argv.is_empty() {
         cfg.console = Console::Discard;
@@ -442,10 +462,10 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         };
         return serve_workload(cfg.vsock.clone(), source, move |vsock| {
             cfg.vsock = Some(vsock);
-            vm::restore(&cfg)
+            restore_vm(&cfg, None)
         });
     }
-    let started = vm::restore(&cfg);
+    let started = restore_vm(&cfg, None);
     if cfg.hold
         && let Ok((handle, _)) = &started
     {
@@ -498,7 +518,7 @@ enum Source<'a> {
 
 /// A warm VM's restore: `vm restore DIR --warm FD`.
 #[cfg(unix)]
-fn warm_restore(mut cfg: RestoreConfig, fd: i32) -> ExitCode {
+fn warm_restore(mut cfg: RestoreConfig, fd: i32, logs: Option<PathBuf>) -> ExitCode {
     let daemon = match crate::warm::Link::new(fd) {
         Ok(link) => link,
         Err(e) => {
@@ -509,19 +529,25 @@ fn warm_restore(mut cfg: RestoreConfig, fd: i32) -> ExitCode {
     cfg.console = Console::Discard;
     serve_workload(None, Source::Warm(daemon), move |vsock| {
         cfg.vsock = Some(vsock);
-        vm::restore(&cfg)
+        restore_vm(&cfg, logs.as_deref())
     })
 }
 
 #[cfg(not(unix))]
-fn warm_restore(_: RestoreConfig, _: i32) -> ExitCode {
+fn warm_restore(_: RestoreConfig, _: i32, _: Option<PathBuf>) -> ExitCode {
     report("warm VMs need Unix sockets, which shards does not support on this platform yet");
     ExitCode::from(125)
 }
 
 /// A warm VM's boot: `vm run --rootfs IMAGE [--snapshot-dir DIR] --warm FD`.
 #[cfg(unix)]
-fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: i32) -> ExitCode {
+fn warm_boot(
+    mut cfg: Config,
+    rootfs: PathBuf,
+    fd: i32,
+    logs: Option<PathBuf>,
+    settles_to: Option<PathBuf>,
+) -> ExitCode {
     let daemon = match crate::warm::Link::new(fd) {
         Ok(link) => link,
         Err(e) => {
@@ -534,12 +560,12 @@ fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: i32) -> ExitCode {
     cfg.console = Console::Discard;
     serve_workload(None, Source::Warm(daemon), move |vsock| {
         cfg.vsock = Some(vsock);
-        vm::start(&cfg)
+        start(&cfg, logs.as_deref(), settles_to.as_deref())
     })
 }
 
 #[cfg(not(unix))]
-fn warm_boot(_: Config, _: PathBuf, _: i32) -> ExitCode {
+fn warm_boot(_: Config, _: PathBuf, _: i32, _: Option<PathBuf>, _: Option<PathBuf>) -> ExitCode {
     report("warm VMs need Unix sockets, which shards does not support on this platform yet");
     ExitCode::from(125)
 }
@@ -845,6 +871,112 @@ fn max_rss_kib() -> u64 {
 
 /// Runs a started VM to its end: console, timing report, exit code. A template must end
 /// in its snapshot.
+/// Starts the VM `cfg` describes, once this process has confined itself to the files it
+/// names, the snapshot directory it saves to, its vsock sockets' directory and `logs`
+/// (D30).
+fn start(cfg: &Config, logs: Option<&Path>, settles_to: Option<&Path>) -> Result<(Handle, Running), String> {
+    // Whole paths: Seatbelt matches a file opened by a relative path against its rules
+    // as named, and a snapshot records its files by absolute path anyway.
+    let mut cfg = cfg.clone();
+    for path in [Some(&mut cfg.kernel), cfg.initrd.as_mut(), cfg.init.as_mut()]
+        .into_iter()
+        .flatten()
+        .chain(cfg.pmem.iter_mut())
+        .chain(cfg.disks.iter_mut().map(|d| &mut d.path))
+        .chain(cfg.snapshot.as_mut().map(|p| &mut p.dir))
+        .chain(cfg.vsock.as_mut())
+    {
+        *path = absolute(path)?;
+    }
+    let logs = logs.map(absolute).transpose()?;
+    let (cfg, logs) = (&cfg, logs.as_deref());
+    let mut paths = crate::confine::Paths::default();
+    paths.write_under.extend(settles_to.map(absolute).transpose()?);
+    paths.read.push(cfg.kernel.clone());
+    paths.read.extend(cfg.initrd.iter().cloned());
+    paths.read.extend(cfg.init.iter().cloned());
+    paths.read.extend(cfg.pmem.iter().cloned());
+    for disk in &cfg.disks {
+        let list = if disk.read_only {
+            &mut paths.read
+        } else {
+            &mut paths.write
+        };
+        list.push(disk.path.clone());
+    }
+    written(
+        &mut paths,
+        cfg.snapshot.as_ref().map(|p| p.dir.as_path()),
+        cfg.vsock.as_deref(),
+        logs,
+    );
+    confine(&paths)?;
+    vm::start(cfg)
+}
+
+/// [`start`] for a restore: the snapshot's directory, and the files it restores against.
+fn restore_vm(cfg: &RestoreConfig, logs: Option<&Path>) -> Result<(Handle, Running), String> {
+    let mut cfg = cfg.clone();
+    for path in std::iter::once(&mut cfg.dir)
+        .chain(cfg.snapshot.as_mut().map(|p| &mut p.dir))
+        .chain(cfg.vsock.as_mut())
+    {
+        *path = absolute(path)?;
+    }
+    let logs = logs.map(absolute).transpose()?;
+    let (cfg, logs) = (&cfg, logs.as_deref());
+    let mut paths = crate::confine::Paths::default();
+    paths.read_under.push(cfg.dir.clone());
+    for (path, read_only) in shards_vmm::snapshot::backing_files(&cfg.dir)? {
+        let list = if read_only {
+            &mut paths.read
+        } else {
+            &mut paths.write
+        };
+        list.push(path);
+    }
+    written(
+        &mut paths,
+        cfg.snapshot.as_ref().map(|p| p.dir.as_path()),
+        cfg.vsock.as_deref(),
+        logs,
+    );
+    confine(&paths)?;
+    vm::restore(cfg)
+}
+
+/// `path` made whole against the working directory.
+fn absolute(path: &Path) -> Result<PathBuf, String> {
+    std::path::absolute(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The directories a VM writes in: the snapshot it saves, its vsock sockets', and a warm
+/// VM's container logs.
+fn written(
+    paths: &mut crate::confine::Paths,
+    snapshot: Option<&Path>,
+    vsock: Option<&Path>,
+    logs: Option<&Path>,
+) {
+    paths.write_under.extend(snapshot.map(Path::to_path_buf));
+    paths
+        .write_under
+        .extend(vsock.and_then(Path::parent).map(Path::to_path_buf));
+    paths.write_under.extend(logs.map(Path::to_path_buf));
+}
+
+/// Applies `paths` where the OS confines by path (macOS, D30); Linux's filter is already
+/// on the whole process.
+fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return crate::confine::seatbelt(paths);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = paths;
+        Ok(())
+    }
+}
+
 fn supervise(started: Result<(Handle, Running), String>, console: Console, template: bool) -> ExitCode {
     let (handle, running) = match started {
         Ok(v) => v,
