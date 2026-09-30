@@ -47,8 +47,11 @@ try:
 
     def sample(binary):
         out = subprocess.check_output([binary, *flags, "--out", os.path.join(work, "memory")], text=True)
-        return json.loads(out)["save_us"]
+        got = json.loads(out)
+        peaks.setdefault(binary, []).append(got.get("peak_kib", 0))
+        return got["save_us"]
 
+    peaks = {}
     for binary in arms.values():
         for _ in range(3):
             sample(binary)
@@ -70,7 +73,7 @@ rev = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=repo,
 print(f"host {platform.machine()} {platform.platform()} · revision {rev} + working tree against {args.old}")
 print(f"{args.mib} MiB, a nonzero byte every {args.every} pages" + (", the rest touched" if args.touch_all else ", the rest untouched"))
 for name, v in samples.items():
-    print(f"{name:<4} n {len(v)} p50 {q(v, 50)} p90 {q(v, 90)} p99 {q(v, 99)} max {max(v)} us")
+    print(f"{name:<4} n {len(v)} p50 {q(v, 50)} p90 {q(v, 90)} p99 {q(v, 99)} max {max(v)} us, peak RSS p50 {q(peaks[arms[name]], 50)} KiB")
 diffs = [n - o for n, o in zip(samples["new"], samples["old"])]
 meds = sorted(sorted(random.choices(diffs, k=len(diffs)))[len(diffs) // 2] for _ in range(2000))
 print(f"new - old, paired: median {sorted(diffs)[len(diffs) // 2]} us, 95% [{meds[50]}, {meds[1949]}]")

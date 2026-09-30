@@ -1916,3 +1916,33 @@ revision before comparing a changed API/implementation.
   process and a cold boot pay the compile, about 3.7 ms. Compiling once in the daemon
   and applying in the VM would cost the VM tens of microseconds; each VM's profile names
   its own socket directory, so each still needs a compile of its own.
+
+### M54. Saving RAM the guest never touched, without touching it
+
+- **Question.** Audit D01: a save reads every page to find the zero ones, and reading an
+  untouched anonymous page makes the host give it one. Can a save skip what the guest
+  never touched, and what does asking cost?
+- **Method.** `GuestMemory::save` asks the OS which pages of anonymous RAM were never
+  touched: neither resident nor paged out (macOS `mach_vm_page_range_query`; Linux
+  /proc/self/pagemap's present and swapped bits); those read as zeros, and are skipped
+  unread. On macOS it first asks each map entry's counts (`mach_vm_region`), and asks page
+  by page only where some page is neither. `docs/research/measurements/access-guard/
+  save-ab/run.py HEAD`, 256 MiB with a nonzero byte in every 16th 16 KiB page, the rest
+  untouched or (`--touch-all`) touched and zero; n = 30 fresh processes per arm,
+  alternating; the harness now reports each process's peak RSS. 2026-09-30, this machine.
+- **Results (µs, p50 / p90 / p99; peak RSS p50).**
+
+| RAM besides every 16th page | Before | After | Paired after − before |
+|---|---|---|---|
+| untouched | 25 904 / 26 744 / 29 321; 268 032 KiB | 9 801 / 10 169 / 10 792; 22 352 KiB | −16 066 [−16 277, −15 923] |
+| touched, zero | 14 083 / 14 283 / 15 228; 268 016 KiB | 15 148 / 15 632 / 16 544; 268 000 KiB | +1 032 [+834, +1 175] |
+
+  - Asking page by page for all 16 384 pages cost 4.7 ms where every page was touched;
+    XNU split the 256 MiB mapping into two entries of 128 MiB, whose counts settle it in
+    1.0 ms.
+  - Linux's path is checked by the memory tests on CI's runners; its time is not
+    measured here.
+- **Consequence.** D01's untouched pages are skipped: a template saved from a guest that
+  touched little of its RAM saves in a third of the time, and costs the host its RAM's
+  used pages only, 22 MB where it was 268 MB. RAM the guest used throughout saves 7%
+  slower.

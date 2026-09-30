@@ -127,6 +127,144 @@ pub unsafe fn release(ptr: NonNull<u8>, len: usize) {
     unsafe { libc::munmap(ptr.as_ptr().cast(), len) };
 }
 
+/// Which of the `len / page` pages at `ptr`, anonymous private memory, the process has
+/// never touched: neither resident nor paged out, so reading one would get zeros, the
+/// first touch having never happened. Where the OS cannot say, `None`.
+///
+/// macOS: `mach_vm_page_range_query`, each page's disposition (osfmk/mach/vm_statistics.h
+/// `VM_PAGE_QUERY_*`). Linux: /proc/self/pagemap, each page's present and swapped bits
+/// (Documentation/admin-guide/mm/pagemap.rst); a page read but never written maps the
+/// shared zero page, and is read, as are any the kernel says are there.
+///
+/// # Safety
+/// `ptr..ptr+len` must be memory this process owns, `page`-aligned.
+pub unsafe fn untouched(ptr: *const u8, len: usize, page: usize) -> io::Result<Option<Vec<bool>>> {
+    let pages = len / page;
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn mach_vm_page_range_query(
+                target_map: libc::vm_map_t,
+                address: u64,
+                size: u64,
+                dispositions: u64,
+                dispositions_count: *mut u64,
+            ) -> libc::kern_return_t;
+            /// This task's port, which the SDK's `mach_task_self()` reads (mach/mach_init.h).
+            static mach_task_self_: libc::mach_port_t;
+            fn mach_vm_region(
+                target_task: libc::vm_map_t,
+                address: *mut u64,
+                size: *mut u64,
+                flavor: i32,
+                info: *mut ExtendedInfo,
+                count: *mut u32,
+                object_name: *mut libc::mach_port_t,
+            ) -> libc::kern_return_t;
+        }
+        /// `struct vm_region_extended_info` (mach/vm_region.h), flavor 13.
+        #[repr(C)]
+        #[derive(Default)]
+        struct ExtendedInfo {
+            protection: i32,
+            user_tag: u32,
+            pages_resident: u32,
+            pages_shared_now_private: u32,
+            pages_swapped_out: u32,
+            pages_dirtied: u32,
+            ref_count: u32,
+            shadow_depth: u16,
+            external_pager: u8,
+            share_mode: u8,
+            pages_reusable: u32,
+        }
+        // Whole-entry counts first: a range each of whose map entries has every page
+        // resident or paged out has none untouched, and asking page by page would cost a
+        // fully used RAM its save time (PM M54). XNU splits a large anonymous mapping into
+        // entries of 128 MiB; each is asked in turn.
+        let end = ptr as u64 + len as u64;
+        let mut at = ptr as u64;
+        let all_used = loop {
+            if at >= end {
+                break true;
+            }
+            let (mut address, mut size) = (at, 0u64);
+            let mut info = ExtendedInfo::default();
+            let mut count = (std::mem::size_of::<ExtendedInfo>() / 4) as u32;
+            let mut object = 0;
+            // SAFETY: mach_vm_region(2) filling `info` for the entry at or after `address`.
+            let kr = unsafe {
+                mach_vm_region(
+                    mach_task_self_,
+                    &mut address,
+                    &mut size,
+                    13,
+                    &mut info,
+                    &mut count,
+                    &mut object,
+                )
+            };
+            let inside = address == at && address.saturating_add(size) <= end;
+            let used = u64::from(info.pages_resident) + u64::from(info.pages_swapped_out);
+            if kr != 0 || !inside || size == 0 || used < size / page as u64 {
+                break false;
+            }
+            at = address + size;
+        };
+        if all_used {
+            return Ok(None);
+        }
+        let mut dispositions = vec![0i32; pages];
+        let mut done = 0usize;
+        while done < pages {
+            let mut count = (pages - done) as u64;
+            // SAFETY: a query of our own task's pages into the rest of `dispositions`, as
+            // many as it has room for.
+            let kr = unsafe {
+                mach_vm_page_range_query(
+                    mach_task_self_,
+                    ptr as u64 + (done * page) as u64,
+                    ((pages - done) * page) as u64,
+                    dispositions.as_mut_ptr().add(done) as u64,
+                    &mut count,
+                )
+            };
+            if kr != 0 {
+                return Err(io::Error::other(format!("mach_vm_page_range_query: {kr}")));
+            }
+            if count == 0 {
+                return Ok(None);
+            }
+            done += count as usize;
+        }
+        let seen = libc::VM_PAGE_QUERY_PAGE_PRESENT | libc::VM_PAGE_QUERY_PAGE_PAGED_OUT;
+        Ok(Some(dispositions.iter().map(|d| d & seen == 0).collect()))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::FileExt;
+        const PRESENT: u64 = 1 << 63;
+        const SWAPPED: u64 = 1 << 62;
+        let pagemap = File::open("/proc/self/pagemap")?;
+        let mut bytes = vec![0u8; pages * 8];
+        let first = (ptr as usize / page) as u64 * 8;
+        pagemap.read_exact_at(&mut bytes, first)?;
+        Ok(Some(
+            bytes
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|e| u64::from_le_bytes(*e) & (PRESENT | SWAPPED) == 0)
+                .collect(),
+        ))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (ptr, pages);
+        Ok(None)
+    }
+}
+
 /// Replaces `len` bytes at `at` with a private, copy-on-write mapping of `file` from
 /// `offset`. Pages come from the page cache on first touch; a write copies only the page
 /// written.

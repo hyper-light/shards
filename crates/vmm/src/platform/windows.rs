@@ -155,6 +155,15 @@ pub fn open_in(_dir: &File, _name: &str) -> io::Result<File> {
     ))
 }
 
+/// Which pages of anonymous memory were never touched: Windows is not asked yet, so none
+/// are skipped (unix.rs `untouched`).
+///
+/// # Safety
+/// As unix.rs `untouched`.
+pub unsafe fn untouched(_ptr: *const u8, _len: usize, _page: usize) -> io::Result<Option<Vec<bool>>> {
+    Ok(None)
+}
+
 /// The names in the directory `dir` holds open. No container logs are kept on Windows.
 pub fn names_in(_dir: &File) -> io::Result<Vec<std::ffi::OsString>> {
     Err(io::Error::new(

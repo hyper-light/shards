@@ -92,6 +92,9 @@ impl Region {
 #[derive(Debug)]
 pub struct GuestMemory {
     regions: Vec<Region>,
+    /// Mapped from a file ([`from_file`](Self::from_file)): a page it has not touched holds
+    /// the file's bytes, not zeros.
+    file_backed: bool,
     /// Held by the thread with the [`Access`].
     host: Mutex<()>,
     /// That thread's [`token`], or 0.
@@ -125,6 +128,7 @@ impl GuestMemory {
         // Built incrementally so that Drop unmaps whatever was mapped if a later range fails.
         let mut mem = GuestMemory {
             regions: Vec::with_capacity(ranges.len()),
+            file_backed: false,
             host: Mutex::new(()),
             holder: AtomicUsize::new(0),
         };
@@ -156,7 +160,7 @@ impl GuestMemory {
     /// The file must hold all of them, and must not change while the VM runs: pages the
     /// guest has not yet touched come from it.
     pub fn from_file(ranges: &[(u64, usize)], file: &File) -> io::Result<GuestMemory> {
-        let mem = GuestMemory::anonymous(ranges)?;
+        let mut mem = GuestMemory::anonymous(ranges)?;
         let total = mem.regions.iter().map(|r| r.len as u64).sum::<u64>();
         let have = file.metadata()?.len();
         if have < total {
@@ -171,7 +175,7 @@ impl GuestMemory {
             // SAFETY: a whole region we just reserved: page-aligned, unmapped by any
             // hypervisor, unreferenced; region offsets in the file are page-aligned sums.
             match unsafe { platform::map_file_private(file, offset, r.len, r.host) } {
-                Ok(()) => {}
+                Ok(()) => mem.file_backed = true,
                 Err(e) if e.kind() == io::ErrorKind::Unsupported => {
                     mem.read_file(r.gpa, r.len, file, offset)?;
                 }
@@ -234,11 +238,23 @@ impl GuestMemory {
         file.set_len(0)?;
         let mut offset = 0u64;
         for r in &self.regions {
+            // Pages of anonymous RAM the guest never touched hold zeros, and reading them
+            // would make the host give each one a page (audit D01): the OS says which, where
+            // it can. Not so for a file's pages, which hold the file's bytes.
+            let untouched = if self.file_backed {
+                None
+            } else {
+                // SAFETY: the whole region, which this value owns.
+                unsafe { platform::untouched(r.host.as_ptr(), r.len, page) }?
+            };
             // Where the run of used pages being gathered starts.
             let mut run = None;
-            for start in (0..r.len).step_by(page) {
+            for (i, start) in (0..r.len).step_by(page).enumerate() {
+                let skipped = untouched
+                    .as_ref()
+                    .is_some_and(|u| u.get(i).copied().unwrap_or(false));
                 // SAFETY: the page at `start` lies in this region, which is page-aligned.
-                let used = unsafe { !is_zero(r.host.as_ptr().add(start), page) };
+                let used = !skipped && unsafe { !is_zero(r.host.as_ptr().add(start), page) };
                 match (run, used) {
                     (None, true) => run = Some(start),
                     (Some(first), false) => {
@@ -870,6 +886,50 @@ mod tests {
             let mut kept = [0u8; 4];
             a.read(0x8000_0000 + p as u64, &mut kept).unwrap();
             assert_eq!(&kept, b"kept");
+        }
+    }
+
+    /// A save skips the pages the guest never touched, and does not touch them itself; a
+    /// restore reads back every page as it was: written, written with zeros, or never
+    /// touched (audit D01).
+    #[test]
+    fn a_save_leaves_untouched_ram_untouched() {
+        let p = page_size().unwrap();
+        let len = 64 * p;
+        let m = GuestMemory::anonymous(&[(0, len)]).unwrap();
+        let written = [3usize, 10, 63];
+        let zeroed = 20usize;
+        {
+            let a = m.access().unwrap();
+            for &i in &written {
+                a.write((i * p + 7) as u64, &[i as u8 + 1]).unwrap();
+            }
+            a.write((zeroed * p) as u64, &[0]).unwrap();
+        }
+        let host = m.regions().next().unwrap().1;
+        // SAFETY: the region this test's memory owns.
+        let before = unsafe { crate::platform::untouched(host, len, p) }.unwrap();
+        let file = tempfile("untouched");
+        m.save(&file).unwrap();
+        // SAFETY: as above.
+        let after = unsafe { crate::platform::untouched(host, len, p) }.unwrap();
+        if let (Some(before), Some(after)) = (before, after) {
+            for i in 0..64 {
+                let touched = written.contains(&i) || i == zeroed;
+                assert_eq!(before[i], !touched, "page {i} before the save");
+                assert_eq!(after[i], !touched, "page {i} after the save: the save touched it");
+            }
+        }
+        let r = GuestMemory::from_file(&[(0, len)], &file).unwrap();
+        let a = r.access().unwrap();
+        let mut page = vec![0u8; p];
+        for i in 0..64 {
+            a.read((i * p) as u64, &mut page).unwrap();
+            let mut want = vec![0u8; p];
+            if written.contains(&i) {
+                want[7] = i as u8 + 1;
+            }
+            assert!(page == want, "page {i} restored");
         }
     }
 

@@ -8,6 +8,7 @@ publish = false
 [workspace]
 
 [dependencies]
+libc = "0.2"
 shards-vmm = { path = "../../../../../crates/vmm" }
 
 [profile.release]
