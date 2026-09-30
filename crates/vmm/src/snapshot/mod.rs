@@ -358,13 +358,18 @@ fn current(dir: &Path) -> io::Result<String> {
 
 /// Creates `path`, fills it, and syncs it: a name no other file had.
 fn create(path: &Path, fill: impl FnOnce(&File) -> io::Result<()>) -> io::Result<()> {
+    platform::sync_durable(&create_unsynced(path, fill)?)
+}
+
+/// [`create`], but for its durable flush: its caller makes it durable later.
+fn create_unsynced(path: &Path, fill: impl FnOnce(&File) -> io::Result<()>) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
         .create_new(true)
         .open(path)?;
     fill(&file)?;
-    platform::sync_durable(&file)
+    Ok(file)
 }
 
 /// Points `dir` at the generation `name`: a new pointer, synced, renamed over the old one,
@@ -413,6 +418,39 @@ fn write_with(
     memory: &GuestMemory,
     after: &mut dyn FnMut(Step) -> io::Result<()>,
 ) -> Result<File, String> {
+    let staged = stage_with(dir, snap, memory, after)?;
+    let generation = staged.generation()?;
+    staged.commit_with(after)?;
+    Ok(generation)
+}
+
+/// A snapshot written, but not yet durable nor in use: all a paused VM must wait for. A
+/// VM that goes on runs again before [`Staged::commit`] makes it durable and points `dir`
+/// at it, since its memory and state are in their files by then (PM M63). Until then it
+/// is a staging directory, which no reader takes for a generation; dropped uncommitted,
+/// it is a dead writer's, which the next write removes.
+#[derive(Debug)]
+pub struct Staged {
+    dir: PathBuf,
+    name: String,
+    staging: PathBuf,
+    /// Its memory and state, made durable by the commit.
+    files: [File; 2],
+    /// Writers to one snapshot take turns, this one until its commit.
+    _lock: File,
+}
+
+/// Stages a snapshot of a paused VM in `dir`, creating `dir` if needed ([`Staged`]).
+pub fn stage(dir: &Path, snap: &Snapshot, memory: &GuestMemory) -> Result<Staged, String> {
+    stage_with(dir, snap, memory, &mut |_| Ok(()))
+}
+
+fn stage_with(
+    dir: &Path,
+    snap: &Snapshot,
+    memory: &GuestMemory,
+    after: &mut dyn FnMut(Step) -> io::Result<()>,
+) -> Result<Staged, String> {
     let at = |e: &dyn std::fmt::Display| format!("{}: {e}", dir.display());
     // The state first: a configuration a restore could not use fails before anything is
     // written.
@@ -438,24 +476,68 @@ fn write_with(
     lock_exclusive(&lock).map_err(|e| at(&e))?;
     let staging = dir.join(format!(".{name}.tmp"));
     fs::create_dir(&staging).map_err(|e| at(&e))?;
-    let written = (|| -> Result<File, String> {
-        let failed = |e: io::Error| at(&e);
-        create(&staging.join(MEMORY), |f| memory.save(f)).map_err(failed)?;
-        after(Step::Memory).map_err(failed)?;
-        create(&staging.join(STATE), |mut f| f.write_all(&state)).map_err(failed)?;
-        after(Step::State).map_err(failed)?;
-        platform::sync_dir(&staging).map_err(failed)?;
-        after(Step::Staged).map_err(failed)?;
-        fs::rename(&staging, dir.join(&name)).map_err(failed)?;
-        after(Step::Renamed).map_err(failed)?;
-        let generation = platform::open_dir(&dir.join(&name)).map_err(failed)?;
-        platform::sync_dir(dir).map_err(failed)?;
-        point(dir, &name).map_err(failed)?;
-        after(Step::Pointed).map_err(failed)?;
-        Ok(generation)
+    let files = (|| -> io::Result<[File; 2]> {
+        let memory_file = create_unsynced(&staging.join(MEMORY), |f| memory.save(f))?;
+        after(Step::Memory)?;
+        let state_file = create_unsynced(&staging.join(STATE), |mut f| f.write_all(&state))?;
+        after(Step::State)?;
+        Ok([memory_file, state_file])
     })();
-    // Whatever `current` names now is whole; everything else goes, this write's leftovers
-    // and any a crashed writer left included.
+    match files {
+        Ok(files) => Ok(Staged {
+            dir: dir.to_path_buf(),
+            name,
+            staging,
+            files,
+            _lock: lock,
+        }),
+        Err(e) => {
+            tidy(dir);
+            Err(at(&e))
+        }
+    }
+}
+
+impl Staged {
+    /// The generation's directory, held open: it stays the generation's once the commit
+    /// renames it into place.
+    pub fn generation(&self) -> Result<File, String> {
+        platform::open_dir(&self.staging).map_err(|e| format!("{}: {e}", self.staging.display()))
+    }
+
+    /// Makes the snapshot durable and the one in use.
+    pub fn commit(self) -> Result<(), String> {
+        self.commit_with(&mut |_| Ok(()))
+    }
+
+    fn commit_with(self, after: &mut dyn FnMut(Step) -> io::Result<()>) -> Result<(), String> {
+        let Staged {
+            dir,
+            name,
+            staging,
+            files,
+            _lock,
+        } = self;
+        let committed = (|| -> io::Result<()> {
+            for file in &files {
+                platform::sync_durable(file)?;
+            }
+            platform::sync_dir(&staging)?;
+            after(Step::Staged)?;
+            fs::rename(&staging, dir.join(&name))?;
+            after(Step::Renamed)?;
+            platform::sync_dir(&dir)?;
+            point(&dir, &name)?;
+            after(Step::Pointed)
+        })();
+        tidy(&dir);
+        committed.map_err(|e| format!("{}: {e}", dir.display()))
+    }
+}
+
+/// Removes everything but what `current` names, which is whole: superseded generations,
+/// and what failed or dead writers left.
+fn tidy(dir: &Path) {
     let keep = current(dir).ok();
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -468,7 +550,6 @@ fn write_with(
             }
         }
     }
-    written
 }
 
 /// Whether `dir` holds a snapshot: a pointer to a generation with its state.

@@ -680,6 +680,9 @@ fn serve_workload(
                             end_recording_in(&stopper, RECORD_FOR);
                         };
                         let ask = || {
+                            // A template this VM saved is in place before the daemon hears the
+                            // VM is ready, and settles it: its commit runs as the guest does.
+                            stopper.wait_for_snapshot();
                             let request = crate::warm::receive(&link, &to_guest)?;
                             served_timing
                                 .asked

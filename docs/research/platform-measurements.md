@@ -2167,3 +2167,31 @@ revision before comparing a changed API/implementation.
   above the largest working set measured (M33's 3,900 pages of 16 KiB, were each
   written), so no measured workload changes. The pool's size times the budget bounds a
   fleet.
+
+### M63. A busy guest's snapshot pause, its durable flush moved past it
+
+- **Question.** M45's busy guest paused 0.35 to 0.61 s for its snapshot, at 8 vCPUs after
+  a 1 s storm. After D01, which skips pages the guest never touched, where does the pause
+  go, and must the guest wait for all of it?
+- **Method.** The storm test, 8 vCPUs, `SHARDS_STORM_MS=1000`, `SHARDS_LOG=info`, the
+  VM's log lines printed by a temporary change to the test. First with the memory file's
+  save and durable flush timed apart, n = 5. Then with the write split in two, n = 20:
+  - `snapshot::stage` writes the memory and state files while the guest is paused.
+  - `Staged::commit` makes them durable, renames the generation into place and points
+    `current` at it, with the guest running.
+  2026-09-30, this machine, load average 16 to 23 (another VM running).
+- **Results.**
+  - Before the split, the whole write took 44.1 to 48.9 ms: the memory's save 9.0 to
+    11.1 ms, its durable flush 12.6 to 16.5 ms, and the state file, the directory syncs,
+    the rename and the pointer the rest.
+  - After it, the guest paused 11.7 to 13.8 ms in 19 of 20 runs (p50 12.4 ms), and
+    54.9 ms in one. The commit took 35 to 47 ms, with 71 ms in one run and 106 ms in
+    the run whose pause was 54.9 ms. Both halves slowed together in that run, and 15
+    further runs did not repeat it: the host's disk and CPU, shared with another VM
+    running at 900% CPU.
+- **Consequence.** The guest runs again once its state is in the staged files. The
+  snapshot becomes durable and in use while it runs, before the VM process can end, since
+  the coordinator's thread is joined. It is visible only once `current` points at it, as
+  before. `Handle::wait_for_snapshot` waits for the commit: a warm VM that saved a
+  template tells the daemon it is ready, and the daemon settles the template, only after
+  it.

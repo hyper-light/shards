@@ -58,6 +58,10 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn wait_for_snapshot(&self) {
+        match self.0 {}
+    }
+
     pub fn release(&self) {
         match self.0 {}
     }

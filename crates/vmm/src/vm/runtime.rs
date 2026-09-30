@@ -64,6 +64,16 @@ impl Handle {
 
     /// Starts the vCPUs of a VM restored with `hold`. Everything else is ready, so this
     /// is all a start request costs.
+    /// Waits until no snapshot is being taken: one the guest asked for is durable and in
+    /// use when this returns, though the guest ran again before it was (PM M63). Returns
+    /// at once if none is, or the VM is stopping.
+    pub fn wait_for_snapshot(&self) {
+        let mut committing = lock(&self.shared.committing);
+        while *committing && !self.shared.exiting() {
+            committing = wait(&self.shared.committed, committing);
+        }
+    }
+
     pub fn release(&self) {
         self.shared.release_vcpus();
     }
@@ -126,6 +136,10 @@ struct Shared {
     /// While a working set is recorded: what records it, and the directory of the
     /// snapshot it goes with, held open since the daemon may rename it.
     recording: Mutex<Option<(machine::Recorder, File)>>,
+    /// Whether a snapshot is being taken, from its vCPUs parking to its commit: the guest
+    /// runs again before the commit ends (PM M63).
+    committing: Mutex<bool>,
+    committed: Condvar,
 }
 
 #[derive(Debug, Default)]
@@ -151,6 +165,8 @@ impl Shared {
             kept: OnceLock::new(),
             released_at_us: OnceLock::new(),
             recording: Mutex::new(None),
+            committing: Mutex::new(false),
+            committed: Condvar::new(),
         }
     }
 
@@ -558,36 +574,67 @@ impl Coordinator {
                 return;
             }
             let t0 = crate::log::uptime_us();
-            // Every vCPU is out of the guest: the devices go quiet, and only then does each
-            // vCPU capture its state.
-            self.bus.pause();
-            let captured = match self.sh.snapshot.capture(&stopping) {
-                None => return,
-                Some(Err(e)) => return self.sh.stop(ExitReason::Error(format!("snapshot: {e}"))),
-                Some(Ok(captured)) => captured,
-            };
-            let generation = match self.write(captured) {
-                Ok(generation) => generation,
-                Err(e) => return self.sh.stop(ExitReason::Error(format!("snapshot: {e}"))),
-            };
-            info!(
-                "snapshot written to {} in {} us",
-                self.policy.dir.display(),
-                crate::log::uptime_us().saturating_sub(t0)
-            );
-            match self.policy.then {
-                AfterSnapshot::Stop => return self.sh.stop(ExitReason::Snapshotted),
-                AfterSnapshot::Resume => {
-                    if self.policy.working_set {
-                        self.record(generation);
-                    }
-                    if let Err(e) = self.bus.resume() {
-                        return self.sh.stop(ExitReason::Error(format!("resuming devices: {e}")));
-                    }
-                    self.sh.snapshot.release();
-                }
+            *lock(&self.sh.committing) = true;
+            let committed = self.take(t0);
+            *lock(&self.sh.committing) = false;
+            self.sh.committed.notify_all();
+            if !committed {
+                return;
             }
         }
+    }
+
+    /// Takes one snapshot, its vCPUs parked; whether the VM goes on.
+    fn take(&self, t0: u128) -> bool {
+        let stopping = || self.sh.exiting();
+        let failed = |e: String| {
+            self.sh.stop(ExitReason::Error(e));
+            false
+        };
+        // Every vCPU is out of the guest: the devices go quiet, and only then does each
+        // vCPU capture its state.
+        self.bus.pause();
+        let captured = match self.sh.snapshot.capture(&stopping) {
+            None => return false,
+            Some(Err(e)) => return failed(format!("snapshot: {e}")),
+            Some(Ok(captured)) => captured,
+        };
+        let staged = match self.stage(captured) {
+            Ok(staged) => staged,
+            Err(e) => return failed(format!("snapshot: {e}")),
+        };
+        info!(
+            "snapshot written to {} in {} us",
+            self.policy.dir.display(),
+            crate::log::uptime_us().saturating_sub(t0)
+        );
+        if let AfterSnapshot::Resume = self.policy.then {
+            if self.policy.working_set {
+                match staged.generation() {
+                    Ok(generation) => self.record(generation),
+                    Err(e) => warn!("not recording a working set: {e}"),
+                }
+            }
+            if let Err(e) = self.bus.resume() {
+                return failed(format!("resuming devices: {e}"));
+            }
+            self.sh.snapshot.release();
+        }
+        // Durable, and in use, with the guest running again: its files hold all of it
+        // already (PM M63). The process ends only once this thread has.
+        let t1 = crate::log::uptime_us();
+        if let Err(e) = staged.commit() {
+            return failed(format!("snapshot: {e}"));
+        }
+        info!(
+            "snapshot made durable in {} us",
+            crate::log::uptime_us().saturating_sub(t1)
+        );
+        if let AfterSnapshot::Stop = self.policy.then {
+            self.sh.stop(ExitReason::Snapshotted);
+            return false;
+        }
+        true
     }
 
     /// Starts recording the working set of `generation`, the snapshot just written, with
@@ -604,10 +651,9 @@ impl Coordinator {
         }
     }
 
-    /// Saves the interrupt controller, the devices and memory, of a machine whose vCPUs
-    /// have parked with their state captured and whose devices are quiet. Returns the new
-    /// generation's directory, held open.
-    fn write(&self, captured: Vec<machine::Captured>) -> Result<File, String> {
+    /// Stages the interrupt controller, the devices and memory, of a machine whose vCPUs
+    /// have parked with their state captured and whose devices are quiet.
+    fn stage(&self, captured: Vec<machine::Captured>) -> Result<snapshot::Staged, String> {
         let arch = machine::encode_state(&self.vm, captured)?;
         let mut w = Writer::default();
         self.bus.save(&mut w);
@@ -616,6 +662,6 @@ impl Coordinator {
             arch,
             devices: w.into_bytes(),
         };
-        snapshot::write(&self.policy.dir, &snap, &self.memory)
+        snapshot::stage(&self.policy.dir, &snap, &self.memory)
     }
 }
