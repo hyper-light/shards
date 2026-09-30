@@ -5,20 +5,30 @@
 
 [[allow]]
 metric = "firecracker/peak_rss"
-reason = "0.4 MiB above Firecracker at boot (398e540); its file-backed part, below, is being traced by mapping"
-expires = 2026-10-31
+reason = "0.3 MiB above Firecracker at boot (ccf5bbc), all of it glibc's pages, which shards-vm maps dynamically and every process on the host shares: its PSS is 1.4 MiB below Firecracker's, its file-backed PSS 0.8 against 2.2 MiB"
+expires = 2026-12-31
 
 [[allow]]
 metric = "firecracker/rss_file"
-reason = "0.5 MiB more file-backed memory at boot (398e540): shards-vm's resident binary, traced by mapping"
-expires = 2026-10-31
+reason = "0.4 MiB more file-backed memory at boot (ccf5bbc): glibc's shared pages, as above; the file-backed PSS is 1.4 MiB below Firecracker's"
+expires = 2026-12-31
 
 [[allow]]
 metric = "firecracker_restore/peak_rss"
-reason = "4.6 MiB above Firecracker after a restore (398e540), all of it file-backed: shards' private memory is 4.3 MiB below; traced by mapping"
+reason = "4.4 MiB above Firecracker after a restore (ccf5bbc): the snapshot's memory file, 19 MB resident against 10 MB; which advice keeps it smaller is docs/research/measurements/restore-advice"
 expires = 2026-10-31
 
 [[allow]]
 metric = "firecracker_restore/rss_file"
-reason = "8.9 MiB more file-backed pages after a restore (398e540), with 4.3 MiB less anonymous memory; traced by mapping"
+reason = "8.7 MiB more of the snapshot's memory file resident (ccf5bbc), with 4.3 MiB less anonymous memory; docs/research/measurements/restore-advice"
+expires = 2026-10-31
+
+[[allow]]
+metric = "firecracker_restore/pss"
+reason = "2.6 MiB above Firecracker's PSS after a restore (ccf5bbc), the memory file's pages; docs/research/measurements/restore-advice"
+expires = 2026-10-31
+
+[[allow]]
+metric = "firecracker_restore/pss_file"
+reason = "6.9 MiB more of the memory file (ccf5bbc); docs/research/measurements/restore-advice"
 expires = 2026-10-31
