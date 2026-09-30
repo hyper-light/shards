@@ -45,6 +45,31 @@ pub struct Touch {
     pub written: bool,
 }
 
+/// The private bytes a restore may spend, ahead of its request, copying the pages its
+/// working set says the guest wrote (audit D02, PM M62). Every warm VM spends them before
+/// any request is known, so the pool's VMs times this bounds what a fleet speculates. 64
+/// MiB is above the largest working set measured, 3,900 pages of 16 KiB (M33), were every
+/// page of it written. Past it, written pages are prefetched as reads: the guest's first
+/// write copies each, as it would without a working set.
+pub const PREFETCH_PRIVATE: u64 = 64 << 20;
+
+/// Keeps the written mark of `touches`, pages of `page` bytes, in their first-touch order,
+/// until `budget` bytes of them are marked, and clears it past that. Returns how many
+/// marks were cleared.
+pub fn budget_writes(touches: &mut [Touch], page: u64, budget: u64) -> usize {
+    let mut left = budget / page.max(1);
+    let mut cleared = 0;
+    for t in touches.iter_mut().filter(|t| t.written) {
+        if left == 0 {
+            t.written = false;
+            cleared += 1;
+        } else {
+            left -= 1;
+        }
+    }
+    cleared
+}
+
 /// The guest's device accesses, as the VMM's buses serve them. Backends call these from
 /// vCPU threads, concurrently.
 pub trait Io: Sync {
@@ -68,4 +93,41 @@ pub enum Exit {
     Shutdown,
     /// The guest asked for a reset.
     Reset,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// Written marks are kept in first-touch order up to the budget, whole pages of it,
+    /// and cleared past it; reads are left alone.
+    #[test]
+    fn a_working_sets_writes_are_kept_within_the_budget() {
+        let page = 16 << 10;
+        let mut touches: Vec<Touch> = (0..10)
+            .map(|i| Touch {
+                gpa: i * page,
+                written: i % 2 == 0,
+            })
+            .collect();
+        // Room for two written pages and part of a third.
+        assert_eq!(budget_writes(&mut touches, page, 2 * page + 1), 3);
+        let written: Vec<u64> = touches
+            .iter()
+            .filter(|t| t.written)
+            .map(|t| t.gpa / page)
+            .collect();
+        assert_eq!(written, [0, 2]);
+        assert_eq!(touches.len(), 10, "every page is still prefetched");
+        // A budget that covers them all clears none.
+        let mut all = vec![
+            Touch {
+                gpa: 0,
+                written: true
+            };
+            4
+        ];
+        assert_eq!(budget_writes(&mut all, page, PREFETCH_PRIVATE), 0);
+    }
 }

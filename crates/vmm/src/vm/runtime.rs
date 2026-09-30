@@ -17,7 +17,7 @@ use crate::hv;
 use crate::memory::GuestMemory;
 use crate::snapshot::{self, MachineConfig, Snapshot, codec::Writer};
 use crate::sync::{lock, wait};
-use crate::{info, platform, warn};
+use crate::{debug, info, platform, warn};
 
 /// Ok when this host can run VMs; otherwise, why not.
 pub fn check_host() -> Result<(), String> {
@@ -333,7 +333,7 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
         generation,
     } = snapshot::read(&cfg.dir)?;
     check_vcpus(snap.config.vcpus)?;
-    let working_set = if cfg.prefetch {
+    let mut working_set = if cfg.prefetch {
         snapshot::read_working_set(&generation, machine::PAGE, guest_pages(&snap)).unwrap_or_else(|e| {
             warn!("{e}; restoring without prefetching it");
             None
@@ -341,6 +341,12 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     } else {
         None
     };
+    if let Some(ws) = &mut working_set {
+        let cleared = hv::budget_writes(ws, machine::PAGE, hv::PREFETCH_PRIVATE);
+        if cleared > 0 {
+            debug!("{cleared} written pages past the prefetch's private budget are read instead");
+        }
+    }
     let recording = cfg.record && working_set.is_none();
     let machine = machine::restore(
         &snap,

@@ -1,0 +1,14 @@
+diff --git a/crates/vmm/src/hv/hvf/mod.rs b/crates/vmm/src/hv/hvf/mod.rs
+index 7c1363c..a9a062c 100644
+--- a/crates/vmm/src/hv/hvf/mod.rs
++++ b/crates/vmm/src/hv/hvf/mod.rs
+@@ -708,7 +708,8 @@ impl Vcpu {
+     pub fn prefetch(&mut self, vm: &Vm, pages: &[Touch]) -> Result<usize> {
+         const TABLE: usize = 4 << 10;
+         // Atomic instructions (FEAT_LSE): ID_AA64ISAR0_EL1.Atomic is 2 or more.
+-        let lse = (self.sys.sys_reg(sysreg::ID_AA64ISAR0_EL1)? >> 20) & 0xf >= 2;
++        let lse = (self.sys.sys_reg(sysreg::ID_AA64ISAR0_EL1)? >> 20) & 0xf >= 2
++            && std::env::var_os("SHARDS_PREFETCH_WRITES").is_none_or(|v| v != "0");
+         let mut listed = std::collections::HashSet::new();
+         let list: Vec<u64> = pages
+             .iter()

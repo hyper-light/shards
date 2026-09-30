@@ -2133,3 +2133,37 @@ revision before comparing a changed API/implementation.
 - **Consequence.** The store compacts the tree after each layer. Compaction keeps what
   the root reaches, a hard-linked node once, renumbered from the root. It costs a walk of
   the tree, and nothing when the layer replaced or removed nothing.
+
+### M62. What a warm VM spends copying the pages its working set wrote
+
+- **Question.** Audit D02: HVF's prefetch writes each page the guest wrote, in guest
+  context, so every warm VM holds those pages' private copies before any request, and
+  whether or not one comes. What do they cost it, and what do they buy?
+- **Method.** `docs/research/measurements/prefetch-writes/`: `SHARDS_PREFETCH_WRITES=0`
+  prefetches every page as a read. The fleet measurement with 10 templates of the test
+  image (M49) ran with writes and without, alternating, three rounds (the third in the
+  other order). It reports the warm VMs' physical footprint, and runs one at a time and
+  in bursts of 8. 8e00eec, 2026-09-30, this machine, load average about 16 (another VM and
+  builds running): the arms are paired, not absolute.
+- **Results.**
+
+| Round, prefetch | 10 warm VMs' footprint | One at a time, p50 / p99 | Bursts of 8, p50 / p99 |
+|---|---|---|---|
+| 1, writes | 58.5 MiB | 6.0 / 6.2 ms | 52.1 / 94.7 ms |
+| 1, reads | 57.3 MiB | 6.0 / 6.9 ms | 20.3 / 25.8 ms |
+| 2, writes | 57.6 MiB | 5.8 / 6.4 ms | 20.1 / 23.7 ms |
+| 2, reads | 57.6 MiB | 6.0 / 6.4 ms | 20.0 / 23.0 ms |
+| 3, reads | 57.3 MiB | 5.6 / 6.1 ms | 21.0 / 26.1 ms |
+| 3, writes | 56.7 MiB | 6.1 / 6.6 ms | 22.5 / 25.9 ms |
+
+  The first round's bursts with writes were the first runs after a build: that round's
+  template saves took 302 ms at the median, where every later round's took 157 to 162.
+  Rounds 2 and 3, in either order, do not repeat it.
+- **Consequence.** For this image the written pages cost a warm VM no measurable memory
+  and buy no measurable time. Nothing bounded them, though: a working set recorded from
+  a workload that writes much of its RAM would have every warm VM copy all of it before
+  any request. A restore now keeps the written marks, in first-touch order, only up to
+  `hv::PREFETCH_PRIVATE`, 64 MiB, and prefetches the pages past it as reads. That is
+  above the largest working set measured (M33's 3,900 pages of 16 KiB, were each
+  written), so no measured workload changes. The pool's size times the budget bounds a
+  fleet.
