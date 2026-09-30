@@ -1,0 +1,13 @@
+diff --git a/crates/vmm/src/platform/unix.rs b/crates/vmm/src/platform/unix.rs
+index 3bf2700..f03074a 100644
+--- a/crates/vmm/src/platform/unix.rs
++++ b/crates/vmm/src/platform/unix.rs
+@@ -280,7 +280,7 @@ pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull
+             at.as_ptr().cast(),
+             len,
+             libc::PROT_READ | libc::PROT_WRITE,
+-            libc::MAP_PRIVATE | libc::MAP_FIXED,
++            libc::MAP_PRIVATE | libc::MAP_FIXED | libc::MAP_NORESERVE,
+             file.as_raw_fd(),
+             offset,
+         )

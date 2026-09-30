@@ -1,0 +1,47 @@
+name: commit accounting
+
+# What restored VMs are charged against Linux's commit limit, under each overcommit mode,
+# as shards maps a template's memory today and with MAP_NORESERVE
+# (docs/research/measurements/commit). Runs when the experiment changes, or when asked.
+on:
+  push:
+    paths:
+      - docs/research/measurements/commit/**
+      - .github/workflows/commit-accounting.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.0 # keep in sync with rust-toolchain.toml
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        mapping: [as-is, noreserve]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - run: sudo chmod 666 /dev/kvm
+      - if: matrix.mapping == 'noreserve'
+        run: git apply docs/research/measurements/commit/noreserve.patch
+      # Built before any mode changes, so that only the measurement runs under each.
+      - run: cargo test --locked --release -p shards --test commit --no-run
+      - name: Each overcommit mode
+        run: |
+          free -m; swapon --show || true
+          for mode in 0 1 2; do
+            echo "=== vm.overcommit_memory=$mode, ${{ matrix.mapping }}"
+            sudo sysctl -qw vm.overcommit_memory=$mode
+            COMMIT_VMS=64 COMMIT_MEMORY=256 cargo test --locked --release -p shards --test commit -- \
+              --ignored --nocapture 2>&1 | grep -vE '^(running|test |$)' || true
+            sudo sysctl -qw vm.overcommit_memory=0
+          done
+      - if: always()
+        run: sudo sysctl -qw vm.overcommit_memory=0
