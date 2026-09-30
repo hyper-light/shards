@@ -2917,7 +2917,19 @@ mod tests {
         assert_eq!(t.daemon.collect_garbage(), Ok(false), "collected under a lease");
         assert!(left.exists() && unknown.exists());
         drop(lease);
-        assert_eq!(t.daemon.collect_garbage(), Ok(true));
+        // A child another test spawns in this process holds the lease's file for as long
+        // as its spawn copies descriptors before it closes the close-on-exec ones, and a
+        // flock lasts as long as any holder: a collection may find the lease there a
+        // moment after it was dropped, and pass until the next.
+        let collected = (0..10_000).any(|_| match t.daemon.collect_garbage() {
+            Ok(true) => true,
+            Ok(false) => {
+                std::thread::yield_now();
+                false
+            }
+            Err(e) => panic!("{e}"),
+        });
+        assert!(collected, "a collection with no lease held never went ahead");
         assert!(ours.exists(), "a template being saved was collected");
         assert!(!left.exists() && !unknown.exists());
     }
