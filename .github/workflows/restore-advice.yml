@@ -35,3 +35,16 @@ jobs:
             SHARDS_FILE_ADVICE=$advice cargo bench --locked -p shards --bench firecracker -- --runs 20 2>&1 |
               awk '/^firecracker_restore:/{p=1} p && /^(shards|fc)_(to_beat|rss_file|pss_file|pss|rss_anon) /'
           done
+      # What the choice does where a run's time is: warm requests, and runs served from a
+      # template's pool; alternating the two advices, twice each.
+      - name: Warm requests and pooled runs, with and without huge folios
+        run: |
+          for round in 1 2; do
+            for advice in none nohuge; do
+              echo "=== round $round, SHARDS_FILE_ADVICE=$advice"
+              SHARDS_FILE_ADVICE=$advice cargo bench --locked -p shards --bench restore -- --runs 30 2>&1 |
+                grep -E '^(cold_restore|cold_spawn_exit|warm_request|warm_peak_rss) '
+              SHARDS_FILE_ADVICE=$advice cargo bench --locked -p shards --bench image -- --runs 60 --templates 3 2>&1 |
+                grep -E '^(run_template|template_command|template_outside|run_template_rss) '
+            done
+          done
