@@ -668,6 +668,53 @@ fn rm_cancels_a_run_whose_vm_is_not_ready() {
     assert_eq!(gated.shards(&home, &["daemon", "stop"]).status, Some(0));
 }
 
+/// A container seen before its daemon died outlives it: the next daemon shows it as one
+/// whose run did not start, with 255 for the status nobody saw, and `rm` removes it
+/// (audit A15, whose finding this is: before, a container existed only in its daemon's
+/// memory until its run started, and went with the daemon).
+#[test]
+fn a_container_outlives_a_daemon_that_dies() {
+    let Some((home, image)) = home("containers-crash") else {
+        return;
+    };
+    let gated = Gated::new("crash-bin");
+    let args = run_args(&image, &["--name", "racer"], &["exit", "7"]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let run = gated.start(&home, &args);
+    let id = created(&gated, &home);
+    let pid: i32 = std::fs::read_to_string(home.join("daemon.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: kill(2) of the daemon this test's run started.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+    let run = run.finish();
+    assert_ne!(run.status, Some(0), "{run}");
+    gated.open();
+    let listed = gated.shards(&home, &["ps", "-a", "--no-trunc"]);
+    let line = listed.stdout.lines().nth(1).unwrap_or_default().to_string();
+    assert!(
+        line.starts_with(&id) && line.contains(" Created ") && line.ends_with(" racer"),
+        "{listed}"
+    );
+    assert_eq!(listed.stdout.lines().count(), 2, "{listed}");
+    let waited = gated.shards(&home, &["wait", "racer"]);
+    assert_eq!(
+        (waited.status, waited.stdout.as_str()),
+        (Some(0), "255\n"),
+        "{waited}"
+    );
+    let removed = gated.shards(&home, &["rm", "racer"]);
+    assert_eq!(
+        (removed.status, removed.stdout.as_str()),
+        (Some(0), "racer\n"),
+        "{removed}"
+    );
+    assert_eq!(gated.shards(&home, &["ps", "-a", "-q"]).stdout, "");
+    assert_eq!(gated.shards(&home, &["daemon", "stop"]).status, Some(0));
+}
+
 /// A daemon told to stop starts no run still pending, and waits for no VM to boot for
 /// one (audit A07): the run is refused at once, the daemon ends, and the run's container
 /// stays, created, with the code of a start that failed.

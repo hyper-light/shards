@@ -307,6 +307,10 @@ pub fn record(home: &Path, kernel: &Path, init: &Path) -> Result<Guest, String> 
     shards_vmm::platform::create_private_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let kernel_digest = keep(&dir, kernel)?;
     let init_digest = keep(&dir, init)?;
+    // What the record names outlasts a power loss before the record does, and the record
+    // is durable once recorded (audit A15).
+    let sync = || shards_vmm::platform::sync_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()));
+    sync()?;
     let record = format!("{kernel_digest}\n{init_digest}\n");
     let temp = dir.join(format!("current.{}", std::process::id()));
     let written = File::create(&temp)
@@ -316,6 +320,7 @@ pub fn record(home: &Path, kernel: &Path, init: &Path) -> Result<Guest, String> 
         let _ = fs::remove_file(&temp);
         return Err(format!("recording the guest: {e}"));
     }
+    sync()?;
     current(home)?.ok_or_else(|| "the guest record vanished".to_string())
 }
 

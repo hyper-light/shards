@@ -146,6 +146,15 @@ struct Tag {
     manifest: Descriptor,
 }
 
+/// Makes the entries of `dir` durable: the renames into it outlast a power loss.
+fn sync_dir(dir: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}
+
 /// A blob being downloaded (`Store::download`). Its file under `ingest/` stays locked for
 /// the download's life and outlives a failed attempt, so the next one resumes, as
 /// containerd keeps ingests (docs/research/registry-pull.md §2).
@@ -373,8 +382,20 @@ impl Store {
     }
 
     /// Records that `reference` names the manifest `manifest` describes, replacing what it
-    /// named.
-    pub fn tag(&self, reference: &str, manifest: &Descriptor) -> Result<(), Error> {
+    /// named. What the record names, the blobs `contents` and the root filesystems, is made
+    /// durable first, and the record after: no power loss leaves a record naming what it
+    /// lost (audit A15).
+    pub fn tag(&self, reference: &str, manifest: &Descriptor, contents: &[Digest]) -> Result<(), Error> {
+        let mut dirs: Vec<PathBuf> = contents
+            .iter()
+            .map(|d| self.root.join("blobs").join(d.algorithm().name()))
+            .collect();
+        dirs.push(self.root.join(format!("rootfs/v{ROOTFS_VERSION}")));
+        dirs.sort();
+        dirs.dedup();
+        for dir in &dirs {
+            sync_dir(dir)?;
+        }
         let record = serde_json::to_vec(&Tag {
             reference: reference.to_string(),
             manifest: manifest.clone(),
@@ -382,7 +403,8 @@ impl Store {
         .map_err(|e| Error(e.to_string()))?;
         let mut partial = Partial::create(&self.root.join("ingest"))?;
         partial.write_all(&record)?;
-        partial.replace(&self.tag_path(reference))
+        partial.replace(&self.tag_path(reference))?;
+        sync_dir(&self.root.join(format!("refs/v{REFS_VERSION}")))
     }
 
     /// The descriptor of the manifest `reference` names, if it has been pulled.
@@ -782,9 +804,9 @@ mod tests {
         };
         let name = "docker.io/library/alpine:latest";
         assert_eq!(store.tagged(name).unwrap(), None);
-        store.tag(name, &a).unwrap();
+        store.tag(name, &a, &[]).unwrap();
         assert_eq!(store.tagged(name).unwrap(), Some(a.clone()));
-        store.tag(name, &b).unwrap();
+        store.tag(name, &b, &[]).unwrap();
         assert_eq!(store.tagged(name).unwrap(), Some(b));
         assert_eq!(store.tagged("docker.io/library/alpine:3").unwrap(), None);
         // A record of the shape before descriptors is not read: the image is pulled again.
@@ -800,6 +822,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(store.tagged("docker.io/library/alpine:3").unwrap(), None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A reference is recorded only once what it names is durable: a directory of what
+    /// it names that cannot be synced fails the record, and nothing is recorded (audit
+    /// A15). Windows has no directory to sync.
+    #[cfg(unix)]
+    #[test]
+    fn a_reference_is_recorded_once_what_it_names_is_durable() {
+        let root = temp("tag-order");
+        let store = Store::open(&root).unwrap();
+        let name = "docker.io/library/alpine:latest";
+        let manifest = described(&sha256(b"a"), 1);
+        let sha512 = Digest::from_hash(Algorithm::Sha512, &Sha512::digest(b"a"));
+        fs::remove_dir_all(root.join("blobs/sha512")).unwrap();
+        assert!(store.tag(name, &manifest, &[sha512]).is_err());
+        assert_eq!(store.tagged(name).unwrap(), None, "nothing recorded");
+        fs::remove_dir_all(root.join(format!("rootfs/v{ROOTFS_VERSION}"))).unwrap();
+        assert!(store.tag(name, &manifest, &[]).is_err());
+        assert_eq!(store.tagged(name).unwrap(), None, "nothing recorded");
         let _ = fs::remove_dir_all(&root);
     }
 

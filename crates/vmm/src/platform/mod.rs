@@ -54,9 +54,12 @@ pub fn read_in(dir: &File, name: &str, max: u64) -> io::Result<Option<Vec<u8>>> 
 }
 
 /// Makes the entries of the directory at `path` durable: the renames into it survive a
-/// crash once this returns.
+/// crash once this returns. Linux takes an fsync of the directory itself (fsync(2)); macOS
+/// takes `sync_durable`'s flush, whose `F_FULLFSYNC` directories accept (PM M46).
 pub fn sync_dir(path: &std::path::Path) -> io::Result<()> {
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
+    return sync_durable(&File::open(path)?);
+    #[cfg(all(unix, not(target_os = "macos")))]
     return File::open(path)?.sync_all();
     #[cfg(not(unix))]
     {

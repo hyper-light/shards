@@ -381,6 +381,9 @@ The store keeps what a pull fetches and what guests boot from. The code is
   and any platform an index labelled it with. Finding the image again then checks what
   pulling it checked (audit A11). Their directory is versioned like the root
   filesystems': a record of an older shape is not read, and its image is pulled again.
+  A record is written only once the directories of what it names (the blobs, the root
+  filesystems) are synced, and its own directory is synced after: no power loss leaves
+  a record naming what it lost (audit A15).
 - **Layers unpack as containerd unpacks them** (registry-pull §5, rows 6 and "Layer media
   types"):
   - **Media type.** It decides whether compression is sniffed (`DiffCompression`,
@@ -1071,6 +1074,40 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   refuses a running container and `rm -f` kills it (137); `ps` and `logs`; `-d` prints
   the ID and runs on, named for its ID; a command that cannot start is reported as
   `docker run` reports it, attached and detached; usage mistakes start no daemon.
+- **Durability** (`containers.rs`, `Registry`; audit A15). What a daemon crash may cut
+  short, the next start reconciles exactly; what a power loss may lose is bounded:
+  - **A container is seen once its record is written.** It is reserved first, its name
+    held, and its record is written on a recorder thread beside the run's start, which
+    never waits for it. Writing it on the start path cost nothing at the median but put
+    the filesystem's tail there: on a busy host a file's create or rename waits
+    milliseconds at p90 behind other processes' flushes (PM M46), and a run's p90 and
+    p99 doubled. What happens to a reserved container waits in the reservation, and the
+    recorder writes again until what it wrote is current. `run -d` prints the ID once
+    the container is seen.
+  - **What happened to a run stands.** Its start and end are kept at once, and written
+    after; a record that cannot be written is behind, logged, told to a detached client
+    as a warning, and written again before any command is answered.
+  - **A removal changes nothing until the container's directory is set aside**
+    (`.ID.removing`), so one that fails leaves the container seen, and removable again.
+    It is then synced before its name is let go and `rm` answers: an answered `rm` never
+    comes back, and no power loss brings back a container beside one that took its
+    name. The sync, 4.3 ms at the median on macOS (PM M46), is out of the registry's
+    lock.
+  - **Records are written and renamed, not synced.** Syncing one costs 8.5 ms at the
+    median on macOS (PM M46), 2.5 times a pooled run. A power loss ends every run
+    anyway; what it leaves of their records, the next start reconciles: a record missing
+    (a spare, or a container never seen: its directory goes), older (a running one exited
+    with 255, a pending one keeps 255 as a run that did not start), torn (its next
+    version is taken if a power loss kept that whole, else it is left and logged, as
+    dockerd leaves a container it cannot load), a removal cut short (finished), or a
+    write cut short (removed).
+  - **Tests:** a fault-injecting disk fails each write, rename and sync, and cuts a
+    container's life short at every step, and the next start must reconcile each; a
+    model of a filesystem losing power, after ALICE's abstract persistence model (Pillai
+    et al., OSDI 2014) at its weakest, enumerates every state a power loss may leave at
+    every step of a life and of the next container to take its name; the daemon holds a
+    removal's name until its sync returns; an E2E kills the daemon while a container is
+    pending and finds it after. Eighteen mutations of the fix, each caught.
 - **Tests of terminals** (E2E, crates/shards/tests/tty.rs): under `-t` the command's
   stdio is a terminal that leads its session, with `\r\n` in its output and its log;
   the refusal and bad detach keys create nothing. The client runs on a pty the test
@@ -1122,7 +1159,9 @@ docs/research/shipping-the-guest.md; the code is `crates/shards/build.rs`,
   daemon stores one file at a time, and removes temporary files that a daemon which
   ended left.
 - **`shards guest use` overrides it.** A recorded guest wins over the default, and
-  `shards guest` says which is in use.
+  `shards guest` says which is in use. Its record is written once the files it names are
+  durable, and is durable itself once `guest use` answers (audit A15); the default guest
+  names nothing, and a file of it a power loss took is fetched again.
 - **An init says which contract it speaks.** `shards-abi`'s build script hashes the
   crate's sources into `IDENTITY`. shards-init writes it to the control page as it starts
   (`control::ABI`), and a snapshot keeps it. The host hands a workload only to a guest

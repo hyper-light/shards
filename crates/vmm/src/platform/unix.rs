@@ -403,15 +403,22 @@ pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Makes completed writes durable on stable storage. On macOS `fsync` does not flush the
-/// drive's write cache; `F_FULLFSYNC` does (fsync(2), fcntl(2)).
+/// drive's write cache; `F_FULLFSYNC` does (fsync(2), fcntl(2)). A filesystem without
+/// `F_FULLFSYNC` gets `fsync` instead, as SQLite falls back (`full_fsync`, os_unix.c):
+/// std's `sync_data` would ask for `F_FULLFSYNC` again.
 pub fn sync_durable(file: &File) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        // SAFETY: fcntl on an owned, open descriptor.
+        // SAFETY: fcntl(2) on an owned, open descriptor.
         if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
             return Ok(());
         }
-        // Filesystems without F_FULLFSYNC support fall back to fsync semantics.
+        // SAFETY: fsync(2) on the same descriptor.
+        if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+            return Ok(());
+        }
+        Err(io::Error::last_os_error())
     }
+    #[cfg(not(target_os = "macos"))]
     file.sync_data()
 }

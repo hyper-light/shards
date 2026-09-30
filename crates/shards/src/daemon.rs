@@ -29,7 +29,7 @@ use shards_ipc::{Identity, Run, kind};
 use shards_registry::http::Cancel;
 use shards_vmm::vm::Config;
 
-use crate::containers::{self, Container, Registry, State as Life};
+use crate::containers::{self, Container, Registry, Removal, State as Life};
 
 mod commands;
 use crate::run::{Boot, Prepared};
@@ -234,6 +234,11 @@ struct Daemon {
     ending: AtomicBool,
     /// Every run's container.
     containers: Mutex<Registry>,
+    /// A reserved container was let be seen.
+    arrived: Condvar,
+    /// Where reserved containers' records go to be written, in order, by one thread, once
+    /// the first run has started it.
+    recorder: Mutex<Option<mpsc::Sender<String>>>,
     /// Who waits for each running container to end, for its exit code: `shards wait`,
     /// `stop`, `kill`, `rm -f`. Told under the containers' lock, as the record changes.
     /// Each waiter has a number, by which it goes if it stops waiting first.
@@ -376,8 +381,8 @@ fn serve() -> Result<(), String> {
     let identity = Identity::of_build(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
     let vm = shards_ipc::vm_binary(&exe);
     let setting = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
-    let containers =
-        Registry::open(&home).map_err(|e| format!("{}: {e}", home.join("containers").display()))?;
+    let containers = Registry::open(&home, &mut |note| log(note))
+        .map_err(|e| format!("{}: {e}", home.join("containers").display()))?;
     let daemon = Arc::new(Daemon::new(
         home,
         vm,
@@ -484,6 +489,8 @@ impl Daemon {
             resolved: Condvar::new(),
             ending: AtomicBool::new(false),
             containers: Mutex::new(containers),
+            arrived: Condvar::new(),
+            recorder: Mutex::default(),
             waiters: Mutex::default(),
             next_waiter: AtomicU64::new(0),
             removing: Mutex::default(),
@@ -797,15 +804,18 @@ impl Daemon {
                 return None;
             }
         };
-        // The run's container, before anything starts: its name must be free.
+        // The run's container, before anything starts: its name must be free. Its record
+        // is written while a VM is found for it.
         if let Err(e) = self.create(&run, &prepared, &id) {
             refuse(&e);
             self.discard(&id);
             self.make_spare();
             return None;
         }
+        self.record_arrival(&id);
         // `docker run -d` prints the ID once the container exists, before it starts.
         if run.detach {
+            self.await_arrival(&id);
             let _ = shards_ipc::send(conn, kind::OUT, format!("{id}\n").as_bytes(), &[]);
         }
         let mut flags = shards_ipc::RUN_LOG;
@@ -902,8 +912,9 @@ impl Daemon {
     }
 
     /// Container `id` of `run`, with the name the run gave, or one made for it, as dockerd
-    /// names containers (moby daemon/names.go). Reserved in memory only: the run's path
-    /// writes nothing but the log it opened.
+    /// names containers (moby daemon/names.go). Reserved, its name held, and seen once its
+    /// record is written ([`record_arrival`](Self::record_arrival)), so that it outlives a
+    /// crash of the daemon (audit A15).
     fn create(&self, run: &Run, prepared: &Prepared, id: &str) -> Result<(), String> {
         let mut registry = lock(&self.containers);
         let name = match &run.name {
@@ -945,6 +956,72 @@ impl Daemon {
         // Its run is owned from the moment the container is visible.
         lock(&self.runs).insert(id.to_string(), RunState::Pending { cancelled: false });
         Ok(())
+    }
+
+    /// Has the record of reserved container `id` written, on the recorder's thread, started
+    /// here if it is not yet; here, if it cannot be.
+    fn record_arrival(self: &Arc<Self>, id: &str) {
+        let mut recorder = lock(&self.recorder);
+        if recorder.is_none() {
+            let (send, receive) = mpsc::channel::<String>();
+            let daemon = Arc::downgrade(self);
+            let spawned = std::thread::Builder::new()
+                .name("recorder".into())
+                .spawn(move || {
+                    for id in receive {
+                        match daemon.upgrade() {
+                            Some(daemon) => daemon.arrive(&id),
+                            None => return,
+                        }
+                    }
+                });
+            match spawned {
+                Ok(_) => *recorder = Some(send),
+                Err(e) => log(format!("the recorder's thread: {e}; recording here")),
+            }
+        }
+        let sent = recorder.as_ref().is_some_and(|r| r.send(id.to_string()).is_ok());
+        drop(recorder);
+        if !sent {
+            self.arrive(id);
+        }
+    }
+
+    /// Writes the record of reserved container `id`, again while it changes as it is
+    /// written, then lets it be seen. One whose record cannot be written is seen, its
+    /// record behind: it exists, and its run may have started.
+    fn arrive(&self, id: &str) {
+        loop {
+            let Some((recorder, c)) = lock(&self.containers).arrival(id) else {
+                return;
+            };
+            let written = recorder.write(&c);
+            let mut registry = lock(&self.containers);
+            let seen = match written {
+                Ok(()) => registry.admit(id, &c),
+                Err(e) => {
+                    log(format!("container {id}: its record is behind: {e}"));
+                    registry.admit_behind(id);
+                    true
+                }
+            };
+            drop(registry);
+            if seen {
+                self.arrived.notify_all();
+                return;
+            }
+        }
+    }
+
+    /// Waits until reserved container `id` is seen.
+    fn await_arrival(&self, id: &str) {
+        let mut registry = lock(&self.containers);
+        while registry.is_arriving(id) {
+            registry = self
+                .arrived
+                .wait(registry)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
     }
 
     /// Starts the successor of a warm VM of `pool` that has just taken a run, and the next
@@ -993,23 +1070,18 @@ impl Daemon {
     /// start it. Those waiting for the container hear its code. Returns what the client is
     /// told.
     fn not_started(&self, id: &str, why: &str) -> String {
+        self.await_arrival(id);
         let mut registry = lock(&self.containers);
         let cancelled = matches!(
             lock(&self.runs).get(id),
             Some(RunState::Pending { cancelled: true })
         );
+        let mut removal = None;
         let (said, code) = if cancelled {
             (format!("No such container: {id}"), 0)
         } else {
             let (said, code) = shards_cmdline::commands::start_failed(why);
-            let kept = if registry.get(id).is_some_and(|c| c.auto_remove) {
-                registry.remove(id).map(drop)
-            } else {
-                registry.update(id, |c| c.exit_code = Some(code))
-            };
-            if let Err(e) = kept {
-                log(format!("container {id}: {e}"));
-            }
+            removal = self.end_container(&mut registry, id, |c| c.exit_code = Some(code));
             (said, code)
         };
         lock(&self.runs).remove(id);
@@ -1018,7 +1090,52 @@ impl Daemon {
             let _ = waiter.tell.send(code);
         }
         drop(registry);
+        if let Some(removal) = removal {
+            let _ = self.complete(&removal);
+        }
         said
+    }
+
+    /// The end of container `id`'s run, as `end` records it: a `--rm` container is taken
+    /// out of sight, for [`complete`](Self::complete) to remove, and one whose removal
+    /// fails, or any other, is recorded. Failures go to the log.
+    fn end_container(
+        &self,
+        registry: &mut Registry,
+        id: &str,
+        end: impl FnOnce(&mut Container),
+    ) -> Option<Removal> {
+        if registry.get(id)?.auto_remove {
+            match registry.remove(id) {
+                Ok(removal) => return removal,
+                Err(e) => log(format!("container {id}: removing it: {e}")),
+            }
+        }
+        if let Err(e) = registry.update(id, end) {
+            log(format!("container {id}: its record is behind: {e}"));
+        }
+        None
+    }
+
+    /// Makes `removal` durable out of the registry's lock, then lets its name go and
+    /// deletes what it set aside. Until it is durable the name stays held, since a crash
+    /// could bring the container back. Failures go to the log, and whether it is durable
+    /// is returned.
+    pub(super) fn complete(&self, removal: &Removal) -> io::Result<()> {
+        let id = &removal.container.id;
+        let synced = removal.sync();
+        match &synced {
+            Ok(()) => lock(&self.containers).release(id),
+            Err(e) => log(format!(
+                "container {id}: its removal may not outlast a crash, and its name stays held: {e}"
+            )),
+        }
+        if let Err(e) = removal.delete() {
+            log(format!(
+                "container {id}: deleting its files: {e}; the next start deletes them"
+            ));
+        }
+        synced
     }
 
     /// Commits the run of container `id` to the warm VM in hand, unless `rm` cancelled it
@@ -1087,11 +1204,12 @@ impl Daemon {
         }
     }
 
-    /// For `rm`: removes container `id` with its run if no VM has been committed to the
-    /// run, which then never starts; those waiting for the container hear 0, the code of
-    /// one that never ran. Whether it did. A run being handed over is seen through first,
-    /// so that `rm` acts on whether it started.
-    pub(super) fn cancel_start(&self, id: &str) -> io::Result<bool> {
+    /// For `rm`: takes container `id` out of sight with its run if no VM has been
+    /// committed to the run, which then never starts; those waiting for the container hear
+    /// 0, the code of one that never ran. The removal, for [`complete`](Self::complete), if
+    /// it did. A run being handed over is seen through first, so that `rm` acts on whether
+    /// it started.
+    pub(super) fn cancel_start(&self, id: &str) -> io::Result<Option<Removal>> {
         loop {
             let mut registry = lock(&self.containers);
             let mut runs = lock(&self.runs);
@@ -1101,7 +1219,7 @@ impl Daemon {
                     false
                 }
                 Some(RunState::Handing) => true,
-                Some(RunState::Tracked(_)) | None => return Ok(false),
+                Some(RunState::Tracked(_)) | None => return Ok(None),
             };
             if handing {
                 drop(registry);
@@ -1112,7 +1230,7 @@ impl Daemon {
             for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
                 let _ = waiter.tell.send(0);
             }
-            return registry.remove(id).map(|_| true);
+            return registry.remove(id);
         }
     }
 
@@ -1190,6 +1308,9 @@ impl Daemon {
     /// Takes what every run has sent, so that what a command answers includes all that
     /// any client has seen of them.
     pub(super) fn settle(&self) {
+        for id in lock(&self.containers).catch_up() {
+            log(format!("container {id}: its record is written again"));
+        }
         let runs: Vec<(String, Arc<Mutex<Inbox>>)> = lock(&self.runs)
             .iter()
             .filter_map(|(id, r)| match r {
@@ -1204,11 +1325,20 @@ impl Daemon {
 
     fn run_started(&self, id: &str, inbox: &mut Inbox) {
         inbox.started = true;
-        self.record(id, |c| {
+        let recorded = lock(&self.containers).update(id, |c| {
             c.state = Life::Running;
             c.started = Some(containers::now());
         });
+        let behind = recorded.err().map(|e| {
+            let said = format!("container {id}: its record is behind: {e}");
+            log(&said);
+            said
+        });
         if let Some(client) = inbox.detached.take() {
+            if let Some(said) = behind {
+                let warning = format!("WARNING: {said}\n");
+                let _ = shards_ipc::send(&client, kind::ERR, warning.as_bytes(), &[]);
+            }
             let _ = shards_ipc::send(&client, kind::END, &[0], &[]);
         }
     }
@@ -1238,28 +1368,24 @@ impl Daemon {
                 (code, Some(said))
             }
         };
-        {
+        let removal = {
             let mut registry = lock(&self.containers);
-            let removing = registry.get(id).is_some_and(|c| c.auto_remove);
-            let kept = if removing {
-                registry.remove(id).map(drop)
-            } else {
-                registry.update(id, |c| {
-                    c.exit_code = Some(status);
-                    if started {
-                        c.state = Life::Exited;
-                        c.finished = Some(containers::now());
-                    }
-                })
-            };
-            if let Err(e) = kept {
-                log(format!("container {id}: {e}"));
-            }
+            let removal = self.end_container(&mut registry, id, |c| {
+                c.exit_code = Some(status);
+                if started {
+                    c.state = Life::Exited;
+                    c.finished = Some(containers::now());
+                }
+            });
             lock(&self.runs).remove(id);
             self.resolved.notify_all();
             for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
                 let _ = waiter.tell.send(status);
             }
+            removal
+        };
+        if let Some(removal) = removal {
+            let _ = self.complete(&removal);
         }
         // A detached command that never started: why, as `docker run -d` says it.
         if let Some(client) = inbox.detached.take() {
@@ -1320,13 +1446,6 @@ impl Daemon {
         drop(waiters);
         // Its code may have come as it gave up.
         told.try_recv().ok()
-    }
-
-    /// Changes the record of the container with `id` by `f`, and writes it.
-    fn record(&self, id: &str, f: impl FnOnce(&mut Container)) {
-        if let Err(e) = lock(&self.containers).update(id, f) {
-            log(format!("container {id}: {e}"));
-        }
     }
 
     /// Stops serving: removes the socket, ends the runs in progress, and exits once they
@@ -1620,8 +1739,13 @@ enum Untaken {
 fn hand_over(vm: &UnixStream, payload: &[u8], fds: &[BorrowedFd<'_>]) -> Result<(), Untaken> {
     // A request cut short is no request: the VM never had all of it.
     shards_ipc::send(vm, kind::RUN, payload, fds).map_err(|e| Untaken::Surely(e.to_string()))?;
-    vm.set_read_timeout(Some(TAKE_TIMEOUT))
-        .map_err(|e| Untaken::Unknown(e.to_string()))?;
+    // macOS refuses options on a socket its peer has closed (EINVAL, xnu sosetoptlock):
+    // the read then finds the end at once.
+    match vm.set_read_timeout(Some(TAKE_TIMEOUT)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::InvalidInput => {}
+        Err(e) => return Err(Untaken::Unknown(e.to_string())),
+    }
     match shards_ipc::recv(vm) {
         Ok(Some(m)) if m.kind == kind::TAKEN => Ok(()),
         Ok(Some(m)) => Err(Untaken::Unknown(format!(
@@ -1664,6 +1788,8 @@ fn ready(socket: &UnixStream, pid: u32) -> Result<(), String> {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use std::io::{Read, Write};
+
+    use crate::containers::{Disk, Real};
 
     use super::*;
 
@@ -1763,10 +1889,17 @@ mod tests {
 
     impl Test {
         fn new(tag: &str) -> Test {
+            Test::on(tag, Arc::new(Real))
+        }
+
+        /// A daemon whose containers are kept on `disk`.
+        fn on(tag: &str, disk: Arc<dyn Disk>) -> Test {
             let home = std::env::temp_dir().join(format!("shards-daemon-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&home);
             std::fs::create_dir_all(&home).unwrap();
-            let containers = Registry::open(&home).unwrap();
+            let containers =
+                Registry::open_on(home.join("containers"), disk, &mut |note| panic!("noted: {note}"))
+                    .unwrap();
             let home_lock = File::create(home.join("daemon.lock")).unwrap();
             let daemon = Daemon::new(
                 home.clone(),
@@ -1800,9 +1933,18 @@ mod tests {
             (ready, theirs)
         }
 
-        /// Creates container `name` as a client's run does; its ID.
+        /// Creates container `name` as a client's run does, in a directory of its own; its
+        /// ID, once it is seen.
         fn create(&self, name: &str) -> String {
-            let id = containers::new_id().unwrap();
+            let id = self.reserve(name);
+            self.daemon.await_arrival(&id);
+            id
+        }
+
+        /// Reserves container `name` as a client's run does, its record being written; its
+        /// ID.
+        fn reserve(&self, name: &str) -> String {
+            let (id, _log) = self.daemon.new_container().unwrap();
             let run = Run {
                 image: "test".into(),
                 name: Some(name.into()),
@@ -1818,6 +1960,7 @@ mod tests {
                 interactive: false,
             };
             self.daemon.create(&run, &prepared, &id).unwrap();
+            self.daemon.record_arrival(&id);
             id
         }
 
@@ -2496,5 +2639,148 @@ mod tests {
         assert_eq!(starting.asked.load(Ordering::SeqCst), 1);
         let record = t.record(&id).unwrap();
         assert_eq!((record.state, record.exit_code), (Life::Created, Some(128)));
+    }
+
+    /// The host's filesystem, but its directory syncs wait until the test lets them
+    /// through, and while `failing` its renames fail.
+    #[derive(Debug, Default)]
+    struct Held {
+        through: Mutex<bool>,
+        turn: std::sync::Condvar,
+        syncing: AtomicBool,
+        failing: AtomicBool,
+        /// Its writes too wait until let through, while this is set.
+        holding_writes: AtomicBool,
+        writing: AtomicBool,
+    }
+
+    impl Held {
+        fn let_through(&self) {
+            *lock(&self.through) = true;
+            self.turn.notify_all();
+        }
+    }
+
+    impl Disk for Held {
+        fn create_dir(&self, dir: &Path) -> io::Result<()> {
+            Real.create_dir(dir)
+        }
+        fn list(&self, dir: &Path) -> io::Result<Vec<String>> {
+            Real.list(dir)
+        }
+        fn read(&self, path: &Path, max: u64) -> io::Result<Vec<u8>> {
+            Real.read(path, max)
+        }
+        fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+            if self.holding_writes.load(Ordering::SeqCst) {
+                self.writing.store(true, Ordering::SeqCst);
+                let through = lock(&self.through);
+                drop(self.turn.wait_while(through, |t| !*t).unwrap());
+            }
+            Real.write(path, bytes)
+        }
+        fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+            if self.failing.load(Ordering::SeqCst) {
+                return Err(io::Error::other("a failing disk"));
+            }
+            Real.rename(from, to)
+        }
+        fn remove_file(&self, path: &Path) -> io::Result<()> {
+            Real.remove_file(path)
+        }
+        fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+            Real.remove_dir_all(path)
+        }
+        fn sync_dir(&self, dir: &Path) -> io::Result<()> {
+            self.syncing.store(true, Ordering::SeqCst);
+            let through = lock(&self.through);
+            drop(self.turn.wait_while(through, |t| !*t).unwrap());
+            Real.sync_dir(dir)
+        }
+    }
+
+    /// A removed container's name is let go only once its removal is durable: a power
+    /// loss before then could bring the container back, next to one that took its name
+    /// (audit A15).
+    #[test]
+    fn a_name_is_let_go_only_once_its_removal_is_durable() {
+        let held = Arc::new(Held::default());
+        let t = Test::on("name-held", held.clone());
+        let id = t.create("racer");
+        let removal = lock(&t.daemon.containers).remove(&id).unwrap().unwrap();
+        let daemon = t.daemon.clone();
+        let completing = std::thread::spawn(move || daemon.complete(&removal));
+        let deadline = Instant::now() + PATIENCE;
+        while !held.syncing.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the removal was never synced");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(lock(&t.daemon.containers).get(&id).is_none(), "out of sight");
+        assert_eq!(
+            lock(&t.daemon.containers)
+                .name_taken("racer")
+                .map(|c| c.id.clone()),
+            Some(id.clone()),
+            "its name was let go before the removal was durable"
+        );
+        held.let_through();
+        completing.join().unwrap().unwrap();
+        assert!(lock(&t.daemon.containers).name_taken("racer").is_none());
+        assert!(!t.home.join("containers").join(&id).exists());
+    }
+
+    /// A record that could not be written is written again before a command is answered
+    /// (audit A15).
+    #[test]
+    fn a_record_behind_is_written_before_a_command_is_answered() {
+        let held = Arc::new(Held::default());
+        let t = Test::on("behind", held.clone());
+        let id = t.create("racer");
+        held.failing.store(true, Ordering::SeqCst);
+        let e = lock(&t.daemon.containers).update(&id, |c| c.exit_code = Some(9));
+        assert!(e.is_err());
+        held.failing.store(false, Ordering::SeqCst);
+        let on_disk = || {
+            let bytes = std::fs::read(t.home.join("containers").join(&id).join("config.json")).unwrap();
+            serde_json::from_slice::<Container>(&bytes).unwrap().exit_code
+        };
+        assert_eq!(on_disk(), None, "behind");
+        t.daemon.settle();
+        assert_eq!(on_disk(), Some(9));
+    }
+
+    /// What happens to a container while its record is written is written too, before it
+    /// is seen (audit A15).
+    #[test]
+    fn a_change_while_a_record_is_written_is_written_before_it_is_seen() {
+        let held = Arc::new(Held::default());
+        let t = Test::on("arriving", held.clone());
+        held.holding_writes.store(true, Ordering::SeqCst);
+        let id = t.reserve("racer");
+        let deadline = Instant::now() + PATIENCE;
+        while !held.writing.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the record was never written");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        lock(&t.daemon.containers)
+            .update(&id, |c| c.exit_code = Some(5))
+            .unwrap();
+        assert!(lock(&t.daemon.containers).get(&id).is_none(), "not seen yet");
+        held.let_through();
+        let deadline = Instant::now() + PATIENCE;
+        while lock(&t.daemon.containers).get(&id).is_none() {
+            assert!(Instant::now() < deadline, "never seen");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            lock(&t.daemon.containers).get(&id).and_then(|c| c.exit_code),
+            Some(5)
+        );
+        let bytes = std::fs::read(t.home.join("containers").join(&id).join("config.json")).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Container>(&bytes).unwrap().exit_code,
+            Some(5),
+            "its record is the change's"
+        );
     }
 }

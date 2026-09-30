@@ -1681,7 +1681,21 @@ revision before comparing a changed API/implementation.
 | a new directory and record, all synced | 8 554–8 682 | 15 976–20 317 | 25 487–37 210 | 36 152–226 825 |
 | a directory renamed aside, parent synced, removed | 4 266–4 284 | 7 303–8 199 | 8 768–14 954 | 15 804–26 912 |
 
+- **A record on the start path** (audit A15). `docs/research/measurements/build-ab/ab.py`,
+  `shards run --pull never alpine true`, each arm its own template, 2026-09-29 after a
+  reboot, load 7–14 (another VM on 3 CPUs, Spotlight reindexing):
+  - Written and renamed before the container was seen, on the run's path: +2.6 ms at the
+    median (n = 500, 95% [+2.1, +2.9]). Timed inside the daemon, the write took 0.18 ms
+    alone but 7.5 ms at the median with the other arm's runs going: `open` and `rename`
+    each took 4.4 ms at the median (n = 612). With shards idle, the same create and
+    rename took 0.16 ms at the median and 4.4 ms at p90: the host's other processes'
+    flushes, in which any metadata write waits.
+  - Written beside the run, which waited for it only before its VM was committed: +0.33
+    ms at the median (n = 1000, 95% [+0.29, +0.39]), p90 6.5 → 11.9 ms, p99 9.9 → 24.1 ms.
+  - Written beside the run, which never waits for it: −21 µs (n = 1000, 95% [−44, +9]);
+    p90 8.8 → 8.0 ms, p99 32.2 → 29.8 ms.
 - **Consequence.** A record durable at once costs 8.5 ms at the median, 2.5 times a whole
-  pooled run (M26, 3.4 ms); a barrier alone costs 0.3 ms and a tail of milliseconds. The
-  start path can afford a write and a rename (0.1 ms). Linux is not measured yet. The
-  durability contract A15 asks for is to be set from these numbers.
+  pooled run (M26, 3.4 ms); a barrier alone costs 0.3 ms and a tail of milliseconds. So
+  container records are written and renamed, not synced, and never on a run's path: a
+  metadata write there takes the filesystem's tail, not its median. A removal, off the
+  path, is synced. Linux is not measured yet. D27, "Durability".

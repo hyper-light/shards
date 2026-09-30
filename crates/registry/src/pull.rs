@@ -103,7 +103,9 @@ pub fn pull(
     fetch_layers(registry, store, &manifest, report)?;
     report(Event::Building);
     let rootfs = store.rootfs(&layers, max_layer)?;
-    store.tag(&reference.to_string(), &manifest_desc)?;
+    let mut contents = vec![manifest_digest.clone(), manifest.config.digest()?];
+    contents.extend(layers.iter().map(|l| l.blob.clone()));
+    store.tag(&reference.to_string(), &manifest_desc, &contents)?;
     Ok(Pulled {
         resolved,
         manifest: manifest_digest,
@@ -836,7 +838,7 @@ mod tests {
             size: i64::try_from(manifest.len()).unwrap(),
             platform: None,
         };
-        store.tag(&reference.to_string(), &desc).unwrap();
+        store.tag(&reference.to_string(), &desc, &[]).unwrap();
     }
 
     /// The audit's A11: what a pull refuses, a stored image is refused for too, with the

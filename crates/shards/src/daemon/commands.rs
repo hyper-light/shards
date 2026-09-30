@@ -16,7 +16,7 @@ use shards_cmdline::{go, gotime, width};
 use shards_ipc::kind;
 
 use super::{Daemon, RunState, STOP_GRACE, lock};
-use crate::containers::{Container, State as Life, now};
+use crate::containers::{Container, Removal, State as Life, now};
 use crate::spec::{LOG_STDERR, LOG_STDOUT};
 
 /// How long a command may take to end after SIGKILL before its VM goes too, and how long
@@ -218,7 +218,7 @@ impl Daemon {
                 return Ok(reference.to_string());
             }
             let name = reference.strip_prefix('/').unwrap_or(reference);
-            if let Some(c) = registry.name_taken(name) {
+            if let Some(c) = registry.named(name) {
                 return Ok(c.id.clone());
             }
             let mut matching = registry.all().filter(|c| c.id.starts_with(reference));
@@ -397,9 +397,17 @@ impl Daemon {
                         "Error response from daemon: removal of container {reference} is already in progress"
                     ));
                 }
+                // Out of sight, then durable: an `rm` answered is never undone by a crash.
+                let complete = |removal: Removal| {
+                    self.complete(&removal).map(|()| true).map_err(|e| {
+                        format!(
+                            "Error response from daemon: container \"{reference}\" is removed, but its removal may not outlast a crash: {e}"
+                        )
+                    })
+                };
                 let removed = (|| {
-                    if self.cancel_start(&id).map_err(|e| cannot(&e.to_string()))? {
-                        return Ok(true);
+                    if let Some(removal) = self.cancel_start(&id).map_err(|e| cannot(&e.to_string()))? {
+                        return complete(removal);
                     }
                     if lock(&self.containers).get(&id).is_none() {
                         return Ok(true);
@@ -416,10 +424,10 @@ impl Daemon {
                             ));
                         }
                     }
-                    lock(&self.containers)
+                    let removal = lock(&self.containers)
                         .remove(&id)
-                        .map(|_| true)
-                        .map_err(|e| cannot(&e.to_string()))
+                        .map_err(|e| cannot(&e.to_string()))?;
+                    removal.map_or(Ok(true), complete)
                 })();
                 lock(&self.removing).remove(&id);
                 removed
