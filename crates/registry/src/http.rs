@@ -960,9 +960,20 @@ struct Conn {
 }
 
 impl Conn {
+    /// Bounds each read and write by `d`. macOS refuses any option on a socket shut down
+    /// both ways, as one the server has reset is, with EINVAL (xnu-11417.101.15
+    /// bsd/kern/uipc_socket.c, sosetoptlock): its reads return what is buffered, then its
+    /// end, and its writes fail, at once, so it needs no bound, and the exchange goes on
+    /// to find out what the server sent.
     fn set_timeout(&self, d: Duration) -> io::Result<()> {
-        self.io.get_ref().tcp().set_read_timeout(Some(d))?;
-        self.io.get_ref().tcp().set_write_timeout(Some(d))
+        let tcp = self.io.get_ref().tcp();
+        for set in [TcpStream::set_read_timeout, TcpStream::set_write_timeout] {
+            match set(tcp, Some(d)) {
+                Err(e) if e.kind() == io::ErrorKind::InvalidInput && e.raw_os_error().is_some() => {}
+                result => result?,
+            }
+        }
+        Ok(())
     }
 
     /// From here on, any read or write that makes no progress for 30 s fails.
@@ -1184,6 +1195,46 @@ mod tests {
         let e = fetch(&plain().cancelled_by(cancel), "GET", &url).unwrap_err();
         assert_eq!(e.kind(), ErrorKind::Cancelled, "{e}");
         assert!(listener.accept().is_err(), "a cancelled client connected");
+    }
+
+    /// A connection the server has reset takes its timeouts without error, and its reads
+    /// end at once: macOS refused them with EINVAL, which failed a request that should have
+    /// been sent again on a new connection (the flaky `a_stale_pooled_connection_is_replaced`).
+    #[test]
+    fn a_reset_connection_takes_its_timeouts() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut tcp = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        // Closing with bytes it never read, the server resets the connection.
+        tcp.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        drop(server);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let mut byte = [0u8; 1];
+            tcp.set_nonblocking(true).unwrap();
+            let seen = tcp.peek(&mut byte);
+            tcp.set_nonblocking(false).unwrap();
+            if !matches!(&seen, Err(e) if e.kind() == io::ErrorKind::WouldBlock) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the reset never arrived");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let conn = Conn {
+            key: Key::of(&at("http", "127.0.0.1", port)),
+            io: BufReader::new(Stream::Plain(tcp)),
+            watch: None,
+        };
+        conn.set_timeout(Duration::from_secs(30)).unwrap();
+        conn.stall().unwrap();
+        let t0 = Instant::now();
+        let mut conn = conn;
+        let mut rest = Vec::new();
+        let _ = conn.io.read_to_end(&mut rest);
+        assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
     }
 
     #[test]
