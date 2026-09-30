@@ -1,6 +1,6 @@
 # Agentfile: OCI-compliant microVM builds, and directives for agents
 
-**Status:** requirements, as stated on 2026-09-29. They are to be examined for gaps and
+**Status:** requirements, as stated on 2026-09-29 (`EXPOSE` revised the same day). They are to be examined for gaps and
 designed once the fixes from the 2026-09-29 audit are done. Nothing here is built yet.
 Open questions noticed while recording them are listed at the end, for that review. The
 design decisions that follow will go in `docs/design/architecture.md`, each with its
@@ -39,17 +39,24 @@ guest over vsock alone (architecture.md D12).
 
 ## 4. Directives
 
-### 4.1 `EXPOSE`, with `FOR INGRESS` and `FOR EGRESS`
+### 4.1 `EXPOSE`, with `AS` and `FOR`
 
 ```
-EXPOSE <port> [FOR INGRESS | FOR EGRESS]
+EXPOSE <port> [AS <egress|ingress>] FOR [<network_name_a> <network_name_b> ...]
 ```
 
-| Directive | Opens port 3000 for |
-|---|---|
-| `EXPOSE 3000` | incoming and outgoing traffic |
-| `EXPOSE 3000 FOR INGRESS` | incoming traffic only |
-| `EXPOSE 3000 FOR EGRESS` | outgoing traffic only |
+`[]` marks what is optional.
+
+- **`AS`** limits the port to one direction:
+
+  | Directive | Opens port 3000 for |
+  |---|---|
+  | `EXPOSE 3000` | ingress and egress |
+  | `EXPOSE 3000 AS ingress` | ingress only |
+  | `EXPOSE 3000 AS egress` | egress only |
+
+- **`FOR <network_name_a> <network_name_b> ...`** lets the named networks (§4.6)
+  communicate beyond the microVM on that port, the microVM's port, as its `AS` allows.
 
 This extension is intentional, and part of the default deny.
 
@@ -222,9 +229,15 @@ Recorded as found; none is answered here.
    scope connect to it, or may they? And are local and remote servers both meant?
 6. **MCP ports.** Is port 8000 the default for `https://` URLs too, or does HTTPS keep 443?
    What does `[:<port>]` mean after a path, git URL or OCI artifact?
-7. **`EXPOSE ... FOR EGRESS`.** Is the port the destination port of outgoing connections,
-   to any destination? How do `FOR` and Docker's protocol suffix (`EXPOSE 3000/udp`)
-   combine? And how does `docker run -p` map onto ingress and egress?
+7. **`EXPOSE`.**
+   - Is `FOR` required, as the syntax as given reads, or optional? What may use a port
+     exposed with no network named: nothing yet, the microVM alone, every agent?
+   - Is an egress port the destination port of outgoing connections, to any
+     destination?
+   - How do `AS` and Docker's protocol suffix (`EXPOSE 3000/udp`) combine? And how does
+     `docker run -p` map onto ingress and egress?
+   - How do `EXPOSE ... FOR <network>` and a network's own `--expose`, `--ingress` and
+     `--egress` (§4.6) relate: two ways to open the same port, or different things?
 8. **`NETWORK`'s port options.** The text named `--egress` for "both egress and ingress"
    and again for "egress only". §4.6 reads the first as `--expose`.
 9. **A workspace's "read-only permissions".** Read-only everywhere, its own directory
