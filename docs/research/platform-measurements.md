@@ -1829,7 +1829,8 @@ revision before comparing a changed API/implementation.
   typically: some 3.6 µs a run, where a run takes about 5 ms (M29).
 - **Consequence.** D06's persistent kqueue is not taken: it would save a few
   microseconds a run, 0.07%, against the stale registrations and descriptor reuse a
-  fresh kqueue rules out by construction.
+  fresh kqueue rules out by construction. M57 found that a stream, which waits
+  constantly, pays 16.5% of its device thread for it; D06 was then taken.
 
 ### M51. Workloads, their output checked, and what streams cost on this host
 
@@ -1981,3 +1982,32 @@ revision before comparing a changed API/implementation.
   those VMs, and a warm request's latency is what shards is for. The Firecracker
   envelope's `rss_file` allowance stands for this reason. Commit accounting, D04's other
   half, is measured apart.
+
+### M57. A sustained vsock stream: where the device thread's time goes
+
+- **Question.** Audits D05 and D06. Do the vsock device's per-packet allocations
+  (chains, spans, iovecs) or its fresh kqueue per wait cost a stream anything? M50
+  measured the kqueue in a run, where it waits 2 or 3 times; a stream waits constantly.
+- **Method.** `docs/research/measurements/vsock-stream/stream.py`: the test guest's
+  `vsock` echo, a host writer sending 256 KiB buffers and a reader taking the echo back
+  for 10 s. Builds alternate for 4 rounds, and sample(1) profiles one 12 s run of each.
+  2026-09-30, this machine; the builds are 137afef, and the same with the vsock worker's
+  kqueue kept (below).
+- **Results.**
+  - Before, the device thread had 4,720 of 7,847 samples busy, the rest waiting in
+    `kevent`:
+    - making and closing each wait's kqueue took 779 (`kqueue` 298, `close` 481), 16.5%
+      of its busy time;
+    - malloc, free and vector growth took about 84, 1.8%;
+    - readv, writev, send and the rest took the remainder.
+  - Echoed MiB/s per round, before and after keeping the kqueue: 297 / 313, 296 / 314,
+    296 / 313, 297 / 308, with VM CPU time 13.6–13.7 s in every run. After, `kqueue` and
+    `close` do not appear, and the thread waits more.
+- **Consequence.**
+  - D06 is taken. Each vsock worker keeps one kqueue (`poll::Poller`). Every wait adds
+    each interest again, which updates a registration or makes a missing one, and deletes
+    what is no longer wanted. Closing a descriptor removes its registrations (kqueue(2)),
+    so a number reused since the last wait is registered anew. A stream moves 5% more for
+    the same CPU. Linux's poll(2) has no object to keep; its `pollfd` array is now kept.
+  - D05 is not taken: the allocations cost 1.8% of the busy thread, below what reworking
+    every device's queue loop would buy.

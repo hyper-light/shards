@@ -343,6 +343,7 @@ fn run(
 ) -> Session {
     let mut interests: Vec<Interest<Option<Token>>> = Vec::new();
     let mut ready: Vec<Ready<Option<Token>>> = Vec::new();
+    let mut poller: Option<poll::Poller> = None;
     while !stop.load(Ordering::Acquire) {
         let more = match step(&mut s, mem, irq) {
             Ok(more) => more,
@@ -370,7 +371,11 @@ fn run(
                 .map(|t| t.saturating_duration_since(Instant::now()))
         };
         ready.clear();
-        if let Err(e) = poll::wait(&interests, timeout, &mut ready) {
+        let waited = match &mut poller {
+            Some(p) => p.wait(&interests, timeout, &mut ready),
+            None => poll::Poller::new().and_then(|p| poller.insert(p).wait(&interests, timeout, &mut ready)),
+        };
+        if let Err(e) = waited {
             // Unexpected (out of memory or descriptors): back off rather than spin.
             warn!("virtio-vsock: waiting for sockets: {e}");
             thread::sleep(std::time::Duration::from_millis(10));
