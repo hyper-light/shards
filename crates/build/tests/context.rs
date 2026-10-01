@@ -95,3 +95,100 @@ fn contexts_are_sent_as_buildx_sends_them() {
         failed.join("\n")
     );
 }
+
+fn tmp(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("shards-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// The bug a build that reads in place would have: an edit after the context is read,
+/// keeping the file's size, must not reach the layer.
+#[test]
+fn an_edit_after_the_context_is_read_does_not_reach_the_build() {
+    use shards_build::data::Sources;
+    use shards_image::erofs::Source as _;
+    let ctx = tmp("snapshot-ctx");
+    let stage = tmp("snapshot-stage");
+    std::fs::write(ctx.join("f"), b"before").unwrap();
+    let mut sources = Sources::default();
+    let fs = context::load(&ctx, &Filters::default(), &mut sources, (0, 0), &stage).unwrap();
+    std::fs::write(ctx.join("f"), b"after!").unwrap();
+    let id = fs.lstat(b"/f").unwrap();
+    let shards_image::erofs::Kind::File { size, data } = fs.node(id).unwrap().kind else {
+        panic!("not a file")
+    };
+    let mut got = vec![0u8; size as usize];
+    sources.read_at(data, 0, &mut got).unwrap();
+    assert_eq!(got, b"before");
+    std::fs::remove_file(ctx.join("f")).unwrap();
+    let mut again = vec![0u8; size as usize];
+    sources.read_at(data, 0, &mut again).unwrap();
+    assert_eq!(again, b"before", "and a removal neither");
+    drop(sources);
+    std::fs::remove_dir_all(&ctx).unwrap();
+    std::fs::remove_dir_all(&stage).unwrap();
+}
+
+/// A file rewritten without pause while it is taken is a state the file was in, or
+/// refused as changing, and a refusal leaves nothing behind. Each version is one write,
+/// so every state the file passes through is a whole version, and a snapshot mixing
+/// two could only be a torn read.
+#[test]
+fn a_file_written_while_it_is_taken_is_one_version_or_refused() {
+    use std::io::{Seek, SeekFrom, Write};
+    let dir = tmp("snapshot-race");
+    let src = dir.join("f");
+    let size = 4 << 20;
+    std::fs::write(&src, vec![b'a'; size]).unwrap();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    // Stops the writer however the checks end, a failed assertion included: the scope
+    // joins it before the panic goes on.
+    struct Stop<'a>(&'a std::sync::atomic::AtomicBool);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    std::thread::scope(|s| {
+        let _stop = Stop(&stop);
+        s.spawn(|| {
+            let mut f = std::fs::File::options().write(true).open(&src).unwrap();
+            let mut n = 0u8;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                n = n.wrapping_add(1);
+                f.seek(SeekFrom::Start(0)).unwrap();
+                let written = f.write(&vec![b'a' + n % 26; size]).unwrap();
+                assert_eq!(written, size, "one write, one version");
+            }
+        });
+        for i in 0..200 {
+            let dst = dir.join(format!("s{i}"));
+            match shards_build::host::snapshot(&src, &dst) {
+                Ok(snap) => {
+                    let b = std::fs::read(&dst).unwrap();
+                    assert_eq!(b.len() as u64, snap.size);
+                    assert!(b.iter().all(|&c| c == b[0]), "snapshot {i} mixes versions");
+                    std::fs::remove_file(&dst).unwrap();
+                }
+                Err(e) => {
+                    assert!(e.to_string().contains("file changed as the build read it"), "{e}");
+                    assert!(!dst.exists(), "a refused snapshot leaves nothing");
+                }
+            }
+        }
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A file a symlink replaced since the walk is not followed out of the context.
+#[test]
+fn a_symlink_put_in_a_files_place_is_not_followed() {
+    let dir = tmp("snapshot-link");
+    std::fs::write(dir.join("outside"), b"secret").unwrap();
+    std::os::unix::fs::symlink(dir.join("outside"), dir.join("f")).unwrap();
+    let e = shards_build::host::snapshot(&dir.join("f"), &dir.join("s")).unwrap_err();
+    assert!(!dir.join("s").exists(), "{e}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

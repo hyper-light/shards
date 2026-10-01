@@ -33,12 +33,21 @@ fn show(b: &[u8]) -> String {
 }
 
 /// Reads the context `dir` as the client sends it and the daemon writes it: a snapshot
-/// whose root BuildKit made at `now`, files owned by root, their bytes in `sources`.
-pub fn load(dir: &Path, filters: &Filters, sources: &mut Sources, now: (i64, u32)) -> Result<Fs, Error> {
+/// whose root BuildKit made at `now`, files owned by root. Each file's bytes are taken
+/// into `stage`, a directory private to the build, as one version no later edit
+/// changes ([`host::snapshot`]): as BuildKit's copy keeps its build from seeing an edit,
+/// without copying where the file system clones. `stage` must outlive `sources`' reads.
+pub fn load(
+    dir: &Path,
+    filters: &Filters,
+    sources: &mut Sources,
+    now: (i64, u32),
+    stage: &Path,
+) -> Result<Fs, Error> {
     let root = host::eval_symlinks(dir).map_err(|e| Error(format!("resolve {}: {e}", dir.display())))?;
     let mut sent = walk(&root, filters)?;
     reset_hardlinks(&mut sent);
-    receive(&root, sent, sources, now)
+    receive(&root, sent, sources, now, stage)
 }
 
 /// hardlinks.go WithHardlinkReset, which the sender walks through: a file whose link
@@ -420,7 +429,9 @@ fn receive(
     sent: Vec<(Vec<u8>, Stat)>,
     sources: &mut Sources,
     now: (i64, u32),
+    stage: &Path,
 ) -> Result<Fs, Error> {
+    let mut taken = 0u64;
     let mut fs = Fs::new(
         Tree::new(Meta {
             mode: 0o755,
@@ -432,7 +443,7 @@ fn receive(
     );
     let os = |e: vfs::PathError| Error(e.to_string());
     let mut dirs: Vec<(Vec<u8>, (i64, u32))> = Vec::new();
-    for (rel, st) in sent {
+    for (rel, mut st) in sent {
         let p = vfs::join(b"/", &rel);
         let mode = st.mode;
         if mode & fm::DIR != 0 {
@@ -457,11 +468,19 @@ fn receive(
             fs.symlink(&st.link, &p).map_err(os)?;
         } else if !st.link.is_empty() {
             fs.link(&vfs::join(b"/", &st.link), &p).map_err(os)?;
+        } else if st.socket {
+            fs.create(&p, syscall_mode(mode)).map_err(os)?;
         } else {
-            let id = fs.create(&p, syscall_mode(mode)).map_err(os)?;
-            let data = sources
-                .host(host::path(root, &rel), st.size)
-                .map_err(|e| Error(e.to_string()))?;
+            // The bytes and the stat they go with, as one version of the file.
+            let snap = stage.join(taken.to_string());
+            taken += 1;
+            let src = host::path(root, &rel);
+            let got = host::snapshot(&src, &snap).map_err(|e| Error(format!("{}: {e}", src.display())))?;
+            st.mode = (st.mode & !(fm::PERM | fm::SETUID | fm::SETGID | fm::STICKY)) | got.mode;
+            st.size = got.size;
+            st.mtime = got.mtime;
+            let id = fs.create(&p, syscall_mode(st.mode)).map_err(os)?;
+            let data = sources.host(snap, st.size).map_err(|e| Error(e.to_string()))?;
             fs.set_data(id, st.size, data);
         }
         rewrite(&mut fs, &p, &st).map_err(os)?;

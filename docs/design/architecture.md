@@ -1584,12 +1584,18 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
        config and the same layers, byte for byte, but for the wall-clock mtimes
        BuildKit's own layers carry (WORKDIR's directory, a parent a COPY touched).
      - Where shards does better than BuildKit, on purpose:
-       - The context is read in place, never sent or copied: shardsd runs as the user
-         beside the files, so BuildKit's session transfer has nothing to do. A file's
-         bytes are read once, when a layer holding it is written. Progress says what was
-         read ("read 5 files, 166B"), not a transfer's byte count. What BuildKit's copy
-         gives that this does not, a snapshot no edit can change mid-build, is guarded
-         only by each file's size so far.
+       - The context is never sent: shardsd runs as the user beside the files, so
+         BuildKit's session transfer has nothing to do, and progress says what was read
+         ("read 5 files, 166B"), not a transfer's byte count. What the transfer gives
+         BuildKit, one version of each file that no edit during the build can change,
+         shards keeps another way: each file is taken into a stage private to the build,
+         by a copy-on-write clone where the file system makes one (APFS, Btrfs, XFS) and
+         by a copy elsewhere, from a descriptor opened without following symlinks. A file
+         whose identity, size, mtime or ctime moved while it was taken is refused, as GNU
+         tar reports "file changed as we read it". `tests/context.rs` holds this under a
+         writer that never pauses: 1,000 snapshots on APFS, none torn; copies taken
+         without the check tear on the first. A stage a crashed build leaves is
+         collected with the store's other leftovers.
        - Layers are stored uncompressed (`application/vnd.oci.image.layer.v1.tar`), so
          no build or run spends time compressing or decompressing them; the diff ID is the
          digest. A push compresses.

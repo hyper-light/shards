@@ -329,6 +329,23 @@ impl Unpacked {
     }
 }
 
+/// A directory under `ingest/` private to one build, removed with what it holds when
+/// dropped; one a crashed build leaves is collected.
+#[derive(Debug)]
+pub struct Stage(PathBuf);
+
+impl Stage {
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Stage {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 /// A blob being written, hashed as it goes; [`BlobWriter::commit`] stores it under its
 /// SHA-256 digest. Dropped uncommitted, it is removed.
 pub struct BlobWriter {
@@ -664,7 +681,22 @@ impl Store {
         let (blobs, rootfs) = self.roots()?;
         let mut collected = Collected::default();
         let mut remove = |path: &Path, count: &mut u64| {
-            let len = fs::symlink_metadata(path).map_or(0, |m| m.len());
+            let meta = fs::symlink_metadata(path);
+            if meta.as_ref().is_ok_and(fs::Metadata::is_dir) {
+                // A build's stage (`Store::stage`) its process left: its files, then it.
+                if let Ok(entries) = fs::read_dir(path) {
+                    for e in entries.flatten() {
+                        let len = e.metadata().map_or(0, |m| m.len());
+                        if fs::remove_file(e.path()).is_ok() {
+                            *count += 1;
+                            collected.bytes = collected.bytes.saturating_add(len);
+                        }
+                    }
+                }
+                let _ = fs::remove_dir(path);
+                return;
+            }
+            let len = meta.map_or(0, |m| m.len());
             if fs::remove_file(path).is_ok() {
                 *count += 1;
                 collected.bytes = collected.bytes.saturating_add(len);
@@ -849,6 +881,19 @@ impl Store {
         }
         partial.flush()?;
         Ok(partial)
+    }
+
+    /// A new stage: on the store's file system, so files cloned into it share their
+    /// blocks where the context is on the same one.
+    pub fn stage(&self) -> Result<Stage, Error> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = self
+            .root
+            .join("ingest")
+            .join(format!("{}-stage-{n}", std::process::id()));
+        fs::create_dir(&path)?;
+        Ok(Stage(path))
     }
 
     /// A new blob, written by the caller.

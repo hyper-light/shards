@@ -24,6 +24,8 @@ pub struct Stat {
     pub devminor: u32,
     pub link: Vec<u8>,
     pub xattrs: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// A socket, which is sent as the empty file archive/tar can hold.
+    pub socket: bool,
 }
 
 fn since_epoch(m: &fs::Metadata) -> (i64, u32) {
@@ -106,6 +108,7 @@ pub fn lstat(p: &Path) -> io::Result<Stat> {
         mode |= fm::STICKY;
     }
     // archive/tar cannot hold a socket, so fsutil sends it as what it then is: a file.
+    let socket = mode & fm::SOCKET != 0;
     mode &= !fm::SOCKET;
     let dir = mode & fm::DIR != 0;
     let rdev = m.rdev();
@@ -130,6 +133,7 @@ pub fn lstat(p: &Path) -> io::Result<Stat> {
         },
         link,
         xattrs: xattrs(p)?,
+        socket,
     })
 }
 
@@ -164,6 +168,7 @@ pub fn lstat(p: &Path) -> io::Result<Stat> {
         devminor: 0,
         link,
         xattrs: BTreeMap::new(),
+        socket: false,
     })
 }
 
@@ -248,6 +253,150 @@ fn get(c: &std::ffi::CStr, name: &std::ffi::CStr) -> io::Result<Vec<u8>> {
             0,
             libc::XATTR_NOFOLLOW,
         )
+    })
+}
+
+/// What a snapshot of a regular file holds: its bytes, private to the build, and the
+/// mode, size and time they had when taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    /// Go's FileMode bits.
+    pub mode: u32,
+    pub size: u64,
+    pub mtime: (i64, u32),
+}
+
+/// Takes a snapshot of the regular file `src` at `dst`, which must not exist: one
+/// version of its bytes, which no later edit of `src` changes. The source is held open
+/// throughout, so a rename over it does not matter, and is never followed through a
+/// symlink put in its place. A copy-on-write clone where the file system makes one
+/// (APFS's fclonefileat, Btrfs's and XFS's FICLONE), else a copy.
+///
+/// A file that changes while it is taken has no one version to take, and is refused, as
+/// GNU tar reports "file changed as we read it": its identity, size, mtime and ctime are
+/// read before and after, and Linux and macOS move ctime on every write, which nothing
+/// can set back.
+#[cfg(unix)]
+pub fn snapshot(src: &Path, dst: &Path) -> io::Result<Snapshot> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let f = fs::File::options()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(src)?;
+    let version = |m: &fs::Metadata| {
+        (
+            m.dev(),
+            m.ino(),
+            m.size(),
+            m.mtime(),
+            m.mtime_nsec(),
+            m.ctime(),
+            m.ctime_nsec(),
+        )
+    };
+    let before = f.metadata()?;
+    if !before.is_file() {
+        return Err(io::Error::other(format!("{}: not a regular file", src.display())));
+    }
+    if !clone(&f, dst)? {
+        copy(&f, dst)?;
+    }
+    let after = f.metadata()?;
+    if version(&before) != version(&after) {
+        fs::remove_file(dst)?;
+        return Err(io::Error::other(format!(
+            "{}: file changed as the build read it",
+            src.display()
+        )));
+    }
+    let st = before.mode();
+    let mut mode = st & 0o777;
+    if st & 0o4000 != 0 {
+        mode |= fm::SETUID;
+    }
+    if st & 0o2000 != 0 {
+        mode |= fm::SETGID;
+    }
+    if st & 0o1000 != 0 {
+        mode |= fm::STICKY;
+    }
+    Ok(Snapshot {
+        mode,
+        size: before.size(),
+        mtime: since_epoch(&before),
+    })
+}
+
+/// Copies what `f` holds to a new file `dst`, from its start.
+#[cfg(unix)]
+fn copy(f: &fs::File, dst: &Path) -> io::Result<()> {
+    use std::io::{Seek, SeekFrom};
+    let mut src = f;
+    src.seek(SeekFrom::Start(0))?;
+    let mut out = fs::File::options().write(true).create_new(true).open(dst)?;
+    io::copy(&mut src, &mut out)?;
+    Ok(())
+}
+
+/// A copy-on-write clone of `f` at `dst`; false where the file system makes none.
+#[cfg(target_os = "macos")]
+fn clone(f: &fs::File, dst: &Path) -> io::Result<bool> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let c = CString::new(dst.as_os_str().as_bytes()).map_err(|_| io::Error::other("NUL in path"))?;
+    // SAFETY: the descriptor is open for the call and `c` is NUL-terminated.
+    let r = unsafe { libc::fclonefileat(f.as_raw_fd(), libc::AT_FDCWD, c.as_ptr(), 0) };
+    if r == 0 {
+        return Ok(true);
+    }
+    let e = io::Error::last_os_error();
+    match e.raw_os_error() {
+        Some(libc::ENOTSUP | libc::EXDEV) => Ok(false),
+        _ => Err(e),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn clone(f: &fs::File, dst: &Path) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    let out = fs::File::options().write(true).create_new(true).open(dst)?;
+    // SAFETY: both descriptors are open for the call; FICLONE reads the source's.
+    let r = unsafe { libc::ioctl(out.as_raw_fd(), libc::FICLONE, f.as_raw_fd()) };
+    if r == 0 {
+        return Ok(true);
+    }
+    let e = io::Error::last_os_error();
+    drop(out);
+    fs::remove_file(dst)?;
+    match e.raw_os_error() {
+        Some(libc::EOPNOTSUPP | libc::EXDEV | libc::EINVAL | libc::ENOTTY) => Ok(false),
+        _ => Err(e),
+    }
+}
+
+/// On Windows the source is opened sharing reads only, so no one writes it while it is
+/// copied, and its metadata is read through that handle.
+#[cfg(windows)]
+pub fn snapshot(src: &Path, dst: &Path) -> io::Result<Snapshot> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // FILE_SHARE_READ: others may read, not write or delete, while it is held.
+    let mut f = fs::File::options().read(true).share_mode(0x1).open(src)?;
+    let m = f.metadata()?;
+    if !m.is_file() {
+        return Err(io::Error::other(format!(
+            "{}: no longer a regular file",
+            src.display()
+        )));
+    }
+    let mut out = fs::File::options().write(true).create_new(true).open(dst)?;
+    io::copy(&mut f, &mut out)?;
+    let mut mode = if m.permissions().readonly() { 0o444 } else { 0o666 };
+    mode = ((mode & fm::PERM) | 0o111) & 0o755;
+    Ok(Snapshot {
+        mode,
+        size: m.len(),
+        mtime: since_epoch(&m),
     })
 }
 

@@ -261,7 +261,10 @@ fn context_source(case: &Value, mem: &mut Sources) -> Fs {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     common::make(&dir, &case["src"]);
-    let fs = shards_build::context::load(&dir, &Default::default(), mem, SENTINEL).unwrap();
+    let stage = dir.with_extension("stage");
+    std::fs::create_dir_all(&stage).unwrap();
+    let fs = shards_build::context::load(&dir, &Default::default(), mem, SENTINEL, &stage).unwrap();
+    CONTEXT_DIRS.with(|d| d.borrow_mut().push(stage));
     CONTEXT_DIRS.with(|d| d.borrow_mut().push(dir));
     fs
 }

@@ -64,6 +64,8 @@ pub struct Exec<'a> {
     pub sources: Sources,
     /// Layers unpacked for snapshots, their files read until the build ends.
     unpacked: Vec<Unpacked>,
+    /// Where the context's files are snapshotted; dropped after `sources`, which reads them.
+    stages: Vec<store::Stage>,
 }
 
 /// One slot of a file operation: an input, an action's mount, or its committed result.
@@ -84,6 +86,7 @@ impl<'a> Exec<'a> {
             limits,
             sources: Sources::default(),
             unpacked: Vec::new(),
+            stages: Vec::new(),
         }
     }
 
@@ -144,7 +147,10 @@ impl<'a> Exec<'a> {
         dir: &std::path::Path,
         filters: &shards_build::context::Filters,
     ) -> Result<Ref, String> {
-        let fs = shards_build::context::load(dir, filters, &mut self.sources, now()).map_err(|e| e.0)?;
+        let stage = self.store.stage().map_err(err)?;
+        let fs = shards_build::context::load(dir, filters, &mut self.sources, now(), stage.path())
+            .map_err(|e| e.0)?;
+        self.stages.push(stage);
         Ok(Ref {
             fs: Rc::new(fs),
             layers: Vec::new(),
