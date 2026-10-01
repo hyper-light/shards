@@ -6,7 +6,7 @@
 //!
 //! Host ports the VM's own process serves ([`VsockHost::ports`]) are reached without a
 //! socket file: a guest connection to one is one end of a socket pair, and the other end
-//! goes to the port's sender. Without a path, the device takes no host clients and other
+//! goes to the port's sender. Each takes one connection; later ones are refused. Without a path, the device takes no host clients and other
 //! host ports refuse.
 //!
 //! A snapshot keeps the streams the guest may still hold ([`Saved`]). The restored copy
@@ -252,8 +252,11 @@ impl Muxer {
             self.stray_rst(key.local_port, key.peer_port);
             return;
         }
-        let connected = match self.served.get(&key.local_port) {
-            Some(port) => serve(port),
+        // A served port takes one connection: its owner dials it before anything else in
+        // the guest runs, and a later dial, by a workload, is refused (AGENTFILE_ARCH.md
+        // §9.7).
+        let connected = match self.served.remove(&key.local_port) {
+            Some(port) => serve(&port),
             None => match &self.listener {
                 Some((path, _)) => {
                     let mut target = OsString::from(path.as_os_str());
@@ -675,8 +678,8 @@ mod tests {
     }
 
     /// A port this process serves gets the guest's connection as a connected socket, with
-    /// no socket file; a port nothing serves, with no path to dial, and a served port whose
-    /// receiver is gone, are refused with an RST.
+    /// no socket file; a port nothing serves, with no path to dial, a served port whose
+    /// receiver is gone, and a second connection to a served port, are refused with an RST.
     #[test]
     fn served_ports_get_connections_without_socket_files() {
         let (sender, arrived) = std::sync::mpsc::channel();
@@ -688,7 +691,7 @@ mod tests {
         };
         let mut m = Muxer::new(host, 3).unwrap();
         let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
-        for (port, from) in [(52, 49_152), (7, 49_153), (53, 49_154)] {
+        for (port, from) in [(52, 49_152), (7, 49_153), (53, 49_154), (52, 49_155)] {
             m.on_guest_packet(&request(port, from), &[], &mem);
         }
         let mut sent = Vec::new();
@@ -700,6 +703,7 @@ mod tests {
             (op::RESPONSE, 52, 49_152),
             (op::RST, 7, 49_153),
             (op::RST, 53, 49_154),
+            (op::RST, 52, 49_155),
         ];
         expected.sort_unstable();
         assert_eq!(sent, expected);

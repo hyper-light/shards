@@ -57,6 +57,7 @@ pub fn main() -> ! {
         "orphan" => orphan(),
         "trap" => trap(arg(1)),
         "tty" => tty(arg(1)),
+        "vsock" => vsock(args.get(1..).unwrap_or_default()),
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -306,6 +307,56 @@ fn orphan() -> i32 {
         }
     }
     let _ = io::stdout().write_all(b"parent done\n");
+    0
+}
+
+/// Dials each host vsock port (CID 2) and prints `PORT connected`, then what the host
+/// sends within a second (`read N bytes`, `closed` or `nothing`), or `PORT refused ERRNO`:
+/// what a workload reaches of the host when nothing confines it.
+fn vsock(ports: &[String]) -> i32 {
+    for port in ports {
+        let Ok(n) = port.parse::<u32>() else {
+            return 2;
+        };
+        // SAFETY: socket(2), connect(2), setsockopt(2) and read(2) on a descriptor this
+        // function owns and closes, with a sockaddr_vm it initializes.
+        let line = unsafe {
+            let fd = libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+            if fd < 0 {
+                format!("{n} socket {}", io::Error::last_os_error())
+            } else {
+                let mut addr: libc::sockaddr_vm = std::mem::zeroed();
+                addr.svm_family = libc::AF_VSOCK as libc::sa_family_t;
+                addr.svm_cid = libc::VMADDR_CID_HOST;
+                addr.svm_port = n;
+                let len = std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t;
+                let line = if libc::connect(fd, (&raw const addr).cast(), len) == 0 {
+                    let wait = libc::timeval {
+                        tv_sec: 1,
+                        tv_usec: 0,
+                    };
+                    libc::setsockopt(
+                        fd,
+                        libc::SOL_SOCKET,
+                        libc::SO_RCVTIMEO,
+                        (&raw const wait).cast(),
+                        std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+                    );
+                    let mut buf = [0u8; 4096];
+                    match libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) {
+                        0 => format!("{n} connected closed"),
+                        r if r > 0 => format!("{n} connected read {r} bytes"),
+                        _ => format!("{n} connected nothing"),
+                    }
+                } else {
+                    format!("{n} refused {}", io::Error::last_os_error())
+                };
+                libc::close(fd);
+                line
+            }
+        };
+        let _ = writeln!(io::stdout(), "{line}");
+    }
     0
 }
 

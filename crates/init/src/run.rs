@@ -68,13 +68,15 @@ pub fn main(device: &str, template: bool) -> ! {
         }
     };
     let _ = crate::linux::control_write(control::MARKER, marker::CONNECTED);
+    // Before the workload exists: the host takes one connection on each of its ports, so
+    // a workload that dials one finds it taken (AGENTFILE_ARCH.md §9.7). Without blocking:
+    // the relay finishes the connection while the workload runs.
+    let signals = dial(run::SIGNAL_PORT, false).ok();
     let started = standby.and_then(|standby| standby.start(&receive(&conn)?));
     let status = match started {
         Ok(workload) => {
             let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_STARTED);
             let _ = send(&conn, kind::STARTED, &[]);
-            // Without blocking: the relay finishes the connection while it runs.
-            let signals = dial(run::SIGNAL_PORT, false).ok();
             workload.relay(&conn, signals)
         }
         Err(f) => {

@@ -2670,3 +2670,29 @@ revision before comparing a changed API/implementation.
   yet measured.
 - **Consequence.** Both changes are kept. The tree the export builds, about 440 bytes an
   entry, and the EROFS writer's 130 MB are what a further cut would go after.
+
+### M79. The signal port dialled before the workload starts
+
+- **Question.** shards-init dialled the host's signal port once the workload had started,
+  so a workload that dialled it first took it, and the host's signals went to the
+  workload instead of to init; and the run port took further connections, which the host
+  held unread (`crates/shards/tests/isolation.rs`, run before the change). Now each
+  host port takes one connection, and init dials the signal port as soon as it holds the
+  run port, before it receives the command. Does the earlier dial cost a run anything?
+- **Method.** `docs/research/measurements/build-ab/ab.py OLD NEW alpine:3.22 300 true`,
+  OLD at 4d59258 and NEW with the change, each restoring its own template: a template
+  holds its own build's init, so one arm's cannot stand in for the other's. 2026-10-01,
+  Apple M5 Max, macOS 26.4.1, load average 21 to 31 from other work on the host.
+- **Result.** Paired differences, NEW minus OLD, median with bootstrap 95% interval: the
+  command's time in the guest +4 µs [−4, +12]; the client's wall clock −23 µs [−98, +34].
+
+  | Arm | n | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | command, OLD | 300 | 582 µs | 839 µs | 2812 µs | 12445 µs |
+  | command, NEW | 300 | 591 µs | 843 µs | 2105 µs | 3489 µs |
+  | wall, OLD | 300 | 5241 µs | 6150 µs | 15026 µs | 31720 µs |
+  | wall, NEW | 300 | 5217 µs | 6069 µs | 10553 µs | 29089 µs |
+
+- **Consequence.** No cost is measurable, and the dial is kept where no workload can take
+  the port first. The p99 and max of both arms, up to 25 times their medians, are not
+  explained by this comparison and are not yet root-caused.

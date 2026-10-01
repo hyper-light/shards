@@ -134,7 +134,8 @@ pub struct VsockHost {
     pub path: Option<PathBuf>,
     /// Host ports this process serves itself. A guest connection to one arrives on its
     /// sender as one end of a socket pair, with no socket file anyone else could reach,
-    /// dial first or need to be granted (D30).
+    /// dial first or need to be granted (D30). Each takes the guest's first connection
+    /// only.
     #[cfg(unix)]
     pub ports: Vec<(u32, std::sync::mpsc::Sender<std::os::unix::net::UnixStream>)>,
 }
