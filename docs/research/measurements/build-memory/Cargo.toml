@@ -1,0 +1,13 @@
+# Heap held at each step of building a root filesystem from one layer (PM M78): the
+# tree layer::apply builds, and what erofs::write adds. Not a workspace member:
+#   cargo run --release --manifest-path .../Cargo.toml -- LAYER.tar
+[package]
+name = "build-memory"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+shards-image = { path = "../../../../crates/image" }

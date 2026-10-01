@@ -15,7 +15,7 @@
 //! one block, as the kernel requires of inline data (data.c). Data blocks follow the
 //! metadata, in inode order.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use crate::{Error, bad as err};
@@ -110,11 +110,53 @@ pub struct Node {
     pub meta: Meta,
 }
 
+/// Nodes by id, in chunks of at most [`Arena::CHUNK`]: growing moves only the last
+/// chunk's nodes, where doubling one vector would move them all, holding both copies at
+/// once, and only the last chunk has room to spare (platform-measurements.md M78). A chunk
+/// grows as a vector does, so a small tree holds a small one.
+#[derive(Debug, Clone, Default)]
+struct Arena {
+    chunks: Vec<Vec<Node>>,
+    len: usize,
+}
+
+impl Arena {
+    const CHUNK_BITS: u32 = 16;
+    const CHUNK: usize = 1 << Self::CHUNK_BITS;
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn get(&self, id: NodeId) -> Option<&Node> {
+        self.chunks
+            .get(id >> Self::CHUNK_BITS)?
+            .get(id & (Self::CHUNK - 1))
+    }
+
+    fn get_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+        self.chunks
+            .get_mut(id >> Self::CHUNK_BITS)?
+            .get_mut(id & (Self::CHUNK - 1))
+    }
+
+    fn push(&mut self, node: Node) {
+        match self.chunks.last_mut() {
+            Some(chunk) if chunk.len() < Self::CHUNK => {
+                // Doubling from a power of two stops at CHUNK, never past it.
+                chunk.push(node);
+            }
+            _ => self.chunks.push(vec![node]),
+        }
+        self.len += 1;
+    }
+}
+
 /// A directory tree to write. Nodes removed from it stay in the arena, unwritten, until
 /// [`Tree::compact`]: only what the root reaches is written.
 #[derive(Debug, Clone)]
 pub struct Tree {
-    nodes: Vec<Node>,
+    nodes: Arena,
     /// Entries replaced or removed since the last compaction: what may have left nodes
     /// unreachable.
     dropped: usize,
@@ -140,13 +182,12 @@ impl Tree {
     pub const ROOT: NodeId = 0;
 
     pub fn new(root: Meta) -> Tree {
-        Tree {
-            nodes: vec![Node {
-                kind: Kind::Dir(BTreeMap::new()),
-                meta: root,
-            }],
-            dropped: 0,
-        }
+        let mut nodes = Arena::default();
+        nodes.push(Node {
+            kind: Kind::Dir(BTreeMap::new()),
+            meta: root,
+        });
+        Tree { nodes, dropped: 0 }
     }
 
     /// How many nodes the arena holds, reachable or not.
@@ -155,7 +196,7 @@ impl Tree {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
+        self.nodes.len() == 0
     }
 
     /// Drops the nodes the root no longer reaches, and renumbers the rest from the root,
@@ -186,7 +227,6 @@ impl Tree {
             }
         }
         let mut old = std::mem::take(&mut self.nodes);
-        self.nodes.reserve_exact(order.len());
         for id in order {
             let Some(slot) = old.get_mut(id) else { continue };
             let mut node = std::mem::replace(
@@ -349,29 +389,28 @@ fn xattr_len(xattrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> u64 {
     })
 }
 
-/// One inode as laid out: everything the writer decides before writing.
+/// One inode as laid out: everything the writer decides before writing. Kept small, as
+/// an image holds one for each of its files: a directory's entries are made again from
+/// the tree when its blocks are written, not held (platform-measurements.md M78).
 #[derive(Debug)]
-struct Inode<'a> {
-    node: NodeId,
-    nlink: u32,
+struct Inode {
+    node: u32,
     /// For directories: the parent's node.
-    parent: NodeId,
-    extended: bool,
+    parent: u32,
+    nlink: u32,
     /// The length of its xattr body, which is built as its record is written.
-    xattrs: u64,
-    size: u64,
-    /// Bytes of data kept in the inode record (FLAT_INLINE), or 0.
-    tail: u64,
+    xattrs: u32,
+    /// Bytes of data kept in the inode record (FLAT_INLINE), or 0: less than a block.
+    tail: u16,
+    extended: bool,
     inline: bool,
+    size: u64,
     nid: u64,
     /// First data block, if the inode has any.
-    start: Option<u64>,
-    /// A directory's entries, sorted, and where each of its blocks ends among them.
-    entries: Vec<Entry<'a>>,
-    block_ends: Vec<usize>,
+    start: Option<u32>,
 }
 
-impl Inode<'_> {
+impl Inode {
     fn isize(&self) -> u64 {
         if self.extended { EXTENDED } else { COMPACT }
     }
@@ -383,14 +422,31 @@ impl Inode<'_> {
             self.size.div_ceil(BLOCK)
         }
     }
+}
 
-    /// A directory's blocks, as runs of its entries.
-    fn dir_blocks(&self) -> impl Iterator<Item = &[Entry<'_>]> {
-        let starts = std::iter::once(0).chain(self.block_ends.iter().copied());
-        starts
-            .zip(self.block_ends.iter().copied())
-            .map(|(from, to)| self.entries.get(from..to).unwrap_or_default())
+/// A directory's entries as written into `all`: its names, then `.` and `..`, in byte
+/// order, a prefix first, which the kernel's lookup (namei.c) relies on. The tree keeps
+/// names in that order already, and no name is `.` or `..`.
+fn dir_entries<'t>(
+    entries: &'t BTreeMap<Vec<u8>, NodeId>,
+    id: NodeId,
+    parent: NodeId,
+    all: &mut Vec<Entry<'t>>,
+) {
+    all.clear();
+    all.extend(entries.iter().map(|(n, &c)| (n.as_slice(), c)));
+    for (name, to) in [(&b"."[..], id), (&b".."[..], parent)] {
+        let at = all.partition_point(|e| e.0 < name);
+        all.insert(at, (name, to));
     }
+}
+
+/// A directory's blocks, as runs of its entries, given where each block ends.
+fn blocks<'e, 't>(all: &'e [Entry<'t>], ends: &'e [usize]) -> impl Iterator<Item = &'e [Entry<'t>]> {
+    std::iter::once(0)
+        .chain(ends.iter().copied())
+        .zip(ends.iter().copied())
+        .map(|(from, to)| all.get(from..to).unwrap_or_default())
 }
 
 /// Where sorted entries split into directory blocks, each holding 12-byte dirents, then
@@ -443,32 +499,38 @@ impl Seq<'_> {
 /// Writes `tree` as an EROFS image to `out`, reading file contents from `source`.
 pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Result<Written, Error> {
     // Depth-first order from the root, children by name: every node once, at its first
-    // name, so the root is first and hard links share one inode.
-    let mut order: Vec<Inode<'_>> = Vec::new();
-    let mut index: HashMap<NodeId, usize> = HashMap::new();
+    // name, so the root is first and hard links share one inode. `index` holds each
+    // node's place in `order`, by node.
+    const NONE: u32 = u32::MAX;
+    let too_many = || Error("too many inodes".into());
+    let mut order: Vec<Inode> = Vec::with_capacity(tree.len());
+    let mut index: Vec<u32> = vec![NONE; tree.len()];
     let mut stack: Vec<(NodeId, NodeId)> = vec![(Tree::ROOT, Tree::ROOT)];
     while let Some((id, parent)) = stack.pop() {
-        if let Some(&i) = index.get(&id) {
-            if let Some(inode) = order.get_mut(i) {
-                inode.nlink += 1;
-            }
+        let slot = index
+            .get_mut(id)
+            .ok_or_else(|| Error(format!("missing node {id}")))?;
+        if let Some(inode) = order.get_mut(*slot as usize) {
+            inode.nlink = inode.nlink.saturating_add(1);
             continue;
         }
+        *slot = u32::try_from(order.len())
+            .ok()
+            .filter(|&i| i != NONE)
+            .ok_or_else(too_many)?;
         let node = tree.node(id).ok_or_else(|| Error(format!("missing node {id}")))?;
-        index.insert(id, order.len());
         order.push(Inode {
-            node: id,
+            node: u32::try_from(id).map_err(|_| too_many())?,
+            parent: u32::try_from(parent).map_err(|_| too_many())?,
             nlink: 1,
-            parent,
-            extended: false,
-            xattrs: xattr_len(&node.meta.xattrs),
-            size: 0,
+            xattrs: u32::try_from(xattr_len(&node.meta.xattrs))
+                .map_err(|_| Error("xattrs too large".into()))?,
             tail: 0,
+            extended: false,
             inline: false,
+            size: 0,
             nid: 0,
             start: None,
-            entries: Vec::new(),
-            block_ends: Vec::new(),
         });
         if let Kind::Dir(entries) = &node.kind {
             // Reverse, so the stack yields names in order.
@@ -478,36 +540,26 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
         }
     }
 
-    // Link counts, sizes, and each directory's blocks.
-    let mut subdirs: HashMap<NodeId, u32> = HashMap::new();
-    for inode in &order {
-        if let Some(Node {
-            kind: Kind::Dir(_), ..
-        }) = tree.node(inode.node)
-            && inode.node != Tree::ROOT
-        {
-            *subdirs.entry(inode.parent).or_default() += 1;
-        }
-    }
+    // Link counts and sizes. A directory's links are its own `.`, its name, and each
+    // subdirectory's `..`.
     let mut epoch = i64::MAX;
+    let mut all: Vec<Entry<'_>> = Vec::new();
     for inode in &mut order {
-        let node = tree
-            .node(inode.node)
-            .ok_or_else(|| Error("missing node".into()))?;
+        let id = inode.node as NodeId;
+        let node = tree.node(id).ok_or_else(|| Error("missing node".into()))?;
         epoch = epoch.min(node.meta.mtime);
         match &node.kind {
             Kind::Dir(entries) => {
-                inode.nlink = 2 + subdirs.get(&inode.node).copied().unwrap_or(0);
-                let mut all: Vec<Entry<'_>> = Vec::with_capacity(entries.len() + 2);
-                all.extend(entries.iter().map(|(n, &c)| (n.as_slice(), c)));
-                all.push((b".", inode.node));
-                all.push((b"..", inode.parent));
-                // Byte order, a prefix first: the kernel's lookup (namei.c) relies on it.
-                all.sort_by(|a, b| a.0.cmp(b.0));
-                let (ends, size) = dir_blocks(&all);
-                inode.entries = all;
-                inode.block_ends = ends;
-                inode.size = size;
+                let subdirs = entries
+                    .values()
+                    .filter(|&&c| matches!(tree.node(c).map(|n| &n.kind), Some(Kind::Dir(_))))
+                    .count();
+                inode.nlink = u32::try_from(subdirs)
+                    .ok()
+                    .and_then(|n| n.checked_add(2))
+                    .ok_or_else(too_many)?;
+                dir_entries(entries, id, inode.parent as NodeId, &mut all);
+                inode.size = dir_blocks(&all).1;
             }
             Kind::File { size, .. } => inode.size = *size,
             Kind::Symlink(target) => inode.size = target.len() as u64,
@@ -522,7 +574,7 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
     let mut offset = SUPER_OFFSET + SUPER_SIZE;
     for inode in &mut order {
         let node = tree
-            .node(inode.node)
+            .node(inode.node as NodeId)
             .ok_or_else(|| Error("missing node".into()))?;
         let m = &node.meta;
         let since_epoch = m.mtime.checked_sub(epoch).and_then(|d| u32::try_from(d).ok());
@@ -532,12 +584,13 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
             || inode.nlink > u32::from(u16::MAX)
             || since_epoch.is_none()
             || m.mtime_nsec != 0;
-        let head = inode.isize() + inode.xattrs;
+        let head = inode.isize() + u64::from(inode.xattrs);
         let tail = inode.size % BLOCK;
         let regular = matches!(node.kind, Kind::File { .. });
         inode.inline = !regular && tail > 0 && head + tail <= BLOCK;
-        inode.tail = if inode.inline { tail } else { 0 };
-        let record = head + inode.tail;
+        // Less than a block.
+        inode.tail = if inode.inline { tail as u16 } else { 0 };
+        let record = head + u64::from(inode.tail);
         offset = offset.next_multiple_of(SLOT);
         // A record that fits in a block never crosses one; a larger one starts a block.
         if offset % BLOCK + record > BLOCK {
@@ -549,18 +602,23 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
     let root_nid = order.first().map_or(0, |i| i.nid);
     let root_nid = u16::try_from(root_nid).map_err(|_| Error("root inode placed too far".into()))?;
     let meta_blocks = offset.div_ceil(BLOCK);
+    let too_large = || Error("image too large for 32-bit block numbers".into());
     let mut next_block = meta_blocks;
     for inode in &mut order {
         let blocks = inode.data_blocks();
         if blocks > 0 {
-            inode.start = Some(next_block);
-            next_block += blocks;
+            inode.start = Some(u32::try_from(next_block).map_err(|_| too_large())?);
+            next_block = next_block.checked_add(blocks).ok_or_else(too_large)?;
         }
     }
     let total_blocks = next_block;
-    let total =
-        u32::try_from(total_blocks).map_err(|_| Error("image too large for 32-bit block numbers".into()))?;
-    let nid_of = |id: NodeId| -> u64 { index.get(&id).and_then(|&i| order.get(i)).map_or(0, |i| i.nid) };
+    let total = u32::try_from(total_blocks).map_err(|_| too_large())?;
+    let nid_of = |id: NodeId| -> u64 {
+        index
+            .get(id)
+            .and_then(|&i| order.get(i as usize))
+            .map_or(0, |i| i.nid)
+    };
 
     // The metadata area: superblock, then inode records, each where it was placed.
     let mut seq = Seq { out, at: 0 };
@@ -589,7 +647,7 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
     let mut xattrs = Vec::new();
     for (ino, inode) in order.iter().enumerate() {
         let node = tree
-            .node(inode.node)
+            .node(inode.node as NodeId)
             .ok_or_else(|| Error("missing node".into()))?;
         let m = &node.meta;
         let (type_bits, rdev) = match &node.kind {
@@ -607,10 +665,7 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
         let i_u = match &node.kind {
             Kind::CharDevice { .. } | Kind::BlockDevice { .. } => rdev,
             Kind::Fifo | Kind::Socket => 0,
-            _ => match inode.start {
-                Some(b) => u32::try_from(b).map_err(|_| Error("block number overflow".into()))?,
-                None => NULL_ADDR,
-            },
+            _ => inode.start.unwrap_or(NULL_ADDR),
         };
         xattr_body(&m.xattrs, &mut xattrs)?;
         let icount = if xattrs.is_empty() {
@@ -651,12 +706,13 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
         seq.put(rec.get(..inode.isize() as usize).unwrap_or_default())?;
         seq.put(&xattrs)?;
         if inode.inline {
-            let start = inode.size - inode.tail;
-            let tail = inode.tail as usize;
+            let start = inode.size - u64::from(inode.tail);
+            let tail = usize::from(inode.tail);
             match &node.kind {
-                Kind::Dir(_) => {
-                    let last = inode
-                        .dir_blocks()
+                Kind::Dir(entries) => {
+                    dir_entries(entries, inode.node as NodeId, inode.parent as NodeId, &mut all);
+                    let (ends, _) = dir_blocks(&all);
+                    let last = blocks(&all, &ends)
                         .last()
                         .ok_or_else(|| Error("empty directory".into()))?;
                     dir_block(last, &nid_of, tree, &mut block);
@@ -678,13 +734,15 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
     for inode in &order {
         let Some(_) = inode.start else { continue };
         let node = tree
-            .node(inode.node)
+            .node(inode.node as NodeId)
             .ok_or_else(|| Error("missing node".into()))?;
         let full = inode.data_blocks() * BLOCK;
         let end = seq.at + full;
         match &node.kind {
-            Kind::Dir(_) => {
-                for (i, entries) in inode.dir_blocks().enumerate() {
+            Kind::Dir(names) => {
+                dir_entries(names, inode.node as NodeId, inode.parent as NodeId, &mut all);
+                let (ends, _) = dir_blocks(&all);
+                for (i, entries) in blocks(&all, &ends).enumerate() {
                     if (i as u64) * BLOCK >= full {
                         break;
                     }

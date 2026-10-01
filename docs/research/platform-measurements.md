@@ -2670,6 +2670,37 @@ revision before comparing a changed API/implementation.
   yet measured.
 - **Consequence.** Both changes are kept. The tree the export builds, about 440 bytes an
   entry, and the EROFS writer's 130 MB are what a further cut would go after.
+- **Second round.** `docs/research/measurements/build-memory` (a crate: `cargo run
+  --release --manifest-path .../Cargo.toml -- LAYER.tar [IMAGE]`) applies one layer as
+  `Store::rootfs` does and writes its image, counting the heap with its global allocator:
+  the bytes requested and live, and their peak, at each step. For the million entries
+  (USTAR, uncompressed), at the revision above:
+
+  | Step | live | peak |
+  |---|---|---|
+  | `layer::apply` | 157 MB | 261 MB |
+  | `erofs::write` | 157 MB | 364 MB |
+
+  The writer held an `Inode` of two vectors for every file, in a vector grown by
+  doubling, a `HashMap` from node to inode, and every directory's sorted entries at once:
+  207 bytes an entry. `apply` held a set of every entry the layer made (a node id and its
+  name), and the tree's node vector doubled, holding both copies as it moved. Now an
+  inode is 48 bytes, in a vector sized once; nodes map to inodes through a `u32` vector;
+  a directory's entries are made again from the tree when its blocks are written; an
+  entry this layer made is known by its node being newer than the layer's first, or by a
+  set of the hard links it made to older nodes; and the tree keeps its nodes in chunks
+  of 65,536 that grow as vectors do, so growing moves one chunk at most:
+
+  | Step | live | peak |
+  |---|---|---|
+  | `layer::apply` | 154 MB | 156 MB |
+  | `erofs::write` | 154 MB | 209 MB |
+
+  The images are byte for byte those of the revision above, for this layer, Alpine
+  3.22's, and one of hard links, devices, xattrs, large IDs, a 3 kB symlink, names that
+  sort before `.`, directories of several blocks and inline tails. With `run.sh`, n 5:
+  maximum resident set size p50 465 MB, max 470 MB, from 616 MB. Probes put the ADD
+  step's peak at 338 MB and the export's at 463 MB.
 
 ### M79. The signal port dialled before the workload starts
 

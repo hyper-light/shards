@@ -57,9 +57,10 @@ pub fn apply(
 ) -> Result<(), Error> {
     let start = archive.stream_position()?;
     let mut layer = Layer {
+        first: tree.len(),
         tree,
         source,
-        fresh: HashSet::new(),
+        linked: HashSet::new(),
     };
 
     // Whiteouts, all found in the lower layers before any is applied.
@@ -134,11 +135,20 @@ fn show(path: &[u8]) -> String {
 struct Layer<'t> {
     tree: &'t mut Tree,
     source: u32,
-    /// The directory entries this layer has made, by directory and name.
-    fresh: HashSet<(NodeId, Vec<u8>)>,
+    /// The first node this layer makes: every node from it on is the layer's own.
+    first: NodeId,
+    /// The hard links this layer has made to nodes of lower layers, by directory and
+    /// name. With the layer's own nodes, they are the entries it has made: a set of every
+    /// entry would hold a million names for a layer of a million files (PM M78).
+    linked: HashSet<(NodeId, Vec<u8>)>,
 }
 
 impl Layer<'_> {
+    /// Whether this layer made the entry `name` of `dir`, which is `child`.
+    fn fresh(&self, dir: NodeId, name: &[u8], child: NodeId) -> bool {
+        child >= self.first || self.linked.contains(&(dir, name.to_vec()))
+    }
+
     /// The directory at `path` as this layer sees it: lower directories merge, the layer's
     /// own symlinks are followed, and missing directories are made, each replacing a lower
     /// layer's non-directory in its way.
@@ -156,11 +166,11 @@ impl Layer<'_> {
                 }
                 _ => {}
             }
-            let fresh = self.fresh.contains(&(at, name.clone()));
             let child = self
                 .tree
                 .child(at, &name)
                 .and_then(|id| Some((id, &self.tree.node(id)?.kind)));
+            let fresh = child.is_some_and(|(id, _)| self.fresh(at, &name, id));
             let next = match child {
                 Some((id, Kind::Dir(_))) => id,
                 Some((_, Kind::Symlink(target))) if fresh => {
@@ -178,21 +188,17 @@ impl Layer<'_> {
                     continue;
                 }
                 Some(_) if fresh => return bad(format!("{:?}: not a directory", show(path))),
-                _ => {
-                    let id = self.tree.insert(
-                        at,
-                        &name,
-                        Node {
-                            kind: Kind::Dir(BTreeMap::new()),
-                            meta: Meta {
-                                mode: 0o755,
-                                ..Meta::default()
-                            },
+                _ => self.tree.insert(
+                    at,
+                    &name,
+                    Node {
+                        kind: Kind::Dir(BTreeMap::new()),
+                        meta: Meta {
+                            mode: 0o755,
+                            ..Meta::default()
                         },
-                    )?;
-                    self.fresh.insert((at, name));
-                    id
-                }
+                    },
+                )?,
             };
             up.push(at);
             at = next;
@@ -223,7 +229,7 @@ impl Layer<'_> {
                     up.push(at);
                     at = id;
                 }
-                Kind::Symlink(target) if self.fresh.contains(&(at, part.to_vec())) => {
+                Kind::Symlink(target) if self.fresh(at, part, id) => {
                     links += 1;
                     if links > MAX_LINKS {
                         return bad(format!("too many symlinks in {:?}", show(path)));
@@ -246,7 +252,6 @@ impl Layer<'_> {
     fn add(&mut self, parent: &[u8], name: &[u8], entry: &Entry) -> Result<(), Error> {
         let dir = self.dir(parent)?;
         let existing = self.tree.child(dir, name);
-        self.fresh.insert((dir, name.to_vec()));
         if entry.kind == Type::Dir
             && let Some(id) = existing
             && let Some(node) = self.tree.node_mut(id)
@@ -262,6 +267,9 @@ impl Layer<'_> {
             Type::HardLink => {
                 let target = self.target(&entry.link)?;
                 self.tree.link(dir, name, target)?;
+                if target < self.first {
+                    self.linked.insert((dir, name.to_vec()));
+                }
                 if let Some(node) = self.tree.node_mut(target) {
                     node.meta = meta(entry, &node.kind);
                 }
