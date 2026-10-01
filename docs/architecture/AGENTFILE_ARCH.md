@@ -404,6 +404,10 @@ Recorded as found. The answers the review has given so far are in §8.
     - How long a shared MCP server's instance for one caller lives (§9.6): one run of the
       agent, one session, or the microVM's life, and whether it keeps state between calls.
 
+21. **Spawning** (raised 2026-10-01). How does an Agentfile declare that an agent or harness
+    starts no process, or bound how many it starts (§9.9): an option of `AGENT` and
+    `HARNESS`, or a grant of its own? And should `pids.max` have a default?
+
 ## 8. Answers from the review
 
 Given 2026-10-01.
@@ -494,9 +498,20 @@ process tree's, and nothing in it can drop it. Each agent and harness runs:
   outside resolves to nothing, whatever a symlink says;
 - in a PID namespace of its own, so `/proc/<pid>/root` and ptrace reach no other domain's
   processes;
+- in an IPC namespace of its own, so System V IPC and POSIX message queues reach no other
+  domain's;
+- under a user and group ID of its own, no other domain's, so the kernel's per-user
+  objects (keyrings among them) are not shared;
+- in a cgroup of its own, whose `pids.max` bounds its processes (§9.9);
 - under Landlock rules, with `no_new_privs` set, so set-ID files gain it nothing, and a
   seccomp filter; Linux makes children inherit all three and none can be undone;
 - with its scratch directory mounted `nosuid,nodev`.
+
+A harness is a domain as an agent is, and runs under all of it. The guest kernel's
+`kernel.io_uring_disabled` is set to 2 before any domain starts (Linux 6.6 and later): an
+io_uring ring opens and connects sockets without the system calls a seccomp filter sees.
+The pinned guest kernel has no Yama (`resources/kernel/`), so ptrace is closed by the PID
+namespace and the separate IDs alone.
 
 ### 9.4 Crossing domains
 
@@ -549,13 +564,115 @@ whatever the server reaches by asking it.
 - **Results carry labels.** A tool's result carries its server's label joined with what it
   read for the caller, so what a tool fetched does not pass the rules of §9.5.
 
-### 9.7 Tests
+### 9.7 Network reach is the process tree's
+
+Raised 2026-10-01: an agent without network access writes a script, and the script
+connects to a port open on the microVM. A grant checked where the agent asks for something
+misses whatever the agent runs; reach must be a property of the process tree, held by the
+guest kernel, so that a script, a compiled binary or an interpreter one-liner has exactly
+the agent's reach. Each agent and harness has:
+
+- **A network namespace of its own.** One without network grants has only its own
+  loopback: a port another domain listens on, or the network process (§6) serves, is in
+  another namespace, and nothing routes to it. One with grants has one veth link to the
+  network process, which applies its policy by the link a packet arrives on, never by its
+  source address. The namespace covers every protocol, UDP and raw sockets among them, and
+  abstract Unix sockets, which Linux keeps per network namespace (`net/unix/af_unix.c`,
+  `unix_find_abstract(net, ...)`).
+- **Landlock network rules**, for the TCP ports it may bind and connect to within its
+  namespace (Linux 6.7), and scoping that refuses abstract Unix sockets and signals across
+  domains (Linux 6.12). Landlock's UDP rights come only in Linux 7.2; the pinned guest
+  kernel is 6.18.48, so the namespace alone holds UDP.
+- **A seccomp filter on `socket()`** allowing only the address families its grants need.
+  `AF_VSOCK`, `AF_PACKET` and `AF_NETLINK` are refused to every domain.
+- **Its mount namespace** (§9.3), so a pathname Unix socket exists for it only when
+  granted, as the in-VM server's of §5 is.
+
+**vsock, today.** The guest reaches the host over vsock alone, and nothing yet keeps a
+workload from opening `AF_VSOCK` itself: a connection to host CID 2 reaches the ports the
+VM process serves, the run and signal ports (`crates/shards/src/vm_run.rs`), and with a
+vsock path any port P reaches the host socket `<path>_P` (`crates/vmm`, the vsock muxer).
+Only shards-init may open `AF_VSOCK`, and the host accepts each port once per run. Whether a
+workload can use either port today is not yet tested; §9.10 holds the test.
+
+### 9.8 One domain triggering another
+
+Raised 2026-10-01: an agent without network access writes a script that triggers an agent,
+or a harness, that has it. This is §9.5's deputy again, except that the trigger need not be
+a request the deputy was declared to take: it can be any way one process affects another.
+Two rules close it.
+
+**Every channel that was not declared does not exist.** These are Linux's ways for one
+process to affect another, and what closes each:
+
+| Channel | Closed by |
+|---|---|
+| Signals, ptrace, `/proc/<pid>` | the PID namespace, the separate IDs, Landlock's signal scope (§9.3) |
+| System V IPC, POSIX message queues | the IPC namespace |
+| Shared memory (`/dev/shm`), FIFOs, files the other watches (inotify, fanotify) | the mount namespace |
+| Unix sockets, pathname and abstract | the mount and network namespaces, Landlock's scope |
+| TCP, UDP and raw sockets | the network namespace (§9.7) |
+| Keyrings | the separate IDs, and seccomp refusing `keyctl`, `add_key` and `request_key` |
+| vsock to the host, asking it to run something | only shards-init opens `AF_VSOCK` (§9.7) |
+| cgroup files, perf events, `userfaultfd`, BPF | not mounted, or refused by seccomp |
+
+**Every channel that was declared is an edge of §9.5.** What remains are channels the
+Agentfile declared: a `VOLUME` shared `FOR` both, `CONNECT`, the in-VM server, `ATTACH`, a
+shared MCP server. If one domain can trigger another, it reaches what the other reaches,
+and the build's closure counts it. A harness is no exception: `ATTACH` is an edge both ways,
+since the harness drives the agent and reads what it produces. So a harness attached to an
+internal-only agent and to one that may reach the world joins the two, and the build fails
+with that path, unless the Agentfile names the harness a relay (§7 Q20).
+
+Run-time labels (§9.5) follow data only through what shards mediates, the in-VM server and
+MCP results: Linux does not carry taint across a `read()` of a shared file. For files the
+build's check is the guarantee, so a `VOLUME` shared by an internal-only domain and one that
+may reach the world is a build error.
+
+### 9.9 Knowing what a domain runs
+
+Every process of an agent or harness is born in its PID namespace and its cgroup, inherits
+both, and cannot leave them: moving a process between cgroups takes write access to the
+cgroups' common ancestor (`kernel/cgroup/cgroup.c`, `cgroup_procs_write_permission`), and
+no domain's mount namespace holds the cgroup filesystem. So the in-VM runtime, outside
+every domain, knows each process a domain starts:
+
+- **as it starts**, from the kernel's process events connector (`CONFIG_PROC_EVENTS`, on in
+  the pinned guest kernel): fork, exec and exit, for a listener in the initial PID and user
+  namespaces (`drivers/connector/cn_proc.c`), which the runtime is. It maps each to its
+  domain by its cgroup. This is a record, for `shards top` and an audit trail; the
+  confinement of §9.3 does not depend on it;
+- **at any time**, from the domain's `cgroup.procs`, and whether anything of it still runs
+  from `cgroup.events`;
+- **at its end**: `cgroup.kill` ends every process of the domain at once, and ending the PID
+  namespace's first process ends the rest, so a double fork leaves nothing behind.
+
+A domain's spawning is bounded by `pids.max`. A domain declared to start no process at all
+(syntax §7 Q21) runs with a seccomp filter that refuses `clone` without `CLONE_THREAD`,
+`fork`, `vfork` and `execve`/`execveat`, and refuses `clone3` with `ENOSYS`, since its flags
+lie in a structure a seccomp filter cannot read, so that libc falls back to `clone`.
+Decisions are never made with seccomp's user notification: the kernel's documentation
+warns that what a notification shows can change before the call runs (TOCTOU,
+`Documentation/userspace-api/seccomp_filter.rst`).
+
+Refusing `execve` does not stop a domain from running code: `bash script.sh` executes
+nothing new, and an interpreter runs what it reads. So spawning is recorded and bounded, but
+the boundary is the confinement every process of the domain is under, whatever it runs.
+
+### 9.10 Tests
 
 Each escape above has an end-to-end test in a real microVM that must fail closed: an agent
 following a planted symlink, using a hard link, running a set-user-ID binary, reading a
 sibling's `/proc` or tracing it; a harness handed a symlink, a FIFO and an oversized file;
 an internal-only agent having a connected agent send its data out; an agent with no grants
 asking a local MCP tool to read outside its directory, a shared server to read another
-agent's files, and a remote server to send anything; and Agentfiles that try each
-build-time escape of §9.2 and each transitive reach of §9.5. Each guard is mutation-checked: the
-suite fails without it.
+agent's files, and a remote server to send anything; an agent with no network grants whose
+script tries TCP and UDP to every port on loopback and on the microVM's addresses, every
+host vsock port, abstract and pathname Unix sockets, raw and packet sockets, and io_uring;
+an agent and a harness that try each channel of §9.8's table on another; a domain that
+double-forks and is still found and ended (§9.9), and one declared to start no process
+that tries every way to start one; and Agentfiles that try each build-time escape of §9.2
+and each transitive reach of §9.5 and §9.8, a harness attached to an internal-only agent
+and a world-reaching one among them. A test also asks today's workloads to dial the host
+over vsock (§9.7), before the rule that closes it exists. Each guard is mutation-checked:
+the suite fails without it.
