@@ -144,8 +144,8 @@ VOLUME [OPTIONS...] <path> [<dest>] [FOR <agent_name>]
 - Options:
   - `--chown=<agent_name>/<user_id>/...`;
   - `--chmod=<permissions>`;
-  - `--type=<harness|agent|default>` (added 2026-10-01): whether the names after `FOR`
-    are harnesses or agents (§4.10).
+  - `--target-kind=<agent|harness>` (added 2026-10-01): whether the names after `FOR`
+    are agents or harnesses (§4.10). A `VOLUME` without `FOR` is Docker's own.
 
 ### 4.6 `NETWORK`
 
@@ -180,8 +180,8 @@ CONNECT [OPTIONS...] <agent> [<agent> ...]
 ```
 
 - Exactly one of `WITH` and `TO` is required.
-- `--type=<harness|agent>` (added 2026-10-01) says whether the names are harnesses or
-  agents (§4.10).
+- `--target-kind=<agent|harness>` (added 2026-10-01) says whether the names are agents
+  or harnesses (§4.10).
 - Several agents may follow `CONNECT`, `WITH` and `TO`, and several networks may follow
   `ON`.
 - `WITH` connects them both ways, for every agent attached to the networks: each may send
@@ -215,7 +215,8 @@ HARNESS <name> FROM <source>[:<tag>] [TO <dest_path>]
 - A harness is a file artifact. The build unpacks it to `/harness/<name>`, or to
   `TO <dest_path>` if given.
 - **It has no agents** by default. `ATTACH` (§4.9) grants it agents.
-- **`VOLUME` and `CONNECT`** name harnesses as they name agents, told apart by `--type`
+- **`VOLUME` and `CONNECT`** name harnesses as they name agents, told apart by
+  `--target-kind`
   (§4.5, §4.7). That is how a harness is granted volumes and paths and attached to
   networks.
 - **Deny by default.** A harness is held to the same deny-by-default rules and file
@@ -244,11 +245,13 @@ ATTACH <agent_a> [<agent_b> ...] FOR <harness_a> [<harness_b> ...]
 
 Agents and harnesses may share a name: users do unexpected things, and the build must
 never resolve a name to the wrong kind. Where a directive may name either (`VOLUME`,
-`CONNECT`), `--type` is optional:
+`CONNECT`), `--target-kind` is optional. It is not `--type`, which reads as a mount's
+type (`--mount type=bind`, Compose's `type:`), nor `--scope`, which Docker's volume
+drivers use for `local` and `global`:
 - without it, the build determines each name's kind: a name that belongs to one kind
   alone resolves to that kind;
 - a name that belongs to both kinds (a `HARNESS main` and an `AGENT main`) is a build
-  error unless `--type` says which is meant. It never defaults to one kind.
+  error unless `--target-kind` says which is meant. It never defaults to one kind.
 - That error helps the user fix it. It names the directive and its line, the ambiguous
   name, and where each of the agent and the harness of that name is declared, and it shows
   the directive rewritten both ways, for example:
@@ -257,9 +260,9 @@ never resolve a name to the wrong kind. Where a directive may name either (`VOLU
   Agentfile:12: VOLUME ./data /data FOR main: "main" names both an agent and a harness
     AGENT main is declared at line 3
     HARNESS main is declared at line 7
-  Say which with --type:
-    VOLUME --type=agent ./data /data FOR main
-    VOLUME --type=harness ./data /data FOR main
+  Say which with --target-kind:
+    VOLUME --target-kind=agent ./data /data FOR main
+    VOLUME --target-kind=harness ./data /data FOR main
   ```
 
 ## 5. Communication between agents in a microVM
@@ -359,10 +362,11 @@ Recorded as found. The answers the review has given so far are in §8.
     - What does `[:<tag>]` mean for a git URL (a ref?), an http URL or a path? How does
       the build tell a tag from a colon in the source: a URL's port, `C:\` on Windows, a
       path with a colon in it?
-    - What does `VOLUME --type=default` mean: Docker's own `VOLUME`, a mount point with no
-      agent or harness scope? May `FOR` follow it?
+    - One `--target-kind` covers every name in a `CONNECT`. How does a `CONNECT` join an
+      agent with a harness when one of their names is ambiguous: two kinds of the flag,
+      a qualifier per name, or not at all?
     - Do skills and MCP servers reach harnesses too, and do `SKILL`, `MCP` and `NETWORK`
-      take `--type`?
+      take `--target-kind`?
     - Does unpacking to `/harness/<name>` omit the tag, where agents go to
       `/agents/<name>[_<tag>]`?
 
