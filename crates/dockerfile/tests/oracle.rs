@@ -952,6 +952,7 @@ fn plans_are_buildkits() {
                 .to_vec(),
             multi_platform: false,
             context_id: b"*".to_vec(),
+            excludes: Vec::new(),
         };
         let mut got = serde_json::Map::new();
         got.insert("file".into(), file.into());
@@ -1273,4 +1274,30 @@ fn patterns_match_as_gos() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// .dockerignore files read as ignorefile.ReadAll reads them: testdata/ignores.json.
+#[test]
+fn dockerignore_files_read_as_buildkits_frontend_reads_them() {
+    let files: Vec<String> =
+        serde_json::from_slice(&std::fs::read(testdata().join("ignores.json")).unwrap()).unwrap();
+    let answers = load("ignores-answers.json");
+    let answers = answers.as_array().unwrap();
+    assert_eq!(files.len(), answers.len());
+    for (file, want) in files.iter().zip(answers) {
+        let mut got = serde_json::Map::new();
+        got.insert("file".into(), qv(file.as_bytes()));
+        match shards_dockerfile::ignore::read_all(file.as_bytes()) {
+            Ok(p) if p.is_empty() => {
+                got.insert("patterns".into(), Value::Null);
+            }
+            Ok(p) => {
+                got.insert("patterns".into(), qvs(&p));
+            }
+            Err(e) => {
+                got.insert("error".into(), qv(&e));
+            }
+        }
+        assert_eq!(&Value::Object(got), want, "{file:?}");
+    }
 }

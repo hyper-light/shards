@@ -26,6 +26,7 @@ import (
 
 	"github.com/docker/go-units"
 	"github.com/moby/patternmatcher"
+	"github.com/moby/patternmatcher/ignorefile"
 	"github.com/moby/buildkit/client/llb/sourceresolver"
 	"github.com/moby/buildkit/frontend/dockerfile/dfgitutil"
 	"github.com/moby/buildkit/util/gitutil"
@@ -733,6 +734,34 @@ func urlsFile(testdata string) {
 
 // What Go's filepath.Match and moby/patternmatcher make of each set of patterns in
 // patterns.json and each path: COPY's wildcards, .dockerignore, --exclude and --parents.
+// ignores.json: what ignorefile.ReadAll makes of each .dockerignore file's text.
+func ignoresFile(testdata string) {
+	data, err := os.ReadFile(filepath.Join(testdata, "ignores.json"))
+	if err != nil {
+		panic(err)
+	}
+	var files []string
+	if err := json.Unmarshal(data, &files); err != nil {
+		panic(err)
+	}
+	var out []map[string]any
+	for _, f := range files {
+		r := map[string]any{"file": q(f)}
+		patterns, err := ignorefile.ReadAll(strings.NewReader(f))
+		if err != nil {
+			r["error"] = q(err.Error())
+		} else {
+			var qs []string
+			for _, p := range patterns {
+				qs = append(qs, q(p))
+			}
+			r["patterns"] = qs
+		}
+		out = append(out, r)
+	}
+	writeJSON(filepath.Join(testdata, "ignores-answers.json"), out)
+}
+
 func patternsFile(testdata string) {
 	data, err := os.ReadFile(filepath.Join(testdata, "patterns.json"))
 	if err != nil {
@@ -845,6 +874,7 @@ func main() {
 	sizesFile(testdata)
 	urlsFile(testdata)
 	patternsFile(testdata)
+	ignoresFile(testdata)
 
 	cases := buildkitCases(filepath.Join(testdata, "buildkit/shell"))
 	extra, err := os.ReadFile(filepath.Join(testdata, "lex-cases.json"))

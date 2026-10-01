@@ -18,6 +18,7 @@ pub mod export;
 pub mod git;
 pub mod glob;
 pub mod go;
+pub mod ignore;
 pub mod image;
 pub mod instructions;
 pub(crate) mod json;

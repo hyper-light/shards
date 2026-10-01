@@ -438,6 +438,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         hostname: Vec::new(),
         multi_platform: false,
         context_id: format!("shards-{}", std::process::id()).into_bytes(),
+        excludes: Vec::new(),
     };
     let plan = match plan::plan(&text, &opts, &bases) {
         Ok(p) => p,

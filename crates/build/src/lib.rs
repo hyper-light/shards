@@ -3,8 +3,11 @@
 
 use std::fmt;
 
+pub mod context;
 pub mod copy;
+pub mod data;
 pub mod diff;
+pub mod host;
 pub mod mode;
 pub mod ops;
 pub mod vfs;

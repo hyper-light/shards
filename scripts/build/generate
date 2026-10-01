@@ -1,7 +1,10 @@
 #!/bin/sh
-# Regenerates crates/build/testdata/ops-answers.json: what BuildKit's own file backend
-# and overlay differ make of each case in crates/build/testdata/ops.json (oracle_test.go),
-# from moby/buildkit dockerfile/1.27.1 built by the Go its go.mod names.
+# Regenerates, from moby/buildkit dockerfile/1.27.1 built by the Go its go.mod names:
+# - crates/build/testdata/ops-answers.json: what BuildKit's own file backend and overlay
+#   differ make of each case in crates/build/testdata/ops.json (oracle_test.go);
+# - crates/build/testdata/contexts-answers.json: what buildx's client sends of the
+#   fixture tree in contexts.json under each case's filters (context/main.go), run on
+#   this host, as buildx runs on the user's.
 #
 # The oracle mounts overlayfs and chowns, mknods and sets security.* xattrs as BuildKit's
 # daemon does, so it runs as root in a privileged Linux container (Docker's), on an
@@ -34,10 +37,15 @@ pkg="$bk/solver/llbsolver/file"
 out=$(mktemp -d)
 cleanup() {
 	rm -f "$pkg/zz_shards_oracle_test.go" "$pkg/zz_shards_user_test.go"
+	rm -rf "$bk/shards-context"
 	rm -rf "$out"
 	if [ -n "$own" ]; then rm -rf "$bk"; fi
 }
 trap cleanup EXIT
+
+mkdir -p "$bk/shards-context"
+cp "$here/context/main.go" "$bk/shards-context/main.go"
+(cd "$bk" && go run -mod=vendor ./shards-context "$data/contexts.json" "$data/contexts-answers.json")
 
 cp "$here/oracle_test.go" "$pkg/zz_shards_oracle_test.go"
 # readUser, as ops/user_linux.go has it, beside the backend: the package and the worker

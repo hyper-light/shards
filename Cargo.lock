@@ -845,6 +845,7 @@ version = "0.1.0"
 name = "shards-build"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serde_json",
  "shards-dockerfile",
  "shards-image",

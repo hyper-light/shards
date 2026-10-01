@@ -27431,5 +27431,919 @@
     "timestamp": -1
    }
   ]
+ },
+ {
+  "name": "context: COPY . /app/",
+  "lower": [
+   {
+    "path": "/etc",
+    "type": "dir"
+   },
+   {
+    "path": "/etc/passwd",
+    "type": "file",
+    "data": "root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534::/:/sbin/nologin\napp:x:1000:1001::/home/app:/bin/sh\n  spaced:x:7:8::/:/bin/sh  \nbadid:x:abc:9::/:/bin/sh\n"
+   },
+   {
+    "path": "/etc/group",
+    "type": "file",
+    "data": "root:x:0:\n#staff:x:99:\napp:x:1001:\nstaff:x:50:app\n"
+   },
+   {
+    "path": "/etc/hosts",
+    "type": "file",
+    "data": "127.0.0.1 localhost\n",
+    "mtime": [
+     1600000000,
+     0
+    ]
+   },
+   {
+    "path": "/bin",
+    "type": "dir"
+   },
+   {
+    "path": "/bin/sh",
+    "type": "file",
+    "mode": 493,
+    "data": "#!sh\n"
+   },
+   {
+    "path": "/usr",
+    "type": "dir"
+   },
+   {
+    "path": "/usr/bin",
+    "type": "dir"
+   },
+   {
+    "path": "/usr/bin/ping",
+    "type": "file",
+    "mode": 2541,
+    "data": "ping",
+    "xattrs": {
+     "security.capability": "base64:AQAAAgAgAAAAAAAAAAAAAAAAAAA="
+    }
+   },
+   {
+    "path": "/var",
+    "type": "dir"
+   },
+   {
+    "path": "/var/lib",
+    "type": "dir"
+   },
+   {
+    "path": "/var/lib/old",
+    "type": "file",
+    "data": "old"
+   },
+   {
+    "path": "/link",
+    "type": "symlink",
+    "target": "/etc"
+   },
+   {
+    "path": "/rel",
+    "type": "symlink",
+    "target": "etc"
+   },
+   {
+    "path": "/data",
+    "type": "dir",
+    "mode": 448,
+    "uid": 1000,
+    "gid": 1001
+   },
+   {
+    "path": "/sgid",
+    "type": "dir",
+    "mode": 1533,
+    "gid": 50
+   },
+   {
+    "path": "/app",
+    "type": "dir"
+   },
+   {
+    "path": "/app/keep",
+    "type": "file",
+    "data": "keep"
+   },
+   {
+    "path": "/app/same.txt",
+    "type": "file",
+    "data": "hello",
+    "mtime": [
+     1650000000,
+     111
+    ]
+   },
+   {
+    "path": "/afile",
+    "type": "file",
+    "data": "x"
+   },
+   {
+    "path": "/dev",
+    "type": "dir"
+   },
+   {
+    "path": "/dev/null",
+    "type": "char",
+    "major": 1,
+    "minor": 3,
+    "mode": 438
+   }
+  ],
+  "src": [
+   {
+    "path": "/Dockerfile",
+    "type": "file",
+    "data": "FROM scratch\n"
+   },
+   {
+    "path": "/app.py",
+    "type": "file",
+    "data": "print(1)\n",
+    "mtime": [
+     1650000000,
+     123
+    ]
+   },
+   {
+    "path": "/bin",
+    "type": "dir",
+    "mode": 488
+   },
+   {
+    "path": "/bin/run",
+    "type": "file",
+    "data": "#!/bin/sh\n",
+    "mode": 493
+   },
+   {
+    "path": "/bin/suid",
+    "type": "file",
+    "data": "s",
+    "mode": 2541
+   },
+   {
+    "path": "/lib",
+    "type": "dir"
+   },
+   {
+    "path": "/lib/a.so",
+    "type": "file",
+    "data": "elf"
+   },
+   {
+    "path": "/lib/b.so",
+    "type": "hardlink",
+    "target": "/lib/a.so"
+   },
+   {
+    "path": "/lib/link",
+    "type": "symlink",
+    "target": "a.so"
+   },
+   {
+    "path": "/empty",
+    "type": "dir"
+   },
+   {
+    "path": "/sticky",
+    "type": "dir",
+    "mode": 1023
+   },
+   {
+    "path": "/fifo",
+    "type": "fifo",
+    "mode": 416
+   }
+  ],
+  "context": true,
+  "actions": [
+   {
+    "kind": "copy",
+    "src": "/",
+    "dest": "/app/",
+    "mode": -1,
+    "timestamp": -1,
+    "follow_symlink": true,
+    "dir_copy_contents": true,
+    "create_dest_path": true,
+    "allow_wildcard": true,
+    "allow_empty_wildcard": true
+   }
+  ]
+ },
+ {
+  "name": "context: COPY a file",
+  "lower": [
+   {
+    "path": "/etc",
+    "type": "dir"
+   },
+   {
+    "path": "/etc/passwd",
+    "type": "file",
+    "data": "root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534::/:/sbin/nologin\napp:x:1000:1001::/home/app:/bin/sh\n  spaced:x:7:8::/:/bin/sh  \nbadid:x:abc:9::/:/bin/sh\n"
+   },
+   {
+    "path": "/etc/group",
+    "type": "file",
+    "data": "root:x:0:\n#staff:x:99:\napp:x:1001:\nstaff:x:50:app\n"
+   },
+   {
+    "path": "/etc/hosts",
+    "type": "file",
+    "data": "127.0.0.1 localhost\n",
+    "mtime": [
+     1600000000,
+     0
+    ]
+   },
+   {
+    "path": "/bin",
+    "type": "dir"
+   },
+   {
+    "path": "/bin/sh",
+    "type": "file",
+    "mode": 493,
+    "data": "#!sh\n"
+   },
+   {
+    "path": "/usr",
+    "type": "dir"
+   },
+   {
+    "path": "/usr/bin",
+    "type": "dir"
+   },
+   {
+    "path": "/usr/bin/ping",
+    "type": "file",
+    "mode": 2541,
+    "data": "ping",
+    "xattrs": {
+     "security.capability": "base64:AQAAAgAgAAAAAAAAAAAAAAAAAAA="
+    }
+   },
+   {
+    "path": "/var",
+    "type": "dir"
+   },
+   {
+    "path": "/var/lib",
+    "type": "dir"
+   },
+   {
+    "path": "/var/lib/old",
+    "type": "file",
+    "data": "old"
+   },
+   {
+    "path": "/link",
+    "type": "symlink",
+    "target": "/etc"
+   },
+   {
+    "path": "/rel",
+    "type": "symlink",
+    "target": "etc"
+   },
+   {
+    "path": "/data",
+    "type": "dir",
+    "mode": 448,
+    "uid": 1000,
+    "gid": 1001
+   },
+   {
+    "path": "/sgid",
+    "type": "dir",
+    "mode": 1533,
+    "gid": 50
+   },
+   {
+    "path": "/app",
+    "type": "dir"
+   },
+   {
+    "path": "/app/keep",
+    "type": "file",
+    "data": "keep"
+   },
+   {
+    "path": "/app/same.txt",
+    "type": "file",
+    "data": "hello",
+    "mtime": [
+     1650000000,
+     111
+    ]
+   },
+   {
+    "path": "/afile",
+    "type": "file",
+    "data": "x"
+   },
+   {
+    "path": "/dev",
+    "type": "dir"
+   },
+   {
+    "path": "/dev/null",
+    "type": "char",
+    "major": 1,
+    "minor": 3,
+    "mode": 438
+   }
+  ],
+  "src": [
+   {
+    "path": "/Dockerfile",
+    "type": "file",
+    "data": "FROM scratch\n"
+   },
+   {
+    "path": "/app.py",
+    "type": "file",
+    "data": "print(1)\n",
+    "mtime": [
+     1650000000,
+     123
+    ]
+   },
+   {
+    "path": "/bin",
+    "type": "dir",
+    "mode": 488
+   },
+   {
+    "path": "/bin/run",
+    "type": "file",
+    "data": "#!/bin/sh\n",
+    "mode": 493
+   },
+   {
+    "path": "/bin/suid",
+    "type": "file",
+    "data": "s",
+    "mode": 2541
+   },
+   {
+    "path": "/lib",
+    "type": "dir"
+   },
+   {
+    "path": "/lib/a.so",
+    "type": "file",
+    "data": "elf"
+   },
+   {
+    "path": "/lib/b.so",
+    "type": "hardlink",
+    "target": "/lib/a.so"
+   },
+   {
+    "path": "/lib/link",
+    "type": "symlink",
+    "target": "a.so"
+   },
+   {
+    "path": "/empty",
+    "type": "dir"
+   },
+   {
+    "path": "/sticky",
+    "type": "dir",
+    "mode": 1023
+   },
+   {
+    "path": "/fifo",
+    "type": "fifo",
+    "mode": 416
+   }
+  ],
+  "context": true,
+  "actions": [
+   {
+    "kind": "copy",
+    "src": "/app.py",
+    "dest": "/srv/",
+    "mode": -1,
+    "timestamp": -1,
+    "follow_symlink": true,
+    "dir_copy_contents": true,
+    "create_dest_path": true,
+    "allow_wildcard": true,
+    "allow_empty_wildcard": true
+   }
+  ]
+ },
+ {
+  "name": "context: COPY a dir with hard links",
+  "lower": [
+   {
+    "path": "/etc",
+    "type": "dir"
+   },
+   {
+    "path": "/etc/passwd",
+    "type": "file",
+    "data": "root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534::/:/sbin/nologin\napp:x:1000:1001::/home/app:/bin/sh\n  spaced:x:7:8::/:/bin/sh  \nbadid:x:abc:9::/:/bin/sh\n"
+   },
+   {
+    "path": "/etc/group",
+    "type": "file",
+    "data": "root:x:0:\n#staff:x:99:\napp:x:1001:\nstaff:x:50:app\n"
+   },
+   {
+    "path": "/etc/hosts",
+    "type": "file",
+    "data": "127.0.0.1 localhost\n",
+    "mtime": [
+     1600000000,
+     0
+    ]
+   },
+   {
+    "path": "/bin",
+    "type": "dir"
+   },
+   {
+    "path": "/bin/sh",
+    "type": "file",
+    "mode": 493,
+    "data": "#!sh\n"
+   },
+   {
+    "path": "/usr",
+    "type": "dir"
+   },
+   {
+    "path": "/usr/bin",
+    "type": "dir"
+   },
+   {
+    "path": "/usr/bin/ping",
+    "type": "file",
+    "mode": 2541,
+    "data": "ping",
+    "xattrs": {
+     "security.capability": "base64:AQAAAgAgAAAAAAAAAAAAAAAAAAA="
+    }
+   },
+   {
+    "path": "/var",
+    "type": "dir"
+   },
+   {
+    "path": "/var/lib",
+    "type": "dir"
+   },
+   {
+    "path": "/var/lib/old",
+    "type": "file",
+    "data": "old"
+   },
+   {
+    "path": "/link",
+    "type": "symlink",
+    "target": "/etc"
+   },
+   {
+    "path": "/rel",
+    "type": "symlink",
+    "target": "etc"
+   },
+   {
+    "path": "/data",
+    "type": "dir",
+    "mode": 448,
+    "uid": 1000,
+    "gid": 1001
+   },
+   {
+    "path": "/sgid",
+    "type": "dir",
+    "mode": 1533,
+    "gid": 50
+   },
+   {
+    "path": "/app",
+    "type": "dir"
+   },
+   {
+    "path": "/app/keep",
+    "type": "file",
+    "data": "keep"
+   },
+   {
+    "path": "/app/same.txt",
+    "type": "file",
+    "data": "hello",
+    "mtime": [
+     1650000000,
+     111
+    ]
+   },
+   {
+    "path": "/afile",
+    "type": "file",
+    "data": "x"
+   },
+   {
+    "path": "/dev",
+    "type": "dir"
+   },
+   {
+    "path": "/dev/null",
+    "type": "char",
+    "major": 1,
+    "minor": 3,
+    "mode": 438
+   }
+  ],
+  "src": [
+   {
+    "path": "/Dockerfile",
+    "type": "file",
+    "data": "FROM scratch\n"
+   },
+   {
+    "path": "/app.py",
+    "type": "file",
+    "data": "print(1)\n",
+    "mtime": [
+     1650000000,
+     123
+    ]
+   },
+   {
+    "path": "/bin",
+    "type": "dir",
+    "mode": 488
+   },
+   {
+    "path": "/bin/run",
+    "type": "file",
+    "data": "#!/bin/sh\n",
+    "mode": 493
+   },
+   {
+    "path": "/bin/suid",
+    "type": "file",
+    "data": "s",
+    "mode": 2541
+   },
+   {
+    "path": "/lib",
+    "type": "dir"
+   },
+   {
+    "path": "/lib/a.so",
+    "type": "file",
+    "data": "elf"
+   },
+   {
+    "path": "/lib/b.so",
+    "type": "hardlink",
+    "target": "/lib/a.so"
+   },
+   {
+    "path": "/lib/link",
+    "type": "symlink",
+    "target": "a.so"
+   },
+   {
+    "path": "/empty",
+    "type": "dir"
+   },
+   {
+    "path": "/sticky",
+    "type": "dir",
+    "mode": 1023
+   },
+   {
+    "path": "/fifo",
+    "type": "fifo",
+    "mode": 416
+   }
+  ],
+  "context": true,
+  "actions": [
+   {
+    "kind": "copy",
+    "src": "/lib",
+    "dest": "/usr/lib/",
+    "mode": -1,
+    "timestamp": -1,
+    "follow_symlink": true,
+    "dir_copy_contents": true,
+    "create_dest_path": true,
+    "allow_wildcard": true,
+    "allow_empty_wildcard": true
+   }
+  ]
+ },
+ {
+  "name": "context: COPY . . onto scratch",
+  "lower": [],
+  "src": [
+   {
+    "path": "/Dockerfile",
+    "type": "file",
+    "data": "FROM scratch\n"
+   },
+   {
+    "path": "/app.py",
+    "type": "file",
+    "data": "print(1)\n",
+    "mtime": [
+     1650000000,
+     123
+    ]
+   },
+   {
+    "path": "/bin",
+    "type": "dir",
+    "mode": 488
+   },
+   {
+    "path": "/bin/run",
+    "type": "file",
+    "data": "#!/bin/sh\n",
+    "mode": 493
+   },
+   {
+    "path": "/bin/suid",
+    "type": "file",
+    "data": "s",
+    "mode": 2541
+   },
+   {
+    "path": "/lib",
+    "type": "dir"
+   },
+   {
+    "path": "/lib/a.so",
+    "type": "file",
+    "data": "elf"
+   },
+   {
+    "path": "/lib/b.so",
+    "type": "hardlink",
+    "target": "/lib/a.so"
+   },
+   {
+    "path": "/lib/link",
+    "type": "symlink",
+    "target": "a.so"
+   },
+   {
+    "path": "/empty",
+    "type": "dir"
+   },
+   {
+    "path": "/sticky",
+    "type": "dir",
+    "mode": 1023
+   },
+   {
+    "path": "/fifo",
+    "type": "fifo",
+    "mode": 416
+   }
+  ],
+  "context": true,
+  "actions": [
+   {
+    "kind": "copy",
+    "src": "/",
+    "dest": "/",
+    "mode": -1,
+    "timestamp": -1,
+    "follow_symlink": true,
+    "dir_copy_contents": true,
+    "create_dest_path": true,
+    "allow_wildcard": true,
+    "allow_empty_wildcard": true
+   }
+  ]
+ },
+ {
+  "name": "context: COPY --chown and --chmod",
+  "lower": [
+   {
+    "path": "/etc",
+    "type": "dir"
+   },
+   {
+    "path": "/etc/passwd",
+    "type": "file",
+    "data": "root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534::/:/sbin/nologin\napp:x:1000:1001::/home/app:/bin/sh\n  spaced:x:7:8::/:/bin/sh  \nbadid:x:abc:9::/:/bin/sh\n"
+   },
+   {
+    "path": "/etc/group",
+    "type": "file",
+    "data": "root:x:0:\n#staff:x:99:\napp:x:1001:\nstaff:x:50:app\n"
+   },
+   {
+    "path": "/etc/hosts",
+    "type": "file",
+    "data": "127.0.0.1 localhost\n",
+    "mtime": [
+     1600000000,
+     0
+    ]
+   },
+   {
+    "path": "/bin",
+    "type": "dir"
+   },
+   {
+    "path": "/bin/sh",
+    "type": "file",
+    "mode": 493,
+    "data": "#!sh\n"
+   },
+   {
+    "path": "/usr",
+    "type": "dir"
+   },
+   {
+    "path": "/usr/bin",
+    "type": "dir"
+   },
+   {
+    "path": "/usr/bin/ping",
+    "type": "file",
+    "mode": 2541,
+    "data": "ping",
+    "xattrs": {
+     "security.capability": "base64:AQAAAgAgAAAAAAAAAAAAAAAAAAA="
+    }
+   },
+   {
+    "path": "/var",
+    "type": "dir"
+   },
+   {
+    "path": "/var/lib",
+    "type": "dir"
+   },
+   {
+    "path": "/var/lib/old",
+    "type": "file",
+    "data": "old"
+   },
+   {
+    "path": "/link",
+    "type": "symlink",
+    "target": "/etc"
+   },
+   {
+    "path": "/rel",
+    "type": "symlink",
+    "target": "etc"
+   },
+   {
+    "path": "/data",
+    "type": "dir",
+    "mode": 448,
+    "uid": 1000,
+    "gid": 1001
+   },
+   {
+    "path": "/sgid",
+    "type": "dir",
+    "mode": 1533,
+    "gid": 50
+   },
+   {
+    "path": "/app",
+    "type": "dir"
+   },
+   {
+    "path": "/app/keep",
+    "type": "file",
+    "data": "keep"
+   },
+   {
+    "path": "/app/same.txt",
+    "type": "file",
+    "data": "hello",
+    "mtime": [
+     1650000000,
+     111
+    ]
+   },
+   {
+    "path": "/afile",
+    "type": "file",
+    "data": "x"
+   },
+   {
+    "path": "/dev",
+    "type": "dir"
+   },
+   {
+    "path": "/dev/null",
+    "type": "char",
+    "major": 1,
+    "minor": 3,
+    "mode": 438
+   }
+  ],
+  "src": [
+   {
+    "path": "/Dockerfile",
+    "type": "file",
+    "data": "FROM scratch\n"
+   },
+   {
+    "path": "/app.py",
+    "type": "file",
+    "data": "print(1)\n",
+    "mtime": [
+     1650000000,
+     123
+    ]
+   },
+   {
+    "path": "/bin",
+    "type": "dir",
+    "mode": 488
+   },
+   {
+    "path": "/bin/run",
+    "type": "file",
+    "data": "#!/bin/sh\n",
+    "mode": 493
+   },
+   {
+    "path": "/bin/suid",
+    "type": "file",
+    "data": "s",
+    "mode": 2541
+   },
+   {
+    "path": "/lib",
+    "type": "dir"
+   },
+   {
+    "path": "/lib/a.so",
+    "type": "file",
+    "data": "elf"
+   },
+   {
+    "path": "/lib/b.so",
+    "type": "hardlink",
+    "target": "/lib/a.so"
+   },
+   {
+    "path": "/lib/link",
+    "type": "symlink",
+    "target": "a.so"
+   },
+   {
+    "path": "/empty",
+    "type": "dir"
+   },
+   {
+    "path": "/sticky",
+    "type": "dir",
+    "mode": 1023
+   },
+   {
+    "path": "/fifo",
+    "type": "fifo",
+    "mode": 416
+   }
+  ],
+  "context": true,
+  "actions": [
+   {
+    "kind": "copy",
+    "src": "/bin",
+    "dest": "/opt/bin",
+    "mode": 488,
+    "timestamp": -1,
+    "follow_symlink": true,
+    "dir_copy_contents": true,
+    "create_dest_path": true,
+    "allow_wildcard": true,
+    "allow_empty_wildcard": true,
+    "owner": {
+     "user": {
+      "id": 1000
+     }
+    }
+   }
+  ]
  }
 ]

@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,7 +30,9 @@ import (
 	"github.com/moby/buildkit/solver/pb"
 	"github.com/moby/buildkit/util/overlay"
 	"github.com/moby/sys/user"
+	"github.com/tonistiigi/fsutil"
 	copy "github.com/tonistiigi/fsutil/copy"
+	"github.com/tonistiigi/fsutil/types"
 	"golang.org/x/sys/unix"
 )
 
@@ -86,6 +89,80 @@ type testCase struct {
 	Lower   []entry  `json:"lower"`
 	Src     []entry  `json:"src"`
 	Actions []action `json:"actions"`
+	// Context makes the source a build context: Src is sent by fsutil's sender, owners
+	// reset as buildx resets them, and written by its receiver, as a local source is.
+	Context bool `json:"context"`
+}
+
+// One end of an in-memory stream of fsutil packets.
+type pipeEnd struct {
+	ctx context.Context
+	in  <-chan []byte
+	out chan<- []byte
+}
+
+func (p *pipeEnd) Context() context.Context { return p.ctx }
+
+func (p *pipeEnd) SendMsg(m any) error {
+	dt, err := m.(*types.Packet).MarshalVT()
+	if err != nil {
+		return err
+	}
+	select {
+	case p.out <- dt:
+		return nil
+	case <-p.ctx.Done():
+		return p.ctx.Err()
+	}
+}
+
+func (p *pipeEnd) RecvMsg(m any) error {
+	select {
+	case dt, ok := <-p.in:
+		if !ok {
+			return io.EOF
+		}
+		return m.(*types.Packet).UnmarshalVT(dt)
+	case <-p.ctx.Done():
+		return p.ctx.Err()
+	}
+}
+
+// sendReceive sends dir as buildx sends a context and receives it into dest.
+func sendReceive(dir, dest string) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a2b, b2a := make(chan []byte, 64), make(chan []byte, 64)
+	a := &pipeEnd{ctx: ctx, in: b2a, out: a2b}
+	b := &pipeEnd{ctx: ctx, in: a2b, out: b2a}
+	f, err := fsutil.NewFS(dir)
+	if err != nil {
+		return err
+	}
+	f, err = fsutil.NewFilterFS(f, &fsutil.FilterOpt{Map: func(_ string, st *types.Stat) fsutil.MapResult {
+		st.Uid = 0
+		st.Gid = 0
+		return fsutil.MapResultKeep
+	}})
+	if err != nil {
+		return err
+	}
+	f, err = fsutil.NewFilterFS(f, &fsutil.FilterOpt{})
+	if err != nil {
+		return err
+	}
+	sent := make(chan error, 1)
+	go func() {
+		err := fsutil.Send(ctx, a, f, nil)
+		close(a2b)
+		sent <- err
+	}()
+	if err := fsutil.Receive(ctx, b, dest, fsutil.ReceiveOpt{}); err != nil {
+		cancel()
+		<-sent
+		return err
+	}
+	return <-sent
 }
 
 type answer struct {
@@ -228,7 +305,18 @@ func run(t *testing.T, c testCase, work string) answer {
 		}
 	}
 	materialize(t, lower, c.Lower)
-	materialize(t, src, c.Src)
+	if c.Context {
+		ctxDir := filepath.Join(work, "ctx")
+		if err := os.MkdirAll(ctxDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		materialize(t, ctxDir, c.Src)
+		if err := sendReceive(ctxDir, src); err != nil {
+			t.Fatalf("%s: %v", c.Name, err)
+		}
+	} else {
+		materialize(t, src, c.Src)
+	}
 	opts := "lowerdir=" + lower + ",upperdir=" + upper + ",workdir=" + ovlWork + ",index=off"
 	if err := unix.Mount("overlay", merged, "overlay", 0, opts); err != nil {
 		t.Fatal(err)

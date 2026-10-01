@@ -14,5 +14,11 @@ workspace = true
 shards-dockerfile = { path = "../dockerfile" }
 shards-image = { path = "../image" }
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 serde_json = "1"
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }

@@ -1569,8 +1569,14 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
        BuildKit's own backend on a real overlayfs mount as root and its differ over the
        result: 91 cases, 79 layers byte for byte and 12 errors word for word
        (`tests/oracle.rs`; each of 16 mutations of these semantics fails it).
-     - Next: the build context (`.dockerignore`, the local source's filters), ADD's
-       archives, and the executor that runs file operations in `shards build`.
+     - Done: the build context. `.dockerignore` is read as ignorefile.ReadAll reads it
+       (18 answers) and planned as `local.excludepatterns`; the directory is walked as
+       buildx's client walks it, include, exclude and follow paths applied (36 cases of
+       fsutil's own walk on this host), and written as BuildKit's receiver writes it
+       (five COPYs from contexts sent and received by fsutil itself, in the overlayfs
+       oracle).
+     - Next: ADD's archives, and the executor that runs file operations in
+       `shards build`.
   3. RUN in a booted VM without a network, and its layer.
   4. Cache keys, then RUN's network, mounts and builder templates.
 

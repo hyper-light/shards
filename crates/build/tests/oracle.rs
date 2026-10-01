@@ -7,50 +7,28 @@
     clippy::expect_used,
     clippy::panic,
     clippy::panic_in_result_fn,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::unreachable
 )]
 
 use std::collections::BTreeMap;
-use std::io;
+
+#[cfg(unix)]
+mod common;
 
 use serde_json::Value;
 use shards_build::copy::Chown;
+use shards_build::data::Sources;
 use shards_build::diff;
 use shards_build::ops::{self, CopyAction};
 use shards_build::vfs::Fs;
 use shards_dockerfile::llb::{OpChown, OpUser};
-use shards_image::erofs::{DataRef, Kind, Meta, Node, NodeId, Source, Tree};
+use shards_image::erofs::{Kind, Meta, Node, NodeId, Tree};
 use shards_image::tar;
 
 /// The time the oracle moves what the kernel stamped to.
 const SENTINEL: (i64, u32) = (2_000_000_000, 123_456_789);
 const FIXTURE_TIME: (i64, u32) = (1_600_000_000, 500);
-
-/// File contents, one source each.
-#[derive(Default)]
-struct Mem(Vec<Vec<u8>>);
-
-impl Mem {
-    fn add(&mut self, data: &[u8]) -> DataRef {
-        self.0.push(data.to_vec());
-        DataRef {
-            source: (self.0.len() - 1) as u32,
-            offset: 0,
-        }
-    }
-}
-
-impl Source for Mem {
-    fn read_at(&mut self, data: DataRef, at: u64, buf: &mut [u8]) -> io::Result<()> {
-        let src = self
-            .0
-            .get(data.source as usize)
-            .ok_or_else(|| io::Error::other("no such source"))?;
-        let start = (data.offset + at) as usize;
-        buf.copy_from_slice(&src[start..start + buf.len()]);
-        Ok(())
-    }
-}
 
 fn unbase64(s: &str) -> Vec<u8> {
     let val = |c: u8| -> u32 {
@@ -94,7 +72,7 @@ fn find(tree: &Tree, path: &str) -> NodeId {
 }
 
 /// A tree as the oracle materializes `entries`: owned, chmodded, stamped.
-fn tree(entries: &Value, mem: &mut Mem) -> Tree {
+fn tree(entries: &Value, mem: &mut Sources) -> Tree {
     let mut tree = Tree::new(Meta {
         mode: 0o755,
         mtime: FIXTURE_TIME.0,
@@ -133,7 +111,7 @@ fn tree(entries: &Value, mem: &mut Mem) -> Tree {
                 let data = e.get("data").and_then(Value::as_str).unwrap_or("").as_bytes();
                 Kind::File {
                     size: data.len() as u64,
-                    data: mem.add(data),
+                    data: mem.bytes(data.to_vec()).unwrap(),
                 }
             }
             "symlink" => Kind::Symlink(e["target"].as_str().unwrap().as_bytes().to_vec()),
@@ -206,9 +184,13 @@ fn strings(a: &Value, key: &str) -> Vec<Vec<u8>> {
 }
 
 /// Runs a case's actions; what fails is BuildKit's message.
-fn run(case: &Value, mem: &mut Mem) -> Result<Vec<u8>, String> {
+fn run(case: &Value, mem: &mut Sources) -> Result<Vec<u8>, String> {
     let lower = Fs::new(tree(&case["lower"], mem), SENTINEL);
-    let src = Fs::new(tree(&case["src"], mem), SENTINEL);
+    let src = if case.get("context").and_then(Value::as_bool) == Some(true) {
+        context_source(case, mem)
+    } else {
+        Fs::new(tree(&case["src"], mem), SENTINEL)
+    };
     let mut upper = lower.clone();
     upper.begin();
     for a in case["actions"].as_array().unwrap() {
@@ -224,7 +206,7 @@ fn run(case: &Value, mem: &mut Mem) -> Result<Vec<u8>, String> {
             "mkdir" => ops::mkdir(&mut upper, &s("path"), mode, flag(a, "parents"), ch, ts),
             "mkfile" => {
                 let data = s("data");
-                let at = mem.add(&data);
+                let at = mem.bytes(data.clone()).unwrap();
                 ops::mkfile(&mut upper, &s("path"), mode, (data.len() as u64, at), ch, ts)
             }
             "copy" => {
@@ -265,6 +247,35 @@ fn run(case: &Value, mem: &mut Mem) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// A case's source as a build context: its tree made in a directory and read as
+/// BuildKit receives a context.
+#[cfg(unix)]
+fn context_source(case: &Value, mem: &mut Sources) -> Fs {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "shards-oracle-ctx-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    common::make(&dir, &case["src"]);
+    let fs = shards_build::context::load(&dir, &Default::default(), mem, SENTINEL).unwrap();
+    CONTEXT_DIRS.with(|d| d.borrow_mut().push(dir));
+    fs
+}
+
+#[cfg(not(unix))]
+fn context_source(_: &Value, _: &mut Sources) -> Fs {
+    unreachable!("context cases run on Unix hosts")
+}
+
+thread_local! {
+    /// Context directories made, removed once their cases' layers are written.
+    static CONTEXT_DIRS: std::cell::RefCell<Vec<std::path::PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// A layer's members, for a readable failure.
 fn listing(layer: &[u8]) -> String {
     let mut r = tar::Reader::new(layer);
@@ -298,8 +309,16 @@ fn file_operations_and_layers_match_buildkit() {
     for (case, answer) in cases.as_array().unwrap().iter().zip(answers.as_array().unwrap()) {
         let name = case["name"].as_str().unwrap();
         assert_eq!(answer["name"].as_str(), Some(name));
-        let mut mem = Mem::default();
+        if cfg!(not(unix)) && case.get("context").is_some() {
+            continue;
+        }
+        let mut mem = Sources::default();
         let got = run(case, &mut mem);
+        CONTEXT_DIRS.with(|d| {
+            for dir in d.borrow_mut().drain(..) {
+                std::fs::remove_dir_all(dir).unwrap();
+            }
+        });
         let want_err = answer["error"].as_str().unwrap_or("");
         match got {
             Err(e) if e == want_err => {}

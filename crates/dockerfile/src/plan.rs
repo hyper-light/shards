@@ -48,6 +48,9 @@ pub struct Options {
     pub multi_platform: bool,
     /// The build context's `local.unique`.
     pub context_id: Vec<u8>,
+    /// The `.dockerignore` patterns the context is sent without (`local.excludepatterns`,
+    /// as dockerui's MainContext sets them).
+    pub excludes: Vec<Vec<u8>>,
 }
 
 /// A base image as resolved: its reference, digest and config.
@@ -2413,6 +2416,11 @@ impl Planner<'_> {
         }
         // The build context, with only the paths the stages copy from it.
         let mut attrs = BTreeMap::new();
+        if !self.opts.excludes.is_empty() {
+            let mut json = String::new();
+            crate::json::write_strings(&mut json, &self.opts.excludes);
+            attrs.insert(b"local.excludepatterns".to_vec(), json.into_bytes());
+        }
         if let Some(paths) = normalize_context_paths(&ctx_paths) {
             let mut json = String::new();
             crate::json::write_strings(&mut json, &paths);
