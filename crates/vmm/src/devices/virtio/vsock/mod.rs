@@ -13,7 +13,6 @@ mod poll;
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -199,12 +198,12 @@ impl std::fmt::Debug for Vsock {
 }
 
 impl Vsock {
-    /// A device whose host side listens at `path`.
-    pub fn new(path: &Path, guest_cid: u64) -> Result<Vsock, String> {
+    /// A device whose host side is `host`.
+    pub fn new(host: crate::vm::VsockHost, guest_cid: u64) -> Result<Vsock, String> {
         Ok(Vsock {
             guest_cid,
             waker: Arc::new(Waker::new().map_err(|e| format!("vsock: {e}"))?),
-            muxer: Some(Muxer::bind(path, guest_cid).map_err(|e| format!("vsock: {e}"))?),
+            muxer: Some(Muxer::new(host, guest_cid).map_err(|e| format!("vsock: {e}"))?),
             context: None,
             worker: None,
             paused: None,
@@ -671,7 +670,7 @@ mod tests {
         }
         let session = Session {
             queues: vec![queue(RX), queue(TX), queue(2)],
-            muxer: Muxer::bind(&dir, 3).unwrap(),
+            muxer: Muxer::new(crate::vm::VsockHost::at(dir.clone()), 3).unwrap(),
         };
         (mem, session, dir)
     }

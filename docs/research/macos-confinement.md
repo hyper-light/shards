@@ -77,12 +77,15 @@ the median, as the Seatbelt profile's compiling cost 3.7 ms [PM M53].
   snapshot a restore reads and the files it records) and for each directory it writes in
   (the snapshot it saves, a warm VM's container logs), and passes them; the VM resolves them
   before it opens anything. Nothing else outside its container is reachable.
-- **Sockets by descriptor.** A Unix socket cannot be bound or dialled outside the container,
-  even in a granted directory. Every VM process shares one container, since they share one
-  identity, so sockets there would be reachable by every other VM: they are not used.
-  Instead the spawner binds the vsock device's listening socket and passes it (`accept` on
-  it works), and a guest's connection to a host port is dialled by the spawner and the
-  connected descriptor passed back over the control socket the VM already has.
+- **No socket files for the run.** The run's own ports are served in the VM process, by
+  socket pair, with no file (D30), so a warm VM or `shards run` needs no socket grant.
+- **Sockets by descriptor, for `--vsock PATH` only.** A Unix socket cannot be bound or
+  dialled outside the container, even in a granted directory. Every VM process shares one
+  container, since they share one identity, so sockets there would be reachable by every
+  other VM: they are not used. Instead the spawner binds the vsock device's listening
+  socket and passes it (`accept` on it works), and a guest's connection to another host
+  port is dialled by the spawner and the connected descriptor passed back over the
+  control socket the VM already has.
 - **Cost:** about 3.1 ms at launch, before a warm VM's request; on a cold `shards vm
   restore`, on its way, as Seatbelt's was.
 - **Open, to measure before relying on it:** that a guest-initiated vsock connection brokered

@@ -722,16 +722,10 @@ mod tests {
         }
     }
 
-    /// Writes records in segments as the workload's `Logger` does with `size` and
-    /// `files`, and removes those `drop` more of the oldest; returns the records of the
-    /// segments left, and how many segments there were.
-    fn write_segments(
-        dir: &Path,
-        records: &[(u8, u64, Vec<u8>)],
-        size: u64,
-        files: u64,
-        drop: u64,
-    ) -> (Vec<(u8, u64, Vec<u8>)>, u64) {
+    /// The segments of at most `size` bytes the workload's `Logger` writes `records` in: a
+    /// record goes to the last, or begins the next. So one more record changes only the
+    /// segment it goes to.
+    fn split(records: &[(u8, u64, Vec<u8>)], size: u64) -> Vec<Vec<(u8, u64, Vec<u8>)>> {
         let mut segments: Vec<Vec<(u8, u64, Vec<u8>)>> = vec![Vec::new()];
         let mut logged = 0u64;
         for record in records.iter().filter(|r| !r.2.is_empty()) {
@@ -743,6 +737,20 @@ mod tests {
             logged += len;
             segments.last_mut().unwrap().push(record.clone());
         }
+        segments
+    }
+
+    /// Writes records in segments as the workload's `Logger` does with `size` and
+    /// `files`, and removes those `drop` more of the oldest; returns the records of the
+    /// segments left, and how many segments there were.
+    fn write_segments(
+        dir: &Path,
+        records: &[(u8, u64, Vec<u8>)],
+        size: u64,
+        files: u64,
+        drop: u64,
+    ) -> (Vec<(u8, u64, Vec<u8>)>, u64) {
+        let segments = split(records, size);
         let total = segments.len() as u64;
         let first = total.saturating_sub(files).saturating_add(drop).min(total - 1);
         // What is written again is written in place, as a writer's appends are.
@@ -943,8 +951,14 @@ mod tests {
                 out[s].last_mut().unwrap().1.extend_from_slice(p.bytes);
                 Ok(true)
             };
+            write_segments(&dir, &[], size, u64::MAX, 0);
             for upto in 0..=records.len() {
-                write_segments(&dir, &records[..upto], size, u64::MAX, 0);
+                // Each record rewrites only the segment it goes to, as the writer's
+                // appends do: rewriting every segment each time spent the test's time
+                // in the file system's metadata calls, not in the reader.
+                let segments = split(&records[..upto], size);
+                let last = segments.len() - 1;
+                write_segment(&dir, last as u64, &segments[last], true);
                 let log = LogFile::open(&dir).unwrap();
                 reader.read(&log, &mut each).unwrap();
             }

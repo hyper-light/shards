@@ -1074,9 +1074,10 @@ fn what_a_moved_tag_named_is_collected() {
     );
 }
 
-/// A daemon whose home is removed exits, and never makes the home again: before, the
-/// spare container it made after the removal made the home's path anew, with its own
-/// directory inside.
+/// A daemon whose home is removed ends its runs, whose containers went with the home, and
+/// exits, and never makes the home again: before, the spare container it made after the
+/// removal made the home's path anew, with its own directory inside, and a run kept its
+/// daemon and VM going with no container left to reach them by.
 #[test]
 fn a_daemon_whose_home_is_removed_exits_without_making_it_again() {
     if cannot_run_vms() || cannot_snapshot() {
@@ -1084,14 +1085,24 @@ fn a_daemon_whose_home_is_removed_exits_without_making_it_again() {
     }
     let (image, _) = served();
     let home = home("daemon-home-removed", &image);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let up = run_shards_env(
+        &["run"],
+        &["-d", "--name", "up", "--pull", "never", &image, "sleep"],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(up.status, Some(0), "{}", up.stderr);
     let daemon = daemon_pid(&home).expect("a daemon pid");
     let path = home.to_path_buf();
+    let named = path.to_string_lossy().into_owned();
     // The daemon may be writing in it as it goes, a spare container or a refill: removed
     // again until it is gone.
     eventually("the home could not be removed", || {
         matches!(std::fs::remove_dir_all(&path), Ok(())) || !path.exists()
     });
     eventually("the daemon outlived its home", || !alive(daemon));
+    eventually("VMs outlived their home", || processes_with(&named).is_empty());
     std::thread::sleep(Duration::from_millis(500));
     let made: Vec<_> = std::fs::read_dir(&path)
         .map(|d| d.map(|e| e.unwrap().path()).collect())

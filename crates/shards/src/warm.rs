@@ -79,7 +79,7 @@ pub struct Request {
 /// has taken it. Until then the daemon holds its own copies of the client's descriptors,
 /// and gives the request to another VM if this one fails. Then makes the client's stdio
 /// this process's, and starts passing the client's signals to the workload through `to`.
-pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
+pub fn receive(link: &Link, to: &'static ToGuest) -> Result<Request, String> {
     let daemon = &link.daemon;
     shards_ipc::send(daemon, kind::READY, &[], &[]).map_err(|e| format!("telling the daemon: {e}"))?;
     let request = shards_ipc::recv(daemon)
@@ -175,10 +175,9 @@ pub fn receive(link: &Link, to: &ToGuest) -> Result<Request, String> {
         relays.push(("client-signals", signals, true));
     }
     for (name, conn, client) in relays {
-        let to = to.clone();
         std::thread::Builder::new()
             .name(name.into())
-            .spawn(move || relay_signals(&conn, &to, client))
+            .spawn(move || relay_signals(&conn, to, client))
             .map_err(|e| format!("{name} thread: {e}"))?;
     }
     Ok(Request {

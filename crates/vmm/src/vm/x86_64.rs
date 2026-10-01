@@ -5,7 +5,6 @@
 
 use std::fs::File;
 use std::io::Write;
-use std::path::Path;
 use std::sync::Arc;
 
 use super::{Config, Console};
@@ -193,7 +192,7 @@ fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
     console: Console,
-    vsock: Option<&Path>,
+    vsock: Option<&super::VsockHost>,
 ) -> Result<Assembled, String> {
     let ram = config
         .memory_mib
@@ -263,8 +262,11 @@ fn assemble(
         add_virtio(&mut bus, Box::new(pmem::Pmem::new(region, gpa)))?;
     }
     if config.vsock {
-        let path = vsock.ok_or("the machine has a vsock device, but no socket path was given")?;
-        add_virtio(&mut bus, Box::new(vsock::Vsock::new(path, vsock::GUEST_CID)?))?;
+        let host = vsock.ok_or("the machine has a vsock device but no host side for it")?;
+        add_virtio(
+            &mut bus,
+            Box::new(vsock::Vsock::new(host.clone(), vsock::GUEST_CID)?),
+        )?;
     }
     let control = Arc::new(Control::default());
     bus.mmio.insert(layout::CONTROL, 0x1000, control.clone())?;
@@ -318,7 +320,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     debug!("kernel loaded");
 
     let config = super::machine_config(cfg)?;
-    let a = assemble(&memory, &config, cfg.console, cfg.vsock.as_deref())?;
+    let a = assemble(&memory, &config, cfg.console, cfg.vsock.as_ref())?;
     let tables = acpi::build(cfg.vcpus, &a.virtio)?.blobs;
     let access = memory.access().map_err(|e| e.to_string())?;
     for (addr, bytes) in tables {
@@ -373,7 +375,7 @@ pub fn restore(
     snap: &Snapshot,
     memory_file: &File,
     console: Console,
-    vsock: Option<&Path>,
+    vsock: Option<&super::VsockHost>,
     working_set: Vec<hv::Touch>,
 ) -> Result<Machine, String> {
     super::check_vsock(snap, vsock)?;

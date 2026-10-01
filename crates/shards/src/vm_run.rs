@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 use shards_vmm::vm::{
     self, AfterSnapshot, Config, Console, Disk, ExitReason, Handle, RestoreConfig, Running, SnapshotPolicy,
+    VsockHost,
 };
 
 use crate::spec::Options;
@@ -218,7 +219,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     cfg.kernel = kernel.ok_or("--kernel is required")?;
     cfg.snapshot = common.policy();
     cfg.console = common.console;
-    cfg.vsock = common.vsock;
+    cfg.vsock = common.vsock.map(VsockHost::at);
     let command = !common.workload.argv.is_empty();
     if let Some(fd) = warm {
         let rootfs = rootfs.ok_or("--warm needs --rootfs")?;
@@ -313,7 +314,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         console: common.console,
         snapshot: common.policy(),
         hold,
-        vsock: common.vsock,
+        vsock: common.vsock.map(VsockHost::at),
         // Restored ahead of its request: the prefetch costs the request nothing.
         prefetch: hold || warm.is_some(),
         // A warm VM's request ends the recording as it ends a template's (RECORD_FOR).
@@ -385,7 +386,7 @@ pub fn run_in(mut cfg: Config, rootfs: PathBuf, workload: &Options) -> ExitCode 
         options: workload,
         hold: false,
     };
-    serve_workload(cfg.vsock.clone(), source, move |vsock| {
+    serve_workload(cfg.vsock.take(), source, move |vsock| {
         cfg.vsock = Some(vsock);
         start(&cfg, None)
     })
@@ -418,11 +419,10 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         Mode::Plain => supervise(start(&cfg, None), cfg.console, false),
         Mode::Template(rootfs) => {
             boot_into(&mut cfg, rootfs, true);
-            with_vsock(cfg.vsock.clone(), |vsock| {
-                // Restored copies dial the host through this device.
-                cfg.vsock = Some(vsock);
-                supervise(start(&cfg, None), cfg.console, true)
-            })
+            // Restored copies dial the host through this device, served by whatever
+            // restores them.
+            cfg.vsock.get_or_insert_with(VsockHost::default);
+            supervise(start(&cfg, None), cfg.console, true)
         }
         Mode::Workload(rootfs) => run_in(cfg, rootfs, &workload),
         Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd, logs_in),
@@ -451,7 +451,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
             options: &workload,
             hold,
         };
-        return serve_workload(cfg.vsock.clone(), source, move |vsock| {
+        return serve_workload(cfg.vsock.take(), source, move |vsock| {
             cfg.vsock = Some(vsock);
             restore_vm(&cfg, None)
         });
@@ -471,28 +471,6 @@ fn wait_for_release(handle: &Handle) {
     let _ = writeln!(std::io::stderr(), "shards-ready");
     let _ = std::io::stdin().read_line(&mut String::new());
     handle.release();
-}
-
-/// Calls `f` with a vsock socket path: `given`, or one in a private directory that lives
-/// as long as the call.
-#[cfg(unix)]
-fn with_vsock(given: Option<PathBuf>, f: impl FnOnce(PathBuf) -> ExitCode) -> ExitCode {
-    if let Some(path) = given {
-        return f(path);
-    }
-    match crate::workload::SocketDir::new() {
-        Ok(dir) => f(dir.path().join("vsock")),
-        Err(e) => {
-            report(format!("socket directory: {e}"));
-            ExitCode::FAILURE
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn with_vsock(_: Option<PathBuf>, _: impl FnOnce(PathBuf) -> ExitCode) -> ExitCode {
-    report("images need vsock, which shards does not support on this platform yet");
-    ExitCode::from(125)
 }
 
 /// Where a served VM's command comes from.
@@ -555,13 +533,14 @@ fn warm_boot(_: Config, _: PathBuf, _: i32, _: Option<PathBuf>) -> ExitCode {
     ExitCode::from(125)
 }
 
-/// Runs a workload in the VM `start` starts, whose vsock device it gives the socket path
-/// for. Exits as the workload does.
+/// Runs a workload in the VM `start` starts, whose vsock device's host side it gives:
+/// `given`, if the command line gave one, and the run's ports, which this process serves.
+/// Exits as the workload does.
 #[cfg(unix)]
 fn serve_workload(
-    vsock: Option<PathBuf>,
+    given: Option<VsockHost>,
     source: Source<'_>,
-    start: impl FnOnce(PathBuf) -> Result<(Handle, Running), String>,
+    start: impl FnOnce(VsockHost) -> Result<(Handle, Running), String>,
 ) -> ExitCode {
     use crate::spec::NOT_RUN;
     use crate::workload::{self, Request};
@@ -589,21 +568,23 @@ fn serve_workload(
         },
         Source::Warm(daemon) => Command::Warm(daemon),
     };
-    with_vsock(vsock, |vsock| {
-        let listeners = workload::listen(&vsock, shards_abi::run::PORT)
-            .and_then(|run| Ok((run, workload::listen(&vsock, shards_abi::run::SIGNAL_PORT)?)));
-        let (listener, signals) = match listeners {
-            Ok(l) => l,
-            Err(e) => return failed(format!("listening for the guest: {e}")),
-        };
+    {
+        let mut vsock = given.unwrap_or_default();
+        let (run_port, listener) = std::sync::mpsc::channel();
+        let (signal_port, signals) = std::sync::mpsc::channel();
+        vsock.ports.push((shards_abi::run::PORT, run_port));
+        vsock.ports.push((shards_abi::run::SIGNAL_PORT, signal_port));
         // A warm VM's signals come from its client. The command line's are this process's:
         // blocked before the VM's threads start, so that they inherit the mask.
-        let to_guest = workload::ToGuest::default();
+        // One workload a process (M34): what its threads share lives as long as they do.
+        static TO_GUEST: workload::ToGuest = workload::ToGuest::new(workload::Signals::new());
+        static TIMING: workload::Timing = workload::Timing::new();
+        let to_guest = &TO_GUEST;
         let warm = matches!(command, Command::Warm(_));
         if let Command::Given { interactive, .. } = &command {
             // SAFETY: isatty(3) on this process's stdin.
             let reads_terminal = *interactive && unsafe { libc::isatty(0) } == 1;
-            if let Err(e) = workload::forward_signals(to_guest.clone(), reads_terminal) {
+            if let Err(e) = workload::forward_signals(to_guest, reads_terminal) {
                 return failed(e);
             }
         }
@@ -612,8 +593,7 @@ fn serve_workload(
             Err(e) => return failed(e),
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        let timing = std::sync::Arc::new(workload::Timing::default());
-        let served_timing = timing.clone();
+        let timing = &TIMING;
         let stopper = handle.clone();
         let served = std::thread::Builder::new()
             .name("workload".into())
@@ -647,14 +627,7 @@ fn serve_workload(
                             }
                         };
                         (
-                            workload::serve(
-                                &listener,
-                                signals,
-                                request,
-                                &to_guest,
-                                &served_timing,
-                                &guest_abi,
-                            ),
+                            workload::serve(&listener, signals, request, to_guest, timing, &guest_abi),
                             false,
                         )
                     }
@@ -668,8 +641,8 @@ fn serve_workload(
                             // A template this VM saved is in place before the daemon hears the
                             // VM is ready, and settles it: its commit runs as the guest does.
                             stopper.wait_for_snapshot();
-                            let request = crate::warm::receive(&link, &to_guest)?;
-                            served_timing
+                            let request = crate::warm::receive(&link, to_guest)?;
+                            timing
                                 .asked
                                 .store(request.timing, std::sync::atomic::Ordering::Relaxed);
                             let _ = client.set(request.client);
@@ -684,17 +657,17 @@ fn serve_workload(
                             &listener,
                             signals,
                             Request::Later(&ask),
-                            &to_guest,
-                            &served_timing,
+                            to_guest,
+                            timing,
                             &guest_abi,
                         );
                         // Some once the request came: its client, if it has one.
                         match client.get() {
                             Some(connection) => {
-                                let timing = served_timing
+                                let timing = timing
                                     .asked
                                     .load(std::sync::atomic::Ordering::Relaxed)
-                                    .then(|| timing_json(&stopper, Some(&served_timing)));
+                                    .then(|| timing_json(&stopper, Some(timing)));
                                 // What the run touched goes to the daemon with its end, for the
                                 // template it was restored from, which no VM writes (D30). A
                                 // failure costs later runs their prefetch, and nothing else.
@@ -728,7 +701,7 @@ fn serve_workload(
         let reason = running.wait();
         // A warm VM's client printed its timing line from the exit status.
         if !warm {
-            report_timing(&handle, Some(&timing));
+            report_timing(&handle, Some(timing));
         }
         if let ExitReason::Error(e) = &reason {
             report(e);
@@ -752,14 +725,14 @@ fn serve_workload(
             Ok((Err(e), false)) => failed(e),
             Err(_) => failed("the guest stopped without running the command".into()),
         }
-    })
+    }
 }
 
 #[cfg(not(unix))]
 fn serve_workload(
-    _: Option<PathBuf>,
+    _: Option<VsockHost>,
     _: Source<'_>,
-    _: impl FnOnce(PathBuf) -> Result<(Handle, Running), String>,
+    _: impl FnOnce(VsockHost) -> Result<(Handle, Running), String>,
 ) -> ExitCode {
     report("running a command in a microVM needs vsock, which shards does not support on this platform yet");
     ExitCode::from(125)
@@ -875,7 +848,7 @@ fn start(cfg: &Config, logs: Option<&Path>) -> Result<(Handle, Running), String>
         .chain(cfg.pmem.iter_mut())
         .chain(cfg.disks.iter_mut().map(|d| &mut d.path))
         .chain(cfg.snapshot.as_mut().map(|p| &mut p.dir))
-        .chain(cfg.vsock.as_mut())
+        .chain(cfg.vsock.as_mut().and_then(|v| v.path.as_mut()))
     {
         *path = absolute(path)?;
     }
@@ -897,7 +870,7 @@ fn start(cfg: &Config, logs: Option<&Path>) -> Result<(Handle, Running), String>
     written(
         &mut paths,
         cfg.snapshot.as_ref().map(|p| p.dir.as_path()),
-        cfg.vsock.as_deref(),
+        cfg.vsock.as_ref().and_then(|v| v.path.as_deref()),
         logs,
     );
     // A host that runs no VM says so, before its files are confined: the check reads no
@@ -912,7 +885,7 @@ fn restore_vm(cfg: &RestoreConfig, logs: Option<&Path>) -> Result<(Handle, Runni
     let mut cfg = cfg.clone();
     for path in std::iter::once(&mut cfg.dir)
         .chain(cfg.snapshot.as_mut().map(|p| &mut p.dir))
-        .chain(cfg.vsock.as_mut())
+        .chain(cfg.vsock.as_mut().and_then(|v| v.path.as_mut()))
     {
         *path = absolute(path)?;
     }
@@ -931,7 +904,7 @@ fn restore_vm(cfg: &RestoreConfig, logs: Option<&Path>) -> Result<(Handle, Runni
     written(
         &mut paths,
         cfg.snapshot.as_ref().map(|p| p.dir.as_path()),
-        cfg.vsock.as_deref(),
+        cfg.vsock.as_ref().and_then(|v| v.path.as_deref()),
         logs,
     );
     // A host that runs no VM says so, before its files are confined: the check reads no
@@ -947,7 +920,7 @@ fn absolute(path: &Path) -> Result<PathBuf, String> {
 }
 
 /// The directories a VM writes in: the snapshot it saves and a warm VM's container logs;
-/// and the one it makes its vsock sockets in.
+/// and the one holding the vsock socket path it was given, if any.
 fn written(
     paths: &mut crate::confine::Paths,
     snapshot: Option<&Path>,
@@ -1067,7 +1040,17 @@ mod tests {
 
         let restore = parse_restore(args(&[b"/h\xff/t", b"--vsock", b"/h\xff/v"])).unwrap();
         assert_eq!(bytes(&restore.cfg.dir), b"/h\xff/t");
-        assert_eq!(bytes(restore.cfg.vsock.as_deref().unwrap()), b"/h\xff/v");
+        assert_eq!(
+            bytes(
+                restore
+                    .cfg
+                    .vsock
+                    .as_ref()
+                    .and_then(|v| v.path.as_deref())
+                    .unwrap()
+            ),
+            b"/h\xff/v"
+        );
 
         let e = parse_run(args(&[b"--kernel", b"/k", b"--cpus", b"\xff"]))
             .err()

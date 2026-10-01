@@ -320,6 +320,11 @@ impl Registry {
         self.arriving.insert(c.id.clone(), c);
     }
 
+    /// Whether any container is reserved, its record not yet written.
+    pub fn any_arriving(&self) -> bool {
+        !self.arriving.is_empty()
+    }
+
     /// Whether the container with `id` is reserved, its record not yet written.
     pub fn is_arriving(&self, id: &str) -> bool {
         self.arriving.contains_key(id)

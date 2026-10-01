@@ -63,7 +63,7 @@ fn a_machine_dropped_unwaited_is_stopped_and_torn_down() {
         path: disk,
         read_only: false,
     }];
-    devices.vsock = Some(dir.join("v.sock"));
+    devices.vsock = Some(shards_vmm::vm::VsockHost::at(dir.join("v.sock")));
     devices.snapshot = Some(SnapshotPolicy {
         dir: dir.join("snapshot"),
         then: AfterSnapshot::Resume,

@@ -56,7 +56,7 @@ performance and resource usage.
 | D9 | Implement **both** virtio-mmio and virtio-pci (modern, per-queue MSI-X). Choose the default transport by measuring the restore path and runtime. | MMIO costs 2 exits per interrupt; PCI is needed for VFIO [VIO §2.4, R3]; GPU-free default VMs must stay pin-free [GPU R1] |
 | D10 | Pin the guest's CPU view explicitly: MPIDR, PARange clamped to the IPA, SME exposure decided per image. Don't inherit defaults. | Defaults show PARange 40 on a 36-bit IPA and expose SME2 [PM M12] |
 | D11 | GPUs are zero-cost when unused. GPU VMs are a separate class assigned from a warm pool (VFIO via iommufd on Linux; virtio-gpu/Venus plus a remoting broker on macOS). | Assigned devices pin all RAM and break CoW; FLR ≥ 100 ms; CUDA init takes seconds [GPU §2.3, R1–R6] |
-| D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). Built (a7b32ab): guest ports map to host Unix sockets as in Firecracker (`CONNECT <port>`; the guest reaches `<path>_P`). Unlike Firecracker, host EOF is a half-close, so a guest can answer after stdin ends. Each restored copy binds its own socket. A snapshot keeps the streams the device held. The restored device resets each of them with an RST on its RX queue, ahead of every other packet, and continues host port allocation past the snapshot's, never reusing a held port. It posts no TRANSPORT_RESET: Linux handles that event in a work item apart from RX, and on one interrupt it visits RX first. So a connection made right after the restore could be established and then reset (13 of 350 restores under CPU load). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7]; macOS poll reports POLLHUP on a half-close, so the device waits with kqueue there; restores [PM M20]: Linux 7.2 net/vmw_vsock/virtio_transport.c (`event_work`, `rx_work` handles RX in order), drivers/virtio/virtio_mmio.c `vm_interrupt` over queues in setup order (virtio_ring.c `list_add_tail`); a REQUEST matching a closing socket is dropped (virtio_transport_common.c `virtio_transport_recv_disconnecting`) |
+| D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). Built (a7b32ab): guest ports map to host Unix sockets as in Firecracker (`CONNECT <port>`; the guest reaches `<path>_P`). Unlike Firecracker, host EOF is a half-close, so a guest can answer after stdin ends. Each restored copy binds its own socket, where it is given a path; the ports its own process serves (the run's) take no socket file (D30). A snapshot keeps the streams the device held. The restored device resets each of them with an RST on its RX queue, ahead of every other packet, and continues host port allocation past the snapshot's, never reusing a held port. It posts no TRANSPORT_RESET: Linux handles that event in a work item apart from RX, and on one interrupt it visits RX first. So a connection made right after the restore could be established and then reset (13 of 350 restores under CPU load). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7]; macOS poll reports POLLHUP on a half-close, so the device waits with kqueue there; restores [PM M20]: Linux 7.2 net/vmw_vsock/virtio_transport.c (`event_work`, `rx_work` handles RX in order), drivers/virtio/virtio_mmio.c `vm_interrupt` over queues in setup order (virtio_ring.c `list_add_tail`); a REQUEST matching a closing socket is dropped (virtio_transport_common.c `virtio_transport_recv_disconnecting`) |
 | D26 | `shards run` is served by a per-user daemon that hands each request to a warm VM process of the image's template: resumed, connected, waiting for its command. The client's stdio and connection pass by `SCM_RIGHTS`, and the daemon keeps its copies until the warm VM has taken them. The CLI is a thin binary. | Handoff 31 µs p50; warm VM 12.3 MiB, no CPU; a thin client costs 1.4 ms against 3.5 ms for a binary linking the VMM's frameworks [PM M23]; XNU flushes a socket in flight that no process holds [PM M24]; a pooled run takes 3.4 ms at p50 and 3.9 ms at p99 with the thin client [PM M26]; pre-created VM shells [Manco17 §5.2; Wanninger22 §5.2] |
 | D27 | Every `shards run` is a container, as `docker run`'s is: an ID and a name, running until its command ends, then exited until `shards rm` or `--rm` removes it. Command lines are read as the Docker CLI reads them, by one crate (`shards-cmdline`) in the client and the daemon: the client answers `--help` and usage mistakes itself, and the daemon keeps the records and answers `ps`, `wait`, `logs`, `stop`, `kill` and `rm`. | The Docker CLI's own answers: a differential test against docker/cli v29.8.1's command tree [scripts/docker-cli]; dockerd's names, IDs, start failures and stop semantics [moby daemon/names.go, daemon/errors.go, daemon/stop.go, daemon/kill.go @ docker-v29.8.1]; docs/research/container-lifecycle-cli.md; a record costs no run anything it waits for (a spare container made ahead) |
 
@@ -1383,7 +1383,7 @@ audit's "Security and test coverage").
     refused, and on ABI v6 signals and abstract Unix sockets outside the process are too.
     Allowed: its kernel, initrd, init, pmem and disks, a restore's snapshot and the files it
     records, the snapshot directory it saves and a warm VM's container logs, sockets made
-    only in its vsock directory, `/dev/null`, its own `/proc` entry, and `/dev/kvm` and the
+    only beside a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and `/dev/kvm` and the
     huge page settings where the host has them. No directory may take a file from another
     (`REFER`). Rules hold inodes: a template keeps its rule when the daemon renames it.
   - It fails closed: a kernel without Landlock, or whose ABI is older than v5 (Linux 6.10,
@@ -1400,10 +1400,23 @@ audit's "Security and test coverage").
   or unsupported interface, so it goes, in the change that brings App Sandbox.
   - `shards-vm` is signed with App Sandbox, the hypervisor entitlement and Hardened Runtime,
     with its identity in an Info.plist linked into it. It reaches nothing but what its
-    spawner grants: files and directories by bookmark, the vsock device's listening socket
-    by descriptor, and connections to host ports dialled by the spawner and handed over.
+    spawner grants: files and directories by bookmark and, only for a `--vsock PATH` of
+    the user's, the device's listening socket by descriptor and connections to host ports
+    dialled by the spawner and handed over.
   - It costs about 3.1 ms at launch (M67), before a warm VM's request, as the profile's
     compiling cost 3.7 ms (M53).
+- **The run's own vsock ports are no socket files.** The run and signal ports are served
+  by the VM process itself, so its device hands a guest's connection to one straight to
+  the serving thread as one end of a `socketpair(2)` (`VsockHost::ports`). Before, the
+  process bound `<path>_<port>` in a private directory and its own device dialled it:
+  - any process that could reach a `--vsock` directory could dial the run's port first
+    and be sent the command, its environment and stdin; a pair has no name to dial;
+  - neither Landlock nor App Sandbox has anything to grant for a warm VM or `shards run`,
+    whose VMs now make no socket file at all; App Sandbox refuses Unix sockets outside
+    its container even in a granted directory (macos-confinement.md §2);
+  - a `socketpair` is allowed by the seccomp filter already (Unix sockets only).
+  A path is only for the user's `--vsock PATH`, Firecracker's interface, which host
+  clients dial and whose `<path>_<port>` sockets other ports reach.
 - **Windows:** nothing yet.
 
 ### Networking: a network process per VM (D31, design)

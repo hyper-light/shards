@@ -19,7 +19,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use shards_cmdline::term::{EscapeProxy, Read as Typed};
@@ -55,8 +55,11 @@ fn serve(home: &Path, daemon: &Path, request: &Run, detach_keys: &[u8]) -> ExitC
     // A terminal's size follows the client's stdout's, when it is one (docker/cli
     // cli/command/container/run.go, MonitorTtySize).
     let resizes = request.tty.is_some() && !request.detach && out_terminal;
-    let current: Arc<Mutex<Option<UnixStream>>> = Arc::default();
-    if let Err(e) = forward_signals(current.clone(), reads_terminal, resizes) {
+    // The connection the run is on, where signals go: one run a process, so the forwarder,
+    // which lives as long as the process, shares it as a `static`.
+    static CURRENT: Mutex<Option<UnixStream>> = Mutex::new(None);
+    let current = &CURRENT;
+    if let Err(e) = forward_signals(current, reads_terminal, resizes) {
         return failed(&e);
     }
     // Only an attached stdin, and only on a terminal, goes raw, unless NORAW is set; the
@@ -385,7 +388,7 @@ fn resize(conn: &UnixStream) {
 /// then goes to the command too, as both reach a Docker container's (docker/cli tty.go,
 /// signals.go).
 fn forward_signals(
-    current: Arc<Mutex<Option<UnixStream>>>,
+    current: &'static Mutex<Option<UnixStream>>,
     reads_terminal: bool,
     resizes: bool,
 ) -> Result<(), String> {

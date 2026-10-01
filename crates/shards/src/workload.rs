@@ -11,13 +11,9 @@ use std::fs;
 #[cfg(unix)]
 use std::io::{self, Read, Write};
 #[cfg(unix)]
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::net::UnixStream;
 #[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
-#[cfg(unix)]
-use std::path::{Path, PathBuf};
-#[cfg(unix)]
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError};
 
 #[cfg(unix)]
 use shards_abi::run::{self, Size, Spec, kind};
@@ -28,59 +24,9 @@ use crate::spec::{
 };
 
 #[cfg(unix)]
-/// A private directory for this VM's vsock sockets, removed on drop.
-#[derive(Debug)]
-pub struct SocketDir(PathBuf);
-
-#[cfg(unix)]
-impl SocketDir {
-    /// A name nobody can predict, made 0700, and never one that already exists: another
-    /// user of a shared /tmp can neither take it over nor block it.
-    pub fn new() -> io::Result<SocketDir> {
-        let mut nonce = [0u8; 8];
-        shards_vmm::platform::fill_random(&mut nonce)?;
-        let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-        let dir = std::env::temp_dir().join(format!("shards-{}-{nonce}", std::process::id()));
-        fs::DirBuilder::new().mode(0o700).create(&dir)?;
-        Ok(SocketDir(dir))
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-#[cfg(unix)]
-impl Drop for SocketDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-#[cfg(unix)]
-/// The socket the guest's run connection arrives on, removed on drop.
-#[derive(Debug)]
-pub struct Listener {
-    listener: UnixListener,
-    path: PathBuf,
-}
-
-#[cfg(unix)]
-impl Drop for Listener {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-#[cfg(unix)]
-/// Listens where the VM's vsock device delivers guest connections to host `port`.
-pub fn listen(vsock: &Path, port: u32) -> io::Result<Listener> {
-    let mut path = vsock.as_os_str().to_owned();
-    path.push(format!("_{port}"));
-    let path = PathBuf::from(path);
-    let listener = UnixListener::bind(&path)?;
-    Ok(Listener { listener, path })
-}
+/// Where the guest's connections to a host port this process serves arrive
+/// ([`shards_vmm::vm::VsockHost::ports`]).
+pub type Port = std::sync::mpsc::Receiver<UnixStream>;
 
 /// Signals and terminal sizes on their way to the workload, as frames: sent once the guest
 /// has dialed the signal port, queued before then while the workload runs or is sure to,
@@ -95,7 +41,20 @@ pub struct Signals {
 }
 
 #[cfg(unix)]
-pub type ToGuest = Arc<Mutex<Signals>>;
+impl Signals {
+    pub const fn new() -> Signals {
+        Signals {
+            conn: None,
+            queued: Vec::new(),
+            running: false,
+        }
+    }
+}
+
+/// Where signals for the workload go. A VM process serves one workload, so its own is a
+/// `static` that the threads relaying signals, which live as long as the process, share.
+#[cfg(unix)]
+pub type ToGuest = Mutex<Signals>;
 
 #[cfg(unix)]
 fn lock(to: &ToGuest) -> std::sync::MutexGuard<'_, Signals> {
@@ -111,6 +70,17 @@ pub struct Timing {
     pub answered_us: std::sync::OnceLock<u128>,
     /// The request asked for the timing line (a warm VM's client set `SHARDS_TIMING`).
     pub asked: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(unix)]
+impl Timing {
+    pub const fn new() -> Timing {
+        Timing {
+            request_us: std::sync::OnceLock::new(),
+            answered_us: std::sync::OnceLock::new(),
+            asked: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
 }
 
 /// The command a served VM runs.
@@ -299,17 +269,16 @@ fn unlink_in(dir: &fs::File, name: &str) -> io::Result<()> {
 /// (shards_abi::control::ABI): an init built for another shards could misread it.
 #[cfg(unix)]
 pub fn serve(
-    listener: &Listener,
-    signals: Listener,
+    listener: &Port,
+    signals: Port,
     request: Request<'_>,
-    to: &ToGuest,
+    to: &'static ToGuest,
     timing: &Timing,
     guest_abi: &dyn Fn() -> Option<u64>,
 ) -> Result<Ended, String> {
-    let (mut conn, _) = listener
-        .listener
-        .accept()
-        .map_err(|e| format!("waiting for the guest: {e}"))?;
+    let mut conn = listener
+        .recv()
+        .map_err(|_| "the microVM ended before its guest connected".to_string())?;
     let Asked {
         spec,
         interactive,
@@ -345,15 +314,14 @@ pub fn serve(
         send(&mut conn, kind::STDIN, &[]).map_err(|e| format!("closing stdin: {e}"))?;
     }
     lock(to).running = true;
-    let signal_path = signals.path.clone();
-    let accepting = to.clone();
     std::thread::Builder::new()
         .name("signal-conn".into())
         .spawn(move || {
-            let Ok((mut c, _)) = signals.listener.accept() else {
+            // Ends with the microVM, if the guest never dials.
+            let Ok(mut c) = signals.recv() else {
                 return;
             };
-            let mut state = lock(&accepting);
+            let mut state = lock(to);
             if !state.running {
                 return;
             }
@@ -372,9 +340,8 @@ pub fn serve(
         let mut state = lock(to);
         *state = Signals::default();
     }
-    // A connection still being awaited is woken, so its listener goes. The guest powers
-    // off once the host closes the run connection: shutting it down closes every copy.
-    let _ = UnixStream::connect(&signal_path);
+    // The guest powers off once the host closes the run connection: shutting it down
+    // closes every copy.
     let _ = conn.shutdown(std::net::Shutdown::Both);
     status
 }
@@ -500,7 +467,7 @@ fn forward_stdin(conn: &mut UnixStream) {
 /// unless it was ignored. With `reads_terminal`, the terminal's job control applies to
 /// shards (shards_ipc::forwarded).
 #[cfg(unix)]
-pub fn forward_signals(to: ToGuest, reads_terminal: bool) -> Result<(), String> {
+pub fn forward_signals(to: &'static ToGuest, reads_terminal: bool) -> Result<(), String> {
     let (set, ignored) =
         shards_ipc::take_forwarded(reads_terminal).map_err(|e| format!("taking signals: {e}"))?;
     std::thread::Builder::new()
@@ -515,7 +482,7 @@ pub fn forward_signals(to: ToGuest, reads_terminal: bool) -> Result<(), String> 
                 let Some(&(_, linux)) = shards_ipc::FORWARDED.iter().find(|(s, _)| *s == sig) else {
                     continue;
                 };
-                let forwarded = signal_guest(&to, linux);
+                let forwarded = signal_guest(to, linux);
                 let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
                 if !forwarded && ends && !ignored.contains(&sig) {
                     // SAFETY: the default action of a terminating signal, on this process.
@@ -577,6 +544,8 @@ fn to_guest(to: &ToGuest, which: u8, payload: &[u8]) -> bool {
 #[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     /// A directory of its own, removed when dropped, whether its test passes or panics.

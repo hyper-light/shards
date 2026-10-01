@@ -41,8 +41,8 @@ pub use unsupported::{
 
 /// A snapshot's vsock device and the restore's socket path come together or not at all.
 #[cfg(hv)]
-fn check_vsock(snap: &crate::snapshot::Snapshot, path: Option<&std::path::Path>) -> Result<(), String> {
-    match (snap.config.vsock, path) {
+fn check_vsock(snap: &crate::snapshot::Snapshot, host: Option<&VsockHost>) -> Result<(), String> {
+    match (snap.config.vsock, host) {
         (true, None) => Err(
             "the snapshot has a vsock device: give the restored VM its own socket with --vsock PATH".into(),
         ),
@@ -121,8 +121,32 @@ pub struct Config {
     pub snapshot: Option<SnapshotPolicy>,
     /// Read-only virtio-pmem devices backed by these files, in guest order (pmem0, ...).
     pub pmem: Vec<PathBuf>,
-    /// A virtio-vsock device whose host side listens at this Unix socket path.
-    pub vsock: Option<PathBuf>,
+    /// A virtio-vsock device, and where its host side is.
+    pub vsock: Option<VsockHost>,
+}
+
+/// The host side of a VM's virtio-vsock device.
+#[derive(Debug, Clone, Default)]
+pub struct VsockHost {
+    /// A Unix socket host clients dial (`CONNECT <port>`), and the prefix of the sockets
+    /// `<path>_<port>` that guest connections to other host ports reach, as Firecracker's.
+    pub path: Option<PathBuf>,
+    /// Host ports this process serves itself. A guest connection to one arrives on its
+    /// sender as one end of a socket pair, with no socket file anyone else could reach,
+    /// dial first or need to be granted (D30).
+    #[cfg(unix)]
+    pub ports: Vec<(u32, std::sync::mpsc::Sender<std::os::unix::net::UnixStream>)>,
+}
+
+impl VsockHost {
+    /// A host side at `path` alone.
+    pub fn at(path: PathBuf) -> VsockHost {
+        VsockHost {
+            path: Some(path),
+            #[cfg(unix)]
+            ports: Vec::new(),
+        }
+    }
 }
 
 impl Config {
@@ -155,9 +179,9 @@ pub struct RestoreConfig {
     /// Prepare everything, then wait for [`Handle::release`]: a warm VM whose start
     /// request costs only the release.
     pub hold: bool,
-    /// Where this VM's vsock device listens. A snapshot with a vsock device needs one:
-    /// the original VM may still hold its own path.
-    pub vsock: Option<PathBuf>,
+    /// This VM's vsock device's host side. A snapshot with a vsock device needs one: the
+    /// original VM may still hold its own path.
+    pub vsock: Option<VsockHost>,
     /// Prefetch the snapshot's working set, if it has one, before the guest runs: for a
     /// restore ahead of its request, which it moves off the request's path (PM M30).
     pub prefetch: bool,

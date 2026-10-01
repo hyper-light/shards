@@ -190,7 +190,19 @@ impl Warm {
         let _ = tx.send(());
         assert!(exited.success(), "the warm VM exited with {exited}");
         let mut said = Vec::new();
+        let mut done = false;
         while let Some(m) = shards_ipc::recv(&self.daemon).unwrap() {
+            // What a restore recorded, where the backend records restores', goes to the
+            // daemon before the end, in well-formed parts.
+            if m.kind == kind::WORKING_SET {
+                assert!(!done, "a working set part after DONE");
+                assert!(
+                    shards_ipc::working_set_part(&m.payload).is_some(),
+                    "a malformed part"
+                );
+                continue;
+            }
+            done |= m.kind == kind::DONE;
             said.push((m.kind, m.payload));
         }
         let mut expected = Vec::new();

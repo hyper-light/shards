@@ -177,7 +177,8 @@ pub struct Paths {
     pub write: Vec<std::path::PathBuf>,
     /// Directories it may make, and in which it reads and writes anything.
     pub write_under: Vec<std::path::PathBuf>,
-    /// Directories it binds and dials Unix sockets in: its vsock device's.
+    /// Directories it binds and dials Unix sockets in: that of a vsock socket path it was
+    /// given (`--vsock`). The ports its own process serves need none.
     pub sockets_under: Vec<std::path::PathBuf>,
 }
 
@@ -214,8 +215,8 @@ fn literal(path: &std::path::Path) -> String {
 /// The profile: nothing but sysctl reads, signals to itself, `/dev/null`, files'
 /// metadata, and `paths` (docs/research/platform-measurements.md M52). Metadata, since
 /// resolving a path stats each directory above it: it says which files are there, not
-/// what they hold. Unix sockets are files to Seatbelt: a VM binds and dials its vsock
-/// sockets in a directory it writes in.
+/// what they hold. Unix sockets are files to Seatbelt: a VM given a vsock socket path
+/// binds and dials beside it.
 // macOS applies it; the others are confined without paths.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn profile(paths: &Paths) -> String {
@@ -297,8 +298,8 @@ pub fn seatbelt(paths: &Paths) -> Result<(), String> {
 /// It fails closed (PM M66): a kernel without Landlock, or whose ABI is older than v5, the
 /// first that governs a device's ioctls (/dev/kvm's), starts no VM, and neither does a path
 /// it must allow that is not there. Each path gets only the rights its use takes: no
-/// directory may take a file from another (`REFER`), and only the vsock device's makes
-/// sockets. The version is asked of the kernel, never inferred from its release, as
+/// directory may take a file from another (`REFER`), and only that of a vsock path given
+/// makes sockets. The version is asked of the kernel, never inferred from its release, as
 /// Landlock's maintainer asks (firecracker-microvm/firecracker#5771).
 ///
 /// Rules hold inodes, not names: a directory keeps its rule when renamed, as a template's

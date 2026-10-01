@@ -291,15 +291,13 @@ mod tests {
             .wait(&[interest(fd, true, false, 3)], short, &mut out)
             .unwrap();
         assert!(out.iter().any(|r| r.token == 3 && r.read), "{out:?}");
-        // Closed, and its number taken by a new socket with data for us.
-        drop((ours, theirs));
+        // Closed, and its number taken by a new socket with data for us. dup2(2) does
+        // both at once: closing first would leave the number to any test thread that
+        // opens a descriptor in between.
         let (new, peer) = UnixStream::pair().unwrap();
-        let (new, peer) = if new.as_raw_fd() == fd {
-            (new, peer)
-        } else {
-            (peer, new)
-        };
-        assert_eq!(new.as_raw_fd(), fd, "the number was not reused");
+        // SAFETY: `fd` is `ours`, which owns the new socket from here on.
+        assert_eq!(unsafe { libc::dup2(new.as_raw_fd(), fd) }, fd);
+        drop((new, theirs));
         (&peer).write_all(b"y").unwrap();
         out.clear();
         poller

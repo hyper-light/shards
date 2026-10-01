@@ -3,7 +3,6 @@
 
 use std::fs::File;
 use std::io::Write;
-use std::path::Path;
 use std::sync::Arc;
 
 use super::{Config, Console};
@@ -134,12 +133,12 @@ struct Assembled {
     pmem: Vec<(u64, u64)>,
 }
 
-/// `vsock` is the host socket path of the vsock device `config` asks for.
+/// `vsock` is the host side of the vsock device `config` asks for.
 fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
     console: Console,
-    vsock: Option<&Path>,
+    vsock: Option<&super::VsockHost>,
 ) -> Result<Assembled, String> {
     let ram = ram_bytes(config.memory_mib)?;
     // Device memory (pmem regions) starts at the first GiB boundary after RAM, and the
@@ -234,8 +233,11 @@ fn assemble(
         add_virtio(&mut bus, Box::new(pmem::Pmem::new(region, gpa)))?;
     }
     if config.vsock {
-        let path = vsock.ok_or("the machine has a vsock device but no socket path for it")?;
-        add_virtio(&mut bus, Box::new(vsock::Vsock::new(path, vsock::GUEST_CID)?))?;
+        let host = vsock.ok_or("the machine has a vsock device but no host side for it")?;
+        add_virtio(
+            &mut bus,
+            Box::new(vsock::Vsock::new(host.clone(), vsock::GUEST_CID)?),
+        )?;
     }
     let out: Box<dyn Write + Send> = match console {
         Console::Stdout => Box::new(platform::stdout_file().map_err(|e| format!("console: {e}"))?),
@@ -285,7 +287,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     debug!("kernel loaded");
 
     let config = super::machine_config(cfg)?;
-    let a = assemble(&memory, &config, cfg.console, cfg.vsock.as_deref())?;
+    let a = assemble(&memory, &config, cfg.console, cfg.vsock.as_ref())?;
     a.vmgenid.write_new_id()?;
 
     let fdt_addr = layout::DRAM_BASE + ram - boot::FDT_MAX;
@@ -409,7 +411,7 @@ pub fn restore(
     snap: &Snapshot,
     memory_file: &File,
     console: Console,
-    vsock: Option<&Path>,
+    vsock: Option<&super::VsockHost>,
     working_set: Vec<hv::Touch>,
 ) -> Result<Machine, String> {
     super::check_vsock(snap, vsock)?;

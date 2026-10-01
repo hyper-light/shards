@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -180,7 +180,9 @@ enum RunState {
     /// starts.
     Pending { cancelled: bool },
     /// Being handed to a warm VM: it starts or fails, and commands wait to see which.
-    Handing,
+    /// `socket` is the VM's, which the handoff holds open until the run leaves this state
+    /// (`start_run`): a VM says TAKEN on it before it starts anything.
+    Handing { socket: RawFd },
     /// Handed over, and followed until it ends.
     Tracked(Tracked),
 }
@@ -624,8 +626,13 @@ fn descriptor_free(any: &impl AsRawFd) -> bool {
 
 /// Whether `socket` has something to read now: a message, or its end.
 fn readable(socket: &UnixStream) -> bool {
+    readable_fd(socket.as_raw_fd())
+}
+
+/// Whether `fd` has something to read, or has ended, now.
+fn readable_fd(fd: RawFd) -> bool {
     let mut pfd = libc::pollfd {
-        fd: socket.as_raw_fd(),
+        fd,
         events: libc::POLLIN,
         revents: 0,
     };
@@ -725,10 +732,13 @@ impl Daemon {
         let mut starved_since: Option<Instant> = None;
         loop {
             let closing = self.closed.load(Ordering::SeqCst);
-            // A daemon whose home is gone has nothing left to serve.
+            // A daemon whose home is gone has nothing left to serve, and its runs' containers
+            // are gone with it, so no command could reach them: they end as `daemon stop`
+            // ends them, rather than run on unseen.
             if !closing && std::fs::symlink_metadata(&self.home).is_err() {
                 log(format!("{} is gone", self.home.display()));
-                self.stopping.store(true, Ordering::SeqCst);
+                self.step_aside();
+                continue;
             }
             // Someone may remove the socket while the daemon runs.
             if !closing && std::fs::symlink_metadata(self.socket).is_err() {
@@ -1085,7 +1095,8 @@ impl Daemon {
     ) -> Result<Arc<Mutex<Inbox>>, String> {
         for _ in 0..HANDOFF_TRIES {
             let ready = acquire().map_err(|e| self.not_started(id, &e))?;
-            if let Err(said) = self.commit(id) {
+            // Every way on leaves `Handing` while `ready` holds the socket it names.
+            if let Err(said) = self.commit(id, ready.socket.as_raw_fd()) {
                 self.give_back(ready);
                 return Err(said);
             }
@@ -1380,13 +1391,13 @@ impl Daemon {
     /// or the daemon is stopping: then it never starts, and the error is what its client
     /// is told. `stop_runs` sets `ending` under the same lock, so a run either commits
     /// before and is stopped once it runs, or sees it here.
-    fn commit(&self, id: &str) -> Result<(), String> {
+    fn commit(&self, id: &str, socket: RawFd) -> Result<(), String> {
         {
             let mut runs = lock(&self.runs);
             match runs.get_mut(id) {
                 Some(state) if matches!(state, RunState::Pending { cancelled: false }) => {
                     if !self.ending.load(Ordering::SeqCst) {
-                        *state = RunState::Handing;
+                        *state = RunState::Handing { socket };
                         return Ok(());
                     }
                 }
@@ -1436,7 +1447,7 @@ impl Daemon {
         let mut runs = lock(&self.runs);
         while matches!(
             runs.get(id),
-            Some(RunState::Pending { cancelled: false } | RunState::Handing)
+            Some(RunState::Pending { cancelled: false } | RunState::Handing { .. })
         ) {
             runs = self.resolved.wait(runs).unwrap_or_else(PoisonError::into_inner);
         }
@@ -1456,7 +1467,7 @@ impl Daemon {
                     *cancelled = true;
                     false
                 }
-                Some(RunState::Handing) => true,
+                Some(RunState::Handing { .. }) => true,
                 Some(RunState::Tracked(_)) | None => return Ok(None),
             };
             if handing {
@@ -1551,16 +1562,40 @@ impl Daemon {
     /// Takes what every run has sent, so that what a command answers includes all that
     /// any client has seen of them.
     pub(super) fn settle(&self) {
-        for id in lock(&self.containers).catch_up() {
+        // A container is seen once its record is written, on the recorder's thread, while
+        // its run goes on: a short run's client can have its status first. The answer
+        // waits for every record being written, each a local write away.
+        let mut registry = lock(&self.containers);
+        for id in registry.catch_up() {
             log(format!("container {id}: its record is written again"));
         }
-        let runs: Vec<(String, Arc<Mutex<Inbox>>)> = lock(&self.runs)
+        while registry.any_arriving() {
+            registry = self
+                .arrived
+                .wait(registry)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        drop(registry);
+        // A run being handed over whose VM has said TAKEN may be running already, and its
+        // client have seen it: what it sent is taken once it is registered, which its
+        // handoff, reading TAKEN, does at once. One whose VM has not said it has started
+        // nothing, and no command waits on a VM that has yet to answer.
+        let mut states = lock(&self.runs);
+        while states
+            .values()
+            .any(|r| matches!(r, RunState::Handing { socket } if readable_fd(*socket)))
+        {
+            states = self.resolved.wait(states).unwrap_or_else(PoisonError::into_inner);
+        }
+        let runs: Vec<(String, Arc<Mutex<Inbox>>)> = states
             .iter()
             .filter_map(|(id, r)| match r {
                 RunState::Tracked(t) => Some((id.clone(), t.inbox.clone())),
                 _ => None,
             })
             .collect();
+        // Messages are taken without it: a run's end takes it again.
+        drop(states);
         for (id, inbox) in runs {
             self.take_messages(&id, &inbox);
         }
@@ -3404,6 +3439,74 @@ mod tests {
         assert_eq!(starting.asked.load(Ordering::SeqCst), 1);
         let record = t.record(&id).unwrap();
         assert_eq!((record.state, record.exit_code), (Life::Created, Some(128)));
+    }
+
+    /// A command waits for a run being handed over only once its VM has said TAKEN, after
+    /// which the VM may have started it and its client seen that: the answer waits for it
+    /// to be registered. One whose VM has not answered is waited for by nothing.
+    #[test]
+    fn a_command_waits_for_a_handoff_only_once_the_vm_has_taken_it() {
+        let t = Test::new("settle-handing");
+        let handing = |socket: &UnixStream| RunState::Handing {
+            socket: socket.as_raw_fd(),
+        };
+        let (quiet, _unanswered) = UnixStream::pair().unwrap();
+        lock(&t.daemon.runs).insert("quiet".into(), handing(&quiet));
+        let (answered, settled) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                t.daemon.settle();
+                answered.send(()).unwrap();
+            });
+            let waited = settled.recv_timeout(Duration::from_secs(2));
+            // Resolved either way, so that the scope ends.
+            lock(&t.daemon.runs).remove("quiet");
+            t.daemon.resolved.notify_all();
+            assert!(waited.is_ok(), "waited on a VM that has not answered");
+        });
+
+        let (taken, vm) = UnixStream::pair().unwrap();
+        say(&vm, kind::TAKEN, &[]);
+        lock(&t.daemon.runs).insert("taken".into(), handing(&taken));
+        let (answered, settled) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                t.daemon.settle();
+                answered.send(()).unwrap();
+            });
+            assert!(
+                settled.recv_timeout(Duration::from_millis(200)).is_err(),
+                "answered while a taken run was being handed over"
+            );
+            // Its handoff resolves it.
+            lock(&t.daemon.runs).insert("taken".into(), RunState::Pending { cancelled: false });
+            t.daemon.resolved.notify_all();
+            settled.recv_timeout(Duration::from_secs(10)).unwrap();
+        });
+        lock(&t.daemon.runs).clear();
+    }
+
+    /// A command answers once every container being recorded is seen: its run may have
+    /// ended, and its client have its status, before its record is written.
+    #[test]
+    fn a_command_sees_a_container_whose_record_is_being_written() {
+        let held = Arc::new(Held::default());
+        let t = Test::on("settle-arriving", held.clone());
+        held.holding_writes.store(true, Ordering::SeqCst);
+        let id = t.reserve("racer");
+        let (answered, settled) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                t.daemon.settle();
+                answered.send(()).unwrap();
+            });
+            let early = settled.recv_timeout(Duration::from_millis(200));
+            // Written either way, so that the scope ends.
+            held.let_through();
+            assert!(early.is_err(), "answered while a record was being written");
+            settled.recv_timeout(PATIENCE).unwrap();
+        });
+        assert!(lock(&t.daemon.containers).get(&id).is_some());
     }
 
     /// The host's filesystem, but its directory syncs wait until the test lets them
