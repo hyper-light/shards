@@ -291,9 +291,9 @@ Given 2026-10-01.
 - **Q7, `EXPOSE` without `FOR`.** `FOR` is optional. Without it the port opens at the
   microVM's boundary only (reachable as `shards run -p` publishes it); no agent may use it
   until a `NETWORK` or `CONNECT` grants it.
-- **Agents cannot read one another** (the user, 2026-10-01). It must be possible, and with
-  §4.2's default it is the default, that no agent reads another agent's directory or
-  anything another agent's workspace has written (its scratch directory included). Only a
+- **Agents cannot read one another** (the user, 2026-10-01): total isolation is the
+  default. No agent reads another agent's directory or anything another agent's workspace
+  has written (its scratch directory included). Only a
   `VOLUME ... FOR`, `NETWORK` or `CONNECT` the Agentfile declares lets one agent reach what
   another holds, and the in-VM runtime enforces it, not the agents.
 - **Q9, writes.** Everything an agent sees is read-only but a private scratch directory of
