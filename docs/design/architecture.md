@@ -1414,7 +1414,9 @@ audit's "Security and test coverage").
   - neither Landlock nor App Sandbox has anything to grant for a warm VM or `shards run`,
     whose VMs now make no socket file at all; App Sandbox refuses Unix sockets outside
     its container even in a granted directory (macos-confinement.md §2);
-  - a `socketpair` is allowed by the seccomp filter already (Unix sockets only).
+  - a `socketpair` is allowed by the seccomp filter already (Unix sockets only);
+  - a pooled run is 66 µs faster at the median, 95% [53, 81], none of it in the guest
+    [PM M68].
   A path is only for the user's `--vsock PATH`, Firecracker's interface, which host
   clients dial and whose `<path>_<port>` sockets other ports reach.
 - **Windows:** nothing yet.

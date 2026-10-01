@@ -2301,3 +2301,31 @@ revision before comparing a changed API/implementation.
   costs a busy vCPU 0.4% to 1.3% more host CPU; idle VMs and restores are unaffected. The
   kernel is not changed without the user's decision, since the change also publishes a
   kernel release.
+
+### M68. What serving the run's vsock ports in the VM process costs a pooled run
+
+- **Question.** f434f9f serves the run and signal ports by socket pair in the VM process
+  (D30), where each warm VM bound `<path>_<port>` in a private directory and its device
+  dialled it. What does a pooled run gain or pay?
+- **Method.** `build-ab/ab.py`, a487fea against f434f9f, each with its own daemon and home,
+  `shards run --pull never alpine true` alternating, n = 3000 per arm. Both restore one
+  template: the guest side (shards-init, the kernel) is the same in both (same init and
+  kernel digests), so the old arm's generation was copied into the new arm's template.
+  The comparison is of the two commits, so it includes f434f9f's other changes, none on
+  a run's path but `settle`'s scan, which only commands take. 2026-09-30, this machine,
+  load average 9.5 to 9.9 from another project's build.
+- **Results** (µs; the paired difference is the median with a bootstrap 95% interval):
+
+| Part | Arm | n | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|
+| wall | a487fea | 3000 | 5250 | 7028 | 18731 | 67921 |
+| wall | f434f9f | 3000 | 5197 | 6894 | 17026 | 103432 |
+| command | a487fea | 3000 | 685 | 868 | 1878 | 16889 |
+| command | f434f9f | 3000 | 684 | 871 | 2149 | 31290 |
+| outside the guest | a487fea | 3000 | 4571 | 6171 | 15267 | 53579 |
+| outside the guest | f434f9f | 3000 | 4523 | 6020 | 14835 | 80898 |
+
+  - Paired, new − old: wall −66 [−81, −53]; command +1 [−3, +4]; outside −72 [−82, −60].
+- **Consequence.** The change costs a run nothing and saves it about 66 µs, all outside
+  the guest. The tails, at this load, are not conclusive either way: a quiet-host run is
+  owed before any claim about them.
