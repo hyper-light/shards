@@ -1,0 +1,512 @@
+[
+ {
+  "patterns": [
+   "*.go"
+  ],
+  "paths": [
+   "a.go",
+   "b/a.go",
+   "a.goo",
+   ".go",
+   "x/y/z.go"
+  ]
+ },
+ {
+  "patterns": [
+   "**/*.go"
+  ],
+  "paths": [
+   "a.go",
+   "b/a.go",
+   "b/c/a.go",
+   "a.txt"
+  ]
+ },
+ {
+  "patterns": [
+   "**"
+  ],
+  "paths": [
+   "a",
+   "a/b"
+  ]
+ },
+ {
+  "patterns": [
+   "a/**"
+  ],
+  "paths": [
+   "a",
+   "a/b",
+   "a/b/c",
+   "ab",
+   "b/a"
+  ]
+ },
+ {
+  "patterns": [
+   "**/a"
+  ],
+  "paths": [
+   "a",
+   "x/a",
+   "x/y/a",
+   "xa"
+  ]
+ },
+ {
+  "patterns": [
+   "a/**/b"
+  ],
+  "paths": [
+   "a/b",
+   "a/x/b",
+   "a/x/y/b",
+   "ab",
+   "a/xb"
+  ]
+ },
+ {
+  "patterns": [
+   "!keep",
+   "*"
+  ],
+  "paths": [
+   "keep",
+   "drop"
+  ]
+ },
+ {
+  "patterns": [
+   "*",
+   "!keep"
+  ],
+  "paths": [
+   "keep",
+   "drop",
+   "dir/keep",
+   "keep/x"
+  ]
+ },
+ {
+  "patterns": [
+   "dir",
+   "!dir/keep"
+  ],
+  "paths": [
+   "dir",
+   "dir/a",
+   "dir/keep",
+   "dir/keep/x"
+  ]
+ },
+ {
+  "patterns": [
+   "a?c"
+  ],
+  "paths": [
+   "abc",
+   "a/c",
+   "ac",
+   "aéc",
+   "aééc"
+  ]
+ },
+ {
+  "patterns": [
+   "[a-c]x"
+  ],
+  "paths": [
+   "ax",
+   "dx",
+   "bx"
+  ]
+ },
+ {
+  "patterns": [
+   "[^a]x"
+  ],
+  "paths": [
+   "ax",
+   "bx",
+   "/x"
+  ]
+ },
+ {
+  "patterns": [
+   "[[:alpha:]]1"
+  ],
+  "paths": [
+   "a1",
+   "11",
+   ":1"
+  ]
+ },
+ {
+  "patterns": [
+   "[[:^digit:]]"
+  ],
+  "paths": [
+   "a",
+   "5"
+  ]
+ },
+ {
+  "patterns": [
+   "\\*x"
+  ],
+  "paths": [
+   "*x",
+   "ax"
+  ]
+ },
+ {
+  "patterns": [
+   "a\\.b"
+  ],
+  "paths": [
+   "a.b",
+   "axb"
+  ]
+ },
+ {
+  "patterns": [
+   "\\d*"
+  ],
+  "paths": [
+   "1",
+   "12",
+   "a1",
+   "1/2"
+  ]
+ },
+ {
+  "patterns": [
+   "\\Qa*b"
+  ],
+  "paths": [
+   "a*b",
+   "a[^/]*b$",
+   "axb"
+  ]
+ },
+ {
+  "patterns": [
+   "a^b"
+  ],
+  "paths": [
+   "a^b",
+   "ab"
+  ]
+ },
+ {
+  "patterns": [
+   "x\\b"
+  ],
+  "paths": [
+   "x",
+   "xy",
+   "x y"
+  ]
+ },
+ {
+  "patterns": [
+   "[ab"
+  ],
+  "paths": [
+   "a",
+   "[ab"
+  ]
+ },
+ {
+  "patterns": [
+   "[]a]"
+  ],
+  "paths": [
+   "]",
+   "a",
+   "b"
+  ]
+ },
+ {
+  "patterns": [
+   "a[!b]c"
+  ],
+  "paths": [
+   "a!c",
+   "abc",
+   "axc"
+  ]
+ },
+ {
+  "patterns": [
+   "#comment"
+  ],
+  "paths": [
+   "#comment"
+  ]
+ },
+ {
+  "patterns": [
+   "  spaced  "
+  ],
+  "paths": [
+   "spaced"
+  ]
+ },
+ {
+  "patterns": [
+   "./a/../b"
+  ],
+  "paths": [
+   "b",
+   "a"
+  ]
+ },
+ {
+  "patterns": [
+   "!"
+  ],
+  "paths": [
+   "x"
+  ]
+ },
+ {
+  "patterns": [
+   "\\"
+  ],
+  "paths": [
+   "\\",
+   "x"
+  ]
+ },
+ {
+  "patterns": [
+   "a/b/"
+  ],
+  "paths": [
+   "a/b",
+   "a/b/c"
+  ]
+ },
+ {
+  "patterns": [
+   "*/b"
+  ],
+  "paths": [
+   "a/b",
+   "a/c/b",
+   "b"
+  ]
+ },
+ {
+  "patterns": [
+   "a(b)c"
+  ],
+  "paths": [
+   "a(b)c",
+   "abc"
+  ]
+ },
+ {
+  "patterns": [
+   "a+b"
+  ],
+  "paths": [
+   "a+b",
+   "aab"
+  ]
+ },
+ {
+  "patterns": [
+   "a{2}"
+  ],
+  "paths": [
+   "a{2}",
+   "aa"
+  ]
+ },
+ {
+  "patterns": [
+   "a$b"
+  ],
+  "paths": [
+   "a$b"
+  ]
+ },
+ {
+  "patterns": [
+   "\\x41"
+  ],
+  "paths": [
+   "A",
+   "x41"
+  ]
+ },
+ {
+  "patterns": [
+   "\\101"
+  ],
+  "paths": [
+   "A"
+  ]
+ },
+ {
+  "patterns": [
+   "\\8"
+  ],
+  "paths": [
+   "8"
+  ]
+ },
+ {
+  "patterns": [
+   "\\pL"
+  ],
+  "paths": [
+   "a"
+  ]
+ },
+ {
+  "patterns": [
+   "[\\d]x"
+  ],
+  "paths": [
+   "1x",
+   "dx"
+  ]
+ },
+ {
+  "patterns": [
+   "[a-]"
+  ],
+  "paths": [
+   "a",
+   "-"
+  ]
+ },
+ {
+  "patterns": [
+   "[-a]"
+  ],
+  "paths": [
+   "a",
+   "-"
+  ]
+ },
+ {
+  "patterns": [
+   "[z-a]"
+  ],
+  "paths": [
+   "a"
+  ]
+ },
+ {
+  "patterns": [
+   "*.[ch]",
+   "!main.c"
+  ],
+  "paths": [
+   "x.c",
+   "x.h",
+   "main.c",
+   "sub/main.c"
+  ]
+ },
+ {
+  "patterns": [
+   "node_modules",
+   "**/*.log",
+   "!important.log"
+  ],
+  "paths": [
+   "node_modules",
+   "node_modules/x",
+   "a.log",
+   "x/b.log",
+   "important.log",
+   "x/important.log"
+  ]
+ },
+ {
+  "patterns": [
+   "a\nb"
+  ],
+  "paths": [
+   "a\nb"
+  ]
+ },
+ {
+  "patterns": [
+   "*x"
+  ],
+  "paths": [
+   "a\nx",
+   "ax"
+  ]
+ },
+ {
+  "patterns": [
+   "?"
+  ],
+  "paths": [
+   "\n",
+   "/"
+  ]
+ },
+ {
+  "patterns": [
+   "ÿ*"
+  ],
+  "paths": [
+   "ÿa"
+  ]
+ },
+ {
+  "patterns": [
+   "x/**/y"
+  ],
+  "paths": [
+   "x/a/y",
+   "x/a\nb/y"
+  ]
+ },
+ {
+  "patterns": [
+   "[a]**"
+  ],
+  "paths": [
+   "ab",
+   "a\nb"
+  ]
+ },
+ {
+  "patterns": [
+   "a[[:blank:]]b"
+  ],
+  "paths": [
+   "a b",
+   "a\tb",
+   "a\nb"
+  ]
+ },
+ {
+  "patterns": [
+   "*",
+   "\\xz"
+  ],
+  "paths": [
+   "a",
+   "b/c"
+  ]
+ },
+ {
+  "patterns": [
+   "\\xz"
+  ],
+  "paths": [
+   "a"
+  ]
+ }
+]

@@ -105,7 +105,7 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-const EOF: i64 = -1;
+pub(crate) const EOF: i64 = -1;
 
 impl Lex {
     pub fn new(escape: u32) -> Lex {
@@ -147,7 +147,7 @@ impl Lex {
 }
 
 /// Go's `text/scanner` read rune by rune.
-struct Scanner<'a> {
+pub(crate) struct Scanner<'a> {
     src: &'a [u8],
     at: usize,
     /// The rune peeked: -2 before the first, EOF at the end.
@@ -155,7 +155,7 @@ struct Scanner<'a> {
 }
 
 impl<'a> Scanner<'a> {
-    fn new(src: &'a [u8]) -> Scanner<'a> {
+    pub(crate) fn new(src: &'a [u8]) -> Scanner<'a> {
         Scanner { src, at: 0, ch: -2 }
     }
 
@@ -170,7 +170,7 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn peek(&mut self) -> i64 {
+    pub(crate) fn peek(&mut self) -> i64 {
         if self.ch == -2 {
             self.ch = self.read();
             if self.ch == 0xFEFF {
@@ -180,7 +180,7 @@ impl<'a> Scanner<'a> {
         self.ch
     }
 
-    fn next(&mut self) -> i64 {
+    pub(crate) fn next(&mut self) -> i64 {
         let ch = self.peek();
         if ch != EOF {
             self.ch = self.read();

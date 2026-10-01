@@ -16,6 +16,7 @@
 
 pub mod export;
 pub mod git;
+pub mod glob;
 pub mod go;
 pub mod image;
 pub mod instructions;

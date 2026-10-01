@@ -1,0 +1,1546 @@
+[
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false",
+    "false",
+    "true",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false",
+   "false",
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false",
+   "false",
+   "true",
+   "false"
+  ],
+  "paths": [
+   "a.go",
+   "b/a.go",
+   "a.goo",
+   ".go",
+   "x/y/z.go"
+  ],
+  "patterns": [
+   "*.go"
+  ],
+  "walked": [
+   "true",
+   "false",
+   "false",
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "true",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true",
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "true",
+   "true",
+   "false"
+  ],
+  "paths": [
+   "a.go",
+   "b/a.go",
+   "b/c/a.go",
+   "a.txt"
+  ],
+  "patterns": [
+   "**/*.go"
+  ],
+  "walked": [
+   "true",
+   "true",
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true"
+  ],
+  "parent_matches": [
+   "true",
+   "true"
+  ],
+  "paths": [
+   "a",
+   "a/b"
+  ],
+  "patterns": [
+   "**"
+  ],
+  "walked": [
+   "true",
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "true",
+    "false",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "false",
+   "true",
+   "true",
+   "false",
+   "false"
+  ],
+  "parent_matches": [
+   "false",
+   "true",
+   "true",
+   "false",
+   "false"
+  ],
+  "paths": [
+   "a",
+   "a/b",
+   "a/b/c",
+   "ab",
+   "b/a"
+  ],
+  "patterns": [
+   "a/**"
+  ],
+  "walked": [
+   "false",
+   "true",
+   "true",
+   "false",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "true",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true",
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "true",
+   "true",
+   "false"
+  ],
+  "paths": [
+   "a",
+   "x/a",
+   "x/y/a",
+   "xa"
+  ],
+  "patterns": [
+   "**/a"
+  ],
+  "walked": [
+   "true",
+   "true",
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "true",
+    "false",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true",
+   "true",
+   "false",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "true",
+   "true",
+   "false",
+   "false"
+  ],
+  "paths": [
+   "a/b",
+   "a/x/b",
+   "a/x/y/b",
+   "ab",
+   "a/xb"
+  ],
+  "patterns": [
+   "a/**/b"
+  ],
+  "walked": [
+   "true",
+   "true",
+   "true",
+   "false",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "false"
+   ],
+   [
+    "true",
+    "true"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true"
+  ],
+  "parent_matches": [
+   "true",
+   "true"
+  ],
+  "paths": [
+   "keep",
+   "drop"
+  ],
+  "patterns": [
+   "!keep",
+   "*"
+  ],
+  "walked": [
+   "true",
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "true",
+    "false",
+    "false"
+   ],
+   [
+    "false",
+    "false",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "false",
+   "true",
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "false",
+   "true",
+   "true",
+   "false"
+  ],
+  "paths": [
+   "keep",
+   "drop",
+   "dir/keep",
+   "keep/x"
+  ],
+  "patterns": [
+   "*",
+   "!keep"
+  ],
+  "walked": [
+   "false",
+   "true",
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false",
+    "false",
+    "false"
+   ],
+   [
+    "false",
+    "false",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true",
+   "false",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "true",
+   "false",
+   "false"
+  ],
+  "paths": [
+   "dir",
+   "dir/a",
+   "dir/keep",
+   "dir/keep/x"
+  ],
+  "patterns": [
+   "dir",
+   "!dir/keep"
+  ],
+  "walked": [
+   "true",
+   "true",
+   "false",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false",
+    "false",
+    "true",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false",
+   "false",
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false",
+   "false",
+   "true",
+   "false"
+  ],
+  "paths": [
+   "abc",
+   "a/c",
+   "ac",
+   "aéc",
+   "aééc"
+  ],
+  "patterns": [
+   "a?c"
+  ],
+  "walked": [
+   "true",
+   "false",
+   "false",
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false",
+    "true"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false",
+   "true"
+  ],
+  "parent_matches": [
+   "true",
+   "false",
+   "true"
+  ],
+  "paths": [
+   "ax",
+   "dx",
+   "bx"
+  ],
+  "patterns": [
+   "[a-c]x"
+  ],
+  "walked": [
+   "true",
+   "false",
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "true",
+    "true"
+   ]
+  ],
+  "matches": [
+   "false",
+   "true",
+   "true"
+  ],
+  "parent_matches": [
+   "false",
+   "true",
+   "true"
+  ],
+  "paths": [
+   "ax",
+   "bx",
+   "/x"
+  ],
+  "patterns": [
+   "[^a]x"
+  ],
+  "walked": [
+   "false",
+   "true",
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false",
+   "false"
+  ],
+  "paths": [
+   "a1",
+   "11",
+   ":1"
+  ],
+  "patterns": [
+   "[[:alpha:]]1"
+  ],
+  "walked": [
+   "true",
+   "false",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false"
+  ],
+  "paths": [
+   "a",
+   "5"
+  ],
+  "patterns": [
+   "[[:^digit:]]"
+  ],
+  "walked": [
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false"
+  ],
+  "paths": [
+   "*x",
+   "ax"
+  ],
+  "patterns": [
+   "\\*x"
+  ],
+  "walked": [
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false"
+  ],
+  "paths": [
+   "a.b",
+   "axb"
+  ],
+  "patterns": [
+   "a\\.b"
+  ],
+  "walked": [
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "false",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true",
+   "false",
+   "true"
+  ],
+  "parent_matches": [
+   "true",
+   "true",
+   "false",
+   "true"
+  ],
+  "paths": [
+   "1",
+   "12",
+   "a1",
+   "1/2"
+  ],
+  "patterns": [
+   "\\d*"
+  ],
+  "walked": [
+   "true",
+   "true",
+   "false",
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "false",
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "false",
+   "true",
+   "false"
+  ],
+  "paths": [
+   "a*b",
+   "a[^/]*b$",
+   "axb"
+  ],
+  "patterns": [
+   "\\Qa*b"
+  ],
+  "walked": [
+   "false",
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false"
+  ],
+  "paths": [
+   "a^b",
+   "ab"
+  ],
+  "patterns": [
+   "a^b"
+  ],
+  "walked": [
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false",
+   "false"
+  ],
+  "paths": [
+   "x",
+   "xy",
+   "x y"
+  ],
+  "patterns": [
+   "x\\b"
+  ],
+  "walked": [
+   "true",
+   "false",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "error syntax error in pattern",
+    "error syntax error in pattern"
+   ]
+  ],
+  "new_error": "syntax error in pattern",
+  "paths": [
+   "a",
+   "[ab"
+  ],
+  "patterns": [
+   "[ab"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "error syntax error in pattern",
+    "error syntax error in pattern",
+    "error syntax error in pattern"
+   ]
+  ],
+  "new_error": "syntax error in pattern",
+  "paths": [
+   "]",
+   "a",
+   "b"
+  ],
+  "patterns": [
+   "[]a]"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "true",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "true",
+   "false"
+  ],
+  "paths": [
+   "a!c",
+   "abc",
+   "axc"
+  ],
+  "patterns": [
+   "a[!b]c"
+  ],
+  "walked": [
+   "true",
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true"
+   ]
+  ],
+  "matches": [
+   "true"
+  ],
+  "parent_matches": [
+   "true"
+  ],
+  "paths": [
+   "#comment"
+  ],
+  "patterns": [
+   "#comment"
+  ],
+  "walked": [
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false"
+   ]
+  ],
+  "matches": [
+   "true"
+  ],
+  "parent_matches": [
+   "true"
+  ],
+  "paths": [
+   "spaced"
+  ],
+  "patterns": [
+   "  spaced  "
+  ],
+  "walked": [
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false"
+  ],
+  "paths": [
+   "b",
+   "a"
+  ],
+  "patterns": [
+   "./a/../b"
+  ],
+  "walked": [
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false"
+   ]
+  ],
+  "new_error": "illegal exclusion pattern: \"!\"",
+  "paths": [
+   "x"
+  ],
+  "patterns": [
+   "!"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "error syntax error in pattern",
+    "error syntax error in pattern"
+   ]
+  ],
+  "new_error": "syntax error in pattern",
+  "paths": [
+   "\\",
+   "x"
+  ],
+  "patterns": [
+   "\\"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true"
+  ],
+  "parent_matches": [
+   "true",
+   "true"
+  ],
+  "paths": [
+   "a/b",
+   "a/b/c"
+  ],
+  "patterns": [
+   "a/b/"
+  ],
+  "walked": [
+   "true",
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false",
+   "false"
+  ],
+  "paths": [
+   "a/b",
+   "a/c/b",
+   "b"
+  ],
+  "patterns": [
+   "*/b"
+  ],
+  "walked": [
+   "true",
+   "false",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false"
+  ],
+  "paths": [
+   "a(b)c",
+   "abc"
+  ],
+  "patterns": [
+   "a(b)c"
+  ],
+  "walked": [
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false"
+  ],
+  "paths": [
+   "a+b",
+   "aab"
+  ],
+  "patterns": [
+   "a+b"
+  ],
+  "walked": [
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false"
+  ],
+  "paths": [
+   "a{2}",
+   "aa"
+  ],
+  "patterns": [
+   "a{2}"
+  ],
+  "walked": [
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true"
+   ]
+  ],
+  "matches": [
+   "true"
+  ],
+  "parent_matches": [
+   "true"
+  ],
+  "paths": [
+   "a$b"
+  ],
+  "patterns": [
+   "a$b"
+  ],
+  "walked": [
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "true"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false"
+  ],
+  "paths": [
+   "A",
+   "x41"
+  ],
+  "patterns": [
+   "\\x41"
+  ],
+  "walked": [
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false"
+   ]
+  ],
+  "matches": [
+   "true"
+  ],
+  "parent_matches": [
+   "true"
+  ],
+  "paths": [
+   "A"
+  ],
+  "patterns": [
+   "\\101"
+  ],
+  "walked": [
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true"
+   ]
+  ],
+  "matches": [
+   "error syntax error in pattern"
+  ],
+  "parent_matches": [
+   "error syntax error in pattern"
+  ],
+  "paths": [
+   "8"
+  ],
+  "patterns": [
+   "\\8"
+  ],
+  "walked": [
+   "error syntax error in pattern"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false"
+   ]
+  ],
+  "matches": [
+   "true"
+  ],
+  "parent_matches": [
+   "true"
+  ],
+  "paths": [
+   "a"
+  ],
+  "patterns": [
+   "\\pL"
+  ],
+  "walked": [
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "true"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false"
+  ],
+  "paths": [
+   "1x",
+   "dx"
+  ],
+  "patterns": [
+   "[\\d]x"
+  ],
+  "walked": [
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "error syntax error in pattern",
+    "error syntax error in pattern"
+   ]
+  ],
+  "new_error": "syntax error in pattern",
+  "paths": [
+   "a",
+   "-"
+  ],
+  "patterns": [
+   "[a-]"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "error syntax error in pattern",
+    "error syntax error in pattern"
+   ]
+  ],
+  "new_error": "syntax error in pattern",
+  "paths": [
+   "a",
+   "-"
+  ],
+  "patterns": [
+   "[-a]"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false"
+   ]
+  ],
+  "matches": [
+   "error syntax error in pattern"
+  ],
+  "parent_matches": [
+   "error syntax error in pattern"
+  ],
+  "paths": [
+   "a"
+  ],
+  "patterns": [
+   "[z-a]"
+  ],
+  "walked": [
+   "error syntax error in pattern"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "true",
+    "true",
+    "false"
+   ],
+   [
+    "false",
+    "false",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true",
+   "false",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "true",
+   "false",
+   "false"
+  ],
+  "paths": [
+   "x.c",
+   "x.h",
+   "main.c",
+   "sub/main.c"
+  ],
+  "patterns": [
+   "*.[ch]",
+   "!main.c"
+  ],
+  "walked": [
+   "true",
+   "true",
+   "false",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false",
+    "false",
+    "false",
+    "false",
+    "false"
+   ],
+   [
+    "false",
+    "false",
+    "false",
+    "true",
+    "false",
+    "true"
+   ],
+   [
+    "false",
+    "false",
+    "false",
+    "false",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true",
+   "true",
+   "true",
+   "false",
+   "true"
+  ],
+  "parent_matches": [
+   "true",
+   "true",
+   "true",
+   "true",
+   "false",
+   "true"
+  ],
+  "paths": [
+   "node_modules",
+   "node_modules/x",
+   "a.log",
+   "x/b.log",
+   "important.log",
+   "x/important.log"
+  ],
+  "patterns": [
+   "node_modules",
+   "**/*.log",
+   "!important.log"
+  ],
+  "walked": [
+   "true",
+   "true",
+   "true",
+   "true",
+   "false",
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true"
+   ]
+  ],
+  "matches": [
+   "true"
+  ],
+  "parent_matches": [
+   "true"
+  ],
+  "paths": [
+   "a\nb"
+  ],
+  "patterns": [
+   "a\nb"
+  ],
+  "walked": [
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "true"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true"
+  ],
+  "parent_matches": [
+   "true",
+   "true"
+  ],
+  "paths": [
+   "a\nx",
+   "ax"
+  ],
+  "patterns": [
+   "*x"
+  ],
+  "walked": [
+   "true",
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false"
+  ],
+  "paths": [
+   "\n",
+   "/"
+  ],
+  "patterns": [
+   "?"
+  ],
+  "walked": [
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true"
+   ]
+  ],
+  "matches": [
+   "true"
+  ],
+  "parent_matches": [
+   "true"
+  ],
+  "paths": [
+   "ÿa"
+  ],
+  "patterns": [
+   "ÿ*"
+  ],
+  "walked": [
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "true"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false"
+  ],
+  "paths": [
+   "x/a/y",
+   "x/a\nb/y"
+  ],
+  "patterns": [
+   "x/**/y"
+  ],
+  "walked": [
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "true"
+   ]
+  ],
+  "matches": [
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "false"
+  ],
+  "paths": [
+   "ab",
+   "a\nb"
+  ],
+  "patterns": [
+   "[a]**"
+  ],
+  "walked": [
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false",
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true",
+   "false"
+  ],
+  "parent_matches": [
+   "true",
+   "true",
+   "false"
+  ],
+  "paths": [
+   "a b",
+   "a\tb",
+   "a\nb"
+  ],
+  "patterns": [
+   "a[[:blank:]]b"
+  ],
+  "walked": [
+   "true",
+   "true",
+   "false"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "true",
+    "false"
+   ],
+   [
+    "false",
+    "false"
+   ]
+  ],
+  "matches": [
+   "true",
+   "true"
+  ],
+  "parent_matches": [
+   "true",
+   "true"
+  ],
+  "paths": [
+   "a",
+   "b/c"
+  ],
+  "patterns": [
+   "*",
+   "\\xz"
+  ],
+  "walked": [
+   "true",
+   "true"
+  ]
+ },
+ {
+  "filepath_match": [
+   [
+    "false"
+   ]
+  ],
+  "matches": [
+   "error syntax error in pattern"
+  ],
+  "parent_matches": [
+   "error syntax error in pattern"
+  ],
+  "paths": [
+   "a"
+  ],
+  "patterns": [
+   "\\xz"
+  ],
+  "walked": [
+   "error syntax error in pattern"
+  ]
+ }
+]

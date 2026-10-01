@@ -1185,3 +1185,92 @@ fn exports_are_buildkits() {
         failures.join("\n")
     );
 }
+
+/// Paths matched as Go's filepath.Match and moby/patternmatcher match them: every set of
+/// testdata/patterns.json.
+#[test]
+fn patterns_match_as_gos() {
+    use shards_dockerfile::glob::{self, MatchInfo, PatternMatcher};
+    let ans = |r: Result<bool, Vec<u8>>| match r {
+        Ok(b) => b.to_string(),
+        Err(e) => format!("error {}", String::from_utf8_lossy(&e)),
+    };
+    let devs = deviations("patterns");
+    let mut failures = Vec::new();
+    for want in load("patterns-answers.json").as_array().unwrap() {
+        let patterns: Vec<Vec<u8>> = strs(&want["patterns"])
+            .into_iter()
+            .map(String::into_bytes)
+            .collect();
+        let paths: Vec<Vec<u8>> = strs(&want["paths"]).into_iter().map(String::into_bytes).collect();
+        let mut got = serde_json::Map::new();
+        got.insert("patterns".into(), want["patterns"].clone());
+        got.insert("paths".into(), want["paths"].clone());
+        let fm: Vec<Value> = patterns
+            .iter()
+            .map(|p| {
+                Value::Array(
+                    paths
+                        .iter()
+                        .map(|path| {
+                            ans(glob::filepath_match(p, path)
+                                .map_err(|()| glob::BAD_PATTERN.as_bytes().to_vec()))
+                            .into()
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        got.insert("filepath_match".into(), Value::Array(fm));
+        match PatternMatcher::new(&patterns) {
+            Err(e) => {
+                got.insert(
+                    "new_error".into(),
+                    String::from_utf8_lossy(&e).into_owned().into(),
+                );
+            }
+            Ok(mut pm) => {
+                let (mut m, mut pmm, mut walked) = (Vec::new(), Vec::new(), Vec::new());
+                for path in &paths {
+                    m.push(Value::String(ans(pm.matches(path))));
+                    pmm.push(Value::String(ans(pm.matches_or_parent_matches(path))));
+                    let parts: Vec<&[u8]> = path.split(|&b| b == b'/').collect();
+                    let mut info = MatchInfo::default();
+                    let mut last = String::new();
+                    for i in 0..parts.len() {
+                        match pm.matches_using_parent_results(&parts[..=i].join(&b'/'), &info) {
+                            Ok((ok, next)) => {
+                                last = ok.to_string();
+                                info = next;
+                            }
+                            Err(e) => {
+                                last = format!("error {}", String::from_utf8_lossy(&e));
+                                break;
+                            }
+                        }
+                    }
+                    walked.push(Value::String(last));
+                }
+                got.insert("matches".into(), Value::Array(m));
+                got.insert("parent_matches".into(), Value::Array(pmm));
+                got.insert("walked".into(), Value::Array(walked));
+            }
+        }
+        let mut want = want.clone();
+        if let Some(d) = devs.iter().find(|d| d["patterns"] == want["patterns"]) {
+            for (k, v) in d["fields"].as_object().unwrap() {
+                want[k] = v.clone();
+            }
+        }
+        let got = Value::Object(got);
+        if got != want {
+            failures.push(format!("{}\n  got:  {got}\n  want: {want}", want["patterns"]));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} pattern sets differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}

@@ -1038,5 +1038,23 @@
    "escape": "\"\\\\\"",
    "warnings": []
   }
+ },
+ {
+  "kind": "patterns",
+  "patterns": [
+   "\\pL"
+  ],
+  "fields": {
+   "matches": [
+    "error Unicode classes in patterns are not supported by shards"
+   ],
+   "parent_matches": [
+    "error Unicode classes in patterns are not supported by shards"
+   ],
+   "walked": [
+    "error Unicode classes in patterns are not supported by shards"
+   ]
+  },
+  "reason": "Go matches a Unicode property class from Unicode's category and script tables, which shards does not carry; a pattern with one is refused rather than matched differently."
  }
 ]

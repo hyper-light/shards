@@ -25,6 +25,7 @@ import (
 	"unicode"
 
 	"github.com/docker/go-units"
+	"github.com/moby/patternmatcher"
 	"github.com/moby/buildkit/client/llb/sourceresolver"
 	"github.com/moby/buildkit/frontend/dockerfile/dfgitutil"
 	"github.com/moby/buildkit/util/gitutil"
@@ -730,6 +731,68 @@ func urlsFile(testdata string) {
 	writeJSON(filepath.Join(testdata, "urls-answers.json"), out)
 }
 
+// What Go's filepath.Match and moby/patternmatcher make of each set of patterns in
+// patterns.json and each path: COPY's wildcards, .dockerignore, --exclude and --parents.
+func patternsFile(testdata string) {
+	data, err := os.ReadFile(filepath.Join(testdata, "patterns.json"))
+	if err != nil {
+		panic(err)
+	}
+	var sets []struct {
+		Patterns []string `json:"patterns"`
+		Paths    []string `json:"paths"`
+	}
+	if err := json.Unmarshal(data, &sets); err != nil {
+		panic(err)
+	}
+	ans := func(ok bool, err error) string {
+		if err != nil {
+			return "error " + err.Error()
+		}
+		return fmt.Sprint(ok)
+	}
+	var out []map[string]any
+	for _, set := range sets {
+		r := map[string]any{"patterns": set.Patterns, "paths": set.Paths}
+		var match [][]string
+		for _, p := range set.Patterns {
+			var row []string
+			for _, path := range set.Paths {
+				row = append(row, ans(filepath.Match(p, path)))
+			}
+			match = append(match, row)
+		}
+		r["filepath_match"] = match
+		pm, err := patternmatcher.New(set.Patterns)
+		if err != nil {
+			r["new_error"] = err.Error()
+			out = append(out, r)
+			continue
+		}
+		var matches, parents, walked []string
+		for _, path := range set.Paths {
+			matches = append(matches, ans(pm.Matches(path)))
+			parents = append(parents, ans(pm.MatchesOrParentMatches(path)))
+			// Down the path, each step given its parent's results, as fsutil walks.
+			var info patternmatcher.MatchInfo
+			var last string
+			parts := strings.Split(path, "/")
+			for i := range parts {
+				var ok bool
+				ok, info, err = pm.MatchesUsingParentResults(strings.Join(parts[:i+1], "/"), info)
+				last = ans(ok, err)
+				if err != nil {
+					break
+				}
+			}
+			walked = append(walked, last)
+		}
+		r["matches"], r["parent_matches"], r["walked"] = matches, parents, walked
+		out = append(out, r)
+	}
+	writeJSON(filepath.Join(testdata, "patterns-answers.json"), out)
+}
+
 func writeJSON(path string, v any) {
 	b, err := json.MarshalIndent(v, "", " ")
 	if err != nil {
@@ -781,6 +844,7 @@ func main() {
 	configsFile(testdata)
 	sizesFile(testdata)
 	urlsFile(testdata)
+	patternsFile(testdata)
 
 	cases := buildkitCases(filepath.Join(testdata, "buildkit/shell"))
 	extra, err := os.ReadFile(filepath.Join(testdata, "lex-cases.json"))
