@@ -1,0 +1,350 @@
+[
+  {
+    "argv": [],
+    "stdout": "",
+    "stderr": "ERROR: shards: 'shards buildx build' requires 1 argument\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--help"
+    ],
+    "stdout": "Usage:  shards buildx build [OPTIONS] PATH | URL | -\n\nStart a build\n\nAliases:\n  shards build, shards builder build, shards image build, shards buildx b\n\nOptions:\n      --build-arg stringArray   Set build-time variables\n  -f, --file string             Name of the Dockerfile (default:\n                                \"PATH/Dockerfile\")\n      --iidfile string          Write the image ID to a file\n      --label stringArray       Set metadata for an image\n      --load                    Shorthand for \"--output=type=docker\"\n      --no-cache                Do not use cache when building the image\n      --platform stringArray    Set target platform for build\n      --progress string         Set type of progress output (\"auto\",\n                                \"none\",  \"plain\", \"quiet\", \"rawjson\",\n                                \"tty\"). Use plain to show container\n                                output (default \"auto\")\n      --pull                    Always attempt to pull all referenced images\n  -q, --quiet                   Suppress the build output and print image\n                                ID on success\n  -t, --tag stringArray         Image identifier (format:\n                                \"[registry/]repository[:tag]\")\n      --target string           Set the target build stage to build\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nStart a build\n\nAliases:\n  shards build, shards builder build, shards image build, shards buildx b\n\nOptions:\n      --build-arg stringArray   Set build-time variables\n  -f, --file string             Name of the Dockerfile (default:\n                                \"PATH/Dockerfile\")\n      --iidfile string          Write the image ID to a file\n      --label stringArray       Set metadata for an image\n      --load                    Shorthand for \"--output=type=docker\"\n      --no-cache                Do not use cache when building the image\n      --platform stringArray    Set target platform for build\n      --progress string         Set type of progress output (\"auto\",\n                                \"none\",  \"plain\", \"quiet\", \"rawjson\",\n                                \"tty\"). Use plain to show container\n                                output (default \"auto\")\n      --pull                    Always attempt to pull all referenced images\n  -q, --quiet                   Suppress the build output and print image\n                                ID on success\n  -t, --tag stringArray         Image identifier (format:\n                                \"[registry/]repository[:tag]\")\n      --target string           Set the target build stage to build\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "."
+    ],
+    "stdout": "RUN \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      ".",
+      "extra"
+    ],
+    "stdout": "",
+    "stderr": "ERROR: shards: 'shards buildx build' requires 1 argument\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--nope",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "-t",
+      "app:1",
+      "."
+    ],
+    "stdout": "RUN --tag=[app:1] \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "-t",
+      "a",
+      "-t",
+      "b",
+      "--tag=c",
+      "."
+    ],
+    "stdout": "RUN --tag=[a,b,c] \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "-f",
+      "Dockerfile.dev",
+      "ctx"
+    ],
+    "stdout": "RUN --file=Dockerfile.dev \"ctx\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "-f",
+      "-",
+      "."
+    ],
+    "stdout": "RUN --file=- \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--file"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --file\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "--build-arg",
+      "A=1",
+      "--build-arg",
+      "B",
+      "."
+    ],
+    "stdout": "RUN --build-arg=[A=1,B] \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--target",
+      "build",
+      "--label",
+      "k=v",
+      "--label",
+      "x",
+      "."
+    ],
+    "stdout": "RUN --label=[k=v,x] --target=build \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--platform",
+      "linux/amd64",
+      "."
+    ],
+    "stdout": "RUN --platform=[linux/amd64] \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--platform",
+      "linux/amd64,linux/arm64",
+      "."
+    ],
+    "stdout": "RUN --platform=[\"linux/amd64,linux/arm64\"] \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--progress",
+      "plain",
+      "."
+    ],
+    "stdout": "RUN --progress=plain \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--progress=quiet",
+      "-q",
+      "."
+    ],
+    "stdout": "RUN --progress=quiet --quiet=true \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "-q",
+      "--iidfile",
+      "id.txt",
+      "."
+    ],
+    "stdout": "RUN --iidfile=id.txt --quiet=true \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--no-cache",
+      "--pull",
+      "--load",
+      "."
+    ],
+    "stdout": "RUN --load=true --no-cache=true --pull=true \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--no-cache=false",
+      "."
+    ],
+    "stdout": "RUN --no-cache=false \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--push",
+      "."
+    ],
+    "stdout": "RUN --push=true \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "id=a",
+      "."
+    ],
+    "stdout": "RUN --secret=[id=a] \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "-o",
+      "type=local,dest=out",
+      "."
+    ],
+    "stdout": "RUN --output=[\"type=local,dest=out\"] \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--network",
+      "none",
+      "."
+    ],
+    "stdout": "RUN --network=none \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--network",
+      "default",
+      "."
+    ],
+    "stdout": "RUN --network=default \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--builder",
+      "x",
+      "."
+    ],
+    "stdout": "RUN --builder=x \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "-D",
+      "."
+    ],
+    "stdout": "RUN --debug=true \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "-",
+      "\u003c",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "ERROR: shards: 'shards buildx build' requires 1 argument\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "https://github.com/docker/buildx.git"
+    ],
+    "stdout": "RUN \"https://github.com/docker/buildx.git\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      ".",
+      "-t",
+      "late"
+    ],
+    "stdout": "RUN --tag=[late] \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "-tq",
+      "app",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "ERROR: shards: 'shards buildx build' requires 1 argument\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--quiet=true",
+      "."
+    ],
+    "stdout": "RUN --quiet=true \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--progress"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --progress\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "--no-cache-filter",
+      "stage",
+      "."
+    ],
+    "stdout": "RUN --no-cache-filter=[stage] \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--call",
+      "check",
+      "."
+    ],
+    "stdout": "RUN --call=check \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--check",
+      "."
+    ],
+    "stdout": "RUN --check= \".\"\n",
+    "stderr": "",
+    "status": 0
+  }
+]

@@ -186,6 +186,29 @@ pub struct Command {
     /// Whether flags may follow its arguments: pflag's `interspersed`, off for commands
     /// whose arguments are another command's (`run`).
     pub interspersed: bool,
+    /// What its errors start with, other than a flag's: `ERROR: ` for buildx's, which
+    /// its main prints so (cmd/buildx/main.go), nothing for the CLI's own.
+    pub error_prefix: &'static str,
+}
+
+/// `v` as Go's `encoding/csv` writes one record, without its line end (pflag's
+/// `writeAsCSV`): a field is quoted, its quotes doubled, if it holds a comma, a quote or a
+/// line break, or starts with a space.
+fn csv_record(v: &[String]) -> String {
+    let fields: Vec<String> = v
+        .iter()
+        .map(|f| {
+            let quote = f == r"\."
+                || f.contains([',', '"', '\r', '\n'])
+                || f.chars().next().is_some_and(char::is_whitespace);
+            if quote {
+                format!("\"{}\"", f.replace('"', "\"\""))
+            } else {
+                f.clone()
+            }
+        })
+        .collect();
+    fields.join(",")
 }
 
 /// The flag an `unserved` line describes.
@@ -307,6 +330,10 @@ impl Parsed {
                     Some(Value::Int(n)) => n.to_string(),
                     Some(Value::Text(s)) => s.clone(),
                     Some(Value::Many(v)) if v.is_empty() => String::new(),
+                    // pflag's string slices and arrays print as one CSV record.
+                    Some(Value::Many(v)) if matches!(f.kind, Kind::Many("stringArray" | "strings")) => {
+                        format!("[{}]", csv_record(v))
+                    }
                     Some(Value::Many(v)) => format!("[{}]", v.join(" ")),
                     None => String::new(),
                 };
@@ -419,7 +446,8 @@ pub fn parse(
         return Outcome::Fail {
             notices,
             text: format!(
-                "{bin}: '{path}' {what}\n\nUsage:  {}\n\n{verb} '{path} --help' for more information",
+                "{}{bin}: '{path}' {what}\n\nUsage:  {}\n\n{verb} '{path} --help' for more information",
+                command.error_prefix,
                 use_line(command, path)
             ),
             status: 1,
@@ -445,7 +473,12 @@ pub fn parse(
     if !unserved.is_empty() {
         let text: Vec<String> = unserved
             .iter()
-            .map(|f| format!("\"--{}\" is not supported by shards yet", f.name))
+            .map(|f| {
+                format!(
+                    "{}\"--{}\" is not supported by shards yet",
+                    command.error_prefix, f.name
+                )
+            })
             .collect();
         return Outcome::Fail {
             notices,

@@ -177,6 +177,7 @@ volume v m - -\n\
 volume-driver - s - -\n\
 volumes-from - m - -",
     interspersed: false,
+    error_prefix: "",
 };
 
 /// A container that did not start, as dockerd takes it (moby daemon/errors.go,
@@ -265,6 +266,7 @@ filter f m - -\n\
 format - s - -\n\
 size s b false -",
     interspersed: true,
+    error_prefix: "",
 };
 
 /// `shards wait`.
@@ -276,6 +278,7 @@ pub static WAIT: Command = Command {
     flags: &[HELP],
     unserved: "",
     interspersed: true,
+    error_prefix: "",
 };
 
 /// `shards logs`.
@@ -312,6 +315,7 @@ pub static LOGS: Command = Command {
     ],
     unserved: "",
     interspersed: true,
+    error_prefix: "",
 };
 
 /// `shards rm`, and `shards container rm`.
@@ -337,6 +341,7 @@ pub static RM: Command = Command {
     unserved: "\
 link l b false -",
     interspersed: true,
+    error_prefix: "",
 };
 
 /// `shards stop`.
@@ -365,6 +370,7 @@ pub static STOP: Command = Command {
     ],
     unserved: "",
     interspersed: true,
+    error_prefix: "",
 };
 
 /// `shards kill`.
@@ -379,6 +385,93 @@ pub static KILL: Command = Command {
     ],
     unserved: "",
     interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards build`: buildx v0.37.1's `build` (commands/build.go), which `docker build` runs
+/// as the CLI's plugin. Its words name `shards buildx build`, as buildx's name `docker
+/// buildx build`. The flags its root adds (`--builder`, `--debug`) are its too.
+pub static BUILD: Command = Command {
+    usage: "[OPTIONS] PATH | URL | -",
+    about: "Start a build",
+    aliases: "shards build, shards builder build, shards image build, shards buildx b",
+    args: Args::Exactly(1),
+    flags: &[
+        Flag::many("build-arg", None, "stringArray", "Set build-time variables"),
+        Flag::string(
+            "file",
+            Some(b'f'),
+            "",
+            "Name of the Dockerfile (default: \"PATH/Dockerfile\")",
+        ),
+        HELP,
+        Flag::string("iidfile", None, "", "Write the image ID to a file"),
+        Flag::many("label", None, "stringArray", "Set metadata for an image"),
+        Flag::bool("load", None, "Shorthand for \"--output=type=docker\""),
+        Flag::bool("no-cache", None, "Do not use cache when building the image"),
+        Flag::many("platform", None, "stringArray", "Set target platform for build"),
+        Flag::string(
+            "progress",
+            None,
+            "auto",
+            "Set type of progress output (\"auto\", \"none\",  \"plain\", \"quiet\", \"rawjson\", \"tty\"). Use plain to show container output",
+        ),
+        Flag::bool("pull", None, "Always attempt to pull all referenced images"),
+        Flag::bool(
+            "quiet",
+            Some(b'q'),
+            "Suppress the build output and print image ID on success",
+        ),
+        Flag::many(
+            "tag",
+            Some(b't'),
+            "stringArray",
+            "Image identifier (format: \"[registry/]repository[:tag]\")",
+        ),
+        Flag::string("target", None, "", "Set the target build stage to build"),
+    ],
+    unserved: "\
+add-host - m - -\n\
+allow - m - -\n\
+annotation - m - -\n\
+attest - m - -\n\
+build-context - m - -\n\
+builder - s - -\n\
+cache-from - m - -\n\
+cache-to - m - -\n\
+call - s build -\n\
+cgroup-parent - s - -\n\
+check - b - -\n\
+compress - b false -\n\
+cpu-period - s - -\n\
+cpu-quota - s - -\n\
+cpu-shares c s - -\n\
+cpuset-cpus - s - -\n\
+cpuset-mems - s - -\n\
+debug D b false -\n\
+force-rm - b false -\n\
+isolation - s - -\n\
+memory m s - -\n\
+memory-swap - s - -\n\
+metadata-file - s - -\n\
+network - s default -\n\
+no-cache-filter - m - -\n\
+output o m - -\n\
+policy - m - -\n\
+print - s - -\n\
+provenance - s - -\n\
+push - b false -\n\
+resource - m - -\n\
+rm - b true -\n\
+sbom - s - -\n\
+secret - m - -\n\
+security-opt - m - -\n\
+shm-size - s 0 -\n\
+squash - b false -\n\
+ssh - m - -\n\
+ulimit - m - -",
+    interspersed: true,
+    error_prefix: "ERROR: ",
 };
 
 /// The container command the start of `words` names, its path (`shards ps`, `shards
@@ -401,4 +494,15 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["container", "kill", ..] => (&KILL, "shards container kill", 2),
         _ => return None,
     })
+}
+
+/// `build` if the start of `words` names it, and how many words do: `build`, `builder
+/// build`, `image build`, `buildx build` or `buildx b`. Its path is always `shards buildx
+/// build`, as buildx's is `docker buildx build` however the CLI was asked.
+pub fn build(words: &[&str]) -> Option<usize> {
+    match words {
+        ["build", ..] => Some(1),
+        ["builder" | "image", "build", ..] | ["buildx", "build" | "b", ..] => Some(2),
+        _ => None,
+    }
 }

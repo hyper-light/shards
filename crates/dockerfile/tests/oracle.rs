@@ -1099,3 +1099,89 @@ fn urls_read_as_gos() {
         failures.join("\n")
     );
 }
+
+/// Images exported as BuildKit's exporter exports them: every case of testdata/exports.json,
+/// its config and manifest byte for byte.
+#[test]
+fn exports_are_buildkits() {
+    use sha2::{Digest as _, Sha256};
+    use shards_dockerfile::export::{self, Layer};
+    use shards_dockerfile::go::Time;
+    use shards_dockerfile::image::Image;
+    let digest = |s: &str| {
+        let h = Sha256::digest(s.as_bytes());
+        let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
+        format!("sha256:{hex}").into_bytes()
+    };
+    let plans = load("plan.json");
+    let image_of = |file: &str| -> String {
+        plans
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["file"] == file)
+            .and_then(|p| p["image"].as_str())
+            .unwrap()
+            .to_string()
+    };
+    let mut failures = Vec::new();
+    for c in load("exports.json").as_array().unwrap() {
+        let file = c["file"].as_str().unwrap();
+        let image = Image::from_json(image_of(file).as_bytes()).unwrap();
+        let n = c["layers"].as_u64().unwrap() as usize;
+        let layers: Vec<Layer> = (0..n)
+            .map(|i| Layer {
+                media_type: b"application/vnd.docker.image.rootfs.diff.tar.gzip".to_vec(),
+                digest: digest(&format!("blob {i}")),
+                size: 100 + i as u64,
+                diff_id: digest(&format!("diff {i}")),
+                annotations: [
+                    (
+                        b"containerd.io/uncompressed".to_vec(),
+                        digest(&format!("diff {i}")),
+                    ),
+                    (b"buildkit/createdat".to_vec(), b"x".to_vec()),
+                    (b"org.example.kept".to_vec(), format!("v{i} <&>").into_bytes()),
+                ]
+                .into_iter()
+                .collect(),
+                created: None,
+                description: Vec::new(),
+            })
+            .collect();
+        let epoch = c["epoch"]
+            .as_bool()
+            .unwrap()
+            .then(|| Time::from_unix(1_700_000_000));
+        let base = c["base"].as_bool().unwrap().then_some(&image);
+        let mut got = serde_json::Map::new();
+        for k in ["file", "layers", "epoch", "base"] {
+            got.insert(k.into(), c[k].clone());
+        }
+        match export::config(&image, &layers, epoch, base) {
+            Err(e) => {
+                got.insert("error".into(), String::from_utf8(e).unwrap().into());
+            }
+            Ok(config) => {
+                let h = Sha256::digest(&config);
+                let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
+                let manifest = export::manifest(&config, format!("sha256:{hex}").as_bytes(), &layers);
+                got.insert("config".into(), String::from_utf8(config).unwrap().into());
+                got.insert("manifest".into(), String::from_utf8(manifest).unwrap().into());
+            }
+        }
+        let got = Value::Object(got);
+        if &got != c {
+            failures.push(format!(
+                "{file} {n} {} {}\n  got:  {got}\n  want: {c}",
+                c["epoch"], c["base"]
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} exports differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}

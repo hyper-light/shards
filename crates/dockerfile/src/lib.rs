@@ -14,6 +14,7 @@
 //! scripts/dockerfile/generate records BuildKit doing; each module's documentation lists
 //! where it deliberately does better, and testdata/deviations.json each case of it.
 
+pub mod export;
 pub mod git;
 pub mod go;
 pub mod image;

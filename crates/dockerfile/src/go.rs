@@ -1044,6 +1044,24 @@ pub fn parse_rfc3339(value: &[u8]) -> Result<Time, Vec<u8>> {
 }
 
 impl Time {
+    /// The instant, as seconds and nanoseconds since 1970 in UTC.
+    pub fn unix(&self) -> (i64, u32) {
+        // Days since 1970-01-01 of a civil date (Howard Hinnant's `days_from_civil`).
+        let y = self.year - i64::from(self.month <= 2);
+        let era = y.div_euclid(400);
+        let yoe = y.rem_euclid(400);
+        let m = i64::from(self.month);
+        let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(self.day) - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        let days = era * 146_097 + doe - 719_468;
+        let secs = days * 86_400
+            + i64::from(self.hour) * 3600
+            + i64::from(self.minute) * 60
+            + i64::from(self.second)
+            - i64::from(self.offset);
+        (secs, self.nanosecond)
+    }
+
     /// `time.Unix(secs, 0).UTC()`.
     pub fn from_unix(secs: i64) -> Time {
         let days = secs.div_euclid(86_400);

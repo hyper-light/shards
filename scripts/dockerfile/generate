@@ -13,6 +13,8 @@
 #   image config in configs.json, read into BuildKit's DockerOCIImage and written back;
 # - crates/dockerfile/testdata/sizes-answers.json and urls-answers.json, what go-units,
 #   net/url and BuildKit's git URL parsing make of sizes.json and urls.json;
+# - crates/dockerfile/testdata/exports.json, what BuildKit's image exporter writes for each
+#   planned image, its config and manifest, over layers made up for it (export_test.go);
 # - crates/dockerfile/src/tables.rs, Go's character classes the parser and lexer use.
 #
 #   scripts/dockerfile/generate [BUILDKIT_CHECKOUT]
@@ -51,6 +53,9 @@ EOF
 
 mkdir -p "$bk/shards-oracle"
 cp "$here/oracle/main.go" "$bk/shards-oracle/main.go"
-cleanup() { rm -rf "$bk/shards-oracle"; }
+cp "$here/export_test.go" "$bk/exporter/containerimage/zz_shards_export_test.go"
+cleanup() { rm -rf "$bk/shards-oracle" "$bk/exporter/containerimage/zz_shards_export_test.go"; }
 trap 'cleanup; [ -z "${1:-}" ] && rm -rf "$bk"' EXIT
 (cd "$bk" && go run -mod=vendor ./shards-oracle "$data")
+(cd "$bk" && SHARDS_PLANS="$data/plan.json" SHARDS_EXPORT_OUT="$data/exports.json" \
+	go test -mod=vendor -count=1 -run '^TestShardsExport$' ./exporter/containerimage/)

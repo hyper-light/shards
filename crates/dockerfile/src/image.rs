@@ -459,47 +459,87 @@ impl Image {
     /// ones left out where Go leaves them out, maps sorted by key.
     pub fn to_json(&self) -> Result<String, Vec<u8>> {
         let mut o = Obj::new();
-        if let Some(t) = &self.created {
-            o.raw("created", &time_json(t)?);
+        for (k, v) in self.members()? {
+            o.raw(k, &v);
         }
-        o.string_nonempty("author", &self.author);
-        let p = &self.platform;
-        o.string("architecture", &p.architecture);
-        o.string("os", &p.os);
-        o.string_nonempty("os.version", &p.os_version);
-        o.strings_nonempty("os.features", &p.os_features);
-        o.string_nonempty("variant", &p.variant);
-        let mut rootfs = Obj::new();
-        rootfs.string("type", &self.rootfs.kind);
-        match &self.rootfs.diff_ids {
-            Some(ids) => rootfs.strings("diff_ids", ids),
-            None => rootfs.raw("diff_ids", "null"),
-        }
-        o.raw("rootfs", &rootfs.end());
-        if !self.history.is_empty() {
-            let mut list = String::from("[");
-            for (i, h) in self.history.iter().enumerate() {
-                if i > 0 {
-                    list.push(',');
-                }
-                let mut e = Obj::new();
-                if let Some(t) = &h.created {
-                    e.raw("created", &time_json(t)?);
-                }
-                e.string_nonempty("created_by", &h.created_by);
-                e.string_nonempty("author", &h.author);
-                e.string_nonempty("comment", &h.comment);
-                if h.empty_layer {
-                    e.raw("empty_layer", "true");
-                }
-                list.push_str(&e.end());
-            }
-            list.push(']');
-            o.raw("history", &list);
-        }
-        o.raw("config", &self.config.to_json());
         Ok(o.end())
     }
+
+    /// The config's members in Go's order, each value as `json.Marshal` writes it.
+    pub fn members(&self) -> Result<Vec<(&'static str, String)>, Vec<u8>> {
+        let mut m: Vec<(&'static str, String)> = Vec::new();
+        let string = |s: &[u8]| {
+            let mut out = String::new();
+            json::write_string(&mut out, s);
+            out
+        };
+        if let Some(t) = &self.created {
+            m.push(("created", time_json(t)?));
+        }
+        if !self.author.is_empty() {
+            m.push(("author", string(&self.author)));
+        }
+        let p = &self.platform;
+        m.push(("architecture", string(&p.architecture)));
+        m.push(("os", string(&p.os)));
+        if !p.os_version.is_empty() {
+            m.push(("os.version", string(&p.os_version)));
+        }
+        if !p.os_features.is_empty() {
+            let mut out = String::new();
+            json::write_strings(&mut out, &p.os_features);
+            m.push(("os.features", out));
+        }
+        if !p.variant.is_empty() {
+            m.push(("variant", string(&p.variant)));
+        }
+        m.push((
+            "rootfs",
+            rootfs_json(&self.rootfs.kind, self.rootfs.diff_ids.as_deref()),
+        ));
+        if !self.history.is_empty() {
+            m.push(("history", history_json(&self.history)?));
+        }
+        m.push(("config", self.config.to_json()));
+        Ok(m)
+    }
+}
+
+/// `ocispec.RootFS`: `diff_ids` is `null` when there are none.
+pub fn rootfs_json(kind: &[u8], diff_ids: Option<&[Vec<u8>]>) -> String {
+    let mut rootfs = Obj::new();
+    rootfs.string("type", kind);
+    match diff_ids {
+        Some(ids) => rootfs.strings("diff_ids", ids),
+        None => rootfs.raw("diff_ids", "null"),
+    }
+    rootfs.end()
+}
+
+/// A `[]ocispec.History`: `null` when there is none.
+pub fn history_json(history: &[History]) -> Result<String, Vec<u8>> {
+    if history.is_empty() {
+        return Ok("null".to_string());
+    }
+    let mut list = String::from("[");
+    for (i, h) in history.iter().enumerate() {
+        if i > 0 {
+            list.push(',');
+        }
+        let mut e = Obj::new();
+        if let Some(t) = &h.created {
+            e.raw("created", &time_json(t)?);
+        }
+        e.string_nonempty("created_by", &h.created_by);
+        e.string_nonempty("author", &h.author);
+        e.string_nonempty("comment", &h.comment);
+        if h.empty_layer {
+            e.raw("empty_layer", "true");
+        }
+        list.push_str(&e.end());
+    }
+    list.push(']');
+    Ok(list)
 }
 
 impl Config {
@@ -546,7 +586,7 @@ impl Config {
     }
 }
 
-fn time_json(t: &Time) -> Result<String, Vec<u8>> {
+pub fn time_json(t: &Time) -> Result<String, Vec<u8>> {
     let text = t.rfc3339_nano().map_err(|e| {
         [
             b"json: error calling MarshalJSON for type *time.Time: ".as_slice(),
