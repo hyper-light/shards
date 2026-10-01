@@ -1214,7 +1214,7 @@ fn patterns_match_as_gos() {
                         .iter()
                         .map(|path| {
                             ans(glob::filepath_match(p, path)
-                                .map_err(|()| glob::BAD_PATTERN.as_bytes().to_vec()))
+                                .map_err(|_| glob::BAD_PATTERN.as_bytes().to_vec()))
                             .into()
                         })
                         .collect(),
