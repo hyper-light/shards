@@ -203,3 +203,99 @@ fn files_a_build_copies_are_in_the_vm_as_built() {
     assert_eq!(got, want, "{shown}");
     assert!(ran.stdout.contains("/all/x.log missing"), "{shown}");
 }
+
+#[test]
+fn a_staged_build_copies_from_its_stages_and_images() {
+    let (image, _) = served();
+    let home = TempDir::new("build-stages-home");
+    let ctx = context(
+        "build-stages-ctx",
+        &format!(
+            "FROM {image} AS base\n\
+             WORKDIR /src\n\
+             COPY a.txt ./\n\
+             FROM scratch AS files\n\
+             COPY --chmod=0600 b.txt /b.txt\n\
+             FROM {image}\n\
+             COPY --from=base /src/a.txt /out/a.txt\n\
+             COPY --from=files /b.txt /out/b.txt\n\
+             COPY --from={image} /etc/group /out/group\n\
+             COPY --from=1 /b.txt /out/b1.txt\n\
+             USER root\n\
+             CMD [\"stat\", \"/out/a.txt\", \"/out/b.txt\", \"/out/group\", \"/out/b1.txt\", \"/src\"]\n"
+        ),
+    );
+    std::fs::write(ctx.join("a.txt"), "a\n").unwrap();
+    std::fs::write(ctx.join("b.txt"), "b\n").unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let built = run_shards_env(
+        &["build"],
+        &["-t", "stages:1", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
+    assert_eq!(built.status, Some(0), "{shown}");
+    let target = run_shards_env(
+        &["build"],
+        &["--target", "base", "-t", "stages:base", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    let shown_target = format!("--- stdout\n{}\n--- stderr\n{}", target.stdout, target.stderr);
+    assert_eq!(target.status, Some(0), "{shown_target}");
+    assert!(
+        !target.stderr.contains("COPY --from=base"),
+        "--target base builds no later stage\n{shown_target}"
+    );
+
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let ran = run_shards_env(&["run"], &["--pull", "never", "--rm", "stages:1"], &env, TIMEOUT);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(1), "/src is the base stage's alone\n{shown}");
+    let group = "root:x:0:\\napp:x:1000:\\nstaff:x:50:app\\n";
+    let want = format!(
+        "/out/a.txt file 644 0:0 2\n= a\\n\n\
+         /out/b.txt file 600 0:0 2\n= b\\n\n\
+         /out/group file 644 0:0 {}\n= {group}\n\
+         /out/b1.txt file 600 0:0 2\n= b\\n\n",
+        group.replace("\\n", "\n").len()
+    );
+    let got: String = ran
+        .stdout
+        .lines()
+        .take_while(|l| !l.starts_with("/src"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_eq!(got, want, "{shown}");
+    assert!(ran.stdout.contains("/src missing"), "{shown}");
+
+    // The base stage alone: its own file, none of the final stage's.
+    let base = run_shards_env(
+        &["run"],
+        &[
+            "--pull",
+            "never",
+            "--rm",
+            "stages:base",
+            "stat",
+            "/src/a.txt",
+            "/out",
+        ],
+        &env,
+        TIMEOUT,
+    );
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", base.stdout, base.stderr);
+    assert!(
+        base.stdout.starts_with("/src/a.txt file 644 0:0 2\n= a\\n\n"),
+        "{shown}"
+    );
+    assert!(base.stdout.contains("/out missing"), "{shown}");
+}
