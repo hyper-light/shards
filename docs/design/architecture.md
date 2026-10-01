@@ -1525,6 +1525,39 @@ Docker's own microVMs, Docker Sandboxes, are not a Docker runtime either. shards
 OCI citizen where that costs nothing: registries, the Agentfile's BuildKit frontend, and
 Compose files that shards reads. Evidence: docs/research/oci-engines.md.
 
+### Building images: `shards build` (D33)
+
+`shards build` is a drop-in for `docker build`: the same Dockerfiles accepted, the same
+image config and history, the same steps cached. RUN steps run in microVMs, not
+containers. Evidence: docs/research/image-build.md (§3 ranks the choices below).
+
+- **The frontend is BuildKit's, reimplemented and held to its code** (`crates/dockerfile`).
+  It parses, lexes, types the instructions and plans the build as dockerfile/1.27.1's
+  `Dockerfile2LLB` does. That covers stages, ONBUILD, ARG and ENV scoping, every step's
+  command, environment, directory, user and mounts, file operations, the image config's
+  bytes and history, progress names, and every build check.
+  - Evidence: `scripts/dockerfile/generate` runs BuildKit's own packages over a corpus.
+    `tests/oracle.rs` expects the same bytes: 75 plans op by op, 146 image configs, 63
+    URLs, the parser's and the lexer's test tables. Deliberate differences are listed in
+    `testdata/deviations.json` and the modules' documentation. Examples: no Go map order,
+    Linux targets only, and no network I/O while planning.
+- **Only RUN runs in a VM**, one per step, over its parent state read-only with a fresh
+  upper (image-build §3.3). BuildKit runs COPY, ADD, WORKDIR's mkdir and the export in its
+  own process (§2.1), and shards does them in `shardsd`. File operations apply to an
+  in-memory tree, never the host's filesystem: case-insensitive APFS, owners, devices and
+  xattrs rule that out (§3.6).
+- **Layers are written as BuildKit writes them**, containerd's `ChangeWriter`: explicit
+  whiteouts, ancestors with their merged metadata, `security.capability` alone among
+  xattrs, PAX only when needed (§2.9). The exporter's config patching and history
+  normalization follow `exporter/containerimage/writer.go`.
+- **Order of work** (§3.13):
+  1. The frontend and its oracle. Done.
+  2. Metadata-only builds and host file operations, written to the store so `shards run`
+     boots them. buildx's command line, held to buildx's own command tree as D27's
+     commands are held to docker/cli's.
+  3. RUN in a booted VM without a network, and its layer.
+  4. Cache keys, then RUN's network, mounts and builder templates.
+
 ## 3. Components
 
 ```
