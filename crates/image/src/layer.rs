@@ -18,10 +18,10 @@
 //!   dropped, as containerd refuses them, and user.* ones on anything but files and
 //!   directories, as Linux refuses them; times before 1970 or past Go's range become 0.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::io::{self, Read, Seek, SeekFrom};
 
-use crate::erofs::{DataRef, Kind, Meta, Node, NodeId, Source, Tree};
+use crate::erofs::{DataRef, Dir, Kind, Meta, Node, NodeId, Source, Tree};
 use crate::tar::{self, Entry, Type};
 use crate::{Error, bad};
 
@@ -192,7 +192,7 @@ impl Layer<'_> {
                     at,
                     &name,
                     Node {
-                        kind: Kind::Dir(BTreeMap::new()),
+                        kind: Kind::Dir(Dir::default()),
                         meta: Meta {
                             mode: 0o755,
                             ..Meta::default()
@@ -296,7 +296,7 @@ impl Layer<'_> {
                 major: entry.devmajor,
                 minor: entry.devminor,
             },
-            Type::Dir => Kind::Dir(BTreeMap::new()),
+            Type::Dir => Kind::Dir(Dir::default()),
             Type::Fifo => Kind::Fifo,
         };
         let meta = meta(entry, &kind);
@@ -438,14 +438,7 @@ mod tests {
             archives: &mut Archives<Cursor<Vec<u8>>>,
             out: &mut Vec<String>,
         ) {
-            let Some(Node {
-                kind: Kind::Dir(entries),
-                ..
-            }) = tree.node(at)
-            else {
-                return;
-            };
-            for (name, &id) in entries {
+            for (name, id) in tree.entries(at) {
                 let path = format!("{prefix}/{}", String::from_utf8_lossy(name));
                 let node = tree.node(id).unwrap();
                 let m = &node.meta;

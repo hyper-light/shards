@@ -75,7 +75,7 @@ pub struct Exec<'a> {
 /// One slot of a file operation: an input, an action's mount, or its committed result.
 enum Slot {
     Ref(Ref),
-    Mount { base: Option<Ref>, fs: Fs },
+    Mount { base: Option<Ref>, fs: Box<Fs> },
     Taken,
 }
 
@@ -324,7 +324,7 @@ impl<'a> Exec<'a> {
                     fs.begin();
                     (Some(r), fs)
                 }
-                Some(Slot::Mount { base, fs }) => (base, fs),
+                Some(Slot::Mount { base, fs }) => (base, *fs),
                 _ => return Err(format!("input {i} is used twice uncommitted")),
             },
         };
@@ -407,7 +407,7 @@ impl<'a> Exec<'a> {
                             }
                             fs
                         }
-                        Some(Slot::Mount { fs, .. }) => Rc::new(fs),
+                        Some(Slot::Mount { fs, .. }) => Rc::new(*fs),
                         _ => return Err(format!("input {i} is used twice uncommitted")),
                     },
                 };
@@ -442,7 +442,10 @@ impl<'a> Exec<'a> {
         let slot = if commit.get(idx).copied().unwrap_or(false) {
             Slot::Ref(self.commit(base, fs, description)?)
         } else {
-            Slot::Mount { base, fs }
+            Slot::Mount {
+                base,
+                fs: Box::new(fs),
+            }
         };
         if let Some(s) = slots.get_mut(idx) {
             *s = slot;

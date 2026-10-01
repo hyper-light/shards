@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{TempDir, cannot_run_vms, kernel, test_guest, vm_run};
-use shards_image::erofs::{self, DataRef, Kind, Meta, Node, NodeId, Source, Tree};
+use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, Tree};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 /// The source id that stands for the manifest; every other id is a pattern salt.
@@ -61,7 +61,7 @@ impl Builder {
                 parent,
                 name.as_bytes(),
                 Node {
-                    kind: Kind::Dir(BTreeMap::new()),
+                    kind: Kind::Dir(Dir::default()),
                     meta: meta(mode, 0, 0),
                 },
             )

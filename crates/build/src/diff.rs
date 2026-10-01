@@ -71,10 +71,7 @@ fn parent_and_name(p: &[u8]) -> (Vec<u8>, Vec<u8>) {
 fn at(fs: &Fs, path: &[u8]) -> Option<NodeId> {
     let mut id = Tree::ROOT;
     for name in path.split(|&c| c == b'/').filter(|n| !n.is_empty()) {
-        match &fs.node(id)?.kind {
-            Kind::Dir(entries) => id = *entries.get(name)?,
-            _ => return None,
-        }
+        id = fs.tree.child(id, name)?;
     }
     Some(id)
 }
@@ -147,10 +144,11 @@ fn double_walk(
     cw: &mut ChangeWriter<'_>,
 ) -> Result<(), Error> {
     let entries = |fs: &Fs, id: NodeId| -> BTreeMap<Vec<u8>, NodeId> {
-        match fs.node(id).map(|n| &n.kind) {
-            Some(Kind::Dir(e)) => e.clone(),
-            _ => BTreeMap::new(),
-        }
+        fs.tree
+            .entries(id)
+            .into_iter()
+            .map(|(n, c)| (n.to_vec(), c))
+            .collect()
     };
     let (le, ue) = (entries(lower, l), entries(upper, u));
     let names: BTreeSet<&Vec<u8>> = le.keys().chain(ue.keys()).collect();
@@ -186,10 +184,8 @@ fn add_all(upper: &Fs, id: NodeId, p: &[u8], cw: &mut ChangeWriter<'_>) -> Resul
 }
 
 fn add_children(upper: &Fs, id: NodeId, p: &[u8], cw: &mut ChangeWriter<'_>) -> Result<(), Error> {
-    if let Some(Kind::Dir(entries)) = upper.node(id).map(|n| &n.kind) {
-        for (name, &child) in entries {
-            add_all(upper, child, &vfs::join(p, name), cw)?;
-        }
+    for (name, child) in upper.tree.entries(id) {
+        add_all(upper, child, &vfs::join(p, name), cw)?;
     }
     Ok(())
 }

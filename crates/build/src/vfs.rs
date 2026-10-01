@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use shards_dockerfile::go;
-use shards_image::erofs::{DataRef, Kind, Meta, Node, NodeId, Tree};
+use shards_image::erofs::{DataRef, Dir, Kind, Meta, Node, NodeId, Tree};
 
 /// MAXSYMLINKS: how many symlinks one path walk follows.
 const MAX_LINKS: u32 = 40;
@@ -210,15 +210,8 @@ impl Fs {
         self.tree.node_mut(id)
     }
 
-    fn children(&self, id: NodeId) -> Option<&BTreeMap<Vec<u8>, NodeId>> {
-        match &self.node(id)?.kind {
-            Kind::Dir(entries) => Some(entries),
-            _ => None,
-        }
-    }
-
     pub fn is_dir(&self, id: NodeId) -> bool {
-        self.children(id).is_some()
+        self.tree.dir_len(id).is_some()
     }
 
     /// Walks `path` from the root as namei does; the last element's symlink is followed
@@ -263,7 +256,7 @@ impl Fs {
                 }
                 continue;
             }
-            let Some(child) = self.children(current).and_then(|c| c.get(&name)).copied() else {
+            let Some(child) = self.tree.child(current, &name) else {
                 if last {
                     let path = canonical(&names, Some(&name));
                     return Ok(Found::Missing {
@@ -409,7 +402,7 @@ impl Fs {
         if self.upper.removed.contains(&at.2) {
             self.upper.recreated.insert(at.2.clone());
         }
-        let node = self.fresh(Kind::Dir(BTreeMap::new()), mode, at.0);
+        let node = self.fresh(Kind::Dir(Dir::default()), mode, at.0);
         self.add("mkdir", path, at, node)
     }
 
@@ -521,11 +514,11 @@ impl Fs {
             Ok(Found::Missing { .. }) => return fail(op, path, Errno::NoEnt),
             Err(e) => return fail(op, path, e),
         };
-        let Some(entries) = self.children(dir) else {
+        if !self.is_dir(dir) {
             return fail(op, path, Errno::NotDir);
-        };
-        match entries.get(&name) {
-            Some(&id) => Ok((dir, name.clone(), id, join(&dir_canon, &name))),
+        }
+        match self.tree.child(dir, &name) {
+            Some(id) => Ok((dir, name.clone(), id, join(&dir_canon, &name))),
             None => fail(op, path, Errno::NoEnt),
         }
     }
@@ -551,9 +544,9 @@ impl Fs {
     /// `rmdir(2)`.
     pub fn rmdir(&mut self, path: &[u8]) -> Result<(), PathError> {
         let (dir, name, id, canon) = self.entry("rmdir", path)?;
-        match self.children(id) {
+        match self.tree.dir_len(id) {
             None => return fail("rmdir", path, Errno::NotDir),
-            Some(c) if !c.is_empty() => return fail("rmdir", path, Errno::NotEmpty),
+            Some(n) if n > 0 => return fail("rmdir", path, Errno::NotEmpty),
             Some(_) => {}
         }
         self.take(dir, &name, &canon);
@@ -732,10 +725,15 @@ impl Fs {
     /// Go's `os.ReadDir`: a directory's names, sorted.
     pub fn read_dir(&self, path: &[u8]) -> Result<Vec<Vec<u8>>, PathError> {
         let id = self.stat(path).map_err(|e| PathError { op: "open", ..e })?;
-        match self.children(id) {
-            Some(c) => Ok(c.keys().cloned().collect()),
-            None => fail("readdirent", path, Errno::NotDir),
+        if !self.is_dir(id) {
+            return fail("readdirent", path, Errno::NotDir);
         }
+        Ok(self
+            .tree
+            .entries(id)
+            .into_iter()
+            .map(|(n, _)| n.to_vec())
+            .collect())
     }
 
     /// How many directory entries name each node: its link count, for what is not a
@@ -744,9 +742,10 @@ impl Fs {
         let mut count = vec![0u32; self.tree.len()];
         let mut todo = vec![Tree::ROOT];
         let mut seen = vec![false; self.tree.len()];
+        let mut entries = Vec::new();
         while let Some(dir) = todo.pop() {
-            if let Some(entries) = self.children(dir) {
-                for &id in entries.values() {
+            if self.tree.entries_into(dir, &mut entries) {
+                for &(_, id) in &entries {
                     if let Some(c) = count.get_mut(id) {
                         *c += 1;
                     }

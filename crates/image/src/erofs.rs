@@ -93,9 +93,23 @@ pub trait Source {
     fn read_at(&mut self, data: DataRef, at: u64, buf: &mut [u8]) -> io::Result<()>;
 }
 
+/// A directory's entries, which only its [`Tree`] reads or changes: the head of its list
+/// of entries and how many are live. [`Dir::default`] is an empty directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dir {
+    first: u32,
+    live: u32,
+}
+
+impl Default for Dir {
+    fn default() -> Dir {
+        Dir { first: NONE, live: 0 }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
-    Dir(BTreeMap<Vec<u8>, NodeId>),
+    Dir(Dir),
     File { size: u64, data: DataRef },
     Symlink(Vec<u8>),
     CharDevice { major: u32, minor: u32 },
@@ -110,17 +124,36 @@ pub struct Node {
     pub meta: Meta,
 }
 
-/// Nodes by id, in chunks of at most [`Arena::CHUNK`]: growing moves only the last
-/// chunk's nodes, where doubling one vector would move them all, holding both copies at
+/// No node, no entry: ids are `u32`, and this one is never given.
+const NONE: u32 = u32::MAX;
+
+/// The name at `at` in a tree's names: one length byte, then the name.
+fn name_at(names: &[u8], at: u32) -> &[u8] {
+    let at = at as usize;
+    let len = names.get(at).copied().map_or(0, usize::from);
+    names.get(at + 1..at + 1 + len).unwrap_or_default()
+}
+
+/// Items by id, in chunks of at most [`Arena::CHUNK`]: growing moves only the last
+/// chunk's items, where doubling one vector would move them all, holding both copies at
 /// once, and only the last chunk has room to spare (platform-measurements.md M78). A chunk
 /// grows as a vector does, so a small tree holds a small one.
-#[derive(Debug, Clone, Default)]
-struct Arena {
-    chunks: Vec<Vec<Node>>,
+#[derive(Debug, Clone)]
+struct Arena<T> {
+    chunks: Vec<Vec<T>>,
     len: usize,
 }
 
-impl Arena {
+impl<T> Default for Arena<T> {
+    fn default() -> Self {
+        Arena {
+            chunks: Vec::new(),
+            len: 0,
+        }
+    }
+}
+
+impl<T> Arena<T> {
     const CHUNK_BITS: u32 = 16;
     const CHUNK: usize = 1 << Self::CHUNK_BITS;
 
@@ -128,35 +161,84 @@ impl Arena {
         self.len
     }
 
-    fn get(&self, id: NodeId) -> Option<&Node> {
+    fn get(&self, id: usize) -> Option<&T> {
         self.chunks
             .get(id >> Self::CHUNK_BITS)?
             .get(id & (Self::CHUNK - 1))
     }
 
-    fn get_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+    fn get_mut(&mut self, id: usize) -> Option<&mut T> {
         self.chunks
             .get_mut(id >> Self::CHUNK_BITS)?
             .get_mut(id & (Self::CHUNK - 1))
     }
 
-    fn push(&mut self, node: Node) {
+    /// Adds `item`, returning its id, which fits a `u32` short of [`NONE`].
+    fn push(&mut self, item: T) -> Result<u32, Error> {
+        let id = u32::try_from(self.len)
+            .ok()
+            .filter(|&id| id != NONE)
+            .ok_or_else(|| Error("too many nodes or entries for one tree".into()))?;
         match self.chunks.last_mut() {
             Some(chunk) if chunk.len() < Self::CHUNK => {
                 // Doubling from a power of two stops at CHUNK, never past it.
-                chunk.push(node);
+                chunk.push(item);
             }
-            _ => self.chunks.push(vec![node]),
+            _ => self.chunks.push(vec![item]),
         }
         self.len += 1;
+        Ok(id)
+    }
+}
+
+/// A name in a directory: what it names, its bytes in the tree's names, and the next
+/// entry of the same directory. A removed entry names [`NONE`], and stays until the tree
+/// is compacted.
+#[derive(Debug, Clone, Copy)]
+struct Link {
+    dir: u32,
+    child: u32,
+    /// Where the name starts in [`Tree::names`]: one length byte, then the name.
+    name: u32,
+    next: u32,
+}
+
+/// Entries by directory and name: open addressing with linear probing (Knuth, TAOCP
+/// vol. 3, 6.4, algorithm L) over entry ids, kept at most three quarters full. Names come
+/// from archives no one vouches for, so the hash is SipHash with keys drawn for each
+/// process (std's `RandomState`): a chosen set of names cannot pile onto one slot.
+/// Removed entries keep their slots, so the probes past them still run, until the
+/// table is rebuilt.
+#[derive(Debug, Clone, Default)]
+struct Index {
+    slots: Vec<u32>,
+    used: usize,
+    keys: std::hash::RandomState,
+}
+
+impl Index {
+    fn hash(&self, dir: u32, name: &[u8]) -> u64 {
+        use std::hash::{BuildHasher, Hasher};
+        let mut h = self.keys.build_hasher();
+        h.write_u32(dir);
+        h.write(name);
+        h.finish()
     }
 }
 
 /// A directory tree to write. Nodes removed from it stay in the arena, unwritten, until
 /// [`Tree::compact`]: only what the root reaches is written.
+///
+/// A directory's entries live in the tree, not in its node: each is a [`Link`], found by
+/// directory and name through one hash index and listed through the directory's chain,
+/// and sorted only when listed, as the image and a layer list them. A tree of a million
+/// entries holds one entry record, one name and a slot each (M78).
 #[derive(Debug, Clone)]
 pub struct Tree {
-    nodes: Arena,
+    nodes: Arena<Node>,
+    links: Arena<Link>,
+    names: Vec<u8>,
+    index: Index,
     /// Entries replaced or removed since the last compaction: what may have left nodes
     /// unreachable.
     dropped: usize,
@@ -182,12 +264,19 @@ impl Tree {
     pub const ROOT: NodeId = 0;
 
     pub fn new(root: Meta) -> Tree {
-        let mut nodes = Arena::default();
-        nodes.push(Node {
-            kind: Kind::Dir(BTreeMap::new()),
+        let mut t = Tree {
+            nodes: Arena::default(),
+            links: Arena::default(),
+            names: Vec::new(),
+            index: Index::default(),
+            dropped: 0,
+        };
+        // The first of an empty arena: id 0 always fits.
+        let _ = t.nodes.push(Node {
+            kind: Kind::Dir(Dir::default()),
             meta: root,
         });
-        Tree { nodes, dropped: 0 }
+        t
     }
 
     /// How many nodes the arena holds, reachable or not.
@@ -199,52 +288,6 @@ impl Tree {
         self.nodes.len() == 0
     }
 
-    /// Drops the nodes the root no longer reaches, and renumbers the rest from the root,
-    /// depth first, so ids held from before mean nothing after. A node with several
-    /// names, a hard link, stays one node (audit D11). Nothing is done if no entry was
-    /// replaced or removed since the last compaction.
-    pub fn compact(&mut self) {
-        if self.dropped == 0 {
-            return;
-        }
-        self.dropped = 0;
-        const NONE: NodeId = NodeId::MAX;
-        let mut new_id = vec![NONE; self.nodes.len()];
-        let mut order: Vec<NodeId> = Vec::new();
-        let mut stack = vec![Tree::ROOT];
-        while let Some(id) = stack.pop() {
-            match new_id.get_mut(id) {
-                Some(slot) if *slot == NONE => *slot = order.len(),
-                _ => continue,
-            }
-            order.push(id);
-            if let Some(Node {
-                kind: Kind::Dir(entries),
-                ..
-            }) = self.nodes.get(id)
-            {
-                stack.extend(entries.values().rev().copied());
-            }
-        }
-        let mut old = std::mem::take(&mut self.nodes);
-        for id in order {
-            let Some(slot) = old.get_mut(id) else { continue };
-            let mut node = std::mem::replace(
-                slot,
-                Node {
-                    kind: Kind::Fifo,
-                    meta: Meta::default(),
-                },
-            );
-            if let Kind::Dir(entries) = &mut node.kind {
-                for child in entries.values_mut() {
-                    *child = new_id.get(*child).copied().unwrap_or(NONE);
-                }
-            }
-            self.nodes.push(node);
-        }
-    }
-
     pub fn node(&self, id: NodeId) -> Option<&Node> {
         self.nodes.get(id)
     }
@@ -253,31 +296,282 @@ impl Tree {
         self.nodes.get_mut(id)
     }
 
-    fn entries_mut(&mut self, dir: NodeId) -> Result<&mut BTreeMap<Vec<u8>, NodeId>, Error> {
-        match self.nodes.get_mut(dir).map(|n| &mut n.kind) {
-            Some(Kind::Dir(entries)) => Ok(entries),
+    fn dir(&self, id: NodeId) -> Option<Dir> {
+        match self.nodes.get(id).map(|n| &n.kind) {
+            Some(Kind::Dir(d)) => Some(*d),
+            _ => None,
+        }
+    }
+
+    fn dir_mut(&mut self, id: NodeId) -> Result<&mut Dir, Error> {
+        match self.nodes.get_mut(id).map(|n| &mut n.kind) {
+            Some(Kind::Dir(d)) => Ok(d),
             _ => err("not a directory"),
         }
     }
 
+    fn name_of(&self, link: &Link) -> &[u8] {
+        name_at(&self.names, link.name)
+    }
+
+    /// The live entries of `dir` into `out`, by id, sorted by name.
+    fn link_ids(&self, dir: NodeId, out: &mut Vec<u32>) {
+        out.clear();
+        let Some(d) = self.dir(dir) else { return };
+        let mut at = d.first;
+        while let Some(l) = self.links.get(at as usize) {
+            if l.child != NONE {
+                out.push(at);
+            }
+            at = l.next;
+        }
+        let name = |id: &u32| self.links.get(*id as usize).map_or(&[][..], |l| self.name_of(l));
+        out.sort_unstable_by(|a, b| name(a).cmp(name(b)));
+    }
+
+    /// The live entry `name` of `dir`, by id.
+    fn find(&self, dir: u32, name: &[u8]) -> Option<u32> {
+        let mask = self.index.slots.len().checked_sub(1)?;
+        let mut i = (self.index.hash(dir, name) as usize) & mask;
+        loop {
+            let slot = *self.index.slots.get(i)?;
+            if slot == NONE {
+                return None;
+            }
+            if let Some(l) = self.links.get(slot as usize)
+                && l.dir == dir
+                && l.child != NONE
+                && self.name_of(l) == name
+            {
+                return Some(slot);
+            }
+            i = (i + 1) & mask;
+        }
+    }
+
+    /// Puts entry `id` in the index, growing it first if it would pass three quarters.
+    fn index_add(&mut self, id: u32) -> Result<(), Error> {
+        if (self.index.used + 1) * 4 > self.index.slots.len() * 3 {
+            let want = (self.index.slots.len() * 2).max(16);
+            self.rebuild_index(want)?;
+        }
+        self.place(id)
+    }
+
+    fn place(&mut self, id: u32) -> Result<(), Error> {
+        let link = *self
+            .links
+            .get(id as usize)
+            .ok_or_else(|| Error("missing entry".into()))?;
+        let mask = self.index.slots.len().saturating_sub(1);
+        let mut i = (self.index.hash(link.dir, self.name_of(&link)) as usize) & mask;
+        loop {
+            match self.index.slots.get_mut(i) {
+                Some(slot) if *slot == NONE => {
+                    *slot = id;
+                    self.index.used += 1;
+                    return Ok(());
+                }
+                Some(_) => i = (i + 1) & mask,
+                None => return err("entry index full"),
+            }
+        }
+    }
+
+    /// The index again, `slots` long, of the live entries only.
+    fn rebuild_index(&mut self, slots: usize) -> Result<(), Error> {
+        let slots = slots.next_power_of_two();
+        self.index.slots = Vec::new();
+        self.index.slots.resize(slots, NONE);
+        self.index.used = 0;
+        for id in 0..self.links.len() {
+            if self.links.get(id).is_some_and(|l| l.child != NONE) {
+                self.place(id as u32)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A new entry `name` in `dir`, naming `child`, at the head of the directory's list.
+    fn add_link(&mut self, dir: u32, name: &[u8], child: u32) -> Result<(), Error> {
+        let at = u32::try_from(self.names.len()).map_err(|_| Error("too many names for one tree".into()))?;
+        let head = self.dir_mut(dir as usize)?;
+        let next = head.first;
+        self.names.push(name.len() as u8);
+        self.names.extend_from_slice(name);
+        let id = self.links.push(Link {
+            dir,
+            child,
+            name: at,
+            next,
+        })?;
+        let head = self.dir_mut(dir as usize)?;
+        head.first = id;
+        head.live += 1;
+        self.index_add(id)
+    }
+
+    /// Sets the entry `name` of `dir` to `child`: the live one replaced, or a new one.
+    fn set(&mut self, dir: NodeId, name: &[u8], child: u32) -> Result<(), Error> {
+        check_name(name)?;
+        let dir = u32::try_from(dir).map_err(|_| Error("not a directory".into()))?;
+        self.dir_mut(dir as usize)?;
+        match self.find(dir, name) {
+            Some(id) => {
+                if let Some(l) = self.links.get_mut(id as usize) {
+                    l.child = child;
+                }
+                self.dropped += 1;
+                Ok(())
+            }
+            None => self.add_link(dir, name, child),
+        }
+    }
+
+    /// Drops the live entry `id`: it keeps its place in the list and index, naming nothing.
+    fn unset(&mut self, id: u32) -> Option<NodeId> {
+        let l = self.links.get_mut(id as usize)?;
+        let (dir, child) = (l.dir, l.child);
+        l.child = NONE;
+        if let Ok(d) = self.dir_mut(dir as usize) {
+            d.live = d.live.saturating_sub(1);
+        }
+        self.dropped += 1;
+        Some(child as NodeId)
+    }
+
+    /// Adds `node` as a new node: a directory starts empty, whatever tree it came from.
+    fn new_node(&mut self, mut node: Node) -> Result<u32, Error> {
+        if let Kind::Dir(d) = &mut node.kind {
+            *d = Dir::default();
+        }
+        self.nodes.push(node)
+    }
+
     /// The entry `name` in directory `dir`.
     pub fn child(&self, dir: NodeId, name: &[u8]) -> Option<NodeId> {
-        match self.nodes.get(dir).map(|n| &n.kind) {
-            Some(Kind::Dir(entries)) => entries.get(name).copied(),
-            _ => None,
+        let dir = u32::try_from(dir).ok()?;
+        self.dir(dir as usize)?;
+        let id = self.find(dir, name)?;
+        self.links.get(id as usize).map(|l| l.child as NodeId)
+    }
+
+    /// How many entries `dir` holds, or `None` if it is no directory.
+    pub fn dir_len(&self, dir: NodeId) -> Option<usize> {
+        self.dir(dir).map(|d| d.live as usize)
+    }
+
+    /// The entries of `dir` into `out`, sorted by name in byte order, as the image and a
+    /// layer list them; false if `dir` is no directory.
+    pub fn entries_into<'t>(&'t self, dir: NodeId, out: &mut Vec<(&'t [u8], NodeId)>) -> bool {
+        out.clear();
+        let Some(d) = self.dir(dir) else {
+            return false;
+        };
+        out.reserve(d.live as usize);
+        let mut at = d.first;
+        while let Some(l) = self.links.get(at as usize) {
+            if l.child != NONE {
+                out.push((self.name_of(l), l.child as NodeId));
+            }
+            at = l.next;
         }
+        // Live names are unique in their directory.
+        out.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        true
+    }
+
+    /// The entries of `dir`, sorted by name; empty if it is no directory.
+    pub fn entries(&self, dir: NodeId) -> Vec<(&[u8], NodeId)> {
+        let mut out = Vec::new();
+        self.entries_into(dir, &mut out);
+        out
+    }
+
+    /// Drops the nodes the root no longer reaches, and renumbers the rest from the root,
+    /// depth first, so ids held from before mean nothing after. A node with several
+    /// names, a hard link, stays one node (audit D11). Removed entries and the names of
+    /// replaced ones go too. Nothing is done if no entry was replaced or removed since the
+    /// last compaction.
+    pub fn compact(&mut self) {
+        if self.dropped == 0 {
+            return;
+        }
+        let mut old = std::mem::replace(self, Tree::new(Meta::default()));
+        // What `old` holds is a valid tree: the copy holds no more than it, so no limit
+        // of `push` or `place` is met that `old` did not meet first.
+        let _ = old.compact_into(self);
+        self.dropped = 0;
+    }
+
+    fn compact_into(&mut self, new: &mut Tree) -> Result<(), Error> {
+        let mut new_id = vec![NONE; self.nodes.len()];
+        let root = self
+            .nodes
+            .get_mut(Tree::ROOT)
+            .map(|n| std::mem::take(&mut n.meta))
+            .unwrap_or_default();
+        if let Some(r) = new.nodes.get_mut(Tree::ROOT) {
+            r.meta = root;
+        }
+        if let Some(slot) = new_id.get_mut(Tree::ROOT) {
+            *slot = 0;
+        }
+        let mut stack = vec![Tree::ROOT];
+        let mut ids = Vec::new();
+        while let Some(dir) = stack.pop() {
+            let new_dir = new_id.get(dir).copied().unwrap_or(NONE);
+            self.link_ids(dir, &mut ids);
+            for &link in ids.iter().rev() {
+                let Some(l) = self.links.get(link as usize).copied() else {
+                    continue;
+                };
+                let child = &(l.child as NodeId);
+                let name = name_at(&self.names, l.name);
+                let moved = match new_id.get(*child).copied() {
+                    Some(id) if id != NONE => id,
+                    _ => {
+                        let node = match self.nodes.get_mut(*child) {
+                            Some(n) => {
+                                // A directory keeps its list here, to be walked when popped.
+                                let keep = match n.kind {
+                                    Kind::Dir(d) => Kind::Dir(d),
+                                    _ => Kind::Fifo,
+                                };
+                                std::mem::replace(
+                                    n,
+                                    Node {
+                                        kind: keep,
+                                        meta: Meta::default(),
+                                    },
+                                )
+                            }
+                            None => continue,
+                        };
+                        let is_dir = matches!(node.kind, Kind::Dir(_));
+                        let id = new.new_node(node)?;
+                        if let Some(slot) = new_id.get_mut(*child) {
+                            *slot = id;
+                        }
+                        if is_dir {
+                            stack.push(*child);
+                        }
+                        id
+                    }
+                };
+                new.add_link(new_dir, name, moved)?;
+            }
+        }
+        Ok(())
     }
 
     /// Adds `node` to `dir` as `name`, replacing any entry of that name.
     pub fn insert(&mut self, dir: NodeId, name: &[u8], node: Node) -> Result<NodeId, Error> {
         check_name(name)?;
-        let id = self.nodes.len();
-        self.entries_mut(dir)?;
-        self.nodes.push(node);
-        if self.entries_mut(dir)?.insert(name.to_vec(), id).is_some() {
-            self.dropped += 1;
-        }
-        Ok(id)
+        self.dir_mut(dir)?;
+        let id = self.new_node(node)?;
+        self.set(dir, name, id)?;
+        Ok(id as NodeId)
     }
 
     /// Gives `target`, which is not a directory, another name: a hard link.
@@ -288,38 +582,42 @@ impl Tree {
             Some(Kind::Dir(_)) => return err("hard link to a directory"),
             Some(_) => {}
         }
-        if self.entries_mut(dir)?.insert(name.to_vec(), target).is_some() {
-            self.dropped += 1;
-        }
-        Ok(())
+        self.set(dir, name, target as u32)
     }
 
     /// Moves the entry `name` of `dir` to `to_name` in `to`, replacing any entry there.
     pub fn rename(&mut self, dir: NodeId, name: &[u8], to: NodeId, to_name: &[u8]) -> Result<(), Error> {
         check_name(to_name)?;
-        self.entries_mut(to)?;
-        let Some(id) = self.entries_mut(dir)?.remove(name) else {
+        self.dir_mut(to)?;
+        let d = u32::try_from(dir).map_err(|_| Error("not a directory".into()))?;
+        let Some(id) = self.find(d, name) else {
             return err("no such entry to rename");
         };
-        if self.entries_mut(to)?.insert(to_name.to_vec(), id).is_some() {
-            self.dropped += 1;
-        }
-        Ok(())
+        let child = self
+            .unset(id)
+            .ok_or_else(|| Error("no such entry to rename".into()))?;
+        // A move is no drop: the node is still named.
+        self.dropped = self.dropped.saturating_sub(1);
+        self.set(to, to_name, child as u32)
     }
 
     /// Removes the entry `name` from `dir`, returning what it named.
     pub fn remove(&mut self, dir: NodeId, name: &[u8]) -> Option<NodeId> {
-        let removed = self.entries_mut(dir).ok()?.remove(name);
-        self.dropped += usize::from(removed.is_some());
-        removed
+        let d = u32::try_from(dir).ok()?;
+        self.dir(dir)?;
+        let id = self.find(d, name)?;
+        self.unset(id)
     }
 
     /// Removes every entry of `dir`.
     pub fn clear(&mut self, dir: NodeId) {
-        if let Ok(entries) = self.entries_mut(dir) {
-            let n = entries.len();
-            entries.clear();
-            self.dropped += n;
+        let Some(d) = self.dir(dir) else { return };
+        let mut at = d.first;
+        while let Some(l) = self.links.get(at as usize).copied() {
+            if l.child != NONE {
+                self.unset(at);
+            }
+            at = l.next;
         }
     }
 }
@@ -425,16 +723,10 @@ impl Inode {
 }
 
 /// A directory's entries as written into `all`: its names, then `.` and `..`, in byte
-/// order, a prefix first, which the kernel's lookup (namei.c) relies on. The tree keeps
+/// order, a prefix first, which the kernel's lookup (namei.c) relies on. The tree lists
 /// names in that order already, and no name is `.` or `..`.
-fn dir_entries<'t>(
-    entries: &'t BTreeMap<Vec<u8>, NodeId>,
-    id: NodeId,
-    parent: NodeId,
-    all: &mut Vec<Entry<'t>>,
-) {
-    all.clear();
-    all.extend(entries.iter().map(|(n, &c)| (n.as_slice(), c)));
+fn dir_entries<'t>(tree: &'t Tree, id: NodeId, parent: NodeId, all: &mut Vec<Entry<'t>>) {
+    tree.entries_into(id, all);
     for (name, to) in [(&b"."[..], id), (&b".."[..], parent)] {
         let at = all.partition_point(|e| e.0 < name);
         all.insert(at, (name, to));
@@ -506,6 +798,7 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
     let mut order: Vec<Inode> = Vec::with_capacity(tree.len());
     let mut index: Vec<u32> = vec![NONE; tree.len()];
     let mut stack: Vec<(NodeId, NodeId)> = vec![(Tree::ROOT, Tree::ROOT)];
+    let mut listed: Vec<Entry<'_>> = Vec::new();
     while let Some((id, parent)) = stack.pop() {
         let slot = index
             .get_mut(id)
@@ -532,9 +825,10 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
             nid: 0,
             start: None,
         });
-        if let Kind::Dir(entries) = &node.kind {
+        if matches!(node.kind, Kind::Dir(_)) {
+            tree.entries_into(id, &mut listed);
             // Reverse, so the stack yields names in order.
-            for (_, &child) in entries.iter().rev() {
+            for &(_, child) in listed.iter().rev() {
                 stack.push((child, id));
             }
         }
@@ -549,16 +843,18 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
         let node = tree.node(id).ok_or_else(|| Error("missing node".into()))?;
         epoch = epoch.min(node.meta.mtime);
         match &node.kind {
-            Kind::Dir(entries) => {
-                let subdirs = entries
-                    .values()
-                    .filter(|&&c| matches!(tree.node(c).map(|n| &n.kind), Some(Kind::Dir(_))))
-                    .count();
+            Kind::Dir(_) => {
+                dir_entries(tree, id, inode.parent as NodeId, &mut all);
+                // Less `.` and `..`, which are no subdirectories of it.
+                let subdirs = all
+                    .iter()
+                    .filter(|&&(_, c)| matches!(tree.node(c).map(|n| &n.kind), Some(Kind::Dir(_))))
+                    .count()
+                    .saturating_sub(2);
                 inode.nlink = u32::try_from(subdirs)
                     .ok()
                     .and_then(|n| n.checked_add(2))
                     .ok_or_else(too_many)?;
-                dir_entries(entries, id, inode.parent as NodeId, &mut all);
                 inode.size = dir_blocks(&all).1;
             }
             Kind::File { size, .. } => inode.size = *size,
@@ -709,8 +1005,8 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
             let start = inode.size - u64::from(inode.tail);
             let tail = usize::from(inode.tail);
             match &node.kind {
-                Kind::Dir(entries) => {
-                    dir_entries(entries, inode.node as NodeId, inode.parent as NodeId, &mut all);
+                Kind::Dir(_) => {
+                    dir_entries(tree, inode.node as NodeId, inode.parent as NodeId, &mut all);
                     let (ends, _) = dir_blocks(&all);
                     let last = blocks(&all, &ends)
                         .last()
@@ -739,8 +1035,8 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
         let full = inode.data_blocks() * BLOCK;
         let end = seq.at + full;
         match &node.kind {
-            Kind::Dir(names) => {
-                dir_entries(names, inode.node as NodeId, inode.parent as NodeId, &mut all);
+            Kind::Dir(_) => {
+                dir_entries(tree, inode.node as NodeId, inode.parent as NodeId, &mut all);
                 let (ends, _) = dir_blocks(&all);
                 for (i, entries) in blocks(&all, &ends).enumerate() {
                     if (i as u64) * BLOCK >= full {
@@ -1039,7 +1335,7 @@ mod tests {
                 Tree::ROOT,
                 b"etc",
                 Node {
-                    kind: Kind::Dir(BTreeMap::new()),
+                    kind: Kind::Dir(Dir::default()),
                     meta: meta(0o755),
                 },
             )
@@ -1071,7 +1367,7 @@ mod tests {
                 Tree::ROOT,
                 b"many",
                 Node {
-                    kind: Kind::Dir(BTreeMap::new()),
+                    kind: Kind::Dir(Dir::default()),
                     meta: meta(0o700),
                 },
             )
@@ -1310,7 +1606,7 @@ mod tests {
                 Tree::ROOT,
                 b"d",
                 Node {
-                    kind: Kind::Dir(BTreeMap::new()),
+                    kind: Kind::Dir(Dir::default()),
                     meta: meta(0o755),
                 },
             )

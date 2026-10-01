@@ -8,7 +8,6 @@
     clippy::indexing_slicing
 )]
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -21,7 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sha2::Digest as _;
-use shards_image::erofs::{self, DataRef, Kind, Meta, Node, NodeId, Source, Tree};
+use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, Tree};
 
 pub fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -533,7 +532,7 @@ pub fn workload_image(dir: &Path) -> PathBuf {
         .unwrap();
     };
     let dir_node = |tree: &mut Tree, at: NodeId, name: &str, mode: u16, owner: u32| {
-        let kind = Kind::Dir(BTreeMap::new());
+        let kind = Kind::Dir(Dir::default());
         tree.insert(
             at,
             name.as_bytes(),

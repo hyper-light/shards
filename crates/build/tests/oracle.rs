@@ -11,8 +11,6 @@
     clippy::unreachable
 )]
 
-use std::collections::BTreeMap;
-
 #[cfg(unix)]
 mod common;
 
@@ -23,7 +21,7 @@ use shards_build::diff;
 use shards_build::ops::{self, CopyAction};
 use shards_build::vfs::Fs;
 use shards_dockerfile::llb::{OpChown, OpUser};
-use shards_image::erofs::{Kind, Meta, Node, NodeId, Tree};
+use shards_image::erofs::{Dir, Kind, Meta, Node, NodeId, Tree};
 use shards_image::tar;
 
 /// The time the oracle moves what the kernel stamped to.
@@ -106,7 +104,7 @@ fn tree(entries: &Value, mem: &mut Sources) -> Tree {
             )
         };
         let kind = match ty {
-            "dir" => Kind::Dir(BTreeMap::new()),
+            "dir" => Kind::Dir(Dir::default()),
             "file" => {
                 let data = match e.get("data_b64").and_then(Value::as_str) {
                     Some(b) => unbase64(b),

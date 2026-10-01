@@ -2701,6 +2701,24 @@ revision before comparing a changed API/implementation.
   sort before `.`, directories of several blocks and inline tails. With `run.sh`, n 5:
   maximum resident set size p50 465 MB, max 470 MB, from 616 MB. Probes put the ADD
   step's peak at 338 MB and the export's at 463 MB.
+- **Third round.** A directory's entries had been a `BTreeMap<Vec<u8>, NodeId>` in its
+  node: a name allocated for each, and slots of 32 bytes in B-tree nodes partly full. Now
+  the tree keeps every entry as one 16-byte record (its directory, what it names, where
+  its name is, the next entry of its directory) in a chunked arena, every name in one
+  byte arena, and one index from directory and name to entry: open addressing over
+  `u32` entry ids, linear probing, at most three quarters full, hashed with SipHash keyed
+  for each process, since names come from archives. A directory's node holds the head of
+  its list, sorted only when listed. With the harness above:
+
+  | Step | live | peak |
+  |---|---|---|
+  | `layer::apply` | 114 MB | 116 MB |
+  | `erofs::write` | 114 MB | 169 MB |
+
+  The three images are byte for byte the same again, the BuildKit oracle
+  (`crates/build/tests/oracle.rs`) passes unchanged, and `run.sh`, n 3: 348, 350 and
+  353 MB, from 465 MB. CPU time is unchanged, 5.8 to 5.9 s of user time: the ADD step's
+  path walks, path-keyed change sets and staged archive are next.
 
 ### M79. The signal port dialled before the workload starts
 

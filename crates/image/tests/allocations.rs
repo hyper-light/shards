@@ -8,10 +8,9 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::collections::BTreeMap;
 use std::io;
 
-use shards_image::erofs::{self, DataRef, Kind, Meta, Node, Source, Tree};
+use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, Source, Tree};
 
 struct Counting;
 
@@ -98,7 +97,7 @@ fn tree(files: usize, size: u64, xattr: usize) -> Tree {
             Tree::ROOT,
             b"files",
             Node {
-                kind: Kind::Dir(BTreeMap::new()),
+                kind: Kind::Dir(Dir::default()),
                 meta: meta(0o755),
             },
         )
