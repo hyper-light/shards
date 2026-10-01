@@ -31,6 +31,7 @@ workspace = true
 
 [dependencies]
 shards-abi = { path = "../abi" }
+shards-build = { path = "../build" }
 shards-cmdline = { path = "../cmdline" }
 shards-dockerfile = { path = "../dockerfile" }
 shards-image = { path = "../image" }

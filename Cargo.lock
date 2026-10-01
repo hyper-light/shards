@@ -827,6 +827,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shards-abi",
+ "shards-build",
  "shards-cmdline",
  "shards-dockerfile",
  "shards-image",

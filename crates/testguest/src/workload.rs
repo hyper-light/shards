@@ -35,6 +35,7 @@ pub fn main() -> ! {
     let code = match arg(0) {
         "report" => report(),
         "cat" => cat(),
+        "stat" => stat(args.get(1..).unwrap_or_default()),
         "stderr" => {
             let _ = io::stderr().write_all(arg(1).as_bytes());
             0
@@ -69,6 +70,58 @@ pub fn main() -> ! {
         }
     };
     std::process::exit(code)
+}
+
+/// Prints each path as lstat(2) sees it: `PATH TYPE MODE UID:GID SIZE`, then `= TEXT`
+/// for a file, its bytes with newlines as `\n`, or `-> TARGET` for a symlink.
+fn stat(paths: &[String]) -> i32 {
+    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+    let mut out = String::new();
+    let mut code = 0;
+    for p in paths {
+        let m = match std::fs::symlink_metadata(p) {
+            Ok(m) => m,
+            Err(e) => {
+                out.push_str(&format!("{p} missing {e}\n"));
+                code = 1;
+                continue;
+            }
+        };
+        let t = m.file_type();
+        let kind = if t.is_dir() {
+            "dir"
+        } else if t.is_symlink() {
+            "symlink"
+        } else if t.is_file() {
+            "file"
+        } else if t.is_fifo() {
+            "fifo"
+        } else {
+            "other"
+        };
+        out.push_str(&format!(
+            "{p} {kind} {:o} {}:{} {}\n",
+            m.mode() & 0o7777,
+            m.uid(),
+            m.gid(),
+            m.size()
+        ));
+        if t.is_file() {
+            match std::fs::read(p) {
+                Ok(b) => out.push_str(&format!(
+                    "= {}\n",
+                    String::from_utf8_lossy(&b).replace('\n', "\\n")
+                )),
+                Err(e) => out.push_str(&format!("= unreadable {e}\n")),
+            }
+        } else if t.is_symlink()
+            && let Ok(target) = std::fs::read_link(p)
+        {
+            out.push_str(&format!("-> {}\n", target.display()));
+        }
+    }
+    let _ = io::stdout().write_all(out.as_bytes());
+    code
 }
 
 /// Cleans the data cache over every page of `path`, mapped read-only and never read, as a

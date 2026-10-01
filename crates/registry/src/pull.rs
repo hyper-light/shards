@@ -126,7 +126,7 @@ pub fn pull(
     let rootfs = store.rootfs(&layers, limits)?;
     let mut contents = vec![manifest_digest.clone(), manifest.config.digest()?];
     contents.extend(layers.iter().map(|l| l.blob.clone()));
-    store.tag(&reference.to_string(), &manifest_desc, &contents)?;
+    store.tag(&reference.to_string(), &manifest_desc, &resolved, &contents)?;
     Ok(Pulled {
         resolved,
         manifest: manifest_digest,
@@ -159,8 +159,11 @@ pub fn local(
     let config = stored(store, &name, &manifest.config, oci::MAX_CONFIG)?;
     let (config, layers) = checked(&name, &manifest_desc, &manifest, &config, targets)?;
     let rootfs = store.rootfs(&layers, limits)?;
+    let resolved = store
+        .resolved(&reference.to_string())?
+        .unwrap_or_else(|| manifest_digest.clone());
     Ok(Some(Pulled {
-        resolved: manifest_digest.clone(),
+        resolved,
         manifest: manifest_digest,
         config,
         rootfs,
@@ -911,7 +914,8 @@ mod tests {
             size: i64::try_from(manifest.len()).unwrap(),
             platform: None,
         };
-        store.tag(&reference.to_string(), &desc, &[]).unwrap();
+        let digest = Digest::parse(&desc.digest).unwrap();
+        store.tag(&reference.to_string(), &desc, &digest, &[]).unwrap();
     }
 
     /// The audit's A11: what a pull refuses, a stored image is refused for too, with the

@@ -175,11 +175,15 @@ impl Partial {
 }
 
 /// What `refs/` records for a reference: the manifest it names, by the descriptor it was
-/// chosen by, so that finding the image again checks what pulling it checked.
+/// chosen by, so that finding the image again checks what pulling it checked; and what
+/// the reference resolved to, an index or the manifest itself, as Docker reports it.
+/// Records written before `resolved` was kept read as resolving to their manifest.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Tag {
     reference: String,
     manifest: Descriptor,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved: Option<String>,
 }
 
 /// Makes the entries of `dir` durable: the renames into it outlast a power loss.
@@ -305,6 +309,61 @@ impl Drop for Partial {
         if self.file.is_some() {
             let _ = fs::remove_file(&self.path);
         }
+    }
+}
+
+/// A layer's archive, decompressed and checked against its DiffID, in a file under
+/// `ingest/` that goes when this is dropped.
+pub struct Unpacked(Partial);
+
+impl std::fmt::Debug for Unpacked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Unpacked({})", self.0.path.display())
+    }
+}
+
+impl Unpacked {
+    /// The archive, opened for reading.
+    pub fn open(&self) -> Result<File, Error> {
+        Ok(File::open(&self.0.path)?)
+    }
+}
+
+/// A blob being written, hashed as it goes; [`BlobWriter::commit`] stores it under its
+/// SHA-256 digest. Dropped uncommitted, it is removed.
+pub struct BlobWriter {
+    partial: Partial,
+    hasher: Hasher,
+    size: u64,
+    blobs: PathBuf,
+}
+
+impl std::fmt::Debug for BlobWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BlobWriter({} bytes)", self.size)
+    }
+}
+
+impl Write for BlobWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.partial.write(buf)?;
+        self.hasher.update(buf.get(..n).unwrap_or_default());
+        self.size += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.partial.flush()
+    }
+}
+
+impl BlobWriter {
+    /// Moves the blob into place (fsync, then rename), returning its digest and size.
+    pub fn commit(self) -> Result<(Digest, u64), Error> {
+        let digest = self.hasher.finish();
+        let to = self.blobs.join(digest.algorithm().name()).join(digest.hex());
+        self.partial.commit(&to)?;
+        Ok((digest, self.size))
     }
 }
 
@@ -502,7 +561,13 @@ impl Store {
     /// named. What the record names, the blobs `contents` and the root filesystems, is made
     /// durable first, and the record after: no power loss leaves a record naming what it
     /// lost (audit A15).
-    pub fn tag(&self, reference: &str, manifest: &Descriptor, contents: &[Digest]) -> Result<(), Error> {
+    pub fn tag(
+        &self,
+        reference: &str,
+        manifest: &Descriptor,
+        resolved: &Digest,
+        contents: &[Digest],
+    ) -> Result<(), Error> {
         let mut dirs: Vec<PathBuf> = contents
             .iter()
             .map(|d| self.root.join("blobs").join(d.algorithm().name()))
@@ -516,6 +581,7 @@ impl Store {
         let record = serde_json::to_vec(&Tag {
             reference: reference.to_string(),
             manifest: manifest.clone(),
+            resolved: Some(resolved.to_string()),
         })
         .map_err(|e| Error(e.to_string()))?;
         let mut partial = Partial::create(&self.root.join("ingest"))?;
@@ -526,6 +592,21 @@ impl Store {
 
     /// The descriptor of the manifest `reference` names, if it has been pulled.
     pub fn tagged(&self, reference: &str) -> Result<Option<Descriptor>, Error> {
+        Ok(self.tag_record(reference)?.map(|t| t.manifest))
+    }
+
+    /// What `reference` resolved to when it was tagged: an index, or its manifest.
+    pub fn resolved(&self, reference: &str) -> Result<Option<Digest>, Error> {
+        let Some(tag) = self.tag_record(reference)? else {
+            return Ok(None);
+        };
+        let digest = tag.resolved.unwrap_or(tag.manifest.digest.clone());
+        Digest::parse(&digest)
+            .map(Some)
+            .map_err(|e| Error(format!("{reference}: {e}")))
+    }
+
+    fn tag_record(&self, reference: &str) -> Result<Option<Tag>, Error> {
         let bytes = match fs::read(self.tag_path(reference)) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -535,7 +616,7 @@ impl Store {
         if tag.reference != reference {
             return bad(format!("{reference}: its record names {}", tag.reference));
         }
-        Ok(Some(tag.manifest))
+        Ok(Some(tag))
     }
 
     /// Where the root filesystem of the layers with `diff_ids` is kept: by their ChainID.
@@ -768,6 +849,27 @@ impl Store {
         }
         partial.flush()?;
         Ok(partial)
+    }
+
+    /// A new blob, written by the caller.
+    pub fn writer(&self) -> Result<BlobWriter, Error> {
+        Ok(BlobWriter {
+            partial: Partial::create(&self.root.join("ingest"))?,
+            hasher: Hasher::new(Algorithm::Sha256),
+            size: 0,
+            blobs: self.root.join("blobs"),
+        })
+    }
+
+    /// `layers`' archives, each decompressed and checked, together taking no more than
+    /// `limits` allow, as [`Store::rootfs`] takes them.
+    pub fn unpack_layers(&self, layers: &[Layer], limits: &Limits) -> Result<Vec<Unpacked>, Error> {
+        let mut room = Room::new(&self.root.join("ingest"), limits)?;
+        let mut bytes = 0u64;
+        layers
+            .iter()
+            .map(|l| Ok(Unpacked(self.unpack(l, &mut bytes, limits, &mut room)?)))
+            .collect()
     }
 
     /// The EROFS root filesystem of `layers`, built on first use: each layer is unpacked
@@ -1242,10 +1344,27 @@ mod tests {
         };
         let name = "docker.io/library/alpine:latest";
         assert_eq!(store.tagged(name).unwrap(), None);
-        store.tag(name, &a, &[]).unwrap();
+        assert_eq!(store.resolved(name).unwrap(), None);
+        let a_digest = Digest::parse(&a.digest).unwrap();
+        store.tag(name, &a, &a_digest, &[]).unwrap();
         assert_eq!(store.tagged(name).unwrap(), Some(a.clone()));
-        store.tag(name, &b, &[]).unwrap();
-        assert_eq!(store.tagged(name).unwrap(), Some(b));
+        assert_eq!(store.resolved(name).unwrap(), Some(a_digest.clone()));
+        // Through an index: the manifest chosen, and the index the reference named.
+        let index = sha256(b"index");
+        store.tag(name, &b, &index, &[]).unwrap();
+        assert_eq!(store.tagged(name).unwrap(), Some(b.clone()));
+        assert_eq!(store.resolved(name).unwrap(), Some(index));
+        // A record from before `resolved` was kept resolves to its manifest.
+        let path = store.tag_path(name);
+        let record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let mut old = record.clone();
+        old.as_object_mut().unwrap().remove("resolved");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(store.tagged(name).unwrap(), Some(b.clone()));
+        assert_eq!(
+            store.resolved(name).unwrap(),
+            Some(Digest::parse(&b.digest).unwrap())
+        );
         assert_eq!(store.tagged("docker.io/library/alpine:3").unwrap(), None);
         // A record of the shape before descriptors is not read: the image is pulled again.
         let old = root
@@ -1275,10 +1394,11 @@ mod tests {
         let manifest = described(&sha256(b"a"), 1);
         let sha512 = Digest::from_hash(Algorithm::Sha512, &Sha512::digest(b"a"));
         fs::remove_dir_all(root.join("blobs/sha512")).unwrap();
-        assert!(store.tag(name, &manifest, &[sha512]).is_err());
+        let resolved = Digest::parse(&manifest.digest).unwrap();
+        assert!(store.tag(name, &manifest, &resolved, &[sha512]).is_err());
         assert_eq!(store.tagged(name).unwrap(), None, "nothing recorded");
         fs::remove_dir_all(root.join(format!("rootfs/v{ROOTFS_VERSION}"))).unwrap();
-        assert!(store.tag(name, &manifest, &[]).is_err());
+        assert!(store.tag(name, &manifest, &resolved, &[]).is_err());
         assert_eq!(store.tagged(name).unwrap(), None, "nothing recorded");
         let _ = fs::remove_dir_all(&root);
     }
@@ -1499,7 +1619,12 @@ mod tests {
         let mut contents = vec![manifest_digest.clone(), config_digest.clone()];
         contents.extend(layers.iter().map(|l| l.blob.clone()));
         store
-            .tag(reference, &described(&manifest_digest, manifest.len()), &contents)
+            .tag(
+                reference,
+                &described(&manifest_digest, manifest.len()),
+                &manifest_digest,
+                &contents,
+            )
             .unwrap();
         (contents.iter().map(|d| store.blob_path(d)).collect(), rootfs)
     }

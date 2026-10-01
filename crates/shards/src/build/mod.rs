@@ -30,6 +30,8 @@ use shards_image::reference::{Algorithm, Digest, Reference};
 use shards_image::store::{self, Store};
 use shards_registry::pull::{self as registry_pull, Event};
 
+mod exec;
+
 const PATH: &str = "shards buildx build";
 
 /// The yellow buildx writes warnings in (aec.YellowF), whatever the output.
@@ -306,15 +308,31 @@ fn build_args(list: &[String], from_env: bool) -> BTreeMap<Vec<u8>, Vec<u8>> {
     out
 }
 
-/// The Dockerfile and its name: `-f`'s file, `-` for stdin, or PATH's `Dockerfile`.
-fn dockerfile(parsed: &Parsed, context: &Path) -> Result<(String, Vec<u8>), String> {
+/// A file's bytes, or none if it is not there. Unlike BuildKit, which has the client send
+/// the Dockerfile and ignore files over a session, shards reads them where they are.
+fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::read(path) {
+        Ok(t) => Ok(Some(t)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// A Dockerfile's name, its text, and the ignore file beside it.
+type Dockerfile = (String, Vec<u8>, Option<Vec<u8>>);
+
+/// The Dockerfile, found as the frontend finds it (dockerui's Client.ReadEntrypoint):
+/// `-f`'s file, stdin's, or PATH's `Dockerfile`, then `dockerfile` for the default name.
+/// Its name, text, and the `<name>.dockerignore` beside it, which overrides the
+/// context's `.dockerignore`.
+fn dockerfile(parsed: &Parsed, context: &Path) -> Result<Dockerfile, String> {
     let file = parsed.string("file");
     if file == "-" {
         let mut text = Vec::new();
         std::io::stdin()
             .read_to_end(&mut text)
             .map_err(|e| format!("reading the Dockerfile from stdin: {e}"))?;
-        return Ok(("Dockerfile".into(), text));
+        return Ok(("Dockerfile".into(), text, None));
     }
     let path = if file.is_empty() {
         context.join("Dockerfile")
@@ -324,8 +342,18 @@ fn dockerfile(parsed: &Parsed, context: &Path) -> Result<(String, Vec<u8>), Stri
     let name = path
         .file_name()
         .map_or_else(|| "Dockerfile".into(), |n| n.to_string_lossy().into_owned());
-    let text = std::fs::read(&path).map_err(|e| format!("failed to read dockerfile: open {name}: {e}"))?;
-    Ok((name, text))
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let mut text = read_if_present(&path)?;
+    if text.is_none() && name == "Dockerfile" {
+        text = read_if_present(&dir.join("dockerfile"))?;
+    }
+    let Some(text) = text else {
+        return Err(format!(
+            "failed to read dockerfile: open {name}: no such file or directory"
+        ));
+    };
+    let beside = read_if_present(&dir.join(format!("{name}.dockerignore")))?;
+    Ok((name, text, beside))
 }
 
 /// BuildKit's excerpt of the Dockerfile at an error's lines (solver/errdefs Source.Print).
@@ -401,22 +429,43 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         .borrow()
         .say("#0 building with \"shards\" instance using shards driver\n");
 
-    let (name, text) = {
+    let (name, text, beside) = {
         let v = progress
             .borrow_mut()
             .start("[internal] load build definition from Dockerfile");
         match dockerfile(parsed, &context) {
-            Ok((name, text)) => {
+            Ok((name, text, ignore)) => {
                 let p = progress.borrow();
-                p.line(&v, &format!("transferring dockerfile: {}B done", text.len()));
+                p.line(&v, &format!("read {} done", human_size(text.len() as u64)));
                 p.done(&v);
-                (name, text)
+                (name, text, ignore)
             }
             Err(e) => {
                 progress.borrow().error(&v, &e);
                 return Err(format!("failed to build: failed to solve: {e}"));
             }
         }
+    };
+
+    // The context's .dockerignore, unless one is beside the Dockerfile; its vertex shows
+    // after the metadata, as the frontend reads it once the stages are planned.
+    let context_ignore = match &beside {
+        Some(_) => None,
+        None => Some(read_if_present(&context.join(".dockerignore"))?),
+    };
+    let (ignore_name, ignore_text) = match (&beside, &context_ignore) {
+        (Some(t), _) => (format!("{name}.dockerignore"), Some(t.clone())),
+        (None, Some(t)) => (".dockerignore".to_string(), t.clone()),
+        (None, None) => (String::new(), None),
+    };
+    let excludes = match ignore_text {
+        Some(t) if !t.is_empty() => shards_dockerfile::ignore::read_all(&t).map_err(|e| {
+            format!(
+                "failed to build: failed to solve: failed to read dockerignore patterns: failed parsing {ignore_name}: {}",
+                show(&e)
+            )
+        })?,
+        _ => Vec::new(),
     };
 
     let home = shards_ipc::home()?;
@@ -438,7 +487,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         hostname: Vec::new(),
         multi_platform: false,
         context_id: format!("shards-{}", std::process::id()).into_bytes(),
-        excludes: Vec::new(),
+        excludes,
     };
     let plan = match plan::plan(&text, &opts, &bases) {
         Ok(p) => p,
@@ -453,51 +502,161 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         }
     };
     {
-        let v = progress.borrow_mut().start("[internal] load .dockerignore");
-        progress.borrow().done(&v);
+        if let Some(found) = &context_ignore {
+            let v = progress.borrow_mut().start("[internal] load .dockerignore");
+            if let Some(t) = found {
+                progress
+                    .borrow()
+                    .line(&v, &format!("read {} done", human_size(t.len() as u64)));
+            }
+            progress.borrow().done(&v);
+        }
     }
 
-    // The steps: base images resolved; anything else is for the steps to come.
+    // The steps, each after what it reads: base images and the context as snapshots,
+    // file operations and merges run here; RUN is for the steps to come.
     let def = plan.definition();
-    let mut layers: Vec<Layer> = Vec::new();
-    let mut base_image: Option<Image> = None;
-    for (op, meta) in def.ops.iter().zip(&def.metadata) {
+    let limits = crate::pull::limits(&home)?;
+    let mut exec = exec::Exec::new(&store, &limits);
+    let mut results: Vec<Vec<exec::Ref>> = Vec::with_capacity(def.ops.len());
+    // What other operations read, so a base image is unpacked only when one does.
+    let read: std::collections::HashSet<usize> = def
+        .ops
+        .iter()
+        .filter(|op| !matches!(op.kind, OpKind::Source { .. }))
+        .flat_map(|op| op.inputs.iter().map(|i| i.op))
+        .collect();
+    for (i, (op, meta)) in def.ops.iter().zip(&def.metadata).enumerate() {
         let name = meta
             .description
             .get(b"llb.customname".as_slice())
             .map(|n| show(n))
             .unwrap_or_default();
-        match &op.kind {
+        let inputs = op
+            .inputs
+            .iter()
+            .map(|inp| {
+                results
+                    .get(inp.op)
+                    .and_then(|outs| outs.get(usize::try_from(inp.index).ok()?))
+                    .cloned()
+                    .ok_or_else(|| format!("input {}:{} is not ready", inp.op, inp.index))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let fail = |v: &Vertex, why: &str| {
+            progress.borrow().error(v, why);
+            print_warnings(&plan.warnings, quiet);
+            format!("failed to build: failed to solve: {why}")
+        };
+        let outs = match &op.kind {
             OpKind::Source { identifier, .. } if identifier.starts_with(b"docker-image://") => {
                 let v = progress.borrow_mut().start(&name);
                 let reference = show(identifier.strip_prefix(b"docker-image://").unwrap_or(identifier));
                 progress.borrow().line(&v, &format!("resolve {reference} done"));
+                let base = bases
+                    .resolved
+                    .borrow()
+                    .values()
+                    .find(|b| reference.starts_with(&b.reference.to_string()))
+                    .map(|b| b.layers.clone())
+                    .ok_or_else(|| format!("{reference}: not resolved"))?;
+                let r = if read.contains(&i) {
+                    exec.image(base).map_err(|e| fail(&v, &e))?
+                } else {
+                    exec::Ref {
+                        fs: std::rc::Rc::new(shards_build::vfs::Fs::new(
+                            shards_image::layer::root(),
+                            exec::now(),
+                        )),
+                        layers: base,
+                    }
+                };
                 progress.borrow().done(&v);
+                vec![r]
             }
-            OpKind::Source { identifier, .. } if identifier.starts_with(b"local://") => {}
+            OpKind::Source { identifier, attrs } if identifier.starts_with(b"local://") => {
+                let v = progress.borrow_mut().start(&name);
+                let list = |key: &[u8]| -> Vec<Vec<u8>> {
+                    attrs
+                        .get(key)
+                        .and_then(|j| serde_json::from_slice::<Vec<String>>(j).ok())
+                        .map(|l| l.into_iter().map(String::into_bytes).collect())
+                        .unwrap_or_default()
+                };
+                let filters = shards_build::context::Filters {
+                    include: list(b"local.includepatterns"),
+                    exclude: list(b"local.excludepatterns"),
+                    follow: list(b"local.followpaths"),
+                };
+                let r = exec.context(&context, &filters).map_err(|e| fail(&v, &e))?;
+                let (files, bytes) = context_size(&r.fs);
+                progress
+                    .borrow()
+                    .line(&v, &format!("read {files} files, {} done", human_size(bytes)));
+                progress.borrow().done(&v);
+                vec![r]
+            }
+            OpKind::File { actions } => {
+                let v = progress.borrow_mut().start(&name);
+                let outs = exec.file(&inputs, actions, &name).map_err(|e| fail(&v, &e))?;
+                progress.borrow().done(&v);
+                outs
+            }
+            OpKind::Merge => {
+                let v = (!name.is_empty()).then(|| progress.borrow_mut().start(&name));
+                let r = exec.merge(&inputs);
+                let r = match (r, &v) {
+                    (Ok(r), _) => r,
+                    (Err(e), Some(v)) => return Err(fail(v, &e)),
+                    (Err(e), None) => return Err(format!("failed to build: failed to solve: {e}")),
+                };
+                if let Some(v) = &v {
+                    progress.borrow().done(v);
+                }
+                vec![r]
+            }
             _ => {
                 let what = name.split_once("] ").map_or(name.as_str(), |(_, s)| s);
                 let v = progress.borrow_mut().start(&name);
-                let why = format!("{what}: this step is not supported by shards build yet");
-                progress.borrow().error(&v, &why);
-                print_warnings(&plan.warnings, quiet);
-                return Err(format!("failed to build: failed to solve: {why}"));
+                return Err(fail(
+                    &v,
+                    &format!("{what}: this step is not supported by shards build yet"),
+                ));
+            }
+        };
+        results.push(outs);
+    }
+    // The image: the target's layers, and its stage's base image for the exporter.
+    let mut layers: Vec<Layer> = Vec::new();
+    let mut base_image: Option<Image> = None;
+    if let Some(root) = def.root {
+        layers = results
+            .get(root.op)
+            .and_then(|outs| outs.get(usize::try_from(root.index).ok()?))
+            .map(|r| r.layers.clone())
+            .unwrap_or_default();
+        // Down the first inputs to the stage's FROM.
+        let mut at = root.op;
+        while let Some(op) = def.ops.get(at) {
+            match &op.kind {
+                OpKind::Source { identifier, .. } => {
+                    if let Some(reference) = identifier.strip_prefix(b"docker-image://") {
+                        let reference = show(reference);
+                        base_image = bases
+                            .resolved
+                            .borrow()
+                            .values()
+                            .find(|b| reference.starts_with(&b.reference.to_string()))
+                            .map(|b| b.image.clone());
+                    }
+                    break;
+                }
+                _ => match op.inputs.first() {
+                    Some(i) => at = i.op,
+                    None => break,
+                },
             }
         }
-    }
-    // The image's layers: its base's, when the target's root is an image.
-    if let Some(root) = def.root
-        && let Some(op) = def.ops.get(root.op)
-        && let OpKind::Source { identifier, .. } = &op.kind
-    {
-        let reference = show(identifier.strip_prefix(b"docker-image://").unwrap_or(identifier));
-        let resolved = bases.resolved.borrow();
-        let base = resolved
-            .values()
-            .find(|b| reference.starts_with(&b.reference.to_string()) || reference == b.reference.to_string())
-            .ok_or_else(|| format!("{reference}: not resolved"))?;
-        layers = base.layers.clone();
-        base_image = Some(base.image.clone());
     }
 
     let v = progress.borrow_mut().start("exporting to image");
@@ -527,7 +686,6 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         })
         .collect::<Result<_, String>>()?;
     if !store_layers.is_empty() {
-        let limits = crate::pull::limits(&home)?;
         store.rootfs(&store_layers, &limits).map_err(|e| e.to_string())?;
     }
     let desc = Descriptor {
@@ -541,7 +699,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     for tag in parsed.many("tag") {
         let reference = Reference::parse(tag).map_err(|e| format!("invalid tag {tag:?}: {e}"))?;
         store
-            .tag(&reference.to_string(), &desc, &contents)
+            .tag(&reference.to_string(), &desc, &manifest_digest, &contents)
             .map_err(|e| e.to_string())?;
         progress.borrow().line(&v, &format!("naming to {reference} done"));
     }
@@ -557,6 +715,72 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         let _ = writeln!(std::io::stdout(), "{id}");
     }
     Ok(())
+}
+
+/// The files a context holds and their bytes, each file once however many names it has.
+/// Nothing is copied: the build reads them in place when it writes a layer.
+fn context_size(fs: &shards_build::vfs::Fs) -> (u64, u64) {
+    let mut seen = std::collections::HashSet::new();
+    let (mut files, mut bytes) = (0u64, 0u64);
+    for id in 0..fs.tree.len() {
+        if let Some(shards_image::erofs::Node {
+            kind: shards_image::erofs::Kind::File { size, data },
+            ..
+        }) = fs.node(id)
+            && seen.insert((data.source, data.offset))
+        {
+            files += 1;
+            bytes += size;
+        }
+    }
+    (files, bytes)
+}
+
+/// go-units HumanSize: decimal units, four significant digits.
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 9] = ["B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
+    let mut size = bytes as f64;
+    let mut i = 0;
+    while size >= 1000.0 && i < UNITS.len() - 1 {
+        size /= 1000.0;
+        i += 1;
+    }
+    format!("{}{}", go_g4(size), UNITS.get(i).unwrap_or(&"B"))
+}
+
+/// `strconv.FormatFloat(v, 'g', 4, 64)` for 0 <= v < 10000.
+fn go_g4(v: f64) -> String {
+    let s = format!("{v:.3e}");
+    let (mantissa, exp) = s.split_once('e').unwrap_or((&s, "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let mut out = if exp >= 0 {
+        let int_len = (exp + 1) as usize;
+        let (int, frac) = if digits.len() > int_len {
+            (
+                digits.get(..int_len).unwrap_or("").to_string(),
+                digits.get(int_len..).unwrap_or("").to_string(),
+            )
+        } else {
+            (format!("{digits:0<int_len$}"), String::new())
+        };
+        if frac.is_empty() {
+            int
+        } else {
+            format!("{int}.{frac}")
+        }
+    } else {
+        format!("0.{}{}", "0".repeat((-exp - 1) as usize), digits)
+    };
+    if out.contains('.') {
+        while out.ends_with('0') {
+            out.pop();
+        }
+        if out.ends_with('.') {
+            out.pop();
+        }
+    }
+    out
 }
 
 fn sha256(bytes: &[u8]) -> Digest {

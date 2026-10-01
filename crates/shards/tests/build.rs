@@ -115,3 +115,91 @@ fn a_dockerfile_error_shows_its_lines() {
     let want = "Dockerfile:2\n--------------------\n   1 |     FROM scratch\n   2 | >>> FOO bar\n   3 |     \n--------------------\nERROR: failed to build: failed to solve: dockerfile parse error on line 2: unknown instruction: FOO (did you mean FROM?)\n";
     assert!(r.stderr.ends_with(want), "{}", r.stderr);
 }
+
+#[test]
+fn files_a_build_copies_are_in_the_vm_as_built() {
+    use std::os::unix::fs::PermissionsExt;
+    let (image, _) = served();
+    let home = TempDir::new("build-files-home");
+    let ctx = context(
+        "build-files-ctx",
+        &format!(
+            "FROM {image}\n\
+             WORKDIR /app\n\
+             COPY a.txt sub/ ./\n\
+             COPY --chown=7:8 --chmod=0640 secret.txt /etc/secret\n\
+             COPY --link link.txt /linked/\n\
+             COPY <<EOF /notes.txt\nhello\nEOF\n\
+             COPY . /all/\n\
+             USER root\n\
+             CMD [\"stat\", \"/app\", \"/app/a.txt\", \"/app/c.txt\", \"/etc/secret\", \"/linked/link.txt\", \"/notes.txt\", \"/all/a.txt\", \"/all/x.log\"]\n"
+        ),
+    );
+    let write = |name: &str, text: &str, mode: u32| {
+        let p = ctx.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, text).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    write("a.txt", "a\n", 0o644);
+    write("sub/c.txt", "c\n", 0o600);
+    write("secret.txt", "s\n", 0o777);
+    write("link.txt", "l\n", 0o644);
+    write("x.log", "ignored\n", 0o644);
+    write(".dockerignore", "*.log\n", 0o644);
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let built = run_shards_env(
+        &["build"],
+        &["-t", "files:1", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
+    assert_eq!(built.status, Some(0), "{shown}");
+    for step in [
+        "WORKDIR /app",
+        "COPY a.txt sub/ ./",
+        "COPY --link link.txt /linked/",
+        "COPY . /all/",
+    ] {
+        assert!(built.stderr.contains(step), "{step}\n{shown}");
+    }
+
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let ran = run_shards_env(&["run"], &["--pull", "never", "--rm", "files:1"], &env, TIMEOUT);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", ran.stdout, ran.stderr);
+    assert_eq!(
+        ran.status,
+        Some(1),
+        "x.log is ignored, so stat fails on it\n{shown}"
+    );
+    // The base runs as 1000:1000, and WORKDIR makes its directory for the user it has.
+    let want = "/app dir 755 1000:1000 4096\n\
+                /app/a.txt file 644 0:0 2\n= a\\n\n\
+                /app/c.txt file 600 0:0 2\n= c\\n\n\
+                /etc/secret file 640 7:8 2\n= s\\n\n\
+                /linked/link.txt file 644 0:0 2\n= l\\n\n\
+                /notes.txt file 644 0:0 6\n= hello\\n\n\
+                /all/a.txt file 644 0:0 2\n= a\\n\n";
+    let got: String = ran
+        .stdout
+        .lines()
+        .take_while(|l| !l.starts_with("/all/x.log"))
+        .map(|l| {
+            // Directory sizes depend on the file system; only the rest is compared.
+            match l.strip_prefix("/app dir ") {
+                Some(rest) => format!("/app dir {} 4096\n", rest.rsplit_once(' ').map_or(rest, |r| r.0)),
+                None => format!("{l}\n"),
+            }
+        })
+        .collect();
+    assert_eq!(got, want, "{shown}");
+    assert!(ran.stdout.contains("/all/x.log missing"), "{shown}");
+}

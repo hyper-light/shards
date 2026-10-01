@@ -1575,8 +1575,27 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
        fsutil's own walk on this host), and written as BuildKit's receiver writes it
        (five COPYs from contexts sent and received by fsutil itself, in the overlayfs
        oracle).
-     - Next: ADD's archives, and the executor that runs file operations in
-       `shards build`.
+     - Done: the executor. `shards build` runs WORKDIR, COPY (with `--chown`, `--chmod`,
+       `--link`, heredocs, `.dockerignore`) and merges as FileOpSolver runs them: a mount
+       per action chain, committed to a layer when it is an output or read twice; a
+       merge stacks its inputs' layers. `tests/build.rs` boots such an image in a VM and
+       finds every file, mode and owner as built. Built against Docker Desktop's
+       BuildKit (v0.28.1, 2026-10-01), the same Dockerfile and context gave the same
+       config and the same layers, byte for byte, but for the wall-clock mtimes
+       BuildKit's own layers carry (WORKDIR's directory, a parent a COPY touched).
+     - Where shards does better than BuildKit, on purpose:
+       - The context is read in place, never sent or copied: shardsd runs as the user
+         beside the files, so BuildKit's session transfer has nothing to do. A file's
+         bytes are read once, when a layer holding it is written. Progress says what was
+         read ("read 5 files, 166B"), not a transfer's byte count. What BuildKit's copy
+         gives that this does not, a snapshot no edit can change mid-build, is guarded
+         only by each file's size so far.
+       - Layers are stored uncompressed (`application/vnd.oci.image.layer.v1.tar`), so
+         no build or run spends time compressing or decompressing them; the diff ID is the
+         digest. A push compresses.
+       - Refs record what a reference resolved to, so a stored image reports the index
+         digest Docker reports, as a fresh pull does.
+     - Next: ADD's archives and URLs, then RUN (step 3).
   3. RUN in a booted VM without a network, and its layer.
   4. Cache keys, then RUN's network, mounts and builder templates.
 
