@@ -2637,3 +2637,36 @@ revision before comparing a changed API/implementation.
   `optimization` feature, lzma-rust2 forbids unsafe code. With `xz` installed for BuildKit,
   the ADD cases of `crates/build/testdata/ops.json`, one archive of each compression among
   them, unpack byte for byte as BuildKit unpacks them.
+
+### M78. Memory of a build that ADDs a million entries
+
+- **Question.** A build that ADDs an archive of a million empty files peaked at 915 MB of
+  memory (D33's stress test), about 900 bytes an entry. Where does it go, and how much of
+  it does the build need?
+- **Method.** Temporary `getrusage` probes after each step put the peak at the export:
+  the ADD step itself peaked at 311 MB (238 MB after the copy, 311 MB after its layer was
+  written), and the export rose from there building the root filesystem, while the
+  build's snapshots, sources and stages were still held. Two changes followed:
+  `shards build` drops its executor and results once every layer is in the store, before
+  the export (`crates/shards/src/build/mod.rs`); and `layer::apply` reads a layer twice,
+  whiteouts in the first pass and everything else in the second, instead of holding a
+  list of its entries (`crates/image/src/layer.rs`). Measured with
+  `docs/research/measurements/build-memory/run.sh SHARDS DIR 1000000 N`, which writes the
+  archive (`d{n/100}/f{n}`, USTAR, gzip) and runs the build N times with `/usr/bin/time
+  -l`. 2026-10-01, Apple M5 Max, 128 GB, macOS 26.4.1; revision 2cb2db1 against it with
+  both changes.
+- **Result.** Maximum resident set size:
+
+  | Build | n | p50 | max |
+  |---|---|---|---|
+  | 2cb2db1 | 4 | 935 MB | 937 MB |
+  | both changes | 5 | 616 MB | 617 MB |
+
+  With the probes, dropping the build's state took the peak from 861 MB to 726 MB, and
+  the two-pass apply took it to 588 MB. What remains is the export's: 440 MB once the
+  layers are stacked into the tree, and 572 MB once the EROFS image is written. User and
+  system time are unchanged (6.2 to 6.8 s and 0.7 to 0.9 s a run). Wall time varied from
+  8 to 19 s in both builds, on a volume 99% full; what the off-CPU time waits on is not
+  yet measured.
+- **Consequence.** Both changes are kept. The tree the export builds, about 440 bytes an
+  entry, and the EROFS writer's 130 MB are what a further cut would go after.

@@ -45,18 +45,17 @@ pub fn root() -> Tree {
 /// Applies a layer's uncompressed archive to `tree`. Files keep `source` in their
 /// [`DataRef`], to be read back from the archive by it. `each` sees every entry as it is
 /// read, before it is kept, and may refuse it.
+///
+/// The archive is read twice, its whiteouts applied in the first pass and everything
+/// else in the second, so that no list of its entries is held: holding one took a build
+/// that ADDs a million entries 138 MB higher (platform-measurements.md M78).
 pub fn apply(
     tree: &mut Tree,
     source: u32,
-    archive: impl Read,
+    mut archive: impl Read + Seek,
     each: &mut dyn FnMut(&Entry) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let mut entries = Vec::new();
-    let mut reader = tar::Reader::new(archive);
-    while let Some(entry) = reader.next_entry()? {
-        each(&entry)?;
-        entries.push(entry);
-    }
+    let start = archive.stream_position()?;
     let mut layer = Layer {
         tree,
         source,
@@ -64,34 +63,40 @@ pub fn apply(
     };
 
     // Whiteouts, all found in the lower layers before any is applied.
-    let mut hidden: Vec<(NodeId, Option<&[u8]>)> = Vec::new();
-    for entry in &entries {
-        let Some((parent, name)) = split(&entry.path)? else {
-            continue;
-        };
-        if name == OPAQUE {
-            hidden.push((layer.dir(parent)?, None));
-        } else if let Some(target) = name.strip_prefix(WHITEOUT) {
-            if matches!(target, b"" | b"." | b"..") {
-                return bad(format!("invalid whiteout {:?}", show(&entry.path)));
+    let mut hidden: Vec<(NodeId, Option<Vec<u8>>)> = Vec::new();
+    {
+        let mut reader = tar::Reader::new(&mut archive);
+        while let Some(entry) = reader.next_entry()? {
+            each(&entry)?;
+            let Some((parent, name)) = split(&entry.path)? else {
+                continue;
+            };
+            if name == OPAQUE {
+                hidden.push((layer.dir(parent)?, None));
+            } else if let Some(target) = name.strip_prefix(WHITEOUT) {
+                if matches!(target, b"" | b"." | b"..") {
+                    return bad(format!("invalid whiteout {:?}", show(&entry.path)));
+                }
+                hidden.push((layer.dir(parent)?, Some(target.to_vec())));
             }
-            hidden.push((layer.dir(parent)?, Some(target)));
         }
     }
     for (dir, name) in hidden {
         match name {
             Some(name) => {
-                layer.tree.remove(dir, name);
+                layer.tree.remove(dir, &name);
             }
             None => layer.tree.clear(dir),
         }
     }
 
-    for entry in &entries {
+    archive.seek(SeekFrom::Start(start))?;
+    let mut reader = tar::Reader::new(&mut archive);
+    while let Some(entry) = reader.next_entry()? {
         if let Some((parent, name)) = split(&entry.path)?
             && !name.starts_with(WHITEOUT)
         {
-            layer.add(parent, name, entry)?;
+            layer.add(parent, name, &entry)?;
         }
     }
     Ok(())
@@ -402,7 +407,9 @@ mod tests {
                 w.member(*m);
             }
             let archive = w.finish();
-            apply(&mut tree, i as u32, archive.as_slice(), &mut |_| Ok(()))?;
+            apply(&mut tree, i as u32, Cursor::new(archive.as_slice()), &mut |_| {
+                Ok(())
+            })?;
             archives.push(Cursor::new(archive));
         }
         Ok((tree, Archives(archives)))
@@ -749,7 +756,7 @@ mod tests {
             ..file(b"suid", b"s")
         });
         let mut tree = root();
-        apply(&mut tree, 0, w.finish().as_slice(), &mut |_| Ok(())).unwrap();
+        apply(&mut tree, 0, Cursor::new(w.finish()), &mut |_| Ok(())).unwrap();
         let meta = |path: &str| tree.node(find(&tree, path).unwrap()).unwrap().meta.clone();
         let names = |m: &Meta| {
             m.xattrs
@@ -784,7 +791,7 @@ mod tests {
             .member(file(b"n", b""))
             .finish();
         assert!(
-            apply(&mut root(), 0, long.as_slice(), &mut |_| Ok(())).is_err(),
+            apply(&mut root(), 0, Cursor::new(long.as_slice()), &mut |_| Ok(())).is_err(),
             "a name longer than 255 bytes"
         );
     }

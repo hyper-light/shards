@@ -1610,8 +1610,8 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
        and `unpigz` and fails without them, shards decodes gzip, bzip2, xz and zstd
        in-process, in pure Rust (PM M77).
      - Stress-tested 2026-10-01: an archive 2,000 directories deep unpacks (1.5 s,
-       46 MB), one of a million entries in 9 s at 915 MB of memory (about 900 bytes an
-       entry, to be brought down). A 20 GB gzip bomb exposed two faults, now fixed: it was
+       46 MB), one of a million entries at 915 MB of memory, since brought to 616 MB
+       (PM M78). A 20 GB gzip bomb exposed two faults, now fixed: it was
        not unpacked at all, as an archive whose first file is past the bytes read to
        detect it was taken for no archive (the tar reader read on into that file's data;
        it now skips data when the next entry is asked for, as Go's does); and nothing

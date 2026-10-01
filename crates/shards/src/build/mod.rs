@@ -658,6 +658,10 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             }
         }
     }
+    // Every layer is in the store now: the snapshots, their sources and stages go before
+    // the export builds the root filesystem, so the two never hold memory at once.
+    drop(results);
+    drop(exec);
 
     let v = progress.borrow_mut().start("exporting to image");
     let epoch = plan.epoch.map(Time::from_unix);
