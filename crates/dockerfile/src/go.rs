@@ -144,6 +144,253 @@ pub(crate) fn to_lower(b: &[u8]) -> Vec<u8> {
     out
 }
 
+/// `unicode.ToUpper`.
+fn upper(r: u32) -> u32 {
+    if r < 0x80 {
+        return u32::from((r as u8).to_ascii_uppercase());
+    }
+    tables::UPPER
+        .binary_search_by_key(&r, |&(from, _)| from)
+        .ok()
+        .and_then(|at| tables::UPPER.get(at))
+        .map_or(r, |&(_, to)| to)
+}
+
+/// `strings.ToUpper`, as [`to_lower`] lowers.
+pub(crate) fn to_upper(b: &[u8]) -> Vec<u8> {
+    if b.is_ascii() {
+        return b.to_ascii_uppercase();
+    }
+    let mut out = Vec::with_capacity(b.len());
+    for (r, _) in runes(b) {
+        push(&mut out, upper(r));
+    }
+    out
+}
+
+/// `strconv.ParseBool`'s accepted words.
+pub(crate) fn parse_bool(b: &[u8]) -> Option<bool> {
+    match b {
+        b"1" | b"t" | b"T" | b"TRUE" | b"true" | b"True" => Some(true),
+        b"0" | b"f" | b"F" | b"FALSE" | b"false" | b"False" => Some(false),
+        _ => None,
+    }
+}
+
+/// `strconv.ParseInt(s, 10, 32)`, and its error as Go words it.
+pub(crate) fn parse_int32(s: &[u8]) -> Result<i64, Vec<u8>> {
+    let fail = |why: &str| {
+        let mut m = b"strconv.ParseInt: parsing ".to_vec();
+        m.extend_from_slice(quote(s).as_bytes());
+        m.extend_from_slice(b": ");
+        m.extend_from_slice(why.as_bytes());
+        m
+    };
+    let (neg, digits) = match s.split_first() {
+        Some((b'-', rest)) => (true, rest),
+        Some((b'+', rest)) => (false, rest),
+        _ => (false, s),
+    };
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return Err(fail("invalid syntax"));
+    }
+    let mut n: u64 = 0;
+    let mut over = false;
+    for &d in digits {
+        match n.checked_mul(10).and_then(|v| v.checked_add(u64::from(d - b'0'))) {
+            Some(v) => n = v,
+            None => over = true,
+        }
+    }
+    let limit: u64 = if neg { 1 << 31 } else { (1 << 31) - 1 };
+    if over || n > limit {
+        return Err(fail("value out of range"));
+    }
+    let n = i64::try_from(n).map_err(|_| fail("value out of range"))?;
+    Ok(if neg { -n } else { n })
+}
+
+/// `time`'s own quoting in its errors: non-ASCII and control bytes as `\xNN`, but a
+/// U+FFFD that ends the string written as its first byte alone (Go's bound is one short).
+pub(crate) fn time_quote(s: &[u8]) -> Vec<u8> {
+    let mut out = vec![b'"'];
+    let mut i = 0;
+    while i < s.len() {
+        let (c, w) = decode(tail(s, i));
+        if !(0x20..0x80).contains(&c) {
+            let width = if c == RUNE_ERROR {
+                if i + 2 < s.len() && span(s, i, i + 3) == "\u{FFFD}".as_bytes() {
+                    3
+                } else {
+                    1
+                }
+            } else {
+                w
+            };
+            for &b in span(s, i, i + width) {
+                out.extend_from_slice(format!("\\x{b:02x}").as_bytes());
+            }
+        } else {
+            if c == u32::from('"') || c == u32::from('\\') {
+                out.push(b'\\');
+            }
+            out.push(c as u8);
+        }
+        i += w;
+    }
+    out.push(b'"');
+    out
+}
+
+/// `time.ParseDuration`, in nanoseconds, with its errors.
+pub(crate) fn parse_duration(orig: &[u8]) -> Result<i64, Vec<u8>> {
+    let fail = |what: &[u8]| {
+        let mut m = b"time: ".to_vec();
+        m.extend_from_slice(what);
+        m.push(b' ');
+        m.extend_from_slice(&time_quote(orig));
+        m
+    };
+    let invalid = || fail(b"invalid duration");
+    let mut s = orig;
+    let mut neg = false;
+    if let Some((&c, rest)) = s.split_first()
+        && (c == b'-' || c == b'+')
+    {
+        neg = c == b'-';
+        s = rest;
+    }
+    if s == b"0" {
+        return Ok(0);
+    }
+    if s.is_empty() {
+        return Err(invalid());
+    }
+    const LIMIT: u64 = 1 << 63;
+    let mut d: u64 = 0;
+    while !s.is_empty() {
+        if !s.first().is_some_and(|&c| c == b'.' || c.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        // Leading integer.
+        let mut v: u64 = 0;
+        let mut i = 0;
+        while let Some(&c) = s.get(i).filter(|c| c.is_ascii_digit()) {
+            if v > LIMIT / 10 {
+                return Err(invalid());
+            }
+            v = v * 10 + u64::from(c - b'0');
+            if v > LIMIT {
+                return Err(invalid());
+            }
+            i += 1;
+        }
+        let pre = i > 0;
+        s = tail(s, i);
+        let (mut f, mut scale, mut post) = (0u64, 1f64, false);
+        if s.first() == Some(&b'.') {
+            s = tail(s, 1);
+            let mut i = 0;
+            let mut overflow = false;
+            while let Some(&c) = s.get(i).filter(|c| c.is_ascii_digit()) {
+                i += 1;
+                if overflow {
+                    continue;
+                }
+                if f > (LIMIT - 1) / 10 {
+                    overflow = true;
+                    continue;
+                }
+                let y = f * 10 + u64::from(c - b'0');
+                if y > LIMIT {
+                    overflow = true;
+                    continue;
+                }
+                f = y;
+                scale *= 10.0;
+            }
+            post = i > 0;
+            s = tail(s, i);
+        }
+        if !pre && !post {
+            return Err(invalid());
+        }
+        let i = s
+            .iter()
+            .position(|&c| c == b'.' || c.is_ascii_digit())
+            .unwrap_or(s.len());
+        if i == 0 {
+            return Err(fail(b"missing unit in duration"));
+        }
+        let unit_text = head(s, i);
+        s = tail(s, i);
+        let unit: u64 = match unit_text {
+            b"ns" => 1,
+            b"us" => 1_000,
+            b"\xc2\xb5s" | b"\xce\xbcs" => 1_000,
+            b"ms" => 1_000_000,
+            b"s" => 1_000_000_000,
+            b"m" => 60_000_000_000,
+            b"h" => 3_600_000_000_000,
+            _ => {
+                let mut what = b"unknown unit ".to_vec();
+                what.extend_from_slice(&time_quote(unit_text));
+                what.extend_from_slice(b" in duration");
+                return Err(fail(&what));
+            }
+        };
+        if v > LIMIT / unit {
+            return Err(invalid());
+        }
+        v *= unit;
+        if f > 0 {
+            // Go's own float arithmetic: the same rounding.
+            v += (f as f64 * (unit as f64 / scale)) as u64;
+            if v > LIMIT {
+                return Err(invalid());
+            }
+        }
+        d += v;
+        if d > LIMIT {
+            return Err(invalid());
+        }
+    }
+    if neg {
+        return Ok((d as i64).wrapping_neg());
+    }
+    if d > LIMIT - 1 {
+        return Err(invalid());
+    }
+    Ok(d as i64)
+}
+
+/// Levenshtein distance over runes (agext/levenshtein's, all costs 1).
+pub(crate) fn levenshtein(a: &[u8], b: &[u8]) -> usize {
+    let a: Vec<u32> = runes(a).map(|(r, _)| r).collect();
+    let b: Vec<u32> = runes(b).map(|(r, _)| r).collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0; b.len() + 1];
+    for (i, &ca) in a.iter().enumerate() {
+        if let Some(c) = cur.first_mut() {
+            *c = i + 1;
+        }
+        for (j, &cb) in b.iter().enumerate() {
+            let sub = prev
+                .get(j)
+                .copied()
+                .unwrap_or(usize::MAX)
+                .saturating_add(usize::from(ca != cb));
+            let del = prev.get(j + 1).copied().unwrap_or(usize::MAX).saturating_add(1);
+            let ins = cur.get(j).copied().unwrap_or(usize::MAX).saturating_add(1);
+            if let Some(c) = cur.get_mut(j + 1) {
+                *c = sub.min(del).min(ins);
+            }
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev.last().copied().unwrap_or(0)
+}
+
 /// `strconv.IsPrint`.
 fn is_print(r: u32) -> bool {
     if r < 0x80 {

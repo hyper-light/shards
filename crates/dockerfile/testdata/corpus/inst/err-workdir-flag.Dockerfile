@@ -1,0 +1,2 @@
+FROM a
+WORKDIR --x a

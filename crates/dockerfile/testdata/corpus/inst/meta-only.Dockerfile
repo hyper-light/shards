@@ -1,0 +1,3 @@
+ARG A
+ARG B=2
+FROM x

@@ -1,0 +1,2 @@
+FROM a
+ADD x

@@ -890,5 +890,153 @@
    "escape": "\"\\\\\"",
    "warnings": []
   }
+ },
+ {
+  "kind": "instructions",
+  "file": "corpus/inst/err-healthcheck-dur-fffd.Dockerfile",
+  "reason": "BuildKit reads a flag's bytes as Latin-1 characters, re-encoding each non-ASCII byte and splitting at bytes 0x85 and 0xA0; shards reads flags as UTF-8, as every other argument (src/parser.rs).",
+  "ours": {
+   "error": "\"dockerfile parse error on line 2: time: invalid duration \\\"\\\\xef\\\\xbf\\\\xbd\\\"\"",
+   "file": "corpus/inst/err-healthcheck-dur-fffd.Dockerfile",
+   "location": [
+    [
+     [
+      2,
+      2
+     ]
+    ]
+   ],
+   "warnings": null
+  }
+ },
+ {
+  "kind": "instructions",
+  "file": "corpus/inst/err-healthcheck-dur-unicode.Dockerfile",
+  "reason": "BuildKit reads a flag's bytes as Latin-1 characters, re-encoding each non-ASCII byte and splitting at bytes 0x85 and 0xA0; shards reads flags as UTF-8, as every other argument (src/parser.rs).",
+  "ours": {
+   "error": "\"dockerfile parse error on line 2: time: unknown unit \\\"x\\\\xc3\\\\xa9\\\" in duration \\\"1x\\\\xc3\\\\xa9\\\"\"",
+   "file": "corpus/inst/err-healthcheck-dur-unicode.Dockerfile",
+   "location": [
+    [
+     [
+      2,
+      2
+     ]
+    ]
+   ],
+   "warnings": null
+  }
+ },
+ {
+  "kind": "parse",
+  "file": "corpus/inst/err-healthcheck-dur-fffd.Dockerfile",
+  "reason": "BuildKit reads a flag's bytes as Latin-1 characters, re-encoding each non-ASCII byte and splitting at bytes 0x85 and 0xA0; shards reads flags as UTF-8, as every other argument (src/parser.rs).",
+  "ours": {
+   "children": [
+    {
+     "attributes": [],
+     "dump": "\"from \\\"a\\\"\"",
+     "end_line": 1,
+     "flags": [],
+     "heredocs": [],
+     "original": "\"FROM a\"",
+     "prev_comment": [],
+     "start_line": 1
+    },
+    {
+     "attributes": [],
+     "dump": "\"healthcheck [\\\"--interval=�\\\"] \\\"CMD\\\" \\\"x\\\"\"",
+     "end_line": 2,
+     "flags": [
+      "\"--interval=�\""
+     ],
+     "heredocs": [],
+     "original": "\"HEALTHCHECK --interval=� CMD x\"",
+     "prev_comment": [],
+     "start_line": 2
+    }
+   ],
+   "dump": "\"(from \\\"a\\\")\\n(healthcheck [\\\"--interval=�\\\"] \\\"CMD\\\" \\\"x\\\")\"",
+   "escape": "\"\\\\\"",
+   "warnings": []
+  }
+ },
+ {
+  "kind": "parse",
+  "file": "corpus/inst/err-healthcheck-dur-unicode.Dockerfile",
+  "reason": "BuildKit reads a flag's bytes as Latin-1 characters, re-encoding each non-ASCII byte and splitting at bytes 0x85 and 0xA0; shards reads flags as UTF-8, as every other argument (src/parser.rs).",
+  "ours": {
+   "children": [
+    {
+     "attributes": [],
+     "dump": "\"from \\\"a\\\"\"",
+     "end_line": 1,
+     "flags": [],
+     "heredocs": [],
+     "original": "\"FROM a\"",
+     "prev_comment": [],
+     "start_line": 1
+    },
+    {
+     "attributes": [],
+     "dump": "\"healthcheck [\\\"--interval=1xé\\\"] \\\"CMD\\\" \\\"x\\\"\"",
+     "end_line": 2,
+     "flags": [
+      "\"--interval=1xé\""
+     ],
+     "heredocs": [],
+     "original": "\"HEALTHCHECK --interval=1xé CMD x\"",
+     "prev_comment": [],
+     "start_line": 2
+    }
+   ],
+   "dump": "\"(from \\\"a\\\")\\n(healthcheck [\\\"--interval=1xé\\\"] \\\"CMD\\\" \\\"x\\\")\"",
+   "escape": "\"\\\\\"",
+   "warnings": []
+  }
+ },
+ {
+  "kind": "parse",
+  "file": "corpus/inst/healthcheck-unicode.Dockerfile",
+  "reason": "BuildKit reads a flag's bytes as Latin-1 characters, re-encoding each non-ASCII byte and splitting at bytes 0x85 and 0xA0; shards reads flags as UTF-8, as every other argument (src/parser.rs).",
+  "ours": {
+   "children": [
+    {
+     "attributes": [],
+     "dump": "\"from \\\"a\\\"\"",
+     "end_line": 1,
+     "flags": [],
+     "heredocs": [],
+     "original": "\"FROM a\"",
+     "prev_comment": [],
+     "start_line": 1
+    },
+    {
+     "attributes": [],
+     "dump": "\"healthcheck \\\"nöne\\\"\"",
+     "end_line": 2,
+     "flags": [],
+     "heredocs": [],
+     "original": "\"HEALTHCHECK nöne\"",
+     "prev_comment": [],
+     "start_line": 2
+    },
+    {
+     "attributes": [],
+     "dump": "\"healthcheck [\\\"--interval=1µs\\\"] \\\"CMD\\\" \\\"x\\\"\"",
+     "end_line": 3,
+     "flags": [
+      "\"--interval=1µs\""
+     ],
+     "heredocs": [],
+     "original": "\"HEALTHCHECK --interval=1µs CMD x\"",
+     "prev_comment": [],
+     "start_line": 3
+    }
+   ],
+   "dump": "\"(from \\\"a\\\")\\n(healthcheck \\\"nöne\\\")\\n(healthcheck [\\\"--interval=1µs\\\"] \\\"CMD\\\" \\\"x\\\")\"",
+   "escape": "\"\\\\\"",
+   "warnings": []
+  }
  }
 ]

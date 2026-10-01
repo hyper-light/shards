@@ -1,0 +1,2 @@
+FROM a
+AGENT x FROM y

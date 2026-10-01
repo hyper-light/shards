@@ -21,6 +21,8 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
+	"github.com/moby/buildkit/frontend/dockerfile/linter"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/buildkit/frontend/dockerfile/shell"
 )
@@ -109,6 +111,217 @@ func parseFile(root, rel string) parsed {
 			c.Heredocs = append(c.Heredocs, heredoc{q(h.Name), h.FileDescriptor, h.Expand, h.Chomp, q(h.Content)})
 		}
 		out.Children = append(out.Children, c)
+	}
+	return out
+}
+
+// What BuildKit's instructions make of a parsed file: its stages and the ARGs before them,
+// with the lint warnings they give, or its error. The linter is set up as
+// dockerfile2llb sets it up, from the file's check directive.
+func instructionsFile(root, rel string) map[string]any {
+	data, err := os.ReadFile(filepath.Join(root, rel))
+	if err != nil {
+		panic(err)
+	}
+	out := map[string]any{"file": rel}
+	res, err := parser.Parse(bytes.NewReader(data))
+	if err != nil {
+		out["parse_error"] = true
+		return out
+	}
+	var warnings []string
+	checkStr, _, _, _ := parser.ParseDirective("check", data)
+	cfg, err := linter.ParseLintOptions(checkStr)
+	if err != nil {
+		out["error"] = q("failed to parse check options: " + err.Error())
+		return out
+	}
+	cfg.Warn = func(rule, desc, url, msg string, loc []parser.Range) {
+		var lines []string
+		for _, r := range loc {
+			lines = append(lines, fmt.Sprintf("%d-%d", r.Start.Line, r.End.Line))
+		}
+		warnings = append(warnings, q(fmt.Sprintf("%s|%s|%s|%s|%s", rule, desc, url, msg, strings.Join(lines, ","))))
+	}
+	lint := linter.New(cfg)
+	stages, metaArgs, err := instructions.Parse(res.AST, lint)
+	out["warnings"] = warnings
+	if err != nil {
+		out["error"] = q(err.Error())
+		var le *parser.LocationError
+		if errors.As(err, &le) {
+			var locs [][][2]int
+			for _, rs := range le.Locations {
+				var lines [][2]int
+				for _, r := range rs {
+					lines = append(lines, [2]int{r.Start.Line, r.End.Line})
+				}
+				locs = append(locs, lines)
+			}
+			out["location"] = locs
+		}
+		return out
+	}
+	if lerr := lint.Error(); lerr != nil {
+		out["lint_error"] = true
+	}
+	var meta []any
+	for _, a := range metaArgs {
+		meta = append(meta, command(&a))
+	}
+	out["meta_args"] = meta
+	var st []any
+	for _, s := range stages {
+		var cmds []any
+		for _, c := range s.Commands {
+			cmds = append(cmds, command(c))
+		}
+		st = append(st, map[string]any{
+			"name": q(s.Name), "orig_cmd": q(s.OrigCmd), "base_name": q(s.BaseName), "platform": q(s.Platform),
+			"doc_comment": q(s.DocComment), "source_code": q(s.SourceCode), "location": ranges(s.Location),
+			"comments": qs(s.Comments), "commands": cmds,
+		})
+	}
+	out["stages"] = st
+	return out
+}
+
+func ranges(rs []parser.Range) [][2]int {
+	out := [][2]int{}
+	for _, r := range rs {
+		out = append(out, [2]int{r.Start.Line, r.End.Line})
+	}
+	return out
+}
+
+func kvps(kv instructions.KeyValuePairs) []any {
+	out := []any{}
+	for _, p := range kv {
+		out = append(out, []any{q(p.Key), q(p.Value), p.NoDelim})
+	}
+	return out
+}
+
+func optq(s *string) any {
+	if s == nil {
+		return nil
+	}
+	return q(*s)
+}
+
+func optb(b *bool) any {
+	if b == nil {
+		return nil
+	}
+	return *b
+}
+
+func optu(u *uint64) any {
+	if u == nil {
+		return nil
+	}
+	return *u
+}
+
+func shellCmd(c instructions.ShellDependantCmdLine) map[string]any {
+	var files []any
+	for _, f := range c.Files {
+		files = append(files, []any{q(f.Name), q(f.Data), f.Chomp})
+	}
+	cl := []string{}
+	if c.CmdLine != nil {
+		cl = qs(c.CmdLine)
+	}
+	return map[string]any{"cmd_line": cl, "cmd_line_nil": c.CmdLine == nil, "files": files, "prepend_shell": c.PrependShell}
+}
+
+func sources(s instructions.SourcesAndDest) map[string]any {
+	var contents []any
+	for _, c := range s.SourceContents {
+		contents = append(contents, []any{q(c.Path), q(c.Data), c.Expand})
+	}
+	return map[string]any{"dest": q(s.DestPath), "paths": qs(s.SourcePaths), "contents": contents}
+}
+
+// One command, its kind and fields.
+func command(c any) map[string]any {
+	type common interface {
+		Name() string
+		Location() []parser.Range
+		Comments() []string
+		String() string
+	}
+	out := map[string]any{"kind": fmt.Sprintf("%T", c)}
+	if cc, ok := c.(common); ok {
+		out["name"] = q(cc.Name())
+		out["code"] = q(cc.String())
+		out["location"] = ranges(cc.Location())
+		out["comments"] = qs(cc.Comments())
+	}
+	switch c := c.(type) {
+	case *instructions.EnvCommand:
+		out["env"] = kvps(c.Env)
+	case *instructions.MaintainerCommand:
+		out["maintainer"] = q(c.Maintainer)
+	case *instructions.LabelCommand:
+		out["labels"] = kvps(c.Labels)
+	case *instructions.AddCommand:
+		out["sources"] = sources(c.SourcesAndDest)
+		out["chown"], out["chmod"], out["link"] = q(c.Chown), q(c.Chmod), c.Link
+		out["exclude"], out["keep_git_dir"], out["checksum"], out["unpack"] = qs(c.ExcludePatterns), optb(c.KeepGitDir), q(c.Checksum), optb(c.Unpack)
+	case *instructions.CopyCommand:
+		out["sources"] = sources(c.SourcesAndDest)
+		out["from"], out["chown"], out["chmod"], out["link"] = q(c.From), q(c.Chown), q(c.Chmod), c.Link
+		out["exclude"], out["parents"] = qs(c.ExcludePatterns), c.Parents
+	case *instructions.OnbuildCommand:
+		out["expression"] = q(c.Expression)
+	case *instructions.WorkdirCommand:
+		out["path"] = q(c.Path)
+	case *instructions.RunCommand:
+		out["shell"] = shellCmd(c.ShellDependantCmdLine)
+		used := append([]string(nil), c.FlagsUsed...)
+		sort.Strings(used)
+		out["flags_used"] = qs(used)
+		var mounts []any
+		for _, m := range instructions.GetMounts(c) {
+			mounts = append(mounts, map[string]any{
+				"type": q(string(m.Type)), "from": q(m.From), "source": q(m.Source), "target": q(m.Target),
+				"read_only": m.ReadOnly, "size": m.SizeLimit, "id": q(m.CacheID), "sharing": q(string(m.CacheSharing)),
+				"required": m.Required, "env": optq(m.Env), "mode": optu(m.Mode), "uid": optu(m.UID), "gid": optu(m.GID),
+			})
+		}
+		out["mounts"] = mounts
+		out["network"] = q(instructions.GetNetwork(c))
+		out["security"] = q(instructions.GetSecurity(c))
+		var devices []any
+		for _, d := range instructions.GetDevices(c) {
+			devices = append(devices, []any{q(d.Name), d.Required})
+		}
+		out["devices"] = devices
+	case *instructions.CmdCommand:
+		out["shell"] = shellCmd(c.ShellDependantCmdLine)
+	case *instructions.EntrypointCommand:
+		out["shell"] = shellCmd(c.ShellDependantCmdLine)
+	case *instructions.HealthCheckCommand:
+		h := c.Health
+		out["health"] = map[string]any{"test": qs(h.Test), "interval": int64(h.Interval), "timeout": int64(h.Timeout),
+			"start_period": int64(h.StartPeriod), "start_interval": int64(h.StartInterval), "retries": h.Retries}
+	case *instructions.ExposeCommand:
+		out["ports"] = qs(c.Ports)
+	case *instructions.UserCommand:
+		out["user"] = q(c.User)
+	case *instructions.VolumeCommand:
+		out["volumes"] = qs(c.Volumes)
+	case *instructions.StopSignalCommand:
+		out["signal"] = q(c.Signal)
+	case *instructions.ArgCommand:
+		var args []any
+		for _, a := range c.Args {
+			args = append(args, []any{q(a.Key), optq(a.Value), q(a.DocComment)})
+		}
+		out["args"] = args
+	case *instructions.ShellCommand:
+		out["shell_words"] = qs(c.Shell)
 	}
 	return out
 }
@@ -255,6 +468,11 @@ func main() {
 		parses = append(parses, parseFile(testdata, f))
 	}
 	writeJSON(filepath.Join(testdata, "parse.json"), parses)
+	var insts []map[string]any
+	for _, f := range files {
+		insts = append(insts, instructionsFile(testdata, f))
+	}
+	writeJSON(filepath.Join(testdata, "instructions.json"), insts)
 
 	cases := buildkitCases(filepath.Join(testdata, "buildkit/shell"))
 	extra, err := os.ReadFile(filepath.Join(testdata, "lex-cases.json"))
@@ -289,6 +507,15 @@ func main() {
 	}
 	lower.WriteString("];\n")
 	tables += lower.String()
+	var upper strings.Builder
+	upper.WriteString("\n/// Go's `unicode.ToUpper`, for the runes it changes: (rune, upper case).\npub(crate) static UPPER: &[(u32, u32)] = &[\n")
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if u := unicode.ToUpper(r); u != r {
+			fmt.Fprintf(&upper, "    (0x%X, 0x%X),\n", r, u)
+		}
+	}
+	upper.WriteString("];\n")
+	tables += upper.String()
 	if err := os.WriteFile(filepath.Join(testdata, "../src/tables.rs"), []byte(tables), 0o644); err != nil {
 		panic(err)
 	}

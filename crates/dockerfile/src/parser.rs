@@ -251,6 +251,47 @@ impl Directives {
     }
 }
 
+/// The first word of directive `key`'s value among a file's leading directives:
+/// `ParseDirective` (a byte-order mark and a shebang line skipped, reading stopped at the
+/// first line that is no directive, or at a directive given twice).
+pub fn directive_value(text: &[u8], key: &[u8]) -> Option<Vec<u8>> {
+    let text = text.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(text);
+    let first_end = text.iter().position(|&b| b == b'\n');
+    let text = match first_end {
+        Some(end) if text.starts_with(b"#!") => go::tail(text, end + 1),
+        None if text.starts_with(b"#!") => &[],
+        _ => text,
+    };
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    for raw in text.split(|&b| b == b'\n') {
+        let line = raw.strip_suffix(b"\r").unwrap_or(raw);
+        let rest = line.strip_prefix(b"#")?;
+        let (k, value) = directive(go::trim_left_space(rest))?;
+        let k = k.to_ascii_lowercase();
+        if !matches!(k.as_slice(), b"syntax" | b"escape" | b"check") {
+            return None;
+        }
+        if seen.contains(&k) {
+            return None;
+        }
+        if k == key {
+            let word = value.split(|&b| b == b' ').next().unwrap_or_default();
+            return Some(word.to_vec());
+        }
+        seen.push(k);
+    }
+    None
+}
+
+/// One comment line read as a directive, BuildKit's `DirectiveParser` with no comment
+/// prefix: how an instruction's comments carry a `# check=` of their own. The directive's
+/// name, lowercase, and value, if the line is one.
+pub(crate) fn directive_line(line: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let (key, value) = directive(go::trim_left_space(line))?;
+    let key = key.to_ascii_lowercase();
+    matches!(key.as_slice(), b"syntax" | b"escape" | b"check").then(|| (key, value.to_vec()))
+}
+
 fn is_comment(line: &[u8]) -> bool {
     go::trim_left_space(line).first() == Some(&b'#')
 }
@@ -702,6 +743,11 @@ fn heredoc(word: &[u8]) -> Result<Option<Heredoc>, Vec<u8>> {
         chomp,
         content: Vec::new(),
     }))
+}
+
+/// The heredoc `word` names, if it names one: `MustParseHeredoc`, errors as none.
+pub(crate) fn heredoc_word(word: &[u8]) -> Option<Heredoc> {
+    heredoc(word).ok().flatten()
 }
 
 /// The heredocs a line opens: `heredocsFromLine`.

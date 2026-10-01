@@ -4524,6 +4524,2590 @@
   ]
  },
  {
+  "file": "corpus/inst/add-copy.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(add [\\\"--chown=1:1\\\" \\\"--chmod=0755\\\" \\\"--link\\\" \\\"--keep-git-dir\\\" \\\"--checksum=sha256:00\\\" \\\"--unpack=false\\\" \\\"--exclude=*.md\\\" \\\"--exclude=x\\\"] \\\"a\\\" \\\"b\\\" \\\"/dst/\\\")\\n(copy [\\\"--from=st\\\" \\\"--chown=u\\\" \\\"--chmod=u+x\\\" \\\"--link=false\\\" \\\"--parents\\\" \\\"--exclude=y\\\"] \\\"s1\\\" \\\"s2\\\" \\\"/d\\\")\\n(copy \\\"\u003c\u003cEOF\\\" \\\"\u003c\u003c-T\\\" \\\"/dest\\\")\\n(add [\\\"--unpack\\\"] \\\"x\\\" \\\"y\\\")\\n(copy [\\\"--link=TRUE\\\"] \\\"a\\\" \\\"b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--chown=1:1\\\" \\\"--chmod=0755\\\" \\\"--link\\\" \\\"--keep-git-dir\\\" \\\"--checksum=sha256:00\\\" \\\"--unpack=false\\\" \\\"--exclude=*.md\\\" \\\"--exclude=x\\\"] \\\"a\\\" \\\"b\\\" \\\"/dst/\\\"\"",
+    "original": "\"ADD --chown=1:1 --chmod=0755 --link --keep-git-dir --checksum=sha256:00 --unpack=false --exclude=*.md --exclude=x a b /dst/\"",
+    "flags": [
+     "\"--chown=1:1\"",
+     "\"--chmod=0755\"",
+     "\"--link\"",
+     "\"--keep-git-dir\"",
+     "\"--checksum=sha256:00\"",
+     "\"--unpack=false\"",
+     "\"--exclude=*.md\"",
+     "\"--exclude=x\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=st\\\" \\\"--chown=u\\\" \\\"--chmod=u+x\\\" \\\"--link=false\\\" \\\"--parents\\\" \\\"--exclude=y\\\"] \\\"s1\\\" \\\"s2\\\" \\\"/d\\\"\"",
+    "original": "\"COPY --from=st --chown=u --chmod=u+x --link=false --parents --exclude=y s1 s2 /d\"",
+    "flags": [
+     "\"--from=st\"",
+     "\"--chown=u\"",
+     "\"--chmod=u+x\"",
+     "\"--link=false\"",
+     "\"--parents\"",
+     "\"--exclude=y\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"\u003c\u003cEOF\\\" \\\"\u003c\u003c-T\\\" \\\"/dest\\\"\"",
+    "original": "\"COPY \u003c\u003cEOF \u003c\u003c-T /dest\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"hello $X\\n\""
+     },
+     {
+      "name": "\"T\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": true,
+      "content": "\"\\tworld\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"add [\\\"--unpack\\\"] \\\"x\\\" \\\"y\\\"\"",
+    "original": "\"ADD --unpack [\\\"x\\\", \\\"y\\\"]\"",
+    "flags": [
+     "\"--unpack\""
+    ],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--link=TRUE\\\"] \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"COPY --link=TRUE a b\"",
+    "flags": [
+     "\"--link=TRUE\""
+    ],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/arg-doc.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(arg \\\"A=1\\\")\\n(arg \\\"B\\\")\\n(from \\\"a\\\")\\n(from \\\"b\\\" \\\"AS\\\" \\\"stage-x\\\")\\n(from \\\"c\\\" \\\"AS\\\" \\\"other\\\")\"",
+  "children": [
+   {
+    "dump": "\"arg \\\"A=1\\\"\"",
+    "original": "\"ARG A=1\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [
+     "\"A the first arg\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"B\\\"\"",
+    "original": "\"ARG B\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [
+     "\"wrong comment\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"b\\\" \\\"AS\\\" \\\"stage-x\\\"\"",
+    "original": "\"FROM b AS stage-x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [
+     "\"stage-x here\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"c\\\" \\\"AS\\\" \\\"other\\\"\"",
+    "original": "\"FROM c AS other\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [
+     "\"not a description\""
+    ],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-add-one-arg.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(add \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"x\\\"\"",
+    "original": "\"ADD x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-arg-blank.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(arg \\\"=x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"=x\\\"\"",
+    "original": "\"ARG =x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-arg-none.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(arg)\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg\"",
+    "original": "\"ARG\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-bool-bad.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(copy [\\\"--link=maybe\\\"] \\\"a\\\" \\\"b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--link=maybe\\\"] \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"COPY --link=maybe a b\"",
+    "flags": [
+     "\"--link=maybe\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-bool-empty.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(copy [\\\"--link=\\\"] \\\"a\\\" \\\"b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--link=\\\"] \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"COPY --link= a b\"",
+    "flags": [
+     "\"--link=\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-check-bad-bool.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-check-bad.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-cmd-flag.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(cmd [\\\"--x=1\\\"] \\\"a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd [\\\"--x=1\\\"] \\\"a\\\"\"",
+    "original": "\"CMD --x=1 a\"",
+    "flags": [
+     "\"--x=1\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-copy-heredoc-dest.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(copy \\\"a\\\" \\\"\u003c\u003cEOF\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"a\\\" \\\"\u003c\u003cEOF\\\"\"",
+    "original": "\"COPY a \u003c\u003cEOF\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"x\\n\""
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-copy-one-arg.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(copy \\\"onlyone\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"onlyone\\\"\"",
+    "original": "\"COPY onlyone\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-dup-flag.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(copy [\\\"--from=x\\\" \\\"--from=y\\\"] \\\"a\\\" \\\"b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=x\\\" \\\"--from=y\\\"] \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"COPY --from=x --from=y a b\"",
+    "flags": [
+     "\"--from=x\"",
+     "\"--from=y\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-env-blank.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(env \\\"\\\" \\\"x\\\" \\\"=\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"\\\" \\\"x\\\" \\\"=\\\"\"",
+    "original": "\"ENV =x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-expose-empty.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(expose)\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose\"",
+    "original": "\"EXPOSE\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-flag-no-dash.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(copy [\\\"--from=x\\\"] \\\"--y\\\" \\\"a\\\" \\\"b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=x\\\"] \\\"--y\\\" \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"COPY --from=x -- --y a b\"",
+    "flags": [
+     "\"--from=x\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-from-bad-name.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\" \\\"AS\\\" \\\"1bad\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\" \\\"AS\\\" \\\"1bad\\\"\"",
+    "original": "\"FROM a AS 1bad\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-from-bad-symbol.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\" \\\"AS\\\" \\\"bad!name\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\" \\\"AS\\\" \\\"bad!name\\\"\"",
+    "original": "\"FROM a AS bad!name\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-from-three.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\" \\\"b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"FROM a b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-from-upper-name.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\" \\\"AS\\\" \\\"GoodName\\\")\\n(from \\\"b\\\" \\\"AS\\\" \\\"has_under.score-ok\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\" \\\"AS\\\" \\\"GoodName\\\"\"",
+    "original": "\"FROM a AS GoodName\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"b\\\" \\\"AS\\\" \\\"has_under.score-ok\\\"\"",
+    "original": "\"FROM b AS has_under.score-ok\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-healthcheck-dur-fffd.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(healthcheck [\\\"--interval=ï¿½\\\"] \\\"CMD\\\" \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--interval=ï¿½\\\"] \\\"CMD\\\" \\\"x\\\"\"",
+    "original": "\"HEALTHCHECK --interval=� CMD x\"",
+    "flags": [
+     "\"--interval=ï¿½\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-healthcheck-dur-unicode.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(healthcheck [\\\"--interval=1xÃ©\\\"] \\\"CMD\\\" \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--interval=1xÃ©\\\"] \\\"CMD\\\" \\\"x\\\"\"",
+    "original": "\"HEALTHCHECK --interval=1xé CMD x\"",
+    "flags": [
+     "\"--interval=1xÃ©\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-healthcheck-empty.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(healthcheck)\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck\"",
+    "original": "\"HEALTHCHECK\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-healthcheck-interval-bad.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(healthcheck [\\\"--interval=5\\\"] \\\"CMD\\\" \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--interval=5\\\"] \\\"CMD\\\" \\\"x\\\"\"",
+    "original": "\"HEALTHCHECK --interval=5 CMD x\"",
+    "flags": [
+     "\"--interval=5\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-healthcheck-interval-small.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(healthcheck [\\\"--interval=1us\\\"] \\\"CMD\\\" \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--interval=1us\\\"] \\\"CMD\\\" \\\"x\\\"\"",
+    "original": "\"HEALTHCHECK --interval=1us CMD x\"",
+    "flags": [
+     "\"--interval=1us\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-healthcheck-nocmd.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(healthcheck \\\"CMD\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck \\\"CMD\\\"\"",
+    "original": "\"HEALTHCHECK CMD\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-healthcheck-none-args.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(healthcheck \\\"NONE\\\" \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck \\\"NONE\\\" \\\"x\\\"\"",
+    "original": "\"HEALTHCHECK NONE x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-healthcheck-retries-bad.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(healthcheck [\\\"--retries=x\\\"] \\\"CMD\\\" \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--retries=x\\\"] \\\"CMD\\\" \\\"x\\\"\"",
+    "original": "\"HEALTHCHECK --retries=x CMD x\"",
+    "flags": [
+     "\"--retries=x\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-healthcheck-retries-big.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(healthcheck [\\\"--retries=99999999999\\\"] \\\"CMD\\\" \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--retries=99999999999\\\"] \\\"CMD\\\" \\\"x\\\"\"",
+    "original": "\"HEALTHCHECK --retries=99999999999 CMD x\"",
+    "flags": [
+     "\"--retries=99999999999\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-healthcheck-retries-neg.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(healthcheck [\\\"--retries=-1\\\"] \\\"CMD\\\" \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--retries=-1\\\"] \\\"CMD\\\" \\\"x\\\"\"",
+    "original": "\"HEALTHCHECK --retries=-1 CMD x\"",
+    "flags": [
+     "\"--retries=-1\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-healthcheck-type.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(healthcheck \\\"CMDX\\\" \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck \\\"CMDX\\\" \\\"x\\\"\"",
+    "original": "\"HEALTHCHECK CMDX x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-label-none.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(label)\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label\"",
+    "original": "\"LABEL\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-maintainer-two.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(maintainer \\\"a b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"maintainer \\\"a b\\\"\"",
+    "original": "\"MAINTAINER a b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-no-stage-env.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(env \\\"a\\\" \\\"b\\\" \\\"=\\\")\\n(from \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"env \\\"a\\\" \\\"b\\\" \\\"=\\\"\"",
+    "original": "\"ENV a=b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"x\\\"\"",
+    "original": "\"FROM x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-no-stage.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(run \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"run \\\"x\\\"\"",
+    "original": "\"RUN x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-onbuild-empty.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(onbuild)\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild\"",
+    "original": "\"ONBUILD\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-onbuild-from.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(onbuild (from \\\"b\\\"))\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (from \\\"b\\\")\"",
+    "original": "\"ONBUILD FROM b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-onbuild-maintainer.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(onbuild (maintainer \\\"x\\\"))\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (maintainer \\\"x\\\")\"",
+    "original": "\"ONBUILD maintainer x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-onbuild-onbuild.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(onbuild (onbuild (run \\\"x\\\")))\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (onbuild (run \\\"x\\\"))\"",
+    "original": "\"ONBUILD ONBUILD RUN x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-run-device-bad-bool.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(run [\\\"--device=a,required=maybe\\\"] \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--device=a,required=maybe\\\"] \\\"x\\\"\"",
+    "original": "\"RUN --device=a,required=maybe x\"",
+    "flags": [
+     "\"--device=a,required=maybe\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-run-device-bad-key.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(run [\\\"--device=a,colour=red\\\"] \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--device=a,colour=red\\\"] \\\"x\\\"\"",
+    "original": "\"RUN --device=a,colour=red x\"",
+    "flags": [
+     "\"--device=a,colour=red\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-run-device-field.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(run [\\\"--device=a,b\\\"] \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--device=a,b\\\"] \\\"x\\\"\"",
+    "original": "\"RUN --device=a,b x\"",
+    "flags": [
+     "\"--device=a,b\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-run-device-two-names.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(run [\\\"--device=a,name=b\\\"] \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--device=a,name=b\\\"] \\\"x\\\"\"",
+    "original": "\"RUN --device=a,name=b x\"",
+    "flags": [
+     "\"--device=a,name=b\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-run-mount-csv.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(run [\\\"--mount=type=bind,source=a x\\\"])\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=bind,source=a x\\\"]\"",
+    "original": "\"RUN --mount=type=bind,source=\\\"a x\"",
+    "flags": [
+     "\"--mount=type=bind,source=a x\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-run-mount-from-var-end.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(run [\\\"--mount=from=x$,target=/t\\\"] \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=from=x$,target=/t\\\"] \\\"x\\\"\"",
+    "original": "\"RUN --mount=from=x$,target=/t x\"",
+    "flags": [
+     "\"--mount=from=x$,target=/t\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-run-mount-from-var.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(run [\\\"--mount=from=$X,target=/t\\\"] \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=from=$X,target=/t\\\"] \\\"x\\\"\"",
+    "original": "\"RUN --mount=from=$X,target=/t x\"",
+    "flags": [
+     "\"--mount=from=$X,target=/t\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-run-mount-type.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(run [\\\"--mount=type=cahce,target=/x\\\"] \\\"y\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=cahce,target=/x\\\"] \\\"y\\\"\"",
+    "original": "\"RUN --mount=type=cahce,target=/x y\"",
+    "flags": [
+     "\"--mount=type=cahce,target=/x\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-run-network-bad.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(run [\\\"--network=bridge\\\"] \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--network=bridge\\\"] \\\"x\\\"\"",
+    "original": "\"RUN --network=bridge x\"",
+    "flags": [
+     "\"--network=bridge\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-run-security-bad.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(run [\\\"--security=yes\\\"] \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--security=yes\\\"] \\\"x\\\"\"",
+    "original": "\"RUN --security=yes x\"",
+    "flags": [
+     "\"--security=yes\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-shell-empty.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(shell)\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"shell\"",
+    "original": "\"SHELL []\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-shell-not-json.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(shell \\\"/bin/sh -c\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"shell \\\"/bin/sh -c\\\"\"",
+    "original": "\"SHELL /bin/sh -c\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-stopsignal-flag.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(stopsignal [\\\"--x=1\\\"] \\\"a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"stopsignal [\\\"--x=1\\\"] \\\"a\\\"\"",
+    "original": "\"STOPSIGNAL --x=1 a\"",
+    "flags": [
+     "\"--x=1\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-stopsignal-two.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(stopsignal \\\"a b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"stopsignal \\\"a b\\\"\"",
+    "original": "\"STOPSIGNAL a b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-string-novalue.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(copy [\\\"--from\\\"] \\\"a\\\" \\\"b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from\\\"] \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"COPY --from a b\"",
+    "flags": [
+     "\"--from\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-unknown-flag-far.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(copy [\\\"--zzzzzz=1\\\"] \\\"a\\\" \\\"b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--zzzzzz=1\\\"] \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"COPY --zzzzzz=1 a b\"",
+    "flags": [
+     "\"--zzzzzz=1\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-unknown-flag.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(copy [\\\"--chmood=1\\\"] \\\"a\\\" \\\"b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--chmood=1\\\"] \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"COPY --chmood=1 a b\"",
+    "flags": [
+     "\"--chmood=1\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-unknown-instruction-far.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(agent \\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"agent \\\"\\\"\"",
+    "original": "\"AGENT x FROM y\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-unknown-instruction.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(runn \\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"runn \\\"\\\"\"",
+    "original": "\"RUNN x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-user-none.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(user)\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"user\"",
+    "original": "\"USER\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-volume-empty-str.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(volume \\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"\\\"\"",
+    "original": "\"VOLUME [\\\"\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-volume-none.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(volume)\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume\"",
+    "original": "\"VOLUME\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-workdir-flag.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(workdir [\\\"--x\\\"] \\\"a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir [\\\"--x\\\"] \\\"a\\\"\"",
+    "original": "\"WORKDIR --x a\"",
+    "flags": [
+     "\"--x\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/err-workdir-two.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(workdir \\\"a b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"a b\\\"\"",
+    "original": "\"WORKDIR a b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/from-long-s.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\" \\\"aſ\\\" \\\"b\\\")\\n(from \\\"c\\\" \\\"AS\\\" \\\"d\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\" \\\"aſ\\\" \\\"b\\\"\"",
+    "original": "\"FROM a aſ b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"c\\\" \\\"AS\\\" \\\"d\\\"\"",
+    "original": "\"FROM c AS d\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/healthcheck-unicode.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(healthcheck \\\"nöne\\\")\\n(healthcheck [\\\"--interval=1Âµs\\\"] \\\"CMD\\\" \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck \\\"nöne\\\"\"",
+    "original": "\"HEALTHCHECK nöne\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--interval=1Âµs\\\"] \\\"CMD\\\" \\\"x\\\"\"",
+    "original": "\"HEALTHCHECK --interval=1µs CMD x\"",
+    "flags": [
+     "\"--interval=1Âµs\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/healthcheck.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(healthcheck [\\\"--interval=30s\\\" \\\"--timeout=1m30s\\\" \\\"--start-period=500ms\\\" \\\"--start-interval=2s\\\" \\\"--retries=3\\\"] \\\"CMD\\\" \\\"curl -f x\\\")\\n(healthcheck \\\"CMD\\\" \\\"curl\\\" \\\"x\\\")\\n(healthcheck \\\"none\\\")\\n(healthcheck [\\\"--interval=0s\\\"] \\\"CMD\\\" \\\"x\\\")\\n(healthcheck [\\\"--retries=0\\\"] \\\"CMD\\\" \\\"y\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--interval=30s\\\" \\\"--timeout=1m30s\\\" \\\"--start-period=500ms\\\" \\\"--start-interval=2s\\\" \\\"--retries=3\\\"] \\\"CMD\\\" \\\"curl -f x\\\"\"",
+    "original": "\"HEALTHCHECK --interval=30s --timeout=1m30s --start-period=500ms --start-interval=2s --retries=3 CMD curl -f x\"",
+    "flags": [
+     "\"--interval=30s\"",
+     "\"--timeout=1m30s\"",
+     "\"--start-period=500ms\"",
+     "\"--start-interval=2s\"",
+     "\"--retries=3\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck \\\"CMD\\\" \\\"curl\\\" \\\"x\\\"\"",
+    "original": "\"HEALTHCHECK CMD [\\\"curl\\\", \\\"x\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck \\\"none\\\"\"",
+    "original": "\"HEALTHCHECK none\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--interval=0s\\\"] \\\"CMD\\\" \\\"x\\\"\"",
+    "original": "\"HEALTHCHECK --interval=0s CMD x\"",
+    "flags": [
+     "\"--interval=0s\""
+    ],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--retries=0\\\"] \\\"CMD\\\" \\\"y\\\"\"",
+    "original": "\"HEALTHCHECK --retries=0 CMD y\"",
+    "flags": [
+     "\"--retries=0\""
+    ],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/lint-casing.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\" \\\"AS\\\" \\\"Build\\\")\\n(from \\\"b\\\" \\\"AS\\\" \\\"c\\\")\\n(from \\\"c\\\" \\\"as\\\" \\\"d\\\")\\n(maintainer \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\" \\\"AS\\\" \\\"Build\\\"\"",
+    "original": "\"FROM a AS Build\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"b\\\" \\\"AS\\\" \\\"c\\\"\"",
+    "original": "\"from b AS c\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"c\\\" \\\"as\\\" \\\"d\\\"\"",
+    "original": "\"FROM c as d\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"maintainer \\\"x\\\"\"",
+    "original": "\"MAINTAINER x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/lint-comment.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(maintainer \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"maintainer \\\"x\\\"\"",
+    "original": "\"MAINTAINER x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [
+     "\"check=skip=MaintainerDeprecated\""
+    ],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/lint-skip-all.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\" \\\"AS\\\" \\\"Build\\\")\\n(maintainer \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\" \\\"AS\\\" \\\"Build\\\"\"",
+    "original": "\"FROM a AS Build\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"maintainer \\\"x\\\"\"",
+    "original": "\"MAINTAINER x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/lint-skip.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\" \\\"AS\\\" \\\"Build\\\")\\n(maintainer \\\"x\\\")\\n(from \\\"b\\\" \\\"AS\\\" \\\"c\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\" \\\"AS\\\" \\\"Build\\\"\"",
+    "original": "\"FROM a AS Build\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"maintainer \\\"x\\\"\"",
+    "original": "\"MAINTAINER x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"b\\\" \\\"AS\\\" \\\"c\\\"\"",
+    "original": "\"from b AS c\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/meta-only.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(arg \\\"A\\\")\\n(arg \\\"B=2\\\")\\n(from \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"arg \\\"A\\\"\"",
+    "original": "\"ARG A\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"B=2\\\"\"",
+    "original": "\"ARG B=2\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"x\\\"\"",
+    "original": "\"FROM x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/onbuild.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(onbuild (run \\\"echo hi\\\"))\\n(onbuild (copy \\\"a\\\" \\\"b\\\"))\\n(onbuild (add \\\"\u003c\u003cEOF\\\" \\\"/x\\\"))\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (run \\\"echo hi\\\")\"",
+    "original": "\"ONBUILD RUN echo hi\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (copy \\\"a\\\" \\\"b\\\")\"",
+    "original": "\"onbuild  COPY a b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (add \\\"\u003c\u003cEOF\\\" \\\"/x\\\")\"",
+    "original": "\"ONBUILD ADD \u003c\u003cEOF /x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"content\\n\""
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/run.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(run [\\\"--mount=type=cache,target=/c,id=x,sharing=locked,mode=0755,uid=1,gid=2\\\" \\\"--network=none\\\" \\\"--security=insecure\\\"] \\\"echo hi\\\")\\n(run [\\\"--mount=from=st,source=/s,target=/t,ro\\\" \\\"--mount=type=secret,id=s,required\\\" \\\"--mount=type=tmpfs,size=1g,target=/tmp\\\" \\\"--mount=type=ssh\\\"] \\\"true\\\")\\n(run [\\\"--device=nvidia.com/gpu=all,required\\\" \\\"--device=name=x,required=false\\\"] \\\"a\\\" \\\"b\\\")\\n(run \\\"\u003c\u003cEOF\\\")\\n(run [\\\"--network=host\\\" \\\"--mount=type=bind,source=a,target=b\\\"] \\\"x\\\")\\n(run [\\\"--mount=type=secret,target=/s,env=SECRET\\\"] \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=cache,target=/c,id=x,sharing=locked,mode=0755,uid=1,gid=2\\\" \\\"--network=none\\\" \\\"--security=insecure\\\"] \\\"echo hi\\\"\"",
+    "original": "\"RUN --mount=type=cache,target=/c,id=x,sharing=locked,mode=0755,uid=1,gid=2 --network=none --security=insecure echo hi\"",
+    "flags": [
+     "\"--mount=type=cache,target=/c,id=x,sharing=locked,mode=0755,uid=1,gid=2\"",
+     "\"--network=none\"",
+     "\"--security=insecure\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=from=st,source=/s,target=/t,ro\\\" \\\"--mount=type=secret,id=s,required\\\" \\\"--mount=type=tmpfs,size=1g,target=/tmp\\\" \\\"--mount=type=ssh\\\"] \\\"true\\\"\"",
+    "original": "\"RUN --mount=from=st,source=/s,target=/t,ro --mount=type=secret,id=s,required --mount=type=tmpfs,size=1g,target=/tmp --mount=type=ssh true\"",
+    "flags": [
+     "\"--mount=from=st,source=/s,target=/t,ro\"",
+     "\"--mount=type=secret,id=s,required\"",
+     "\"--mount=type=tmpfs,size=1g,target=/tmp\"",
+     "\"--mount=type=ssh\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--device=nvidia.com/gpu=all,required\\\" \\\"--device=name=x,required=false\\\"] \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"RUN --device=nvidia.com/gpu=all,required --device=name=x,required=false [\\\"a\\\", \\\"b\\\"]\"",
+    "flags": [
+     "\"--device=nvidia.com/gpu=all,required\"",
+     "\"--device=name=x,required=false\""
+    ],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003cEOF\\\"\"",
+    "original": "\"RUN \u003c\u003cEOF\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"set -e\\necho $A\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run [\\\"--network=host\\\" \\\"--mount=type=bind,source=a,target=b\\\"] \\\"x\\\"\"",
+    "original": "\"RUN --network=host --mount=\\\"type=bind,source=a,target=b\\\" x\"",
+    "flags": [
+     "\"--network=host\"",
+     "\"--mount=type=bind,source=a,target=b\""
+    ],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=secret,target=/s,env=SECRET\\\"] \\\"true\\\"\"",
+    "original": "\"RUN --mount=type=secret,target=/s,env=SECRET true\"",
+    "flags": [
+     "\"--mount=type=secret,target=/s,env=SECRET\""
+    ],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/stages.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(arg \\\"BASE=alpine\\\")\\n(arg \\\"V\\\")\\n(from \\\"$BASE\\\" \\\"AS\\\" \\\"base\\\")\\n(run \\\"echo\\\")\\n(from \\\"base\\\" \\\"as\\\" \\\"Next\\\")\\n(copy [\\\"--from=base\\\"] \\\"/a\\\" \\\"/b\\\")\\n(from [\\\"--platform=$BUILDPLATFORM\\\"] \\\"scratch\\\" \\\"AS\\\" \\\"Final\\\")\\n(arg \\\"X=1\\\" \\\"Y\\\")\\n(env \\\"A\\\" \\\"1\\\" \\\"=\\\" \\\"B\\\" \\\"2\\\" \\\"=\\\")\\n(env \\\"legacy\\\" \\\"value here\\\" \\\"\\\")\\n(label \\\"a\\\" \\\"b\\\" \\\"=\\\" \\\"c\\\" \\\"\\\\\\\"d e\\\\\\\"\\\" \\\"=\\\")\\n(workdir \\\"/x\\\")\\n(user \\\"app:app\\\")\\n(volume \\\"/v1\\\" \\\"/v2\\\")\\n(volume \\\"/v3\\\" \\\" /v4 \\\")\\n(stopsignal \\\"SIGTERM\\\")\\n(expose \\\"80/tcp\\\" \\\"443\\\" \\\"8080/UDP\\\" \\\"1.2.3.4:80:80\\\")\\n(shell \\\"/bin/sh\\\" \\\"-c\\\")\\n(cmd \\\"echo hi\\\")\\n(cmd \\\"a\\\" \\\"b\\\")\\n(entrypoint \\\"e\\\")\\n(entrypoint)\\n(maintainer \\\"someone\\\")\"",
+  "children": [
+   {
+    "dump": "\"arg \\\"BASE=alpine\\\"\"",
+    "original": "\"ARG BASE=alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"V\\\"\"",
+    "original": "\"ARG V\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"$BASE\\\" \\\"AS\\\" \\\"base\\\"\"",
+    "original": "\"FROM $BASE AS base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [
+     "\"base the base stage\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo\\\"\"",
+    "original": "\"RUN echo\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"base\\\" \\\"as\\\" \\\"Next\\\"\"",
+    "original": "\"from base as Next\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [
+     "\"other\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=base\\\"] \\\"/a\\\" \\\"/b\\\"\"",
+    "original": "\"COPY --from=base /a /b\"",
+    "flags": [
+     "\"--from=base\""
+    ],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from [\\\"--platform=$BUILDPLATFORM\\\"] \\\"scratch\\\" \\\"AS\\\" \\\"Final\\\"\"",
+    "original": "\"FROM --platform=$BUILDPLATFORM scratch AS Final\"",
+    "flags": [
+     "\"--platform=$BUILDPLATFORM\""
+    ],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"X=1\\\" \\\"Y\\\"\"",
+    "original": "\"ARG X=1 Y\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"A\\\" \\\"1\\\" \\\"=\\\" \\\"B\\\" \\\"2\\\" \\\"=\\\"\"",
+    "original": "\"ENV A=1 B=2\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"legacy\\\" \\\"value here\\\" \\\"\\\"\"",
+    "original": "\"ENV legacy value here\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"a\\\" \\\"b\\\" \\\"=\\\" \\\"c\\\" \\\"\\\\\\\"d e\\\\\\\"\\\" \\\"=\\\"\"",
+    "original": "\"LABEL a=b c=\\\"d e\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 13,
+    "end_line": 13,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"/x\\\"\"",
+    "original": "\"WORKDIR /x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"user \\\"app:app\\\"\"",
+    "original": "\"USER app:app\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 15,
+    "end_line": 15,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"/v1\\\" \\\"/v2\\\"\"",
+    "original": "\"VOLUME /v1 /v2\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 16,
+    "end_line": 16,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"/v3\\\" \\\" /v4 \\\"\"",
+    "original": "\"VOLUME [\\\"/v3\\\", \\\" /v4 \\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 17,
+    "end_line": 17,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"stopsignal \\\"SIGTERM\\\"\"",
+    "original": "\"STOPSIGNAL SIGTERM\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 18,
+    "end_line": 18,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"80/tcp\\\" \\\"443\\\" \\\"8080/UDP\\\" \\\"1.2.3.4:80:80\\\"\"",
+    "original": "\"EXPOSE 80/tcp 443 8080/UDP 1.2.3.4:80:80\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 19,
+    "end_line": 19,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"shell \\\"/bin/sh\\\" \\\"-c\\\"\"",
+    "original": "\"SHELL [\\\"/bin/sh\\\",\\\"-c\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 20,
+    "end_line": 20,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"echo hi\\\"\"",
+    "original": "\"CMD echo hi\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 21,
+    "end_line": 21,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"CMD [\\\"a\\\",\\\"b\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 22,
+    "end_line": 22,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"entrypoint \\\"e\\\"\"",
+    "original": "\"ENTRYPOINT [\\\"e\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 23,
+    "end_line": 23,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"entrypoint\"",
+    "original": "\"ENTRYPOINT\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 24,
+    "end_line": 24,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"maintainer \\\"someone\\\"\"",
+    "original": "\"MAINTAINER someone\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 25,
+    "end_line": 25,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/inst/unicode-upper.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\\n(onbuild (onbuıld \\\"\\\"))\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (onbuıld \\\"\\\")\"",
+    "original": "\"ONBUILD onbuıld RUN x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/json-bool.Dockerfile",
   "error": "\"when using JSON array syntax, arrays must be comprised of strings only\"",
   "location": [

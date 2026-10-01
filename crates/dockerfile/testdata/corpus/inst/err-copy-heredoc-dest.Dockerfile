@@ -1,0 +1,4 @@
+FROM a
+COPY a <<EOF
+x
+EOF
