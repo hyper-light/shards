@@ -34,6 +34,12 @@ fn main() -> ExitCode {
             Err(e) => failed(&e),
         },
         ["vm", ..] => vm(args.get(1..).unwrap_or_default()),
+        // `build` (or `builder build`, `image build`, `buildx build`, `buildx b`): shardsd's.
+        _ if let Some(named) = shards_cmdline::commands::build(&words) => {
+            let mut rest = vec![OsString::from("build")];
+            rest.extend(args.get(named..).unwrap_or_default().iter().cloned());
+            instead(SHARDSD, &rest)
+        }
         _ => match shards_cmdline::commands::find(&words) {
             Some((command, path, named)) => container(command, path, &words, named, &args),
             None => instead(SHARDSD, &args),

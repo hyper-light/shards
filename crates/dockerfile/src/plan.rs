@@ -71,6 +71,8 @@ pub struct Plan {
     pub image: Image,
     pub platform: Platform,
     pub warnings: Vec<lint::Warning>,
+    /// SOURCE_DATE_EPOCH, in seconds, when the build has one.
+    pub epoch: Option<i64>,
 }
 
 impl Plan {
@@ -2450,6 +2452,7 @@ impl Planner<'_> {
             image,
             platform,
             warnings: Vec::new(),
+            epoch: self.epoch,
         })
     }
 }

@@ -1555,6 +1555,12 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
   2. Metadata-only builds and host file operations, written to the store so `shards run`
      boots them. buildx's command line, held to buildx's own command tree as D27's
      commands are held to docker/cli's.
+     - Done: buildx's `build` command line (36 answers of buildx v0.37.1's own tree), the
+       exporter (512 configs and manifests of BuildKit's own functions), and builds of
+       base images and settings, end to end. An image `shards build` wrote has the config
+       Docker Desktop's BuildKit wrote for the same Dockerfile, byte for byte (the same
+       digest, checked 2026-10-01), and `shards run` boots it (`tests/build.rs`).
+     - Next: file operations on the host (COPY, ADD, WORKDIR) and their layers.
   3. RUN in a booted VM without a network, and its layer.
   4. Cache keys, then RUN's network, mounts and builder templates.
 
