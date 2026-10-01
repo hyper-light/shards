@@ -38,6 +38,10 @@ exposes no ports: a user exposes one with the CLI or with `EXPOSE`.
 Today's microVMs already fit this: they have no network device at all. The host reaches the
 guest over vsock alone (architecture.md D12).
 
+Default deny covers files and processes as well as ports. Nothing a build step adds, and
+nothing an agent or harness writes or runs, may reach past its own directory and grants,
+directly or through another component (§9).
+
 ## 4. Directives
 
 ### 4.1 `EXPOSE`, with `AS` and `FOR`
@@ -280,7 +284,8 @@ Networks between agents need more than the directives:
 
 - **Images.** `shards pull` and `shards run IMAGE` take OCI images from registries
   (`crates/registry`) and build a root filesystem from their layers (`crates/image`).
-  There is no `shards build` yet.
+  `shards build` builds Dockerfiles as BuildKit does (architecture.md D33); the
+  directives here are not built yet.
 - **Networking.** No network device exists. A microVM is reached only over vsock, so it is
   airgapped today, the default this spec keeps. `EXPOSE`, `NETWORK`, `CONNECT` and remote
   `MCP` servers will reach the network through a network process of the microVM's own, never
@@ -290,7 +295,7 @@ Networks between agents need more than the directives:
   per VM, each isolated as a container would be, without being containers. It is where the
   workloads/workspaces of §4.2 live. Mounts go to one workload, some or all, attached once
   (architecture.md D17). That is how `VOLUME ... FOR`, `SKILL ... FOR` and `MCP ... FOR`
-  would reach their agents, and `HARNESS ... FOR` its harnesses.
+  would reach their agents, and `ATTACH` its harnesses.
 - **Isolation per agent and per microVM**, of network, devices and permissions, is already
   a requirement of that runtime, and `EXPOSE`, `NETWORK` and `CONNECT` extend it.
 
@@ -369,6 +374,29 @@ Recorded as found. The answers the review has given so far are in §8.
       take `--target-kind`?
     - Does unpacking to `/harness/<name>` omit the tag, where agents go to
       `/agents/<name>[_<tag>]`?
+19. **`COPY`, stages, agents and harnesses** (raised 2026-10-01). Each has a recommended
+    answer, for the review to confirm:
+    1. **`COPY --from=<agent or harness>`.** Recommended: allowed. Its root is the
+       artifact's own content, as `--from=<image>`'s root is that image's root filesystem.
+    2. **One namespace.** Recommended: stage aliases, agents and harnesses share one; a
+       name used by two of them is a build error, with the help §4.10 gives, since
+       `--from=main` would otherwise mean either.
+    3. **Writing into an agent's or harness's directory.** Recommended: a build error for
+       any `COPY`, `ADD` or `RUN` that is not that agent's or harness's own directive.
+       Agents are signed artifacts their runtime keeps read-only, and a step that changes
+       their files would change a signed artifact silently. `VOLUME ... FOR` and the
+       scratch directory are how it gets more.
+    4. **The layers of `AGENT` and `HARNESS`.** Recommended: each adds one layer as
+       `COPY --link` does, independent of those below it, so it is cached alone and a new
+       base image does not rebuild it.
+    5. **Directives in stages.** Recommended: `AGENT`, `HARNESS`, `SKILL`, `ATTACH` and
+       every grant belong to the stage they are written in, and the microVM has those of
+       its target stage's lineage only. `COPY --from=<stage>` copies files, never a stage's
+       agents or grants: a builder stage must not widen what the final microVM allows.
+    6. **`SKILL --from=<agent>`.** An agent's config lists the skills it brings. May another
+       agent take one (`SKILL --from=main <skill> FOR other`)? That gives one agent what
+       another shipped, which the rule that agents cannot read one another (§8) has to
+       allow explicitly. Open.
 
 ## 8. Answers from the review
 
@@ -420,3 +448,64 @@ Given 2026-10-01.
   own, is canonical: it survives every store and copy, and shards' runtime reads it. A
   config label carries its digest and a summary, manifest annotations make it findable in
   registries, and attestations serve provenance alone (docs/research/oci-artifacts.md §4).
+
+## 9. Isolation, from build to run
+
+Raised 2026-10-01. Confining an agent's writes to its own directory is not enough: a build
+step can plant what reaches past a directory, and what an agent writes or runs can reach
+past it through something with more access. Both are closed by the same rules, held at
+build time and again at run time.
+
+### 9.1 Domains
+
+Every path in a microVM's filesystem belongs to one domain: the system, one agent (its
+directory, `/agents/<name>[_<tag>]`, and what its directives add under
+`/agent/<name>[_<tag>]/`), or one harness (`/harness/<name>`). Its scratch directory belongs
+to it too. A domain holds only what its own directives put there.
+
+### 9.2 Held at build time
+
+The build knows where every file came from: each step runs on a snapshot of the tree
+(`crates/build`). Before an image is exported, each domain is checked, and any of these
+fails the build with the step's line, the path and why:
+
+- a symlink whose target, resolved inside the image, leaves its domain (`-> /etc`,
+  `-> ../other`), absolute or relative;
+- a hard link whose names lie in two domains: path rules cannot see a hard link;
+- a device node, FIFO or socket in an agent's or harness's domain, and a file there with
+  set-user-ID, set-group-ID or file capabilities: `COPY --from` carries all of them over
+  from a stage, and `--chmod` sets the bits;
+- a path outside a domain owned by that domain's user (`--chown` to an agent's uid on
+  `/etc/...`), and a path inside one owned by another domain's;
+- a write into a domain by a step other than its own directive (§7 Q19.3).
+
+### 9.3 Held at run time
+
+What runs in a domain stays in it, whatever it starts: the confinement is the whole
+process tree's, and nothing in it can drop it. Each agent and harness runs:
+
+- in a mount namespace whose root holds its own domain and what it was granted, so a path
+  outside resolves to nothing, whatever a symlink says;
+- in a PID namespace of its own, so `/proc/<pid>/root` and ptrace reach no other domain's
+  processes;
+- under Landlock rules, with `no_new_privs` set, so set-ID files gain it nothing, and a
+  seccomp filter; Linux makes children inherit all three and none can be undone;
+- with its scratch directory mounted `nosuid,nodev`.
+
+### 9.4 Crossing domains
+
+What one domain produces reaches another (an `ATTACH`ed harness reading an agent's output,
+an agent reading a `VOLUME` shared `FOR` both, the host's `shards cp`) only through what a
+directive declares, and the reader never trusts its shape. It opens paths with
+`openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS)` or their equivalent, refuses FIFOs,
+devices and sockets where it expects files, and reads with bounded sizes, so a symlink, a
+FIFO or a giant file an agent planted cannot redirect, stall or exhaust a component with
+more access.
+
+### 9.5 Tests
+
+Each escape above has an end-to-end test in a real microVM that must fail closed: an agent
+following a planted symlink, using a hard link, running a set-user-ID binary, reading a
+sibling's `/proc` or tracing it; a harness handed a symlink, a FIFO and an oversized file;
+and Agentfiles that try each build-time escape of §9.2. Each guard is mutation-checked: the
+suite fails without it.
