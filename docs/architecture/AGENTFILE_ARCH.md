@@ -408,6 +408,11 @@ Recorded as found. The answers the review has given so far are in §8.
     starts no process, or bound how many it starts (§9.9): an option of `AGENT` and
     `HARNESS`, or a grant of its own? And should `pids.max` have a default?
 
+22. **Ingesting OCI images** (raised 2026-10-01, §10). Is the Agentfile made from an
+    image one image's spec alone, or also a Compose file's services as agents of one
+    microVM? Should an image's `RUN` history be offered as a rebuildable Agentfile, which
+    needs its build context, or is `FROM` by digest the answer?
+
 ## 8. Answers from the review
 
 Given 2026-10-01.
@@ -676,3 +681,37 @@ and each transitive reach of §9.5 and §9.8, a harness attached to an internal-
 and a world-reaching one among them. A test also asks today's workloads to dial the host
 over vsock (§9.7), before the rule that closes it exists. Each guard is mutation-checked:
 the suite fails without it.
+
+## 10. Any OCI image, as a microVM and as an Agentfile
+
+Raised 2026-10-01. shards takes in any valid Linux OCI image and makes of it a microVM, an
+Agentfile, or both. Linux only, as Firecracker runs Linux guests; other `os` values are
+refused by name.
+
+- **What exists.** `shards pull` and `shards run IMAGE` take an image from a registry:
+  an index is resolved to this host's `linux/<arch>` manifest, its layers (gzip, zstd or
+  uncompressed, with whiteouts) are applied, and the root filesystem is written as EROFS
+  and booted, with the config's entrypoint, command, environment, user and working
+  directory (crates/registry, crates/image, D25).
+- **What it takes in.** Every way Docker and OCI tools hand an image over, not only a
+  registry: an OCI image layout directory or its tar (`oci-layout`, `index.json`,
+  `blobs/`, image-spec v1.1 image-layout.md), and the tar `docker save` writes
+  (`manifest.json` and its layers), as `docker load` reads both. Each is verified by its
+  digests before it is used, as a pull is.
+- **What it makes.**
+  - A microVM: the image's root filesystem, booted, its config applied as `docker run`
+    applies it.
+  - An Agentfile that builds the same image: `FROM` the image by digest, so that the
+    build reproduces it exactly, with the config's settings written out as the
+    instructions that set them (`ENV`, `USER`, `WORKDIR`, `ENTRYPOINT`, `CMD`, `EXPOSE`,
+    `LABEL`, `STOPSIGNAL`, `HEALTHCHECK`, `VOLUME`, `SHELL`), and the image's history
+    as comments where the image records it. Under default deny (§3), its `EXPOSE`d ports
+    and `VOLUME`s become declarations the Agentfile shows for the user to grant, not
+    grants.
+- **Tests.** Each form taken in, from images Docker itself writes (`docker save`,
+  `buildx --output type=oci`), boots and runs as `docker run` runs it; and the Agentfile
+  made from each builds an image whose config is the original's.
+- **Open (§7 Q22).** Whether "an Agentfile" means one image's spec alone, or also a
+  Compose file's services as agents of one microVM; and whether an image's `RUN` history
+  should be offered as a rebuildable Agentfile, which needs its build context, rather
+  than `FROM` by digest.
