@@ -19,7 +19,7 @@ use shards_image::tar::{self, Type};
 use crate::Error;
 use crate::copy::{self, Chown, User};
 use crate::data::Sources;
-use crate::vfs::{self, Errno, Fs, PathError};
+use crate::vfs::{self, Errno, Fs, PathError, Place};
 
 /// moby's ImpliedDirectoryMode.
 const IMPLIED_DIR_MODE: u32 = 0o755;
@@ -328,6 +328,12 @@ fn untar(
         budget.entry(&entry)?;
         // filepath.Clean keeps a leading `..`, which joining to the root then removes.
         let name = go::clean(&entry.path);
+        if name != b"."
+            && entry.kind != Type::HardLink
+            && placed(dest, &name, &entry, source, owner, &mut dirs)?
+        {
+            continue;
+        }
         if name != b"/" {
             let parent = copy::dir(&name);
             let parent_path = vfs::join(b"/", &parent);
@@ -434,6 +440,92 @@ fn untar(
         dest.utimes(&path, times).map_err(os)?;
     }
     Ok(())
+}
+
+/// One entry of [`untar`] where its path leads somewhere already: to a free name in a
+/// directory that exists, or to a directory it names again. The path is resolved once and
+/// what follows acts on what it led to, as each call on the path would find it again;
+/// true when done. Anything else (an entry in the way, a directory missing on the way, a
+/// path that leads nowhere) is false, with nothing changed, and goes the way of every
+/// call on the path, which says why as Linux and Go would.
+fn placed(
+    dest: &mut Fs,
+    name: &[u8],
+    entry: &tar::Entry,
+    source: u32,
+    owner: Option<User>,
+    dirs: &mut Vec<(Vec<u8>, (i64, u32))>,
+) -> Result<bool, Error> {
+    let path = vfs::join(b"/", name);
+    let mode = header_mode(entry.mode);
+    let made = match dest.place(&path) {
+        Ok(Place::Free(dir, last)) => {
+            let (op, made) = match entry.kind {
+                Type::Dir => ("mkdir", dest.mkdir_in(dir, &last, mode)),
+                Type::File => ("open", dest.create_in(dir, &last, mode)),
+                Type::BlockDevice | Type::CharDevice | Type::Fifo => {
+                    let kind = match entry.kind {
+                        Type::BlockDevice => Kind::BlockDevice {
+                            major: entry.devmajor,
+                            minor: entry.devminor,
+                        },
+                        Type::CharDevice => Kind::CharDevice {
+                            major: entry.devmajor,
+                            minor: entry.devminor,
+                        },
+                        _ => Kind::Fifo,
+                    };
+                    ("mknod", dest.mknod_in(dir, &last, kind, mode))
+                }
+                Type::Symlink => ("symlink", dest.symlink_in(&entry.link, dir, &last)),
+                Type::HardLink => return Ok(false),
+            };
+            let (id, at) = made.map_err(|errno| {
+                os(PathError {
+                    op,
+                    path: if entry.kind == Type::Symlink {
+                        [&entry.link[..], b" ", &path].concat()
+                    } else {
+                        path.clone()
+                    },
+                    errno,
+                })
+            })?;
+            if entry.kind == Type::File {
+                dest.set_data(
+                    id,
+                    entry.size,
+                    DataRef {
+                        source,
+                        offset: entry.offset,
+                    },
+                );
+            }
+            (id, at)
+        }
+        Ok(Place::Is(id, at)) if entry.kind == Type::Dir && dest.is_dir(id) => (id, at),
+        _ => return Ok(false),
+    };
+    let (id, at) = made;
+    let (uid, gid) = owner.map_or((entry.uid, entry.gid), |u| (u.uid, u.gid));
+    dest.lchown_node(id, at, uid, gid);
+    for (k, v) in &entry.xattrs {
+        if let Err(errno) = dest.setxattr_node(id, at, k, v) {
+            // BestEffortXattrs: what the file system refuses is left out.
+            if !matches!(errno, Errno::NotSup | Errno::Perm) {
+                return Err(Error(errno.text().to_string()));
+            }
+        }
+    }
+    let times = bound(entry.mtime, entry.mtime_nsec);
+    if entry.kind != Type::Symlink {
+        dest.chmod_node(id, at, mode);
+    }
+    dest.utimes_node(id, at, times);
+    if entry.kind == Type::Dir {
+        dirs.push((path, times));
+    }
+    Ok(true)
 }
 
 /// user.MkdirAllAndChown(path, 0755, 0, 0, WithOnlyNew): the directories made, and only

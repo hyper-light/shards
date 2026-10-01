@@ -2719,6 +2719,21 @@ revision before comparing a changed API/implementation.
   (`crates/build/tests/oracle.rs`) passes unchanged, and `run.sh`, n 3: 348, 350 and
   353 MB, from 465 MB. CPU time is unchanged, 5.8 to 5.9 s of user time: the ADD step's
   path walks, path-keyed change sets and staged archive are next.
+- **Fourth round.** What a step changed had been kept as a set of every path it touched,
+  each a heap string, and every operation resolved its path again: about six walks for
+  each entry ADD unpacks. Now an entry carries the number of the last step that changed
+  it, and a directory the entry that names it, so recording a change stamps the entry
+  and climbs to the first ancestor already stamped; a removal leaves its entry in the
+  directory's list, stamped, for its whiteout; the differ lists each directory's
+  stamped entries. Path walks borrow their names instead of copying each. ADD resolves
+  an entry's path once and makes it, owns it, sets its xattrs, mode and times on what it
+  found, falling back to the path calls wherever something is in the way. The index
+  keeps half of each entry's hash beside its id, so a probe reads an entry only when the
+  hashes agree. An uncompressed layer is checked against its DiffID where it is stored,
+  not copied first. The BuildKit oracle passes, with a case added whose files carry
+  `security.capability`, the one extended attribute a layer keeps, which no case had
+  covered. `run.sh`, n 3: 215, 217 and 225 MB; user time 3.5 to 3.7 s, from 5.9 s; the ADD
+  step 3.2 s and the export 1.4 s of wall time.
 
 ### M79. The signal port dialled before the workload starts
 

@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use shards_dockerfile::go;
-use shards_image::erofs::{DataRef, Dir, Kind, Meta, Node, NodeId, Tree};
+use shards_image::erofs::{DataRef, Dir, EntryId, Kind, Meta, Node, NodeId, Tree};
 
 /// MAXSYMLINKS: how many symlinks one path walk follows.
 const MAX_LINKS: u32 = 40;
@@ -101,25 +101,32 @@ fn fail<T>(op: &'static str, path: &[u8], errno: Errno) -> Result<T, PathError> 
     })
 }
 
-/// What a path names, once the directories before its last element are found, with the
-/// path that names it without symlinks: where overlayfs would copy it up to.
+/// What a path names, once the directories before its last element are found.
 enum Found {
-    Node(NodeId, Vec<u8>),
+    /// Its node, and the entry naming it, which the root has none of: where overlayfs
+    /// would copy it up to.
+    Node(NodeId, Option<EntryId>),
     /// The last element is not there; its directory is.
-    Missing {
-        dir: NodeId,
-        name: Vec<u8>,
-        path: Vec<u8>,
-    },
+    Missing { dir: NodeId, name: Vec<u8> },
+}
+
+/// Where a path leads, its last symlink not followed: what each call on that path would
+/// find, resolved once, so that what follows on the same path acts on it directly.
+#[derive(Debug)]
+pub enum Place {
+    /// Something is there: its node, and the entry naming it (none for the root).
+    Is(NodeId, Option<EntryId>),
+    /// Nothing is there: the directory that would hold it, and the name.
+    Free(NodeId, Vec<u8>),
 }
 
 /// What one step changed, as overlayfs's upper directory records it over the snapshot
-/// the step started from: every path made, changed or removed, with the directories above
-/// it; and directories made where one had been removed, which overlayfs makes opaque when
-/// the snapshot below has the path.
+/// the step started from. Every path made, changed or removed, with the directories above
+/// it, is stamped in the tree with the step ([`Tree::mark`]); what is kept here, by path,
+/// is what was removed, and the directories made where one had been, which overlayfs
+/// makes opaque when the snapshot below has the path.
 #[derive(Debug, Clone, Default)]
 pub struct Upper {
-    pub touched: BTreeSet<Vec<u8>>,
     removed: BTreeSet<Vec<u8>>,
     pub recreated: BTreeSet<Vec<u8>>,
 }
@@ -146,19 +153,20 @@ pub struct Fs {
     pub now: (i64, u32),
     pub upper: Upper,
     /// Where paths resolve from: the snapshot's root, or a directory [`Fs::chroot`] made
-    /// the root, and that directory's names from the snapshot's root.
+    /// the root.
     root: NodeId,
-    root_names: Vec<Vec<u8>>,
 }
 
 impl Fs {
-    pub fn new(tree: Tree, now: (i64, u32)) -> Fs {
+    /// A snapshot of `tree`, recording what changes from now on as one step, as
+    /// [`Fs::begin`] starts one.
+    pub fn new(mut tree: Tree, now: (i64, u32)) -> Fs {
+        tree.next_step();
         Fs {
             tree,
             now,
             upper: Upper::default(),
             root: Tree::ROOT,
-            root_names: Vec::new(),
         }
     }
 
@@ -166,40 +174,55 @@ impl Fs {
     /// absolute symlink starts again at it. What changes is still recorded by its path
     /// from the snapshot's root.
     pub fn chroot(&mut self, dir: &[u8]) -> Result<(), PathError> {
-        let (id, canon) = self.lookup("chroot", dir, true)?;
+        let (id, _) = self.lookup("chroot", dir, true)?;
         if !self.is_dir(id) {
             return fail("chroot", dir, Errno::NotDir);
         }
         self.root = id;
-        self.root_names = canon
-            .split(|&c| c == b'/')
-            .filter(|n| !n.is_empty())
-            .map(<[u8]>::to_vec)
-            .collect();
         Ok(())
     }
 
     /// Back to the snapshot's own root.
     pub fn unchroot(&mut self) {
         self.root = Tree::ROOT;
-        self.root_names.clear();
     }
 
     /// Starts a step on this snapshot: nothing is changed yet.
     pub fn begin(&mut self) {
         self.upper = Upper::default();
+        self.tree.next_step();
     }
 
-    /// Records `path` as changed, and the directories above it as copied up.
-    fn mark(&mut self, path: &[u8]) {
-        let mut p = path.to_vec();
-        while p.len() > 1 {
-            if !self.upper.touched.insert(p.clone()) {
-                break;
-            }
-            let at = p.iter().rposition(|&c| c == b'/').unwrap_or(0);
-            p.truncate(at.max(1));
+    /// Records what `entry` names as changed, and the directories above it as copied up.
+    /// The root has no entry, and nothing above it.
+    fn mark(&mut self, entry: Option<EntryId>) {
+        if let Some(e) = entry {
+            self.tree.mark(e);
         }
+    }
+
+    /// The absolute path of directory `dir` from the snapshot's root, symlinks aside.
+    fn dir_path(&self, dir: NodeId) -> Vec<u8> {
+        let mut names: Vec<&[u8]> = Vec::new();
+        let mut at = dir;
+        while let Some((parent, name)) = self.tree.up(at).and_then(|e| self.tree.entry(e)) {
+            names.push(name);
+            at = parent;
+        }
+        let mut p = Vec::new();
+        for n in names.iter().rev() {
+            p.push(b'/');
+            p.extend_from_slice(n);
+        }
+        if p.is_empty() {
+            p.push(b'/');
+        }
+        p
+    }
+
+    /// The absolute path of `name` in `dir`.
+    fn path_in(&self, dir: NodeId, name: &[u8]) -> Vec<u8> {
+        join(&self.dir_path(dir), name)
     }
 
     pub fn node(&self, id: NodeId) -> Option<&Node> {
@@ -215,20 +238,19 @@ impl Fs {
     }
 
     /// Walks `path` from the root as namei does; the last element's symlink is followed
-    /// when `follow` is set, or when the path ends in a slash.
+    /// when `follow` is set, or when the path ends in a slash. Names are borrowed from the
+    /// path and from the targets of the symlinks followed, never copied.
     fn walk(&self, path: &[u8], follow: bool) -> Result<Found, Errno> {
         if path.len() >= 4096 {
             return Err(Errno::NameTooLong);
         }
         // What remains to walk, last element first, and the directories walked through.
-        let mut todo: Vec<Vec<u8>> = Vec::new();
+        let mut todo: Vec<&[u8]> = Vec::new();
         let mut trailing = path.ends_with(b"/");
         push_elements(&mut todo, path);
         let mut stack: Vec<NodeId> = vec![self.root];
-        // The names of the directories on `stack` past the root, and of `current` when it
-        // is not a directory.
-        let mut names: Vec<Vec<u8>> = self.root_names.clone();
-        let mut leaf: Option<Vec<u8>> = None;
+        // The entry naming `current`, when it is no directory.
+        let mut leaf: Option<EntryId> = None;
         let mut links = 0u32;
         let mut current = self.root;
         while let Some(name) = todo.pop() {
@@ -248,7 +270,6 @@ impl Fs {
             if name == b".." {
                 if stack.len() > 1 {
                     stack.pop();
-                    names.pop();
                 }
                 current = stack.last().copied().unwrap_or(self.root);
                 if last {
@@ -256,13 +277,11 @@ impl Fs {
                 }
                 continue;
             }
-            let Some(child) = self.tree.child(current, &name) else {
+            let Some((entry, child)) = self.tree.lookup(current, name) else {
                 if last {
-                    let path = canonical(&names, Some(&name));
                     return Ok(Found::Missing {
                         dir: current,
-                        name,
-                        path,
+                        name: name.to_vec(),
                     });
                 }
                 return Err(Errno::NoEnt);
@@ -282,7 +301,6 @@ impl Fs {
                 }
                 if target.first() == Some(&b'/') {
                     stack.truncate(1);
-                    names.truncate(self.root_names.len());
                     current = self.root;
                 }
                 if target.ends_with(b"/") && last {
@@ -294,23 +312,19 @@ impl Fs {
             current = child;
             if self.is_dir(child) {
                 stack.push(child);
-                names.push(name);
             } else {
-                leaf = Some(name);
+                leaf = Some(entry);
             }
         }
         if trailing && !self.is_dir(current) {
             return Err(Errno::NotDir);
         }
-        let path = canonical(
-            &names,
-            if self.is_dir(current) {
-                None
-            } else {
-                leaf.as_deref()
-            },
-        );
-        Ok(Found::Node(current, path))
+        let entry = if self.is_dir(current) {
+            self.tree.up(current)
+        } else {
+            leaf
+        };
+        Ok(Found::Node(current, entry))
     }
 
     /// `lstat(2)`: what `path` names, its last symlink not followed.
@@ -318,25 +332,37 @@ impl Fs {
         self.lookup("lstat", path, false).map(|(id, _)| id)
     }
 
+    /// Where `path` leads, as [`Fs::lstat`] walks it, or why it leads nowhere.
+    pub fn place(&self, path: &[u8]) -> Result<Place, Errno> {
+        Ok(match self.walk(path, false)? {
+            Found::Node(id, entry) => Place::Is(id, entry),
+            Found::Missing { dir, name } => Place::Free(dir, name),
+        })
+    }
+
     /// `stat(2)`: what `path` names, its last symlink followed.
     pub fn stat(&self, path: &[u8]) -> Result<NodeId, PathError> {
         self.lookup("stat", path, true).map(|(id, _)| id)
     }
 
-    /// What `path` names and its path without symlinks.
-    fn lookup(&self, op: &'static str, path: &[u8], follow: bool) -> Result<(NodeId, Vec<u8>), PathError> {
+    /// What `path` names and the entry naming it.
+    fn lookup(
+        &self,
+        op: &'static str,
+        path: &[u8],
+        follow: bool,
+    ) -> Result<(NodeId, Option<EntryId>), PathError> {
         match self.walk(path, follow) {
-            Ok(Found::Node(id, canon)) => Ok((id, canon)),
+            Ok(Found::Node(id, entry)) => Ok((id, entry)),
             Ok(Found::Missing { .. }) => fail(op, path, Errno::NoEnt),
             Err(e) => fail(op, path, e),
         }
     }
 
-    /// Where a new entry `path` goes: its directory, name and path without symlinks, or
-    /// why it cannot go there.
-    fn create_at(&self, op: &'static str, path: &[u8]) -> Result<(NodeId, Vec<u8>, Vec<u8>), PathError> {
+    /// Where a new entry `path` goes: its directory and name, or why it cannot go there.
+    fn create_at(&self, op: &'static str, path: &[u8]) -> Result<(NodeId, Vec<u8>), PathError> {
         match self.walk(path, false) {
-            Ok(Found::Missing { dir, name, path }) => Ok((dir, name, path)),
+            Ok(Found::Missing { dir, name }) => Ok((dir, name)),
             Ok(Found::Node(..)) => fail(op, path, Errno::Exist),
             Err(e) => fail(op, path, e),
         }
@@ -362,18 +388,25 @@ impl Fs {
         &mut self,
         op: &'static str,
         path: &[u8],
-        at: (NodeId, Vec<u8>, Vec<u8>),
+        at: (NodeId, Vec<u8>),
         node: Node,
     ) -> Result<NodeId, PathError> {
-        let (dir, name, canon) = at;
-        let id = self.tree.insert(dir, &name, node).map_err(|_| PathError {
-            op,
-            path: path.to_vec(),
-            errno: Errno::Inval,
-        })?;
+        self.add_in(at.0, &at.1, node)
+            .map(|(id, _)| id)
+            .map_err(|errno| PathError {
+                op,
+                path: path.to_vec(),
+                errno,
+            })
+    }
+
+    /// Adds `node` as `name` in `dir`, which holds no such name: the node and its entry.
+    fn add_in(&mut self, dir: NodeId, name: &[u8], node: Node) -> Result<(NodeId, Option<EntryId>), Errno> {
+        let id = self.tree.insert(dir, name, node).map_err(|_| Errno::Inval)?;
         self.touch(dir);
-        self.mark(&canon);
-        Ok(id)
+        let entry = self.tree.lookup(dir, name).map(|(e, _)| e);
+        self.mark(entry);
+        Ok((id, entry))
     }
 
     fn fresh(&self, kind: Kind, mode: u32, dir: NodeId) -> Node {
@@ -393,17 +426,36 @@ impl Fs {
 
     /// `mkdir(2)` with `perm`'s permission and sticky bits, less the umask.
     pub fn mkdir(&mut self, path: &[u8], perm: u32) -> Result<NodeId, PathError> {
-        let at = self.create_at("mkdir", path)?;
-        let (_, _, sgid) = self.new_owner(at.0);
+        let (dir, name) = self.create_at("mkdir", path)?;
+        self.mkdir_in(dir, &name, perm)
+            .map(|(id, _)| id)
+            .map_err(|errno| PathError {
+                op: "mkdir",
+                path: path.to_vec(),
+                errno,
+            })
+    }
+
+    /// [`Fs::mkdir`] at a free place.
+    pub fn mkdir_in(
+        &mut self,
+        dir: NodeId,
+        name: &[u8],
+        perm: u32,
+    ) -> Result<(NodeId, Option<EntryId>), Errno> {
+        let (_, _, sgid) = self.new_owner(dir);
         let mut mode = perm & 0o1777 & !UMASK;
         if sgid {
             mode |= S_ISGID;
         }
-        if self.upper.removed.contains(&at.2) {
-            self.upper.recreated.insert(at.2.clone());
+        if !self.upper.removed.is_empty() {
+            let canon = self.path_in(dir, name);
+            if self.upper.removed.contains(&canon) {
+                self.upper.recreated.insert(canon);
+            }
         }
-        let node = self.fresh(Kind::Dir(Dir::default()), mode, at.0);
-        self.add("mkdir", path, at, node)
+        let node = self.fresh(Kind::Dir(Dir::default()), mode, dir);
+        self.add_in(dir, name, node)
     }
 
     /// `mknod(2)`: a device, a FIFO, or (with `Kind::File`) an empty file.
@@ -411,6 +463,18 @@ impl Fs {
         let at = self.create_at("mknod", path)?;
         let node = self.fresh(kind, perm & !UMASK, at.0);
         self.add("mknod", path, at, node)
+    }
+
+    /// [`Fs::mknod`] at a free place.
+    pub fn mknod_in(
+        &mut self,
+        dir: NodeId,
+        name: &[u8],
+        kind: Kind,
+        perm: u32,
+    ) -> Result<(NodeId, Option<EntryId>), Errno> {
+        let node = self.fresh(kind, perm & !UMASK, dir);
+        self.add_in(dir, name, node)
     }
 
     /// `symlink(2)`.
@@ -421,6 +485,28 @@ impl Fs {
         })?;
         let node = self.fresh(Kind::Symlink(target.to_vec()), 0o777, at.0);
         self.add("symlink", path, at, node)
+    }
+
+    /// [`Fs::symlink`] at a free place.
+    pub fn symlink_in(
+        &mut self,
+        target: &[u8],
+        dir: NodeId,
+        name: &[u8],
+    ) -> Result<(NodeId, Option<EntryId>), Errno> {
+        let node = self.fresh(Kind::Symlink(target.to_vec()), 0o777, dir);
+        self.add_in(dir, name, node)
+    }
+
+    /// [`Fs::create`] at a free place: a new, empty file.
+    pub fn create_in(
+        &mut self,
+        dir: NodeId,
+        name: &[u8],
+        perm: u32,
+    ) -> Result<(NodeId, Option<EntryId>), Errno> {
+        let node = self.fresh(Kind::File { size: 0, data: EMPTY }, perm & !UMASK, dir);
+        self.add_in(dir, name, node)
     }
 
     /// `link(2)`, which does not follow `old` if it is a symlink.
@@ -434,7 +520,7 @@ impl Fs {
         if self.is_dir(target) {
             return fail("link", &both, Errno::Perm);
         }
-        let (dir, name, canon) = self.create_at("link", new).map_err(|e| PathError {
+        let (dir, name) = self.create_at("link", new).map_err(|e| PathError {
             path: both.clone(),
             ..e
         })?;
@@ -444,7 +530,8 @@ impl Fs {
             errno: Errno::Inval,
         })?;
         self.touch(dir);
-        self.mark(&canon);
+        let entry = self.tree.lookup(dir, &name).map(|(e, _)| e);
+        self.mark(entry);
         Ok(())
     }
 
@@ -452,7 +539,7 @@ impl Fs {
     /// call it: an existing file, its last symlink followed, is emptied.
     pub fn create(&mut self, path: &[u8], perm: u32) -> Result<NodeId, PathError> {
         match self.walk(path, true) {
-            Ok(Found::Node(id, canon)) => {
+            Ok(Found::Node(id, entry)) => {
                 if self.is_dir(id) {
                     return fail("open", path, Errno::IsDir);
                 }
@@ -464,16 +551,12 @@ impl Fs {
                     n.meta.mtime = now.0;
                     n.meta.mtime_nsec = now.1;
                 }
-                self.mark(&canon);
+                self.mark(entry);
                 Ok(id)
             }
-            Ok(Found::Missing {
-                dir,
-                name,
-                path: canon,
-            }) => {
+            Ok(Found::Missing { dir, name }) => {
                 let node = self.fresh(Kind::File { size: 0, data: EMPTY }, perm & !UMASK, dir);
-                self.add("open", path, (dir, name, canon), node)
+                self.add("open", path, (dir, name), node)
             }
             Err(e) => fail("open", path, e),
         }
@@ -494,8 +577,8 @@ impl Fs {
     }
 
     /// The entry `path` names, its last symlink not followed: its directory, name, node,
-    /// and its path without symlinks.
-    fn entry(&self, op: &'static str, path: &[u8]) -> Result<(NodeId, Vec<u8>, NodeId, Vec<u8>), PathError> {
+    /// and its id.
+    fn entry(&self, op: &'static str, path: &[u8]) -> Result<(NodeId, Vec<u8>, NodeId, EntryId), PathError> {
         let (dir_path, name) = split(path);
         let name = name.to_vec();
         if name.is_empty() || name == b"." || name == b".." {
@@ -509,47 +592,49 @@ impl Fs {
                 },
             );
         }
-        let (dir, dir_canon) = match self.walk(dir_path, true) {
-            Ok(Found::Node(d, c)) => (d, c),
+        let dir = match self.walk(dir_path, true) {
+            Ok(Found::Node(d, _)) => d,
             Ok(Found::Missing { .. }) => return fail(op, path, Errno::NoEnt),
             Err(e) => return fail(op, path, e),
         };
         if !self.is_dir(dir) {
             return fail(op, path, Errno::NotDir);
         }
-        match self.tree.child(dir, &name) {
-            Some(id) => Ok((dir, name.clone(), id, join(&dir_canon, &name))),
+        match self.tree.lookup(dir, &name) {
+            Some((entry, id)) => Ok((dir, name, id, entry)),
             None => fail(op, path, Errno::NoEnt),
         }
     }
 
     /// Takes an entry out, recording its removal.
-    fn take(&mut self, dir: NodeId, name: &[u8], canon: &[u8]) {
+    fn take(&mut self, dir: NodeId, name: &[u8], entry: EntryId) {
+        let canon = self.path_in(dir, name);
         self.tree.remove(dir, name);
         self.touch(dir);
-        self.mark(canon);
-        self.upper.removed.insert(canon.to_vec());
+        // The removed entry stays in its directory's list, stamped: a whiteout's place.
+        self.mark(Some(entry));
+        self.upper.removed.insert(canon);
     }
 
     /// `unlink(2)`.
     pub fn unlink(&mut self, path: &[u8]) -> Result<(), PathError> {
-        let (dir, name, id, canon) = self.entry("unlink", path)?;
+        let (dir, name, id, entry) = self.entry("unlink", path)?;
         if self.is_dir(id) {
             return fail("unlink", path, Errno::IsDir);
         }
-        self.take(dir, &name, &canon);
+        self.take(dir, &name, entry);
         Ok(())
     }
 
     /// `rmdir(2)`.
     pub fn rmdir(&mut self, path: &[u8]) -> Result<(), PathError> {
-        let (dir, name, id, canon) = self.entry("rmdir", path)?;
+        let (dir, name, id, entry) = self.entry("rmdir", path)?;
         match self.tree.dir_len(id) {
             None => return fail("rmdir", path, Errno::NotDir),
             Some(n) if n > 0 => return fail("rmdir", path, Errno::NotEmpty),
             Some(_) => {}
         }
-        self.take(dir, &name, &canon);
+        self.take(dir, &name, entry);
         Ok(())
     }
 
@@ -576,8 +661,8 @@ impl Fs {
             return fail("RemoveAll", path, Errno::Inval);
         }
         match self.entry("RemoveAll", path) {
-            Ok((dir, name, _, canon)) => {
-                self.take(dir, &name, &canon);
+            Ok((dir, name, _, entry)) => {
+                self.take(dir, &name, entry);
                 Ok(())
             }
             Err(e) if matches!(e.errno, Errno::NoEnt | Errno::NotDir) => Ok(()),
@@ -603,23 +688,24 @@ impl Fs {
                 Ok(_) => fail("rename", &both, Errno::Exist),
             };
         }
-        let (odir, oname, id, ocanon) = self.entry("rename", old).map_err(lerr)?;
+        let (odir, oname, id, oentry) = self.entry("rename", old).map_err(lerr)?;
         if self.is_dir(id) {
             // overlayfs refuses to move a directory without redirect_dir, which BuildKit's
             // differ refuses too; nothing here moves one.
             return fail("rename", &both, Errno::XDev);
         }
-        let (ndir, nname, ncanon) = match self.walk(new, false) {
-            Ok(Found::Missing { dir, name, path }) => (dir, name, path),
+        let (ndir, nname) = match self.walk(new, false) {
+            Ok(Found::Missing { dir, name }) => (dir, name),
             Ok(Found::Node(existing, _)) => {
-                let (dir, name, _, canon) = self.entry("rename", new).map_err(lerr)?;
+                let (dir, name, _, _) = self.entry("rename", new).map_err(lerr)?;
                 if self.is_dir(existing) {
                     return fail("rename", &both, Errno::IsDir);
                 }
-                (dir, name, canon)
+                (dir, name)
             }
             Err(e) => return fail("rename", &both, e),
         };
+        let ocanon = self.path_in(odir, &oname);
         self.tree
             .rename(odir, &oname, ndir, &nname)
             .map_err(|_| PathError {
@@ -629,27 +715,39 @@ impl Fs {
             })?;
         self.touch(odir);
         self.touch(ndir);
-        self.mark(&ocanon);
+        self.mark(Some(oentry));
         self.upper.removed.insert(ocanon);
-        self.mark(&ncanon);
+        let nentry = self.tree.lookup(ndir, &nname).map(|(e, _)| e);
+        self.mark(nentry);
         Ok(())
     }
 
     /// `chmod(2)`, which follows symlinks: Go's `os.Chmod` with the set-ID and sticky bits
     /// it carries over.
     pub fn chmod(&mut self, path: &[u8], mode: u32) -> Result<(), PathError> {
-        let (id, canon) = self.lookup("chmod", path, true)?;
+        let (id, entry) = self.lookup("chmod", path, true)?;
+        self.chmod_node(id, entry, mode);
+        Ok(())
+    }
+
+    /// [`Fs::chmod`] of what a path led to, symlinks followed.
+    pub fn chmod_node(&mut self, id: NodeId, entry: Option<EntryId>, mode: u32) {
         if let Some(n) = self.node_mut(id) {
             n.meta.mode = (mode & 0o7777) as u16;
         }
-        self.mark(&canon);
-        Ok(())
+        self.mark(entry);
     }
 
     /// `lchown(2)`; an ID of `u32::MAX`, (uid_t)-1, is left as it is.
     pub fn lchown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), PathError> {
-        let (id, canon) = self.lookup("lchown", path, false)?;
-        self.mark(&canon);
+        let (id, entry) = self.lookup("lchown", path, false)?;
+        self.lchown_node(id, entry, uid, gid);
+        Ok(())
+    }
+
+    /// [`Fs::lchown`] of what a path led to.
+    pub fn lchown_node(&mut self, id: NodeId, entry: Option<EntryId>, uid: u32, gid: u32) {
+        self.mark(entry);
         let dir = self.is_dir(id);
         if let Some(n) = self.node_mut(id) {
             // (uid_t)-1 leaves an ID as it is.
@@ -669,25 +767,45 @@ impl Fs {
                 n.meta.xattrs.remove(CAPABILITY);
             }
         }
-        Ok(())
     }
 
     /// `utimensat(path, AT_SYMLINK_NOFOLLOW)`: the modification time.
     pub fn utimes(&mut self, path: &[u8], t: (i64, u32)) -> Result<(), PathError> {
-        let (id, canon) = self.lookup("utimes", path, false)?;
-        self.mark(&canon);
+        let (id, entry) = self.lookup("utimes", path, false)?;
+        self.utimes_node(id, entry, t);
+        Ok(())
+    }
+
+    /// [`Fs::utimes`] of what a path led to.
+    pub fn utimes_node(&mut self, id: NodeId, entry: Option<EntryId>, t: (i64, u32)) {
+        self.mark(entry);
         if let Some(n) = self.node_mut(id) {
             n.meta.mtime = t.0;
             n.meta.mtime_nsec = t.1;
         }
-        Ok(())
     }
 
     /// `lsetxattr(2)`, or `setxattr(2)` when `follow` is set.
     pub fn setxattr(&mut self, path: &[u8], key: &[u8], value: &[u8], follow: bool) -> Result<(), PathError> {
-        let (id, canon) = self.lookup("setxattr", path, follow)?;
+        let (id, entry) = self.lookup("setxattr", path, follow)?;
+        self.setxattr_node(id, entry, key, value)
+            .map_err(|errno| PathError {
+                op: "setxattr",
+                path: path.to_vec(),
+                errno,
+            })
+    }
+
+    /// [`Fs::setxattr`] of what a path led to.
+    pub fn setxattr_node(
+        &mut self,
+        id: NodeId,
+        entry: Option<EntryId>,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), Errno> {
         let Some(n) = self.node(id) else {
-            return fail("setxattr", path, Errno::NoEnt);
+            return Err(Errno::NoEnt);
         };
         let plain = matches!(n.kind, Kind::Dir(_) | Kind::File { .. });
         let errno = if key.starts_with(b"user.") {
@@ -704,9 +822,9 @@ impl Fs {
             Some(Errno::NotSup)
         };
         if let Some(errno) = errno {
-            return fail("setxattr", path, errno);
+            return Err(errno);
         }
-        self.mark(&canon);
+        self.mark(entry);
         if let Some(n) = self.node_mut(id) {
             n.meta.xattrs.insert(key.to_vec(), value.to_vec());
         }
@@ -773,24 +891,12 @@ pub const EMPTY: DataRef = DataRef {
     offset: 0,
 };
 
-/// The absolute path of `names`, then `last`.
-fn canonical(names: &[Vec<u8>], last: Option<&[u8]>) -> Vec<u8> {
-    let mut p = Vec::new();
-    for n in names.iter().map(Vec::as_slice).chain(last) {
-        p.push(b'/');
-        p.extend_from_slice(n);
-    }
-    if p.is_empty() {
-        p.push(b'/');
-    }
-    p
-}
-
 /// Pushes `path`'s elements onto `todo` so the first is popped first.
-fn push_elements(todo: &mut Vec<Vec<u8>>, path: &[u8]) {
-    let elements: Vec<&[u8]> = path.split(|&c| c == b'/').filter(|e| !e.is_empty()).collect();
-    for e in elements.into_iter().rev() {
-        todo.push(e.to_vec());
+fn push_elements<'p>(todo: &mut Vec<&'p [u8]>, path: &'p [u8]) {
+    let at = todo.len();
+    todo.extend(path.split(|&c| c == b'/').filter(|e| !e.is_empty()));
+    if let Some(added) = todo.get_mut(at..) {
+        added.reverse();
     }
 }
 

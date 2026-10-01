@@ -314,18 +314,35 @@ impl Drop for Partial {
 
 /// A layer's archive, decompressed and checked against its DiffID, in a file under
 /// `ingest/` that goes when this is dropped.
-pub struct Unpacked(Partial);
+pub struct Unpacked(Tar);
 
 impl std::fmt::Debug for Unpacked {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Unpacked({})", self.0.path.display())
+        write!(f, "Unpacked({})", self.0.path().display())
     }
 }
 
 impl Unpacked {
     /// The archive, opened for reading.
     pub fn open(&self) -> Result<File, Error> {
-        Ok(File::open(&self.0.path)?)
+        Ok(File::open(self.0.path())?)
+    }
+}
+
+/// A layer's archive, checked against its DiffID: a blob that is its own archive, read
+/// where it is, or a decompressed copy, which goes when this does. A blob is only read:
+/// copying one that needs no decompressing wrote it to disk again for nothing (PM M78).
+enum Tar {
+    Blob(PathBuf),
+    Temp(Partial),
+}
+
+impl Tar {
+    fn path(&self) -> &Path {
+        match self {
+            Tar::Blob(p) => p,
+            Tar::Temp(p) => &p.path,
+        }
     }
 }
 
@@ -838,49 +855,58 @@ impl Store {
     /// whole decompressed stream, bytes after the tar's end included, must match the
     /// DiffID, as containerd's applier checks it (`core/diff/apply/apply.go`), and must
     /// not pass `max` bytes.
-    fn unpack(
-        &self,
-        layer: &Layer,
-        bytes: &mut u64,
-        limits: &Limits,
-        room: &mut Room,
-    ) -> Result<Partial, Error> {
+    fn unpack(&self, layer: &Layer, bytes: &mut u64, limits: &Limits, room: &mut Room) -> Result<Tar, Error> {
         let how = oci::layer_compression(&layer.media_type)?;
-        let mut file = File::open(self.blob_path(&layer.blob))?;
+        let blob = self.blob_path(&layer.blob);
+        let mut file = File::open(&blob)?;
         let mut head = Vec::with_capacity(8);
         if how == oci::LayerCompression::Sniffed {
             (&mut file).take(8).read_to_end(&mut head)?;
             file.rewind()?;
         }
         let mut src = BufReader::with_capacity(CHUNK, file);
+        let check = |hasher: Hasher| {
+            let actual = hasher.finish();
+            if actual != layer.diff_id {
+                return bad(format!(
+                    "layer {}: its content hashes to {actual}, not its DiffID {}",
+                    layer.blob, layer.diff_id
+                ));
+            }
+            Ok(())
+        };
+        let how = compression(&head);
+        if matches!(how, Compression::None) {
+            let mut sink = Sink {
+                hasher: Hasher::new(layer.diff_id.algorithm()),
+                out: None,
+                written: bytes,
+                max: limits.bytes,
+            };
+            io::copy(&mut src, &mut sink)?;
+            check(sink.hasher)?;
+            return Ok(Tar::Blob(blob));
+        }
         let mut partial = Partial::create(&self.root.join("ingest"))?;
         let mut sink = Sink {
             hasher: Hasher::new(layer.diff_id.algorithm()),
-            out: Checked {
+            out: Some(Checked {
                 out: &mut partial,
                 room,
-            },
+            }),
             written: bytes,
             max: limits.bytes,
         };
-        match compression(&head) {
-            Compression::None => {
-                io::copy(&mut src, &mut sink)?;
-            }
+        match how {
             Compression::Gzip => {
                 io::copy(&mut flate2::bufread::MultiGzDecoder::new(src), &mut sink)?;
             }
             Compression::Zstd => zstd(&mut src, &mut sink)?,
+            Compression::None => {}
         }
-        let actual = sink.hasher.finish();
-        if actual != layer.diff_id {
-            return bad(format!(
-                "layer {}: its content hashes to {actual}, not its DiffID {}",
-                layer.blob, layer.diff_id
-            ));
-        }
+        check(sink.hasher)?;
         partial.flush()?;
-        Ok(partial)
+        Ok(Tar::Temp(partial))
     }
 
     /// A new stage: on the store's file system, so files cloned into it share their
@@ -945,7 +971,7 @@ impl Store {
         for (i, l) in layers.iter().enumerate() {
             let tar = self.unpack(l, &mut bytes, limits, &mut room)?;
             let source = u32::try_from(i).map_err(|_| Error("too many layers".into()))?;
-            let file = File::open(&tar.path)?;
+            let file = File::open(tar.path())?;
             let mut count = |e: &crate::tar::Entry| {
                 entries += 1;
                 let held = e.path.len() + e.link.len();
@@ -978,7 +1004,7 @@ impl Store {
         }
         let files = tars
             .iter()
-            .map(|t| File::open(&t.path))
+            .map(|t| File::open(t.path()))
             .collect::<io::Result<Vec<_>>>()?;
         let mut partial = Partial::create(&ingest)?;
         let mut out = Checked {
@@ -1091,11 +1117,11 @@ impl Write for Checked<'_> {
     }
 }
 
-/// Where decompressed layer bytes go: hashed, counted against the image's budget, and
-/// written.
+/// Where a layer's archive goes as it is checked: hashed, counted against the image's
+/// limit, and written to `out` when it is kept apart from its blob.
 struct Sink<'a> {
     hasher: Hasher,
-    out: Checked<'a>,
+    out: Option<Checked<'a>>,
     written: &'a mut u64,
     max: u64,
 }
@@ -1110,7 +1136,9 @@ impl Write for Sink<'_> {
             )));
         }
         self.hasher.update(buf);
-        self.out.write_all(buf)?;
+        if let Some(out) = &mut self.out {
+            out.write_all(buf)?;
+        }
         Ok(buf.len())
     }
 
@@ -1288,7 +1316,7 @@ mod tests {
                 diff_id: diff_id.clone(),
             };
             let out = unpack_within(&store, &layer, 1 << 20).unwrap();
-            assert_eq!(fs::read(&out.path).unwrap(), tar);
+            assert_eq!(fs::read(out.path()).unwrap(), tar);
             drop(out);
             // A wrong DiffID, or a cap below the size, and nothing is kept.
             let wrong = Layer {
@@ -1307,7 +1335,28 @@ mod tests {
         };
         assert!(unpack_within(&store, &raw(diff_id.clone()), 1 << 20).is_err());
         let out = unpack_within(&store, &raw(sha256(&gz)), 1 << 20).unwrap();
-        assert_eq!(fs::read(&out.path).unwrap(), gz);
+        assert_eq!(fs::read(out.path()).unwrap(), gz);
+        drop(out);
+        // A plain blob is read where it is, and still checked: one changed on disk after
+        // it was stored is refused.
+        let plain = Layer {
+            blob: sha256(&tar),
+            media_type: oci::media::OCI_LAYER.into(),
+            diff_id: diff_id.clone(),
+        };
+        assert!(unpack_within(&store, &plain, 1 << 20).is_ok());
+        let path = store.blob_path(&plain.blob);
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        fs::set_permissions(&path, perms).unwrap();
+        let mut changed = tar.clone();
+        changed[600] ^= 1;
+        fs::write(&path, &changed).unwrap();
+        match unpack_within(&store, &plain, 1 << 20) {
+            Err(e) => assert!(e.to_string().contains("not its DiffID"), "{e}"),
+            Ok(_) => panic!("a changed blob was taken"),
+        }
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1553,7 +1602,7 @@ mod tests {
             .ingest(&layer.blob, blob.len() as u64, &mut &blob[..])
             .unwrap();
         let out = unpack_within(&store, &layer, 1 << 20).unwrap();
-        assert_eq!(fs::read(&out.path).unwrap(), tar);
+        assert_eq!(fs::read(out.path()).unwrap(), tar);
         // The frame decodes, but its last 4 bytes, the checksum, disagree.
         let mut blob = compress_to_vec(&tar[..], CompressionLevel::Fastest);
         if let Some(last) = blob.last_mut() {
@@ -1611,7 +1660,7 @@ mod tests {
     }
 
     /// Unpacks `layer` alone, within `max` bytes.
-    fn unpack_within(store: &Store, layer: &Layer, max: u64) -> Result<Partial, Error> {
+    fn unpack_within(store: &Store, layer: &Layer, max: u64) -> Result<Tar, Error> {
         let limits = Limits {
             bytes: max,
             ..Limits::none()

@@ -66,9 +66,18 @@ big_first = tar([{"name": "big", "data": "".join(chr(97 + i % 26) for i in range
 bomb = tar([{"name": "zeros", "data": "\0" * (64 << 20)}])
 many = tar([{"name": f"d{n // 100}/f{n}"} for n in range(5000)])
 times = tar([{"name": "old", "data": "o", "mtime": -5}, {"name": "far", "data": "f", "mtime": 99999999999}])
+# File capabilities, the one extended attribute a layer keeps: VFS_CAP_REVISION_2 with
+# the effective flag, CAP_NET_BIND_SERVICE permitted (linux/capability.h). moby sets
+# xattrs after the lchown that would clear them, so they reach the layer.
+cap = "\x01\x00\x00\x02" + "\x00\x04\x00\x00" + "\x00" * 12
+caps = tar([
+    {"name": "bin/", "type": "dir", "mode": 0o755},
+    {"name": "bin/serve", "data": "s", "mode": 0o755, "xattrs": {"security.capability": cap}},
+    {"name": "bin/both", "data": "b", "mode": 0o755, "uid": 1000, "xattrs": {"security.capability": cap, "user.note": "n"}},
+])
 print(json.dumps({k: base64.b64encode(v).decode() for k, v in {
     "simple.tar": simple, "simple.tar.gz": gz(simple), "simple.tar.bz2": bz2.compress(simple),
     "simple.tar.xz": lzma.compress(simple, format=lzma.FORMAT_XZ), "simple.tar.zst": zst,
-    "evil.tar": evil, "implied.tar": implied, "replace.tar": replace, "dot.tar": dot, "times.tar": times, "big-first.tar.gz": gz(big_first), "bomb.tar.gz": gz(bomb), "many.tar.gz": gz(many),
+    "evil.tar": evil, "caps.tar": caps, "implied.tar": implied, "replace.tar": replace, "dot.tar": dot, "times.tar": times, "big-first.tar.gz": gz(big_first), "bomb.tar.gz": gz(bomb), "many.tar.gz": gz(many),
     "plain.gz": gz(b"just text\n"), "fake.tar": b"not an archive at all\n" * 40,
 }.items()}))

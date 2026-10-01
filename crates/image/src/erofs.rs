@@ -94,18 +94,27 @@ pub trait Source {
 }
 
 /// A directory's entries, which only its [`Tree`] reads or changes: the head of its list
-/// of entries and how many are live. [`Dir::default`] is an empty directory.
+/// of entries, how many are live, and the entry that names the directory itself, which
+/// a directory has one of. [`Dir::default`] is an empty directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dir {
     first: u32,
     live: u32,
+    up: u32,
 }
 
 impl Default for Dir {
     fn default() -> Dir {
-        Dir { first: NONE, live: 0 }
+        Dir {
+            first: NONE,
+            live: 0,
+            up: NONE,
+        }
     }
 }
+
+/// An entry of a [`Tree`], by id: a name in a directory.
+pub type EntryId = u32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
@@ -201,6 +210,10 @@ struct Link {
     /// Where the name starts in [`Tree::names`]: one length byte, then the name.
     name: u32,
     next: u32,
+    /// The last step [`Tree::mark`] stamped the entry with: a step that made, changed or
+    /// removed it, or something below it. Only `mark` stamps, so a stamped entry's
+    /// directories are stamped too.
+    stamp: u32,
 }
 
 /// Entries by directory and name: open addressing with linear probing (Knuth, TAOCP
@@ -208,12 +221,20 @@ struct Link {
 /// from archives no one vouches for, so the hash is SipHash with keys drawn for each
 /// process (std's `RandomState`): a chosen set of names cannot pile onto one slot.
 /// Removed entries keep their slots, so the probes past them still run, until the
-/// table is rebuilt.
+/// table is rebuilt. A slot holds the entry's id and the top half of its hash, so a probe
+/// reads an entry and its name only when their hashes agree that far.
 #[derive(Debug, Clone, Default)]
 struct Index {
-    slots: Vec<u32>,
+    slots: Vec<u64>,
     used: usize,
     keys: std::hash::RandomState,
+}
+
+/// An empty slot: no entry has id [`NONE`].
+const EMPTY: u64 = u64::MAX;
+
+fn slot(hash: u64, id: u32) -> u64 {
+    (hash & !0xffff_ffff) | u64::from(id)
 }
 
 impl Index {
@@ -242,6 +263,10 @@ pub struct Tree {
     /// Entries replaced or removed since the last compaction: what may have left nodes
     /// unreachable.
     dropped: usize,
+    /// The step [`Tree::mark`] stamps entries with: entries made, changed or removed in
+    /// it, and the directories above them, are what the step changed. Steps start at 1:
+    /// an entry never marked has 0.
+    step: u32,
 }
 
 fn check_name(name: &[u8]) -> Result<(), Error> {
@@ -270,6 +295,7 @@ impl Tree {
             names: Vec::new(),
             index: Index::default(),
             dropped: 0,
+            step: 0,
         };
         // The first of an empty arena: id 0 always fits.
         let _ = t.nodes.push(Node {
@@ -332,18 +358,22 @@ impl Tree {
     /// The live entry `name` of `dir`, by id.
     fn find(&self, dir: u32, name: &[u8]) -> Option<u32> {
         let mask = self.index.slots.len().checked_sub(1)?;
-        let mut i = (self.index.hash(dir, name) as usize) & mask;
+        let hash = self.index.hash(dir, name);
+        let tag = hash & !0xffff_ffff;
+        let mut i = (hash as usize) & mask;
         loop {
-            let slot = *self.index.slots.get(i)?;
-            if slot == NONE {
+            let s = *self.index.slots.get(i)?;
+            if s == EMPTY {
                 return None;
             }
-            if let Some(l) = self.links.get(slot as usize)
+            let id = s as u32;
+            if s & !0xffff_ffff == tag
+                && let Some(l) = self.links.get(id as usize)
                 && l.dir == dir
                 && l.child != NONE
                 && self.name_of(l) == name
             {
-                return Some(slot);
+                return Some(id);
             }
             i = (i + 1) & mask;
         }
@@ -364,11 +394,12 @@ impl Tree {
             .get(id as usize)
             .ok_or_else(|| Error("missing entry".into()))?;
         let mask = self.index.slots.len().saturating_sub(1);
-        let mut i = (self.index.hash(link.dir, self.name_of(&link)) as usize) & mask;
+        let hash = self.index.hash(link.dir, self.name_of(&link));
+        let mut i = (hash as usize) & mask;
         loop {
             match self.index.slots.get_mut(i) {
-                Some(slot) if *slot == NONE => {
-                    *slot = id;
+                Some(s) if *s == EMPTY => {
+                    *s = slot(hash, id);
                     self.index.used += 1;
                     return Ok(());
                 }
@@ -382,7 +413,7 @@ impl Tree {
     fn rebuild_index(&mut self, slots: usize) -> Result<(), Error> {
         let slots = slots.next_power_of_two();
         self.index.slots = Vec::new();
-        self.index.slots.resize(slots, NONE);
+        self.index.slots.resize(slots, EMPTY);
         self.index.used = 0;
         for id in 0..self.links.len() {
             if self.links.get(id).is_some_and(|l| l.child != NONE) {
@@ -404,11 +435,23 @@ impl Tree {
             child,
             name: at,
             next,
+            stamp: 0,
         })?;
         let head = self.dir_mut(dir as usize)?;
         head.first = id;
         head.live += 1;
+        self.adopt(child, id);
         self.index_add(id)
+    }
+
+    /// Records that entry `link` names `child`, if `child` is a directory.
+    fn adopt(&mut self, child: u32, link: u32) {
+        if let Some(Node {
+            kind: Kind::Dir(d), ..
+        }) = self.nodes.get_mut(child as usize)
+        {
+            d.up = link;
+        }
     }
 
     /// Sets the entry `name` of `dir` to `child`: the live one replaced, or a new one.
@@ -421,6 +464,7 @@ impl Tree {
                 if let Some(l) = self.links.get_mut(id as usize) {
                     l.child = child;
                 }
+                self.adopt(child, id);
                 self.dropped += 1;
                 Ok(())
             }
@@ -446,6 +490,88 @@ impl Tree {
             *d = Dir::default();
         }
         self.nodes.push(node)
+    }
+
+    /// Starts a new step: nothing is stamped with it yet. Steps outnumbering a `u32`
+    /// start again from 1, every entry's stamp cleared first, so no old stamp is taken for
+    /// the new step's.
+    pub fn next_step(&mut self) {
+        match self.step.checked_add(1) {
+            Some(step) => self.step = step,
+            None => {
+                for id in 0..self.links.len() {
+                    if let Some(l) = self.links.get_mut(id) {
+                        l.stamp = 0;
+                    }
+                }
+                self.step = 1;
+            }
+        }
+    }
+
+    /// The live entry `name` of `dir`, and what it names.
+    pub fn lookup(&self, dir: NodeId, name: &[u8]) -> Option<(EntryId, NodeId)> {
+        let d = u32::try_from(dir).ok()?;
+        self.dir(dir)?;
+        let id = self.find(d, name)?;
+        self.links.get(id as usize).map(|l| (id, l.child as NodeId))
+    }
+
+    /// The directory an entry is in, and its name.
+    pub fn entry(&self, id: EntryId) -> Option<(NodeId, &[u8])> {
+        let l = self.links.get(id as usize)?;
+        Some((l.dir as NodeId, self.name_of(l)))
+    }
+
+    /// The entry naming directory `dir`, or `None` for the root and what is no directory.
+    pub fn up(&self, dir: NodeId) -> Option<EntryId> {
+        self.dir(dir).map(|d| d.up).filter(|&u| u != NONE)
+    }
+
+    /// Stamps entry `id` with this step, and the entries naming the directories above it,
+    /// up to the first already stamped: what overlayfs copies up to change it.
+    pub fn mark(&mut self, id: EntryId) {
+        let step = self.step;
+        let mut at = id;
+        while let Some(l) = self.links.get_mut(at as usize) {
+            if l.stamp == step && at != id {
+                return;
+            }
+            l.stamp = step;
+            let dir = l.dir as usize;
+            match self.up(dir) {
+                Some(up) => at = up,
+                None => return,
+            }
+        }
+    }
+
+    /// Stamps the entries naming `dir` and the directories above it, as [`Tree::mark`].
+    pub fn mark_dir(&mut self, dir: NodeId) {
+        if let Some(up) = self.up(dir) {
+            self.mark(up);
+        }
+    }
+
+    /// What this step changed in `dir`, into `out`: each name stamped with it, once, and
+    /// what it names now, or `None` where it was removed; sorted by name.
+    pub fn changed_into<'t>(&'t self, dir: NodeId, out: &mut Vec<(&'t [u8], Option<NodeId>)>) {
+        out.clear();
+        // Before the first step nothing was marked, and 0 is every unmarked entry's stamp.
+        if self.step == 0 {
+            return;
+        }
+        let Some(d) = self.dir(dir) else { return };
+        let mut at = d.first;
+        while let Some(l) = self.links.get(at as usize) {
+            if l.stamp == self.step {
+                out.push((self.name_of(l), (l.child != NONE).then_some(l.child as NodeId)));
+            }
+            at = l.next;
+        }
+        // A name removed and made again in one step is listed once, as it is now.
+        out.sort_unstable_by(|a, b| a.0.cmp(b.0).then(b.1.is_some().cmp(&a.1.is_some())));
+        out.dedup_by(|b, a| a.0 == b.0);
     }
 
     /// The entry `name` in directory `dir`.
@@ -1540,6 +1666,96 @@ mod tests {
         assert!(after.len() < before, "a removed 1 MiB file still takes space");
         let r = Reader::open(&after);
         assert!(r.dir(&r.lookup("etc")).iter().all(|(n, _, _)| n != b"f1048581"));
+    }
+
+    /// The entry index agrees with a map of every directory's names through inserts,
+    /// replacements, removals, renames, hard links and clears, seeded so a failure
+    /// repeats, across the index's growth and a compaction; and a directory lists its
+    /// names sorted and once each.
+    #[test]
+    fn entries_agree_with_a_model_through_every_change() {
+        use std::collections::BTreeMap;
+        let mut tree = Tree::new(meta(0o755));
+        let dirs: Vec<NodeId> = (0..8)
+            .map(|d| {
+                let node = Node {
+                    kind: Kind::Dir(Dir::default()),
+                    meta: meta(0o755),
+                };
+                tree.insert(Tree::ROOT, format!("d{d}").as_bytes(), node).unwrap()
+            })
+            .collect();
+        let mut model: Vec<BTreeMap<Vec<u8>, NodeId>> = vec![BTreeMap::new(); dirs.len()];
+        let file = || Node {
+            kind: Kind::Fifo,
+            meta: meta(0o644),
+        };
+        // xorshift64*: deterministic, no dependency.
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move |n: u64| {
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D) % n
+        };
+        for _ in 0..60_000 {
+            let d = next(dirs.len() as u64) as usize;
+            let name = format!("n{}", next(3_000)).into_bytes();
+            match next(10) {
+                0..=4 => {
+                    let id = tree.insert(dirs[d], &name, file()).unwrap();
+                    model[d].insert(name, id);
+                }
+                5 | 6 => {
+                    assert_eq!(tree.remove(dirs[d], &name), model[d].remove(&name));
+                }
+                7 => {
+                    let to = next(dirs.len() as u64) as usize;
+                    let to_name = format!("n{}", next(3_000)).into_bytes();
+                    let r = tree.rename(dirs[d], &name, dirs[to], &to_name);
+                    match model[d].remove(&name) {
+                        Some(id) => {
+                            r.unwrap();
+                            model[to].insert(to_name, id);
+                        }
+                        None => assert!(r.is_err()),
+                    }
+                }
+                8 => {
+                    if let Some((_, &id)) = model[d].iter().next() {
+                        tree.link(dirs[d], &name, id).unwrap();
+                        model[d].insert(name, id);
+                    }
+                }
+                _ => {
+                    if next(50) == 0 {
+                        tree.clear(dirs[d]);
+                        model[d].clear();
+                    }
+                }
+            }
+        }
+        let check = |tree: &Tree, model: &[BTreeMap<Vec<u8>, NodeId>], same_ids: bool| {
+            for (d, m) in model.iter().enumerate() {
+                let dir = tree.child(Tree::ROOT, format!("d{d}").as_bytes()).unwrap();
+                let listed = tree.entries(dir);
+                assert_eq!(tree.dir_len(dir), Some(m.len()));
+                assert_eq!(
+                    listed.iter().map(|(n, _)| n.to_vec()).collect::<Vec<_>>(),
+                    m.keys().cloned().collect::<Vec<_>>()
+                );
+                for (name, &id) in m {
+                    let found = tree.child(dir, name).unwrap();
+                    if same_ids {
+                        assert_eq!(found, id);
+                    }
+                }
+                assert_eq!(tree.child(dir, b"never"), None);
+            }
+        };
+        check(&tree, &model, true);
+        tree.compact();
+        check(&tree, &model, false);
     }
 
     /// Compacting drops only what the root no longer reaches: the image is the same

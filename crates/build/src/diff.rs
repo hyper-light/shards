@@ -42,53 +42,26 @@ pub fn write_layer(lower: &Fs, upper: &Fs, data: &mut dyn Source, out: &mut dyn 
         added_dirs: BTreeSet::new(),
         data,
     };
-    let mut children: BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>> = BTreeMap::new();
-    for p in &upper.upper.touched {
-        let (d, name) = parent_and_name(p);
-        children.entry(d).or_default().insert(name);
-    }
-    let walk = Walk {
-        lower,
-        upper,
-        children: &children,
-    };
-    walk.dir(b"/", &mut cw)?;
+    let walk = Walk { lower, upper };
+    walk.dir(b"/", Tree::ROOT, &mut cw)?;
     cw.tw.finish().map_err(|e| Error(e.to_string()))?;
     Ok(())
 }
 
-fn parent_and_name(p: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    let at = p.iter().rposition(|&c| c == b'/').unwrap_or(0);
-    let parent = if at == 0 {
-        b"/".to_vec()
-    } else {
-        p.get(..at).unwrap_or_default().to_vec()
-    };
-    (parent, p.get(at + 1..).unwrap_or_default().to_vec())
-}
-
-/// The node at a path, symlinks not followed anywhere: a walk of real directories.
-fn at(fs: &Fs, path: &[u8]) -> Option<NodeId> {
-    let mut id = Tree::ROOT;
-    for name in path.split(|&c| c == b'/').filter(|n| !n.is_empty()) {
-        id = fs.tree.child(id, name)?;
-    }
-    Some(id)
-}
-
-/// overlay.Changes over the touched paths.
+/// overlay.Changes over what the step changed: the entries the upper tree stamped with
+/// its step, directory by directory in name order, as the differ walks the upper
+/// directory.
 struct Walk<'a> {
     lower: &'a Fs,
     upper: &'a Fs,
-    children: &'a BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>,
 }
 
 impl Walk<'_> {
-    fn dir(&self, path: &[u8], cw: &mut ChangeWriter<'_>) -> Result<(), Error> {
-        let Some(names) = self.children.get(path) else {
-            return Ok(());
-        };
-        for name in names {
+    /// The changes in `path`, which is `dir` in the upper tree.
+    fn dir(&self, path: &[u8], dir: NodeId, cw: &mut ChangeWriter<'_>) -> Result<(), Error> {
+        let mut changed = Vec::new();
+        self.upper.tree.changed_into(dir, &mut changed);
+        for (name, now) in changed {
             let p = vfs::join(path, name);
             let in_base = match self.lower.lstat(&p) {
                 Ok(id) => Some(id),
@@ -99,7 +72,7 @@ impl Walk<'_> {
                     )));
                 }
             };
-            let Some(u) = at(self.upper, &p) else {
+            let Some(u) = now else {
                 // A whiteout, where the base has something to hide.
                 if in_base.is_some() {
                     cw.handle(Change::Delete, &p, None)?;
@@ -128,7 +101,7 @@ impl Walk<'_> {
                 }
                 continue;
             }
-            self.dir(&p, cw)?;
+            self.dir(&p, u, cw)?;
         }
         Ok(())
     }
@@ -417,5 +390,52 @@ impl ChangeWriter<'_> {
             self.added_dirs.insert(name.to_vec());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use shards_image::erofs::Meta;
+    use shards_image::tar;
+
+    use super::*;
+    use crate::data::Sources;
+
+    fn empty() -> Fs {
+        Fs::new(
+            Tree::new(Meta {
+                mode: 0o755,
+                ..Meta::default()
+            }),
+            (1_600_000_000, 0),
+        )
+    }
+
+    /// The names in the layer the step that made `upper` from `lower` writes.
+    fn names(lower: &Fs, upper: &Fs) -> Vec<String> {
+        let mut out = Vec::new();
+        write_layer(lower, upper, &mut Sources::default(), &mut out).unwrap();
+        let mut r = tar::Reader::raw(&out[..]);
+        let mut names = Vec::new();
+        while let Some(e) = r.next_entry().unwrap() {
+            names.push(String::from_utf8(e.path).unwrap());
+        }
+        names
+    }
+
+    /// A snapshot records what changes from the moment it is made, with no step begun,
+    /// as COPY --link's scratch snapshot is used; and beginning a step starts the record
+    /// again. A snapshot made without one recorded nothing, and its layer was empty.
+    #[test]
+    fn a_snapshot_records_its_changes_from_when_it_is_made() {
+        let lower = empty();
+        let mut upper = empty();
+        upper.mkdir(b"/d", 0o755).unwrap();
+        upper.create(b"/d/f", 0o644).unwrap();
+        assert_eq!(names(&lower, &upper), ["d/", "d/f"]);
+        upper.begin();
+        upper.create(b"/g", 0o644).unwrap();
+        assert_eq!(names(&lower, &upper), ["g"]);
     }
 }
