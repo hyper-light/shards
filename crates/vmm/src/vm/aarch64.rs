@@ -49,8 +49,85 @@ pub struct Restored {
     pub devices: Vec<u8>,
     /// The snapshot's working set, to prefetch before the guest runs; empty for none.
     pub working_set: Vec<hv::Touch>,
-    /// How many of its pages were prefetched.
-    pub prefetched: std::sync::OnceLock<usize>,
+}
+
+/// What vCPU `index` sets itself up from ([`split`]): moved to its thread, its own alone.
+#[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "moved once to each vCPU's thread at its setup: boxing the state would add an allocation per vCPU to every restore"
+)]
+pub enum VcpuStart {
+    /// The boot vCPU's entry; `None` for the others, which wait for PSCI CPU_ON.
+    Boot(Option<Entry>),
+    Restore {
+        state: VcpuState,
+        /// vCPU 0's part.
+        first: Option<First>,
+    },
+}
+
+/// vCPU 0's part of a restore: the CPU the snapshot was taken on, and the working set it
+/// prefetches.
+#[derive(Debug)]
+pub struct First {
+    cpu_id: Vec<(u16, u64)>,
+    working_set: Vec<hv::Touch>,
+}
+
+/// What a restore's start leaves the machine once the vCPUs have theirs ([`split`]):
+/// applied by [`finish`] once every vCPU exists.
+#[derive(Debug)]
+pub struct Remainder {
+    counter: u64,
+    gic: Vec<u8>,
+    devices: Vec<u8>,
+}
+
+/// What vCPU 0 found as it set up, for the machine to keep.
+#[derive(Debug, Default)]
+pub struct SetUp {
+    /// Pages of the working set it prefetched.
+    prefetched: usize,
+}
+
+/// Divides `start` among `vcpus` vCPUs and the machine: each vCPU takes only its own
+/// part, and none is shared.
+pub fn split(start: Start, vcpus: usize) -> Result<(Vec<VcpuStart>, Option<Remainder>), String> {
+    match start {
+        Start::Boot(entry) => Ok((
+            (0..vcpus)
+                .map(|index| VcpuStart::Boot((index == 0).then_some(entry)))
+                .collect(),
+            None,
+        )),
+        Start::Restore(r) => {
+            if r.vcpus.len() < vcpus {
+                return Err(format!("the snapshot has {} vCPUs, not {vcpus}", r.vcpus.len()));
+            }
+            let mut first = Some(First {
+                cpu_id: r.cpu_id,
+                working_set: r.working_set,
+            });
+            let starts = r
+                .vcpus
+                .into_iter()
+                .take(vcpus)
+                .map(|state| VcpuStart::Restore {
+                    state,
+                    first: first.take(),
+                })
+                .collect();
+            Ok((
+                starts,
+                Some(Remainder {
+                    counter: r.counter,
+                    gic: r.gic,
+                    devices: r.devices,
+                }),
+            ))
+        }
+    }
 }
 
 /// The devices' address space: MMIO only on arm64.
@@ -374,17 +451,11 @@ pub struct Kept {
     prefetched: usize,
 }
 
-/// What `start` leaves the running machine, once every vCPU is set up.
-pub fn keep(start: &Start) -> Kept {
-    match start {
-        Start::Restore(r) => Kept {
-            counter: Some(r.counter),
-            prefetched: r.prefetched.get().copied().unwrap_or(0),
-        },
-        Start::Boot(_) => Kept {
-            counter: None,
-            prefetched: 0,
-        },
+/// What the start leaves the running machine, once every vCPU is set up.
+pub fn keep(rest: Option<&Remainder>, first: &SetUp) -> Kept {
+    Kept {
+        counter: rest.map(|r| r.counter),
+        prefetched: first.prefetched,
     }
 }
 
@@ -450,7 +521,6 @@ pub fn restore(
             gic: state.gic,
             devices: snap.devices.clone(),
             working_set,
-            prefetched: std::sync::OnceLock::new(),
         }),
         config: snap.config.clone(),
     })
@@ -465,8 +535,8 @@ pub fn restore(
 /// request completed, the guest never told). Devices go after the GIC, because they
 /// re-raise their interrupt lines as they restore. Last, the restored guest gets a new
 /// generation ID, so it reseeds its RNG before it runs anything that uses it.
-pub fn finish(vm: &hv::Vm, bus: &MmioBus, vmgenid: &VmGenId, start: &Start) -> Result<(), String> {
-    let Start::Restore(r) = start else {
+pub fn finish(vm: &hv::Vm, bus: &MmioBus, vmgenid: &VmGenId, rest: Option<&Remainder>) -> Result<(), String> {
+    let Some(r) = rest else {
         return Ok(());
     };
     vm.restore_gic(&r.gic).map_err(|e| e.to_string())?;
@@ -479,41 +549,36 @@ pub fn finish(vm: &hv::Vm, bus: &MmioBus, vmgenid: &VmGenId, start: &Start) -> R
 
 /// Creates vCPU `index` and puts it where `start` says: the boot entry, parked for
 /// PSCI CPU_ON, or its restored state.
-pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu, String> {
+pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vcpu, SetUp), String> {
     let e = |e: hv::Error| e.to_string();
     let mut vcpu = vm.create_vcpu(index).map_err(e)?;
+    let mut set_up = SetUp::default();
     match start {
-        Start::Boot(entry) => {
-            if index == 0 {
-                vcpu.boot(*entry);
+        VcpuStart::Boot(entry) => {
+            if let Some(entry) = entry {
+                vcpu.boot(entry);
             }
         }
-        Start::Restore(r) => {
-            if index == 0 {
+        VcpuStart::Restore { state, first } => {
+            if let Some(First { cpu_id, working_set }) = first {
                 let here = vcpu.cpu_id().map_err(e)?;
-                if here != r.cpu_id {
+                if here != cpu_id {
                     return Err(format!(
-                        "this CPU is not the one the snapshot was taken on: {here:x?} vs {:x?}",
-                        r.cpu_id
+                        "this CPU is not the one the snapshot was taken on: {here:x?} vs {cpu_id:x?}"
                     ));
                 }
+                // Before the state: the prefetch runs on this vCPU. A failure is the VM's,
+                // since its translations may outlive a loop that stopped short.
+                if !working_set.is_empty() {
+                    set_up.prefetched = vcpu
+                        .prefetch(vm, &working_set)
+                        .map_err(|e| format!("prefetching the working set: {e}"))?;
+                }
             }
-            // Before the state: the prefetch runs on this vCPU. A failure is the VM's, since
-            // its translations may outlive a loop that stopped short.
-            if index == 0 && !r.working_set.is_empty() {
-                let n = vcpu
-                    .prefetch(vm, &r.working_set)
-                    .map_err(|e| format!("prefetching the working set: {e}"))?;
-                let _ = r.prefetched.set(n);
-            }
-            let state = r
-                .vcpus
-                .get(index)
-                .ok_or_else(|| format!("the snapshot has no vCPU {index}"))?;
-            vcpu.restore_state(state).map_err(e)?;
+            vcpu.restore_state(&state).map_err(e)?;
         }
     }
-    Ok(vcpu)
+    Ok((vcpu, set_up))
 }
 
 /// For a restore, the counter offset every vCPU applies at release, taken now so the

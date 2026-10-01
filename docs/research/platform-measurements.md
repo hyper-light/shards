@@ -2329,3 +2329,29 @@ revision before comparing a changed API/implementation.
 - **Consequence.** The change costs a run nothing and saves it about 66 µs, all outside
   the guest. The tails, at this load, are not conclusive either way: a quiet-host run is
   owed before any claim about them.
+
+### M69. Whether moving each vCPU its part of the start costs a pooled run
+
+- **Question.** The restore's start (vCPU states, working set, device state) was one
+  `Arc<Start>` every vCPU thread held through its setup, and the machine checked with a
+  `Weak` that it had gone. Now `split` moves each vCPU its own part and the machine keeps
+  the rest. Does a pooled run pay for it?
+- **Method.** `build-ab/ab.py`, dedc442 against the change, one template restored by
+  both (the guest side is the same), `shards run --pull never alpine true`, n = 3000 per
+  arm, interleaved. 2026-09-30, this machine, load average 3.5 to 8.6. A pooled VM
+  restores before its request, so this measures the request's path; the restore itself
+  was not timed apart.
+- **Results** (µs; paired differences are medians with bootstrap 95% intervals):
+
+| Part | Arm | n | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|
+| wall | dedc442 | 3000 | 4779 | 5141 | 5465 | 16184 |
+| wall | split | 3000 | 4764 | 5124 | 5479 | 27941 |
+| command | dedc442 | 3000 | 715 | 1057 | 1133 | 1302 |
+| command | split | 3000 | 709 | 1060 | 1135 | 1215 |
+| outside the guest | dedc442 | 3000 | 3949 | 4322 | 4653 | 15514 |
+| outside the guest | split | 3000 | 3952 | 4299 | 4662 | 27255 |
+
+  - Paired, new − old: wall −15 [−26, −3]; command +0 [−5, +4]; outside −9 [−19, +3].
+- **Consequence.** No cost on a run's path. The max differs by single runs under load, as
+  in M68: no claim on the tails.

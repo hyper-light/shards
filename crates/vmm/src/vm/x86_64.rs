@@ -48,11 +48,75 @@ pub struct Restored {
     pub devices: Vec<u8>,
     /// The snapshot's working set, to map before the guest runs; empty for none.
     pub working_set: Vec<hv::Touch>,
-    /// How many of its pages were mapped ahead.
-    pub prefetched: std::sync::OnceLock<usize>,
-    /// vCPU 0's TSC, which the release starts ([`release_offset`]), where the restore held
-    /// the vCPUs' TSCs back.
-    pub tsc: std::sync::OnceLock<hv::Tsc>,
+}
+
+/// What vCPU `index` sets itself up from ([`split`]): moved to its thread, its own alone.
+#[derive(Debug)]
+pub enum VcpuStart {
+    /// The boot vCPU's registers; `None` for the others, which wait for INIT/SIPI.
+    Boot(Option<x86_64::Boot>),
+    Restore {
+        state: hv::VcpuState,
+        /// vCPU 0's: the working set it maps ahead.
+        working_set: Option<Vec<hv::Touch>>,
+    },
+}
+
+/// What a restore's start leaves the machine once the vCPUs have theirs ([`split`]):
+/// applied by [`finish`] once every vCPU exists.
+#[derive(Debug)]
+pub struct Remainder {
+    vm: hv::VmState,
+    devices: Vec<u8>,
+    /// Where the snapshot has vCPU 0's TSC start.
+    tsc_start: Option<hv::TscStart>,
+}
+
+/// What vCPU 0 found as it set up, for the machine to keep.
+#[derive(Debug, Default)]
+pub struct SetUp {
+    /// Pages of the working set it mapped ahead.
+    prefetched: usize,
+    /// Its TSC, which the release starts ([`release_offset`]), where the restore held the
+    /// vCPUs' TSCs back.
+    tsc: Option<hv::Tsc>,
+}
+
+/// Divides `start` among `vcpus` vCPUs and the machine: each vCPU takes only its own
+/// part, and none is shared.
+pub fn split(start: Start, vcpus: usize) -> Result<(Vec<VcpuStart>, Option<Remainder>), String> {
+    match start {
+        Start::Boot(boot) => Ok((
+            (0..vcpus)
+                .map(|index| VcpuStart::Boot((index == 0).then_some(boot)))
+                .collect(),
+            None,
+        )),
+        Start::Restore(r) => {
+            if r.vcpus.len() < vcpus {
+                return Err(format!("the snapshot has {} vCPUs, not {vcpus}", r.vcpus.len()));
+            }
+            let tsc_start = r.vcpus.first().and_then(hv::VcpuState::tsc_start);
+            let mut working_set = Some(r.working_set);
+            let starts = r
+                .vcpus
+                .into_iter()
+                .take(vcpus)
+                .map(|state| VcpuStart::Restore {
+                    state,
+                    working_set: working_set.take(),
+                })
+                .collect();
+            Ok((
+                starts,
+                Some(Remainder {
+                    vm: r.vm,
+                    devices: r.devices,
+                    tsc_start,
+                }),
+            ))
+        }
+    }
 }
 
 /// MMIO devices and port I/O devices.
@@ -413,8 +477,6 @@ pub fn restore(
             vm: vm_state,
             devices: snap.devices.clone(),
             working_set,
-            prefetched: std::sync::OnceLock::new(),
-            tsc: std::sync::OnceLock::new(),
         }),
         config: snap.config.clone(),
     })
@@ -535,20 +597,11 @@ pub struct Kept {
     prefetched: usize,
 }
 
-/// What `start` leaves the running machine, once every vCPU is set up.
-pub fn keep(start: &Start) -> Kept {
-    match start {
-        Start::Restore(r) => Kept {
-            tsc: r
-                .tsc
-                .get()
-                .map(|tsc| (tsc.clone(), r.vcpus.first().and_then(hv::VcpuState::tsc_start))),
-            prefetched: r.prefetched.get().copied().unwrap_or(0),
-        },
-        Start::Boot(_) => Kept {
-            tsc: None,
-            prefetched: 0,
-        },
+/// What the start leaves the running machine, once every vCPU is set up.
+pub fn keep(rest: Option<&Remainder>, first: &SetUp) -> Kept {
+    Kept {
+        tsc: rest.and_then(|r| first.tsc.clone().map(|tsc| (tsc, r.tsc_start))),
+        prefetched: first.prefetched,
     }
 }
 
@@ -571,47 +624,42 @@ pub fn prefetched(kept: &Kept) -> usize {
 
 /// Creates vCPU `index` and puts it where `start` says: the boot protocol's registers for
 /// the boot vCPU, or its restored state.
-pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu, String> {
+pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vcpu, SetUp), String> {
     let mut vcpu = vm.create_vcpu(index).map_err(|e| e.to_string())?;
+    let mut set_up = SetUp::default();
     match start {
-        Start::Boot(boot) => {
-            if index == 0 {
-                vcpu.boot(boot).map_err(|e| e.to_string())?;
+        VcpuStart::Boot(boot) => {
+            if let Some(boot) = boot {
+                vcpu.boot(&boot).map_err(|e| e.to_string())?;
             }
         }
-        Start::Restore(r) => {
-            let state = r
-                .vcpus
-                .get(index)
-                .ok_or_else(|| format!("the snapshot has no vCPU {index}"))?;
-            vcpu.restore_state(state).map_err(|e| e.to_string())?;
-            if index == 0
-                && let Some(tsc) = vcpu.tsc()
-            {
-                let _ = r.tsc.set(tsc);
-            }
-            // After the state, which sets the paging mode KVM maps for.
-            if index == 0 && !r.working_set.is_empty() {
-                let t0 = crate::log::uptime_us();
-                let n = pre_fault(&vcpu, &r.working_set);
-                debug!(
-                    "mapped {n} of {} working-set pages ahead in {} us",
-                    r.working_set.len(),
-                    crate::log::uptime_us().saturating_sub(t0)
-                );
-                let _ = r.prefetched.set(n);
+        VcpuStart::Restore { state, working_set } => {
+            vcpu.restore_state(&state).map_err(|e| e.to_string())?;
+            if let Some(working_set) = working_set {
+                set_up.tsc = vcpu.tsc();
+                // After the state, which sets the paging mode KVM maps for.
+                if !working_set.is_empty() {
+                    let t0 = crate::log::uptime_us();
+                    set_up.prefetched = pre_fault(&vcpu, &working_set);
+                    debug!(
+                        "mapped {} of {} working-set pages ahead in {} us",
+                        set_up.prefetched,
+                        working_set.len(),
+                        crate::log::uptime_us().saturating_sub(t0)
+                    );
+                }
             }
         }
     }
-    Ok(vcpu)
+    Ok((vcpu, set_up))
 }
 
 /// Completes a restore once every vCPU exists and before any runs: the interrupt
 /// controllers and kvmclock, then the devices, which re-raise their lines as they
 /// restore, then a new generation ID, so the guest reseeds its RNG before it runs
 /// anything that uses it (as the arm64 machine orders them).
-pub fn finish(vm: &hv::Vm, bus: &Bus, vmgenid: &Finish, start: &Start) -> Result<(), String> {
-    let Start::Restore(r) = start else {
+pub fn finish(vm: &hv::Vm, bus: &Bus, vmgenid: &Finish, rest: Option<&Remainder>) -> Result<(), String> {
+    let Some(r) = rest else {
         return Ok(());
     };
     vm.restore_state(&r.vm).map_err(|e| e.to_string())?;

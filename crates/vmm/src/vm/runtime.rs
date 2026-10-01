@@ -7,7 +7,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 use std::thread::JoinHandle;
 
 use super::barrier::Barrier;
-use super::machine::{self, Machine, Start};
+use super::machine::{self, Machine};
 use super::{AfterSnapshot, Config, ExitReason, RestoreConfig, SnapshotPolicy};
 use crate::devices::control::Control;
 use crate::devices::power::PowerEvent;
@@ -434,9 +434,12 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         config,
     } = m;
     let vcpus = config.vcpus;
+    // Each vCPU is moved its own part of the start, and the machine keeps the rest: none
+    // of it is shared, and each part goes as soon as its owner is done with it.
+    let start_bytes = machine::start_bytes(&start);
+    let (starts, rest) = machine::split(start, vcpus as usize)?;
     let vm = Arc::new(vm);
     let bus = Arc::new(bus);
-    let start = Arc::new(start);
     let shared = Arc::new(Shared::new(vcpus));
     let sh = shared.clone();
     power.on_event(Box::new(move |event| {
@@ -468,9 +471,10 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
     }
 
     // vCPUs are created strictly in index order (D5).
-    for index in 0..vcpus as usize {
+    let mut first = None;
+    for (index, start) in starts.into_iter().enumerate() {
         let (created_tx, created_rx) = mpsc::channel();
-        let (vm, sh, bus, start) = (vm.clone(), shared.clone(), bus.clone(), start.clone());
+        let (vm, sh, bus) = (vm.clone(), shared.clone(), bus.clone());
         let spawned = std::thread::Builder::new()
             .name(format!("vcpu{index}"))
             .spawn(move || vcpu_thread(&vm, &sh, &*bus, index, start, &created_tx));
@@ -482,7 +486,11 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
             }
         }
         match created_rx.recv() {
-            Ok(Ok(())) => {}
+            Ok(Ok(set_up)) => {
+                if index == 0 {
+                    first = Some(set_up);
+                }
+            }
             Ok(Err(e)) => {
                 shared.stop(ExitReason::Error(format!("vCPU {index}: {e}")));
                 break;
@@ -496,21 +504,18 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         }
     }
     if !shared.exiting() {
-        let finished = machine::finish(&vm, &bus, &finish, &start);
-        let _ = shared.kept.set(machine::keep(&start));
-        // The vCPUs dropped theirs once set up: the snapshot's states, device state and
-        // working set go now, where a warm VM held them for its whole life.
-        let (bytes, held) = (machine::start_bytes(&start), Arc::downgrade(&start));
-        drop(start);
-        if let Some([vcpus, devices, working_set]) = bytes {
-            if held.strong_count() == 0 {
-                info!(
-                    "dropped the restore's state: {vcpus} bytes of vCPU state, {devices} of \
-                     devices, {working_set} of working set"
-                );
-            } else {
-                warn!("the restore's state is still held after its vCPUs were set up");
-            }
+        let finished = machine::finish(&vm, &bus, &finish, rest.as_ref());
+        let _ = shared
+            .kept
+            .set(machine::keep(rest.as_ref(), &first.unwrap_or_default()));
+        // The vCPUs dropped theirs once set up: the snapshot's device state goes now, where
+        // a warm VM held it for its whole life.
+        drop(rest);
+        if let Some([vcpus, devices, working_set]) = start_bytes {
+            info!(
+                "dropped the restore's state: {vcpus} bytes of vCPU state, {devices} of \
+                 devices, {working_set} of working set"
+            );
         }
         match finished {
             Ok(()) if !hold => shared.release_vcpus(),
@@ -544,18 +549,16 @@ fn vcpu_thread(
     sh: &Shared,
     io: &dyn hv::Io,
     index: usize,
-    start: Arc<Start>,
-    created: &mpsc::Sender<Result<(), String>>,
+    start: machine::VcpuStart,
+    created: &mpsc::Sender<Result<machine::SetUp, String>>,
 ) {
     if let Err(e) = platform::prioritize_vcpu_thread()
         && index == 0
     {
         warn!("vCPU threads run without real-time policy (coarser guest timers): {e}");
     }
-    let set_up = machine::setup_vcpu(vm, index, &start);
-    // Only its setup reads the start; the machine keeps what its release needs.
-    drop(start);
-    let mut vcpu = match set_up {
+    // Its part of the start goes with its setup.
+    let (mut vcpu, set_up) = match machine::setup_vcpu(vm, index, start) {
         Ok(v) => v,
         Err(e) => {
             let _ = created.send(Err(e));
@@ -565,7 +568,7 @@ fn vcpu_thread(
     if let Some(slot) = sh.kickers.get(index) {
         let _ = slot.set(vcpu.kicker());
     }
-    let _ = created.send(Ok(()));
+    let _ = created.send(Ok(set_up));
     if let Some(offset) = sh.wait_release()
         && let Err(e) = machine::set_counter_offset(&mut vcpu, offset)
     {
