@@ -72,6 +72,197 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/args-platform.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ARG TARGETPLATFORM=linux/amd64\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"ARG TARGETOS=linux TARGETARCH=amd64\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"ARG BUILDPLATFORM=linux/amd64\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN |4 TARGETPLATFORM=linux/amd64 TARGETOS=linux TARGETARCH=amd64 BUILDPLATFORM=linux/amd64 /bin/sh -c echo $TARGETPLATFORM $TARGETOS/$TARGETARCH on $BUILDPLATFORM # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo $TARGETPLATFORM $TARGETOS/$TARGETARCH on $BUILDPLATFORM"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+       "TARGETPLATFORM=linux/amd64",
+       "TARGETOS=linux",
+       "TARGETARCH=amd64",
+       "BUILDPLATFORM=linux/amd64"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo $TARGETPLATFORM $TARGETOS/$TARGETARCH on $BUILDPLATFORM",
+      "llb.customname": "[2/2] RUN echo linux/amd64 linux/amd64 on linux/amd64"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/args-stages.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ARG GLOBAL=g1\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"ARG LOCAL=l-g1\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"ENV E=l-g1\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN |2 GLOBAL=g1 LOCAL=l-g1 /bin/sh -c echo $GLOBAL $LOCAL $E $UNDEFINED # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ARG VERSION=1.0\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"ARG LOCAL=override\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN |3 GLOBAL=g1 LOCAL=override VERSION=1.0 /bin/sh -c echo $VERSION $LOCAL ${TARGETPLATFORM} $BUILDARCH # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\",\"E=l-g1\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine AS a",
+      "llb.customname": "[a 1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo $GLOBAL $LOCAL $E $UNDEFINED"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+       "GLOBAL=g1",
+       "LOCAL=l-g1",
+       "E=l-g1"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo $GLOBAL $LOCAL $E $UNDEFINED",
+      "llb.customname": "[a 2/2] RUN echo g1 l-g1 l-g1 $UNDEFINED"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo $VERSION $LOCAL ${TARGETPLATFORM} $BUILDARCH"
+      ],
+      "cwd": "/",
+      "env": [
+       "GLOBAL=g1",
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+       "E=l-g1",
+       "VERSION=1.0",
+       "LOCAL=override"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo $VERSION $LOCAL ${TARGETPLATFORM} $BUILDARCH",
+      "llb.customname": "[stage-1 1/1] RUN echo 1.0 override ${TARGETPLATFORM} $BUILDARCH"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/args.Dockerfile",
   "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ARG V=1\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"ARG W=2\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN |2 V=1 W=2 /bin/sh -c echo $V $W # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ENV E=2\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\",\"E=2\"],\"Cmd\":[\"/bin/sh\"]}}",
   "ops": [
@@ -136,6 +327,1206 @@
     "inputs": [
      [
       1,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/config-shell-form.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"/bin/sh\\\" \\\"-c\\\" \\\"echo first\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"CMD [\\\"/bin/sh\\\" \\\"-c\\\" \\\"echo second\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"ENTRYPOINT [\\\"/bin/sh\\\" \\\"-c\\\" \\\"run me\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"HEALTHCHECK {Test:[NONE] Interval:0s Timeout:0s StartPeriod:0s StartInterval:0s Retries:0}\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"STOPSIGNAL 9\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Entrypoint\":[\"/bin/sh\",\"-c\",\"run me\"],\"Cmd\":[\"/bin/sh\",\"-c\",\"echo second\"],\"StopSignal\":\"9\",\"ArgsEscaped\":true,\"Healthcheck\":{\"Test\":[\"NONE\"]}}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/1] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": [
+   "\"JSONArgsRecommended|JSON arguments recommended for CMD to prevent unintended behavior related to OS signals|2-2\"",
+   "\"MultipleInstructionsDisallowed|Multiple CMD instructions should not be used in the same stage because only the last one will be used|2-2\"",
+   "\"JSONArgsRecommended|JSON arguments recommended for CMD to prevent unintended behavior related to OS signals|3-3\"",
+   "\"JSONArgsRecommended|JSON arguments recommended for ENTRYPOINT to prevent unintended behavior related to OS signals|4-4\""
+  ]
+ },
+ {
+  "file": "corpus/plan/config.Dockerfile",
+  "image": "{\"author\":\"someone@example.com\",\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"USER nobody\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"WORKDIR /home/nobody\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"EXPOSE [9000/tcp 443/tcp 53/udp 80/tcp 8000/tcp 8001/tcp 8002/tcp]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"VOLUME [/data [/logs, /cache]]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"STOPSIGNAL SIGINT\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"HEALTHCHECK {Test:[CMD-SHELL curl -f http://localhost/ || exit 1] Interval:5s Timeout:1m30s StartPeriod:500ms StartInterval:2s Retries:4}\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"LABEL a=1 b c=2\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"LABEL legacy=value\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"ENV legacy=value\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"MAINTAINER someone@example.com\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"ENTRYPOINT [\\\"/entry\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"CMD [\\\"arg\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"config\":{\"User\":\"nobody\",\"ExposedPorts\":{\"443/tcp\":{},\"53/udp\":{},\"80/tcp\":{},\"8000/tcp\":{},\"8001/tcp\":{},\"8002/tcp\":{},\"9000/tcp\":{}},\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\",\"legacy=value\"],\"Entrypoint\":[\"/entry\"],\"Cmd\":[\"arg\"],\"Volumes\":{\"/cache]\":{},\"/data\":{},\"[/logs,\":{}},\"WorkingDir\":\"/home/nobody\",\"Labels\":{\"a\":\"1\",\"b c\":\"2\",\"legacy\":\"value\"},\"StopSignal\":\"SIGINT\",\"ArgsEscaped\":true,\"Healthcheck\":{\"Test\":[\"CMD-SHELL\",\"curl -f http://localhost/ || exit 1\"],\"Interval\":5000000000,\"Timeout\":90000000000,\"StartPeriod\":500000000,\"StartInterval\":2000000000,\"Retries\":4}}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "mkdir": {
+        "makeParents": true,
+        "mode": 493,
+        "owner": {
+         "user": {
+          "byName": {
+           "name": "nobody"
+          }
+         }
+        },
+        "path": "/home/nobody",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/2] WORKDIR /home/nobody"
+     }
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": [
+   "\"MaintainerDeprecated|Maintainer instruction is deprecated in favor of using label|11-11\"",
+   "\"ExposeInvalidFormat|EXPOSE instruction should not define an IP address or host-port mapping, found '127.0.0.1:9000:9000'|4-4\"",
+   "\"ExposeProtoCasing|Defined protocol '53/UDP' in EXPOSE instruction should be lowercase|4-4\"",
+   "\"LegacyKeyValueFormat|\\\"LABEL key=value\\\" should be used instead of legacy \\\"LABEL key value\\\" format|9-9\"",
+   "\"LegacyKeyValueFormat|\\\"ENV key=value\\\" should be used instead of legacy \\\"ENV key value\\\" format|10-10\""
+  ]
+ },
+ {
+  "file": "corpus/plan/copy-flags.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"WORKDIR /w\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --chown=app:staff --chmod=u+rwx,g+rx a rel/ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --chown=1000 b ./ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --chown=root:0 c . # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY d /d # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --parents x/y/./z/*.go /src/ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --parents p/q.txt /p/ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --chmod=755 e /e # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD --chown=1:1 f.tar.gz /f/ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD g.tar /g # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD h /h # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --chown=2 i /i # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --chmod=600 j /j # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"],\"WorkingDir\":\"/w\"}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[ 1/14] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "mkdir": {
+        "makeParents": true,
+        "mode": 493,
+        "path": "/w",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 2/14] WORKDIR /w"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load build context"
+     }
+    },
+    "source": {
+     "attrs": {
+      "local.followpaths": "[\"a\",\"b\",\"c\",\"d\",\"e\",\"f.tar.gz\",\"g.tar\",\"h\",\"i\",\"j\",\"p/q.txt\",\"x/y/z/*.go\"]",
+      "local.sharedkeyhint": "context",
+      "local.unique": "*"
+     },
+     "identifier": "local://context"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/w/rel/",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "modeStr": "u+rwx,g+rx",
+        "owner": {
+         "group": {
+          "byName": {
+           "name": "staff"
+          }
+         },
+         "user": {
+          "byName": {
+           "name": "app"
+          }
+         }
+        },
+        "src": "/a",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 3/14] COPY --chown=app:staff --chmod=u+rwx,g+rx a rel/"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/w/",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "owner": {
+         "user": {
+          "byID": 1000
+         }
+        },
+        "src": "/b",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 4/14] COPY --chown=1000 b ./"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/w/",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "owner": {
+         "group": {
+          "byID": 0
+         },
+         "user": {
+          "byID": 0
+         }
+        },
+        "src": "/c",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      4,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 5/14] COPY --chown=root:0 c ."
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/d",
+        "dirCopyContents": true,
+        "exclude_patterns": [
+         "*.tmp",
+         "cache"
+        ],
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/d",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      5,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 6/14] COPY --exclude=*.tmp --exclude=cache d /d"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/src/",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "include_patterns": [
+         "z/*.go"
+        ],
+        "mode": -1,
+        "src": "/x/y",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      6,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 7/14] COPY --parents x/y/./z/*.go /src/"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/p/",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "include_patterns": [
+         "p/q.txt"
+        ],
+        "mode": -1,
+        "required_paths": [
+         "/p/q.txt"
+        ],
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      7,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 8/14] COPY --parents p/q.txt /p/"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/e",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": 493,
+        "src": "/e",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      8,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 9/14] COPY --chmod=755 e /e"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "attemptUnpackDockerCompatibility": true,
+        "createDestPath": true,
+        "dest": "/f/",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "owner": {
+         "group": {
+          "byID": 1
+         },
+         "user": {
+          "byID": 1
+         }
+        },
+        "src": "/f.tar.gz",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      9,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[10/14] ADD --chown=1:1 f.tar.gz /f/"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/g",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/g.tar",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      10,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[11/14] ADD --unpack=false g.tar /g"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "attemptUnpackDockerCompatibility": true,
+        "createDestPath": true,
+        "dest": "/h",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/h",
+        "timestamp": "-1"
+       },
+       "input": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[12/14] ADD --link h /h"
+     },
+     "progress_group": {
+      "id": "*",
+      "name": "[12/14] ADD --link h /h",
+      "weak": true
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [
+     [
+      11,
+      0
+     ],
+     [
+      12,
+      0
+     ]
+    ],
+    "merge": {
+     "inputs": [
+      {},
+      {
+       "input": "1"
+      }
+     ]
+    },
+    "metadata": {
+     "description": {
+      "llb.customname": "[12/14] LINK ADD --link h /h"
+     },
+     "progress_group": {
+      "id": "*",
+      "name": "[12/14] ADD --link h /h"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/i",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "owner": {
+         "user": {
+          "byID": 2
+         }
+        },
+        "src": "/i",
+        "timestamp": "-1"
+       },
+       "input": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[13/14] COPY --link --chown=2 i /i"
+     },
+     "progress_group": {
+      "id": "*",
+      "name": "[13/14] COPY --link --chown=2 i /i",
+      "weak": true
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [
+     [
+      13,
+      0
+     ],
+     [
+      14,
+      0
+     ]
+    ],
+    "merge": {
+     "inputs": [
+      {},
+      {
+       "input": "1"
+      }
+     ]
+    },
+    "metadata": {
+     "description": {
+      "llb.customname": "[13/14] LINK COPY --link --chown=2 i /i"
+     },
+     "progress_group": {
+      "id": "*",
+      "name": "[13/14] COPY --link --chown=2 i /i"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/j",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": 384,
+        "src": "/j",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      15,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[14/14] COPY --link --chmod=600 j /j"
+     }
+    }
+   },
+   {
+    "inputs": [
+     [
+      16,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/copy-from.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":null},\"history\":[{\"created_by\":\"COPY /out /out0 # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY /out/./a* /out1/ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY /etc/passwd /passwd # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY /app /app # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"WorkingDir\":\"/\"}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "",
+      "llb.customname": "FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "mkdir /out"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN mkdir /out",
+      "llb.customname": "[one 2/2] RUN mkdir /out"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/out0",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/out",
+        "timestamp": "-1"
+       },
+       "input": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[stage-1 1/4] COPY --from=0 /out /out0"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/out1/",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/out/a*",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[stage-1 2/4] COPY --from=one /out/./a* /out1/"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/passwd",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/etc/passwd",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ],
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[stage-1 3/4] COPY --from=alpine /etc/passwd /passwd"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "",
+      "llb.customname": "FROM registry.example.com:5000/team/app:1.0@sha256:0107e9cb37820c4f34ead1213fc3600d14a65faf7606323afa9a68b17044d209"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://registry.example.com:5000/team/app:1.0@sha256:0107e9cb37820c4f34ead1213fc3600d14a65faf7606323afa9a68b17044d209"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/app",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/app",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      4,
+      0
+     ],
+     [
+      5,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[stage-1 4/4] COPY --from=registry.example.com:5000/team/app:1.0 /app /app"
+     }
+    }
+   },
+   {
+    "inputs": [
+     [
+      6,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/copy-heredoc.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ARG NAME=world\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"COPY \\u003c\\u003cEOF /greet # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY \\u003c\\u003cEOT /raw # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY \\u003c\\u003cA \\u003c\\u003cB /two/ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/4] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "input": "-1",
+       "mkfile": {
+        "data": "aGVsbG8gd29ybGQK",
+        "mode": 420,
+        "path": "/EOF",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "-1"
+      }
+     ]
+    },
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] preparing inline document"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/greet",
+        "mode": -1,
+        "src": "/EOF",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/4] COPY \u003c\u003cEOF /greet"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "input": "-1",
+       "mkfile": {
+        "data": "bm8gJHtOQU1FfSBleHBhbnNpb24K",
+        "mode": 420,
+        "path": "/EOT",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "-1"
+      }
+     ]
+    },
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] preparing inline document"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/raw",
+        "mode": -1,
+        "src": "/EOT",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ],
+     [
+      3,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/4] COPY \u003c\u003c-EOT /raw"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "input": "-1",
+       "mkfile": {
+        "data": "Zmlyc3QK",
+        "mode": 420,
+        "path": "/A",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "-1"
+      }
+     ]
+    },
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] preparing inline document"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "input": "-1",
+       "mkfile": {
+        "data": "c2Vjb25kCg==",
+        "mode": 420,
+        "path": "/B",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "-1"
+      }
+     ]
+    },
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] preparing inline document"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/two/",
+        "mode": -1,
+        "src": "/A",
+        "timestamp": "-1"
+       },
+       "output": "-1",
+       "secondaryInput": "1"
+      },
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/two/",
+        "mode": -1,
+        "src": "/B",
+        "timestamp": "-1"
+       },
+       "input": "3",
+       "secondaryInput": "2"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      4,
+      0
+     ],
+     [
+      5,
+      0
+     ],
+     [
+      6,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[4/4] COPY \u003c\u003cA \u003c\u003cB /two/"
+     }
+    }
+   },
+   {
+    "inputs": [
+     [
+      7,
       0
      ]
     ],
@@ -383,6 +1774,79 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/empty-continuation.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo a   \\u0026\\u0026 echo b # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo a   \u0026\u0026 echo b"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo a   \u0026\u0026 echo b",
+      "llb.customname": "[2/2] RUN echo a   \u0026\u0026 echo b"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": [
+   "\"NoEmptyContinuation|Empty continuation line|4-4\""
+  ]
+ },
+ {
   "file": "corpus/plan/empty.Dockerfile",
   "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[]},\"history\":[{\"created_by\":\"nothing\",\"empty_layer\":true},{\"created_by\":\"COPY a /a # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"]}}",
   "ops": [
@@ -448,6 +1912,322 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/entrypoint-resets-cmd.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/bash -lc echo onbuild-run # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ENV TRIGGERED=1\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"ENTRYPOINT [\\\"/new-entry\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"config\":{\"User\":\"app\",\"ExposedPorts\":{\"8080/tcp\":{}},\"Env\":[\"PATH=/opt/bin:/usr/bin\",\"LANG=C.UTF-8\",\"FOO=base\",\"TRIGGERED=1\"],\"Entrypoint\":[\"/new-entry\"],\"Volumes\":{\"/data\":{}},\"WorkingDir\":\"/srv/app\",\"Labels\":{\"base\":\"yes\"},\"StopSignal\":\"SIGINT\",\"Healthcheck\":{\"Test\":[\"CMD\",\"true\"],\"Interval\":30000000000},\"Shell\":[\"/bin/bash\",\"-lc\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM withconfig",
+      "llb.customname": "[1/1] FROM docker.io/library/withconfig:latest@sha256:29dfe4bc1db70e704f32007adbb490cbac67873e386e5df778a73e40ba789935"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/withconfig:latest@sha256:29dfe4bc1db70e704f32007adbb490cbac67873e386e5df778a73e40ba789935"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/bash",
+       "-lc",
+       "echo onbuild-run"
+      ],
+      "cwd": "/srv/app",
+      "env": [
+       "PATH=/opt/bin:/usr/bin",
+       "LANG=C.UTF-8",
+       "FOO=base"
+      ],
+      "removeMountStubsRecursive": true,
+      "user": "app"
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo onbuild-run",
+      "llb.customname": "[2/3] ONBUILD RUN echo onbuild-run"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"WORKDIR /w\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"COPY a /a # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"ADD b /b # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"RUN /bin/sh -c true # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"],\"WorkingDir\":\"/w\"}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/5] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "mkdir": {
+        "makeParents": true,
+        "mode": 493,
+        "path": "/w",
+        "timestamp": "1700000000000000000"
+       },
+       "secondaryInput": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/5] WORKDIR /w"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load build context"
+     }
+    },
+    "source": {
+     "attrs": {
+      "local.followpaths": "[\"a\",\"b\"]",
+      "local.sharedkeyhint": "context",
+      "local.unique": "*"
+     },
+     "identifier": "local://context"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/a",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/a",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/5] COPY a /a"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "attemptUnpackDockerCompatibility": true,
+        "createDestPath": true,
+        "dest": "/b",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/b",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[4/5] ADD b /b"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "true"
+      ],
+      "cwd": "/w",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN true",
+      "llb.customname": "[5/5] RUN true"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      5,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"failed to parse stage name \\\"Bad:Name\\\": invalid reference format: repository name (library/Bad) must be lowercase\"",
+  "file": "corpus/plan/err-bad-ref.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ],
+  "warnings": [
+   "\"InvalidDefaultArgInFrom|Default value for ARG Bad:Name results in empty or invalid base image name|2-2\""
+  ]
+ },
+ {
+  "error": "\"checksum requires HTTP(S) or Git sources\"",
+  "file": "corpus/plan/err-checksum-copy.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"invalid syntax\"",
+  "file": "corpus/plan/err-chmod-sym.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"invalid chmod parameter: '0999'. it should be octal string and between 0 and 07777\"",
+  "file": "corpus/plan/err-chmod.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
   "error": "\"circular dependency detected on stage: a\"",
   "file": "corpus/plan/err-circular.Dockerfile",
   "location": [
@@ -500,6 +2280,11 @@
   "warnings": null
  },
  {
+  "error": "\"variable expansion is not supported for --from, define a new stage with FROM using ARG from global scope as a workaround\"",
+  "file": "corpus/plan/err-copy-from-var.Dockerfile",
+  "warnings": null
+ },
+ {
   "error": "\"base name ($B) should not be blank\"",
   "file": "corpus/plan/err-empty-base.Dockerfile",
   "location": [
@@ -515,6 +2300,19 @@
   ]
  },
  {
+  "error": "\"invalid port: \\\"80/xyz\\\": invalid proto: xyz\"",
+  "file": "corpus/plan/err-expose.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
   "error": "\"nosuchimage: docker.io/library/nosuchimage:latest: not found\"",
   "file": "corpus/plan/err-missing-image.Dockerfile",
   "location": [
@@ -526,6 +2324,107 @@
    ]
   ],
   "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-mount-later.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine AS later",
+      "llb.customname": "[later 1/1] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"invalid mount target \\\"/\\\"\"",
+  "file": "corpus/plan/err-mount-root.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"unsupported mount type \\\"bnd\\\" (did you mean bind?)\"",
+  "file": "corpus/plan/err-mount-type.Dockerfile",
+  "location": [
+   [
+    [
+     3,
+     3
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"nowhere: docker.io/library/nowhere:latest: not found\"",
+  "file": "corpus/plan/err-onbuild-from.Dockerfile",
+  "location": [
+   []
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"failed to parse platform linux/am*64: \\\"linux/am*64\\\": wildcards not yet supported: invalid argument\"",
+  "file": "corpus/plan/err-platform-parse.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ],
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"empty platform value from expression $NOPE\"",
+  "file": "corpus/plan/err-platform.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": [
+   "\"UndefinedArgInFrom|FROM argument 'NOPE' is not declared|1-1\""
+  ]
  },
  {
   "error": "\"invalid signal: NOTASIGNAL\"",
@@ -543,6 +2442,19 @@
  {
   "error": "\"target stage \\\"nope\\\" could not be found\"",
   "file": "corpus/plan/err-target.Dockerfile",
+  "warnings": null
+ },
+ {
+  "error": "\"VOLUME specified can not be an empty string\"",
+  "file": "corpus/plan/err-volume-empty.Dockerfile",
+  "location": [
+   [
+    [
+     3,
+     3
+    ]
+   ]
+  ],
   "warnings": null
  },
  {
@@ -577,6 +2489,35 @@
    }
   ],
   "warnings": null
+ },
+ {
+  "error": "\"base name ($NOPE) should not be blank\"",
+  "file": "corpus/plan/lint-checks.Dockerfile",
+  "location": [
+   [
+    [
+     5,
+     5
+    ]
+   ]
+  ],
+  "warnings": [
+   "\"StageNameCasing|Stage name 'Builder' should be lowercase|4-4\"",
+   "\"FromAsCasing|'as' and 'FROM' keywords' casing do not match|4-4\"",
+   "\"ReservedStageName|Stage name should not use the same name as reserved stage \\\"scratch\\\"|6-6\"",
+   "\"DuplicateStageName|Duplicate stage name \\\"dup\\\", stage names should be unique|8-8\"",
+   "\"ConsistentInstructionCasing|Command 'from' should match the case of the command majority (uppercase)|9-9\"",
+   "\"ConsistentInstructionCasing|Command 'Run' should match the case of the command majority (uppercase)|10-10\"",
+   "\"InvalidDefaultArgInFrom|Default value for ARG $NOPE results in empty or invalid base image name|5-5\"",
+   "\"UndefinedArgInFrom|FROM argument 'NOPE' is not declared|5-5\""
+  ]
+ },
+ {
+  "error": "\"lint violation found for rules: JSONArgsRecommended\"",
+  "file": "corpus/plan/lint-error.Dockerfile",
+  "warnings": [
+   "\"JSONArgsRecommended|JSON arguments recommended for CMD to prevent unintended behavior related to OS signals|3-3\""
+  ]
  },
  {
   "file": "corpus/plan/lint-many.Dockerfile",
@@ -728,6 +2669,115 @@
    "\"ExposeInvalidFormat|EXPOSE instruction should not define an IP address or host-port mapping, found '1.2.3.4:80:80'|10-10\"",
    "\"ExposeProtoCasing|Defined protocol '80/TCP' in EXPOSE instruction should be lowercase|10-10\""
   ]
+ },
+ {
+  "file": "corpus/plan/lint-skip.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"CMD [\\\"/bin/sh\\\" \\\"-c\\\" \\\"echo x\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN /bin/sh -c echo $ALSO_NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\",\"-c\",\"echo x\"],\"ArgsEscaped\":true}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/3] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo $NOPE"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo $NOPE",
+      "llb.customname": "[2/3] RUN echo $NOPE"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo $ALSO_NOPE"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo $ALSO_NOPE",
+      "llb.customname": "[3/3] RUN echo $ALSO_NOPE"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
  },
  {
   "file": "corpus/plan/meta.Dockerfile",
@@ -1175,6 +3225,479 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/onbuild-chain.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo from-base # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY /etc/hosts /hosts # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c echo child # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c echo grandchild # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine AS base",
+      "llb.customname": "[base 1/1] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo from-base"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo from-base",
+      "llb.customname": "[child 1/3] ONBUILD RUN echo from-base"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/hosts",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/etc/hosts",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ],
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[child 2/3] ONBUILD COPY --from=base /etc/hosts /hosts"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo child"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo child",
+      "llb.customname": "[child 3/3] RUN echo child"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo grandchild"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo grandchild",
+      "llb.customname": "[stage-2 1/1] RUN echo grandchild"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/onbuild.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"COPY . /app/src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c make -C /app/src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ENV BUILT=1\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN /bin/sh -c echo after # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/bin\",\"BUILT=1\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM onbuild",
+      "llb.customname": "[1/2] FROM docker.io/library/onbuild:latest@sha256:c8a5823897ac95f0cf21c2f39b68bd2fe1d318cd4c95c2d4b22445925ca69e8f"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/onbuild:latest@sha256:c8a5823897ac95f0cf21c2f39b68bd2fe1d318cd4c95c2d4b22445925ca69e8f"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load build context"
+     }
+    },
+    "source": {
+     "attrs": {
+      "local.sharedkeyhint": "context",
+      "local.unique": "*"
+     },
+     "identifier": "local://context"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/app/src",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/5] ONBUILD COPY . /app/src"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "make -C /app/src"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN make -C /app/src",
+      "llb.customname": "[3/5] ONBUILD RUN make -C /app/src"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo after"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/bin",
+       "BUILT=1"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo after",
+      "llb.customname": "[4/5] RUN echo after"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/platform-cross.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"COPY /x /x # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM --platform=$BUILDPLATFORM alpine",
+      "llb.customname": "[stage-3 1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM --platform=linux/arm64 armimg AS arm",
+      "llb.customname": "[arm 1/2] FROM docker.io/library/armimg:latest@sha256:f55566cbd1e615d795f43656876f0b6ba6cc1e5064ef3edb34cc63873fe554a2"
+     }
+    },
+    "platform": {
+     "Architecture": "arm64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/armimg:latest@sha256:f55566cbd1e615d795f43656876f0b6ba6cc1e5064ef3edb34cc63873fe554a2"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "uname -m"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN uname -m",
+      "llb.customname": "[arm 2/2] RUN uname -m"
+     }
+    },
+    "platform": {
+     "Architecture": "arm64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/x",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/x",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[stage-3 2/2] COPY --from=arm /x /x"
+     }
+    }
+   },
+   {
+    "inputs": [
+     [
+      3,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": [
+   "\"FromPlatformFlagConstDisallowed|FROM --platform flag should not use constant value \\\"linux/arm64\\\"|1-1\"",
+   "\"RedundantTargetPlatform|Setting platform to predefined $TARGETPLATFORM in FROM is redundant as this is the default behavior|3-3\"",
+   "\"FromPlatformFlagConstDisallowed|FROM --platform flag should not use constant value \\\"linux/amd64\\\"|4-4\""
+  ]
+ },
+ {
   "file": "corpus/plan/platform.Dockerfile",
   "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"COPY /x /x # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
   "ops": [
@@ -1274,6 +3797,450 @@
     "inputs": [
      [
       2,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/proxy-hostname.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ARG HTTP_PROXY=http://proxy:3128\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN |1 HTTP_PROXY=http://proxy:3128 /bin/sh -c curl example.com # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "curl example.com"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+       "HTTP_PROXY=http://proxy:3128"
+      ],
+      "hostname": "builder",
+      "proxy_env": {
+       "all_proxy": "socks5://s",
+       "http_proxy": "http://proxy:3128",
+       "no_proxy": "localhost"
+      },
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN curl example.com",
+      "llb.customname": "[2/2] RUN curl example.com"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/run-forms.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"SHELL [/bin/bash -c]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN /bin/bash -c echo shell form with bash # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN exec form # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/bash -c echo one\\necho two\\n # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/bash -c \\u003c\\u003c'EOS' bash\\nset -e\\necho quoted\\nEOS # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/bash -c /dev/pipes/EOF # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/bash -c cat \\u003c\\u003cA \\u003c\\u003cB\\na\\nA\\nb\\nB # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/bash -c /dev/pipes/EOF # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"],\"Shell\":[\"/bin/bash\",\"-c\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/8] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/bash",
+       "-c",
+       "echo shell form with bash"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo shell form with bash",
+      "llb.customname": "[2/8] RUN echo shell form with bash"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "exec",
+       "form"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN [\"exec\", \"form\"]",
+      "llb.customname": "[3/8] RUN [\"exec\", \"form\"]"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/bash",
+       "-c",
+       "echo one\necho two\n"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN \u003c\u003cEOF",
+      "llb.customname": "[4/8] RUN \u003c\u003cEOF (echo one...)"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/bash",
+       "-c",
+       "\u003c\u003c'EOS' bash\nset -e\necho quoted\nEOS"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN \u003c\u003c'EOS' bash",
+      "llb.customname": "[5/8] RUN \u003c\u003c'EOS' bash"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "input": "-1",
+       "mkfile": {
+        "data": "IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwpwcmludCgic2hlYmFuZyIpCg==",
+        "mode": 493,
+        "path": "/EOF",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "-1"
+      }
+     ]
+    },
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] preparing inline document"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/bash",
+       "-c",
+       "/dev/pipes/EOF"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "dest": "/dev/pipes/",
+       "input": "1",
+       "output": "-1",
+       "readonly": true,
+       "selector": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      4,
+      0
+     ],
+     [
+      5,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN \u003c\u003cEOF",
+      "llb.customname": "[6/8] RUN \u003c\u003cEOF (#!/usr/bin/env python3...)"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/bash",
+       "-c",
+       "cat \u003c\u003cA \u003c\u003cB\na\nA\nb\nB"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      6,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN cat \u003c\u003cA \u003c\u003cB",
+      "llb.customname": "[7/8] RUN cat \u003c\u003cA \u003c\u003cB"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "input": "-1",
+       "mkfile": {
+        "data": "IyEvYmluL3NoCmVjaG8gY2hvbXBlZAo=",
+        "mode": 493,
+        "path": "/EOF",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "-1"
+      }
+     ]
+    },
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] preparing inline document"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/bash",
+       "-c",
+       "/dev/pipes/EOF"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "dest": "/dev/pipes/",
+       "input": "1",
+       "output": "-1",
+       "readonly": true,
+       "selector": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      7,
+      0
+     ],
+     [
+      8,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN \u003c\u003c-EOF",
+      "llb.customname": "[8/8] RUN \u003c\u003c-EOF (#!/bin/sh...)"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      9,
       0
      ]
     ],
@@ -1455,6 +4422,559 @@
     "inputs": [
      [
       4,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/run-mounts.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c make # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c go build # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c echo $TOKEN # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c cat /run/secrets/npmrc # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c git clone # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c ls # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c ping x # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c nvidia-smi # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine AS src",
+      "llb.customname": "[src 1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "mkdir -p /build/out"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN mkdir -p /build/out",
+      "llb.customname": "[src 2/2] RUN mkdir -p /build/out"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load build context"
+     }
+    },
+    "source": {
+     "attrs": {
+      "local.sharedkeyhint": "context",
+      "local.unique": "*"
+     },
+     "identifier": "local://context"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "make"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "dest": "/b",
+       "input": "1",
+       "output": "-1",
+       "readonly": true,
+       "selector": "/build"
+      },
+      {
+       "dest": "/ctx",
+       "input": "2",
+       "output": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --mount=type=bind,from=src,source=/build,target=/b --mount=type=bind,rw,target=/ctx make",
+      "llb.customname": "[stage-1 2/9] RUN --mount=type=bind,from=src,source=/build,target=/b --mount=type=bind,rw,target=/ctx make"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "input": "-1",
+       "mkdir": {
+        "mode": 448,
+        "owner": {
+         "group": {
+          "byID": 1000
+         },
+         "user": {
+          "byID": 1000
+         }
+        },
+        "path": "/cache",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "-1"
+      }
+     ]
+    },
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] setting cache mount permissions"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "go build"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "cacheOpt": {
+        "ID": "//c2",
+        "sharing": "PRIVATE"
+       },
+       "dest": "/c2",
+       "input": "1",
+       "mountType": "CACHE",
+       "output": "-1",
+       "selector": "/build"
+      },
+      {
+       "cacheOpt": {
+        "ID": "/rel/cache"
+       },
+       "dest": "/rel/cache",
+       "input": "2",
+       "mountType": "CACHE",
+       "output": "-1",
+       "selector": "/cache"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ],
+     [
+      1,
+      0
+     ],
+     [
+      4,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --mount=type=cache,target=rel/cache,uid=1000,gid=1000,mode=0700 --mount=type=cache,target=/c2,sharing=private,from=src,source=/build go build",
+      "llb.customname": "[stage-1 3/9] RUN --mount=type=cache,target=rel/cache,uid=1000,gid=1000,mode=0700 --mount=type=cache,target=/c2,sharing=private,from=src,source=/build go build"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo $TOKEN"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "dest": "/s/f",
+       "input": "-1",
+       "mountType": "SECRET",
+       "secretOpt": {
+        "ID": "f",
+        "mode": 288,
+        "uid": 5
+       }
+      }
+     ],
+     "secretenv": [
+      {
+       "ID": "tok",
+       "name": "TOKEN",
+       "optional": true
+      }
+     ]
+    },
+    "inputs": [
+     [
+      5,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --mount=type=secret,id=tok,env=TOKEN --mount=type=secret,id=f,target=/s/f,uid=5,mode=0440,required echo $TOKEN",
+      "llb.customname": "[stage-1 4/9] RUN --mount=type=secret,id=tok,env=TOKEN --mount=type=secret,id=f,target=/s/f,uid=5,mode=0440,required echo ****"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "cat /run/secrets/npmrc"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "dest": "/run/secrets/npmrc",
+       "input": "-1",
+       "mountType": "SECRET",
+       "secretOpt": {
+        "ID": "npmrc",
+        "mode": 256,
+        "optional": true
+       }
+      },
+      {
+       "dest": "/only/target",
+       "input": "-1",
+       "mountType": "SECRET",
+       "secretOpt": {
+        "ID": "target",
+        "mode": 256,
+        "optional": true
+       }
+      }
+     ]
+    },
+    "inputs": [
+     [
+      6,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --mount=type=secret,source=npmrc --mount=type=secret,target=/only/target cat /run/secrets/npmrc",
+      "llb.customname": "[stage-1 5/9] RUN --mount=type=secret,source=npmrc --mount=type=secret,target=/only/target cat /run/secrets/npmrc"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "git clone"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+       "SSH_AUTH_SOCK=/run/buildkit/ssh_agent.0"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "SSHOpt": {
+        "mode": 384,
+        "optional": true
+       },
+       "dest": "/run/buildkit/ssh_agent.0",
+       "input": "-1",
+       "mountType": "SSH"
+      },
+      {
+       "SSHOpt": {
+        "ID": "deploy",
+        "mode": 438
+       },
+       "dest": "/agent.sock",
+       "input": "-1",
+       "mountType": "SSH"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      7,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --mount=type=ssh --mount=type=ssh,id=deploy,target=/agent.sock,mode=0666,required git clone",
+      "llb.customname": "[stage-1 6/9] RUN --mount=type=ssh --mount=type=ssh,id=deploy,target=/agent.sock,mode=0666,required git clone"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "ls"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "TmpfsOpt": {},
+       "dest": "/t2",
+       "input": "-1",
+       "mountType": "TMPFS",
+       "output": "-1"
+      },
+      {
+       "TmpfsOpt": {
+        "size": "1073741824"
+       },
+       "dest": "/tmp",
+       "input": "-1",
+       "mountType": "TMPFS",
+       "output": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      8,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --mount=type=tmpfs,target=/tmp,size=1g --mount=type=tmpfs,target=/t2 ls",
+      "llb.customname": "[stage-1 7/9] RUN --mount=type=tmpfs,target=/tmp,size=1g --mount=type=tmpfs,target=/t2 ls"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "ping x"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ],
+     "network": "HOST",
+     "security": "INSECURE"
+    },
+    "inputs": [
+     [
+      9,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --network=host --security=insecure ping x",
+      "llb.customname": "[stage-1 8/9] RUN --network=host --security=insecure ping x"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "cdiDevices": [
+      {
+       "name": "nvidia.com/gpu=all",
+       "optional": true
+      },
+      {
+       "name": "vendor.com/x=1"
+      }
+     ],
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "nvidia-smi"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      10,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --device=nvidia.com/gpu=all --device=name=vendor.com/x=1,required=true nvidia-smi",
+      "llb.customname": "[stage-1 9/9] RUN --device=nvidia.com/gpu=all --device=name=vendor.com/x=1,required=true nvidia-smi"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      11,
       0
      ]
     ],
@@ -1689,6 +5209,184 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/stage-chain.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ENV A=1\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"WORKDIR /app\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"USER 1000\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"ENV B=2\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN /bin/sh -c env # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY /app /copy # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c echo $A $B # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"User\":\"1000\",\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\",\"A=1\",\"B=2\"],\"Cmd\":[\"/bin/sh\"],\"WorkingDir\":\"/app\"}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine AS base",
+      "llb.customname": "[base 1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "mkdir": {
+        "makeParents": true,
+        "mode": 493,
+        "path": "/app",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[base 2/2] WORKDIR /app"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "env"
+      ],
+      "cwd": "/app",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+       "A=1",
+       "B=2"
+      ],
+      "removeMountStubsRecursive": true,
+      "user": "1000"
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN env",
+      "llb.customname": "[mid 1/1] RUN env"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/copy",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/app",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[stage-3 1/2] COPY --from=base /app /copy"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo $A $B"
+      ],
+      "cwd": "/app",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+       "A=1",
+       "B=2"
+      ],
+      "removeMountStubsRecursive": true,
+      "user": "1000"
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo $A $B",
+      "llb.customname": "[stage-3 2/2] RUN echo 1 2"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/target.Dockerfile",
   "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo b # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
   "ops": [
@@ -1758,6 +5456,174 @@
    }
   ],
   "warnings": null
+ },
+ {
+  "file": "corpus/plan/user-base.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created\":\"2025-06-01T10:20:30.123456789+02:00\",\"created_by\":\"/bin/sh -c #(nop) USER app\",\"author\":\"someone\",\"comment\":\"c \\u003c\\u0026\\u003e\",\"empty_layer\":true},{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/bash -eo pipefail -c pwd \\u0026\\u0026 whoami # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"WORKDIR /srv/app/sub\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY x . # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"CMD [\\\"/bin/bash\\\" \\\"-eo\\\" \\\"pipefail\\\" \\\"-c\\\" \\\"run\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"config\":{\"User\":\"app:app\",\"Env\":[\"PATH=/usr/bin:/bin\"],\"Cmd\":[\"/bin/bash\",\"-eo\",\"pipefail\",\"-c\",\"run\"],\"Volumes\":{\"/data\":{}},\"WorkingDir\":\"/srv/app/sub\",\"StopSignal\":\"SIGQUIT\",\"ArgsEscaped\":true,\"Shell\":[\"/bin/bash\",\"-eo\",\"pipefail\",\"-c\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM userwd",
+      "llb.customname": "[1/4] FROM docker.io/library/userwd:latest@sha256:418a46c7f9e35f367e24064323e9759a208f30223ddd001667753d28ffe59570"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/userwd:latest@sha256:418a46c7f9e35f367e24064323e9759a208f30223ddd001667753d28ffe59570"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/bash",
+       "-eo",
+       "pipefail",
+       "-c",
+       "pwd \u0026\u0026 whoami"
+      ],
+      "cwd": "/srv/app",
+      "env": [
+       "PATH=/usr/bin:/bin"
+      ],
+      "removeMountStubsRecursive": true,
+      "user": "app:app"
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN pwd \u0026\u0026 whoami",
+      "llb.customname": "[2/4] RUN pwd \u0026\u0026 whoami"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "mkdir": {
+        "makeParents": true,
+        "mode": 493,
+        "owner": {
+         "group": {
+          "byName": {
+           "name": "app"
+          }
+         },
+         "user": {
+          "byName": {
+           "name": "app"
+          }
+         }
+        },
+        "path": "/srv/app/sub",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/4] WORKDIR sub"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load build context"
+     }
+    },
+    "source": {
+     "attrs": {
+      "local.followpaths": "[\"x\"]",
+      "local.sharedkeyhint": "context",
+      "local.unique": "*"
+     },
+     "identifier": "local://context"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/srv/app/sub/",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/x",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ],
+     [
+      3,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[4/4] COPY x ."
+     }
+    }
+   },
+   {
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": [
+   "\"WorkdirRelativePath|Relative workdir \\\"sub\\\" can have unexpected results if the base image changes|3-3\""
+  ]
  },
  {
   "file": "corpus/plan/withconfig-entry.Dockerfile",

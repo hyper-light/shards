@@ -495,3 +495,526 @@ fn image_configs_read_and_write_as_gos() {
         assert_eq!(got, want, "{}", String::from_utf8_lossy(&text));
     }
 }
+
+/// Sizes read as go-units' `RAMInBytes` reads a tmpfs mount's `size=`: every case of
+/// testdata/sizes.json.
+#[test]
+fn sizes_read_as_go_units_reads_them() {
+    for a in load("sizes-answers.json").as_array().unwrap() {
+        let input = a["input"].as_str().unwrap();
+        let got = match shards_dockerfile::go::ram_in_bytes(input.as_bytes()) {
+            Ok(n) => serde_json::json!({ "input": input, "bytes": n.to_string() }),
+            Err(e) => serde_json::json!({ "input": input, "error": quote(&e) }),
+        };
+        assert_eq!(&got, a, "{input}");
+    }
+}
+
+/// The fake base images of testdata/images.json, by reference.
+struct Images(serde_json::Map<String, Value>);
+
+impl shards_dockerfile::plan::Resolver for Images {
+    fn resolve(
+        &self,
+        name: &[u8],
+        _: &shards_dockerfile::platform::Platform,
+    ) -> Result<shards_dockerfile::plan::Resolved, Vec<u8>> {
+        let key = String::from_utf8_lossy(name).to_string();
+        let Some(img) = self.0.get(&key) else {
+            return Err(format!("{key}: not found").into_bytes());
+        };
+        Ok(shards_dockerfile::plan::Resolved {
+            reference: img["ref"].as_str().unwrap().as_bytes().to_vec(),
+            digest: img["digest"].as_str().map(|d| d.as_bytes().to_vec()),
+            config: serde_json::to_vec(&img["config"]).unwrap(),
+        })
+    }
+}
+
+fn ustr(b: &[u8]) -> Value {
+    Value::String(String::from_utf8(b.to_vec()).unwrap())
+}
+
+fn ustrs(v: &[Vec<u8>]) -> Value {
+    Value::Array(v.iter().map(|s| ustr(s)).collect())
+}
+
+/// Sets `key` unless `v` is what protojson leaves out: false, 0, "", [], {}.
+fn put(o: &mut serde_json::Map<String, Value>, key: &str, v: Value) {
+    let empty = match &v {
+        Value::Bool(b) => !b,
+        Value::Number(n) => n.as_i64() == Some(0),
+        Value::String(s) => s.is_empty() || s == "0",
+        Value::Array(a) => a.is_empty(),
+        Value::Object(m) => m.is_empty(),
+        Value::Null => true,
+    };
+    if !empty {
+        o.insert(key.to_string(), v);
+    }
+}
+
+fn platform_v(p: &shards_dockerfile::platform::Platform) -> Value {
+    let mut o = serde_json::Map::new();
+    put(&mut o, "Architecture", ustr(&p.architecture));
+    put(&mut o, "OS", ustr(&p.os));
+    put(&mut o, "Variant", ustr(&p.variant));
+    put(&mut o, "OSVersion", ustr(&p.os_version));
+    put(&mut o, "OSFeatures", ustrs(&p.os_features));
+    Value::Object(o)
+}
+
+fn owner_v(c: &Option<shards_dockerfile::llb::OpChown>) -> Value {
+    use shards_dockerfile::llb::OpUser;
+    let Some(c) = c else {
+        return Value::Null;
+    };
+    let user = |u: &Option<OpUser>| match u {
+        None => Value::Null,
+        Some(OpUser::Id(id)) => serde_json::json!({ "byID": id }),
+        Some(OpUser::Name { name, input }) => {
+            let mut n = serde_json::Map::new();
+            put(&mut n, "name", ustr(name));
+            put(&mut n, "input", Value::String(input.to_string()));
+            serde_json::json!({ "byName": n })
+        }
+    };
+    let mut o = serde_json::Map::new();
+    put(&mut o, "user", user(&c.user));
+    put(&mut o, "group", user(&c.group));
+    Value::Object(o)
+}
+
+/// An operation as the oracle prints it: protojson with BuildKit's field names.
+fn op_v(op: &shards_dockerfile::llb::Op, md: &shards_dockerfile::llb::Meta, order: &[usize]) -> Value {
+    use shards_dockerfile::llb::{NetMode, OpActionKind, OpKind, OpMountKind, Security, Sharing};
+    let pos = |i: usize| order.iter().position(|&o| o == i).unwrap();
+    let mut o = serde_json::Map::new();
+    o.insert("constraints".into(), serde_json::json!({}));
+    o.insert(
+        "inputs".into(),
+        Value::Array(
+            op.inputs
+                .iter()
+                .map(|i| serde_json::json!([pos(i.op), i.index]))
+                .collect(),
+        ),
+    );
+    if let Some(p) = &op.platform {
+        o.insert("platform".into(), platform_v(p));
+    }
+    let s64 = |n: i64| Value::String(n.to_string());
+    match &op.kind {
+        OpKind::Source { identifier, attrs } => {
+            let mut s = serde_json::Map::new();
+            put(&mut s, "identifier", ustr(identifier));
+            let mut a = serde_json::Map::new();
+            for (k, v) in attrs {
+                let k = String::from_utf8(k.clone()).unwrap();
+                let v = if k == "local.unique" {
+                    Value::String("*".into())
+                } else {
+                    ustr(v)
+                };
+                a.insert(k, v);
+            }
+            put(&mut s, "attrs", Value::Object(a));
+            o.insert("source".into(), Value::Object(s));
+        }
+        OpKind::Exec {
+            process,
+            mounts,
+            network,
+            security,
+            secret_env,
+            devices,
+        } => {
+            let mut m = serde_json::Map::new();
+            put(&mut m, "args", ustrs(&process.args));
+            put(&mut m, "env", ustrs(&process.env));
+            put(&mut m, "cwd", ustr(&process.cwd));
+            put(&mut m, "user", ustr(&process.user));
+            if let Some(p) = &process.proxy {
+                let mut pe = serde_json::Map::new();
+                put(&mut pe, "http_proxy", ustr(&p.http));
+                put(&mut pe, "https_proxy", ustr(&p.https));
+                put(&mut pe, "ftp_proxy", ustr(&p.ftp));
+                put(&mut pe, "no_proxy", ustr(&p.no));
+                put(&mut pe, "all_proxy", ustr(&p.all));
+                m.insert("proxy_env".into(), Value::Object(pe));
+            }
+            put(&mut m, "hostname", ustr(&process.hostname));
+            put(&mut m, "cgroupParent", ustr(&process.cgroup_parent));
+            m.insert("removeMountStubsRecursive".into(), Value::Bool(true));
+            let mut e = serde_json::Map::new();
+            e.insert("meta".into(), Value::Object(m));
+            let ms: Vec<Value> = mounts
+                .iter()
+                .map(|mt| {
+                    let mut x = serde_json::Map::new();
+                    put(&mut x, "input", s64(mt.input));
+                    put(&mut x, "selector", ustr(&mt.selector));
+                    put(&mut x, "dest", ustr(&mt.dest));
+                    put(&mut x, "output", s64(mt.output));
+                    put(&mut x, "readonly", Value::Bool(mt.readonly));
+                    match &mt.kind {
+                        OpMountKind::Bind => {}
+                        OpMountKind::Cache { id, sharing } => {
+                            x.insert("mountType".into(), "CACHE".into());
+                            let mut c = serde_json::Map::new();
+                            put(&mut c, "ID", ustr(id));
+                            match sharing {
+                                Sharing::Shared => {}
+                                Sharing::Private => {
+                                    c.insert("sharing".into(), "PRIVATE".into());
+                                }
+                                Sharing::Locked => {
+                                    c.insert("sharing".into(), "LOCKED".into());
+                                }
+                            }
+                            x.insert("cacheOpt".into(), Value::Object(c));
+                        }
+                        OpMountKind::Tmpfs { size } => {
+                            x.insert("mountType".into(), "TMPFS".into());
+                            let mut t = serde_json::Map::new();
+                            put(&mut t, "size", s64(*size));
+                            x.insert("TmpfsOpt".into(), Value::Object(t));
+                        }
+                        OpMountKind::Secret {
+                            id,
+                            uid,
+                            gid,
+                            mode,
+                            optional,
+                        }
+                        | OpMountKind::Ssh {
+                            id,
+                            uid,
+                            gid,
+                            mode,
+                            optional,
+                        } => {
+                            let (kind, key) = match &mt.kind {
+                                OpMountKind::Secret { .. } => ("SECRET", "secretOpt"),
+                                _ => ("SSH", "SSHOpt"),
+                            };
+                            x.insert("mountType".into(), kind.into());
+                            let mut s = serde_json::Map::new();
+                            put(&mut s, "ID", ustr(id));
+                            put(&mut s, "uid", (*uid).into());
+                            put(&mut s, "gid", (*gid).into());
+                            put(&mut s, "mode", (*mode).into());
+                            put(&mut s, "optional", Value::Bool(*optional));
+                            x.insert(key.into(), Value::Object(s));
+                        }
+                    }
+                    Value::Object(x)
+                })
+                .collect();
+            put(&mut e, "mounts", Value::Array(ms));
+            match network {
+                NetMode::Sandbox => {}
+                NetMode::Host => {
+                    e.insert("network".into(), "HOST".into());
+                }
+                NetMode::None => {
+                    e.insert("network".into(), "NONE".into());
+                }
+            }
+            if *security == Security::Insecure {
+                e.insert("security".into(), "INSECURE".into());
+            }
+            let se: Vec<Value> = secret_env
+                .iter()
+                .map(|(id, name, optional)| {
+                    let mut x = serde_json::Map::new();
+                    put(&mut x, "ID", ustr(id));
+                    put(&mut x, "name", ustr(name));
+                    put(&mut x, "optional", Value::Bool(*optional));
+                    Value::Object(x)
+                })
+                .collect();
+            put(&mut e, "secretenv", Value::Array(se));
+            let dv: Vec<Value> = devices
+                .iter()
+                .map(|d| {
+                    let mut x = serde_json::Map::new();
+                    put(&mut x, "name", ustr(&d.name));
+                    put(&mut x, "optional", Value::Bool(d.optional));
+                    Value::Object(x)
+                })
+                .collect();
+            put(&mut e, "cdiDevices", Value::Array(dv));
+            o.insert("exec".into(), Value::Object(e));
+        }
+        OpKind::File { actions } => {
+            let acts: Vec<Value> = actions
+                .iter()
+                .map(|a| {
+                    let mut x = serde_json::Map::new();
+                    put(&mut x, "input", s64(a.input));
+                    put(&mut x, "secondaryInput", s64(a.secondary_input));
+                    put(&mut x, "output", s64(a.output));
+                    let mut b = serde_json::Map::new();
+                    let key = match &a.action {
+                        OpActionKind::Mkdir {
+                            path,
+                            mode,
+                            make_parents,
+                            owner,
+                            timestamp,
+                        } => {
+                            put(&mut b, "path", ustr(path));
+                            put(&mut b, "mode", (*mode).into());
+                            put(&mut b, "makeParents", Value::Bool(*make_parents));
+                            put(&mut b, "owner", owner_v(owner));
+                            put(&mut b, "timestamp", s64(*timestamp));
+                            "mkdir"
+                        }
+                        OpActionKind::Mkfile {
+                            path,
+                            mode,
+                            data,
+                            owner,
+                            timestamp,
+                        } => {
+                            put(&mut b, "path", ustr(path));
+                            put(&mut b, "mode", (*mode).into());
+                            put(&mut b, "data", Value::String(base64(data)));
+                            put(&mut b, "owner", owner_v(owner));
+                            put(&mut b, "timestamp", s64(*timestamp));
+                            "mkfile"
+                        }
+                        OpActionKind::Copy {
+                            src,
+                            dest,
+                            owner,
+                            mode,
+                            mode_str,
+                            follow_symlink,
+                            dir_copy_contents,
+                            attempt_unpack,
+                            create_dest_path,
+                            allow_wildcard,
+                            allow_empty_wildcard,
+                            timestamp,
+                            include_patterns,
+                            exclude_patterns,
+                            required_paths,
+                        } => {
+                            put(&mut b, "src", ustr(src));
+                            put(&mut b, "dest", ustr(dest));
+                            put(&mut b, "owner", owner_v(owner));
+                            put(&mut b, "mode", (*mode).into());
+                            put(&mut b, "followSymlink", Value::Bool(*follow_symlink));
+                            put(&mut b, "dirCopyContents", Value::Bool(*dir_copy_contents));
+                            put(
+                                &mut b,
+                                "attemptUnpackDockerCompatibility",
+                                Value::Bool(*attempt_unpack),
+                            );
+                            put(&mut b, "createDestPath", Value::Bool(*create_dest_path));
+                            put(&mut b, "allowWildcard", Value::Bool(*allow_wildcard));
+                            put(&mut b, "allowEmptyWildcard", Value::Bool(*allow_empty_wildcard));
+                            put(&mut b, "timestamp", s64(*timestamp));
+                            put(&mut b, "include_patterns", ustrs(include_patterns));
+                            put(&mut b, "exclude_patterns", ustrs(exclude_patterns));
+                            put(&mut b, "modeStr", ustr(mode_str));
+                            put(&mut b, "required_paths", ustrs(required_paths));
+                            "copy"
+                        }
+                    };
+                    x.insert(key.into(), Value::Object(b));
+                    Value::Object(x)
+                })
+                .collect();
+            o.insert("file".into(), serde_json::json!({ "actions": acts }));
+        }
+        OpKind::Merge => {
+            let ins: Vec<Value> = (0..op.inputs.len())
+                .map(|i| {
+                    let mut x = serde_json::Map::new();
+                    put(&mut x, "input", s64(i as i64));
+                    Value::Object(x)
+                })
+                .collect();
+            o.insert("merge".into(), serde_json::json!({ "inputs": ins }));
+        }
+    }
+    o.insert("metadata".into(), meta_v(md));
+    Value::Object(o)
+}
+
+fn meta_v(md: &shards_dockerfile::llb::Meta) -> Value {
+    let mut m = serde_json::Map::new();
+    put(&mut m, "ignore_cache", Value::Bool(md.ignore_cache));
+    let mut d = serde_json::Map::new();
+    for (k, v) in &md.description {
+        d.insert(String::from_utf8(k.clone()).unwrap(), ustr(v));
+    }
+    put(&mut m, "description", Value::Object(d));
+    if let Some(pg) = &md.progress_group {
+        let mut p = serde_json::Map::new();
+        p.insert("id".into(), "*".into());
+        put(&mut p, "name", ustr(&pg.name));
+        put(&mut p, "weak", Value::Bool(pg.weak));
+        m.insert("progress_group".into(), Value::Object(p));
+    }
+    Value::Object(m)
+}
+
+fn base64(b: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in b.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &c)| n | u32::from(c) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(A[(n >> (18 - 6 * i) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// A definition as the oracle lists it: depth first from the end, each input before what
+/// reads it, then the end itself, which reads the target's output.
+fn definition_v(def: &shards_dockerfile::llb::Definition) -> Value {
+    let Some(root) = def.root else {
+        return Value::Array(Vec::new());
+    };
+    let mut order = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    fn visit(
+        i: usize,
+        def: &shards_dockerfile::llb::Definition,
+        seen: &mut std::collections::BTreeSet<usize>,
+        order: &mut Vec<usize>,
+    ) {
+        if !seen.insert(i) {
+            return;
+        }
+        for inp in &def.ops[i].inputs {
+            visit(inp.op, def, seen, order);
+        }
+        order.push(i);
+    }
+    visit(root.op, def, &mut seen, &mut order);
+    let mut out: Vec<Value> = order
+        .iter()
+        .map(|&i| op_v(&def.ops[i], &def.metadata[i], &order))
+        .collect();
+    let pos = order.iter().position(|&o| o == root.op).unwrap();
+    out.push(serde_json::json!({ "inputs": [[pos, root.index]], "metadata": {} }));
+    Value::Array(out)
+}
+
+/// Build plans as BuildKit's Dockerfile2LLB makes them: every file of testdata/corpus/plan
+/// with its options, against images.json's base images. The graph op by op, the image
+/// config byte for byte, the checks' warnings and any error.
+#[test]
+fn plans_are_buildkits() {
+    use shards_dockerfile::plan::{Options, plan};
+    use shards_dockerfile::platform::Platform;
+    let images = Images(load("images.json").as_object().unwrap().clone());
+    let devs = deviations("plan");
+    let mut failures = Vec::new();
+    for want in load("plan.json").as_array().unwrap() {
+        let file = want["file"].as_str().unwrap();
+        let text = std::fs::read(testdata().join(file)).unwrap();
+        let opts_v: Value = std::fs::read(testdata().join(format!("{file}.opts.json")))
+            .map(|b| serde_json::from_slice(&b).unwrap())
+            .unwrap_or(Value::Null);
+        let map = |v: &Value| -> std::collections::BTreeMap<Vec<u8>, Vec<u8>> {
+            v.as_object()
+                .map(|o| {
+                    o.iter()
+                        .map(|(k, v)| (k.as_bytes().to_vec(), v.as_str().unwrap().as_bytes().to_vec()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let opts = Options {
+            target_platform: Platform::new("linux", "amd64"),
+            build_platforms: vec![Platform::new("linux", "amd64")],
+            build_args: map(&opts_v["build_args"]),
+            target: opts_v["target"].as_str().unwrap_or_default().as_bytes().to_vec(),
+            labels: map(&opts_v["labels"]),
+            hostname: opts_v["hostname"]
+                .as_str()
+                .unwrap_or_default()
+                .as_bytes()
+                .to_vec(),
+            multi_platform: false,
+            context_id: b"*".to_vec(),
+        };
+        let mut got = serde_json::Map::new();
+        got.insert("file".into(), file.into());
+        let warnings = |ws: &[shards_dockerfile::lint::Warning]| -> Value {
+            if ws.is_empty() {
+                return Value::Null;
+            }
+            let mut v: Vec<String> = ws
+                .iter()
+                .map(|w| {
+                    let lines: Vec<String> = w.location.iter().map(|(s, e)| format!("{s}-{e}")).collect();
+                    quote(
+                        format!(
+                            "{}|{}|{}",
+                            w.rule,
+                            String::from_utf8_lossy(&w.message),
+                            lines.join(",")
+                        )
+                        .as_bytes(),
+                    )
+                })
+                .collect();
+            v.sort();
+            Value::Array(v.into_iter().map(Value::String).collect())
+        };
+        match plan(&text, &opts, &images) {
+            Err(e) => {
+                got.insert("warnings".into(), warnings(&e.warnings));
+                got.insert("error".into(), quote(&e.message).into());
+                if !e.location.is_empty() {
+                    got.insert("location".into(), serde_json::to_value(&e.location).unwrap());
+                }
+            }
+            Ok(p) => {
+                got.insert("warnings".into(), warnings(&p.warnings));
+                got.insert("image".into(), p.image.to_json().unwrap().into());
+                got.insert("ops".into(), definition_v(&p.definition()));
+            }
+        }
+        let mut want = want.clone();
+        if let Some(Value::Array(ws)) = want.get_mut("warnings") {
+            let mut v: Vec<String> = ws.iter().map(|w| w.as_str().unwrap().to_string()).collect();
+            v.sort();
+            *ws = v.into_iter().map(Value::String).collect();
+        }
+        if let Some(d) = devs.iter().find(|d| d["file"] == file) {
+            for (k, v) in d["fields"].as_object().unwrap() {
+                want[k] = v.clone();
+            }
+        }
+        let got = Value::Object(got);
+        if got != want {
+            failures.push(format!(
+                "{file}\n  got:  {}\n  want: {}",
+                serde_json::to_string(&got).unwrap(),
+                serde_json::to_string(&want).unwrap()
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of the plans differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}

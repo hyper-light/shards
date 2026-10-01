@@ -9999,6 +9999,361 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/args-platform.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"TARGETPLATFORM\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG TARGETPLATFORM\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "args": [
+       [
+        "\"TARGETOS\"",
+        null,
+        "\"\""
+       ],
+       [
+        "\"TARGETARCH\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG TARGETOS TARGETARCH\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "args": [
+       [
+        "\"BUILDPLATFORM\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG BUILDPLATFORM\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"RUN echo $TARGETPLATFORM $TARGETOS/$TARGETARCH on $BUILDPLATFORM\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo $TARGETPLATFORM $TARGETOS/$TARGETARCH on $BUILDPLATFORM\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/args-stages.Dockerfile",
+  "meta_args": [
+   {
+    "args": [
+     [
+      "\"GLOBAL\"",
+      "\"g1\"",
+      "\"\""
+     ]
+    ],
+    "code": "\"ARG GLOBAL=g1\"",
+    "comments": [],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"ARG\""
+   },
+   {
+    "args": [
+     [
+      "\"UNUSED\"",
+      null,
+      "\"\""
+     ]
+    ],
+    "code": "\"ARG UNUSED\"",
+    "comments": [],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      2,
+      2
+     ]
+    ],
+    "name": "\"ARG\""
+   },
+   {
+    "args": [
+     [
+      "\"VERSION\"",
+      "\"1.0\"",
+      "\"\""
+     ]
+    ],
+    "code": "\"ARG VERSION=1.0\"",
+    "comments": [],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      3,
+      3
+     ]
+    ],
+    "name": "\"ARG\""
+   }
+  ],
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"GLOBAL\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG GLOBAL\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "args": [
+       [
+        "\"LOCAL\"",
+        "\"l-${GLOBAL}\"",
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG LOCAL=l-${GLOBAL}\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"ENV E=$LOCAL\"",
+      "comments": [],
+      "env": [
+       [
+        "\"E\"",
+        "\"$LOCAL\"",
+        false
+       ]
+      ],
+      "kind": "*instructions.EnvCommand",
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "name": "\"ENV\""
+     },
+     {
+      "code": "\"RUN echo $GLOBAL $LOCAL $E $UNDEFINED\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        8,
+        8
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo $GLOBAL $LOCAL $E $UNDEFINED\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"a\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS a\""
+   },
+   {
+    "base_name": "\"a\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"VERSION\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG VERSION\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        10,
+        10
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "args": [
+       [
+        "\"LOCAL\"",
+        "\"override\"",
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG LOCAL=override\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        11,
+        11
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"RUN echo $VERSION $LOCAL ${TARGETPLATFORM} $BUILDARCH\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        12,
+        12
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo $VERSION $LOCAL ${TARGETPLATFORM} $BUILDARCH\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      9,
+      9
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM a\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/args.Dockerfile",
   "meta_args": [
    {
@@ -10144,6 +10499,1040 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/config-shell-form.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"CMD echo first\"",
+      "comments": [],
+      "kind": "*instructions.CmdCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"CMD\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo first\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"CMD echo second\"",
+      "comments": [],
+      "kind": "*instructions.CmdCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"CMD\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo second\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"ENTRYPOINT run me\"",
+      "comments": [],
+      "kind": "*instructions.EntrypointCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"ENTRYPOINT\"",
+      "shell": {
+       "cmd_line": [
+        "\"run me\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"HEALTHCHECK NONE\"",
+      "comments": [],
+      "health": {
+       "interval": 0,
+       "retries": 0,
+       "start_interval": 0,
+       "start_period": 0,
+       "test": [
+        "\"NONE\""
+       ],
+       "timeout": 0
+      },
+      "kind": "*instructions.HealthCheckCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "name": "\"HEALTHCHECK\""
+     },
+     {
+      "code": "\"STOPSIGNAL 9\"",
+      "comments": [],
+      "kind": "*instructions.StopSignalCommand",
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "name": "\"STOPSIGNAL\"",
+      "signal": "\"9\""
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/config.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"USER nobody\"",
+      "comments": [],
+      "kind": "*instructions.UserCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"USER\"",
+      "user": "\"nobody\""
+     },
+     {
+      "code": "\"WORKDIR /home/nobody\"",
+      "comments": [],
+      "kind": "*instructions.WorkdirCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"WORKDIR\"",
+      "path": "\"/home/nobody\""
+     },
+     {
+      "code": "\"EXPOSE 80 443/tcp 53/UDP 8000-8002 127.0.0.1:9000:9000\"",
+      "comments": [],
+      "kind": "*instructions.ExposeCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"EXPOSE\"",
+      "ports": [
+       "\"127.0.0.1:9000:9000\"",
+       "\"443/tcp\"",
+       "\"53/UDP\"",
+       "\"80\"",
+       "\"8000-8002\""
+      ]
+     },
+     {
+      "code": "\"VOLUME /data [\\\"/logs\\\", \\\"/cache\\\"]\"",
+      "comments": [],
+      "kind": "*instructions.VolumeCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "name": "\"VOLUME\"",
+      "volumes": [
+       "\"/data\"",
+       "\"[\\\"/logs\\\",\"",
+       "\"\\\"/cache\\\"]\""
+      ]
+     },
+     {
+      "code": "\"STOPSIGNAL SIGINT\"",
+      "comments": [],
+      "kind": "*instructions.StopSignalCommand",
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "name": "\"STOPSIGNAL\"",
+      "signal": "\"SIGINT\""
+     },
+     {
+      "code": "\"HEALTHCHECK --interval=5s --timeout=1m30s --start-period=500ms --start-interval=2s --retries=4 CMD curl -f http://localhost/ || exit 1\"",
+      "comments": [],
+      "health": {
+       "interval": 5000000000,
+       "retries": 4,
+       "start_interval": 2000000000,
+       "start_period": 500000000,
+       "test": [
+        "\"CMD-SHELL\"",
+        "\"curl -f http://localhost/ || exit 1\""
+       ],
+       "timeout": 90000000000
+      },
+      "kind": "*instructions.HealthCheckCommand",
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "name": "\"HEALTHCHECK\""
+     },
+     {
+      "code": "\"LABEL a=1 \\\"b c\\\"=2\"",
+      "comments": [],
+      "kind": "*instructions.LabelCommand",
+      "labels": [
+       [
+        "\"a\"",
+        "\"1\"",
+        false
+       ],
+       [
+        "\"\\\"b c\\\"\"",
+        "\"2\"",
+        false
+       ]
+      ],
+      "location": [
+       [
+        8,
+        8
+       ]
+      ],
+      "name": "\"LABEL\""
+     },
+     {
+      "code": "\"LABEL legacy value\"",
+      "comments": [],
+      "kind": "*instructions.LabelCommand",
+      "labels": [
+       [
+        "\"legacy\"",
+        "\"value\"",
+        true
+       ]
+      ],
+      "location": [
+       [
+        9,
+        9
+       ]
+      ],
+      "name": "\"LABEL\""
+     },
+     {
+      "code": "\"ENV legacy value\"",
+      "comments": [],
+      "env": [
+       [
+        "\"legacy\"",
+        "\"value\"",
+        true
+       ]
+      ],
+      "kind": "*instructions.EnvCommand",
+      "location": [
+       [
+        10,
+        10
+       ]
+      ],
+      "name": "\"ENV\""
+     },
+     {
+      "code": "\"MAINTAINER someone@example.com\"",
+      "comments": [],
+      "kind": "*instructions.MaintainerCommand",
+      "location": [
+       [
+        11,
+        11
+       ]
+      ],
+      "maintainer": "\"someone@example.com\"",
+      "name": "\"MAINTAINER\""
+     },
+     {
+      "code": "\"ENTRYPOINT [\\\"/entry\\\"]\"",
+      "comments": [],
+      "kind": "*instructions.EntrypointCommand",
+      "location": [
+       [
+        12,
+        12
+       ]
+      ],
+      "name": "\"ENTRYPOINT\"",
+      "shell": {
+       "cmd_line": [
+        "\"/entry\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": false
+      }
+     },
+     {
+      "code": "\"CMD [\\\"arg\\\"]\"",
+      "comments": [],
+      "kind": "*instructions.CmdCommand",
+      "location": [
+       [
+        13,
+        13
+       ]
+      ],
+      "name": "\"CMD\"",
+      "shell": {
+       "cmd_line": [
+        "\"arg\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": false
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": [
+   "\"MaintainerDeprecated|The MAINTAINER instruction is deprecated, use a label instead to define an image author|https://docs.docker.com/go/dockerfile/rule/maintainer-deprecated/|Maintainer instruction is deprecated in favor of using label|11-11\""
+  ]
+ },
+ {
+  "file": "corpus/plan/copy-flags.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"WORKDIR /w\"",
+      "comments": [],
+      "kind": "*instructions.WorkdirCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"WORKDIR\"",
+      "path": "\"/w\""
+     },
+     {
+      "chmod": "\"u+rwx,g+rx\"",
+      "chown": "\"app:staff\"",
+      "code": "\"COPY --chown=app:staff --chmod=u+rwx,g+rx a rel/\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"rel/\"",
+       "paths": [
+        "\"a\""
+       ]
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"1000\"",
+      "code": "\"COPY --chown=1000 b ./\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"./\"",
+       "paths": [
+        "\"b\""
+       ]
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"root:0\"",
+      "code": "\"COPY --chown=root:0 c .\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\".\"",
+       "paths": [
+        "\"c\""
+       ]
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --exclude=*.tmp --exclude=cache d /d\"",
+      "comments": [],
+      "exclude": [
+       "\"*.tmp\"",
+       "\"cache\""
+      ],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/d\"",
+       "paths": [
+        "\"d\""
+       ]
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --parents x/y/./z/*.go /src/\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": true,
+      "sources": {
+       "contents": null,
+       "dest": "\"/src/\"",
+       "paths": [
+        "\"x/y/./z/*.go\""
+       ]
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --parents p/q.txt /p/\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        8,
+        8
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": true,
+      "sources": {
+       "contents": null,
+       "dest": "\"/p/\"",
+       "paths": [
+        "\"p/q.txt\""
+       ]
+      }
+     },
+     {
+      "chmod": "\"755\"",
+      "chown": "\"\"",
+      "code": "\"COPY --chmod=755 e /e\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        9,
+        9
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/e\"",
+       "paths": [
+        "\"e\""
+       ]
+      }
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"1:1\"",
+      "code": "\"ADD --chown=1:1 f.tar.gz /f/\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        10,
+        10
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/f/\"",
+       "paths": [
+        "\"f.tar.gz\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --unpack=false g.tar /g\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        11,
+        11
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/g\"",
+       "paths": [
+        "\"g.tar\""
+       ]
+      },
+      "unpack": false
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --link h /h\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": true,
+      "location": [
+       [
+        12,
+        12
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/h\"",
+       "paths": [
+        "\"h\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"2\"",
+      "code": "\"COPY --link --chown=2 i /i\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": true,
+      "location": [
+       [
+        13,
+        13
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/i\"",
+       "paths": [
+        "\"i\""
+       ]
+      }
+     },
+     {
+      "chmod": "\"600\"",
+      "chown": "\"\"",
+      "code": "\"COPY --link --chmod=600 j /j\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": true,
+      "location": [
+       [
+        14,
+        14
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/j\"",
+       "paths": [
+        "\"j\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/copy-from.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN mkdir /out\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"mkdir /out\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"one\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS one\""
+   },
+   {
+    "base_name": "\"scratch\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=0 /out /out0\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"0\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/out0\"",
+       "paths": [
+        "\"/out\""
+       ]
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=one /out/./a* /out1/\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"one\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/out1/\"",
+       "paths": [
+        "\"/out/./a*\""
+       ]
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=alpine /etc/passwd /passwd\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"alpine\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/passwd\"",
+       "paths": [
+        "\"/etc/passwd\""
+       ]
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=registry.example.com:5000/team/app:1.0 /app /app\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"registry.example.com:5000/team/app:1.0\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/app\"",
+       "paths": [
+        "\"/app\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      3,
+      3
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM scratch\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/copy-heredoc.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"NAME\"",
+        "\"world\"",
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG NAME=world\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY \u003c\u003cEOF /greet\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        3,
+        3
+       ],
+       [
+        4,
+        4
+       ],
+       [
+        5,
+        5
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": [
+        [
+         "\"EOF\"",
+         "\"hello $NAME\\n\"",
+         true
+        ]
+       ],
+       "dest": "\"/greet\"",
+       "paths": []
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY \u003c\u003c-\\\"EOT\\\" /raw\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        6,
+        6
+       ],
+       [
+        7,
+        7
+       ],
+       [
+        8,
+        8
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": [
+        [
+         "\"EOT\"",
+         "\"no ${NAME} expansion\\n\"",
+         false
+        ]
+       ],
+       "dest": "\"/raw\"",
+       "paths": []
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY \u003c\u003cA \u003c\u003cB /two/\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        9,
+        9
+       ],
+       [
+        10,
+        10
+       ],
+       [
+        11,
+        11
+       ],
+       [
+        12,
+        12
+       ],
+       [
+        13,
+        13
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": [
+        [
+         "\"A\"",
+         "\"first\\n\"",
+         true
+        ],
+        [
+         "\"B\"",
+         "\"second\\n\"",
+         true
+        ]
+       ],
+       "dest": "\"/two/\"",
+       "paths": []
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/copy.Dockerfile",
   "meta_args": null,
   "stages": [
@@ -10282,6 +11671,63 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/empty-continuation.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN echo a   \u0026\u0026 echo b\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        4,
+        4
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo a   \u0026\u0026 echo b\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/empty.Dockerfile",
   "meta_args": null,
   "stages": [
@@ -10326,6 +11772,350 @@
     "orig_cmd": "\"FROM\"",
     "platform": "\"\"",
     "source_code": "\"FROM empty\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/entrypoint-resets-cmd.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"withconfig\"",
+    "commands": [
+     {
+      "code": "\"ENTRYPOINT [\\\"/new-entry\\\"]\"",
+      "comments": [],
+      "kind": "*instructions.EntrypointCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ENTRYPOINT\"",
+      "shell": {
+       "cmd_line": [
+        "\"/new-entry\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": false
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM withconfig\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"WORKDIR /w\"",
+      "comments": [],
+      "kind": "*instructions.WorkdirCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"WORKDIR\"",
+      "path": "\"/w\""
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY a /a\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/a\"",
+       "paths": [
+        "\"a\""
+       ]
+      }
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD b /b\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/b\"",
+       "paths": [
+        "\"b\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-bad-ref.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   },
+   {
+    "base_name": "\"Bad:Name\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      2,
+      2
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM Bad:Name\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-checksum-copy.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "checksum": "\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000 a /a\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/a\"",
+       "paths": [
+        "\"a\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-chmod-sym.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "chmod": "\"u+q\"",
+      "chown": "\"\"",
+      "code": "\"COPY --chmod=u+q a /a\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/a\"",
+       "paths": [
+        "\"a\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-chmod.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "chmod": "\"0999\"",
+      "chown": "\"\"",
+      "code": "\"COPY --chmod=0999 a /a\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/a\"",
+       "paths": [
+        "\"a\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
    }
   ],
   "warnings": null
@@ -10487,6 +12277,74 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/err-copy-from-var.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"S\"",
+        "\"x\"",
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG S=x\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=$S /a /a\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"$S\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/a\"",
+       "paths": [
+        "\"/a\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/err-empty-base.Dockerfile",
   "meta_args": [
    {
@@ -10530,6 +12388,45 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/err-expose.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"EXPOSE 80/xyz\"",
+      "comments": [],
+      "kind": "*instructions.ExposeCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"EXPOSE\"",
+      "ports": [
+       "\"80/xyz\""
+      ]
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/err-missing-image.Dockerfile",
   "meta_args": null,
   "stages": [
@@ -10548,6 +12445,341 @@
     "orig_cmd": "\"FROM\"",
     "platform": "\"\"",
     "source_code": "\"FROM nosuchimage\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-mount-later.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN --mount=type=bind,from=later,target=/l ls\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"later\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"ls\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      3,
+      3
+     ]
+    ],
+    "name": "\"later\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS later\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-mount-root.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN --mount=type=cache,target=/ ls\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"ls\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-mount-type.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"T\"",
+        "\"bnd\"",
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG T=bnd\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"RUN --mount=type=$T,target=/x ls\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"ls\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-onbuild-from.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"ONBUILD RUN --mount=type=bind,from=nowhere,target=/x ls\"",
+      "comments": [],
+      "expression": "\"RUN --mount=type=bind,from=nowhere,target=/x ls\"",
+      "kind": "*instructions.OnbuildCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ONBUILD\""
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"base\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS base\""
+   },
+   {
+    "base_name": "\"base\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      3,
+      3
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-platform-parse.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"linux/am*64\"",
+    "source_code": "\"FROM --platform=linux/am*64 alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-platform.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"$NOPE\"",
+    "source_code": "\"FROM --platform=$NOPE alpine\""
    }
   ],
   "warnings": null
@@ -10613,6 +12845,64 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/err-volume-empty.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"E\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG E\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"VOLUME $E\"",
+      "comments": [],
+      "kind": "*instructions.VolumeCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"VOLUME\"",
+      "volumes": [
+       "\"$E\""
+      ]
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/labels.Dockerfile",
   "meta_args": null,
   "stages": [
@@ -10645,6 +12935,286 @@
      [
       1,
       1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/lint-checks.Dockerfile",
+  "meta_args": [
+   {
+    "args": [
+     [
+      "\"BASE\"",
+      "\"\"",
+      "\"\""
+     ]
+    ],
+    "code": "\"ARG BASE=\"",
+    "comments": [],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      2,
+      2
+     ]
+    ],
+    "name": "\"ARG\""
+   },
+   {
+    "args": [
+     [
+      "\"password\"",
+      "\"secret\"",
+      "\"\""
+     ]
+    ],
+    "code": "\"ARG password=secret\"",
+    "comments": [],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      3,
+      3
+     ]
+    ],
+    "name": "\"ARG\""
+   }
+  ],
+  "stages": [
+   {
+    "base_name": "\"${BASE:-alpine}\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"builder\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM ${BASE:-alpine} as Builder\""
+   },
+   {
+    "base_name": "\"$NOPE\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      5,
+      5
+     ]
+    ],
+    "name": "\"nope\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM $NOPE AS nope\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      6,
+      6
+     ]
+    ],
+    "name": "\"scratch\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS scratch\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      7,
+      7
+     ]
+    ],
+    "name": "\"dup\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS dup\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      8,
+      8
+     ]
+    ],
+    "name": "\"dup\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS dup\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"Run echo mixed\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        10,
+        10
+       ]
+      ],
+      "mounts": null,
+      "name": "\"Run\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo mixed\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"ENV API_KEY=x PUBLIC_KEY=y\"",
+      "comments": [],
+      "env": [
+       [
+        "\"API_KEY\"",
+        "\"x\"",
+        false
+       ],
+       [
+        "\"PUBLIC_KEY\"",
+        "\"y\"",
+        false
+       ]
+      ],
+      "kind": "*instructions.EnvCommand",
+      "location": [
+       [
+        11,
+        11
+       ]
+      ],
+      "name": "\"ENV\""
+     },
+     {
+      "code": "\"WORKDIR relative\"",
+      "comments": [],
+      "kind": "*instructions.WorkdirCommand",
+      "location": [
+       [
+        12,
+        12
+       ]
+      ],
+      "name": "\"WORKDIR\"",
+      "path": "\"relative\""
+     },
+     {
+      "code": "\"WORKDIR /abs\"",
+      "comments": [],
+      "kind": "*instructions.WorkdirCommand",
+      "location": [
+       [
+        13,
+        13
+       ]
+      ],
+      "name": "\"WORKDIR\"",
+      "path": "\"/abs\""
+     },
+     {
+      "code": "\"EXPOSE 80/TCP\"",
+      "comments": [],
+      "kind": "*instructions.ExposeCommand",
+      "location": [
+       [
+        14,
+        14
+       ]
+      ],
+      "name": "\"EXPOSE\"",
+      "ports": [
+       "\"80/TCP\""
+      ]
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      9,
+      9
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"from\"",
+    "platform": "\"\"",
+    "source_code": "\"from alpine\""
+   }
+  ],
+  "warnings": [
+   "\"StageNameCasing|Stage names should be lowercase|https://docs.docker.com/go/dockerfile/rule/stage-name-casing/|Stage name 'Builder' should be lowercase|4-4\"",
+   "\"FromAsCasing|The 'as' keyword should match the case of the 'from' keyword|https://docs.docker.com/go/dockerfile/rule/from-as-casing/|'as' and 'FROM' keywords' casing do not match|4-4\""
+  ]
+ },
+ {
+  "file": "corpus/plan/lint-error.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"CMD echo shell form\"",
+      "comments": [],
+      "kind": "*instructions.CmdCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"CMD\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo shell form\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      2,
+      2
      ]
     ],
     "name": "\"\"",
@@ -10858,6 +13428,102 @@
    "\"StageNameCasing|Stage names should be lowercase|https://docs.docker.com/go/dockerfile/rule/stage-name-casing/|Stage name 'Build' should be lowercase|1-1\"",
    "\"FromAsCasing|The 'as' keyword should match the case of the 'from' keyword|https://docs.docker.com/go/dockerfile/rule/from-as-casing/|'as' and 'FROM' keywords' casing do not match|1-1\""
   ]
+ },
+ {
+  "file": "corpus/plan/lint-skip.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN echo $NOPE\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo $NOPE\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"CMD echo x\"",
+      "comments": [],
+      "kind": "*instructions.CmdCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"CMD\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo x\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN echo $ALSO_NOPE\"",
+      "comments": [
+       "\"check=skip=all\""
+      ],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo $ALSO_NOPE\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      2,
+      2
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
  },
  {
   "file": "corpus/plan/meta.Dockerfile",
@@ -11480,6 +14146,312 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/onbuild-chain.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"ONBUILD RUN echo from-base\"",
+      "comments": [],
+      "expression": "\"RUN echo from-base\"",
+      "kind": "*instructions.OnbuildCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ONBUILD\""
+     },
+     {
+      "code": "\"ONBUILD COPY --from=base /etc/hosts /hosts\"",
+      "comments": [],
+      "expression": "\"COPY --from=base /etc/hosts /hosts\"",
+      "kind": "*instructions.OnbuildCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"ONBUILD\""
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"base\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS base\""
+   },
+   {
+    "base_name": "\"base\"",
+    "commands": [
+     {
+      "code": "\"RUN echo child\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo child\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"child\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base AS child\""
+   },
+   {
+    "base_name": "\"child\"",
+    "commands": [
+     {
+      "code": "\"RUN echo grandchild\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo grandchild\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      6,
+      6
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM child\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/onbuild.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"onbuild\"",
+    "commands": [
+     {
+      "code": "\"RUN echo after\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo after\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM onbuild\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/platform-cross.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"armimg\"",
+    "commands": [
+     {
+      "code": "\"RUN uname -m\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"uname -m\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"arm\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"linux/arm64\"",
+    "source_code": "\"FROM --platform=linux/arm64 armimg AS arm\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      3,
+      3
+     ]
+    ],
+    "name": "\"redundant\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"$TARGETPLATFORM\"",
+    "source_code": "\"FROM --platform=$TARGETPLATFORM alpine AS redundant\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"const\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"linux/amd64\"",
+    "source_code": "\"FROM --platform=linux/amd64 alpine AS const\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=arm /x /x\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"arm\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/x\"",
+       "paths": [
+        "\"/x\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      5,
+      5
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"$BUILDPLATFORM\"",
+    "source_code": "\"FROM --platform=$BUILDPLATFORM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/platform.Dockerfile",
   "meta_args": null,
   "stages": [
@@ -11579,6 +14551,389 @@
      [
       4,
       4
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/proxy-hostname.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"HTTP_PROXY\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG HTTP_PROXY\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"RUN curl example.com\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"curl example.com\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/run-forms.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"SHELL [\\\"/bin/bash\\\", \\\"-c\\\"]\"",
+      "comments": [],
+      "kind": "*instructions.ShellCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"SHELL\"",
+      "shell_words": [
+       "\"/bin/bash\"",
+       "\"-c\""
+      ]
+     },
+     {
+      "code": "\"RUN echo shell form with bash\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo shell form with bash\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN [\\\"exec\\\", \\\"form\\\"]\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"exec\"",
+        "\"form\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": false
+      }
+     },
+     {
+      "code": "\"RUN \u003c\u003cEOF\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ],
+       [
+        6,
+        6
+       ],
+       [
+        7,
+        7
+       ],
+       [
+        8,
+        8
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"\u003c\u003cEOF\""
+       ],
+       "cmd_line_nil": false,
+       "files": [
+        [
+         "\"EOF\"",
+         "\"echo one\\necho two\\n\"",
+         false
+        ]
+       ],
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN \u003c\u003c'EOS' bash\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        9,
+        9
+       ],
+       [
+        10,
+        10
+       ],
+       [
+        11,
+        11
+       ],
+       [
+        12,
+        12
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"\u003c\u003c'EOS' bash\""
+       ],
+       "cmd_line_nil": false,
+       "files": [
+        [
+         "\"EOS\"",
+         "\"set -e\\necho quoted\\n\"",
+         false
+        ]
+       ],
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN \u003c\u003cEOF\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        13,
+        13
+       ],
+       [
+        14,
+        14
+       ],
+       [
+        15,
+        15
+       ],
+       [
+        16,
+        16
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"\u003c\u003cEOF\""
+       ],
+       "cmd_line_nil": false,
+       "files": [
+        [
+         "\"EOF\"",
+         "\"#!/usr/bin/env python3\\nprint(\\\"shebang\\\")\\n\"",
+         false
+        ]
+       ],
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN cat \u003c\u003cA \u003c\u003cB\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        17,
+        17
+       ],
+       [
+        18,
+        18
+       ],
+       [
+        19,
+        19
+       ],
+       [
+        20,
+        20
+       ],
+       [
+        21,
+        21
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"cat \u003c\u003cA \u003c\u003cB\""
+       ],
+       "cmd_line_nil": false,
+       "files": [
+        [
+         "\"A\"",
+         "\"a\\n\"",
+         false
+        ],
+        [
+         "\"B\"",
+         "\"b\\n\"",
+         false
+        ]
+       ],
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN \u003c\u003c-EOF\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        22,
+        22
+       ],
+       [
+        23,
+        23
+       ],
+       [
+        24,
+        24
+       ],
+       [
+        25,
+        25
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"\u003c\u003c-EOF\""
+       ],
+       "cmd_line_nil": false,
+       "files": [
+        [
+         "\"EOF\"",
+         "\"\\t#!/bin/sh\\n\\techo chomped\\n\"",
+         true
+        ]
+       ],
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
      ]
     ],
     "name": "\"\"",
@@ -11741,6 +15096,484 @@
      [
       1,
       1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/run-mounts.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN mkdir -p /build/out\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"mkdir -p /build/out\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN --mount=type=bind,from=src,source=/build,target=/b --mount=type=bind,rw,target=/ctx make\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"src\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       },
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"make\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN --mount=type=cache,target=rel/cache,uid=1000,gid=1000,mode=0700 --mount=type=cache,target=/c2,sharing=private,from=src,source=/build go build\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       },
+       {
+        "env": null,
+        "from": "\"src\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"go build\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN --mount=type=secret,id=tok,env=TOKEN --mount=type=secret,id=f,target=/s/f,uid=5,mode=0440,required echo $TOKEN\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       },
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo $TOKEN\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN --mount=type=secret,source=npmrc --mount=type=secret,target=/only/target cat /run/secrets/npmrc\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       },
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"cat /run/secrets/npmrc\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN --mount=type=ssh --mount=type=ssh,id=deploy,target=/agent.sock,mode=0666,required git clone\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        8,
+        8
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       },
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"git clone\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN --mount=type=tmpfs,target=/tmp,size=1g --mount=type=tmpfs,target=/t2 ls\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        9,
+        9
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       },
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"ls\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN --network=host --security=insecure ping x\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"network\"",
+       "\"security\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        10,
+        10
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"host\"",
+      "security": "\"insecure\"",
+      "shell": {
+       "cmd_line": [
+        "\"ping x\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN --device=nvidia.com/gpu=all --device=name=vendor.com/x=1,required=true nvidia-smi\"",
+      "comments": [],
+      "devices": [
+       [
+        "\"nvidia.com/gpu=all\"",
+        false
+       ],
+       [
+        "\"vendor.com/x=1\"",
+        true
+       ]
+      ],
+      "flags_used": [
+       "\"device\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        11,
+        11
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"nvidia-smi\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      3,
+      3
      ]
     ],
     "name": "\"\"",
@@ -12019,6 +15852,245 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/stage-chain.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"ENV A=1\"",
+      "comments": [],
+      "env": [
+       [
+        "\"A\"",
+        "\"1\"",
+        false
+       ]
+      ],
+      "kind": "*instructions.EnvCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ENV\""
+     },
+     {
+      "code": "\"WORKDIR /app\"",
+      "comments": [],
+      "kind": "*instructions.WorkdirCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"WORKDIR\"",
+      "path": "\"/app\""
+     },
+     {
+      "code": "\"USER 1000\"",
+      "comments": [],
+      "kind": "*instructions.UserCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"USER\"",
+      "user": "\"1000\""
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"base\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS base\""
+   },
+   {
+    "base_name": "\"base\"",
+    "commands": [
+     {
+      "code": "\"ENV B=2\"",
+      "comments": [],
+      "env": [
+       [
+        "\"B\"",
+        "\"2\"",
+        false
+       ]
+      ],
+      "kind": "*instructions.EnvCommand",
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "name": "\"ENV\""
+     },
+     {
+      "code": "\"RUN env\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"env\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      5,
+      5
+     ]
+    ],
+    "name": "\"mid\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base AS mid\""
+   },
+   {
+    "base_name": "\"mid\"",
+    "commands": [
+     {
+      "code": "\"RUN echo never\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        9,
+        9
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo never\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      8,
+      8
+     ]
+    ],
+    "name": "\"unused\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM mid AS unused\""
+   },
+   {
+    "base_name": "\"mid\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=base /app /copy\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"base\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        11,
+        11
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/copy\"",
+       "paths": [
+        "\"/app\""
+       ]
+      }
+     },
+     {
+      "code": "\"RUN echo $A $B\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        12,
+        12
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo $A $B\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      10,
+      10
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM mid\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/target.Dockerfile",
   "meta_args": null,
   "stages": [
@@ -12147,6 +16219,113 @@
     "orig_cmd": "\"FROM\"",
     "platform": "\"\"",
     "source_code": "\"FROM alpine AS c\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/user-base.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"userwd\"",
+    "commands": [
+     {
+      "code": "\"RUN pwd \u0026\u0026 whoami\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"pwd \u0026\u0026 whoami\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"WORKDIR sub\"",
+      "comments": [],
+      "kind": "*instructions.WorkdirCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"WORKDIR\"",
+      "path": "\"sub\""
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY x .\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\".\"",
+       "paths": [
+        "\"x\""
+       ]
+      }
+     },
+     {
+      "code": "\"CMD run\"",
+      "comments": [],
+      "kind": "*instructions.CmdCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "name": "\"CMD\"",
+      "shell": {
+       "cmd_line": [
+        "\"run\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM userwd\""
    }
   ],
   "warnings": null

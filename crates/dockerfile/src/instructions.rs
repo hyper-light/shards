@@ -114,7 +114,10 @@ pub struct Health {
 pub struct Run {
     pub cmd: CmdLine,
     pub flags_used: Vec<Vec<u8>>,
+    /// The mounts as parsing reads them, before expansion: only `from` is known.
     pub mounts: Vec<Mount>,
+    /// Each `--mount` as written, for `parse_mount` to read whole once expanded.
+    pub mount_specs: Vec<Vec<u8>>,
     pub network: Vec<u8>,
     pub security: Vec<u8>,
     pub devices: Vec<Device>,
@@ -212,7 +215,7 @@ fn errf(parts: &[&[u8]]) -> Vec<u8> {
 
 /// The best option within edit distance 2 of `val`, ties to the option first in byte
 /// order: `suggest.Search`, made deterministic (the module's documentation).
-fn suggest(val: &[u8], options: &[&[u8]], case_sensitive: bool) -> Option<Vec<u8>> {
+pub(crate) fn suggest(val: &[u8], options: &[&[u8]], case_sensitive: bool) -> Option<Vec<u8>> {
     let lower = |s: &[u8]| {
         if case_sensitive {
             s.to_vec()
@@ -246,7 +249,12 @@ fn suggest(val: &[u8], options: &[&[u8]], case_sensitive: bool) -> Option<Vec<u8
 }
 
 /// `err` with ` (did you mean X?)` when an option is near `val`.
-fn with_suggestion(mut err: Vec<u8>, val: &[u8], options: &[&[u8]], case_sensitive: bool) -> Vec<u8> {
+pub(crate) fn with_suggestion(
+    mut err: Vec<u8>,
+    val: &[u8],
+    options: &[&[u8]],
+    case_sensitive: bool,
+) -> Vec<u8> {
     if let Some(m) = suggest(val, options, case_sensitive) {
         err.extend_from_slice(b" (did you mean ");
         err.extend_from_slice(&m);
@@ -680,10 +688,12 @@ fn parse_healthcheck(req: &mut Req<'_>) -> Result<Health, Vec<u8>> {
     Ok(h)
 }
 
-/// A `--mount` as the instruction is parsed, before variables expand: its fields split,
-/// `from` checked to need no expansion, the rest left for later (`parseMount` with no
-/// expander).
-fn parse_mount_unexpanded(val: &[u8]) -> Result<Mount, Vec<u8>> {
+/// Expands one word of a step, as BuildKit's `SingleWordExpander`.
+pub type Expand<'a> = &'a mut dyn FnMut(&[u8]) -> Result<Vec<u8>, Vec<u8>>;
+
+/// `parseMount`: a `--mount` value, each value expanded by `expand` as the step runs.
+/// Without `expand`, as parsing reads it: only `from`, which may not use variables.
+pub fn parse_mount(val: &[u8], mut expand: Option<Expand<'_>>) -> Result<Mount, Vec<u8>> {
     let fields = csv_fields(val).map_err(|e| errf(&[b"failed to parse csv mounts: ", &e]))?;
     let mut m = Mount {
         kind: b"bind".to_vec(),
@@ -700,25 +710,191 @@ fn parse_mount_unexpanded(val: &[u8]) -> Result<Mount, Vec<u8>> {
         uid: None,
         gid: None,
     };
+    let mut ro_auto = true;
+    let secretish = |m: &Mount| m.kind == b"secret" || m.kind == b"ssh";
+    let unexpected =
+        |key: &[u8], m: &Mount| errf(&[b"unexpected key '", key, b"' for mount type '", &m.kind, b"'"]);
+    let invalid = |key: &[u8], value: &[u8]| errf(&[b"invalid value for ", key, b": ", value]);
     for field in &fields {
-        let Some(at) = field.iter().position(|&b| b == b'=') else {
+        let (key, value) = match field.iter().position(|&b| b == b'=') {
+            Some(at) => (go::to_lower(go::head(field, at)), Some(go::tail(field, at + 1))),
+            None => (go::to_lower(field), None),
+        };
+        let Some(value) = value else {
+            if expand.is_none() {
+                continue;
+            }
+            match key.as_slice() {
+                b"readonly" | b"ro" => {
+                    m.read_only = true;
+                    ro_auto = false;
+                }
+                b"readwrite" | b"rw" => {
+                    m.read_only = false;
+                    ro_auto = false;
+                }
+                b"required" if secretish(&m) => m.required = true,
+                b"required" => return Err(unexpected(&key, &m)),
+                _ => return Err(errf(&[b"invalid field '", field, b"' must be a key=value pair"])),
+            }
             continue;
         };
-        let key = go::to_lower(go::head(field, at));
-        let value = go::tail(field, at + 1);
-        if key != b"from" {
-            continue;
+        let value = match expand.as_mut() {
+            Some(e) => e(value)?,
+            None if key == b"from" => {
+                if let Some(i) = value.iter().position(|&b| b == b'$')
+                    && i != value.len() - 1
+                {
+                    return Err(
+                        b"'from' doesn't support variable expansion, define alias stage instead".to_vec(),
+                    );
+                }
+                value.to_vec()
+            }
+            None => continue,
+        };
+        match key.as_slice() {
+            b"type" => {
+                let v = go::to_lower(&value);
+                if !matches!(v.as_slice(), b"bind" | b"cache" | b"tmpfs" | b"secret" | b"ssh") {
+                    let e = errf(&[b"unsupported mount type ", go::quote(&value).as_bytes()]);
+                    return Err(with_suggestion(
+                        e,
+                        &value,
+                        &[b"bind", b"cache", b"tmpfs", b"secret", b"ssh"],
+                        true,
+                    ));
+                }
+                m.kind = v;
+            }
+            b"from" => m.from = value,
+            b"source" | b"src" => m.source = value,
+            b"target" | b"dst" | b"destination" => m.target = value,
+            b"readonly" | b"ro" => {
+                m.read_only = go::parse_bool(&value).ok_or_else(|| invalid(&key, &value))?;
+                ro_auto = false;
+            }
+            b"readwrite" | b"rw" => {
+                m.read_only = !go::parse_bool(&value).ok_or_else(|| invalid(&key, &value))?;
+                ro_auto = false;
+            }
+            b"required" if secretish(&m) => {
+                m.required = go::parse_bool(&value).ok_or_else(|| invalid(&key, &value))?;
+            }
+            b"required" => return Err(unexpected(&key, &m)),
+            b"size" if m.kind == b"tmpfs" => {
+                m.size = go::ram_in_bytes(&value).map_err(|_| invalid(&key, &value))?;
+            }
+            b"size" => return Err(unexpected(&key, &m)),
+            b"id" => m.id = value,
+            b"sharing" => {
+                let v = go::to_lower(&value);
+                if !matches!(v.as_slice(), b"shared" | b"private" | b"locked") {
+                    let e = errf(&[b"unsupported sharing value ", go::quote(&value).as_bytes()]);
+                    return Err(with_suggestion(
+                        e,
+                        &value,
+                        &[b"shared", b"private", b"locked"],
+                        true,
+                    ));
+                }
+                m.sharing = v;
+            }
+            b"mode" => {
+                let bad = || errf(&[b"invalid value ", &value, b" for mode"]);
+                m.mode = Some(parse_uint32(&value, 8).ok_or_else(bad)?);
+            }
+            b"uid" => {
+                let bad = || errf(&[b"invalid value ", &value, b" for uid"]);
+                m.uid = Some(parse_uint32(&value, 10).ok_or_else(bad)?);
+            }
+            b"gid" => {
+                let bad = || errf(&[b"invalid value ", &value, b" for gid"]);
+                m.gid = Some(parse_uint32(&value, 10).ok_or_else(bad)?);
+            }
+            b"env" => m.env = Some(value),
+            _ => {
+                let all: &[&[u8]] = &[
+                    b"type",
+                    b"from",
+                    b"source",
+                    b"target",
+                    b"readonly",
+                    b"id",
+                    b"sharing",
+                    b"required",
+                    b"size",
+                    b"mode",
+                    b"uid",
+                    b"gid",
+                    b"src",
+                    b"dst",
+                    b"destination",
+                    b"ro",
+                    b"rw",
+                    b"readwrite",
+                    b"env",
+                ];
+                let e = errf(&[b"unexpected key '", &key, b"' in '", field, b"'"]);
+                return Err(with_suggestion(e, &key, all, true));
+            }
         }
-        if let Some(i) = value.iter().position(|&b| b == b'$')
-            && i != value.len() - 1
-        {
-            return Err(b"'from' doesn't support variable expansion, define alias stage instead".to_vec());
-        }
-        m.from = value.to_vec();
     }
-    // A bind mount is read-only unless it says otherwise.
-    m.read_only = true;
+    let file_info = matches!(m.kind.as_slice(), b"secret" | b"ssh" | b"cache");
+    if !file_info {
+        for (set, what) in [
+            (m.mode.is_some(), "mode"),
+            (m.uid.is_some(), "uid"),
+            (m.gid.is_some(), "gid"),
+        ] {
+            if set {
+                return Err(errf(&[
+                    what.as_bytes(),
+                    b" not allowed for ",
+                    go::quote(&m.kind).as_bytes(),
+                    b" type mounts",
+                ]));
+            }
+        }
+    }
+    if ro_auto {
+        m.read_only = !matches!(m.kind.as_slice(), b"cache" | b"tmpfs");
+    }
+    if m.kind == b"secret" {
+        if !m.from.is_empty() {
+            return Err(b"secret mount should not have a from".to_vec());
+        }
+        if !m.sharing.is_empty() {
+            return Err(b"secret mount should not define sharing".to_vec());
+        }
+        if m.source.is_empty() && m.target.is_empty() && m.id.is_empty() {
+            return Err(b"invalid secret mount. one of source, target required".to_vec());
+        }
+        if !m.source.is_empty() && !m.id.is_empty() {
+            return Err(b"both source and id can't be set".to_vec());
+        }
+    }
+    if !m.sharing.is_empty() && m.kind != b"cache" {
+        return Err(errf(&[b"invalid cache sharing set for ", &m.kind, b" mount"]));
+    }
     Ok(m)
+}
+
+/// `strconv.ParseUint(s, base, 32)`, for base 8 or 10: digits of the base only, no sign
+/// and no underscores (a base given, Go allows neither).
+fn parse_uint32(s: &[u8], base: u32) -> Option<u64> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut n: u64 = 0;
+    for &c in s {
+        let d = u64::from(char::from(c).to_digit(base)?);
+        n = n.checked_mul(u64::from(base))?.checked_add(d)?;
+        if n > u64::from(u32::MAX) {
+            return None;
+        }
+    }
+    Some(n)
 }
 
 /// `ParseDevice`.
@@ -871,7 +1047,7 @@ fn parse_run(req: &mut Req<'_>) -> Result<Run, Vec<u8>> {
         .flags
         .values("mount")
         .iter()
-        .map(|m| parse_mount_unexpanded(m))
+        .map(|m| parse_mount(m, None))
         .collect::<Result<Vec<_>, _>>()?;
     let network = req.flags.value("network");
     if !matches!(network.as_slice(), b"default" | b"none" | b"host") {
@@ -885,10 +1061,12 @@ fn parse_run(req: &mut Req<'_>) -> Result<Run, Vec<u8>> {
             b" is not valid",
         ]));
     }
+    let mount_specs = req.flags.values("mount");
     Ok(Run {
         cmd,
         flags_used,
         mounts,
+        mount_specs,
         network,
         security,
         devices,
@@ -1195,6 +1373,22 @@ fn definition_description(
 
 /// A file's stages and the `ARG`s before them: `instructions.Parse`. Errors are
 /// BuildKit's: `dockerfile parse error on line N: ...`, located at the instruction.
+/// `ParseCommand`: one node as an instruction within a stage, with no build checks; a
+/// `FROM` is not one.
+pub fn parse_command(node: &crate::parser::Node) -> Result<Command, Error> {
+    let location: Location = (node.start_line..=node.end_line.max(node.start_line))
+        .map(|l| (l, l))
+        .collect();
+    let fail = |message: Vec<u8>| Error {
+        message,
+        location: vec![location.clone()],
+    };
+    match instruction(node, &Linter::default()).map_err(fail)? {
+        Parsed1::Command(c) => Ok(c),
+        Parsed1::Stage(_) => Err(fail(b"*instructions.Stage is not a command type".to_vec())),
+    }
+}
+
 pub fn parse(parsed: &Parsed, lint: &Linter) -> Result<Instructions, Error> {
     let mut stages: Vec<Stage> = Vec::new();
     let mut meta_args = Vec::new();

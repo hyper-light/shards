@@ -1,0 +1,186 @@
+[
+ {
+  "bytes": "67108864",
+  "input": "64m"
+ },
+ {
+  "bytes": "67108864",
+  "input": "64M"
+ },
+ {
+  "bytes": "67108864",
+  "input": "64mb"
+ },
+ {
+  "bytes": "67108864",
+  "input": "64MiB"
+ },
+ {
+  "bytes": "67108864",
+  "input": "64mib"
+ },
+ {
+  "bytes": "67108864",
+  "input": "64 m"
+ },
+ {
+  "bytes": "1536",
+  "input": "1.5k"
+ },
+ {
+  "error": "\"strconv.ParseFloat: parsing \\\"1.5.5\\\": invalid syntax\"",
+  "input": "1.5.5k"
+ },
+ {
+  "error": "\"invalid size: 'k'\"",
+  "input": "k"
+ },
+ {
+  "error": "\"invalid size: ''\"",
+  "input": ""
+ },
+ {
+  "error": "\"strconv.ParseFloat: parsing \\\" \\\": invalid syntax\"",
+  "input": "  "
+ },
+ {
+  "error": "\"invalid size: '-1'\"",
+  "input": "-1"
+ },
+ {
+  "bytes": "1000",
+  "input": "1e3"
+ },
+ {
+  "bytes": "1024000",
+  "input": "1e3k"
+ },
+ {
+  "bytes": "16",
+  "input": "0x1p4"
+ },
+ {
+  "bytes": "16384",
+  "input": "0x1p4k"
+ },
+ {
+  "error": "\"strconv.ParseFloat: parsing \\\"0x10\\\": invalid syntax\"",
+  "input": "0x10"
+ },
+ {
+  "bytes": "1000",
+  "input": "1_000"
+ },
+ {
+  "error": "\"strconv.ParseFloat: parsing \\\"1__0\\\": invalid syntax\"",
+  "input": "1__0"
+ },
+ {
+  "error": "\"strconv.ParseFloat: parsing \\\"_1\\\": invalid syntax\"",
+  "input": "_1"
+ },
+ {
+  "bytes": "16",
+  "input": "0x_1p4"
+ },
+ {
+  "error": "\"invalid size: 'inf'\"",
+  "input": "inf"
+ },
+ {
+  "error": "\"strconv.ParseFloat: parsing \\\"1e400\\\": value out of range\"",
+  "input": "1e400"
+ },
+ {
+  "bytes": "9223372036854775807",
+  "input": "1e300p"
+ },
+ {
+  "bytes": "9223372036854775807",
+  "input": "9223372036854775807"
+ },
+ {
+  "bytes": "9223372036854775807",
+  "input": "1.7976931348623157e308p"
+ },
+ {
+  "bytes": "512",
+  "input": ".5k"
+ },
+ {
+  "bytes": "5120",
+  "input": "5.k"
+ },
+ {
+  "error": "\"invalid suffix: 'kbb'\"",
+  "input": "1kbb"
+ },
+ {
+  "error": "\"invalid suffix: 'kx'\"",
+  "input": "1kx"
+ },
+ {
+  "error": "\"invalid suffix: 'ki'\"",
+  "input": "1ki"
+ },
+ {
+  "bytes": "1024",
+  "input": "1kib"
+ },
+ {
+  "bytes": "1024",
+  "input": "1kIB"
+ },
+ {
+  "bytes": "9223372036854775807",
+  "input": "12345678901234567890b"
+ },
+ {
+  "bytes": "5",
+  "input": "+5"
+ },
+ {
+  "bytes": "5",
+  "input": "5 "
+ },
+ {
+  "error": "\"strconv.ParseFloat: parsing \\\"5 \\\": invalid syntax\"",
+  "input": "5  m"
+ },
+ {
+  "bytes": "3",
+  "input": "0x1.8p1"
+ },
+ {
+  "error": "\"strconv.ParseFloat: parsing \\\"0x1.fffffffffffff8p1023\\\": value out of range\"",
+  "input": "0x1.fffffffffffff8p1023"
+ },
+ {
+  "bytes": "0",
+  "input": "0x1p-1075"
+ },
+ {
+  "bytes": "0",
+  "input": "0x1p-1074"
+ },
+ {
+  "bytes": "0",
+  "input": "1e-400"
+ },
+ {
+  "bytes": "16",
+  "input": "0X1P4"
+ },
+ {
+  "error": "\"strconv.ParseFloat: parsing \\\"1p4\\\": invalid syntax\"",
+  "input": "1p4"
+ },
+ {
+  "error": "\"invalid size: 'nan'\"",
+  "input": "nan"
+ },
+ {
+  "error": "\"invalid size: 'Infinity'\"",
+  "input": "Infinity"
+ }
+]

@@ -7466,6 +7466,190 @@
   ]
  },
  {
+  "file": "corpus/plan/args-platform.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(arg \\\"TARGETPLATFORM\\\")\\n(arg \\\"TARGETOS\\\" \\\"TARGETARCH\\\")\\n(arg \\\"BUILDPLATFORM\\\")\\n(run \\\"echo $TARGETPLATFORM $TARGETOS/$TARGETARCH on $BUILDPLATFORM\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"TARGETPLATFORM\\\"\"",
+    "original": "\"ARG TARGETPLATFORM\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"TARGETOS\\\" \\\"TARGETARCH\\\"\"",
+    "original": "\"ARG TARGETOS TARGETARCH\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"BUILDPLATFORM\\\"\"",
+    "original": "\"ARG BUILDPLATFORM\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo $TARGETPLATFORM $TARGETOS/$TARGETARCH on $BUILDPLATFORM\\\"\"",
+    "original": "\"RUN echo $TARGETPLATFORM $TARGETOS/$TARGETARCH on $BUILDPLATFORM\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/args-stages.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(arg \\\"GLOBAL=g1\\\")\\n(arg \\\"UNUSED\\\")\\n(arg \\\"VERSION=1.0\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"a\\\")\\n(arg \\\"GLOBAL\\\")\\n(arg \\\"LOCAL=l-${GLOBAL}\\\")\\n(env \\\"E\\\" \\\"$LOCAL\\\" \\\"=\\\")\\n(run \\\"echo $GLOBAL $LOCAL $E $UNDEFINED\\\")\\n(from \\\"a\\\")\\n(arg \\\"VERSION\\\")\\n(arg \\\"LOCAL=override\\\")\\n(run \\\"echo $VERSION $LOCAL ${TARGETPLATFORM} $BUILDARCH\\\")\"",
+  "children": [
+   {
+    "dump": "\"arg \\\"GLOBAL=g1\\\"\"",
+    "original": "\"ARG GLOBAL=g1\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"UNUSED\\\"\"",
+    "original": "\"ARG UNUSED\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"VERSION=1.0\\\"\"",
+    "original": "\"ARG VERSION=1.0\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"a\\\"\"",
+    "original": "\"FROM alpine AS a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"GLOBAL\\\"\"",
+    "original": "\"ARG GLOBAL\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"LOCAL=l-${GLOBAL}\\\"\"",
+    "original": "\"ARG LOCAL=l-${GLOBAL}\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"E\\\" \\\"$LOCAL\\\" \\\"=\\\"\"",
+    "original": "\"ENV E=$LOCAL\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo $GLOBAL $LOCAL $E $UNDEFINED\\\"\"",
+    "original": "\"RUN echo $GLOBAL $LOCAL $E $UNDEFINED\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"VERSION\\\"\"",
+    "original": "\"ARG VERSION\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"LOCAL=override\\\"\"",
+    "original": "\"ARG LOCAL=override\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo $VERSION $LOCAL ${TARGETPLATFORM} $BUILDARCH\\\"\"",
+    "original": "\"RUN echo $VERSION $LOCAL ${TARGETPLATFORM} $BUILDARCH\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/args.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(arg \\\"BASE=alpine\\\")\\n(arg \\\"V=1\\\")\\n(from \\\"$BASE\\\")\\n(arg \\\"V\\\")\\n(arg \\\"W=2\\\")\\n(run \\\"echo $V $W\\\")\\n(env \\\"E\\\" \\\"$W\\\" \\\"=\\\")\"",
@@ -7543,6 +7727,568 @@
   ]
  },
  {
+  "file": "corpus/plan/config-shell-form.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(cmd \\\"echo first\\\")\\n(cmd \\\"echo second\\\")\\n(entrypoint \\\"run me\\\")\\n(healthcheck \\\"NONE\\\")\\n(stopsignal \\\"9\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"echo first\\\"\"",
+    "original": "\"CMD echo first\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"echo second\\\"\"",
+    "original": "\"CMD echo second\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"entrypoint \\\"run me\\\"\"",
+    "original": "\"ENTRYPOINT run me\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck \\\"NONE\\\"\"",
+    "original": "\"HEALTHCHECK NONE\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"stopsignal \\\"9\\\"\"",
+    "original": "\"STOPSIGNAL 9\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/config.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(user \\\"nobody\\\")\\n(workdir \\\"/home/nobody\\\")\\n(expose \\\"80\\\" \\\"443/tcp\\\" \\\"53/UDP\\\" \\\"8000-8002\\\" \\\"127.0.0.1:9000:9000\\\")\\n(volume \\\"/data\\\" \\\"[\\\\\\\"/logs\\\\\\\",\\\" \\\"\\\\\\\"/cache\\\\\\\"]\\\")\\n(stopsignal \\\"SIGINT\\\")\\n(healthcheck [\\\"--interval=5s\\\" \\\"--timeout=1m30s\\\" \\\"--start-period=500ms\\\" \\\"--start-interval=2s\\\" \\\"--retries=4\\\"] \\\"CMD\\\" \\\"curl -f http://localhost/ || exit 1\\\")\\n(label \\\"a\\\" \\\"1\\\" \\\"=\\\" \\\"\\\\\\\"b c\\\\\\\"\\\" \\\"2\\\" \\\"=\\\")\\n(label \\\"legacy\\\" \\\"value\\\" \\\"\\\")\\n(env \\\"legacy\\\" \\\"value\\\" \\\"\\\")\\n(maintainer \\\"someone@example.com\\\")\\n(entrypoint \\\"/entry\\\")\\n(cmd \\\"arg\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"user \\\"nobody\\\"\"",
+    "original": "\"USER nobody\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"/home/nobody\\\"\"",
+    "original": "\"WORKDIR /home/nobody\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"80\\\" \\\"443/tcp\\\" \\\"53/UDP\\\" \\\"8000-8002\\\" \\\"127.0.0.1:9000:9000\\\"\"",
+    "original": "\"EXPOSE 80 443/tcp 53/UDP 8000-8002 127.0.0.1:9000:9000\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"/data\\\" \\\"[\\\\\\\"/logs\\\\\\\",\\\" \\\"\\\\\\\"/cache\\\\\\\"]\\\"\"",
+    "original": "\"VOLUME /data [\\\"/logs\\\", \\\"/cache\\\"]\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"stopsignal \\\"SIGINT\\\"\"",
+    "original": "\"STOPSIGNAL SIGINT\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--interval=5s\\\" \\\"--timeout=1m30s\\\" \\\"--start-period=500ms\\\" \\\"--start-interval=2s\\\" \\\"--retries=4\\\"] \\\"CMD\\\" \\\"curl -f http://localhost/ || exit 1\\\"\"",
+    "original": "\"HEALTHCHECK --interval=5s --timeout=1m30s --start-period=500ms --start-interval=2s --retries=4 CMD curl -f http://localhost/ || exit 1\"",
+    "flags": [
+     "\"--interval=5s\"",
+     "\"--timeout=1m30s\"",
+     "\"--start-period=500ms\"",
+     "\"--start-interval=2s\"",
+     "\"--retries=4\""
+    ],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"a\\\" \\\"1\\\" \\\"=\\\" \\\"\\\\\\\"b c\\\\\\\"\\\" \\\"2\\\" \\\"=\\\"\"",
+    "original": "\"LABEL a=1 \\\"b c\\\"=2\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"legacy\\\" \\\"value\\\" \\\"\\\"\"",
+    "original": "\"LABEL legacy value\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"legacy\\\" \\\"value\\\" \\\"\\\"\"",
+    "original": "\"ENV legacy value\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"maintainer \\\"someone@example.com\\\"\"",
+    "original": "\"MAINTAINER someone@example.com\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"entrypoint \\\"/entry\\\"\"",
+    "original": "\"ENTRYPOINT [\\\"/entry\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"arg\\\"\"",
+    "original": "\"CMD [\\\"arg\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 13,
+    "end_line": 13,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/copy-flags.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(workdir \\\"/w\\\")\\n(copy [\\\"--chown=app:staff\\\" \\\"--chmod=u+rwx,g+rx\\\"] \\\"a\\\" \\\"rel/\\\")\\n(copy [\\\"--chown=1000\\\"] \\\"b\\\" \\\"./\\\")\\n(copy [\\\"--chown=root:0\\\"] \\\"c\\\" \\\".\\\")\\n(copy [\\\"--exclude=*.tmp\\\" \\\"--exclude=cache\\\"] \\\"d\\\" \\\"/d\\\")\\n(copy [\\\"--parents\\\"] \\\"x/y/./z/*.go\\\" \\\"/src/\\\")\\n(copy [\\\"--parents\\\"] \\\"p/q.txt\\\" \\\"/p/\\\")\\n(copy [\\\"--chmod=755\\\"] \\\"e\\\" \\\"/e\\\")\\n(add [\\\"--chown=1:1\\\"] \\\"f.tar.gz\\\" \\\"/f/\\\")\\n(add [\\\"--unpack=false\\\"] \\\"g.tar\\\" \\\"/g\\\")\\n(add [\\\"--link\\\"] \\\"h\\\" \\\"/h\\\")\\n(copy [\\\"--link\\\" \\\"--chown=2\\\"] \\\"i\\\" \\\"/i\\\")\\n(copy [\\\"--link\\\" \\\"--chmod=600\\\"] \\\"j\\\" \\\"/j\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"/w\\\"\"",
+    "original": "\"WORKDIR /w\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--chown=app:staff\\\" \\\"--chmod=u+rwx,g+rx\\\"] \\\"a\\\" \\\"rel/\\\"\"",
+    "original": "\"COPY --chown=app:staff --chmod=u+rwx,g+rx a rel/\"",
+    "flags": [
+     "\"--chown=app:staff\"",
+     "\"--chmod=u+rwx,g+rx\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--chown=1000\\\"] \\\"b\\\" \\\"./\\\"\"",
+    "original": "\"COPY --chown=1000 b ./\"",
+    "flags": [
+     "\"--chown=1000\""
+    ],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--chown=root:0\\\"] \\\"c\\\" \\\".\\\"\"",
+    "original": "\"COPY --chown=root:0 c .\"",
+    "flags": [
+     "\"--chown=root:0\""
+    ],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--exclude=*.tmp\\\" \\\"--exclude=cache\\\"] \\\"d\\\" \\\"/d\\\"\"",
+    "original": "\"COPY --exclude=*.tmp --exclude=cache d /d\"",
+    "flags": [
+     "\"--exclude=*.tmp\"",
+     "\"--exclude=cache\""
+    ],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--parents\\\"] \\\"x/y/./z/*.go\\\" \\\"/src/\\\"\"",
+    "original": "\"COPY --parents x/y/./z/*.go /src/\"",
+    "flags": [
+     "\"--parents\""
+    ],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--parents\\\"] \\\"p/q.txt\\\" \\\"/p/\\\"\"",
+    "original": "\"COPY --parents p/q.txt /p/\"",
+    "flags": [
+     "\"--parents\""
+    ],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--chmod=755\\\"] \\\"e\\\" \\\"/e\\\"\"",
+    "original": "\"COPY --chmod=755 e /e\"",
+    "flags": [
+     "\"--chmod=755\""
+    ],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--chown=1:1\\\"] \\\"f.tar.gz\\\" \\\"/f/\\\"\"",
+    "original": "\"ADD --chown=1:1 f.tar.gz /f/\"",
+    "flags": [
+     "\"--chown=1:1\""
+    ],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--unpack=false\\\"] \\\"g.tar\\\" \\\"/g\\\"\"",
+    "original": "\"ADD --unpack=false g.tar /g\"",
+    "flags": [
+     "\"--unpack=false\""
+    ],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--link\\\"] \\\"h\\\" \\\"/h\\\"\"",
+    "original": "\"ADD --link h /h\"",
+    "flags": [
+     "\"--link\""
+    ],
+    "attributes": null,
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--link\\\" \\\"--chown=2\\\"] \\\"i\\\" \\\"/i\\\"\"",
+    "original": "\"COPY --link --chown=2 i /i\"",
+    "flags": [
+     "\"--link\"",
+     "\"--chown=2\""
+    ],
+    "attributes": null,
+    "start_line": 13,
+    "end_line": 13,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--link\\\" \\\"--chmod=600\\\"] \\\"j\\\" \\\"/j\\\"\"",
+    "original": "\"COPY --link --chmod=600 j /j\"",
+    "flags": [
+     "\"--link\"",
+     "\"--chmod=600\""
+    ],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/copy-from.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"one\\\")\\n(run \\\"mkdir /out\\\")\\n(from \\\"scratch\\\")\\n(copy [\\\"--from=0\\\"] \\\"/out\\\" \\\"/out0\\\")\\n(copy [\\\"--from=one\\\"] \\\"/out/./a*\\\" \\\"/out1/\\\")\\n(copy [\\\"--from=alpine\\\"] \\\"/etc/passwd\\\" \\\"/passwd\\\")\\n(copy [\\\"--from=registry.example.com:5000/team/app:1.0\\\"] \\\"/app\\\" \\\"/app\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"one\\\"\"",
+    "original": "\"FROM alpine AS one\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"mkdir /out\\\"\"",
+    "original": "\"RUN mkdir /out\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"scratch\\\"\"",
+    "original": "\"FROM scratch\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=0\\\"] \\\"/out\\\" \\\"/out0\\\"\"",
+    "original": "\"COPY --from=0 /out /out0\"",
+    "flags": [
+     "\"--from=0\""
+    ],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=one\\\"] \\\"/out/./a*\\\" \\\"/out1/\\\"\"",
+    "original": "\"COPY --from=one /out/./a* /out1/\"",
+    "flags": [
+     "\"--from=one\""
+    ],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=alpine\\\"] \\\"/etc/passwd\\\" \\\"/passwd\\\"\"",
+    "original": "\"COPY --from=alpine /etc/passwd /passwd\"",
+    "flags": [
+     "\"--from=alpine\""
+    ],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=registry.example.com:5000/team/app:1.0\\\"] \\\"/app\\\" \\\"/app\\\"\"",
+    "original": "\"COPY --from=registry.example.com:5000/team/app:1.0 /app /app\"",
+    "flags": [
+     "\"--from=registry.example.com:5000/team/app:1.0\""
+    ],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/copy-heredoc.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(arg \\\"NAME=world\\\")\\n(copy \\\"\u003c\u003cEOF\\\" \\\"/greet\\\")\\n(copy \\\"\u003c\u003c-\\\\\\\"EOT\\\\\\\"\\\" \\\"/raw\\\")\\n(copy \\\"\u003c\u003cA\\\" \\\"\u003c\u003cB\\\" \\\"/two/\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"NAME=world\\\"\"",
+    "original": "\"ARG NAME=world\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"\u003c\u003cEOF\\\" \\\"/greet\\\"\"",
+    "original": "\"COPY \u003c\u003cEOF /greet\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"hello $NAME\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"copy \\\"\u003c\u003c-\\\\\\\"EOT\\\\\\\"\\\" \\\"/raw\\\"\"",
+    "original": "\"COPY \u003c\u003c-\\\"EOT\\\" /raw\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOT\"",
+      "fd": 0,
+      "expand": false,
+      "chomp": true,
+      "content": "\"\\tno ${NAME} expansion\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"copy \\\"\u003c\u003cA\\\" \\\"\u003c\u003cB\\\" \\\"/two/\\\"\"",
+    "original": "\"COPY \u003c\u003cA \u003c\u003cB /two/\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 13,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"A\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"first\\n\""
+     },
+     {
+      "name": "\"B\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"second\\n\""
+     }
+    ]
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/copy.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"alpine\\\")\\n(copy \\\"a\\\" \\\"b\\\" \\\"/dst/\\\")\\n(copy [\\\"--chown=1:2\\\" \\\"--chmod=0644\\\"] \\\"c\\\" \\\"/f\\\")\\n(add \\\"d\\\" \\\"/g\\\")\\n(copy \\\"\u003c\u003cEOF\\\" \\\"/inline\\\")\"",
@@ -7611,6 +8357,36 @@
   ]
  },
  {
+  "file": "corpus/plan/empty-continuation.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo a   \u0026\u0026 echo b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo a   \u0026\u0026 echo b\\\"\"",
+    "original": "\"RUN echo a   \u0026\u0026 echo b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ],
+  "warnings": [
+   "\"Empty continuation line found in: RUN echo a   \u0026\u0026 echo b|https://docs.docker.com/go/dockerfile/rule/no-empty-continuation/|4\""
+  ]
+ },
+ {
   "file": "corpus/plan/empty.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"empty\\\")\\n(copy \\\"a\\\" \\\"/a\\\")\"",
@@ -7629,6 +8405,206 @@
     "dump": "\"copy \\\"a\\\" \\\"/a\\\"\"",
     "original": "\"COPY a /a\"",
     "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/entrypoint-resets-cmd.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"withconfig\\\")\\n(entrypoint \\\"/new-entry\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"withconfig\\\"\"",
+    "original": "\"FROM withconfig\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"entrypoint \\\"/new-entry\\\"\"",
+    "original": "\"ENTRYPOINT [\\\"/new-entry\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(workdir \\\"/w\\\")\\n(copy \\\"a\\\" \\\"/a\\\")\\n(add \\\"b\\\" \\\"/b\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"/w\\\"\"",
+    "original": "\"WORKDIR /w\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"a\\\" \\\"/a\\\"\"",
+    "original": "\"COPY a /a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"b\\\" \\\"/b\\\"\"",
+    "original": "\"ADD b /b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-bad-ref.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(from \\\"Bad:Name\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"Bad:Name\\\"\"",
+    "original": "\"FROM Bad:Name\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-checksum-copy.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(add [\\\"--checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000\\\"] \\\"a\\\" \\\"/a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000\\\"] \\\"a\\\" \\\"/a\\\"\"",
+    "original": "\"ADD --checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000 a /a\"",
+    "flags": [
+     "\"--checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-chmod-sym.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy [\\\"--chmod=u+q\\\"] \\\"a\\\" \\\"/a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--chmod=u+q\\\"] \\\"a\\\" \\\"/a\\\"\"",
+    "original": "\"COPY --chmod=u+q a /a\"",
+    "flags": [
+     "\"--chmod=u+q\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-chmod.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy [\\\"--chmod=0999\\\"] \\\"a\\\" \\\"/a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--chmod=0999\\\"] \\\"a\\\" \\\"/a\\\"\"",
+    "original": "\"COPY --chmod=0999 a /a\"",
+    "flags": [
+     "\"--chmod=0999\""
+    ],
     "attributes": null,
     "start_line": 2,
     "end_line": 2,
@@ -7728,6 +8704,45 @@
   ]
  },
  {
+  "file": "corpus/plan/err-copy-from-var.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(arg \\\"S=x\\\")\\n(copy [\\\"--from=$S\\\"] \\\"/a\\\" \\\"/a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"S=x\\\"\"",
+    "original": "\"ARG S=x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=$S\\\"] \\\"/a\\\" \\\"/a\\\"\"",
+    "original": "\"COPY --from=$S /a /a\"",
+    "flags": [
+     "\"--from=$S\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/err-empty-base.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(arg \\\"B=\\\")\\n(from \\\"$B\\\")\"",
@@ -7755,6 +8770,33 @@
   ]
  },
  {
+  "file": "corpus/plan/err-expose.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(expose \\\"80/xyz\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"80/xyz\\\"\"",
+    "original": "\"EXPOSE 80/xyz\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/err-missing-image.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"nosuchimage\\\")\"",
@@ -7763,6 +8805,188 @@
     "dump": "\"from \\\"nosuchimage\\\"\"",
     "original": "\"FROM nosuchimage\"",
     "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-mount-later.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run [\\\"--mount=type=bind,from=later,target=/l\\\"] \\\"ls\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"later\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=bind,from=later,target=/l\\\"] \\\"ls\\\"\"",
+    "original": "\"RUN --mount=type=bind,from=later,target=/l ls\"",
+    "flags": [
+     "\"--mount=type=bind,from=later,target=/l\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"later\\\"\"",
+    "original": "\"FROM alpine AS later\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-mount-root.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run [\\\"--mount=type=cache,target=/\\\"] \\\"ls\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=cache,target=/\\\"] \\\"ls\\\"\"",
+    "original": "\"RUN --mount=type=cache,target=/ ls\"",
+    "flags": [
+     "\"--mount=type=cache,target=/\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-mount-type.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(arg \\\"T=bnd\\\")\\n(run [\\\"--mount=type=$T,target=/x\\\"] \\\"ls\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"T=bnd\\\"\"",
+    "original": "\"ARG T=bnd\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=$T,target=/x\\\"] \\\"ls\\\"\"",
+    "original": "\"RUN --mount=type=$T,target=/x ls\"",
+    "flags": [
+     "\"--mount=type=$T,target=/x\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-onbuild-from.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"base\\\")\\n(onbuild (run [\\\"--mount=type=bind,from=nowhere,target=/x\\\"] \\\"ls\\\"))\\n(from \\\"base\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"base\\\"\"",
+    "original": "\"FROM alpine AS base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (run [\\\"--mount=type=bind,from=nowhere,target=/x\\\"] \\\"ls\\\")\"",
+    "original": "\"ONBUILD RUN --mount=type=bind,from=nowhere,target=/x ls\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"base\\\"\"",
+    "original": "\"FROM base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-platform-parse.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from [\\\"--platform=linux/am*64\\\"] \\\"alpine\\\")\"",
+  "children": [
+   {
+    "dump": "\"from [\\\"--platform=linux/am*64\\\"] \\\"alpine\\\"\"",
+    "original": "\"FROM --platform=linux/am*64 alpine\"",
+    "flags": [
+     "\"--platform=linux/am*64\""
+    ],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-platform.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from [\\\"--platform=$NOPE\\\"] \\\"alpine\\\")\"",
+  "children": [
+   {
+    "dump": "\"from [\\\"--platform=$NOPE\\\"] \\\"alpine\\\"\"",
+    "original": "\"FROM --platform=$NOPE alpine\"",
+    "flags": [
+     "\"--platform=$NOPE\""
+    ],
     "attributes": null,
     "start_line": 1,
     "end_line": 1,
@@ -7816,6 +9040,43 @@
   ]
  },
  {
+  "file": "corpus/plan/err-volume-empty.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(arg \\\"E\\\")\\n(volume \\\"$E\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"E\\\"\"",
+    "original": "\"ARG E\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"$E\\\"\"",
+    "original": "\"VOLUME $E\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/labels.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"alpine\\\")\\n(label \\\"x\\\" \\\"1\\\" \\\"=\\\")\"",
@@ -7837,6 +9098,170 @@
     "attributes": null,
     "start_line": 2,
     "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/lint-checks.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(arg \\\"BASE=\\\")\\n(arg \\\"password=secret\\\")\\n(from \\\"${BASE:-alpine}\\\" \\\"as\\\" \\\"Builder\\\")\\n(from \\\"$NOPE\\\" \\\"AS\\\" \\\"nope\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"scratch\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"dup\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"dup\\\")\\n(from \\\"alpine\\\")\\n(run \\\"echo mixed\\\")\\n(env \\\"API_KEY\\\" \\\"x\\\" \\\"=\\\" \\\"PUBLIC_KEY\\\" \\\"y\\\" \\\"=\\\")\\n(workdir \\\"relative\\\")\\n(workdir \\\"/abs\\\")\\n(expose \\\"80/TCP\\\")\"",
+  "children": [
+   {
+    "dump": "\"arg \\\"BASE=\\\"\"",
+    "original": "\"ARG BASE=\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"password=secret\\\"\"",
+    "original": "\"ARG password=secret\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"${BASE:-alpine}\\\" \\\"as\\\" \\\"Builder\\\"\"",
+    "original": "\"FROM ${BASE:-alpine} as Builder\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"$NOPE\\\" \\\"AS\\\" \\\"nope\\\"\"",
+    "original": "\"FROM $NOPE AS nope\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"scratch\\\"\"",
+    "original": "\"FROM alpine AS scratch\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"dup\\\"\"",
+    "original": "\"FROM alpine AS dup\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"dup\\\"\"",
+    "original": "\"FROM alpine AS dup\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"from alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo mixed\\\"\"",
+    "original": "\"Run echo mixed\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"API_KEY\\\" \\\"x\\\" \\\"=\\\" \\\"PUBLIC_KEY\\\" \\\"y\\\" \\\"=\\\"\"",
+    "original": "\"ENV API_KEY=x PUBLIC_KEY=y\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"relative\\\"\"",
+    "original": "\"WORKDIR relative\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"/abs\\\"\"",
+    "original": "\"WORKDIR /abs\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 13,
+    "end_line": 13,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"80/TCP\\\"\"",
+    "original": "\"EXPOSE 80/TCP\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/lint-error.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(cmd \\\"echo shell form\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"echo shell form\\\"\"",
+    "original": "\"CMD echo shell form\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
     "prev_comment": [],
     "heredocs": null
    }
@@ -7945,6 +9370,55 @@
     "start_line": 10,
     "end_line": 10,
     "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/lint-skip.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo $NOPE\\\")\\n(cmd \\\"echo x\\\")\\n(run \\\"echo $ALSO_NOPE\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo $NOPE\\\"\"",
+    "original": "\"RUN echo $NOPE\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"echo x\\\"\"",
+    "original": "\"CMD echo x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo $ALSO_NOPE\\\"\"",
+    "original": "\"RUN echo $ALSO_NOPE\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [
+     "\"check=skip=all\""
+    ],
     "heredocs": null
    }
   ]
@@ -8276,6 +9750,187 @@
   ]
  },
  {
+  "file": "corpus/plan/onbuild-chain.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"base\\\")\\n(onbuild (run \\\"echo from-base\\\"))\\n(onbuild (copy [\\\"--from=base\\\"] \\\"/etc/hosts\\\" \\\"/hosts\\\"))\\n(from \\\"base\\\" \\\"AS\\\" \\\"child\\\")\\n(run \\\"echo child\\\")\\n(from \\\"child\\\")\\n(run \\\"echo grandchild\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"base\\\"\"",
+    "original": "\"FROM alpine AS base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (run \\\"echo from-base\\\")\"",
+    "original": "\"ONBUILD RUN echo from-base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (copy [\\\"--from=base\\\"] \\\"/etc/hosts\\\" \\\"/hosts\\\")\"",
+    "original": "\"ONBUILD COPY --from=base /etc/hosts /hosts\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"base\\\" \\\"AS\\\" \\\"child\\\"\"",
+    "original": "\"FROM base AS child\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo child\\\"\"",
+    "original": "\"RUN echo child\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"child\\\"\"",
+    "original": "\"FROM child\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo grandchild\\\"\"",
+    "original": "\"RUN echo grandchild\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/onbuild.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"onbuild\\\")\\n(run \\\"echo after\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"onbuild\\\"\"",
+    "original": "\"FROM onbuild\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo after\\\"\"",
+    "original": "\"RUN echo after\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/platform-cross.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from [\\\"--platform=linux/arm64\\\"] \\\"armimg\\\" \\\"AS\\\" \\\"arm\\\")\\n(run \\\"uname -m\\\")\\n(from [\\\"--platform=$TARGETPLATFORM\\\"] \\\"alpine\\\" \\\"AS\\\" \\\"redundant\\\")\\n(from [\\\"--platform=linux/amd64\\\"] \\\"alpine\\\" \\\"AS\\\" \\\"const\\\")\\n(from [\\\"--platform=$BUILDPLATFORM\\\"] \\\"alpine\\\")\\n(copy [\\\"--from=arm\\\"] \\\"/x\\\" \\\"/x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from [\\\"--platform=linux/arm64\\\"] \\\"armimg\\\" \\\"AS\\\" \\\"arm\\\"\"",
+    "original": "\"FROM --platform=linux/arm64 armimg AS arm\"",
+    "flags": [
+     "\"--platform=linux/arm64\""
+    ],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"uname -m\\\"\"",
+    "original": "\"RUN uname -m\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from [\\\"--platform=$TARGETPLATFORM\\\"] \\\"alpine\\\" \\\"AS\\\" \\\"redundant\\\"\"",
+    "original": "\"FROM --platform=$TARGETPLATFORM alpine AS redundant\"",
+    "flags": [
+     "\"--platform=$TARGETPLATFORM\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from [\\\"--platform=linux/amd64\\\"] \\\"alpine\\\" \\\"AS\\\" \\\"const\\\"\"",
+    "original": "\"FROM --platform=linux/amd64 alpine AS const\"",
+    "flags": [
+     "\"--platform=linux/amd64\""
+    ],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from [\\\"--platform=$BUILDPLATFORM\\\"] \\\"alpine\\\"\"",
+    "original": "\"FROM --platform=$BUILDPLATFORM alpine\"",
+    "flags": [
+     "\"--platform=$BUILDPLATFORM\""
+    ],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=arm\\\"] \\\"/x\\\" \\\"/x\\\"\"",
+    "original": "\"COPY --from=arm /x /x\"",
+    "flags": [
+     "\"--from=arm\""
+    ],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/platform.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from [\\\"--platform=$BUILDPLATFORM\\\"] \\\"alpine\\\" \\\"AS\\\" \\\"b\\\")\\n(arg \\\"TARGETARCH\\\")\\n(run \\\"echo $TARGETARCH\\\")\\n(from \\\"alpine\\\")\\n(copy [\\\"--from=b\\\"] \\\"/x\\\" \\\"/x\\\")\"",
@@ -8333,6 +9988,191 @@
     "end_line": 5,
     "prev_comment": [],
     "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/proxy-hostname.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(arg \\\"HTTP_PROXY\\\")\\n(run \\\"curl example.com\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"HTTP_PROXY\\\"\"",
+    "original": "\"ARG HTTP_PROXY\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"curl example.com\\\"\"",
+    "original": "\"RUN curl example.com\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/run-forms.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(shell \\\"/bin/bash\\\" \\\"-c\\\")\\n(run \\\"echo shell form with bash\\\")\\n(run \\\"exec\\\" \\\"form\\\")\\n(run \\\"\u003c\u003cEOF\\\")\\n(run \\\"\u003c\u003c'EOS' bash\\\")\\n(run \\\"\u003c\u003cEOF\\\")\\n(run \\\"cat \u003c\u003cA \u003c\u003cB\\\")\\n(run \\\"\u003c\u003c-EOF\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"shell \\\"/bin/bash\\\" \\\"-c\\\"\"",
+    "original": "\"SHELL [\\\"/bin/bash\\\", \\\"-c\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo shell form with bash\\\"\"",
+    "original": "\"RUN echo shell form with bash\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"exec\\\" \\\"form\\\"\"",
+    "original": "\"RUN [\\\"exec\\\", \\\"form\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003cEOF\\\"\"",
+    "original": "\"RUN \u003c\u003cEOF\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"echo one\\necho two\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003c'EOS' bash\\\"\"",
+    "original": "\"RUN \u003c\u003c'EOS' bash\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOS\"",
+      "fd": 0,
+      "expand": false,
+      "chomp": false,
+      "content": "\"set -e\\necho quoted\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003cEOF\\\"\"",
+    "original": "\"RUN \u003c\u003cEOF\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 13,
+    "end_line": 16,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"#!/usr/bin/env python3\\nprint(\\\"shebang\\\")\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"cat \u003c\u003cA \u003c\u003cB\\\"\"",
+    "original": "\"RUN cat \u003c\u003cA \u003c\u003cB\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 17,
+    "end_line": 21,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"A\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"a\\n\""
+     },
+     {
+      "name": "\"B\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"b\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003c-EOF\\\"\"",
+    "original": "\"RUN \u003c\u003c-EOF\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 22,
+    "end_line": 25,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": true,
+      "content": "\"\\t#!/bin/sh\\n\\techo chomped\\n\""
+     }
+    ]
    }
   ]
  },
@@ -8411,6 +10251,147 @@
       "content": "\"second\\n\""
      }
     ]
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/run-mounts.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"src\\\")\\n(run \\\"mkdir -p /build/out\\\")\\n(from \\\"alpine\\\")\\n(run [\\\"--mount=type=bind,from=src,source=/build,target=/b\\\" \\\"--mount=type=bind,rw,target=/ctx\\\"] \\\"make\\\")\\n(run [\\\"--mount=type=cache,target=rel/cache,uid=1000,gid=1000,mode=0700\\\" \\\"--mount=type=cache,target=/c2,sharing=private,from=src,source=/build\\\"] \\\"go build\\\")\\n(run [\\\"--mount=type=secret,id=tok,env=TOKEN\\\" \\\"--mount=type=secret,id=f,target=/s/f,uid=5,mode=0440,required\\\"] \\\"echo $TOKEN\\\")\\n(run [\\\"--mount=type=secret,source=npmrc\\\" \\\"--mount=type=secret,target=/only/target\\\"] \\\"cat /run/secrets/npmrc\\\")\\n(run [\\\"--mount=type=ssh\\\" \\\"--mount=type=ssh,id=deploy,target=/agent.sock,mode=0666,required\\\"] \\\"git clone\\\")\\n(run [\\\"--mount=type=tmpfs,target=/tmp,size=1g\\\" \\\"--mount=type=tmpfs,target=/t2\\\"] \\\"ls\\\")\\n(run [\\\"--network=host\\\" \\\"--security=insecure\\\"] \\\"ping x\\\")\\n(run [\\\"--device=nvidia.com/gpu=all\\\" \\\"--device=name=vendor.com/x=1,required=true\\\"] \\\"nvidia-smi\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM alpine AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"mkdir -p /build/out\\\"\"",
+    "original": "\"RUN mkdir -p /build/out\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=bind,from=src,source=/build,target=/b\\\" \\\"--mount=type=bind,rw,target=/ctx\\\"] \\\"make\\\"\"",
+    "original": "\"RUN --mount=type=bind,from=src,source=/build,target=/b --mount=type=bind,rw,target=/ctx make\"",
+    "flags": [
+     "\"--mount=type=bind,from=src,source=/build,target=/b\"",
+     "\"--mount=type=bind,rw,target=/ctx\""
+    ],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=cache,target=rel/cache,uid=1000,gid=1000,mode=0700\\\" \\\"--mount=type=cache,target=/c2,sharing=private,from=src,source=/build\\\"] \\\"go build\\\"\"",
+    "original": "\"RUN --mount=type=cache,target=rel/cache,uid=1000,gid=1000,mode=0700 --mount=type=cache,target=/c2,sharing=private,from=src,source=/build go build\"",
+    "flags": [
+     "\"--mount=type=cache,target=rel/cache,uid=1000,gid=1000,mode=0700\"",
+     "\"--mount=type=cache,target=/c2,sharing=private,from=src,source=/build\""
+    ],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=secret,id=tok,env=TOKEN\\\" \\\"--mount=type=secret,id=f,target=/s/f,uid=5,mode=0440,required\\\"] \\\"echo $TOKEN\\\"\"",
+    "original": "\"RUN --mount=type=secret,id=tok,env=TOKEN --mount=type=secret,id=f,target=/s/f,uid=5,mode=0440,required echo $TOKEN\"",
+    "flags": [
+     "\"--mount=type=secret,id=tok,env=TOKEN\"",
+     "\"--mount=type=secret,id=f,target=/s/f,uid=5,mode=0440,required\""
+    ],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=secret,source=npmrc\\\" \\\"--mount=type=secret,target=/only/target\\\"] \\\"cat /run/secrets/npmrc\\\"\"",
+    "original": "\"RUN --mount=type=secret,source=npmrc --mount=type=secret,target=/only/target cat /run/secrets/npmrc\"",
+    "flags": [
+     "\"--mount=type=secret,source=npmrc\"",
+     "\"--mount=type=secret,target=/only/target\""
+    ],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=ssh\\\" \\\"--mount=type=ssh,id=deploy,target=/agent.sock,mode=0666,required\\\"] \\\"git clone\\\"\"",
+    "original": "\"RUN --mount=type=ssh --mount=type=ssh,id=deploy,target=/agent.sock,mode=0666,required git clone\"",
+    "flags": [
+     "\"--mount=type=ssh\"",
+     "\"--mount=type=ssh,id=deploy,target=/agent.sock,mode=0666,required\""
+    ],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=tmpfs,target=/tmp,size=1g\\\" \\\"--mount=type=tmpfs,target=/t2\\\"] \\\"ls\\\"\"",
+    "original": "\"RUN --mount=type=tmpfs,target=/tmp,size=1g --mount=type=tmpfs,target=/t2 ls\"",
+    "flags": [
+     "\"--mount=type=tmpfs,target=/tmp,size=1g\"",
+     "\"--mount=type=tmpfs,target=/t2\""
+    ],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--network=host\\\" \\\"--security=insecure\\\"] \\\"ping x\\\"\"",
+    "original": "\"RUN --network=host --security=insecure ping x\"",
+    "flags": [
+     "\"--network=host\"",
+     "\"--security=insecure\""
+    ],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--device=nvidia.com/gpu=all\\\" \\\"--device=name=vendor.com/x=1,required=true\\\"] \\\"nvidia-smi\\\"\"",
+    "original": "\"RUN --device=nvidia.com/gpu=all --device=name=vendor.com/x=1,required=true nvidia-smi\"",
+    "flags": [
+     "\"--device=nvidia.com/gpu=all\"",
+     "\"--device=name=vendor.com/x=1,required=true\""
+    ],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
    }
   ]
  },
@@ -8560,6 +10541,135 @@
   ]
  },
  {
+  "file": "corpus/plan/stage-chain.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"base\\\")\\n(env \\\"A\\\" \\\"1\\\" \\\"=\\\")\\n(workdir \\\"/app\\\")\\n(user \\\"1000\\\")\\n(from \\\"base\\\" \\\"AS\\\" \\\"mid\\\")\\n(env \\\"B\\\" \\\"2\\\" \\\"=\\\")\\n(run \\\"env\\\")\\n(from \\\"mid\\\" \\\"AS\\\" \\\"unused\\\")\\n(run \\\"echo never\\\")\\n(from \\\"mid\\\")\\n(copy [\\\"--from=base\\\"] \\\"/app\\\" \\\"/copy\\\")\\n(run \\\"echo $A $B\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"base\\\"\"",
+    "original": "\"FROM alpine AS base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"A\\\" \\\"1\\\" \\\"=\\\"\"",
+    "original": "\"ENV A=1\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"/app\\\"\"",
+    "original": "\"WORKDIR /app\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"user \\\"1000\\\"\"",
+    "original": "\"USER 1000\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"base\\\" \\\"AS\\\" \\\"mid\\\"\"",
+    "original": "\"FROM base AS mid\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"B\\\" \\\"2\\\" \\\"=\\\"\"",
+    "original": "\"ENV B=2\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"env\\\"\"",
+    "original": "\"RUN env\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"mid\\\" \\\"AS\\\" \\\"unused\\\"\"",
+    "original": "\"FROM mid AS unused\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo never\\\"\"",
+    "original": "\"RUN echo never\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"mid\\\"\"",
+    "original": "\"FROM mid\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=base\\\"] \\\"/app\\\" \\\"/copy\\\"\"",
+    "original": "\"COPY --from=base /app /copy\"",
+    "flags": [
+     "\"--from=base\""
+    ],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo $A $B\\\"\"",
+    "original": "\"RUN echo $A $B\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/target.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"a\\\")\\n(run \\\"echo a\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"b\\\")\\n(run \\\"echo b\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"c\\\")\\n(run \\\"echo c\\\")\"",
@@ -8621,6 +10731,63 @@
     "attributes": null,
     "start_line": 6,
     "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/user-base.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"userwd\\\")\\n(run \\\"pwd \u0026\u0026 whoami\\\")\\n(workdir \\\"sub\\\")\\n(copy \\\"x\\\" \\\".\\\")\\n(cmd \\\"run\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"userwd\\\"\"",
+    "original": "\"FROM userwd\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"pwd \u0026\u0026 whoami\\\"\"",
+    "original": "\"RUN pwd \u0026\u0026 whoami\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"sub\\\"\"",
+    "original": "\"WORKDIR sub\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"x\\\" \\\".\\\"\"",
+    "original": "\"COPY x .\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"run\\\"\"",
+    "original": "\"CMD run\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
     "prev_comment": [],
     "heredocs": null
    }

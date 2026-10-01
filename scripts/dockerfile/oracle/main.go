@@ -23,6 +23,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/docker/go-units"
 	"github.com/moby/buildkit/client/llb/sourceresolver"
 	"github.com/moby/buildkit/frontend/dockerfile/dockerfile2llb"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
@@ -654,6 +655,29 @@ func configsFile(testdata string) {
 	writeJSON(filepath.Join(testdata, "configs-answers.json"), out)
 }
 
+// What go-units' RAMInBytes, which a tmpfs mount's size= goes through, makes of each
+// size in sizes.json.
+func sizesFile(testdata string) {
+	data, err := os.ReadFile(filepath.Join(testdata, "sizes.json"))
+	if err != nil {
+		panic(err)
+	}
+	var cases []string
+	if err := json.Unmarshal(data, &cases); err != nil {
+		panic(err)
+	}
+	var out []map[string]any
+	for _, c := range cases {
+		n, err := units.RAMInBytes(c)
+		if err != nil {
+			out = append(out, map[string]any{"input": c, "error": q(err.Error())})
+		} else {
+			out = append(out, map[string]any{"input": c, "bytes": strconv.FormatInt(n, 10)})
+		}
+	}
+	writeJSON(filepath.Join(testdata, "sizes-answers.json"), out)
+}
+
 func writeJSON(path string, v any) {
 	b, err := json.MarshalIndent(v, "", " ")
 	if err != nil {
@@ -703,6 +727,7 @@ func main() {
 	}
 	writeJSON(filepath.Join(testdata, "plan.json"), plans)
 	configsFile(testdata)
+	sizesFile(testdata)
 
 	cases := buildkitCases(filepath.Join(testdata, "buildkit/shell"))
 	extra, err := os.ReadFile(filepath.Join(testdata, "lex-cases.json"))

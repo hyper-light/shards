@@ -43,6 +43,132 @@ pub const INVALID_DEFINITION_DESCRIPTION: Rule = Rule {
     experimental: true,
 };
 
+pub const NO_EMPTY_CONTINUATION: Rule = Rule {
+    name: "NoEmptyContinuation",
+    description: "Empty continuation lines will become errors in a future release",
+    url: "https://docs.docker.com/go/dockerfile/rule/no-empty-continuation/",
+    experimental: false,
+};
+
+pub const CONSISTENT_INSTRUCTION_CASING: Rule = Rule {
+    name: "ConsistentInstructionCasing",
+    description: "All commands within the Dockerfile should use the same casing (either upper or lower)",
+    url: "https://docs.docker.com/go/dockerfile/rule/consistent-instruction-casing/",
+    experimental: false,
+};
+
+pub const DUPLICATE_STAGE_NAME: Rule = Rule {
+    name: "DuplicateStageName",
+    description: "Stage names should be unique",
+    url: "https://docs.docker.com/go/dockerfile/rule/duplicate-stage-name/",
+    experimental: false,
+};
+
+pub const RESERVED_STAGE_NAME: Rule = Rule {
+    name: "ReservedStageName",
+    description: "Reserved words should not be used as stage names",
+    url: "https://docs.docker.com/go/dockerfile/rule/reserved-stage-name/",
+    experimental: false,
+};
+
+pub const JSON_ARGS_RECOMMENDED: Rule = Rule {
+    name: "JSONArgsRecommended",
+    description: "JSON arguments recommended for ENTRYPOINT/CMD to prevent unintended behavior related to OS signals",
+    url: "https://docs.docker.com/go/dockerfile/rule/json-args-recommended/",
+    experimental: false,
+};
+
+pub const UNDEFINED_ARG_IN_FROM: Rule = Rule {
+    name: "UndefinedArgInFrom",
+    description: "FROM command must use declared ARGs",
+    url: "https://docs.docker.com/go/dockerfile/rule/undefined-arg-in-from/",
+    experimental: false,
+};
+
+pub const WORKDIR_RELATIVE_PATH: Rule = Rule {
+    name: "WorkdirRelativePath",
+    description: "Relative workdir without an absolute workdir declared within the build can have unexpected results if the base image changes",
+    url: "https://docs.docker.com/go/dockerfile/rule/workdir-relative-path/",
+    experimental: false,
+};
+
+pub const UNDEFINED_VAR: Rule = Rule {
+    name: "UndefinedVar",
+    description: "Variables should be defined before their use",
+    url: "https://docs.docker.com/go/dockerfile/rule/undefined-var/",
+    experimental: false,
+};
+
+pub const MULTIPLE_INSTRUCTIONS_DISALLOWED: Rule = Rule {
+    name: "MultipleInstructionsDisallowed",
+    description: "Multiple instructions of the same type should not be used in the same stage",
+    url: "https://docs.docker.com/go/dockerfile/rule/multiple-instructions-disallowed/",
+    experimental: false,
+};
+
+pub const LEGACY_KEY_VALUE_FORMAT: Rule = Rule {
+    name: "LegacyKeyValueFormat",
+    description: "Legacy key/value format with whitespace separator should not be used",
+    url: "https://docs.docker.com/go/dockerfile/rule/legacy-key-value-format/",
+    experimental: false,
+};
+
+pub const INVALID_BASE_IMAGE_PLATFORM: Rule = Rule {
+    name: "InvalidBaseImagePlatform",
+    description: "Base image platform does not match expected target platform",
+    url: "",
+    experimental: false,
+};
+
+pub const REDUNDANT_TARGET_PLATFORM: Rule = Rule {
+    name: "RedundantTargetPlatform",
+    description: "Setting platform to predefined $TARGETPLATFORM in FROM is redundant as this is the default behavior",
+    url: "https://docs.docker.com/go/dockerfile/rule/redundant-target-platform/",
+    experimental: false,
+};
+
+pub const SECRETS_USED_IN_ARG_OR_ENV: Rule = Rule {
+    name: "SecretsUsedInArgOrEnv",
+    description: "Sensitive data should not be used in the ARG or ENV commands",
+    url: "https://docs.docker.com/go/dockerfile/rule/secrets-used-in-arg-or-env/",
+    experimental: false,
+};
+
+pub const INVALID_DEFAULT_ARG_IN_FROM: Rule = Rule {
+    name: "InvalidDefaultArgInFrom",
+    description: "Default value for global ARG results in an empty or invalid base image name",
+    url: "https://docs.docker.com/go/dockerfile/rule/invalid-default-arg-in-from/",
+    experimental: false,
+};
+
+pub const FROM_PLATFORM_FLAG_CONST_DISALLOWED: Rule = Rule {
+    name: "FromPlatformFlagConstDisallowed",
+    description: "FROM --platform flag should not use a constant value",
+    url: "https://docs.docker.com/go/dockerfile/rule/from-platform-flag-const-disallowed/",
+    experimental: false,
+};
+
+pub const COPY_IGNORED_FILE: Rule = Rule {
+    name: "CopyIgnoredFile",
+    description: "Attempting to Copy file that is excluded by .dockerignore",
+    url: "https://docs.docker.com/go/dockerfile/rule/copy-ignored-file/",
+    experimental: false,
+};
+
+pub const EXPOSE_PROTO_CASING: Rule = Rule {
+    name: "ExposeProtoCasing",
+    description: "Protocol in EXPOSE instruction should be lowercase",
+    url: "https://docs.docker.com/go/dockerfile/rule/expose-proto-casing/",
+    experimental: false,
+};
+
+pub const EXPOSE_INVALID_FORMAT: Rule = Rule {
+    name: "ExposeInvalidFormat",
+    description: "IP address and host-port mapping should not be used in EXPOSE instruction. This will become an error in a future release",
+    url: "https://docs.docker.com/go/dockerfile/rule/expose-invalid-format/",
+    experimental: false,
+};
+
 /// A warning a rule gave.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Warning {
@@ -173,6 +299,11 @@ impl Linter {
             linter: self,
             extra: None,
         }
+    }
+
+    /// Runs `rule` with the file's configuration alone.
+    pub fn run(&self, rule: &Rule, location: &[(usize, usize)], message: Option<&[u8]>) {
+        self.run_with(None, rule, location, message);
     }
 
     fn run_with(

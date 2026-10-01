@@ -28,6 +28,33 @@
   "digest": "sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c",
   "ref": "docker.io/library/alpine:latest"
  },
+ "docker.io/library/armimg:latest": {
+  "config": {
+   "architecture": "arm64",
+   "config": {
+    "Env": [
+     "PATH=/usr/bin"
+    ]
+   },
+   "created": "2026-01-01T00:00:00Z",
+   "history": [
+    {
+     "created_by": "base",
+     "empty_layer": false
+    }
+   ],
+   "os": "linux",
+   "rootfs": {
+    "diff_ids": [
+     "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    ],
+    "type": "layers"
+   },
+   "variant": "v8"
+  },
+  "digest": "sha256:f55566cbd1e615d795f43656876f0b6ba6cc1e5064ef3edb34cc63873fe554a2",
+  "ref": "docker.io/library/armimg:latest"
+ },
  "docker.io/library/empty:latest": {
   "config": {
    "architecture": "amd64",
@@ -73,6 +100,82 @@
   },
   "digest": "sha256:35b77b224d0d6917ad63ccf974b798d00093af813d71affbc292fb9bc298844e",
   "ref": "docker.io/library/nopath:latest"
+ },
+ "docker.io/library/onbuild:latest": {
+  "config": {
+   "architecture": "amd64",
+   "config": {
+    "Env": [
+     "PATH=/bin"
+    ],
+    "OnBuild": [
+     "COPY . /app/src",
+     "RUN make -C /app/src",
+     "ENV BUILT=1"
+    ]
+   },
+   "created": "2026-01-01T00:00:00Z",
+   "history": [
+    {
+     "created_by": "base",
+     "empty_layer": false
+    }
+   ],
+   "os": "linux",
+   "rootfs": {
+    "diff_ids": [
+     "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    ],
+    "type": "layers"
+   }
+  },
+  "digest": "sha256:c8a5823897ac95f0cf21c2f39b68bd2fe1d318cd4c95c2d4b22445925ca69e8f",
+  "ref": "docker.io/library/onbuild:latest"
+ },
+ "docker.io/library/userwd:latest": {
+  "config": {
+   "architecture": "amd64",
+   "config": {
+    "Env": [
+     "PATH=/usr/bin:/bin"
+    ],
+    "Shell": [
+     "/bin/bash",
+     "-eo",
+     "pipefail",
+     "-c"
+    ],
+    "StopSignal": "SIGQUIT",
+    "User": "app:app",
+    "Volumes": {
+     "/data": {}
+    },
+    "WorkingDir": "/srv/app"
+   },
+   "created": "2026-01-01T00:00:00Z",
+   "history": [
+    {
+     "author": "someone",
+     "comment": "c <&>",
+     "created": "2025-06-01T10:20:30.123456789+02:00",
+     "created_by": "/bin/sh -c #(nop) USER app",
+     "empty_layer": true
+    },
+    {
+     "created_by": "base",
+     "empty_layer": false
+    }
+   ],
+   "os": "linux",
+   "rootfs": {
+    "diff_ids": [
+     "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    ],
+    "type": "layers"
+   }
+  },
+  "digest": "sha256:418a46c7f9e35f367e24064323e9759a208f30223ddd001667753d28ffe59570",
+  "ref": "docker.io/library/userwd:latest"
  },
  "docker.io/library/withconfig:latest": {
   "config": {
@@ -134,5 +237,32 @@
   },
   "digest": "sha256:29dfe4bc1db70e704f32007adbb490cbac67873e386e5df778a73e40ba789935",
   "ref": "docker.io/library/withconfig:latest"
+ },
+ "registry.example.com:5000/team/app:1.0": {
+  "config": {
+   "architecture": "amd64",
+   "config": {
+    "Env": [
+     "PATH=/bin",
+     "TEAM=x"
+    ]
+   },
+   "created": "2026-01-01T00:00:00Z",
+   "history": [
+    {
+     "created_by": "base",
+     "empty_layer": false
+    }
+   ],
+   "os": "linux",
+   "rootfs": {
+    "diff_ids": [
+     "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    ],
+    "type": "layers"
+   }
+  },
+  "digest": "sha256:0107e9cb37820c4f34ead1213fc3600d14a65faf7606323afa9a68b17044d209",
+  "ref": "registry.example.com:5000/team/app:1.0"
  }
 }

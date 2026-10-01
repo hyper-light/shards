@@ -485,6 +485,11 @@ pub(crate) fn join(elements: &[&[u8]]) -> Vec<u8> {
     clean(&parts.join(&b'/'))
 }
 
+/// `path.IsAbs`.
+pub(crate) fn is_abs(p: &[u8]) -> bool {
+    p.first() == Some(&b'/')
+}
+
 /// `strings.EqualFold(s, name)` for an ASCII `name`, as Go's `encoding/json` matches a
 /// key to a field: the only runes beyond ASCII whose case-folding orbit holds an ASCII
 /// letter are U+212A KELVIN SIGN (with `k`) and U+017F LATIN SMALL LETTER LONG S (with
@@ -507,11 +512,359 @@ pub(crate) fn equal_fold_ascii(s: &[u8], name: &[u8]) -> bool {
     runes.next().is_none()
 }
 
+/// `strconv.ParseFloat(s, 64)`: decimal and hexadecimal (`0x1p4`) floats, underscores
+/// between digits, `inf`, `infinity` and `nan`; failing as Go does, with `invalid syntax`
+/// or, past the largest float, `value out of range`.
+pub(crate) fn parse_float(s: &[u8]) -> Result<f64, &'static str> {
+    const SYNTAX: &str = "invalid syntax";
+    const RANGE: &str = "value out of range";
+    // special: a sign and inf, infinity or nan, ignoring case, and nothing after.
+    let (neg, body) = match s.first() {
+        Some(b'-') => (true, tail(s, 1)),
+        Some(b'+') => (false, tail(s, 1)),
+        _ => (false, s),
+    };
+    let lower = body.to_ascii_lowercase();
+    if lower == b"inf" || lower == b"infinity" {
+        return Ok(if neg { f64::NEG_INFINITY } else { f64::INFINITY });
+    }
+    if lower == b"nan" && s.first().is_none_or(|c| !matches!(c, b'+' | b'-')) {
+        return Ok(f64::NAN);
+    }
+    if !float_syntax(s) {
+        return Err(SYNTAX);
+    }
+    let clean: Vec<u8> = s.iter().copied().filter(|&c| c != b'_').collect();
+    let hex = {
+        let b = clean
+            .strip_prefix(b"-")
+            .or_else(|| clean.strip_prefix(b"+"))
+            .unwrap_or(&clean);
+        b.len() > 2 && b.first() == Some(&b'0') && matches!(b.get(1), Some(b'x' | b'X'))
+    };
+    let v = if hex {
+        hex_float(&clean).ok_or(RANGE)?
+    } else {
+        std::str::from_utf8(&clean)
+            .ok()
+            .and_then(|t| t.parse::<f64>().ok())
+            .ok_or(SYNTAX)?
+    };
+    // Past the largest float is a range error.
+    if v.is_finite() { Ok(v) } else { Err(RANGE) }
+}
+
+/// `readFloat`'s grammar, whole: sign, digits with at most one dot, an exponent (`p`
+/// and required for hex), and underscores where `underscoreOK` allows them.
+fn float_syntax(s: &[u8]) -> bool {
+    let mut i = 0;
+    if matches!(s.first(), Some(b'+' | b'-')) {
+        i += 1;
+    }
+    let hex = s.len() > i + 2 && s.get(i) == Some(&b'0') && matches!(s.get(i + 1), Some(b'x' | b'X'));
+    if hex {
+        i += 2;
+    }
+    let (mut dot, mut digits) = (false, false);
+    while let Some(&c) = s.get(i) {
+        match c {
+            b'_' => {}
+            b'.' if !dot => dot = true,
+            b'0'..=b'9' => digits = true,
+            b'a'..=b'f' | b'A'..=b'F' if hex => digits = true,
+            _ => break,
+        }
+        i += 1;
+    }
+    if !digits {
+        return false;
+    }
+    let exp = if hex { b'p' } else { b'e' };
+    if s.get(i).is_some_and(|c| c.to_ascii_lowercase() == exp) {
+        i += 1;
+        if matches!(s.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        if !s.get(i).is_some_and(u8::is_ascii_digit) {
+            return false;
+        }
+        while s.get(i).is_some_and(|&c| c.is_ascii_digit() || c == b'_') {
+            i += 1;
+        }
+    } else if hex {
+        return false;
+    }
+    if i != s.len() {
+        return false;
+    }
+    !s.contains(&b'_') || underscore_ok(s)
+}
+
+/// `underscoreOK`: each underscore between digits, or after a base prefix.
+fn underscore_ok(s: &[u8]) -> bool {
+    let s = match s.first() {
+        Some(b'+' | b'-') => tail(s, 1),
+        _ => s,
+    };
+    let mut saw = b'^';
+    let mut i = 0;
+    let mut hex = false;
+    if s.len() >= 2
+        && s.first() == Some(&b'0')
+        && matches!(s.get(1).map(u8::to_ascii_lowercase), Some(b'b' | b'o' | b'x'))
+    {
+        i = 2;
+        saw = b'0';
+        hex = s.get(1).map(u8::to_ascii_lowercase) == Some(b'x');
+    }
+    while let Some(&c) = s.get(i) {
+        i += 1;
+        if c.is_ascii_digit() || (hex && c.is_ascii_hexdigit()) {
+            saw = b'0';
+        } else if c == b'_' {
+            if saw != b'0' {
+                return false;
+            }
+            saw = b'_';
+        } else if saw == b'_' {
+            return false;
+        } else {
+            saw = b'!';
+        }
+    }
+    saw != b'_'
+}
+
+/// A hex float's value, `atofHex` for float64: the mantissa's first 16 digits, a sticky
+/// bit for the rest, and round to nearest even.
+fn hex_float(s: &[u8]) -> Option<f64> {
+    let (neg, s) = match s.first() {
+        Some(b'-') => (true, tail(s, 1)),
+        Some(b'+') => (false, tail(s, 1)),
+        _ => (false, s),
+    };
+    let s = tail(s, 2);
+    let p = s.iter().position(|&c| c == b'p' || c == b'P')?;
+    let (digits, exp) = (head(s, p), tail(s, p + 1));
+    let mut mantissa: u64 = 0;
+    let (mut nd, mut nd_mant, mut dp) = (0i64, 0i64, 0i64);
+    let mut dot = false;
+    let mut trunc = false;
+    for &c in digits {
+        if c == b'.' {
+            dot = true;
+            dp = nd;
+            continue;
+        }
+        let d = u64::from(char::from(c).to_digit(16)?);
+        if d == 0 && nd == 0 {
+            dp -= 1;
+            continue;
+        }
+        nd += 1;
+        if nd_mant < 16 {
+            mantissa = mantissa * 16 + d;
+            nd_mant += 1;
+        } else if d != 0 {
+            trunc = true;
+        }
+    }
+    if !dot {
+        dp = nd;
+    }
+    dp *= 4;
+    nd_mant *= 4;
+    let (esign, edigits) = match exp.first() {
+        Some(b'-') => (-1, tail(exp, 1)),
+        Some(b'+') => (1, tail(exp, 1)),
+        _ => (1, exp),
+    };
+    let e = edigits.iter().fold(0i64, |e, &c| {
+        if e < 10_000 {
+            e * 10 + i64::from(c - b'0')
+        } else {
+            e
+        }
+    });
+    dp += e * esign;
+    let mut exp = if mantissa != 0 { dp - nd_mant } else { 0 };
+    const MANTBITS: i64 = 52;
+    const BIAS: i64 = -1023;
+    let max_exp = (1 << 11) + BIAS - 2;
+    let min_exp = BIAS + 1;
+    exp += MANTBITS;
+    while mantissa != 0 && mantissa >> (MANTBITS + 2) == 0 {
+        mantissa <<= 1;
+        exp -= 1;
+    }
+    if trunc {
+        mantissa |= 1;
+    }
+    while mantissa >> (1 + MANTBITS + 2) != 0 {
+        mantissa = (mantissa >> 1) | (mantissa & 1);
+        exp += 1;
+    }
+    while mantissa > 1 && exp < min_exp - 2 {
+        mantissa = (mantissa >> 1) | (mantissa & 1);
+        exp += 1;
+    }
+    let mut round = mantissa & 3;
+    mantissa >>= 2;
+    round |= mantissa & 1;
+    exp += 2;
+    if round == 3 {
+        mantissa += 1;
+        if mantissa == 1 << (1 + MANTBITS) {
+            mantissa >>= 1;
+            exp += 1;
+        }
+    }
+    if mantissa >> MANTBITS == 0 {
+        exp = BIAS;
+    }
+    if exp > max_exp {
+        return None;
+    }
+    let mut bits = mantissa & ((1 << MANTBITS) - 1);
+    bits |= (((exp - BIAS) & ((1 << 11) - 1)) as u64) << MANTBITS;
+    if neg {
+        bits |= 1 << 63;
+    }
+    Some(f64::from_bits(bits))
+}
+
+/// go-units' `RAMInBytes`: a size with an optional binary unit (`k`, `kb`, `kib` and so
+/// on up to `p`, any case), its text as Go's error has it. Past `i64`, the size saturates,
+/// where Go's conversion depends on the machine.
+pub fn ram_in_bytes(size: &[u8]) -> Result<i64, Vec<u8>> {
+    let invalid = || [b"invalid size: '".as_slice(), size, b"'"].concat();
+    let Some(sep) = size
+        .iter()
+        .rposition(|c| c.is_ascii_digit() || matches!(c, b'.' | b' '))
+    else {
+        return Err(invalid());
+    };
+    let (num, sfx) = if size.get(sep) == Some(&b' ') {
+        (head(size, sep), tail(size, sep + 1))
+    } else {
+        (head(size, sep + 1), tail(size, sep + 1))
+    };
+    let mut value = parse_float(num).map_err(|e| {
+        [
+            b"strconv.ParseFloat: parsing ".as_slice(),
+            quote(num).as_bytes(),
+            b": ",
+            e.as_bytes(),
+        ]
+        .concat()
+    })?;
+    if value < 0.0 {
+        return Err(invalid());
+    }
+    if sfx.is_empty() {
+        return Ok(value as i64);
+    }
+    let bad = |sfx: &[u8]| [b"invalid suffix: '".as_slice(), sfx, b"'"].concat();
+    if sfx.len() > 3 {
+        return Err(bad(sfx));
+    }
+    let sfx = to_lower(sfx);
+    if sfx.first() == Some(&b'b') {
+        if sfx.len() > 1 {
+            return Err(bad(&sfx));
+        }
+        return Ok(value as i64);
+    }
+    let shift = match sfx.first() {
+        Some(b'k') => 10,
+        Some(b'm') => 20,
+        Some(b'g') => 30,
+        Some(b't') => 40,
+        Some(b'p') => 50,
+        _ => return Err(bad(&sfx)),
+    };
+    value *= (1u64 << shift) as f64;
+    match sfx.len() {
+        2 if sfx.get(1) != Some(&b'b') => Err(bad(&sfx)),
+        3 if go_tail_is(&sfx, b"ib") => Ok(value as i64),
+        3 => Err(bad(&sfx)),
+        _ => Ok(value as i64),
+    }
+}
+
+fn go_tail_is(s: &[u8], want: &[u8]) -> bool {
+    tail(s, 1) == want
+}
+
+/// `time.Duration.String`: `1h2m3.5s`, `1.5ms`, `0s`.
+pub(crate) fn format_duration(d: i64) -> Vec<u8> {
+    // Built from the end, as Go builds it.
+    let mut out: Vec<u8> = Vec::new();
+    let neg = d < 0;
+    let mut u = d.unsigned_abs();
+    let frac = |out: &mut Vec<u8>, v: u64, prec: u32| -> u64 {
+        let mut v = v;
+        let mut print = false;
+        let mut digits = Vec::new();
+        for _ in 0..prec {
+            let digit = v % 10;
+            print = print || digit != 0;
+            if print {
+                digits.push(b'0' + digit as u8);
+            }
+            v /= 10;
+        }
+        if print {
+            out.extend(digits);
+            out.push(b'.');
+        }
+        v
+    };
+    let int = |out: &mut Vec<u8>, v: u64| out.extend(v.to_string().bytes().rev());
+    if u < 1_000_000_000 {
+        out.push(b's');
+        let prec = if u == 0 {
+            return b"0s".to_vec();
+        } else if u < 1_000 {
+            out.push(b'n');
+            0
+        } else if u < 1_000_000 {
+            // U+00B5 MICRO SIGN, reversed.
+            out.extend_from_slice(&[0xB5, 0xC2]);
+            3
+        } else {
+            out.push(b'm');
+            6
+        };
+        u = frac(&mut out, u, prec);
+        int(&mut out, u);
+    } else {
+        out.push(b's');
+        u = frac(&mut out, u, 9);
+        int(&mut out, u % 60);
+        u /= 60;
+        if u > 0 {
+            out.push(b'm');
+            int(&mut out, u % 60);
+            u /= 60;
+            if u > 0 {
+                out.push(b'h');
+                int(&mut out, u);
+            }
+        }
+    }
+    if neg {
+        out.push(b'-');
+    }
+    out.reverse();
+    out
+}
+
 /// A time as Go's `time.Parse(time.RFC3339, ...)` reads it: its wall clock where it was
 /// written, and that place's offset from UTC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Time {
-    pub year: u32,
+    pub year: i64,
     pub month: u32,
     pub day: u32,
     pub hour: u32,
@@ -524,11 +877,11 @@ pub struct Time {
 
 const RFC3339: &[u8] = b"2006-01-02T15:04:05Z07:00";
 
-fn is_leap(year: u32) -> bool {
-    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
+fn is_leap(year: i64) -> bool {
+    year.rem_euclid(4) == 0 && (year.rem_euclid(100) != 0 || year.rem_euclid(400) == 0)
 }
 
-fn days_in(month: u32, year: u32) -> u32 {
+fn days_in(month: u32, year: i64) -> u32 {
     match month {
         2 if is_leap(year) => 29,
         2 => 28,
@@ -586,7 +939,7 @@ pub fn parse_rfc3339(value: &[u8]) -> Result<Time, Vec<u8>> {
     // 2006
     let year = match rest.get(..4) {
         Some(p) if p.iter().all(u8::is_ascii_digit) => {
-            p.iter().fold(0u32, |y, &c| y * 10 + u32::from(c - b'0'))
+            p.iter().fold(0i64, |y, &c| y * 10 + i64::from(c - b'0'))
         }
         _ => return Err(cannot(rest, b"2006")),
     };
@@ -691,10 +1044,39 @@ pub fn parse_rfc3339(value: &[u8]) -> Result<Time, Vec<u8>> {
 }
 
 impl Time {
+    /// `time.Unix(secs, 0).UTC()`.
+    pub fn from_unix(secs: i64) -> Time {
+        let days = secs.div_euclid(86_400);
+        let rem = secs.rem_euclid(86_400);
+        // Days since 1970-01-01 to a civil date (Howard Hinnant's `civil_from_days`).
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        Time {
+            year,
+            month: month as u32,
+            day: day as u32,
+            hour: (rem / 3600) as u32,
+            minute: (rem % 3600 / 60) as u32,
+            second: (rem % 60) as u32,
+            nanosecond: 0,
+            offset: 0,
+        }
+    }
+
     /// `Time.MarshalJSON`'s text without its quotes: RFC 3339 with the fraction's trailing
     /// zeros dropped, and `Z` for UTC. Fails where Go's does, for an offset of 24 hours or
     /// more.
     pub fn rfc3339_nano(&self) -> Result<String, Vec<u8>> {
+        if !(0..=9999).contains(&self.year) {
+            return Err(b"Time.MarshalJSON: year outside of range [0,9999]".to_vec());
+        }
         // The wall clock in its own zone is the one parsed: Go adds the offset back.
         let mut out = format!(
             "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
