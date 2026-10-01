@@ -842,6 +842,15 @@ name = "shards-abi"
 version = "0.1.0"
 
 [[package]]
+name = "shards-build"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "shards-dockerfile",
+ "shards-image",
+]
+
+[[package]]
 name = "shards-cmdline"
 version = "0.1.0"
 dependencies = [

@@ -400,7 +400,7 @@ fn is_print(r: u32) -> bool {
 }
 
 /// `bytes.TrimLeftFunc(b, unicode.IsSpace)`.
-pub(crate) fn trim_left_space(b: &[u8]) -> &[u8] {
+pub fn trim_left_space(b: &[u8]) -> &[u8] {
     let mut at = 0;
     while at < b.len() {
         let (r, w) = decode(tail(b, at));
@@ -413,7 +413,7 @@ pub(crate) fn trim_left_space(b: &[u8]) -> &[u8] {
 }
 
 /// `bytes.TrimRightFunc(b, unicode.IsSpace)`.
-pub(crate) fn trim_right_space(b: &[u8]) -> &[u8] {
+pub fn trim_right_space(b: &[u8]) -> &[u8] {
     let mut end = b.len();
     while end > 0 {
         let (r, w) = decode_last(head(b, end));
@@ -426,13 +426,13 @@ pub(crate) fn trim_right_space(b: &[u8]) -> &[u8] {
 }
 
 /// `strings.TrimSpace`.
-pub(crate) fn trim_space(b: &[u8]) -> &[u8] {
+pub fn trim_space(b: &[u8]) -> &[u8] {
     trim_right_space(trim_left_space(b))
 }
 
 /// `path.Clean`: the shortest path naming what `p` names, lexically: one slash between
 /// elements, no `.` elements, `..` eating the element before it, and none at the root.
-pub(crate) fn clean(p: &[u8]) -> Vec<u8> {
+pub fn clean(p: &[u8]) -> Vec<u8> {
     if p.is_empty() {
         return b".".to_vec();
     }
@@ -477,7 +477,7 @@ pub(crate) fn clean(p: &[u8]) -> Vec<u8> {
 }
 
 /// `path.Join`: the non-empty elements joined by slashes, cleaned; empty if all are.
-pub(crate) fn join(elements: &[&[u8]]) -> Vec<u8> {
+pub fn join(elements: &[&[u8]]) -> Vec<u8> {
     let parts: Vec<&[u8]> = elements.iter().copied().filter(|e| !e.is_empty()).collect();
     if parts.is_empty() {
         return Vec::new();
@@ -486,7 +486,7 @@ pub(crate) fn join(elements: &[&[u8]]) -> Vec<u8> {
 }
 
 /// `path.IsAbs`.
-pub(crate) fn is_abs(p: &[u8]) -> bool {
+pub fn is_abs(p: &[u8]) -> bool {
     p.first() == Some(&b'/')
 }
 

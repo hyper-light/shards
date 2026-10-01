@@ -254,6 +254,19 @@ impl Tree {
         Ok(())
     }
 
+    /// Moves the entry `name` of `dir` to `to_name` in `to`, replacing any entry there.
+    pub fn rename(&mut self, dir: NodeId, name: &[u8], to: NodeId, to_name: &[u8]) -> Result<(), Error> {
+        check_name(to_name)?;
+        self.entries_mut(to)?;
+        let Some(id) = self.entries_mut(dir)?.remove(name) else {
+            return err("no such entry to rename");
+        };
+        if self.entries_mut(to)?.insert(to_name.to_vec(), id).is_some() {
+            self.dropped += 1;
+        }
+        Ok(())
+    }
+
     /// Removes the entry `name` from `dir`, returning what it named.
     pub fn remove(&mut self, dir: NodeId, name: &[u8]) -> Option<NodeId> {
         let removed = self.entries_mut(dir).ok()?.remove(name);

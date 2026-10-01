@@ -1,0 +1,18 @@
+[package]
+name = "shards-build"
+version = "0.1.0"
+description = "What shards build does to files: BuildKit's file operations and layers, in memory"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+shards-dockerfile = { path = "../dockerfile" }
+shards-image = { path = "../image" }
+
+[dev-dependencies]
+serde_json = "1"

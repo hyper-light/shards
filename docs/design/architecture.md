@@ -1560,7 +1560,17 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
        base images and settings, end to end. An image `shards build` wrote has the config
        Docker Desktop's BuildKit wrote for the same Dockerfile, byte for byte (the same
        digest, checked 2026-10-01), and `shards run` boots it (`tests/build.rs`).
-     - Next: file operations on the host (COPY, ADD, WORKDIR) and their layers.
+     - Done: file operations and their layers (`crates/build`). BuildKit's mkdir, mkfile
+       and copy actions (fsutil's copy, its chmod strings, `--chown` names from the
+       image's /etc/passwd and /etc/group) run on an in-memory tree that changes as Linux
+       changes a file system, and record what overlayfs's upper directory would hold;
+       the layer is BuildKit's overlay differ over it, through containerd's
+       ChangeWriter and a port of Go's tar writer. `scripts/build/generate` runs
+       BuildKit's own backend on a real overlayfs mount as root and its differ over the
+       result: 91 cases, 79 layers byte for byte and 12 errors word for word
+       (`tests/oracle.rs`; each of 16 mutations of these semantics fails it).
+     - Next: the build context (`.dockerignore`, the local source's filters), ADD's
+       archives, and the executor that runs file operations in `shards build`.
   3. RUN in a booted VM without a network, and its layer.
   4. Cache keys, then RUN's network, mounts and builder templates.
 

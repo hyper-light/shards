@@ -15,6 +15,8 @@ use std::io::{self, Read};
 
 use crate::{Error, bad};
 
+pub mod writer;
+
 const BLOCK: usize = 512;
 /// Go's maxSpecialFileSize: the largest PAX header or GNU long name read.
 const MAX_SPECIAL: u64 = 1 << 20;
