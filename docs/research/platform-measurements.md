@@ -2470,3 +2470,34 @@ revision before comparing a changed API/implementation.
     Developer ID keeps one requirement across versions. Whether such builds pay the switch
     is unmeasured: it needs a Developer ID.
   - App Sandbox costs a launch 4.5 ms here, at load 8, against M67's 3.1 ms.
+
+### M73. What granting a warm VM its containers' directory cost
+
+- **Question.** A warm VM spent about 6 ms from `main` to holding its grants, where its
+  grants were answered in under 2 ms (M71). Where did the rest go?
+- **Method.** Timestamps in the VM process (a probe, not kept) from `main` through each
+  step of a warm restore's setup, 25 warm VMs; then around the one bookmark it resolved,
+  12 VMs. Then the change: the VM is granted no directory for logs, its request brings the
+  log's first segment open and the daemon makes later segments
+  (`kind::LOG_SEGMENT`); measured with `docs/research/measurements/grant-broker/broker.patch`
+  (`ready-us`, spawn to READY) on builds before and after it, in alternating blocks of 60
+  pooled `shards run --rm alpine true` with 0.15 s between runs, one build at a time (a
+  launch after the other build's pays M72's 100 ms; the first five starts of each block are
+  dropped), six blocks each. macOS 26.4.1, Apple M5 Max, 2026-10-01; other work on the
+  host (load average 5.6 to 10).
+- **Results.** Before: `main` to its first grants 0.5 ms, and the last ask, the containers
+  directory's bookmark, 5.7 to 6.0 ms, of which 0.4 ms is waiting for the answer and 3.9 to
+  4.1 ms resolving it (`CFURLCreateByResolvingBookmarkData`, the process's first
+  CoreFoundation call). Warm VM starts, spawn to READY:
+
+| | n | p50 | p90 | p99 | max | block medians |
+|---|---|---|---|---|---|---|
+| Before | 371 | 21.0 ms | 45.2 ms | 271.3 ms | 531.1 ms | 27.0 26.9 38.9 16.6 18.9 17.0 |
+| After | 371 | 14.8 ms | 47.4 ms | 170.6 ms | 418.4 ms | 16.0 19.6 16.0 16.1 13.2 13.3 |
+
+  After is faster in every block, by 0.5 to 22.9 ms; in the two quietest, by 5.7 and
+  3.7 ms. The tails are the host's other work: both builds share them.
+- **Consequence.** A VM is given no directory for its log. Besides its start, this ends a
+  wider grant: a pooled VM, which cannot know its container ahead, could write every
+  container's log and record (on Linux too, by its Landlock rule). Bookmarks remain only
+  for a template's directory, on a cold path. The tails need a quiet host to say more.

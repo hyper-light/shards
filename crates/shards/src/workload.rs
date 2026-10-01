@@ -20,7 +20,7 @@ use shards_abi::run::{self, Size, Spec, kind};
 
 #[cfg(unix)]
 use crate::spec::{
-    INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT, LogRetention, log_segment, now,
+    INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT, LogRetention, now,
 };
 
 #[cfg(unix)]
@@ -115,14 +115,14 @@ pub struct Ended {
 
 /// Keeps a container's output (spec.rs, `LOG_STDOUT`): each record appended to its log,
 /// then its entry to the log's index once the record is whole, in segments kept as its
-/// retention says (spec.rs, `log_segment`). A record that cannot be kept, on a full disk
+/// retention says (segments.rs). A record that cannot be kept, on a full disk
 /// or a log removed, costs the log, not the run: it is taken back, so neither file holds
 /// any of it, and its bytes are counted as lost (audit A12).
 #[cfg(unix)]
-#[derive(Debug)]
 pub struct Logger {
-    /// The container's directory, where the segments are.
-    dir: fs::File,
+    /// Makes the next segment: in a VM, its daemon, since no VM reaches a container's
+    /// directory (D30).
+    next: NextSegment,
     retention: LogRetention,
     /// The segment written, and its files.
     seq: u64,
@@ -134,19 +134,32 @@ pub struct Logger {
     lost: u64,
 }
 
+/// Makes a log's segment `seq`, its log and index to append to, and removes the oldest
+/// past the log's retention ([`new_segment`]).
+#[cfg(unix)]
+pub type NextSegment = Box<dyn FnMut(u64) -> io::Result<(fs::File, fs::File)> + Send>;
+
+#[cfg(unix)]
+impl std::fmt::Debug for Logger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Logger")
+            .field("seq", &self.seq)
+            .field("logged", &self.logged)
+            .field("lost", &self.lost)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(unix)]
 impl Logger {
-    /// Writes the container's log in `dir`, from its first segment, which its daemon made
-    /// with the container.
-    pub fn new(dir: fs::File, retention: LogRetention) -> io::Result<Logger> {
-        let (log_name, index_name) = log_segment(0);
-        let log = open_in(&dir, &log_name, false)?;
-        let index = open_in(&dir, &index_name, false)?;
-        Logger::with(dir, retention, log, index)
-    }
-
-    /// Writes the log in `dir` from its first segment, `log` and `index`.
-    fn with(dir: fs::File, retention: LogRetention, log: fs::File, index: fs::File) -> io::Result<Logger> {
+    /// Writes a container's log from its first segment, `log` and `index`, which its
+    /// daemon made with the container, going on in the segments `next` makes.
+    pub fn new(
+        log: fs::File,
+        index: fs::File,
+        retention: LogRetention,
+        next: NextSegment,
+    ) -> io::Result<Logger> {
         let logged = log.metadata()?.len();
         let mut indexed = index.metadata()?.len();
         // A partial entry an earlier writer left is not one.
@@ -155,7 +168,7 @@ impl Logger {
             index.set_len(indexed)?;
         }
         Ok(Logger {
-            dir,
+            next,
             retention,
             seq: 0,
             log,
@@ -200,27 +213,11 @@ impl Logger {
         }
     }
 
-    /// Starts the next segment, and removes the oldest past the retention's files. A
-    /// segment is there for readers once its index is, so its log is made first, and its
-    /// index goes first; the index there says the segment before is done (spec.rs,
-    /// `log_segment`).
+    /// Starts the next segment.
     fn rotate(&mut self) -> io::Result<()> {
         let next = self.seq + 1;
-        let (log_name, index_name) = log_segment(next);
-        let log = open_in(&self.dir, &log_name, true)?;
-        let index = match open_in(&self.dir, &index_name, true) {
-            Ok(index) => index,
-            Err(e) => {
-                let _ = unlink_in(&self.dir, &log_name);
-                return Err(e);
-            }
-        };
+        let (log, index) = (self.next)(next)?;
         (self.seq, self.log, self.index, self.logged, self.indexed) = (next, log, index, 0, 0);
-        if let Some(gone) = next.checked_sub(self.retention.files) {
-            let (log_name, index_name) = log_segment(gone);
-            let _ = unlink_in(&self.dir, &index_name);
-            let _ = unlink_in(&self.dir, &log_name);
-        }
         Ok(())
     }
 
@@ -228,39 +225,6 @@ impl Logger {
     pub fn lost(&self) -> u64 {
         self.lost
     }
-}
-
-/// Opens `name` in the directory `dir` holds open, to append to; with `new`, made, this
-/// user's alone, and refused if it is there.
-#[cfg(unix)]
-fn open_in(dir: &fs::File, name: &str, new: bool) -> io::Result<fs::File> {
-    use std::os::fd::{AsRawFd as _, FromRawFd as _};
-    let name = std::ffi::CString::new(name)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a name with NUL"))?;
-    let mut flags = libc::O_WRONLY | libc::O_APPEND | libc::O_CLOEXEC;
-    if new {
-        flags |= libc::O_CREAT | libc::O_EXCL;
-    }
-    // SAFETY: openat(2) with a NUL-terminated name, relative to a directory held open.
-    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags, 0o600 as libc::c_uint) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: a descriptor just opened, owned by nothing else.
-    Ok(unsafe { fs::File::from_raw_fd(fd) })
-}
-
-/// Removes `name` from the directory `dir` holds open.
-#[cfg(unix)]
-fn unlink_in(dir: &fs::File, name: &str) -> io::Result<()> {
-    use std::os::fd::AsRawFd as _;
-    let name = std::ffi::CString::new(name)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a name with NUL"))?;
-    // SAFETY: unlinkat(2) with a NUL-terminated name, relative to a directory held open.
-    if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
 }
 
 /// Serves the guest: sends the command, relays stdio, and returns how the workload ended.
@@ -547,6 +511,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::segments::{log_segment, new_segment};
 
     /// A directory of its own, removed when dropped, whether its test passes or panics.
     struct Temp(std::path::PathBuf);
@@ -577,6 +542,12 @@ mod tests {
         Temp(dir)
     }
 
+    /// Segments made in `dir`, as the daemon makes a run's.
+    fn in_dir(dir: &Path, retention: LogRetention) -> NextSegment {
+        let dir = fs::File::open(dir).unwrap();
+        Box::new(move |seq| new_segment(&dir, seq, retention.files))
+    }
+
     fn append(path: &Path) -> fs::File {
         fs::OpenOptions::new()
             .create(true)
@@ -592,14 +563,11 @@ mod tests {
     fn a_logger_keeps_records_whole_or_counts_them_lost() {
         let dir = temp("keep");
         let (log, index) = (dir.join("log"), dir.join("log.idx"));
-        let opened = || fs::File::open(&dir).unwrap();
         let keep = LogRetention {
             size: u64::MAX,
             files: 1,
         };
-        append(&log);
-        append(&index);
-        let mut logger = Logger::new(opened(), keep).unwrap();
+        let mut logger = Logger::new(append(&log), append(&index), keep, in_dir(&dir, keep)).unwrap();
         logger.keep(LOG_STDOUT, b"a\n");
         logger.keep(LOG_STDERR, b"b");
         logger.keep(LOG_STDOUT, b"");
@@ -618,7 +586,7 @@ mod tests {
             } else {
                 (append(&log), fs::File::open(&index).unwrap())
             };
-            let mut logger = Logger::with(opened(), keep, l, i).unwrap();
+            let mut logger = Logger::new(l, i, keep, in_dir(&dir, keep)).unwrap();
             logger.keep(LOG_STDOUT, b"lost\n");
             assert_eq!(logger.lost(), 5, "{broken}");
             assert_eq!(
@@ -628,7 +596,7 @@ mod tests {
             );
             assert_eq!(fs::read(&index).unwrap(), entries, "{broken}: an entry left");
         }
-        let mut logger = Logger::new(opened(), keep).unwrap();
+        let mut logger = Logger::new(append(&log), append(&index), keep, in_dir(&dir, keep)).unwrap();
         logger.keep(LOG_STDOUT, b"c\n");
         assert_eq!(fs::read(&index).unwrap().len(), 24);
         assert_eq!(
@@ -646,10 +614,10 @@ mod tests {
     #[test]
     fn a_log_rotates_and_keeps_its_newest_segments() {
         let dir = temp("rotate");
-        append(&dir.join("log"));
-        append(&dir.join("log.idx"));
         let retention = LogRetention { size: 64, files: 3 };
-        let mut logger = Logger::new(fs::File::open(&dir).unwrap(), retention).unwrap();
+        let first = || (append(&dir.join("log")), append(&dir.join("log.idx")));
+        let (log, index) = first();
+        let mut logger = Logger::new(log, index, retention, in_dir(&dir, retention)).unwrap();
         // A first record past a segment's size is the first segment's, not an empty one's
         // successor's.
         logger.keep(LOG_STDOUT, &[b'_'; 70]);
@@ -657,9 +625,8 @@ mod tests {
         assert!(!dir.join("log.1").exists());
         fs::remove_file(dir.join("log")).unwrap();
         fs::remove_file(dir.join("log.idx")).unwrap();
-        append(&dir.join("log"));
-        append(&dir.join("log.idx"));
-        let mut logger = Logger::new(fs::File::open(&dir).unwrap(), retention).unwrap();
+        let (log, index) = first();
+        let mut logger = Logger::new(log, index, retention, in_dir(&dir, retention)).unwrap();
         // 13 + 20 bytes a record: one a segment, since a second would pass 64.
         for i in 0..10u8 {
             logger.keep(LOG_STDOUT, &[b'a' + i; 20]);

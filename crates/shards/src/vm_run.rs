@@ -80,8 +80,6 @@ struct Common {
     snapshot_dir: Option<PathBuf>,
     then: AfterSnapshot,
     vsock: Option<PathBuf>,
-    /// `--logs-in DIR`: where a warm VM's container logs are, which it may write in.
-    logs_in: Option<PathBuf>,
     workload: Options,
     /// Whether a workload option was given.
     workload_options: bool,
@@ -94,7 +92,6 @@ impl Common {
             snapshot_dir: None,
             then: AfterSnapshot::Stop,
             vsock: None,
-            logs_in: None,
             workload: Options::default(),
             workload_options: false,
         }
@@ -118,7 +115,6 @@ impl Common {
                 }
             }
             "--vsock" => self.vsock = Some(PathBuf::from(value("--vsock")?)),
-            "--logs-in" => self.logs_in = Some(PathBuf::from(value("--logs-in")?)),
             "--cwd" => {
                 let dir = PathBuf::from(value("--cwd")?);
                 if !dir.is_absolute() {
@@ -182,7 +178,6 @@ struct Run {
     cfg: Config,
     mode: Mode,
     workload: Options,
-    logs_in: Option<PathBuf>,
 }
 
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
@@ -252,7 +247,6 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             cfg,
             mode: Mode::Warm { rootfs, fd },
             workload: common.workload,
-            logs_in: common.logs_in,
         });
     }
     let mode = match rootfs {
@@ -266,7 +260,6 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         cfg,
         mode,
         workload: common.workload,
-        logs_in: common.logs_in,
     })
 }
 
@@ -275,7 +268,6 @@ struct Restore {
     workload: Options,
     /// `--warm FD`: the daemon's socket.
     warm: Option<i32>,
-    logs_in: Option<PathBuf>,
 }
 
 fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String> {
@@ -338,7 +330,6 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         cfg,
         workload: common.workload,
         warm,
-        logs_in: common.logs_in,
     })
 }
 
@@ -402,7 +393,7 @@ pub fn run_in(mut cfg: Config, rootfs: PathBuf, workload: &Options) -> ExitCode 
     };
     serve_workload(cfg.vsock.take(), source, move |vsock| {
         cfg.vsock = Some(vsock);
-        start(&cfg, None)
+        start(&cfg)
     })
 }
 
@@ -424,22 +415,21 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         mut cfg,
         mode,
         workload,
-        logs_in,
     } = match parsed(parse_run(args), RUN_USAGE) {
         Ok(run) => run,
         Err(code) => return code,
     };
     match mode {
-        Mode::Plain => supervise(start(&cfg, None), cfg.console, false),
+        Mode::Plain => supervise(start(&cfg), cfg.console, false),
         Mode::Template(rootfs) => {
             boot_into(&mut cfg, rootfs, true);
             // Restored copies dial the host through this device, served by whatever
             // restores them.
             cfg.vsock.get_or_insert_with(VsockHost::default);
-            supervise(start(&cfg, None), cfg.console, true)
+            supervise(start(&cfg), cfg.console, true)
         }
         Mode::Workload(rootfs) => run_in(cfg, rootfs, &workload),
-        Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd, logs_in),
+        Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd),
     }
 }
 
@@ -448,13 +438,12 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         mut cfg,
         workload,
         warm,
-        logs_in,
     } = match parsed(parse_restore(args), RESTORE_USAGE) {
         Ok(restore) => restore,
         Err(code) => return code,
     };
     if let Some(fd) = warm {
-        return warm_restore(cfg, fd, logs_in);
+        return warm_restore(cfg, fd);
     }
     if !workload.argv.is_empty() {
         cfg.console = Console::Discard;
@@ -467,10 +456,10 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         };
         return serve_workload(cfg.vsock.take(), source, move |vsock| {
             cfg.vsock = Some(vsock);
-            restore_vm(&cfg, None)
+            restore_vm(&cfg)
         });
     }
-    let started = restore_vm(&cfg, None);
+    let started = restore_vm(&cfg);
     if cfg.hold
         && let Ok((handle, _)) = &started
     {
@@ -501,7 +490,7 @@ enum Source<'a> {
 
 /// A warm VM's restore: `vm restore DIR --warm FD`.
 #[cfg(unix)]
-fn warm_restore(mut cfg: RestoreConfig, fd: i32, logs: Option<PathBuf>) -> ExitCode {
+fn warm_restore(mut cfg: RestoreConfig, fd: i32) -> ExitCode {
     let daemon = match crate::warm::Link::new(fd) {
         Ok(link) => link,
         Err(e) => {
@@ -512,19 +501,19 @@ fn warm_restore(mut cfg: RestoreConfig, fd: i32, logs: Option<PathBuf>) -> ExitC
     cfg.console = Console::Discard;
     serve_workload(None, Source::Warm(daemon), move |vsock| {
         cfg.vsock = Some(vsock);
-        restore_vm(&cfg, logs.as_deref())
+        restore_vm(&cfg)
     })
 }
 
 #[cfg(not(unix))]
-fn warm_restore(_: RestoreConfig, _: i32, _: Option<PathBuf>) -> ExitCode {
+fn warm_restore(_: RestoreConfig, _: i32) -> ExitCode {
     report("warm VMs need Unix sockets, which shards does not support on this platform yet");
     ExitCode::from(125)
 }
 
 /// A warm VM's boot: `vm run --rootfs IMAGE [--snapshot-dir DIR] --warm FD`.
 #[cfg(unix)]
-fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: i32, logs: Option<PathBuf>) -> ExitCode {
+fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: i32) -> ExitCode {
     let daemon = match crate::warm::Link::new(fd) {
         Ok(link) => link,
         Err(e) => {
@@ -537,12 +526,12 @@ fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: i32, logs: Option<PathBuf>) -
     cfg.console = Console::Discard;
     serve_workload(None, Source::Warm(daemon), move |vsock| {
         cfg.vsock = Some(vsock);
-        start(&cfg, logs.as_deref())
+        start(&cfg)
     })
 }
 
 #[cfg(not(unix))]
-fn warm_boot(_: Config, _: PathBuf, _: i32, _: Option<PathBuf>) -> ExitCode {
+fn warm_boot(_: Config, _: PathBuf, _: i32) -> ExitCode {
     report("warm VMs need Unix sockets, which shards does not support on this platform yet");
     ExitCode::from(125)
 }
@@ -848,9 +837,9 @@ fn max_rss_kib() -> u64 {
 }
 
 /// Starts the VM `cfg` describes, once this process is confined to the files it names, the
-/// snapshot directory it saves to, its vsock socket and `logs`: on Linux by Landlock, on
-/// macOS by what its spawner grants it (D30).
-fn start(cfg: &Config, logs: Option<&Path>) -> Result<(Handle, Running), String> {
+/// snapshot directory it saves to and its vsock socket: on Linux by Landlock, on macOS by
+/// what its spawner grants it (D30). A warm VM's container log comes open from its daemon.
+fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     // Whole paths: grants and Landlock's rules name each file whole, a VM on macOS runs in
     // its sandbox's container rather than the caller's directory, and a snapshot records
     // its files by absolute path anyway.
@@ -865,8 +854,7 @@ fn start(cfg: &Config, logs: Option<&Path>) -> Result<(Handle, Running), String>
     {
         *path = absolute(path)?;
     }
-    let logs = logs.map(absolute).transpose()?;
-    let (cfg, logs) = (&cfg, logs.as_deref());
+    let cfg = &cfg;
     let mut paths = crate::confine::Paths::default();
     paths.read.push(cfg.kernel.clone());
     paths.read.extend(cfg.initrd.iter().cloned());
@@ -884,7 +872,6 @@ fn start(cfg: &Config, logs: Option<&Path>) -> Result<(Handle, Running), String>
         &mut paths,
         cfg.snapshot.as_ref().map(|p| p.dir.as_path()),
         cfg.vsock.as_ref().and_then(|v| v.path.as_deref()),
-        logs,
     );
     // A host that runs no VM says so, before its files are confined: the check reads no
     // input of the VM's.
@@ -894,7 +881,7 @@ fn start(cfg: &Config, logs: Option<&Path>) -> Result<(Handle, Running), String>
 }
 
 /// [`start`] for a restore: the snapshot's directory, and the files it restores against.
-fn restore_vm(cfg: &RestoreConfig, logs: Option<&Path>) -> Result<(Handle, Running), String> {
+fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     let mut cfg = cfg.clone();
     for path in std::iter::once(&mut cfg.dir)
         .chain(cfg.snapshot.as_mut().map(|p| &mut p.dir))
@@ -902,8 +889,7 @@ fn restore_vm(cfg: &RestoreConfig, logs: Option<&Path>) -> Result<(Handle, Runni
     {
         *path = absolute(path)?;
     }
-    let logs = logs.map(absolute).transpose()?;
-    let (cfg, logs) = (&cfg, logs.as_deref());
+    let cfg = &cfg;
     // A host that runs no VM says so, before its files are confined: the check reads no
     // input of the VM's.
     vm::check_host()?;
@@ -926,7 +912,6 @@ fn restore_vm(cfg: &RestoreConfig, logs: Option<&Path>) -> Result<(Handle, Runni
         &mut paths,
         cfg.snapshot.as_ref().map(|p| p.dir.as_path()),
         cfg.vsock.as_ref().and_then(|v| v.path.as_deref()),
-        logs,
     );
     confine(&paths)?;
     vm::restore(cfg)
@@ -944,14 +929,9 @@ fn absolute(path: &Path) -> Result<PathBuf, String> {
 /// Sandbox starts a VM process in its container instead.
 static CWD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// The directories a VM writes in: the snapshot it saves and a warm VM's container logs;
-/// and the one holding the vsock socket path it was given, if any.
-fn written(
-    paths: &mut crate::confine::Paths,
-    snapshot: Option<&Path>,
-    vsock: Option<&Path>,
-    logs: Option<&Path>,
-) {
+/// The directory a VM writes in, the snapshot it saves, and the one holding the vsock
+/// socket path it was given, if any.
+fn written(paths: &mut crate::confine::Paths, snapshot: Option<&Path>, vsock: Option<&Path>) {
     paths.write_under.extend(snapshot.map(Path::to_path_buf));
     // Landlock holds a directory by its inode, so the one a snapshot goes to is made now,
     // as its snapshot would make it (confine.rs, `landlock`). On macOS the spawner makes it
@@ -968,7 +948,6 @@ fn written(
     paths
         .sockets_under
         .extend(vsock.and_then(Path::parent).map(Path::to_path_buf));
-    paths.write_under.extend(logs.map(Path::to_path_buf));
 }
 
 /// The socket this VM asks its spawner for access on (`--grants FD`): one a process, as

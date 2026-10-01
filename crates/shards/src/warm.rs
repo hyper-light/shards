@@ -15,8 +15,9 @@
 
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
+use std::sync::mpsc;
 
 use shards_abi::run::Spec;
 use shards_ipc::kind;
@@ -132,9 +133,19 @@ pub fn receive(link: &Link, to: &'static ToGuest) -> Result<Request, String> {
     } else {
         (File::from(next()?), File::from(next()?))
     };
+    // The log's first segment; the daemon makes the rest, as this VM reaches no
+    // container's directory (D30), and its answers arrive with its signals.
+    let (segments, answers) = mpsc::channel();
     let log = if detached || logged {
-        let dir = File::from(next()?);
-        Some(workload::Logger::new(dir, retention).map_err(|e| format!("the container's log: {e}"))?)
+        let (log, index) = (File::from(next()?), File::from(next()?));
+        let asker = daemon
+            .try_clone()
+            .map_err(|e| format!("the daemon's connection: {e}"))?;
+        let next = segments_from(asker, answers);
+        Some(
+            workload::Logger::new(log, index, retention, next)
+                .map_err(|e| format!("the container's log: {e}"))?,
+        )
     } else {
         None
     };
@@ -173,17 +184,17 @@ pub fn receive(link: &Link, to: &'static ToGuest) -> Result<Request, String> {
     let from_daemon = daemon
         .try_clone()
         .map_err(|e| format!("the daemon's connection: {e}"))?;
-    let mut relays = vec![("daemon-signals", from_daemon, false)];
+    let mut relays = vec![("daemon-signals", from_daemon, From::Daemon(segments))];
     if let Some(client) = &client {
         let signals = client
             .try_clone()
             .map_err(|e| format!("the client's connection: {e}"))?;
-        relays.push(("client-signals", signals, true));
+        relays.push(("client-signals", signals, From::Client));
     }
-    for (name, conn, client) in relays {
+    for (name, conn, from) in relays {
         std::thread::Builder::new()
             .name(name.into())
-            .spawn(move || relay_signals(&conn, to, client))
+            .spawn(move || relay_signals(&conn, to, from))
             .map_err(|e| format!("{name} thread: {e}"))?;
     }
     Ok(Request {
@@ -195,13 +206,53 @@ pub fn receive(link: &Link, to: &'static ToGuest) -> Result<Request, String> {
     })
 }
 
+/// A log's next segments, asked of the daemon on `daemon`, whose answers the daemon's relay
+/// passes to `answers`: none once the daemon has gone.
+fn segments_from(daemon: UnixStream, answers: mpsc::Receiver<Segment>) -> workload::NextSegment {
+    Box::new(move |seq| {
+        shards_ipc::send(&daemon, kind::LOG_SEGMENT, &seq.to_be_bytes(), &[])?;
+        loop {
+            let (answered, fds) = answers
+                .recv()
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "the daemon has gone"))?;
+            // One ask is answered at a time; an answer to another is not this one's.
+            if answered != seq {
+                continue;
+            }
+            let mut fds = fds.into_iter();
+            return match (fds.next(), fds.next(), fds.next()) {
+                (Some(log), Some(index), None) => Ok((File::from(log), File::from(index))),
+                _ => Err(io::Error::other(format!("the daemon made no log segment {seq}"))),
+            };
+        }
+    })
+}
+
+/// The daemon's answer to a `LOG_SEGMENT`: the segment's number, and its log and index.
+type Segment = (u64, Vec<OwnedFd>);
+
+/// Whose connection a relay reads.
+enum From {
+    /// The daemon's, which also brings its answers for the log, passed on here.
+    Daemon(mpsc::Sender<Segment>),
+    Client,
+}
+
 /// Passes the signals that arrive on `conn` to the workload until it closes: the client's,
 /// or the daemon's (`shards stop`, `kill`), and the client's terminal sizes. When the
 /// client hangs up, the VM lets go of its stdio. A workload outlives its client, as a
 /// container outlives `docker run`'s.
-fn relay_signals(conn: &UnixStream, to: &ToGuest, client: bool) {
+fn relay_signals(conn: &UnixStream, to: &ToGuest, from: From) {
+    let client = matches!(from, From::Client);
     while let Ok(Some(message)) = shards_ipc::recv(conn) {
         match message.kind {
+            kind::SEGMENT => {
+                if let (From::Daemon(segments), Ok(seq)) =
+                    (&from, <[u8; 8]>::try_from(message.payload.as_slice()))
+                {
+                    let _ = segments.send((u64::from_be_bytes(seq), message.fds));
+                }
+            }
             kind::SIGNAL => {
                 if let Ok(signal) = <[u8; 4]>::try_from(message.payload.as_slice()) {
                     workload::signal_guest(to, u32::from_be_bytes(signal));

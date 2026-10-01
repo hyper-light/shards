@@ -16,6 +16,10 @@ mod grant;
 #[cfg(target_os = "macos")]
 #[path = "../../grant_ask.rs"]
 mod grant_ask;
+// Made by the daemon alone; the logger's tests make them as it does.
+#[cfg(all(test, unix))]
+#[path = "../../segments.rs"]
+mod segments;
 #[path = "../../spec.rs"]
 mod spec;
 #[path = "../../terminal.rs"]

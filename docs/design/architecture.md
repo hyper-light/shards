@@ -1047,7 +1047,12 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
     directory and open log, made after the last handover.
 - **Output.** Every run writes its output to the container's log, as records of stream,
   time and bytes, in the order they arrived (`workload.rs`); `--rm` takes the log with
-  the container.
+  the container. The VM reaches no container's directory: the request brings its log's
+  first segment open, and the daemon makes each next one as the VM asks
+  (`kind::LOG_SEGMENT`, `segments.rs`). Before, every warm VM could write the whole
+  `containers` directory, every container's log and record, since a pooled VM cannot know
+  its container ahead; and on macOS its grant cost each warm VM's start about 4.5 ms
+  [PM M73].
 - **The guest says when the command started** (`STARTED`), before any output, so a
   container is running only once its command is.
 - **Detached runs** (`-d`). The ID goes to stdout once the container exists, before its
@@ -1382,7 +1387,7 @@ audit's "Security and test coverage").
   - Every filesystem right Landlock's ABI v5 knows is handled, TCP bind and connect are
     refused, and on ABI v6 signals and abstract Unix sockets outside the process are too.
     Allowed: its kernel, initrd, init, pmem and disks, a restore's snapshot and the files it
-    records, the snapshot directory it saves and a warm VM's container logs, sockets made
+    records, the snapshot directory it saves, sockets made
     only beside a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and `/dev/kvm` and the
     huge page settings where the host has them. No directory may take a file from another
     (`REFER`). Rules hold inodes: a template keeps its rule when the daemon renames it.
@@ -1403,8 +1408,8 @@ audit's "Security and test coverage").
     spawner, on a socket of its own (`--grants`), for what its arguments name, and reaches
     nothing else: a file it reads as a descriptor opened read-only, since a bookmark passed
     between processes grants read and write or nothing [PM M70]; a file it writes as a
-    descriptor opened read-write; a directory it writes in (a template it saves, a warm
-    VM's container logs) by a read-write bookmark, made first; a restore's template file
+    descriptor opened read-write; the directory a template it saves goes in by a
+    read-write bookmark, made first; a restore's template file
     by file, never its directory. Only for a `--vsock PATH` of the user's, the spawner
     binds the device's socket for it to listen on, and dials each host port its guest
     connects to, handing the connection over.

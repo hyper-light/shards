@@ -112,6 +112,14 @@ pub mod kind {
     /// big-endian u32, on the socket `<path>_<port>` beside the vsock path it was granted
     /// to listen at. Answered with a `GRANTED` carrying the connection, or an `ERR`.
     pub const DIAL: u8 = 20;
+    /// Warm VM → daemon, as its run's log fills a segment: the next segment's sequence
+    /// number, a big-endian u64, which the daemon makes in the run's container and removes
+    /// the oldest past the retention. Answered with a `SEGMENT` carrying the new segment's
+    /// log and index, in that order, or none where it could not be made. A VM reaches no
+    /// container's directory itself (D30).
+    pub const LOG_SEGMENT: u8 = 21;
+    /// Daemon → warm VM: the answer to its `LOG_SEGMENT`.
+    pub const SEGMENT: u8 = 22;
 }
 
 /// A container command as the client asks for it (`kind::CONTAINER`): its name and the

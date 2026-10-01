@@ -79,9 +79,11 @@ the median, as the Seatbelt profile's compiling cost 3.7 ms [PM M53].
   VM asks its spawner, before it opens anything, for each path its arguments name
   (`kind::GRANT`); each file it reads or writes is answered with a descriptor the spawner
   opened read-only or read-write, which the VM opens again as itself (a registry in the
-  VMM from path to descriptor, which every open of an input goes through), and each
-  directory it writes in (a template it saves, its container's logs, both its own) with
-  a read-write bookmark, made first by the spawner. A restore asks for its template's
+  VMM from path to descriptor, which every open of an input goes through), and the
+  directory a template it saves goes in, its own, with a read-write bookmark, made first by
+  the spawner. A warm VM's container log comes open in its request, and the daemon makes
+  each next segment for it [PM M73]: resolving a bookmark is a VM process's first use of
+  CoreFoundation, 4 ms. A restore asks for its template's
   pointer, then the generation's state, memory and working set, then the files the
   state names: no directory of a template is ever granted. The descriptors pin what they
   open, as the generation's directory does where a VM opens by path (Linux).

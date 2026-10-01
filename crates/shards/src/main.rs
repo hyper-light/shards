@@ -23,6 +23,8 @@ mod kernel;
 mod names;
 mod pull;
 mod run;
+#[cfg(unix)]
+mod segments;
 mod spec;
 
 const USAGE: &str = "usage: shards <command> [args...]

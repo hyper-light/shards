@@ -35,7 +35,8 @@ mod commands;
 mod demand;
 mod logs;
 use crate::run::{Boot, Prepared};
-use crate::spec::{LogRetention, NOT_RUN, log_segment};
+use crate::segments::log_segment;
+use crate::spec::{LogRetention, NOT_RUN};
 
 const USAGE: &str = "usage: shards daemon [--detached | stop]
   Serves `shards run` from warm microVMs; `shards run` starts one when none is running.
@@ -217,6 +218,10 @@ struct Inbox {
     working_set: WorkingSet,
     /// The most bytes it may take, read from the template at its first part.
     working_set_limit: Option<u64>,
+    /// The run's container's directory, and the log segment the VM writes there, which
+    /// the daemon made.
+    container: PathBuf,
+    segment: u64,
 }
 
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
@@ -1082,7 +1087,7 @@ impl<D: Disk> Daemon<D> {
         } else {
             vec![conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()]
         };
-        fds.push(container_log.dir.as_fd());
+        fds.extend([container_log.log.as_fd(), container_log.index.as_fd()]);
         // The flags, the retention's two u64s, then the spec, in one allocation (audit D10).
         let mut payload = Vec::with_capacity(17 + prepared.spec.encoded_len().unwrap_or(0));
         payload.push(flags);
@@ -1529,6 +1534,8 @@ impl<D: Disk> Daemon<D> {
             records: ready.records,
             working_set: WorkingSet::default(),
             working_set_limit: None,
+            container: lock(&self.containers).dir(id),
+            segment: 0,
         }));
         let tracked = Tracked {
             socket,
@@ -1576,11 +1583,48 @@ impl<D: Disk> Daemon<D> {
                 Ok(Some(m)) if m.kind == kind::DONE => self.run_ended(id, &mut inbox, Some(&m.payload)),
                 Ok(Some(m)) if m.kind == kind::LOST => self.log_lost(id, &m.payload),
                 Ok(Some(m)) if m.kind == kind::WORKING_SET => working_set_part(id, &mut inbox, &m.payload),
+                Ok(Some(m)) if m.kind == kind::LOG_SEGMENT => self.make_segment(id, &mut inbox, &m.payload),
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => self.run_ended(id, &mut inbox, None),
             }
         }
         inbox.ended
+    }
+
+    /// Makes the log segment run `id`'s VM asks for, the one after the last made, in its
+    /// container, and answers with its files, or with none where it is not that one or
+    /// cannot be made: the VM then keeps no more output (workload.rs, `Logger`).
+    fn make_segment(&self, id: &str, inbox: &mut Inbox, payload: &[u8]) {
+        let asked = <[u8; 8]>::try_from(payload).ok().map(u64::from_be_bytes);
+        let next = inbox.segment.checked_add(1);
+        let made = match asked {
+            Some(seq) if Some(seq) == next => File::open(&inbox.container)
+                .and_then(|d| crate::segments::new_segment(&d, seq, self.logs.files))
+                .map_err(|e| log(format!("container {id}: log segment {seq}: {e}")))
+                .ok(),
+            _ => {
+                log(format!(
+                    "container {id}: a VM asked for a log segment out of turn"
+                ));
+                None
+            }
+        };
+        let seq = asked.unwrap_or_default();
+        let sent = match &made {
+            Some((log, index)) => {
+                inbox.segment = seq;
+                shards_ipc::send(
+                    &inbox.socket,
+                    kind::SEGMENT,
+                    &seq.to_be_bytes(),
+                    &[log.as_fd(), index.as_fd()],
+                )
+            }
+            None => shards_ipc::send(&inbox.socket, kind::SEGMENT, &seq.to_be_bytes(), &[]),
+        };
+        if let Err(e) = sent {
+            log(format!("container {id}: answering for its log: {e}"));
+        }
     }
 
     /// Takes what every run has sent, so that what a command answers includes all that
@@ -1994,16 +2038,8 @@ impl<D: Disk> Daemon<D> {
         let Some(pool) = pools.get_mut(dir) else {
             return;
         };
-        // Its container logs are the only files of the home it writes (D30).
-        let logs = self.home.join("containers");
-        let args: Vec<OsString> = vec![
-            "restore".into(),
-            dir.into(),
-            "--warm".into(),
-            "3".into(),
-            "--logs-in".into(),
-            logs.into(),
-        ];
+        // It writes no file of the home: the daemon gives it its container's log (D30).
+        let args: Vec<OsString> = vec!["restore".into(), dir.into(), "--warm".into(), "3".into()];
         for _ in 0..for_runs + ahead {
             match self.start(threads, &args, For::Pool(dir.to_path_buf())) {
                 Ok(vm) => {
@@ -2207,12 +2243,7 @@ impl<D: Disk> Daemon<D> {
         if let Some(fresh) = save {
             args.extend(["--snapshot-dir".into(), fresh.into()]);
         }
-        args.extend([
-            "--warm".into(),
-            "3".into(),
-            "--logs-in".into(),
-            self.home.join("containers").into(),
-        ]);
+        args.extend(["--warm".into(), "3".into()]);
         let (tx, rx) = mpsc::channel();
         self.start(threads, &args, For::Run(tx))?;
         // A VM given up on ends as its socket closes, the daemon's end dropped with it.
@@ -2403,10 +2434,13 @@ fn taken(vm: &UnixStream) -> Result<(), Untaken> {
     }
 }
 
-/// A container's directory, where its run's VM writes its log (spec.rs, `LOG_STDOUT`).
+/// The first segment of a container's log (spec.rs, `LOG_STDOUT`), its log and index,
+/// which its run's VM appends to; the daemon makes the rest as the VM asks
+/// (`kind::LOG_SEGMENT`).
 #[derive(Debug)]
 struct Log {
-    dir: File,
+    log: File,
+    index: File,
 }
 
 /// A new container's directory `dir`, with its log's first segment and that segment's
@@ -2416,17 +2450,19 @@ fn new_log(dir: &Path) -> io::Result<Log> {
     // In the home's `containers`, which is there while the home is: a daemon whose home
     // was removed never makes it again.
     std::fs::DirBuilder::new().mode(0o700).create(dir)?;
-    // Its log, then its index, which says the segment is there (spec.rs, `log_segment`).
+    // Its log, then its index, which says the segment is there (segments.rs).
     let (log, index) = log_segment(0);
-    for name in [log, index] {
+    let made = |name: String| {
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
-            .open(dir.join(name))?;
-    }
+            .open(dir.join(name))
+    };
+    let log = made(log)?;
     Ok(Log {
-        dir: File::open(dir)?,
+        log,
+        index: made(index)?,
     })
 }
 
@@ -3981,6 +4017,57 @@ mod tests {
             let (status, _, err) = ask(&t.daemon, &["logs", "gone"]);
             assert_eq!(status, 1, "{err}");
             assert!(err.contains("its log"), "{err}");
+        });
+    }
+
+    /// A run's VM is given each log segment it asks for, in turn, made in its container,
+    /// and nothing for one out of turn; past the retention the oldest goes. No VM reaches a
+    /// container's directory (D30): the daemon makes its segments.
+    #[test]
+    fn a_runs_log_segments_are_made_in_turn() {
+        use std::io::Write as _;
+        let t = Test::new("segments");
+        t.run(|t| {
+            let (id, starting, vm) = running(t, "rotating");
+            let dir = lock(&t.daemon.containers).dir(&id);
+            vm.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let ask = |seq: u64| {
+                say(&vm, kind::LOG_SEGMENT, &seq.to_be_bytes());
+                let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                assert_eq!(m.kind, kind::SEGMENT);
+                assert_eq!(m.payload, seq.to_be_bytes(), "the answer names its segment");
+                m.fds
+            };
+            assert!(ask(2).is_empty(), "segment 2 before 1");
+            let files = t.daemon.logs.files;
+            for seq in 1..=files + 1 {
+                let fds = ask(seq);
+                assert_eq!(fds.len(), 2, "segment {seq}");
+                let mut fds = fds.into_iter();
+                let (mut log, mut index) = (File::from(fds.next().unwrap()), File::from(fds.next().unwrap()));
+                log.write_all(b"record").unwrap();
+                index.write_all(&[0; 8]).unwrap();
+                let (l, i) = log_segment(seq);
+                assert_eq!(
+                    std::fs::read(dir.join(l)).unwrap(),
+                    b"record",
+                    "segment {seq}'s log"
+                );
+                assert_eq!(
+                    std::fs::read(dir.join(i)).unwrap(),
+                    [0; 8],
+                    "segment {seq}'s index"
+                );
+                assert!(ask(seq).is_empty(), "segment {seq} again");
+            }
+            let (l, i) = log_segment(1);
+            assert!(
+                !dir.join(l).exists() && !dir.join(i).exists(),
+                "the oldest past the retention"
+            );
+            say(&vm, kind::DONE, &[0]);
+            drop(vm);
+            let _ = starting.run.join();
         });
     }
 }

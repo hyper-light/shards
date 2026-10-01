@@ -16,7 +16,8 @@ use std::path::Path;
 
 use shards_vmm::platform;
 
-use crate::spec::{INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT, log_segment};
+use crate::segments::log_segment;
+use crate::spec::{INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT};
 
 /// A log's first segment, and its index, in its container's directory.
 pub const LOG: &str = "log";
@@ -59,7 +60,7 @@ struct Record {
     len: u64,
 }
 
-/// A container's log: its directory, where its segments are (spec.rs, `log_segment`),
+/// A container's log: its directory, where its segments are (segments.rs),
 /// held open wherever it goes.
 #[derive(Debug)]
 pub struct LogFile {

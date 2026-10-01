@@ -129,20 +129,6 @@ pub const INDEX_START: u64 = INDEX_LINE - 1;
 /// A record's bytes before its output.
 pub const LOG_HEAD: u64 = 13;
 
-/// A log's segments (audit A12): the first `log` and `log.idx`, then `log.1` and
-/// `log.1.idx`, and on. A writer starts the next once the last would pass
-/// [`LogRetention::size`] bytes, and removes the oldest past [`LogRetention::files`]. A
-/// segment is there once its index is: it is made after its log, and removed before it.
-/// Nothing is renamed, so a reader never pairs one segment's log with another's index,
-/// and a segment's successor there says it is whole.
-pub fn log_segment(seq: u64) -> (String, String) {
-    if seq == 0 {
-        ("log".into(), "log.idx".into())
-    } else {
-        (format!("log.{seq}"), format!("log.{seq}.idx"))
-    }
-}
-
 /// How much of a container's output its log keeps: `files` segments of `size` bytes at
 /// most, the oldest removed first, as its daemon's settings say (daemon.rs, `Settings`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
