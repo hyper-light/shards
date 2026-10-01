@@ -11,6 +11,8 @@
 #   images of images.json) BuildKit makes of the corpus;
 # - crates/dockerfile/testdata/configs-answers.json, what Go's encoding/json makes of each
 #   image config in configs.json, read into BuildKit's DockerOCIImage and written back;
+# - crates/dockerfile/testdata/sizes-answers.json and urls-answers.json, what go-units,
+#   net/url and BuildKit's git URL parsing make of sizes.json and urls.json;
 # - crates/dockerfile/src/tables.rs, Go's character classes the parser and lexer use.
 #
 #   scripts/dockerfile/generate [BUILDKIT_CHECKOUT]

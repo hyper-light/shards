@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"errors"
 	"fmt"
 	"os"
@@ -25,6 +26,8 @@ import (
 
 	"github.com/docker/go-units"
 	"github.com/moby/buildkit/client/llb/sourceresolver"
+	"github.com/moby/buildkit/frontend/dockerfile/dfgitutil"
+	"github.com/moby/buildkit/util/gitutil"
 	"github.com/moby/buildkit/frontend/dockerfile/dockerfile2llb"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/moby/buildkit/frontend/dockerui"
@@ -678,6 +681,55 @@ func sizesFile(testdata string) {
 	writeJSON(filepath.Join(testdata, "sizes-answers.json"), out)
 }
 
+// What Go's net/url, BuildKit's gitutil.ParseURL and dfgitutil.ParseGitRef make of each
+// source in urls.json, as ADD reads its sources.
+func urlsFile(testdata string) {
+	data, err := os.ReadFile(filepath.Join(testdata, "urls.json"))
+	if err != nil {
+		panic(err)
+	}
+	var cases []string
+	if err := json.Unmarshal(data, &cases); err != nil {
+		panic(err)
+	}
+	var out []map[string]any
+	for _, c := range cases {
+		r := map[string]any{"input": c}
+		if u, err := url.Parse(c); err != nil {
+			r["url_error"] = q(err.Error())
+		} else {
+			user := ""
+			if u.User != nil {
+				user = u.User.String() + "@"
+			}
+			r["url"] = map[string]any{
+				"scheme": u.Scheme, "opaque": u.Opaque, "user": user, "host": u.Host, "path": u.Path,
+				"raw_path": u.RawPath, "raw_query": u.RawQuery, "fragment": u.Fragment, "string": u.String(),
+			}
+		}
+		if g, err := gitutil.ParseURL(c); err != nil {
+			r["git_url_error"] = q(err.Error())
+		} else {
+			r["git_url"] = map[string]any{"scheme": g.Scheme, "host": g.Host, "path": g.Path, "remote": g.Remote, "opts": g.Opts != nil}
+		}
+		ref, isGit, err := dfgitutil.ParseGitRef(c)
+		r["is_git"] = isGit
+		if err != nil && isGit {
+			r["git_ref_error"] = q(err.Error())
+		} else if err == nil {
+			r["git_ref"] = map[string]any{
+				"remote": ref.Remote, "short_name": ref.ShortName, "ref": ref.Ref, "checksum": ref.Checksum,
+				"subdir": ref.SubDir, "local": ref.IndistinguishableFromLocal, "tcp": ref.UnencryptedTCP,
+				"keep": fmt.Sprint(ref.KeepGitDir != nil && *ref.KeepGitDir, ref.KeepGitDir != nil),
+				"submodules": fmt.Sprint(ref.Submodules != nil && *ref.Submodules, ref.Submodules != nil),
+				"mtime": ref.MTime, "fetch_by_commit": ref.FetchByCommit,
+			}
+		}
+		out = append(out, r)
+	}
+	writeJSON(filepath.Join(testdata, "urls-answers.json"), out)
+}
+
 func writeJSON(path string, v any) {
 	b, err := json.MarshalIndent(v, "", " ")
 	if err != nil {
@@ -728,6 +780,7 @@ func main() {
 	writeJSON(filepath.Join(testdata, "plan.json"), plans)
 	configsFile(testdata)
 	sizesFile(testdata)
+	urlsFile(testdata)
 
 	cases := buildkitCases(filepath.Join(testdata, "buildkit/shell"))
 	extra, err := os.ReadFile(filepath.Join(testdata, "lex-cases.json"))

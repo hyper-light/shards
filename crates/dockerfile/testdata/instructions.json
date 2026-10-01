@@ -9911,6 +9911,316 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/add-remote.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://example.com/files/app.tar.gz /opt/\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/opt/\"",
+       "paths": [
+        "\"https://example.com/files/app.tar.gz\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "checksum": "\"sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d https://example.com/x /x\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/x\"",
+       "paths": [
+        "\"https://example.com/x\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"644\"",
+      "chown": "\"1:1\"",
+      "code": "\"ADD --chmod=644 --chown=1:1 http://example.com/ /root-file\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/root-file\"",
+       "paths": [
+        "\"http://example.com/\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --unpack=true https://example.com/a.tar /a\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/a\"",
+       "paths": [
+        "\"https://example.com/a.tar\""
+       ]
+      },
+      "unpack": true
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://github.com/moby/buildkit.git#v0.12.0:docs /docs\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/docs\"",
+       "paths": [
+        "\"https://github.com/moby/buildkit.git#v0.12.0:docs\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --keep-git-dir=true https://github.com/moby/buildkit.git?ref=main\u0026subdir=frontend /fe\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": true,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/fe\"",
+       "paths": [
+        "\"https://github.com/moby/buildkit.git?ref=main\u0026subdir=frontend\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://example.com/r.git?branch=dev\u0026submodules=false\u0026fetch-by-commit /r\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        8,
+        8
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/r\"",
+       "paths": [
+        "\"https://example.com/r.git?branch=dev\u0026submodules=false\u0026fetch-by-commit\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD git@nonexistent.invalid:org/repo.git#main /ssh\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        9,
+        9
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/ssh\"",
+       "paths": [
+        "\"git@nonexistent.invalid:org/repo.git#main\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "checksum": "\"0123456789abcdef\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --checksum=0123456789abcdef https://example.com/r.git /sum\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        10,
+        10
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/sum\"",
+       "paths": [
+        "\"https://example.com/r.git\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD git://example.com/r.git /plain\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        11,
+        11
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/plain\"",
+       "paths": [
+        "\"git://example.com/r.git\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD github.com/moby/buildkit /looks-local\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        12,
+        12
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/looks-local\"",
+       "paths": [
+        "\"github.com/moby/buildkit\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/args-build.Dockerfile",
   "meta_args": [
    {
@@ -11914,6 +12224,354 @@
        "cmd_line_nil": false,
        "files": null,
        "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-add-checksum-bad.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "checksum": "\"md5:abc\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --checksum=md5:abc https://example.com/f /f\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/f\"",
+       "paths": [
+        "\"https://example.com/f\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-add-checksum-local.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "checksum": "\"sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d local /l\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/l\"",
+       "paths": [
+        "\"local\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-add-checksum-mismatch.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "checksum": "\"aaa\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --checksum=aaa https://example.com/r.git?checksum=bbb /r\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/r\"",
+       "paths": [
+        "\"https://example.com/r.git?checksum=bbb\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-add-git-copy.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY https://example.com/r.git /r\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/r\"",
+       "paths": [
+        "\"https://example.com/r.git\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-add-git-query.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://example.com/r.git?bogus=1 /r\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/r\"",
+       "paths": [
+        "\"https://example.com/r.git?bogus=1\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-add-keep-inconsistent.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --keep-git-dir=false https://example.com/r.git?keep-git-dir /r\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": false,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/r\"",
+       "paths": [
+        "\"https://example.com/r.git?keep-git-dir\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/err-add-url-copy.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY https://example.com/f /f\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/f\"",
+       "paths": [
+        "\"https://example.com/f\""
+       ]
       }
      }
     ],

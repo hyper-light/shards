@@ -1018,3 +1018,84 @@ fn plans_are_buildkits() {
         failures.join("\n")
     );
 }
+
+/// Sources read as Go's net/url, BuildKit's gitutil.ParseURL and dfgitutil.ParseGitRef
+/// read them: every case of testdata/urls.json.
+#[test]
+fn urls_read_as_gos() {
+    use shards_dockerfile::{git, url};
+    let s = |b: &[u8]| String::from_utf8(b.to_vec()).unwrap();
+    let mut failures = Vec::new();
+    for want in load("urls-answers.json").as_array().unwrap() {
+        let input = want["input"].as_str().unwrap();
+        let b = input.as_bytes();
+        let mut got = serde_json::Map::new();
+        got.insert("input".into(), input.into());
+        match url::parse(b) {
+            Err(e) => {
+                got.insert("url_error".into(), quote(&e).into());
+            }
+            Ok(u) => {
+                let user = u
+                    .user
+                    .as_ref()
+                    .map(|x| format!("{}@", s(&url::userinfo_string(x))))
+                    .unwrap_or_default();
+                got.insert(
+                    "url".into(),
+                    serde_json::json!({
+                        "scheme": s(&u.scheme), "opaque": s(&u.opaque), "user": user, "host": s(&u.host),
+                        "path": s(&u.path), "raw_path": s(&u.raw_path), "raw_query": s(&u.raw_query),
+                        "fragment": s(&u.fragment), "string": s(&u.string()),
+                    }),
+                );
+            }
+        }
+        match git::parse_url(b) {
+            Err(git::UrlError::UnknownProtocol) => {
+                got.insert("git_url_error".into(), quote(b"unknown protocol").into());
+            }
+            Err(git::UrlError::Other(e)) => {
+                got.insert("git_url_error".into(), quote(&e).into());
+            }
+            Ok(g) => {
+                got.insert(
+                    "git_url".into(),
+                    serde_json::json!({"scheme": s(&g.scheme), "host": s(&g.host), "path": s(&g.path), "remote": s(&g.remote), "opts": g.opts.is_some()}),
+                );
+            }
+        }
+        match git::parse_git_ref(b) {
+            git::Parsed::NotGit => {
+                got.insert("is_git".into(), false.into());
+            }
+            git::Parsed::BadGit(e) => {
+                got.insert("is_git".into(), true.into());
+                got.insert("git_ref_error".into(), quote(&e).into());
+            }
+            git::Parsed::Git(r) => {
+                got.insert("is_git".into(), true.into());
+                let pair = |o: Option<bool>| format!("{} {}", o == Some(true), o.is_some());
+                got.insert(
+                    "git_ref".into(),
+                    serde_json::json!({
+                        "remote": s(&r.remote), "short_name": s(&r.short_name), "ref": s(&r.reference),
+                        "checksum": s(&r.checksum), "subdir": s(&r.subdir), "local": r.indistinguishable_from_local,
+                        "tcp": r.unencrypted_tcp, "keep": pair(r.keep_git_dir), "submodules": pair(r.submodules),
+                        "mtime": s(&r.mtime), "fetch_by_commit": r.fetch_by_commit,
+                    }),
+                );
+            }
+        }
+        let got = Value::Object(got);
+        if &got != want {
+            failures.push(format!("{input:?}\n  got:  {got}\n  want: {want}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of the sources differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}

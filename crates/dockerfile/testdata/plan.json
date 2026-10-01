@@ -1,5 +1,593 @@
 [
  {
+  "file": "corpus/plan/add-remote.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ADD https://example.com/files/app.tar.gz /opt/ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://example.com/x /x # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD --chown=1:1 --chmod=644 http://example.com/ /root-file # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://example.com/a.tar /a # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://github.com/moby/buildkit.git#v0.12.0:docs /docs # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://github.com/moby/buildkit.git?ref=main\\u0026subdir=frontend /fe # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://example.com/r.git?branch=dev\\u0026submodules=false\\u0026fetch-by-commit /r # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD git@nonexistent.invalid:org/repo.git#main /ssh # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://example.com/r.git /sum # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD git://example.com/r.git /plain # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD github.com/moby/buildkit /looks-local # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[ 1/12] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "",
+      "llb.customname": "[ 2/12] ADD https://example.com/files/app.tar.gz /opt/"
+     }
+    },
+    "source": {
+     "attrs": {
+      "http.filename": "app.tar.gz"
+     },
+     "identifier": "https://example.com/files/app.tar.gz"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/opt/",
+        "mode": -1,
+        "src": "/app.tar.gz",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 2/12] ADD https://example.com/files/app.tar.gz /opt/"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "",
+      "llb.customname": "[ 3/12] ADD --checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d https://example.com/x /x"
+     }
+    },
+    "source": {
+     "attrs": {
+      "http.checksum": "sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d",
+      "http.filename": "x"
+     },
+     "identifier": "https://example.com/x"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/x",
+        "mode": -1,
+        "src": "/x",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ],
+     [
+      3,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 3/12] ADD --checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d https://example.com/x /x"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "",
+      "llb.customname": "[ 4/12] ADD --chmod=644 --chown=1:1 http://example.com/ /root-file"
+     }
+    },
+    "source": {
+     "attrs": {
+      "http.filename": "__unnamed__"
+     },
+     "identifier": "http://example.com/"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/root-file",
+        "mode": 420,
+        "owner": {
+         "group": {
+          "byID": 1
+         },
+         "user": {
+          "byID": 1
+         }
+        },
+        "src": "/__unnamed__",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      4,
+      0
+     ],
+     [
+      5,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 4/12] ADD --chmod=644 --chown=1:1 http://example.com/ /root-file"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "",
+      "llb.customname": "[ 5/12] ADD --unpack=true https://example.com/a.tar /a"
+     }
+    },
+    "source": {
+     "attrs": {
+      "http.filename": "a.tar"
+     },
+     "identifier": "https://example.com/a.tar"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "attemptUnpackDockerCompatibility": true,
+        "createDestPath": true,
+        "dest": "/a",
+        "mode": -1,
+        "src": "/a.tar",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      6,
+      0
+     ],
+     [
+      7,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 5/12] ADD --unpack=true https://example.com/a.tar /a"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 6/12] ADD https://github.com/moby/buildkit.git#v0.12.0:docs /docs"
+     }
+    },
+    "source": {
+     "attrs": {
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.fullurl": "https://github.com/moby/buildkit.git"
+     },
+     "identifier": "git://github.com/moby/buildkit.git#v0.12.0:docs"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/docs",
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      8,
+      0
+     ],
+     [
+      9,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 6/12] ADD https://github.com/moby/buildkit.git#v0.12.0:docs /docs"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 7/12] ADD --keep-git-dir=true https://github.com/moby/buildkit.git?ref=main\u0026subdir=frontend /fe"
+     }
+    },
+    "source": {
+     "attrs": {
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.fullurl": "https://github.com/moby/buildkit.git",
+      "git.keepgitdir": "true"
+     },
+     "identifier": "git://github.com/moby/buildkit.git#main:frontend"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/fe",
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      10,
+      0
+     ],
+     [
+      11,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 7/12] ADD --keep-git-dir=true https://github.com/moby/buildkit.git?ref=main\u0026subdir=frontend /fe"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 8/12] ADD https://example.com/r.git?branch=dev\u0026submodules=false\u0026fetch-by-commit /r"
+     }
+    },
+    "source": {
+     "attrs": {
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.fetchbycommit": "true",
+      "git.fullurl": "https://example.com/r.git",
+      "git.skipsubmodules": "true"
+     },
+     "identifier": "git://example.com/r.git#refs/heads/dev"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/r",
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      12,
+      0
+     ],
+     [
+      13,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 8/12] ADD https://example.com/r.git?branch=dev\u0026submodules=false\u0026fetch-by-commit /r"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 9/12] ADD git@nonexistent.invalid:org/repo.git#main /ssh"
+     }
+    },
+    "source": {
+     "attrs": {
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.fullurl": "git@nonexistent.invalid:org/repo.git",
+      "git.mountsshsock": "default"
+     },
+     "identifier": "git://nonexistent.invalid/org/repo.git#main"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/ssh",
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      14,
+      0
+     ],
+     [
+      15,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[ 9/12] ADD git@nonexistent.invalid:org/repo.git#main /ssh"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[10/12] ADD --checksum=0123456789abcdef https://example.com/r.git /sum"
+     }
+    },
+    "source": {
+     "attrs": {
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.checksum": "0123456789abcdef",
+      "git.fullurl": "https://example.com/r.git"
+     },
+     "identifier": "git://example.com/r.git"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/sum",
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      16,
+      0
+     ],
+     [
+      17,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[10/12] ADD --checksum=0123456789abcdef https://example.com/r.git /sum"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[11/12] ADD git://example.com/r.git /plain"
+     }
+    },
+    "source": {
+     "attrs": {
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.fullurl": "git://example.com/r.git"
+     },
+     "identifier": "git://example.com/r.git"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/plain",
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      18,
+      0
+     ],
+     [
+      19,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[11/12] ADD git://example.com/r.git /plain"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load build context"
+     }
+    },
+    "source": {
+     "attrs": {
+      "local.followpaths": "[\"git:/example.com/r.git\",\"git@nonexistent.invalid:org/repo.git#main\",\"github.com/moby/buildkit\"]",
+      "local.sharedkeyhint": "context",
+      "local.unique": "*"
+     },
+     "identifier": "local://context"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "attemptUnpackDockerCompatibility": true,
+        "createDestPath": true,
+        "dest": "/looks-local",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/github.com/moby/buildkit",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      20,
+      0
+     ],
+     [
+      21,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[12/12] ADD github.com/moby/buildkit /looks-local"
+     }
+    }
+   },
+   {
+    "inputs": [
+     [
+      22,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/args-build.Dockerfile",
   "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ARG X=fromcli\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN |1 X=fromcli /bin/sh -c echo $X # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
   "ops": [
@@ -2170,6 +2758,97 @@
     ],
     "metadata": {}
    }
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"unsupported digest algorithm\"",
+  "file": "corpus/plan/err-add-checksum-bad.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"checksum requires HTTP(S) or Git sources\"",
+  "file": "corpus/plan/err-add-checksum-local.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"checksum mismatch \\\"aaa\\\" != \\\"bbb\\\"\"",
+  "file": "corpus/plan/err-add-checksum-mismatch.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"source can't be a git ref for COPY\"",
+  "file": "corpus/plan/err-add-git-copy.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"unexpected query \\\"bogus\\\"\"",
+  "file": "corpus/plan/err-add-git-query.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"inconsistent keep-git-dir configuration\"",
+  "file": "corpus/plan/err-add-keep-inconsistent.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"source can't be a URL for COPY\"",
+  "file": "corpus/plan/err-add-url-copy.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
   ],
   "warnings": null
  },

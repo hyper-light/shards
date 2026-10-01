@@ -10,12 +10,15 @@
 //!   `error=true` check names come in a fixed order;
 //! - the build context's unique ID and progress groups' IDs are given, not random;
 //! - targets are Linux, the only guests a microVM runs: signals are Linux's, and a
-//!   Windows target is refused rather than planned.
+//!   Windows target is refused rather than planned;
+//! - planning does no network I/O: an `ADD` of a git repository over SSH carries no
+//!   host keys scanned while planning (`git.knownsshhosts`); the fetch verifies them.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use shards_image::reference::Reference;
 
+use crate::git;
 use crate::go;
 use crate::image::{History, Image};
 use crate::instructions::{self, ArgDef, Command, Kind, Location, Stage};
@@ -27,6 +30,7 @@ use crate::llb::{
 };
 use crate::parser;
 use crate::platform::{self, Platform};
+use crate::url;
 
 /// What the build is asked: dockerui's `Config` as Dockerfile2LLB reads it.
 #[derive(Debug, Clone, Default)]
@@ -1580,7 +1584,7 @@ impl Planner<'_> {
                     chown: a.chown.clone(),
                     chmod: a.chmod.clone(),
                     link: a.link,
-
+                    keep_git_dir: a.keep_git_dir,
                     checksum: a.checksum.clone(),
                     parents: false,
                     unpack: a.unpack,
@@ -1626,7 +1630,7 @@ impl Planner<'_> {
                     chown: c.chown.clone(),
                     chmod: c.chmod.clone(),
                     link: c.link,
-
+                    keep_git_dir: None,
                     checksum: Vec::new(),
                     parents: c.parents,
                     unpack: None,
@@ -2105,13 +2109,17 @@ impl Planner<'_> {
             if !cfg.is_add {
                 return Err(Fail::new(b"checksum can't be specified for COPY".to_vec()));
             }
-            if cfg.sources.paths.len() != 1 {
+            let [only] = cfg.sources.paths.as_slice() else {
                 return Err(Fail::new(
                     b"checksum can't be specified for multiple sources".to_vec(),
                 ));
+            };
+            if !is_http_source(only) && !matches!(git::parse_git_ref(only), git::Parsed::Git(_)) {
+                return Err(Fail::new(b"checksum requires HTTP(S) or Git sources".to_vec()));
             }
-            return Err(Fail::new(b"checksum requires HTTP(S) or Git sources".to_vec()));
         }
+        let mut checksum = cfg.checksum.clone();
+        let mut keep_git_dir = cfg.keep_git_dir;
         let mut msg: Vec<u8> = if cfg.is_add {
             b"ADD".to_vec()
         } else {
@@ -2139,12 +2147,91 @@ impl Planner<'_> {
         });
         for src in &cfg.sources.paths {
             msg.extend_from_slice(&errb(&[b" ", src]));
-            if src.starts_with(b"http://")
-                || src.starts_with(b"https://")
-                || src.starts_with(b"git@")
-                || src.ends_with(b".git")
-            {
-                return Err(Fail::new(errb(&[b"remote sources are not supported yet: ", src])));
+            let git_ref = match git::parse_git_ref(src) {
+                git::Parsed::BadGit(e) => return Err(Fail::new(e)),
+                git::Parsed::Git(g) if !g.indistinguishable_from_local => Some(g),
+                _ => None,
+            };
+            if let Some(g) = git_ref {
+                if !cfg.is_add {
+                    return Err(Fail::new(b"source can't be a git ref for COPY".to_vec()));
+                }
+                if let (Some(a), Some(b)) = (keep_git_dir, g.keep_git_dir)
+                    && a != b
+                {
+                    return Err(Fail::new(b"inconsistent keep-git-dir configuration".to_vec()));
+                }
+                if g.keep_git_dir.is_some() {
+                    keep_git_dir = g.keep_git_dir;
+                }
+                if !checksum.is_empty() && !g.checksum.is_empty() && checksum != g.checksum {
+                    return Err(Fail::new(errb(&[
+                        b"checksum mismatch ",
+                        go::quote(&checksum).as_bytes(),
+                        b" != ",
+                        go::quote(&g.checksum).as_bytes(),
+                    ])));
+                }
+                if !g.checksum.is_empty() {
+                    checksum = g.checksum.clone();
+                }
+                let st = self.git_source(&g, keep_git_dir == Some(true), &checksum, &pg_name);
+                actions.push(Action::Copy {
+                    from: st.output,
+                    from_dir: st.dir.clone(),
+                    src: b"/".to_vec(),
+                    dest: dest.clone(),
+                    info: CopyInfo {
+                        mode: mode.clone(),
+                        create_dest_path: true,
+                        exclude_patterns: cfg.exclude.clone(),
+                        chown: chown.clone(),
+                        ..CopyInfo::default()
+                    },
+                });
+                continue;
+            }
+            if is_http_source(src) {
+                if !cfg.is_add {
+                    return Err(Fail::new(b"source can't be a URL for COPY".to_vec()));
+                }
+                // Not unpacked unless asked: remote archives stay as they are.
+                let mut name = b"__unnamed__".to_vec();
+                if let Ok(u) = url::parse(src) {
+                    let base = path_base(&u.path);
+                    if base != b"." && base != b"/" {
+                        name = base;
+                    }
+                }
+                let mut attrs = BTreeMap::new();
+                if !checksum.is_empty() {
+                    let c = std::str::from_utf8(&checksum)
+                        .map_err(|_| Fail::new(b"invalid checksum digest format".to_vec()))?;
+                    let dg = shards_image::reference::Digest::parse(c)
+                        .map_err(|e| Fail::new(e.to_string().into_bytes()))?;
+                    attrs.insert(b"http.checksum".to_vec(), dg.to_string().into_bytes());
+                }
+                attrs.insert(b"http.filename".to_vec(), name.clone());
+                let mut meta = custom_name(pg_name.clone());
+                // dfCmd of the sources: they print nothing.
+                meta.description
+                    .insert(b"com.docker.dockerfile.v1.command".to_vec(), Vec::new());
+                let st = self.graph.source(src.clone(), attrs, None, meta);
+                actions.push(Action::Copy {
+                    from: st.output,
+                    from_dir: st.dir.clone(),
+                    src: name,
+                    dest: dest.clone(),
+                    info: CopyInfo {
+                        mode: mode.clone(),
+                        create_dest_path: true,
+                        attempt_unpack: cfg.unpack.unwrap_or(false),
+                        exclude_patterns: cfg.exclude.clone(),
+                        chown: chown.clone(),
+                        ..CopyInfo::default()
+                    },
+                });
+                continue;
             }
             let (mut src, mut patterns, mut required) = (src.clone(), Vec::new(), Vec::new());
             if cfg.parents {
@@ -2253,6 +2340,63 @@ impl Planner<'_> {
         Ok(())
     }
 
+    /// `llb.Git`: the repository as a source, its ID and attributes as BuildKit makes
+    /// them. Unlike BuildKit, no SSH host keys are scanned while planning: they are the
+    /// fetch's to verify.
+    fn git_source(&mut self, g: &git::GitRef, keep_git_dir: bool, checksum: &[u8], name: &[u8]) -> State {
+        let mut full = g.remote.clone();
+        let mut remote = git::parse_url(&full);
+        if remote == Err(git::UrlError::UnknownProtocol) {
+            full = [b"https://".as_slice(), &full].concat();
+            remote = git::parse_url(&full);
+        }
+        if let Ok(r) = &remote {
+            full = r.remote.clone();
+        }
+        let id = match &remote {
+            Err(_) => full.clone(),
+            Ok(r) => {
+                let mut id = [r.host.as_slice(), &go::join(&[b"/", &r.path])].concat();
+                if !g.reference.is_empty() || !g.subdir.is_empty() {
+                    id.push(b'#');
+                    id.extend_from_slice(&g.reference);
+                    if !g.subdir.is_empty() {
+                        id.push(b':');
+                        id.extend_from_slice(&g.subdir);
+                    }
+                }
+                id
+            }
+        };
+        let mut attrs = BTreeMap::new();
+        if keep_git_dir {
+            attrs.insert(b"git.keepgitdir".to_vec(), b"true".to_vec());
+        }
+        if !full.is_empty() {
+            attrs.insert(b"git.fullurl".to_vec(), full);
+        }
+        attrs.insert(b"git.authtokensecret".to_vec(), b"GIT_AUTH_TOKEN".to_vec());
+        attrs.insert(b"git.authheadersecret".to_vec(), b"GIT_AUTH_HEADER".to_vec());
+        if remote.as_ref().is_ok_and(|r| r.scheme == b"ssh") {
+            attrs.insert(b"git.mountsshsock".to_vec(), b"default".to_vec());
+        }
+        if !checksum.is_empty() {
+            attrs.insert(b"git.checksum".to_vec(), checksum.to_vec());
+        }
+        if g.submodules == Some(false) {
+            attrs.insert(b"git.skipsubmodules".to_vec(), b"true".to_vec());
+        }
+        if g.fetch_by_commit {
+            attrs.insert(b"git.fetchbycommit".to_vec(), b"true".to_vec());
+        }
+        self.graph.source(
+            [b"git://".as_slice(), &id].concat(),
+            attrs,
+            None,
+            custom_name(name.to_vec()),
+        )
+    }
+
     fn finalize(mut self, target: usize) -> Result<Plan, Fail> {
         let ctx_paths: BTreeSet<Vec<u8>> = self
             .states
@@ -2310,6 +2454,12 @@ impl Planner<'_> {
     }
 }
 
+/// `isHTTPSource`: an http(s) URL that is no git repository.
+fn is_http_source(src: &[u8]) -> bool {
+    (src.starts_with(b"http://") || src.starts_with(b"https://"))
+        && !matches!(git::parse_git_ref(src), git::Parsed::Git(_))
+}
+
 /// What `dispatchCopy` copies.
 struct CopyConfig {
     sources: instructions::Sources,
@@ -2321,7 +2471,8 @@ struct CopyConfig {
     chown: Vec<u8>,
     chmod: Vec<u8>,
     link: bool,
-
+    /// `ADD --keep-git-dir`.
+    keep_git_dir: Option<bool>,
     checksum: Vec<u8>,
     parents: bool,
     unpack: Option<bool>,

@@ -90,6 +90,17 @@ impl Algorithm {
     }
 }
 
+/// go-digest's `DigestRegexp` for a digest split at its first `:`: components of
+/// lowercase letters and digits joined by single `.+_-`, then `[a-zA-Z0-9=_-]+`.
+fn well_formed(algorithm: &str, encoded: &str) -> bool {
+    algorithm
+        .split(['.', '+', '_', '-'])
+        .all(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+        && encoded
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'=' | b'_' | b'-'))
+}
+
 impl Digest {
     /// go-digest's `Parse`: `algorithm:hex`.
     pub fn parse(s: &str) -> Result<Digest, Error> {
@@ -100,7 +111,10 @@ impl Digest {
             "sha256" => Algorithm::Sha256,
             "sha384" => Algorithm::Sha384,
             "sha512" => Algorithm::Sha512,
-            _ => return bad("unsupported digest algorithm"),
+            // An unknown algorithm is unsupported only when the digest is well formed:
+            // `DigestRegexpAnchored`, `[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[a-zA-Z0-9=_-]+`.
+            _ if well_formed(algorithm, hex) => return bad("unsupported digest algorithm"),
+            _ => return bad("invalid checksum digest format"),
         };
         if hex.len() != 2 * algorithm.size() {
             return bad("invalid checksum digest length");

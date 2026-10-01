@@ -1,0 +1,1180 @@
+[
+ {
+  "git_url": {
+   "host": "example.com",
+   "opts": false,
+   "path": "/a/b.tar.gz",
+   "remote": "https://example.com/a/b.tar.gz",
+   "scheme": "https"
+  },
+  "input": "https://example.com/a/b.tar.gz",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "example.com",
+   "opaque": "",
+   "path": "/a/b.tar.gz",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "https",
+   "string": "https://example.com/a/b.tar.gz",
+   "user": ""
+  }
+ },
+ {
+  "git_url": {
+   "host": "example.com",
+   "opts": false,
+   "path": "/",
+   "remote": "http://example.com/",
+   "scheme": "http"
+  },
+  "input": "http://example.com/",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "example.com",
+   "opaque": "",
+   "path": "/",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "http",
+   "string": "http://example.com/",
+   "user": ""
+  }
+ },
+ {
+  "git_url": {
+   "host": "example.com",
+   "opts": false,
+   "path": "",
+   "remote": "https://example.com",
+   "scheme": "https"
+  },
+  "input": "https://example.com",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "example.com",
+   "opaque": "",
+   "path": "",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "https",
+   "string": "https://example.com",
+   "user": ""
+  }
+ },
+ {
+  "git_url": {
+   "host": "h.com:8080",
+   "opts": true,
+   "path": "/p",
+   "remote": "https://user:pa%40ss@h.com:8080/p",
+   "scheme": "https"
+  },
+  "input": "https://user:pa%40ss@h.com:8080/p?q=1\u0026r=a+b#frag",
+  "is_git": false,
+  "url": {
+   "fragment": "frag",
+   "host": "h.com:8080",
+   "opaque": "",
+   "path": "/p",
+   "raw_path": "",
+   "raw_query": "q=1\u0026r=a+b",
+   "scheme": "https",
+   "string": "https://user:pa%40ss@h.com:8080/p?q=1\u0026r=a+b#frag",
+   "user": "user:pa%40ss@"
+  }
+ },
+ {
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "/a/b/c d",
+   "remote": "https://h.com/a%2Fb/c%20d",
+   "scheme": "https"
+  },
+  "input": "https://h.com/a%2Fb/c%20d",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/a/b/c d",
+   "raw_path": "/a%2Fb/c%20d",
+   "raw_query": "",
+   "scheme": "https",
+   "string": "https://h.com/a%2Fb/c%20d",
+   "user": ""
+  }
+ },
+ {
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "/a b",
+   "remote": "https://h.com/a%20b",
+   "scheme": "https"
+  },
+  "input": "https://h.com/a b",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/a b",
+   "raw_path": "/a b",
+   "raw_query": "",
+   "scheme": "https",
+   "string": "https://h.com/a%20b",
+   "user": ""
+  }
+ },
+ {
+  "git_url": {
+   "host": "H.com",
+   "opts": false,
+   "path": "/X",
+   "remote": "https://H.com/X",
+   "scheme": "https"
+  },
+  "input": "HTTPS://H.com/X",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "H.com",
+   "opaque": "",
+   "path": "/X",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "https",
+   "string": "https://H.com/X",
+   "user": ""
+  }
+ },
+ {
+  "git_url_error": "\"parse \\\"https://h.com:80:90/x\\\": invalid port \\\":80:90\\\" after host\"",
+  "input": "https://h.com:80:90/x",
+  "is_git": false,
+  "url_error": "\"parse \\\"https://h.com:80:90/x\\\": invalid port \\\":80:90\\\" after host\""
+ },
+ {
+  "git_url": {
+   "host": "[::1]:443",
+   "opts": false,
+   "path": "/x",
+   "remote": "https://[::1]:443/x",
+   "scheme": "https"
+  },
+  "input": "https://[::1]:443/x",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "[::1]:443",
+   "opaque": "",
+   "path": "/x",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "https",
+   "string": "https://[::1]:443/x",
+   "user": ""
+  }
+ },
+ {
+  "git_url": {
+   "host": "[fe80::1%eth0]",
+   "opts": false,
+   "path": "/x",
+   "remote": "https://[fe80::1%25eth0]/x",
+   "scheme": "https"
+  },
+  "input": "https://[fe80::1%25eth0]/x",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "[fe80::1%eth0]",
+   "opaque": "",
+   "path": "/x",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "https",
+   "string": "https://[fe80::1%25eth0]/x",
+   "user": ""
+  }
+ },
+ {
+  "git_url_error": "\"parse \\\"https://[1.2.3.4]/x\\\": invalid IP-literal\"",
+  "input": "https://[1.2.3.4]/x",
+  "is_git": false,
+  "url_error": "\"parse \\\"https://[1.2.3.4]/x\\\": invalid IP-literal\""
+ },
+ {
+  "git_url_error": "\"parse \\\"https://[::1/x\\\": missing ']' in host\"",
+  "input": "https://[::1/x",
+  "is_git": false,
+  "url_error": "\"parse \\\"https://[::1/x\\\": missing ']' in host\""
+ },
+ {
+  "git_url_error": "\"parse \\\"https://[::g]/x\\\": invalid host: ParseAddr(\\\"::g\\\"): each colon-separated field must have at least one digit (at \\\"g\\\")\"",
+  "input": "https://[::g]/x",
+  "is_git": false,
+  "url_error": "\"parse \\\"https://[::g]/x\\\": invalid host: ParseAddr(\\\"::g\\\"): each colon-separated field must have at least one digit (at \\\"g\\\")\""
+ },
+ {
+  "git_url_error": "\"parse \\\"https://h.com/%zz\\\": invalid URL escape \\\"%zz\\\"\"",
+  "input": "https://h.com/%zz",
+  "is_git": false,
+  "url_error": "\"parse \\\"https://h.com/%zz\\\": invalid URL escape \\\"%zz\\\"\""
+ },
+ {
+  "git_url_error": "\"parse \\\"https://h.com/x#%zz\\\": invalid URL escape \\\"%zz\\\"\"",
+  "input": "https://h.com/x#%zz",
+  "is_git": false,
+  "url_error": "\"parse \\\"https://h.com/x#%zz\\\": invalid URL escape \\\"%zz\\\"\""
+ },
+ {
+  "git_url_error": "\"parse \\\"https://h\\\\x7f.com\\\": net/url: invalid control character in URL\"",
+  "input": "https://h.com",
+  "is_git": false,
+  "url_error": "\"parse \\\"https://h\\\\x7f.com\\\": net/url: invalid control character in URL\""
+ },
+ {
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "/",
+   "remote": "https://h.com/",
+   "scheme": "https"
+  },
+  "input": "https://h.com/?a=1;b=2",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/",
+   "raw_path": "",
+   "raw_query": "a=1;b=2",
+   "scheme": "https",
+   "string": "https://h.com/?a=1;b=2",
+   "user": ""
+  }
+ },
+ {
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "/x",
+   "remote": "https://h.com/x?",
+   "scheme": "https"
+  },
+  "input": "https://h.com/x?",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/x",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "https",
+   "string": "https://h.com/x?",
+   "user": ""
+  }
+ },
+ {
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "/x",
+   "remote": "https://h.com/x",
+   "scheme": "https"
+  },
+  "input": "https://h.com/x?a?b",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/x",
+   "raw_path": "",
+   "raw_query": "a?b",
+   "scheme": "https",
+   "string": "https://h.com/x?a?b",
+   "user": ""
+  }
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": false,
+   "mtime": "",
+   "ref": "",
+   "remote": "git://h.com/r.git",
+   "short_name": "r",
+   "subdir": "",
+   "submodules": "false false",
+   "tcp": true
+  },
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "/r.git",
+   "remote": "git://h.com/r.git",
+   "scheme": "git"
+  },
+  "input": "git://h.com/r.git",
+  "is_git": true,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/r.git",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "git",
+   "string": "git://h.com/r.git",
+   "user": ""
+  }
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": false,
+   "mtime": "",
+   "ref": "v1",
+   "remote": "ssh://git@h.com/r.git",
+   "short_name": "r",
+   "subdir": "sub/dir",
+   "submodules": "false false",
+   "tcp": false
+  },
+  "git_url": {
+   "host": "h.com",
+   "opts": true,
+   "path": "/r.git",
+   "remote": "ssh://git@h.com/r.git",
+   "scheme": "ssh"
+  },
+  "input": "ssh://git@h.com/r.git#v1:sub/dir",
+  "is_git": true,
+  "url": {
+   "fragment": "v1:sub/dir",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/r.git",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "ssh",
+   "string": "ssh://git@h.com/r.git#v1:sub/dir",
+   "user": "git@"
+  }
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": false,
+   "mtime": "",
+   "ref": "",
+   "remote": "git@github.com:moby/buildkit.git",
+   "short_name": "buildkit",
+   "subdir": "",
+   "submodules": "false false",
+   "tcp": false
+  },
+  "git_url": {
+   "host": "github.com",
+   "opts": false,
+   "path": "moby/buildkit.git",
+   "remote": "git@github.com:moby/buildkit.git",
+   "scheme": "ssh"
+  },
+  "input": "git@github.com:moby/buildkit.git",
+  "is_git": true,
+  "url_error": "\"parse \\\"git@github.com:moby/buildkit.git\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": false,
+   "mtime": "",
+   "ref": "main",
+   "remote": "git@github.com:moby/buildkit.git",
+   "short_name": "buildkit",
+   "subdir": "docs",
+   "submodules": "false false",
+   "tcp": false
+  },
+  "git_url": {
+   "host": "github.com",
+   "opts": true,
+   "path": "moby/buildkit.git",
+   "remote": "git@github.com:moby/buildkit.git",
+   "scheme": "ssh"
+  },
+  "input": "git@github.com:moby/buildkit.git#main:docs",
+  "is_git": true,
+  "url_error": "\"parse \\\"git@github.com:moby/buildkit.git\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": false,
+   "mtime": "",
+   "ref": "v1",
+   "remote": "git@h.com:r.git",
+   "short_name": "git@h.com:r",
+   "subdir": "x",
+   "submodules": "false false",
+   "tcp": false
+  },
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "r.git",
+   "remote": "git@h.com:r.git",
+   "scheme": "ssh"
+  },
+  "input": "git@h.com:r.git?ref=v1\u0026subdir=x",
+  "is_git": true,
+  "url_error": "\"parse \\\"git@h.com:r.git?ref=v1\u0026subdir=x\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_ref_error": "\"branch conflicts with tag\"",
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "r.git",
+   "remote": "git@h.com:r.git",
+   "scheme": "ssh"
+  },
+  "input": "git@h.com:r.git?branch=b\u0026tag=t",
+  "is_git": true,
+  "url_error": "\"parse \\\"git@h.com:r.git?branch=b\u0026tag=t\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "true true",
+   "local": false,
+   "mtime": "",
+   "ref": "",
+   "remote": "git@h.com:r.git",
+   "short_name": "git@h.com:r",
+   "subdir": "",
+   "submodules": "false true",
+   "tcp": false
+  },
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "r.git",
+   "remote": "git@h.com:r.git",
+   "scheme": "ssh"
+  },
+  "input": "git@h.com:r.git?keep-git-dir\u0026submodules=false",
+  "is_git": true,
+  "url_error": "\"parse \\\"git@h.com:r.git?keep-git-dir\u0026submodules=false\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_ref_error": "\"invalid mtime value: \\\"now\\\" (must be \\\"checkout\\\" or \\\"commit\\\")\"",
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "r.git",
+   "remote": "git@h.com:r.git",
+   "scheme": "ssh"
+  },
+  "input": "git@h.com:r.git?mtime=now",
+  "is_git": true,
+  "url_error": "\"parse \\\"git@h.com:r.git?mtime=now\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_ref_error": "\"unexpected query \\\"nope\\\"\"",
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "r.git",
+   "remote": "git@h.com:r.git",
+   "scheme": "ssh"
+  },
+  "input": "git@h.com:r.git?nope=1",
+  "is_git": true,
+  "url_error": "\"parse \\\"git@h.com:r.git?nope=1\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_ref_error": "\"query \\\"ref\\\" has multiple values\"",
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "r.git",
+   "remote": "git@h.com:r.git",
+   "scheme": "ssh"
+  },
+  "input": "git@h.com:r.git?ref=a\u0026ref=b",
+  "is_git": true,
+  "url_error": "\"parse \\\"git@h.com:r.git?ref=a\u0026ref=b\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_ref_error": "\"ref conflicts: \\\"v2\\\" vs \\\"v1\\\"\"",
+  "git_url": {
+   "host": "h.com",
+   "opts": true,
+   "path": "/r.git",
+   "remote": "https://h.com/r.git",
+   "scheme": "https"
+  },
+  "input": "https://h.com/r.git?ref=v1#v2",
+  "is_git": true,
+  "url": {
+   "fragment": "v2",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/r.git",
+   "raw_path": "",
+   "raw_query": "ref=v1",
+   "scheme": "https",
+   "string": "https://h.com/r.git?ref=v1#v2",
+   "user": ""
+  }
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": false,
+   "mtime": "",
+   "ref": "refs/tags/v1",
+   "remote": "https://h.com/r.git",
+   "short_name": "r",
+   "subdir": "",
+   "submodules": "false false",
+   "tcp": false
+  },
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "/r.git",
+   "remote": "https://h.com/r.git",
+   "scheme": "https"
+  },
+  "input": "https://h.com/r.git?tag=v1",
+  "is_git": true,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/r.git",
+   "raw_path": "",
+   "raw_query": "tag=v1",
+   "scheme": "https",
+   "string": "https://h.com/r.git?tag=v1",
+   "user": ""
+  }
+ },
+ {
+  "git_ref": {
+   "checksum": "abc",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": false,
+   "mtime": "",
+   "ref": "refs/heads/x",
+   "remote": "https://h.com/r.git",
+   "short_name": "r",
+   "subdir": "",
+   "submodules": "false false",
+   "tcp": false
+  },
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "/r.git",
+   "remote": "https://h.com/r.git",
+   "scheme": "https"
+  },
+  "input": "https://h.com/r.git?branch=refs/heads/x\u0026commit=abc",
+  "is_git": true,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/r.git",
+   "raw_path": "",
+   "raw_query": "branch=refs/heads/x\u0026commit=abc",
+   "scheme": "https",
+   "string": "https://h.com/r.git?branch=refs/heads/x\u0026commit=abc",
+   "user": ""
+  }
+ },
+ {
+  "git_ref_error": "\"query \\\"checksum\\\" has no value\"",
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "/r.git",
+   "remote": "https://h.com/r.git",
+   "scheme": "https"
+  },
+  "input": "https://h.com/r.git?checksum=",
+  "is_git": true,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/r.git",
+   "raw_path": "",
+   "raw_query": "checksum=",
+   "scheme": "https",
+   "string": "https://h.com/r.git?checksum=",
+   "user": ""
+  }
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": true,
+   "mtime": "",
+   "ref": "",
+   "remote": "github.com/moby/buildkit",
+   "short_name": "buildkit",
+   "subdir": "",
+   "submodules": "false false",
+   "tcp": false
+  },
+  "git_url_error": "\"unknown protocol\"",
+  "input": "github.com/moby/buildkit",
+  "is_git": true,
+  "url": {
+   "fragment": "",
+   "host": "",
+   "opaque": "",
+   "path": "github.com/moby/buildkit",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "",
+   "string": "github.com/moby/buildkit",
+   "user": ""
+  }
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": true,
+   "mtime": "",
+   "ref": "v0.1",
+   "remote": "github.com/moby/buildkit",
+   "short_name": "buildkit",
+   "subdir": "sub",
+   "submodules": "false false",
+   "tcp": false
+  },
+  "git_url_error": "\"unknown protocol\"",
+  "input": "github.com/moby/buildkit#v0.1:sub",
+  "is_git": true,
+  "url": {
+   "fragment": "v0.1:sub",
+   "host": "",
+   "opaque": "",
+   "path": "github.com/moby/buildkit",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "",
+   "string": "github.com/moby/buildkit#v0.1:sub",
+   "user": ""
+  }
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": "./local",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "",
+   "opaque": "",
+   "path": "./local",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "",
+   "string": "./local",
+   "user": ""
+  }
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": "../up",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "",
+   "opaque": "",
+   "path": "../up",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "",
+   "string": "../up",
+   "user": ""
+  }
+ },
+ {
+  "git_url_error": "\"ftp: invalid protocol\"",
+  "input": "ftp://h.com/r.git",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/r.git",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "ftp",
+   "string": "ftp://h.com/r.git",
+   "user": ""
+  }
+ },
+ {
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "/notgit",
+   "remote": "https://h.com/notgit",
+   "scheme": "https"
+  },
+  "input": "https://h.com/notgit",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/notgit",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "https",
+   "string": "https://h.com/notgit",
+   "user": ""
+  }
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": false,
+   "mtime": "",
+   "ref": "",
+   "remote": "http://h.com/r.git",
+   "short_name": "r",
+   "subdir": "",
+   "submodules": "false false",
+   "tcp": true
+  },
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "/r.git",
+   "remote": "http://h.com/r.git",
+   "scheme": "http"
+  },
+  "input": "http://h.com/r.git",
+  "is_git": true,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/r.git",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "http",
+   "string": "http://h.com/r.git",
+   "user": ""
+  }
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": false,
+   "mtime": "",
+   "ref": "",
+   "remote": "user@host:path",
+   "short_name": "user@host:path",
+   "subdir": "",
+   "submodules": "false false",
+   "tcp": false
+  },
+  "git_url": {
+   "host": "host",
+   "opts": false,
+   "path": "path",
+   "remote": "user@host:path",
+   "scheme": "ssh"
+  },
+  "input": "user@host:path",
+  "is_git": true,
+  "url_error": "\"parse \\\"user@host:path\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": "bad user@host:p",
+  "is_git": false,
+  "url_error": "\"parse \\\"bad user@host:p\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": "u@h_x:p",
+  "is_git": false,
+  "url_error": "\"parse \\\"u@h_x:p\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": "foo:bar",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "",
+   "opaque": "bar",
+   "path": "",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "foo",
+   "string": "foo:bar",
+   "user": ""
+  }
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": "mailto:x@y.z",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "",
+   "opaque": "x@y.z",
+   "path": "",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "mailto",
+   "string": "mailto:x@y.z",
+   "user": ""
+  }
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": "//h.com/p",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/p",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "",
+   "string": "//h.com/p",
+   "user": ""
+  }
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": "/abs/path",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "",
+   "opaque": "",
+   "path": "/abs/path",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "",
+   "string": "/abs/path",
+   "user": ""
+  }
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": "rel/path",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "",
+   "opaque": "",
+   "path": "rel/path",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "",
+   "string": "rel/path",
+   "user": ""
+  }
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": ":nope",
+  "is_git": false,
+  "url_error": "\"parse \\\":nope\\\": missing protocol scheme\""
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": "*",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "",
+   "opaque": "",
+   "path": "*",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "",
+   "string": "*",
+   "user": ""
+  }
+ },
+ {
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "/a;b",
+   "remote": "https://h.com/a;b",
+   "scheme": "https"
+  },
+  "input": "https://h.com/a;b",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/a;b",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "https",
+   "string": "https://h.com/a;b",
+   "user": ""
+  }
+ },
+ {
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "/x",
+   "remote": "https://h.com/x",
+   "scheme": "https"
+  },
+  "input": "https://h.com/x?q=%zz",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/x",
+   "raw_path": "",
+   "raw_query": "q=%zz",
+   "scheme": "https",
+   "string": "https://h.com/x?q=%zz",
+   "user": ""
+  }
+ },
+ {
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "",
+   "remote": "https://u@h.com",
+   "scheme": "https"
+  },
+  "input": "https://u@h.com",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "https",
+   "string": "https://u@h.com",
+   "user": "u@"
+  }
+ },
+ {
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "",
+   "remote": "https://u:@h.com",
+   "scheme": "https"
+  },
+  "input": "https://u:@h.com",
+  "is_git": false,
+  "url": {
+   "fragment": "",
+   "host": "h.com",
+   "opaque": "",
+   "path": "",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "https",
+   "string": "https://u:@h.com",
+   "user": "u:@"
+  }
+ },
+ {
+  "git_url_error": "\"parse \\\"https://ü@h.com\\\": net/url: invalid userinfo\"",
+  "input": "https://ü@h.com",
+  "is_git": false,
+  "url_error": "\"parse \\\"https://ü@h.com\\\": net/url: invalid userinfo\""
+ },
+ {
+  "git_url_error": "\"parse \\\"https://h.com:abc/\\\": invalid port \\\":abc\\\" after host\"",
+  "input": "https://h.com:abc/",
+  "is_git": false,
+  "url_error": "\"parse \\\"https://h.com:abc/\\\": invalid port \\\":abc\\\" after host\""
+ },
+ {
+  "git_url_error": "\"parse \\\"https://[::1]x/\\\": invalid port \\\"x\\\" after host\"",
+  "input": "https://[::1]x/",
+  "is_git": false,
+  "url_error": "\"parse \\\"https://[::1]x/\\\": invalid port \\\"x\\\" after host\""
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": false,
+   "mtime": "",
+   "ref": "",
+   "remote": "git@h.com:r.git",
+   "short_name": "git@h.com:r",
+   "subdir": "",
+   "submodules": "false false",
+   "tcp": false
+  },
+  "git_url": {
+   "host": "h.com",
+   "opts": false,
+   "path": "r.git",
+   "remote": "git@h.com:r.git",
+   "scheme": "ssh"
+  },
+  "input": "git@h.com:r.git#",
+  "is_git": true,
+  "url_error": "\"parse \\\"git@h.com:r.git\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": false,
+   "mtime": "",
+   "ref": "f",
+   "remote": "git@h.com:r.git",
+   "short_name": "git@h.com:r",
+   "subdir": "",
+   "submodules": "false false",
+   "tcp": false
+  },
+  "git_url": {
+   "host": "h.com",
+   "opts": true,
+   "path": "r.git",
+   "remote": "git@h.com:r.git",
+   "scheme": "ssh"
+  },
+  "input": "git@h.com:r.git?#f",
+  "is_git": true,
+  "url_error": "\"parse \\\"git@h.com:r.git?\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_ref": {
+   "checksum": "",
+   "fetch_by_commit": false,
+   "keep": "false false",
+   "local": false,
+   "mtime": "",
+   "ref": "ref",
+   "remote": "https://h.com/r.git",
+   "short_name": "r",
+   "subdir": "etc",
+   "submodules": "false false",
+   "tcp": false
+  },
+  "git_url": {
+   "host": "h.com",
+   "opts": true,
+   "path": "/r.git",
+   "remote": "https://h.com/r.git",
+   "scheme": "https"
+  },
+  "input": "https://h.com/r.git#ref:../../etc",
+  "is_git": true,
+  "url": {
+   "fragment": "ref:../../etc",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/r.git",
+   "raw_path": "",
+   "raw_query": "",
+   "scheme": "https",
+   "string": "https://h.com/r.git#ref:../../etc",
+   "user": ""
+  }
+ },
+ {
+  "git_ref_error": "\"query \\\"subdir\\\" has multiple values\"",
+  "git_url": {
+   "host": "h.com",
+   "opts": true,
+   "path": "/r.git",
+   "remote": "https://h.com/r.git",
+   "scheme": "https"
+  },
+  "input": "https://h.com/r.git?subdir=a\u0026subdir=a#x:b",
+  "is_git": true,
+  "url": {
+   "fragment": "x:b",
+   "host": "h.com",
+   "opaque": "",
+   "path": "/r.git",
+   "raw_path": "",
+   "raw_query": "subdir=a\u0026subdir=a",
+   "scheme": "https",
+   "string": "https://h.com/r.git?subdir=a\u0026subdir=a#x:b",
+   "user": ""
+  }
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": "git@h.com:r\nx.git",
+  "is_git": false,
+  "url_error": "\"parse \\\"git@h.com:r\\\\nx.git\\\": net/url: invalid control character in URL\""
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": "git@h.com:r.git#a\nb",
+  "is_git": false,
+  "url_error": "\"parse \\\"git@h.com:r.git\\\": first path segment in URL cannot contain colon\""
+ },
+ {
+  "git_url_error": "\"unknown protocol\"",
+  "input": "u@h:p?x\ny",
+  "is_git": false,
+  "url_error": "\"parse \\\"u@h:p?x\\\\ny\\\": net/url: invalid control character in URL\""
+ }
+]

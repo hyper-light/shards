@@ -7419,6 +7419,144 @@
   ]
  },
  {
+  "file": "corpus/plan/add-remote.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(add \\\"https://example.com/files/app.tar.gz\\\" \\\"/opt/\\\")\\n(add [\\\"--checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\\\"] \\\"https://example.com/x\\\" \\\"/x\\\")\\n(add [\\\"--chmod=644\\\" \\\"--chown=1:1\\\"] \\\"http://example.com/\\\" \\\"/root-file\\\")\\n(add [\\\"--unpack=true\\\"] \\\"https://example.com/a.tar\\\" \\\"/a\\\")\\n(add \\\"https://github.com/moby/buildkit.git#v0.12.0:docs\\\" \\\"/docs\\\")\\n(add [\\\"--keep-git-dir=true\\\"] \\\"https://github.com/moby/buildkit.git?ref=main\u0026subdir=frontend\\\" \\\"/fe\\\")\\n(add \\\"https://example.com/r.git?branch=dev\u0026submodules=false\u0026fetch-by-commit\\\" \\\"/r\\\")\\n(add \\\"git@nonexistent.invalid:org/repo.git#main\\\" \\\"/ssh\\\")\\n(add [\\\"--checksum=0123456789abcdef\\\"] \\\"https://example.com/r.git\\\" \\\"/sum\\\")\\n(add \\\"git://example.com/r.git\\\" \\\"/plain\\\")\\n(add \\\"github.com/moby/buildkit\\\" \\\"/looks-local\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://example.com/files/app.tar.gz\\\" \\\"/opt/\\\"\"",
+    "original": "\"ADD https://example.com/files/app.tar.gz /opt/\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\\\"] \\\"https://example.com/x\\\" \\\"/x\\\"\"",
+    "original": "\"ADD --checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d https://example.com/x /x\"",
+    "flags": [
+     "\"--checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--chmod=644\\\" \\\"--chown=1:1\\\"] \\\"http://example.com/\\\" \\\"/root-file\\\"\"",
+    "original": "\"ADD --chmod=644 --chown=1:1 http://example.com/ /root-file\"",
+    "flags": [
+     "\"--chmod=644\"",
+     "\"--chown=1:1\""
+    ],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--unpack=true\\\"] \\\"https://example.com/a.tar\\\" \\\"/a\\\"\"",
+    "original": "\"ADD --unpack=true https://example.com/a.tar /a\"",
+    "flags": [
+     "\"--unpack=true\""
+    ],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://github.com/moby/buildkit.git#v0.12.0:docs\\\" \\\"/docs\\\"\"",
+    "original": "\"ADD https://github.com/moby/buildkit.git#v0.12.0:docs /docs\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--keep-git-dir=true\\\"] \\\"https://github.com/moby/buildkit.git?ref=main\u0026subdir=frontend\\\" \\\"/fe\\\"\"",
+    "original": "\"ADD --keep-git-dir=true https://github.com/moby/buildkit.git?ref=main\u0026subdir=frontend /fe\"",
+    "flags": [
+     "\"--keep-git-dir=true\""
+    ],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://example.com/r.git?branch=dev\u0026submodules=false\u0026fetch-by-commit\\\" \\\"/r\\\"\"",
+    "original": "\"ADD https://example.com/r.git?branch=dev\u0026submodules=false\u0026fetch-by-commit /r\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"git@nonexistent.invalid:org/repo.git#main\\\" \\\"/ssh\\\"\"",
+    "original": "\"ADD git@nonexistent.invalid:org/repo.git#main /ssh\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--checksum=0123456789abcdef\\\"] \\\"https://example.com/r.git\\\" \\\"/sum\\\"\"",
+    "original": "\"ADD --checksum=0123456789abcdef https://example.com/r.git /sum\"",
+    "flags": [
+     "\"--checksum=0123456789abcdef\""
+    ],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"git://example.com/r.git\\\" \\\"/plain\\\"\"",
+    "original": "\"ADD git://example.com/r.git /plain\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"github.com/moby/buildkit\\\" \\\"/looks-local\\\"\"",
+    "original": "\"ADD github.com/moby/buildkit /looks-local\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/args-build.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(arg \\\"BASE=nopath\\\")\\n(from \\\"$BASE\\\")\\n(arg \\\"X\\\")\\n(run \\\"echo $X\\\")\"",
@@ -8494,6 +8632,203 @@
     "attributes": null,
     "start_line": 5,
     "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-add-checksum-bad.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(add [\\\"--checksum=md5:abc\\\"] \\\"https://example.com/f\\\" \\\"/f\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--checksum=md5:abc\\\"] \\\"https://example.com/f\\\" \\\"/f\\\"\"",
+    "original": "\"ADD --checksum=md5:abc https://example.com/f /f\"",
+    "flags": [
+     "\"--checksum=md5:abc\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-add-checksum-local.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(add [\\\"--checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\\\"] \\\"local\\\" \\\"/l\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\\\"] \\\"local\\\" \\\"/l\\\"\"",
+    "original": "\"ADD --checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d local /l\"",
+    "flags": [
+     "\"--checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-add-checksum-mismatch.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(add [\\\"--checksum=aaa\\\"] \\\"https://example.com/r.git?checksum=bbb\\\" \\\"/r\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--checksum=aaa\\\"] \\\"https://example.com/r.git?checksum=bbb\\\" \\\"/r\\\"\"",
+    "original": "\"ADD --checksum=aaa https://example.com/r.git?checksum=bbb /r\"",
+    "flags": [
+     "\"--checksum=aaa\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-add-git-copy.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy \\\"https://example.com/r.git\\\" \\\"/r\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"https://example.com/r.git\\\" \\\"/r\\\"\"",
+    "original": "\"COPY https://example.com/r.git /r\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-add-git-query.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(add \\\"https://example.com/r.git?bogus=1\\\" \\\"/r\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://example.com/r.git?bogus=1\\\" \\\"/r\\\"\"",
+    "original": "\"ADD https://example.com/r.git?bogus=1 /r\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-add-keep-inconsistent.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(add [\\\"--keep-git-dir=false\\\"] \\\"https://example.com/r.git?keep-git-dir\\\" \\\"/r\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--keep-git-dir=false\\\"] \\\"https://example.com/r.git?keep-git-dir\\\" \\\"/r\\\"\"",
+    "original": "\"ADD --keep-git-dir=false https://example.com/r.git?keep-git-dir /r\"",
+    "flags": [
+     "\"--keep-git-dir=false\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/err-add-url-copy.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy \\\"https://example.com/f\\\" \\\"/f\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"https://example.com/f\\\" \\\"/f\\\"\"",
+    "original": "\"COPY https://example.com/f /f\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
     "prev_comment": [],
     "heredocs": null
    }
