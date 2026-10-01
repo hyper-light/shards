@@ -141,10 +141,11 @@ fn count(tree: &Tree) -> (usize, usize, isize, u64, u64) {
 #[test]
 fn what_writing_ten_thousand_files_allocates() {
     // The images' hashes are those the writer made before it streamed its metadata
-    // (PM M60): the same bytes.
+    // (PM M60): the same bytes; but 512-byte files, which became plain blocks for DAX
+    // (erofs.rs), where their tails were inline.
     for (what, size, xattr, image) in [
         ("empty files", 0, 0, 0xb5f1_fb8e_e1d7_ecdb),
-        ("512-byte inline files", 512, 0, 0x7bbe_af2d_65df_07d5),
+        ("512-byte files", 512, 0, 0x6427_b74a_ebe0_1953),
         ("4,095-byte plain files", 4095, 0, 0x1f6a_1376_0474_7707),
         ("4,096-byte plain files", 4096, 0, 0x1f40_7cae_04c4_6da3),
         (

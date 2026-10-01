@@ -1362,6 +1362,35 @@ fn num<T: std::str::FromStr>(field: Option<&str>) -> Result<T, String> {
         .map_err(|_| "bad number".to_string())
 }
 
+/// Whether the kernel serves `path` with DAX: `STATX_ATTR_DAX` in statx(2)'s attributes
+/// (include/uapi/linux/stat.h), which it must also report it can say.
+fn is_dax(path: &str) -> Result<bool, String> {
+    const STATX_BASIC_STATS: u32 = 0x07ff;
+    const STATX_ATTR_DAX: u64 = 0x0020_0000;
+    let c = cstr(path)?;
+    // struct statx: 256 bytes, with stx_attributes at 0x08 and stx_attributes_mask at 0x38.
+    let mut buf = [0u64; 32];
+    // SAFETY: a NUL-terminated path, and a buffer of the size and alignment statx writes.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_statx,
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+            STATX_BASIC_STATS,
+            buf.as_mut_ptr(),
+        )
+    };
+    if r != 0 {
+        return Err(format!("statx: {}", io::Error::last_os_error()));
+    }
+    let [_, attributes, _, _, _, _, _, mask, ..] = buf;
+    if mask & STATX_ATTR_DAX == 0 {
+        return Err("statx does not report DAX".into());
+    }
+    Ok(attributes & STATX_ATTR_DAX != 0)
+}
+
 /// One manifest line: `<kind> <path> ...` (see crates/shards/tests/erofs.rs).
 fn check_entry(line: &str) -> Result<(), String> {
     let mut f = line.split(' ');
@@ -1399,10 +1428,14 @@ fn check_entry(line: &str) -> Result<(), String> {
             if data.len() as u64 != size {
                 return Err(format!("{} bytes", data.len()));
             }
-            match first_mismatch(salt, 0, &data) {
-                Some(at) => Err(format!("byte {at} differs")),
-                None => Ok(()),
+            if let Some(at) = first_mismatch(salt, 0, &data) {
+                return Err(format!("byte {at} differs"));
             }
+            // Mapped straight from pmem, not copied through the page cache.
+            if !is_dax(&path)? {
+                return Err("not served with DAX".into());
+            }
+            Ok(())
         }
         "l" => {
             let target = std::fs::read_link(&path).map_err(|e| e.to_string())?;

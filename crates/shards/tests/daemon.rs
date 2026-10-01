@@ -22,7 +22,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, registry_of, run_shards_env,
+    TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, registry_of, rootfs_dir, run_shards_env,
     run_shards_env_in, served, served_variant, shards, shards_vm, shardsd, test_image, test_image_with,
 };
 
@@ -31,6 +31,16 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 /// A home with the image pulled, the guest recorded, and the image's template saved by a
 /// first run, whose daemon now serves it.
 fn home(name: &str, image: &str) -> TempDir {
+    let home = recorded(name);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let first = run_shards_env(&["run"], &[image, "exit", "0"], &env, TIMEOUT);
+    assert_eq!(first.status, Some(0), "{}", first.stderr);
+    home
+}
+
+/// A home whose runs boot the test kernel and init, recorded as its guest, so that they
+/// save and restore templates.
+fn recorded(name: &str) -> TempDir {
     let home = TempDir::new(name);
     let env = [("SHARDS_HOME", home.as_os_str())];
     let args = [
@@ -42,9 +52,38 @@ fn home(name: &str, image: &str) -> TempDir {
     ];
     let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
     assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
-    let first = run_shards_env(&["run"], &[image, "exit", "0"], &env, TIMEOUT);
-    assert_eq!(first.status, Some(0), "{}", first.stderr);
     home
+}
+
+/// An image's first run is served by the VM that saved its template, which goes on
+/// recording what the run touches. Its command may clean the data cache over the image's
+/// pages before it reads them, as a guest kernel does over a page it is about to execute
+/// from the image (served with DAX): the host takes the fault for a write to its
+/// read-only device memory, which it was not, and gives the page back, as later runs
+/// restored from the template do too. Before, the VM ended.
+#[test]
+fn runs_may_clean_the_cache_over_their_image() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = recorded("daemon-clean-cache");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    for which in ["first", "restored"] {
+        let run = run_shards_env(
+            &["run"],
+            &[&image, "clean-cache", "/bin/testguest"],
+            &env,
+            TIMEOUT,
+        );
+        assert_eq!(run.status, Some(0), "{which}: {}", run.stderr);
+        let pages: u64 = run
+            .stdout
+            .strip_prefix("cleaned ")
+            .and_then(|n| n.trim_end().parse().ok())
+            .unwrap_or_else(|| panic!("{which}: {:?}", run.stdout));
+        assert!(pages > 1, "{which}: {pages} pages");
+    }
 }
 
 /// `shards run ARGS` in `home`, its stdout piped and its stdin closed.
@@ -1035,7 +1074,7 @@ fn what_a_moved_tag_named_is_collected() {
     };
     let (blobs, rootfs, templates) = (
         listed("images/blobs/sha256"),
-        listed("images/rootfs/v1"),
+        listed(&rootfs_dir()),
         listed("templates"),
     );
     assert_eq!(
@@ -1055,7 +1094,7 @@ fn what_a_moved_tag_named_is_collected() {
     eventually("the old template's VMs outlived it", || {
         processes_with(&template).is_empty()
     });
-    let (now_blobs, now_rootfs) = (listed("images/blobs/sha256"), listed("images/rootfs/v1"));
+    let (now_blobs, now_rootfs) = (listed("images/blobs/sha256"), listed(&rootfs_dir()));
     assert_eq!(
         (now_blobs.len(), now_rootfs.len()),
         (blobs.len(), 1),
@@ -1065,7 +1104,7 @@ fn what_a_moved_tag_named_is_collected() {
     run();
     assert_eq!(listed("templates").len(), 1, "the new image's template");
     assert!(
-        listed("images/rootfs/v1") == now_rootfs,
+        listed(&rootfs_dir()) == now_rootfs,
         "the new image's root filesystem kept"
     );
     assert_eq!(

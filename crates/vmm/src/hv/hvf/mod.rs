@@ -388,6 +388,9 @@ impl Vcpu {
                 ec @ (esr::EC_DABT_LOW | esr::EC_IABT_LOW) if self.memory.iter().any(|r| r.holds(ipa)) => {
                     given_back = self.give_back(io, ec, syndrome, ipa, returned)?;
                 }
+                // A cache maintenance instruction on no guest memory: nothing to keep
+                // coherent, as KVM has it (esr::cache_maintenance).
+                esr::EC_DABT_LOW if esr::cache_maintenance(syndrome) => self.advance_pc(syndrome)?,
                 esr::EC_DABT_LOW => self.mmio(io, syndrome, ipa)?,
                 esr::EC_HVC64 | esr::EC_SMC64 => {
                     // HVC exits with PC already past the instruction; a trapped SMC does not
@@ -421,7 +424,9 @@ impl Vcpu {
         let Some(region) = self.memory.iter().find(|r| r.holds(ipa)).copied() else {
             return Err(Error::Guest(self.describe_fault(ec, syndrome, ipa)));
         };
-        let write = ec == esr::EC_DABT_LOW && esr::writes(syndrome);
+        // Cache maintenance reports a write, and needs only to read: it goes on once the
+        // page is back, read-only or not (esr::cache_maintenance).
+        let write = ec == esr::EC_DABT_LOW && esr::writes(syndrome) && !esr::cache_maintenance(syndrome);
         if write && region.perms != sys::Perms::RWX {
             // Dropped, like a write to no device (map_device_memory).
             self.mmio(io, syndrome, ipa)?;

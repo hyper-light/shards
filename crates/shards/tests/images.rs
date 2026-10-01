@@ -14,7 +14,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use common::{
-    TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served, sha256_digest, test_image,
+    TempDir, cannot_run_vms, guest_init, kernel, rootfs_dir, run_shards_env, served, sha256_digest,
+    test_image,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -155,7 +156,7 @@ fn an_image_past_its_limits_is_refused() {
             .contains("more than 3 entries (SHARDS_MAX_IMAGE_ENTRIES)"),
         "{shown}"
     );
-    let built = std::fs::read_dir(home.join("images/rootfs/v1"))
+    let built = std::fs::read_dir(home.join(rootfs_dir()))
         .unwrap()
         .filter(|e| !e.as_ref().unwrap().file_name().to_string_lossy().starts_with('.'))
         .count();

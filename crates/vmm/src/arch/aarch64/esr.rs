@@ -13,9 +13,20 @@ pub fn ec(esr: u64) -> u32 {
 }
 
 /// Whether a data abort was a write (WnR), for an instruction syndrome or not. A stage 1
-/// table walk's abort is a write when the walk would update a descriptor.
+/// table walk's abort is a write when the walk would update a descriptor. A cache
+/// maintenance instruction's abort always reports WnR set ([`cache_maintenance`]), and is
+/// no write.
 pub fn writes(esr: u64) -> bool {
     esr & (1 << 6) != 0
+}
+
+/// Whether a data abort came from a cache maintenance or address translation instruction
+/// (ISS bit 8, CM), such as the `DC CVAU` a guest kernel runs over a page before it
+/// executes from it. Its WnR is always set, and it carries no instruction syndrome: it
+/// moves no data, so it is neither emulated as an access nor a write. KVM skips one that
+/// reaches no guest memory (arch/arm64/kvm/mmu.c, `kvm_handle_guest_abort`).
+pub fn cache_maintenance(esr: u64) -> bool {
+    esr & (1 << 8) != 0
 }
 
 /// Instruction length: 4 bytes when IL is set, else 2 (only for T32, never here).
@@ -112,6 +123,17 @@ mod tests {
         let r = data_abort(0x9382_0006).unwrap();
         assert!(!r.write);
         assert_eq!(data_abort(0x9200_0046), None); // ISV clear
+    }
+
+    /// A guest kernel's `DC CVAU` on a page taken away at stage 2, on the M5 Max: a level 3
+    /// translation fault with CM and WnR set and no instruction syndrome.
+    #[test]
+    fn cache_maintenance_is_told_from_a_write() {
+        let dc = 0x9200_0147;
+        assert_eq!(ec(dc), EC_DABT_LOW);
+        assert!(cache_maintenance(dc) && writes(dc));
+        assert_eq!(data_abort(dc), None);
+        assert!(!cache_maintenance(0x9382_0046), "a store");
     }
 
     #[test]

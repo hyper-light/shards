@@ -52,6 +52,7 @@ pub fn main() -> ! {
             let _ = writeln!(io::stdout(), "{hash:016x}");
             0
         }
+        "clean-cache" => clean_cache(arg(1)),
         "orphan" => orphan(),
         "trap" => trap(arg(1)),
         "tty" => tty(arg(1)),
@@ -68,6 +69,67 @@ pub fn main() -> ! {
         }
     };
     std::process::exit(code)
+}
+
+/// Cleans the data cache over every page of `path`, mapped read-only and never read, as a
+/// JIT or a kernel making a page executable does: `DC CVAU` on arm64, `CLFLUSH` on x86_64.
+/// From an image served with DAX, each page is the image's own, in memory the host maps.
+/// Prints how many pages it cleaned.
+fn clean_cache(path: &str) -> i32 {
+    use std::os::fd::AsRawFd as _;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{path}: {e}");
+            return 1;
+        }
+    };
+    let len = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
+    // SAFETY: sysconf(3) has no preconditions.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap_or(4096);
+    if len == 0 {
+        let _ = writeln!(io::stderr(), "{path}: empty");
+        return 1;
+    }
+    // SAFETY: a read-only shared mapping of a file held open, unmapped below.
+    let at = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if at == libc::MAP_FAILED {
+        let _ = writeln!(io::stderr(), "mmap: {}", io::Error::last_os_error());
+        return 1;
+    }
+    let mut cleaned = 0;
+    for offset in (0..len).step_by(page) {
+        let line = at.cast::<u8>().wrapping_add(offset);
+        // SAFETY: an address in the mapping; cleaning the cache reads and writes no data.
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            std::arch::asm!("dc cvau, {0}", in(reg) line, options(nostack, preserves_flags));
+        }
+        // SAFETY: as above.
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            std::arch::asm!("clflush [{0}]", in(reg) line, options(nostack, preserves_flags));
+        }
+        cleaned += 1;
+    }
+    // SAFETY: as above; the barrier completes the maintenance.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        std::arch::asm!("dsb ish", options(nostack, preserves_flags));
+    }
+    // SAFETY: the mapping made above.
+    unsafe { libc::munmap(at, len) };
+    let _ = writeln!(io::stdout(), "cleaned {cleaned}");
+    0
 }
 
 /// Prints who and where the workload is, one `key value` per line, and proves the root

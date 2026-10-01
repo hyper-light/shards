@@ -209,6 +209,12 @@ The host flattens an image's layers into one EROFS image, which guests mount fro
 virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The code is
 `crates/image`.
 
+- **Regular files are plain**, whole blocks, so the guest serves them with DAX: what a VM
+  reads stays in the host's page cache, shared by every VM of the image, where a file with
+  an inline tail is copied into the VM's own memory. A python VM that imported 24 modules
+  kept 42 MB against 63, for images 3 to 6% larger [PM M74]. Directories and symlinks keep
+  their tails inline.
+
 - **Reading layers.** Docker, containerd and BuildKit read and write layers with Go's
   `archive/tar`, so our reader accepts what it accepts. That covers V7, ustar, star, GNU
   and PAX headers and base-256 numbers. Global PAX headers are ignored, as containerd

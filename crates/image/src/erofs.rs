@@ -1,6 +1,12 @@
 //! Writes EROFS images as Linux 6.18 reads them (fs/erofs/erofs_fs.h, inode.c, data.c,
-//! dir.c, namei.c and xattr.c at v6.18.48): uncompressed, 4 KiB blocks, inline file tails,
-//! inline xattrs, and no feature flags. The bytes are a function of the tree alone.
+//! dir.c, namei.c and xattr.c at v6.18.48): uncompressed, 4 KiB blocks, inline xattrs, and
+//! no feature flags. The bytes are a function of the tree alone.
+//!
+//! A regular file's data is whole blocks (`FLAT_PLAIN`), so guests map it straight from
+//! pmem with DAX: the kernel gives DAX only to plain and chunk-based files
+//! (inode.c:194-198), and an inline tail would send every read through the guest's page
+//! cache, copied out of pmem (docs/research/platform-measurements.md M74). Directories and
+//! symlinks, which DAX never serves, keep their tails inline.
 //!
 //! Layout. Block 0 holds the superblock at byte 1024. The metadata area starts at block 0
 //! (`meta_blkaddr` 0), so inode numbers (nid = byte offset / 32) start after the
@@ -515,7 +521,8 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
             || m.mtime_nsec != 0;
         let head = inode.isize() + inode.xattrs;
         let tail = inode.size % BLOCK;
-        inode.inline = tail > 0 && head + tail <= BLOCK;
+        let regular = matches!(node.kind, Kind::File { .. });
+        inode.inline = !regular && tail > 0 && head + tail <= BLOCK;
         inode.tail = if inode.inline { tail } else { 0 };
         let record = head + inode.tail;
         offset = offset.next_multiple_of(SLOT);

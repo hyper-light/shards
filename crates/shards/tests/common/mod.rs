@@ -567,6 +567,11 @@ pub fn workload_image(dir: &Path) -> PathBuf {
 
 // A registry image for `shards run`: the test guest, served over loopback HTTP.
 
+/// Where a home's image store keeps the root filesystems this build makes.
+pub fn rootfs_dir() -> String {
+    format!("images/rootfs/v{}", shards_image::store::ROOTFS_VERSION)
+}
+
 /// `sha256:<hex>` of `bytes`.
 pub fn sha256_digest(bytes: &[u8]) -> String {
     let hex: String = sha2::Sha256::digest(bytes)

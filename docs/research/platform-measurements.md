@@ -2501,3 +2501,44 @@ revision before comparing a changed API/implementation.
   wider grant: a pooled VM, which cannot know its container ahead, could write every
   container's log and record (on Linux too, by its Landlock rule). Bookmarks remain only
   for a template's directory, on a cold path. The tails need a quiet host to say more.
+
+### M74. Plain files for DAX, against inline tails
+
+- **Question.** A guest serves an EROFS file with DAX, straight from the pmem the host
+  maps, only if its data is whole blocks (`FLAT_PLAIN`; fs/erofs/inode.c at v6.18.48); a
+  file with an inline tail goes through the guest's page cache, copied into the VM's own
+  memory. Writing every regular file plain costs image size. What does it save, and what
+  does it cost?
+- **Method.** Two builds of one revision but for the EROFS writer (inline tails, and
+  regular files plain: `ROOTFS_VERSION` 1 and 2), each with a home holding alpine and
+  python:3.13-slim pulled and their templates saved. Sizes from the image store. Then
+  `docs/research/measurements/dax/dax.py`: a restore of the python template imports 24
+  standard modules and waits while `footprint` reads its process; builds alternate in
+  blocks of 8 (M72), 4 blocks each. The image writer's allocation test gives a synthetic
+  extreme, 10,000 files of 512 bytes. macOS 26.4.1, Apple M5 Max, 2026-10-01; load average
+  4 to 12.8 from other work.
+- **Results.**
+
+| | inline tails | plain |
+|---|---|---|
+| alpine's EROFS | 8,736,768 B | 8,962,048 B (+2.6%) |
+| python:3.13-slim's EROFS | 143,024,128 B | 151,506,944 B (+5.9%) |
+| 10,000 files of 512 B | 6,078,464 B | 41,504,768 B (6.8×) |
+| VM footprint after the imports, p50 / p90 / max (n 32 each) | 63.0 / 63.0 / 63.0 MB | 42.0 / 43.0 / 43.0 MB |
+| The imports, p50 / p90 / max | 483.5 / 582.6 / 590.2 ms | 419.5 / 574.8 / 605.2 ms |
+
+- **Consequence.** Regular files are written plain (D15): each VM that reads an image's
+  files keeps 21 MB less of its own for this workload, what it read staying in the host's
+  page cache, which every VM of the image shares, for images 3 to 6% larger. The imports
+  were no slower; at this load the samples say no more. A tree of many small files grows
+  most, toward a block a file.
+- **Found validating it.** The VM that saves an image's template serves the first run while
+  it records the working set, all guest memory taken away at stage 2. A guest kernel cleans
+  the data cache over a page of the image before it executes it (`DC CVAU`), and the abort
+  reports WnR set, as every cache maintenance abort does (ESR 0x92000147: CM and WnR, no
+  instruction syndrome). HVF's fault handler took it for a write to read-only pmem, could
+  not emulate it, and the VM ended: alpine's and python's first runs failed. A cache
+  maintenance abort now reads as a read (`esr::cache_maintenance`): the page goes back
+  read-only and the instruction runs again; on no guest memory it is skipped, as KVM skips
+  it. `daemon.rs`'s `runs_may_clean_the_cache_over_their_image` runs `DC CVAU` over an
+  image file in a first run and a restored one; without the change the first fails.

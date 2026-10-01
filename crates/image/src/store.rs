@@ -21,7 +21,8 @@ use crate::reference::{Algorithm, Digest};
 use crate::{Error, bad};
 
 /// Bumped whenever the EROFS writer's output changes, so older root filesystems are rebuilt.
-const ROOTFS_VERSION: u32 = 1;
+/// 2: regular files are plain, for DAX (erofs.rs).
+pub const ROOTFS_VERSION: u32 = 2;
 /// Bumped whenever a reference's record changes shape: records of an older shape are not
 /// read, and the images they name are pulled again.
 const REFS_VERSION: u32 = 1;
