@@ -24,7 +24,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::io::Read;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use base64::Engine as _;
@@ -178,7 +178,24 @@ impl Credentials {
 pub struct Authorizer {
     registry: Url,
     credentials: Credentials,
-    hosts: Mutex<HashMap<String, Arc<Handler>>>,
+    /// How each host asked to be answered, and the tokens fetched for it.
+    hosts: Mutex<Hosts>,
+    /// Signalled when a token fetch ends, or a host's way of answering changes, for
+    /// requests waiting on a fetch in progress.
+    fetched: Condvar,
+}
+
+#[derive(Default)]
+struct Hosts {
+    by_origin: HashMap<String, Host>,
+    /// The next host's generation: a fetch that ends after its host's challenge was
+    /// replaced keeps its token to itself.
+    next: u64,
+}
+
+struct Host {
+    generation: u64,
+    handler: Handler,
 }
 
 impl fmt::Debug for Authorizer {
@@ -192,22 +209,39 @@ impl fmt::Debug for Authorizer {
 
 enum Handler {
     Basic(String),
-    Bearer(Box<Bearer>),
+    /// The challenge's terms, and a slot per set of scopes asked for.
+    Bearer(Box<Bearer>, HashMap<String, Slot>),
 }
 
+/// A set of scopes' token: being fetched by one request, which the others wait for, or
+/// fetched.
+enum Slot {
+    Fetching,
+    Ready(Token),
+}
+
+#[derive(Clone)]
 struct Bearer {
     realm: Url,
     service: String,
     scopes: Vec<String>,
     username: String,
     secret: String,
-    /// One slot per set of scopes; whoever holds a slot's lock fetches for it.
-    tokens: Mutex<HashMap<String, Arc<Mutex<Option<Token>>>>>,
 }
 
+#[derive(Clone)]
 struct Token {
     value: String,
     expires: SystemTime,
+}
+
+impl Hosts {
+    /// Answers `host` with `handler` from here on, as a new generation.
+    fn add(&mut self, host: String, handler: Handler) {
+        let generation = self.next;
+        self.next = self.next.wrapping_add(1);
+        self.by_origin.insert(host, Host { generation, handler });
+    }
 }
 
 impl Authorizer {
@@ -215,8 +249,13 @@ impl Authorizer {
         Authorizer {
             registry: registry.clone(),
             credentials,
-            hosts: Mutex::new(HashMap::new()),
+            hosts: Mutex::default(),
+            fetched: Condvar::new(),
         }
+    }
+
+    fn hosts(&self) -> MutexGuard<'_, Hosts> {
+        self.hosts.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn is_registry(&self, url: &Url) -> bool {
@@ -234,15 +273,69 @@ impl Authorizer {
         if let Credentials::RegistryToken(token) = &self.credentials {
             return Ok(self.is_registry(url).then(|| format!("Bearer {token}")));
         }
-        let handler = {
-            let hosts = self.hosts.lock().unwrap_or_else(PoisonError::into_inner);
-            hosts.get(&url.origin()).cloned()
-        };
-        match handler.as_deref() {
-            None => Ok(None),
-            Some(Handler::Basic(value)) => Ok(Some(value.clone())),
-            Some(Handler::Bearer(bearer)) => bearer.authorization(http, scopes).map(Some),
+        /// What a request does, decided under the lock.
+        enum Next {
+            Answer(Option<String>),
+            Wait,
+            Fetch(Box<Bearer>, Vec<String>, String, u64),
         }
+        let origin = url.origin();
+        let mut hosts = self.hosts();
+        let (bearer, scopes, key, generation) = loop {
+            let next = match hosts.by_origin.get_mut(&origin) {
+                None => Next::Answer(None),
+                Some(Host {
+                    handler: Handler::Basic(value),
+                    ..
+                }) => Next::Answer(Some(value.clone())),
+                Some(Host {
+                    generation,
+                    handler: Handler::Bearer(bearer, tokens),
+                }) => {
+                    let scopes = bearer.scopes_with(scopes);
+                    let key = scopes.join(" ");
+                    match tokens.get(&key) {
+                        Some(Slot::Ready(token)) if SystemTime::now() < token.expires => {
+                            Next::Answer(Some(format!("Bearer {}", token.value)))
+                        }
+                        Some(Slot::Fetching) => Next::Wait,
+                        _ => {
+                            tokens.insert(key.clone(), Slot::Fetching);
+                            Next::Fetch(bearer.clone(), scopes, key, *generation)
+                        }
+                    }
+                }
+            };
+            match next {
+                Next::Answer(answer) => return Ok(answer),
+                Next::Wait => hosts = self.fetched.wait(hosts).unwrap_or_else(PoisonError::into_inner),
+                Next::Fetch(bearer, scopes, key, generation) => break (bearer, scopes, key, generation),
+            }
+        };
+        drop(hosts);
+        // Fetched without the lock: other hosts' requests, and this host's for other
+        // scopes, go on meanwhile.
+        let fetched = bearer.fetch(http, &scopes);
+        let mut hosts = self.hosts();
+        if let Some(Host {
+            generation: current,
+            handler: Handler::Bearer(_, tokens),
+        }) = hosts.by_origin.get_mut(&origin)
+            && *current == generation
+        {
+            match &fetched {
+                Ok(token) => {
+                    tokens.insert(key, Slot::Ready(token.clone()));
+                }
+                // Those waiting fetch for themselves, as a request after this one would.
+                Err(_) => {
+                    tokens.remove(&key);
+                }
+            }
+        }
+        drop(hosts);
+        self.fetched.notify_all();
+        fetched.map(|token| Some(format!("Bearer {}", token.value)))
     }
 
     /// Takes in a 401 from `url` and says whether to send the request again. `repeated`
@@ -253,15 +346,16 @@ impl Authorizer {
             return Ok(false);
         }
         let host = url.origin();
-        let mut hosts = self.hosts.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut hosts = self.hosts();
         for c in challenges(response.headers("www-authenticate")) {
             match c.scheme {
                 Scheme::Bearer => {
                     // `error=` means the token itself was refused: start again.
-                    if c.params.contains_key("error") {
-                        hosts.remove(&host);
+                    if c.params.contains_key("error") && hosts.by_origin.remove(&host).is_some() {
+                        // Waiters on its fetches find it gone.
+                        self.fetched.notify_all();
                     }
-                    if hosts.contains_key(&host) {
+                    if hosts.by_origin.contains_key(&host) {
                         return Ok(true);
                     }
                     let (username, secret) = if self.is_registry(url) {
@@ -270,7 +364,7 @@ impl Authorizer {
                         ("", "")
                     };
                     let bearer = Bearer::new(url, &c, username, secret)?;
-                    hosts.insert(host, Arc::new(Handler::Bearer(Box::new(bearer))));
+                    hosts.add(host, Handler::Bearer(Box::new(bearer), HashMap::new()));
                     return Ok(true);
                 }
                 Scheme::Basic => {
@@ -286,7 +380,7 @@ impl Authorizer {
                         )));
                     }
                     let basic = format!("Basic {}", BASE64.encode(format!("{username}:{secret}")));
-                    hosts.insert(host, Arc::new(Handler::Basic(basic)));
+                    hosts.add(host, Handler::Basic(basic));
                     return Ok(true);
                 }
                 Scheme::Digest => {}
@@ -322,29 +416,15 @@ impl Bearer {
                 .unwrap_or_default(),
             username: username.to_string(),
             secret: secret.to_string(),
-            tokens: Mutex::new(HashMap::new()),
         })
     }
 
-    fn authorization(&self, http: &Client, request_scopes: &[String]) -> Result<String, Error> {
-        // containerd's GetTokenScopes: the request's and the challenge's, sorted, deduplicated.
+    /// containerd's GetTokenScopes: the request's and the challenge's, sorted, deduplicated.
+    fn scopes_with(&self, request_scopes: &[String]) -> Vec<String> {
         let mut scopes: Vec<String> = request_scopes.iter().chain(&self.scopes).cloned().collect();
         scopes.sort();
         scopes.dedup();
-        let slot = {
-            let mut tokens = self.tokens.lock().unwrap_or_else(PoisonError::into_inner);
-            tokens.entry(scopes.join(" ")).or_default().clone()
-        };
-        let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(token) = slot.as_ref()
-            && SystemTime::now() < token.expires
-        {
-            return Ok(format!("Bearer {}", token.value));
-        }
-        let token = self.fetch(http, &scopes)?;
-        let value = format!("Bearer {}", token.value);
-        *slot = Some(token);
-        Ok(value)
+        scopes
     }
 
     /// containerd's `doBearerAuth`: OAuth2 when there is a secret, falling back to GET
@@ -364,7 +444,7 @@ impl Bearer {
     }
 
     /// `FetchTokenWithOAuth`: a form POST, fields in Go's sorted order.
-    fn post(&self, http: &Client, scopes: &[String]) -> Result<Response, Error> {
+    fn post<'c>(&self, http: &'c Client, scopes: &[String]) -> Result<Response<'c>, Error> {
         let mut form: Vec<(&str, String)> = vec![("client_id", CLIENT_ID.to_string())];
         if self.username.is_empty() {
             form.push(("grant_type", "refresh_token".into()));
@@ -503,7 +583,7 @@ pub(crate) fn loopback(url: &Url) -> bool {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
-    use crate::testing::{After, Server, serve};
+    use crate::testing::{After, Server, route, serve};
 
     fn plain() -> Client {
         Client::new(
@@ -538,8 +618,8 @@ mod tests {
         )
     }
 
-    /// A response carrying `challenge`, as a registry's 401 would.
-    fn refusal(challenge: &str) -> Response {
+    /// A response carrying `challenge`, as a registry's 401 would, from `client`.
+    fn refusal<'c>(client: &'c Client, challenge: &str) -> Response<'c> {
         let server = serve(
             None,
             vec![(
@@ -552,7 +632,7 @@ mod tests {
             )],
         );
         let url = Url::parse(&format!("http://127.0.0.1:{}/v2/", server.port)).unwrap();
-        plain()
+        client
             .send(&Request {
                 method: "GET",
                 url: &url,
@@ -581,7 +661,7 @@ mod tests {
         let https = Url::parse("https://registry.example/v2/").unwrap();
         let auth = Authorizer::new(&https, credentials);
         assert!(
-            auth.challenged(&https, &refusal(r#"Basic realm="r""#), false)
+            auth.challenged(&https, &refusal(&plain(), r#"Basic realm="r""#), false)
                 .unwrap()
         );
         let client = plain();
@@ -629,7 +709,10 @@ mod tests {
                 r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
                 realm.port
             );
-            assert!(auth.challenged(&registry(), &refusal(&challenge), false).unwrap());
+            assert!(
+                auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                    .unwrap()
+            );
             let fetched = auth.authorization(&plain(), &registry(), &pull("a/b"));
             let e = fetched.expect_err(status).to_string();
             assert!(e.contains("another origin"), "{status}: {e}");
@@ -663,7 +746,10 @@ mod tests {
             r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
             realm.port
         );
-        assert!(auth.challenged(&registry(), &refusal(&challenge), false).unwrap());
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
         let value = auth.authorization(&plain(), &registry(), &pull("a/b")).unwrap();
         assert_eq!(value.as_deref(), Some("Bearer t3"));
         let requests = realm.requests();
@@ -733,7 +819,10 @@ mod tests {
             r#"Bearer realm="http://127.0.0.1:{}/token?x=1",service="svc",scope="repository:a/b:pull""#,
             tokens.port
         );
-        assert!(auth.challenged(&registry(), &refusal(&challenge), false).unwrap());
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
         let client = plain();
         for _ in 0..2 {
             let value = auth
@@ -752,6 +841,38 @@ mod tests {
             requests[0]
         );
         assert!(!requests[0].to_ascii_lowercase().contains("authorization:"));
+    }
+
+    /// Requests that need the same token at once fetch it once: the first fetches, with no
+    /// lock held, and the others wait for its answer.
+    #[test]
+    fn concurrent_requests_fetch_a_token_once() {
+        let answer = http("200 OK", "", r#"{"token":"t1","expires_in":300}"#);
+        let tokens = route(None, move |_| {
+            // Slow enough that every request arrives while the first fetch is out.
+            std::thread::sleep(Duration::from_millis(200));
+            Some((answer.clone(), After::Keep))
+        });
+        let auth = Authorizer::new(&registry(), Credentials::Anonymous);
+        let challenge = format!(r#"Bearer realm="http://127.0.0.1:{}/token""#, tokens.port);
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
+        std::thread::scope(|scope| {
+            let asking: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        auth.authorization(&plain(), &registry(), &pull("library/alpine"))
+                            .unwrap()
+                    })
+                })
+                .collect();
+            for asked in asking {
+                assert_eq!(asked.join().unwrap().as_deref(), Some("Bearer t1"));
+            }
+        });
+        assert_eq!(tokens.requests().len(), 1, "one fetch for all eight");
     }
 
     #[test]
@@ -775,7 +896,10 @@ mod tests {
             r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
             tokens.port
         );
-        assert!(auth.challenged(&registry(), &refusal(&challenge), false).unwrap());
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
         let value = auth.authorization(&plain(), &registry(), &pull("a/b")).unwrap();
         assert_eq!(value.as_deref(), Some("Bearer t2"));
         let requests = tokens.requests();
@@ -808,7 +932,10 @@ mod tests {
             r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
             tokens.port
         );
-        assert!(auth.challenged(&registry(), &refusal(&challenge), false).unwrap());
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
         let client = plain();
         let get = || auth.authorization(&client, &registry(), &pull("a/b")).unwrap();
         assert_eq!(get().as_deref(), Some("Bearer old"));
@@ -838,7 +965,8 @@ mod tests {
             let tokens = token_server(&[answer]);
             let auth = Authorizer::new(&registry(), Credentials::Anonymous);
             let challenge = format!(r#"Bearer realm="http://127.0.0.1:{}/token""#, tokens.port);
-            auth.challenged(&registry(), &refusal(&challenge), false).unwrap();
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap();
             assert!(
                 auth.authorization(&plain(), &registry(), &pull("a/b")).is_err(),
                 "{why}"
@@ -848,7 +976,8 @@ mod tests {
         let tokens = token_server(&[r#"{"token":"t"}"#]);
         let auth = Authorizer::new(&registry(), Credentials::IdentityToken("idt".into()));
         let challenge = format!(r#"Bearer realm="http://127.0.0.1:{}/token""#, tokens.port);
-        auth.challenged(&registry(), &refusal(&challenge), false).unwrap();
+        auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+            .unwrap();
         assert!(auth.authorization(&plain(), &registry(), &pull("a/b")).is_err());
     }
 
@@ -883,14 +1012,19 @@ mod tests {
         assert_eq!(auth.authorization(&client, &other, &[]).unwrap(), None);
         assert!(
             !auth
-                .challenged(&registry(), &refusal(r#"Bearer realm="https://a/t""#), false)
+                .challenged(
+                    &registry(),
+                    &refusal(&plain(), r#"Bearer realm="https://a/t""#),
+                    false
+                )
                 .unwrap()
         );
     }
 
     #[test]
     fn basic_challenges_need_credentials() {
-        let refused = refusal(r#"Basic realm="registry""#);
+        let client = plain();
+        let refused = refusal(&client, r#"Basic realm="registry""#);
         let credentials = Credentials::Password {
             username: "u".into(),
             password: "p".into(),
@@ -912,14 +1046,22 @@ mod tests {
         let auth = Authorizer::new(&registry(), Credentials::Anonymous);
         let challenge = format!(r#"Bearer realm="http://127.0.0.1:{}/token""#, tokens.port);
         let client = plain();
-        assert!(auth.challenged(&registry(), &refusal(&challenge), false).unwrap());
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
         let get = || auth.authorization(&client, &registry(), &pull("a/b")).unwrap();
         assert_eq!(get().as_deref(), Some("Bearer first"));
         let invalid = format!(r#"{challenge},error="invalid_token""#);
-        assert!(auth.challenged(&registry(), &refusal(&invalid), false).unwrap());
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &invalid), false)
+                .unwrap()
+        );
         assert_eq!(get().as_deref(), Some("Bearer second"));
         assert!(
-            !auth.challenged(&registry(), &refusal(&invalid), true).unwrap(),
+            !auth
+                .challenged(&registry(), &refusal(&plain(), &invalid), true)
+                .unwrap(),
             "refused twice"
         );
     }

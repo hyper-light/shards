@@ -92,7 +92,7 @@ impl Registry {
         method: &'a str,
         url: &Url,
         headers: &[(&str, &str)],
-    ) -> Result<(Response, &'a str), Error> {
+    ) -> Result<(Response<'_>, &'a str), Error> {
         let mut method = method;
         let mut last: Option<u16> = None;
         let mut attempt = 0;

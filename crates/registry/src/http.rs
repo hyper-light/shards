@@ -54,7 +54,8 @@ pub type TlsFor = dyn Fn(&Url) -> Result<Arc<ClientConfig>, Error> + Send + Sync
 
 pub struct Client {
     tls: Box<TlsFor>,
-    pool: Arc<Pool>,
+    /// Idle connections, which responses borrowing the client hand back.
+    pool: Pool,
     user_agent: String,
     cancel: Option<Cancel>,
 }
@@ -190,14 +191,14 @@ impl std::fmt::Debug for Request<'_> {
 
 /// A response. Reading it reads the body; once the body ends, the connection is reused.
 #[derive(Debug)]
-pub struct Response {
+pub struct Response<'c> {
     pub status: u16,
     url: Url,
     headers: Vec<(String, String)>,
-    body: Body,
+    body: Body<'c>,
 }
 
-impl Response {
+impl Response<'_> {
     /// The URL that answered: after redirects, the last one.
     pub fn url(&self) -> &Url {
         &self.url
@@ -220,7 +221,7 @@ impl Response {
     }
 }
 
-impl Read for Response {
+impl Read for Response<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.body.read(buf)
     }
@@ -230,7 +231,7 @@ impl Client {
     pub fn new(tls: Box<TlsFor>, user_agent: &str) -> Client {
         Client {
             tls,
-            pool: Arc::new(Pool::default()),
+            pool: Pool::default(),
             user_agent: user_agent.to_string(),
             cancel: None,
         }
@@ -245,7 +246,7 @@ impl Client {
     /// Sends `req` and reads the response head. A GET or HEAD that fails on a reused
     /// connection before any response arrived is sent once more on a new one, as Go
     /// retries replayable requests.
-    pub fn send(&self, req: &Request<'_>) -> Result<Response, Error> {
+    pub fn send(&self, req: &Request<'_>) -> Result<Response<'_>, Error> {
         self.checked(self.send_now(req))
     }
 
@@ -259,7 +260,7 @@ impl Client {
         }
     }
 
-    fn send_now(&self, req: &Request<'_>) -> Result<Response, Error> {
+    fn send_now(&self, req: &Request<'_>) -> Result<Response<'_>, Error> {
         if let Some(cancel) = &self.cancel {
             cancel.check()?;
         }
@@ -292,7 +293,7 @@ impl Client {
         req: &Request<'_>,
         authorize: &dyn Fn(&Url) -> Result<Option<String>, Error>,
         redirects: Redirects,
-    ) -> Result<Response, Error> {
+    ) -> Result<Response<'_>, Error> {
         let mut url = req.url.clone();
         let mut method = req.method;
         let mut body = req.body;
@@ -361,7 +362,7 @@ impl Client {
         Ok(head)
     }
 
-    fn exchange(&self, mut conn: Conn, req: &Request<'_>, head: &[u8]) -> Result<Response, Failure> {
+    fn exchange(&self, mut conn: Conn, req: &Request<'_>, head: &[u8]) -> Result<Response<'_>, Failure> {
         let written = conn
             .io
             .get_mut()
@@ -397,7 +398,7 @@ impl Client {
             conn: Some(conn),
             framing,
             reuse: !close && !both,
-            pool: self.pool.clone(),
+            pool: &self.pool,
         };
         body.finish_if_done();
         Ok(Response {
@@ -738,14 +739,14 @@ struct Chunked {
 }
 
 #[derive(Debug)]
-struct Body {
+struct Body<'c> {
     conn: Option<Conn>,
     framing: Framing,
     reuse: bool,
-    pool: Arc<Pool>,
+    pool: &'c Pool,
 }
 
-impl Body {
+impl Body<'_> {
     /// Hands the connection back to the pool once the body is over, if it may be reused.
     fn finish_if_done(&mut self) {
         let done = match &self.framing {
