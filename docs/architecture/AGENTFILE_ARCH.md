@@ -243,10 +243,12 @@ ATTACH <agent_a> [<agent_b> ...] FOR <harness_a> [<harness_b> ...]
 ### 4.10 Names of agents and harnesses
 
 Agents and harnesses may share a name: users do unexpected things, and the build must
-never resolve a name to the wrong kind. So where a directive may name either (`VOLUME`,
-`CONNECT`), a name that belongs to both an agent and a harness is a build error unless
-`--type` says which is meant; it never defaults to one kind. A name that belongs to one
-kind alone resolves to that kind.
+never resolve a name to the wrong kind. Where a directive may name either (`VOLUME`,
+`CONNECT`), `--type` is optional:
+- without it, the build determines each name's kind: a name that belongs to one kind
+  alone resolves to that kind;
+- a name that belongs to both kinds (a `HARNESS main` and an `AGENT main`) is a build
+  error unless `--type` says which is meant. It never defaults to one kind.
 
 ## 5. Communication between agents in a microVM
 
