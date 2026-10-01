@@ -276,6 +276,21 @@ Given 2026-10-01.
 - **Q1, the agent.** An OCI artifact of its own type, not an OCI image: its
   `artifactType` and manifest are shards' to specify. Firecracker's existing integrations
   with OCI are the reference to study first.
+  - **The shape** (docs/research/oci-artifacts.md §4): OCI 1.1's own-config-and-layers
+    case, as Helm and Wasm are, under a new standard the user proposes, the **Open Sandbox
+    Initiative (OSI)**: `artifactType` `application/vnd.osi.agent.v1`, config
+    `application/vnd.osi.agent.config.v1+json` (name, version, how it runs relative to its
+    directory, platform, the skills and MCP servers it brings, the capabilities it asks
+    for, which an Agentfile grants or refuses), content layers
+    `application/vnd.osi.agent.content.v1.tar+zstd` (or `+gzip`) rooted at the agent's
+    directory, an index for several platforms, signatures and SBOMs as its referrers.
+    Firecracker itself has no OCI support; firecracker-containerd runs container images in
+    a VM and defines no artifact type.
+- **Q7, `EXPOSE` without `FOR`.** `FOR` is optional. Without it the port opens at the
+  microVM's boundary only (reachable as `shards run -p` publishes it); no agent may use it
+  until a `NETWORK` or `CONNECT` grants it.
+- **Q9, writes.** Everything an agent sees is read-only but a private scratch directory of
+  its own, lost when its run ends; any other writable path is a `VOLUME ... FOR` grant.
 - **Q12, skills.** The Agent Skills format: a directory whose `SKILL.md` has YAML
   frontmatter with `name` and `description`, copied whole with its other files; anything
   else is refused.
@@ -293,3 +308,7 @@ Given 2026-10-01.
 - **Q16, the file.** It is an `Agentfile` (a plain `Dockerfile` builds too). `shards
   build` reads both, and a BuildKit frontend named by a `# syntax=` line lets `docker
   buildx build` build an Agentfile as well.
+- **Where the directives travel.** The normalized Agentfile, as a file in a layer of its
+  own, is canonical: it survives every store and copy, and shards' runtime reads it. A
+  config label carries its digest and a summary, manifest annotations make it findable in
+  registries, and attestations serve provenance alone (docs/research/oci-artifacts.md §4).
