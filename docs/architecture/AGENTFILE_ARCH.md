@@ -285,10 +285,17 @@ Given 2026-10-01.
     `application/vnd.osi.agent.content.v1.tar+zstd` (or `+gzip`) rooted at the agent's
     directory, an index for several platforms, signatures and SBOMs as its referrers.
     Firecracker itself has no OCI support; firecracker-containerd runs container images in
-    a VM and defines no artifact type.
+    a VM and defines no artifact type. IANA's media-type registry (application, text and the other
+    trees, fetched 2026-10-01) holds no `vnd.osi` type; "OSI" is otherwise the Open Source
+    Initiative's acronym.
 - **Q7, `EXPOSE` without `FOR`.** `FOR` is optional. Without it the port opens at the
   microVM's boundary only (reachable as `shards run -p` publishes it); no agent may use it
   until a `NETWORK` or `CONNECT` grants it.
+- **Agents cannot read one another** (the user, 2026-10-01). It must be possible, and with
+  §4.2's default it is the default, that no agent reads another agent's directory or
+  anything another agent's workspace has written (its scratch directory included). Only a
+  `VOLUME ... FOR`, `NETWORK` or `CONNECT` the Agentfile declares lets one agent reach what
+  another holds, and the in-VM runtime enforces it, not the agents.
 - **Q9, writes.** Everything an agent sees is read-only but a private scratch directory of
   its own, lost when its run ends; any other writable path is a `VOLUME ... FOR` grant.
 - **Q12, skills.** The Agent Skills format: a directory whose `SKILL.md` has YAML
