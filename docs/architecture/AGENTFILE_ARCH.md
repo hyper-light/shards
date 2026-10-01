@@ -218,7 +218,7 @@ Networks between agents need more than the directives:
 
 ## 7. Open questions, for the review
 
-Recorded as found; none is answered here.
+Recorded as found. The answers the review has given so far are in §8.
 
 1. **The agent tarball.** Its layout was to be explained, and has not been yet: what it
    holds, how shards runs what is in it, and how it relates to an OCI image or artifact.
@@ -268,3 +268,23 @@ Recorded as found; none is answered here.
 17. **The in-VM server.** What identities and keys encrypt and authorize its traffic?
     How is its reach tied to `NETWORK`, `CONNECT`, `MCP ... FOR` and `EXPOSE`? What does
     "code-mode" MCP mean exactly, and from which source?
+
+## 8. Answers from the review
+
+Given 2026-10-01.
+
+- **Q1, the agent.** An OCI artifact of its own type, not an OCI image: its
+  `artifactType` and manifest are shards' to specify. Firecracker's existing integrations
+  with OCI are the reference to study first.
+- **Q12, skills.** The Agent Skills format: a directory whose `SKILL.md` has YAML
+  frontmatter with `name` and `description`, copied whole with its other files; anything
+  else is refused.
+- **Q15, other engines.** Running shards-built microVMs from Docker, Compose or Kubernetes
+  is wanted only if it keeps everything this spec defines working fully: the VM process's
+  confinement (Landlock, App Sandbox), the networking of `EXPOSE`, `NETWORK` and `CONNECT`,
+  and the other directives. If that cannot be done fully, other engines run them through
+  shards' runtime alone. To decide, research how Docker and the others build and run
+  microVMs today.
+- **Q16, the file.** It is an `Agentfile` (a plain `Dockerfile` builds too). `shards
+  build` reads both, and a BuildKit frontend named by a `# syntax=` line lets `docker
+  buildx build` build an Agentfile as well.
