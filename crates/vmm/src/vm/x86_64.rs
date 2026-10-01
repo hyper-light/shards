@@ -379,7 +379,8 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     let memory = Arc::new(GuestMemory::anonymous(&ranges).map_err(|e| format!("guest RAM: {e}"))?);
     let low_ram_end = ram.min(layout::MMIO_GAP);
 
-    let kernel_file = File::open(&cfg.kernel).map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
+    let kernel_file = crate::platform::open_input(&cfg.kernel, false)
+        .map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
     let kernel = boot::load_kernel(&memory, &kernel_file, low_ram_end).map_err(|e| e.to_string())?;
     debug!("kernel loaded");
 

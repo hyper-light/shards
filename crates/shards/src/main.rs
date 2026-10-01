@@ -10,6 +10,13 @@ use std::process::ExitCode;
 mod containers;
 #[cfg(unix)]
 mod daemon;
+#[cfg(target_os = "macos")]
+mod grant;
+#[cfg(target_os = "macos")]
+mod grant_answer;
+// The VM's half, which the daemon's tests answer.
+#[cfg(all(test, target_os = "macos"))]
+mod grant_ask;
 mod guest;
 mod kernel;
 #[cfg(unix)]
@@ -41,6 +48,9 @@ fn main() -> ExitCode {
             usage_error("the daemon needs Unix sockets, which shards does not support on this platform yet")
         }
         Some("guest") => guest::guest(args),
+        // `shards vm`'s broker: not for people to run.
+        #[cfg(target_os = "macos")]
+        Some("grants") => grant_answer::broker(),
         Some("pull") => pull::pull(args),
         Some("run") => usage_error("run: the `shards` command runs commands, through the daemon"),
         Some("vm") => usage_error("vm: the `shards` command runs microVMs, through shards-vm"),

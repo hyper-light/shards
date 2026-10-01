@@ -24,6 +24,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
+#[cfg(target_os = "macos")]
+use common::shardsd;
 use common::{
     TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, shards, shards_vm, workload_image,
 };
@@ -69,6 +71,45 @@ fn template(dir: &Path) -> PathBuf {
 struct Warm {
     child: Child,
     daemon: UnixStream,
+    /// On macOS, what grants the VM its files, as the daemon does.
+    #[cfg(target_os = "macos")]
+    _broker: Broker,
+}
+
+/// `shardsd grants`, serving a VM's asks: killed if it outlives its test, and reaped.
+#[cfg(target_os = "macos")]
+struct Broker(Child);
+
+#[cfg(target_os = "macos")]
+impl Broker {
+    /// A broker on one end of a new pair; the VM's end is returned.
+    fn spawn() -> (Broker, UnixStream) {
+        let (vm, theirs) = UnixStream::pair().unwrap();
+        let fd = theirs.as_raw_fd();
+        let mut command = Command::new(shardsd());
+        command.arg("grants").stdin(Stdio::null()).stdout(Stdio::null());
+        // SAFETY: runs in the child between fork and exec, calling only dup2(2) and
+        // fcntl(2), which are async-signal-safe.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(fd, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let broker = Broker(command.spawn().unwrap());
+        drop(theirs);
+        (broker, vm)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for Broker {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 /// What the client holds while its command runs.
@@ -92,12 +133,31 @@ impl Warm {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
+        #[cfg(target_os = "macos")]
+        let (broker, grants) = Broker::spawn();
+        #[cfg(target_os = "macos")]
+        let grants = grants.as_raw_fd();
+        #[cfg(target_os = "macos")]
+        command.args(["--grants", "4"]);
+        #[cfg(not(target_os = "macos"))]
+        let grants = -1;
         // SAFETY: runs in the child between fork and exec, calling only dup2(2) and
         // fcntl(2), which are async-signal-safe.
         unsafe {
             command.pre_exec(move || {
-                if libc::dup2(fd, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
+                // The grants socket is moved past 4 first, so that placing the daemon's at
+                // 3 cannot close it.
+                let grants = match grants {
+                    -1 => -1,
+                    g => libc::fcntl(g, libc::F_DUPFD_CLOEXEC, 5),
+                };
+                for (from, to) in [(fd, 3), (grants, 4)] {
+                    if from == -1 && to == 4 {
+                        continue;
+                    }
+                    if from < 0 || libc::dup2(from, to) < 0 || libc::fcntl(to, libc::F_SETFD, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
                 }
                 Ok(())
             });
@@ -105,7 +165,12 @@ impl Warm {
         let child = command.spawn().unwrap();
         drop(theirs);
         daemon.set_read_timeout(Some(TIMEOUT)).unwrap();
-        Warm { child, daemon }
+        Warm {
+            child,
+            daemon,
+            #[cfg(target_os = "macos")]
+            _broker: broker,
+        }
     }
 
     fn ready(&mut self) {

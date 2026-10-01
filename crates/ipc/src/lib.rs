@@ -101,6 +101,17 @@ pub mod kind {
     /// and the name of the generation it was recorded from, then the next part of the
     /// working set as the snapshot encodes it (vmm `snapshot::encode_working_set`).
     pub const WORKING_SET: u8 = 17;
+    /// VM → its spawner, before it opens anything: the paths it needs and how, for App
+    /// Sandbox to let it reach them (macOS; the shards crate's `grant`). Answered with a
+    /// `GRANTED` per path, in order, or an `ERR` saying why not.
+    pub const GRANT: u8 = 18;
+    /// Spawner → VM: what was granted for one path: a descriptor, a bookmark, or neither
+    /// for a file not there.
+    pub const GRANTED: u8 = 19;
+    /// VM → its spawner, once it runs: a connection to the vsock host port given as a
+    /// big-endian u32, on the socket `<path>_<port>` beside the vsock path it was granted
+    /// to listen at. Answered with a `GRANTED` carrying the connection, or an `ERR`.
+    pub const DIAL: u8 = 20;
 }
 
 /// A container command as the client asks for it (`kind::CONTAINER`): its name and the

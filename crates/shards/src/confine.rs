@@ -163,10 +163,9 @@ pub fn confine() -> Result<(), String> {
     Ok(())
 }
 
-/// The files and sockets a VM process may use, for its Seatbelt profile on macOS and its
-/// Landlock rules on Linux (D30): all it is denied besides. For Seatbelt, paths are
-/// resolved (`/tmp` is `/private/tmp` to it, which matches the paths of the files
-/// themselves); one not there yet, by its parent.
+/// The files and sockets a VM process may use, for the grants its spawner gives it in App
+/// Sandbox on macOS (`grant`) and its Landlock rules on Linux (D30): all it is denied
+/// besides.
 #[derive(Debug, Default)]
 pub struct Paths {
     /// Files it reads.
@@ -180,116 +179,14 @@ pub struct Paths {
     /// Directories it binds and dials Unix sockets in: that of a vsock socket path it was
     /// given (`--vsock`). The ports its own process serves need none.
     pub sockets_under: Vec<std::path::PathBuf>,
-}
-
-/// `path` as Seatbelt sees it: resolved, or its parent resolved if it is not there yet.
-// macOS applies it; the others are confined without paths.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn resolved(path: &std::path::Path) -> std::path::PathBuf {
-    if let Ok(real) = std::fs::canonicalize(path) {
-        return real;
-    }
-    match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) => resolved(parent).join(name),
-        _ => path.to_path_buf(),
-    }
-}
-
-/// An SBPL string literal: its backslashes and quotes escaped.
-// macOS applies it; the others are confined without paths.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn literal(path: &std::path::Path) -> String {
-    let text = path.to_string_lossy();
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('"');
-    for c in text.chars() {
-        if matches!(c, '"' | '\\') {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out.push('"');
-    out
-}
-
-/// The profile: nothing but sysctl reads, signals to itself, `/dev/null`, files'
-/// metadata, and `paths` (docs/research/platform-measurements.md M52). Metadata, since
-/// resolving a path stats each directory above it: it says which files are there, not
-/// what they hold. Unix sockets are files to Seatbelt: a VM given a vsock socket path
-/// binds and dials beside it.
-// macOS applies it; the others are confined without paths.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn profile(paths: &Paths) -> String {
-    let mut p = String::from(
-        "(version 1)\n(deny default)\n(allow sysctl-read)\n(allow signal (target self))\n\
-         (allow file-read-metadata)\n(allow file-read* file-write* (literal \"/dev/null\"))\n\
-         (allow mach-lookup (global-name \"com.apple.diagnosticd\"))\n",
-    );
-    let rule = |allow: &str, filter: &str, path: &std::path::Path| {
-        format!("(allow {allow} ({filter} {}))\n", literal(&resolved(path)))
-    };
-    for f in &paths.read {
-        p.push_str(&rule("file-read*", "literal", f));
-    }
-    for d in &paths.read_under {
-        p.push_str(&rule("file-read*", "subpath", d));
-    }
-    for f in &paths.write {
-        p.push_str(&rule("file-read* file-write*", "literal", f));
-    }
-    for d in &paths.sockets_under {
-        p.push_str(&rule("file-read* file-write*", "subpath", d));
-        p.push_str(&rule(
-            "network-bind network-outbound network-inbound",
-            "subpath",
-            d,
-        ));
-    }
-    for d in &paths.write_under {
-        p.push_str(&rule("file-read* file-write*", "subpath", d));
-        // Its ancestors not there yet, which making it makes first: made, nothing more.
-        let mut above = d.parent();
-        while let Some(a) = above.filter(|a| !a.as_os_str().is_empty() && !a.exists()) {
-            p.push_str(&rule("file-write-create", "literal", a));
-            above = a.parent();
-        }
-    }
-    p
-}
-
-/// Applies `paths`' profile to this process, for good (sandbox_init(3)).
-#[cfg(target_os = "macos")]
-pub fn seatbelt(paths: &Paths) -> Result<(), String> {
-    unsafe extern "C" {
-        fn sandbox_init(profile: *const std::ffi::c_char, flags: u64, err: *mut *mut std::ffi::c_char)
-        -> i32;
-        fn sandbox_free_error(err: *mut std::ffi::c_char);
-    }
-    shards_vmm::debug!("its sandbox:\n{}", profile(paths));
-    let profile = std::ffi::CString::new(profile(paths)).map_err(|_| "a path with NUL".to_string())?;
-    let mut err: *mut std::ffi::c_char = std::ptr::null_mut();
-    // SAFETY: sandbox_init(3) reads a NUL-terminated profile and may set `err` to a
-    // message it allocated, which is freed below.
-    let r = unsafe { sandbox_init(profile.as_ptr(), 0, &mut err) };
-    if r == 0 {
-        return Ok(());
-    }
-    let why = if err.is_null() {
-        String::from("no reason given")
-    } else {
-        // SAFETY: a NUL-terminated message sandbox_init allocated, freed once read.
-        let why = unsafe { std::ffi::CStr::from_ptr(err) }
-            .to_string_lossy()
-            .into_owned();
-        // SAFETY: as above.
-        unsafe { sandbox_free_error(err) };
-        why
-    };
-    Err(format!("the sandbox: {why}"))
+    /// The vsock socket path it was given, which on macOS its spawner binds for it, and
+    /// beside which it dials for it (grant).
+    #[cfg(target_os = "macos")]
+    pub vsock: Option<std::path::PathBuf>,
 }
 
 /// Applies `paths` to this process with Landlock
-/// (https://docs.kernel.org/userspace-api/landlock.html), as Seatbelt applies them on
+/// (https://docs.kernel.org/userspace-api/landlock.html), as App Sandbox's grants do on
 /// macOS (D30). Every filesystem access Landlock's ABI v5 knows is handled, and only
 /// `paths` are allowed, with `/dev/kvm`, `/dev/null`, this process's `/proc` entry and the
 /// kernel's transparent huge page settings. TCP is refused, and where the ABI knows them
@@ -476,101 +373,13 @@ pub fn landlock(paths: &Paths) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-
-    /// In a child process (this test binary, told by `SEATBELT_CHILD` where its files
-    /// are): applies a profile granting one file to read and one directory to write, then
-    /// tries what a VM might be made to. Prints each outcome and how long the profile took.
-    #[cfg(target_os = "macos")]
-    fn seatbelt_child(dir: &str) -> ! {
-        use std::io::Write as _;
-        let dir = std::path::Path::new(dir);
-        let t0 = std::time::Instant::now();
-        seatbelt(&Paths {
-            read: vec![dir.join("granted")],
-            write_under: vec![dir.join("out")],
-            ..Paths::default()
-        })
-        .unwrap();
-        let took = t0.elapsed();
-        let ok = |r: bool| if r { "ok" } else { "refused" };
-        let mut out = String::new();
-        out.push_str(&format!(
-            "read granted: {}\n",
-            ok(std::fs::read(dir.join("granted")).is_ok())
-        ));
-        out.push_str(&format!(
-            "read other: {}\n",
-            ok(std::fs::read(dir.join("other")).is_ok())
-        ));
-        out.push_str(&format!(
-            "write under: {}\n",
-            ok(std::fs::write(dir.join("out").join("f"), b"x").is_ok())
-        ));
-        out.push_str(&format!(
-            "write other: {}\n",
-            ok(std::fs::write(dir.join("other2"), b"x").is_ok())
-        ));
-        let listener = std::net::TcpListener::bind("127.0.0.1:0");
-        out.push_str(&format!("tcp: {}\n", ok(listener.is_ok())));
-        out.push_str(&format!("took_us: {}\n", took.as_micros()));
-        let _ = std::io::stdout().write_all(out.as_bytes());
-        std::process::exit(0)
-    }
-
-    /// A VM process confined to its paths reads and writes those, and nothing else, and
-    /// has no network (D30).
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_profile_confines_the_process_to_its_paths() {
-        if let Ok(dir) = std::env::var("SEATBELT_CHILD") {
-            seatbelt_child(&dir);
-        }
-        let dir = std::env::temp_dir().join(format!("shards-seatbelt-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("out")).unwrap();
-        std::fs::write(dir.join("granted"), b"g").unwrap();
-        std::fs::write(dir.join("other"), b"o").unwrap();
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "confine::tests::a_profile_confines_the_process_to_its_paths",
-                "--nocapture",
-            ])
-            .env("SEATBELT_CHILD", &dir)
-            .output()
-            .unwrap();
-        let said = String::from_utf8_lossy(&out.stdout);
-        let _ = std::fs::remove_dir_all(&dir);
-        for line in [
-            "read granted: ok",
-            "read other: refused",
-            "write under: ok",
-            "write other: refused",
-            "tcp: refused",
-        ] {
-            assert!(
-                said.contains(line),
-                "{line}\n{said}\n{}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
-        let took = said
-            .lines()
-            .find_map(|l| l.strip_prefix("took_us: "))
-            .unwrap_or("?");
-        let _ = std::io::Write::write_all(
-            &mut std::io::stderr(),
-            format!("sandbox_init took {took} µs\n").as_bytes(),
-        );
-    }
 
     /// In a child process (this test binary, told by `LANDLOCK_CHILD` where its files
     /// are): confines itself to one file to read, one directory to write in and one to make
     /// sockets in, then tries what a VM might be made to. Prints each outcome, and the ABI.
-    #[cfg(target_os = "linux")]
     fn landlock_child(dir: &str) -> ! {
         use std::io::Write as _;
         let dir = std::path::Path::new(dir);
@@ -642,7 +451,6 @@ mod tests {
     /// sockets only where it may, moves nothing from one directory to another, has no TCP,
     /// and is refused a rule for a path not there (D30, PM M66). shards runs no VM on a
     /// kernel without ABI v5, and this test fails on one.
-    #[cfg(target_os = "linux")]
     #[test]
     fn landlock_confines_the_process_to_its_paths() {
         if let Ok(dir) = std::env::var("LANDLOCK_CHILD") {
@@ -690,46 +498,5 @@ mod tests {
         ] {
             assert!(said.contains(line), "{line}\n{}", why());
         }
-    }
-
-    #[test]
-    fn paths_are_quoted_and_resolved_as_seatbelt_matches_them() {
-        assert_eq!(literal(std::path::Path::new(r#"/a "b"\c"#)), r#""/a \"b\"\\c""#);
-        let tmp = std::env::temp_dir();
-        let real = std::fs::canonicalize(&tmp).unwrap_or(tmp.clone());
-        assert_eq!(resolved(&tmp.join("not-there-yet")), real.join("not-there-yet"));
-        let p = profile(&Paths {
-            read: vec![tmp.join("k")],
-            write_under: vec![tmp.join("d")],
-            ..Paths::default()
-        });
-        assert!(p.starts_with("(version 1)\n(deny default)\n"), "{p}");
-        assert!(
-            p.contains(&format!(
-                "(allow file-read* (literal {}))",
-                literal(&real.join("k"))
-            )),
-            "{p}"
-        );
-        assert!(
-            p.contains(&format!(
-                "(allow file-read* file-write* (subpath {}))",
-                literal(&real.join("d"))
-            )),
-            "{p}"
-        );
-        // A directory whose ancestors are not there yet: they may be made, nothing more.
-        let deep = profile(&Paths {
-            write_under: vec![tmp.join("not-there").join("nor-this").join("d")],
-            ..Paths::default()
-        });
-        for missing in [real.join("not-there"), real.join("not-there").join("nor-this")] {
-            let rule = format!("(allow file-write-create (literal {}))", literal(&missing));
-            assert!(deep.contains(&rule), "{deep}");
-        }
-        assert!(
-            !deep.contains(&format!("(literal {})", literal(&real))),
-            "an ancestor that is there granted: {deep}"
-        );
     }
 }

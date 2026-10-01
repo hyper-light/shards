@@ -2355,3 +2355,118 @@ revision before comparing a changed API/implementation.
   - Paired, new − old: wall −15 [−26, −3]; command +0 [−5, +4]; outside −9 [−19, +3].
 - **Consequence.** No cost on a run's path. The max differs by single runs under load, as
   in M68: no claim on the tails.
+
+### M70. What a VM process in App Sandbox can be granted read-only
+
+- **Question.** App Sandbox's grants (D30, macOS) come from the VM's spawner as bookmarks.
+  A VM only reads most of what it is given (kernel, init, its image, a template), and a
+  template is shared: a VM that could write one could change every run restored from it.
+  Can a grant be read-only?
+- **Method.** `docs/research/measurements/app-sandbox/run.sh`: the sandboxed probe
+  (`probe.c`, signed with `entitlements.plist`, Info.plist embedded) is handed, in one
+  process per trial since a sandbox extension lasts the process's life, a bookmark made by
+  an unsandboxed parent with options 0 (read-write) or
+  `kCFURLBookmarkCreationSecurityScopeAllowOnlyReadAccess`, for a file and for a
+  directory, or a descriptor the parent opened read-only. Its files live under `$HOME`:
+  App Sandbox lets a tool read the directory its own executable is in, so a file beside
+  the probe reads with no grant (the control trial shows it), as a first run of this
+  probe, with its files there, wrongly found read-only bookmarks working. macOS 26.4.1,
+  Apple M5 Max, 2026-09-30.
+- **Results.**
+
+| Grant | Read | Write |
+|---|---|---|
+| Read-write bookmark, file | ok | ok |
+| Read-only bookmark, file | refused | refused |
+| Read-write bookmark, directory: a file in it read, one made in it | ok | ok |
+| Read-only bookmark, directory | refused | refused |
+| Descriptor opened read-only, by its number | ok | — |
+| The same, opened again as `/dev/fd/N` | ok | refused (EACCES) |
+| No grant: a file under `$HOME` | refused | — |
+| No grant: a file beside the probe's executable | ok | — |
+
+- **Consequence.** A bookmark passed between processes grants read and write or nothing:
+  `AllowOnlyReadAccess` is for a process's own security-scoped bookmarks, and its
+  resolver here gets nothing. What a VM only reads it is given as descriptors opened
+  read-only, which it reaches as `/dev/fd/N`: it can read them, and neither write them nor
+  reach their paths. Bookmarks, read-write, are for the directories a VM writes in, which
+  are its own (a template it saves, its container's logs).
+
+### M71. Who answers a VM's grants: the daemon, or a broker process
+
+- **Question.** A VM in App Sandbox asks its spawner for every file it opens (D30, M70).
+  `shards vm` must leave that to another process: it becomes the VM by exec, and it links
+  nothing of the broker's. The daemon can answer on the thread that watches the VM, or
+  spawn the same broker, `shardsd grants`, for each VM. What does each cost a warm VM's
+  start, and a run?
+- **Method.** `docs/research/measurements/grant-broker/`: `broker.patch` (against the commit
+  that adds it) makes `SHARDS_GRANT_BROKER=spawn` have the daemon spawn the
+  broker, logs each warm VM's start (spawn to READY, every grant answered), and has the VM
+  log how long its first ask waits and when each answer arrives. `ab.py` runs `shards run
+  --pull never alpine true` through two daemons of that build, alternating; each run's
+  warm VM is replaced, and those starts are the samples. Process starts were timed alone,
+  to exit, with output to `/dev/null`. macOS 26.4.1, Apple M5 Max, 2026-10-01; the host
+  was shared with other work (load average 4 to 12), which the paired differences cancel
+  and the tails do not.
+- **Results.**
+
+| | n | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|
+| Warm VM start, the daemon answers | 300 | 18.2 ms | 38.7 ms | 100.8 ms | 112.8 ms |
+| Warm VM start, a spawned broker answers | 300 | 22.2 ms | 42.8 ms | 137.8 ms | 156.8 ms |
+| Paired, spawned − daemon | 300 | +3.93 ms, 95% [+3.76, +4.14] | | | |
+| Run wall clock, paired, spawned − daemon | 300 | −0.13 ms, 95% [−0.24, +0.00] | | | |
+| First ask's wait, daemon / spawned broker (warm VMs) | 109 / 109 | 43 / 49 µs | 58 / 57 µs | | 145 / 80 µs |
+| First ask's wait, `shards vm restore` (spawned broker) | 200 | 56 µs | 71 µs | 111 µs | 520 µs |
+| A directory's grant (bookmark), daemon / fresh broker | 20 / 19 | 0.43 / 5.1 ms | | | |
+| A file's grant (descriptor), either | | 35 to 160 µs | | | |
+| Process start to exit: `/usr/bin/true` / `shards` / `shardsd grants` | 200 each | 1.3 / 2.2 / 3.8 ms | | | |
+| The `posix_spawn` call itself, `shardsd` | 200 | 0.31 ms | | 0.61 ms | |
+
+- **Consequence.** A broker is up before the VM it serves asks (its first answer waits
+  no longer than the daemon's), and spawning it blocks its spawner 0.3 ms. The 3.9 ms is
+  the directory's grant: a bookmark made in a fresh process pays for CoreFoundation's
+  start, 5 ms, where the daemon, warm, makes one in 0.4 ms. So the daemon answers its own
+  VMs, and a broker serves only `shards vm`, which pays the fresh bookmark only when it
+  writes a directory (`--snapshot-dir`). Neither reaches a pooled run (the wall clock is
+  unchanged), but a warm VM's start bounds how fast a pool refills.
+
+### M72. A sandboxed launch after another build's
+
+- **Question.** Comparing two builds' daemons run by run (`build-ab/ab.py`), warm VM starts
+  alternated between about 20 ms and 120 ms, in both builds, where either build alone
+  started them in 18 ms (M71's harness, one build). Every App Sandbox process signed with
+  one identifier (`dev.shards.vm`) shares one container. What does a launch cost when the
+  previous launch for that container was another build's?
+- **Method.** `docs/research/measurements/app-sandbox/identity-switch.py`: two builds'
+  shards-vm, each ad-hoc signed with `resources/vm.entitlements` and `-o runtime` (one
+  identifier, different code), launched with `--version`, spawn to reap, one build
+  repeatedly, then the two alternately. For scale, one of them signed with
+  `resources/hvf.entitlements` alone, outside App Sandbox. Inside the warm VMs, a probe
+  timed process start (`proc_pidinfo`) to `main`, to READY. macOS 26.4.1, Apple M5 Max,
+  2026-10-01, load average 8.
+- **Results.**
+
+| Launches | n | p50 | p90 | max |
+|---|---|---|---|---|
+| One build, repeatedly | 58 | 9.3 ms | 10.4 ms | 11.6 ms |
+| The other build, repeatedly | 58 | 9.3 ms | 9.8 ms | 10.5 ms |
+| The two alternately | 58 | 109.3 ms | 117.9 ms | 135.8 ms |
+| The first build again | 58 | 9.6 ms | 10.3 ms | 10.9 ms |
+| Outside App Sandbox / in it, one build (100 each, twice) | 100 | 4.9–5.1 / 9.4–9.6 ms | 5.3–5.5 / 10.0–10.1 ms | 6.4 / 10.8 ms |
+
+  In the daemons' A/B, the slow warm VMs lost the time before `main` (95 to 136 ms against
+  9 to 15 ms); from `main` to READY every one took 11 to 13 ms. The first launch of a
+  newly signed binary took 436 to 456 ms.
+- **Consequence.** A launch whose container was last used by another build's code pays
+  about 100 ms; one build's launches do not, and the cost goes with the switch. So:
+  - Builds compared by alternating them on one host must not share a sandbox identity
+    for their VM processes, or every launch measured pays the switch. A pooled run's wall
+    clock, which no launch reaches, is unaffected (−10 µs, 95% [−80, +46], between two
+    builds of one source).
+  - Two ad-hoc signed builds of shards in use at once (two homes on two versions) pay it
+    on every VM start that follows the other's. Ad-hoc code's designated requirement is
+    its own hash, so every local build is another identity; a release signed by one
+    Developer ID keeps one requirement across versions. Whether such builds pay the switch
+    is unmeasured: it needs a Developer ID.
+  - App Sandbox costs a launch 4.5 ms here, at load 8, against M67's 3.1 ms.

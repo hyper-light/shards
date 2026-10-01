@@ -72,26 +72,44 @@ the median, as the Seatbelt profile's compiling cost 3.7 ms [PM M53].
 - `shards-vm` is signed with App Sandbox, the hypervisor entitlement and Hardened Runtime,
   its identifier `dev.shards.vm` and Info.plist linked in. `scripts/hvf-run` and releases
   sign it so; `shards` and `shardsd` stay outside the sandbox, as the brokers.
-- **Files by bookmark.** The spawner (the daemon, or `shards vm` for a direct run) makes a
-  bookmark for each file the VM reads or writes (kernel, initrd, init, disks, pmem, the
-  snapshot a restore reads and the files it records) and for each directory it writes in
-  (the snapshot it saves, a warm VM's container logs), and passes them; the VM resolves them
-  before it opens anything. Nothing else outside its container is reachable.
+- **Files it reads, by descriptor; directories it writes in, by bookmark.** A bookmark
+  passed between processes grants read and write or nothing: a read-only one grants
+  nothing [PM M70]. A VM only reads most of what it is given, and a template is shared,
+  so a read-write grant there would let one VM change every run restored from it. So the
+  VM asks its spawner, before it opens anything, for each path its arguments name
+  (`kind::GRANT`); each file it reads or writes is answered with a descriptor the spawner
+  opened read-only or read-write, which the VM opens again as itself (a registry in the
+  VMM from path to descriptor, which every open of an input goes through), and each
+  directory it writes in (a template it saves, its container's logs, both its own) with
+  a read-write bookmark, made first by the spawner. A restore asks for its template's
+  pointer, then the generation's state, memory and working set, then the files the
+  state names: no directory of a template is ever granted. The descriptors pin what they
+  open, as the generation's directory does where a VM opens by path (Linux).
 - **No socket files for the run.** The run's own ports are served in the VM process, by
   socket pair, with no file (D30), so a warm VM or `shards run` needs no socket grant.
 - **Sockets by descriptor, for `--vsock PATH` only.** A Unix socket cannot be bound or
   dialled outside the container, even in a granted directory. Every VM process shares one
   container, since they share one identity, so sockets there would be reachable by every
-  other VM: they are not used. Instead the spawner binds the vsock device's listening
-  socket and passes it (`accept` on it works), and a guest's connection to another host
-  port is dialled by the spawner and the connected descriptor passed back over the
-  control socket the VM already has.
+  other VM: they are not used. Instead the spawner binds the vsock device's socket and
+  passes it, and the VM listens on it and accepts (both work in the sandbox); a guest's
+  connection to another host port, `<path>_<port>` alone, is dialled by the spawner and
+  the connected descriptor passed back over the socket the VM asks for its grants on,
+  which stays open for this.
+- **Who answers.** The daemon answers its own VMs, on the thread that watches each;
+  `shards vm`, which becomes the VM by exec, starts a broker (`shardsd grants`) that
+  answers and exits when the VM closes the socket. A broker per daemon VM would cost
+  each warm VM's start 3.9 ms, a directory's bookmark made in a fresh process [PM M71].
+  The spawner holds each descriptor it sends until the VM's next message, as XNU flushes
+  a socket in flight that no process holds [PM M24]. A VM not in App Sandbox, or given
+  no socket to ask on, starts no VM.
 - **Cost:** about 3.1 ms at launch, before a warm VM's request; on a cold `shards vm
   restore`, on its way, as Seatbelt's was.
 - **Open, to measure before relying on it:** that a guest-initiated vsock connection brokered
   by descriptor meets the latency of a direct `connect`; how the container prompt behaves
   for a binary signed by another identity than the last (an upgrade from a release to a
-  local build). A working set is no longer the VM's to write: the VM sends it to the
+  local build). No prompt appears between ad-hoc builds, but a launch after another
+  build's pays about 100 ms [PM M72]; whether one Developer ID's releases do is
+  unmeasured. A working set is no longer the VM's to write: the VM sends it to the
   daemon, which writes it with the template, so no grant for the template's final name is
   needed (D30).
 

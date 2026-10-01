@@ -359,7 +359,8 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     let memory = Arc::new(GuestMemory::anonymous(&ram_ranges(ram)?).map_err(|e| format!("guest RAM: {e}"))?);
     // A bad kernel fails the start before any hypervisor state exists. The image is copied,
     // not mapped: a mapped image stalled boots for up to 1 s (platform-measurements M16).
-    let kernel_file = File::open(&cfg.kernel).map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
+    let kernel_file = crate::platform::open_input(&cfg.kernel, false)
+        .map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
     let kernel = boot::load_kernel(&memory, &kernel_file, ram).map_err(|e| e.to_string())?;
     debug!("kernel loaded");
 

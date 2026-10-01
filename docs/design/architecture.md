@@ -1399,10 +1399,23 @@ audit's "Security and test coverage").
   SDK marks deprecated and no longer supported [sandbox.h:7,45]; shards uses no deprecated
   or unsupported interface, so it goes, in the change that brings App Sandbox.
   - `shards-vm` is signed with App Sandbox, the hypervisor entitlement and Hardened Runtime,
-    with its identity in an Info.plist linked into it. It reaches nothing but what its
-    spawner grants: files and directories by bookmark and, only for a `--vsock PATH` of
-    the user's, the device's listening socket by descriptor and connections to host ports
-    dialled by the spawner and handed over.
+    with its identity in an Info.plist linked into it. Before it opens anything it asks its
+    spawner, on a socket of its own (`--grants`), for what its arguments name, and reaches
+    nothing else: a file it reads as a descriptor opened read-only, since a bookmark passed
+    between processes grants read and write or nothing [PM M70]; a file it writes as a
+    descriptor opened read-write; a directory it writes in (a template it saves, a warm
+    VM's container logs) by a read-write bookmark, made first; a restore's template file
+    by file, never its directory. Only for a `--vsock PATH` of the user's, the spawner
+    binds the device's socket for it to listen on, and dials each host port its guest
+    connects to, handing the connection over.
+  - It fails closed: a VM process not in App Sandbox, or given nothing to ask, starts no
+    VM. Its spawner keeps each descriptor it sends until the VM's next message, as XNU
+    flushes a socket in flight that no process holds [PM M24].
+  - The daemon answers its own VMs, on the thread that watches each. `shards vm`, which
+    becomes the VM by exec, starts a broker, `shardsd grants`, that answers and exits. A
+    broker per VM would cost each warm VM's start 3.9 ms, 95% [3.8, 4.1], all of it a
+    directory's bookmark made in a fresh process, where the daemon makes one in 0.4 ms;
+    a broker is up before its VM asks [PM M71].
   - It costs about 3.1 ms at launch (M67), before a warm VM's request, as the profile's
     compiling cost 3.7 ms (M53).
 - **The run's own vsock ports are no socket files.** The run and signal ports are served

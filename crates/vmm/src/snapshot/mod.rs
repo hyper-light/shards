@@ -90,13 +90,15 @@ pub struct Snapshot {
     pub devices: Vec<u8>,
 }
 
-/// A generation, pinned: its state decoded, and its memory file and directory held open.
-/// Its working set is read and written through the directory, wherever it has gone.
+/// A generation, pinned: its state decoded and its memory file held open. Its files are
+/// a VM's inputs (`platform::open_input`): a VM in App Sandbox is handed each open, and
+/// never its directory (PM M70).
 #[derive(Debug)]
 pub struct Pinned {
     pub snapshot: Snapshot,
     pub memory: File,
-    pub generation: File,
+    /// The generation's directory.
+    pub path: PathBuf,
     /// The generation's name, which a working set recorded from it names (runtime.rs,
     /// `accept_working_set`).
     pub name: String,
@@ -116,7 +118,7 @@ struct Identity {
 
 impl Identity {
     fn of(path: &Path) -> io::Result<Identity> {
-        let m = fs::metadata(path)?;
+        let m = platform::input_metadata(path)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt as _;
@@ -169,6 +171,26 @@ pub fn backing_files(dir: &Path) -> Result<Vec<(PathBuf, bool)>, String> {
     Ok(backing(&pinned.snapshot.config)
         .map(|(path, read_only)| (path.to_path_buf(), read_only))
         .collect())
+}
+
+/// The files of the generation the snapshot in `dir` is at, for a VM in App Sandbox to be
+/// granted before it reads the snapshot (shards `grant`; PM M70): its state and memory,
+/// and its working set, which it may not have. Its pointer is read as the VM's input.
+pub fn generation_files(dir: &Path) -> Result<([PathBuf; 2], PathBuf), String> {
+    let name = current(dir).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => format!("{}: no snapshot here", dir.display()),
+        _ => format!("{}: {CURRENT}: {e}", dir.display()),
+    })?;
+    let generation = dir.join(name);
+    Ok((
+        [generation.join(STATE), generation.join(MEMORY)],
+        generation.join(WORKING_SET),
+    ))
+}
+
+/// A snapshot's pointer, for [`generation_files`].
+pub fn pointer(dir: &Path) -> PathBuf {
+    dir.join(CURRENT)
 }
 
 /// The files backing `config`, disks then pmem, each with whether the guest only reads it.
@@ -348,7 +370,7 @@ fn is_generation(name: &str) -> bool {
 /// one is read.
 fn current(dir: &Path) -> io::Result<String> {
     let mut bytes = Vec::new();
-    File::open(dir.join(CURRENT))?
+    platform::open_input(&dir.join(CURRENT), false)?
         .take(MAX_NAME as u64 + 2)
         .read_to_end(&mut bytes)?;
     let name = std::str::from_utf8(&bytes)
@@ -599,8 +621,7 @@ fn open(dir: &Path, name: &str) -> Result<Pinned, Open> {
             Open::Bad(at(file, &e))
         }
     };
-    let generation = platform::open_dir(&path).map_err(|e| lost("", e))?;
-    let bytes = platform::read_in(&generation, STATE, MAX_STATE)
+    let bytes = platform::read_input(&path.join(STATE), MAX_STATE)
         .map_err(|e| Open::Bad(at(STATE, &e)))?
         .ok_or_else(|| Open::Gone(at(STATE, &"gone")))?;
     let decoded = decode(&bytes).map_err(|e| Open::Bad(at(STATE, &e)))?;
@@ -621,7 +642,7 @@ fn open(dir: &Path, name: &str) -> Result<Pinned, Open> {
             )));
         }
     }
-    let memory = platform::open_in(&generation, MEMORY).map_err(|e| lost(MEMORY, e))?;
+    let memory = platform::open_input(&path.join(MEMORY), false).map_err(|e| lost(MEMORY, e))?;
     let expected = snapshot.config.memory_mib.saturating_mul(1 << 20);
     let actual = memory.metadata().map_err(|e| Open::Bad(at(MEMORY, &e)))?.len();
     if actual != expected {
@@ -633,7 +654,7 @@ fn open(dir: &Path, name: &str) -> Result<Pinned, Open> {
     Ok(Pinned {
         snapshot,
         memory,
-        generation,
+        path,
         name: name.to_string(),
     })
 }
@@ -740,17 +761,20 @@ pub fn accept_working_set(
     let Some(pages) = decode_working_set_bytes(bytes, page, max_pages(&pinned.snapshot))? else {
         return Ok(0);
     };
-    write_working_set(&pinned.generation, &pages, page)?;
+    let generation =
+        platform::open_dir(&pinned.path).map_err(|e| format!("{}: {e}", pinned.path.display()))?;
+    write_working_set(&generation, &pages, page)?;
     Ok(pages.len())
 }
 
-pub fn read_working_set(generation: &File, page: u64, max_pages: u64) -> Result<Option<Vec<Touch>>, String> {
+pub fn read_working_set(generation: &Path, page: u64, max_pages: u64) -> Result<Option<Vec<Touch>>, String> {
     let at = |e: &dyn std::fmt::Display| format!("the working set: {e}");
     let max_bytes = max_pages
         .checked_mul(8)
         .and_then(|b| b.checked_add(WORKING_SET_HEADER))
         .ok_or_else(|| at(&"a guest too large to bound"))?;
-    let Some(bytes) = platform::read_in(generation, WORKING_SET, max_bytes).map_err(|e| at(&e))? else {
+    let Some(bytes) = platform::read_input(&generation.join(WORKING_SET), max_bytes).map_err(|e| at(&e))?
+    else {
         return Ok(None);
     };
     let max_pages = usize::try_from(max_pages).map_err(|e| at(&e))?;
@@ -1191,13 +1215,10 @@ mod tests {
             write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
             let p = read(&dir).unwrap();
             let many: Vec<u64> = (0..20).map(|i| 0x8000_0000 + i * 16384).collect();
-            write_working_set(&p.generation, &touches(&many), 16384).unwrap();
-            assert_eq!(
-                read_working_set(&p.generation, 16384, 20).unwrap().unwrap().len(),
-                20
-            );
+            write_working_set(&platform::open_dir(&p.path).unwrap(), &touches(&many), 16384).unwrap();
+            assert_eq!(read_working_set(&p.path, 16384, 20).unwrap().unwrap().len(), 20);
             assert!(
-                read_working_set(&p.generation, 16384, 2)
+                read_working_set(&p.path, 16384, 2)
                     .unwrap_err()
                     .contains("past the limit")
             );
@@ -1216,7 +1237,7 @@ mod tests {
             let (page, max) = (0x4000, 64);
             let set = touches(&[0x8000_0000, 0x8000_4000, 0x8000_c000]);
             let bytes = encode_working_set(&set, page);
-            let stored = || read_working_set(&read(&dir).unwrap().generation, page, max).unwrap();
+            let stored = || read_working_set(&read(&dir).unwrap().path, page, max).unwrap();
             // Another generation's, or recorded at another page size: nothing is written.
             assert_eq!(
                 accept_working_set(&dir, "g-not-this", &bytes, page, |_| max),
@@ -1241,24 +1262,20 @@ mod tests {
             let dir = s.0.join("snap");
             let written = write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
             let p = read(&dir).unwrap();
-            assert_eq!(
-                read_working_set(&p.generation, 16384, 8).unwrap(),
-                None,
-                "none saved"
-            );
+            assert_eq!(read_working_set(&p.path, 16384, 8).unwrap(), None, "none saved");
             let moved = s.0.join("moved");
             fs::rename(&dir, &moved).unwrap();
             write_working_set(&written, &pages, 16384).unwrap();
             let again = read(&moved).unwrap();
             assert_eq!(
-                read_working_set(&again.generation, 16384, 8).unwrap().unwrap(),
+                read_working_set(&again.path, 16384, 8).unwrap().unwrap(),
                 pages,
                 "written where the generation went"
             );
             // A newer generation starts without one.
             write(&moved, &sample(&s.0, 2), &ram(2)).unwrap();
             let newer = read(&moved).unwrap();
-            assert_eq!(read_working_set(&newer.generation, 16384, 8).unwrap(), None);
+            assert_eq!(read_working_set(&newer.path, 16384, 8).unwrap(), None);
         }
 
         /// Working sets saved at once into one generation each land whole (a pool's
@@ -1272,9 +1289,10 @@ mod tests {
             let sets: Vec<Vec<Touch>> = (1..=8u64)
                 .map(|n| touches(&(0..n * 64).map(|i| 0x8000_0000 + i * 16384).collect::<Vec<_>>()))
                 .collect();
+            let generation = platform::open_dir(&p.path).unwrap();
             std::thread::scope(|scope| {
                 for set in &sets {
-                    let generation = &p.generation;
+                    let generation = &generation;
                     scope.spawn(move || {
                         for _ in 0..20 {
                             write_working_set(generation, set, 16384).unwrap();
@@ -1282,7 +1300,7 @@ mod tests {
                     });
                 }
             });
-            let saved = read_working_set(&p.generation, 16384, 1 << 20).unwrap().unwrap();
+            let saved = read_working_set(&p.path, 16384, 1 << 20).unwrap().unwrap();
             assert!(sets.contains(&saved), "{} pages", saved.len());
             let names = generations(&dir.join(current(&dir).unwrap()));
             assert_eq!(names, [MEMORY, STATE, WORKING_SET], "no temporary files are left");

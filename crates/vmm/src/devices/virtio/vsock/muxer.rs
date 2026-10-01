@@ -125,7 +125,8 @@ impl Muxer {
     pub fn new(host: VsockHost, guest_cid: u64) -> io::Result<Muxer> {
         let listener = match host.path {
             Some(path) => {
-                let listener = UnixListener::bind(&path)
+                // Bound here, or by the spawner where this process may not (App Sandbox).
+                let listener = crate::platform::listen_unix(&path)
                     .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
                 listener.set_nonblocking(true)?;
                 Some((path, listener))
@@ -257,9 +258,13 @@ impl Muxer {
                 Some((path, _)) => {
                     let mut target = OsString::from(path.as_os_str());
                     target.push(format!("_{}", key.local_port));
-                    connect_nonblocking(Path::new(&target)).map_err(|e| {
-                        io::Error::new(e.kind(), format!("{}: {e}", Path::new(&target).display()))
-                    })
+                    let target = Path::new(&target);
+                    // Dialled here, or by the spawner where this process may not.
+                    match crate::platform::dial_unix(target) {
+                        Some(dialled) => dialled.and_then(|s| s.set_nonblocking(true).map(|()| s)),
+                        None => connect_nonblocking(target),
+                    }
+                    .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", target.display())))
                 }
                 None => Err(io::Error::new(
                     io::ErrorKind::ConnectionRefused,

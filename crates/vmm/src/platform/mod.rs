@@ -18,6 +18,32 @@ pub use windows::*;
 #[cfg(target_os = "macos")]
 mod macos_thread;
 
+#[cfg(unix)]
+mod granted;
+#[cfg(unix)]
+pub use granted::{
+    dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix, open_input, set_dialer,
+};
+
+/// `path` for reading, and with `write` for writing too (a VM's inputs; granted
+/// descriptors are a Unix host's).
+#[cfg(not(unix))]
+pub fn open_input(path: &std::path::Path, write: bool) -> io::Result<File> {
+    std::fs::OpenOptions::new().read(true).write(write).open(path)
+}
+
+/// `path` resolved, links and all.
+#[cfg(not(unix))]
+pub fn input_path(path: &std::path::Path) -> io::Result<std::path::PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+/// `path`'s metadata.
+#[cfg(not(unix))]
+pub fn input_metadata(path: &std::path::Path) -> io::Result<std::fs::Metadata> {
+    std::fs::metadata(path)
+}
+
 #[cfg(target_os = "linux")]
 pub mod seccomp;
 
@@ -34,7 +60,16 @@ pub fn prioritize_vcpu_thread() -> Result<(), String> {
 /// The bytes of `name` in the directory `dir` holds open, or `None` if there is no such
 /// file. A file longer than `max` bytes is an error, found before it is read.
 pub fn read_in(dir: &File, name: &str, max: u64) -> io::Result<Option<Vec<u8>>> {
-    let file = match open_in(dir, name) {
+    read_bounded(open_in(dir, name), name, max)
+}
+
+/// [`read_in`] for a VM's input at `path` ([`open_input`]).
+pub fn read_input(path: &std::path::Path, max: u64) -> io::Result<Option<Vec<u8>>> {
+    read_bounded(open_input(path, false), &path.display().to_string(), max)
+}
+
+fn read_bounded(opened: io::Result<File>, name: &str, max: u64) -> io::Result<Option<Vec<u8>>> {
+    let file = match opened {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),

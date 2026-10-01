@@ -4,7 +4,7 @@
 //! pointers to positional reads and writes, so no Rust reference ever aliases memory the guest
 //! may modify concurrently.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -66,11 +66,8 @@ impl std::fmt::Debug for Block {
 impl Block {
     /// Opens `path` as a disk. Its size must be a whole number of 512-byte sectors.
     pub fn open(path: &Path, read_only: bool, id: &str) -> Result<Block, String> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(!read_only)
-            .open(path)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let file =
+            crate::platform::open_input(path, !read_only).map_err(|e| format!("{}: {e}", path.display()))?;
         let bytes = file
             .metadata()
             .map_err(|e| format!("{}: {e}", path.display()))?

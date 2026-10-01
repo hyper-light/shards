@@ -33,7 +33,7 @@ fn main() -> ExitCode {
             Ok(home) => client::stop(&home),
             Err(e) => failed(&e),
         },
-        ["vm", ..] => instead(SHARDS_VM, args.get(1..).unwrap_or_default()),
+        ["vm", ..] => vm(args.get(1..).unwrap_or_default()),
         _ => match shards_cmdline::commands::find(&words) {
             Some((command, path, named)) => container(command, path, &words, named, &args),
             None => instead(SHARDSD, &args),
@@ -213,6 +213,69 @@ fn instead(name: &str, args: &[OsString]) -> ExitCode {
         Ok(status) => ExitCode::from(status.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
         Err(e) => failed(&format!("{}: {e}", bin.display())),
     }
+}
+
+/// `shards vm`: becomes shards-vm. On macOS, where shards-vm runs in App Sandbox and may
+/// open nothing it is not granted, it first starts the VM's broker, `shardsd grants`, on a
+/// socket the VM then asks on (`--grants`; docs/research/macos-confinement.md §3). The VM
+/// keeps this process: its terminal, its signals, its exit status. The broker leads a
+/// session of its own, out of reach of a Ctrl-C meant for the VM, exits once the VM has
+/// all it needs, and is reaped by the kernel, since SIGCHLD stays ignored through the exec.
+#[cfg(target_os = "macos")]
+fn vm(args: &[OsString]) -> ExitCode {
+    use std::os::fd::{AsFd as _, IntoRawFd as _};
+    if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
+        return instead(SHARDS_VM, args);
+    }
+    let broker = match beside(SHARDSD) {
+        Ok(bin) => bin,
+        Err(e) => return failed(&e),
+    };
+    let (ours, theirs) = match std::os::unix::net::UnixStream::pair() {
+        Ok(pair) => pair,
+        Err(e) => return failed(&format!("the VM's grants socket: {e}")),
+    };
+    // SAFETY: signal(2) setting SIGCHLD's disposition, before any thread starts.
+    unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
+    let stderr = std::io::stderr();
+    let spawned = shards_ipc::spawn(
+        &broker,
+        &["grants".as_ref()],
+        &[(theirs.as_fd(), 3), (stderr.as_fd(), 2)],
+        true,
+    );
+    if let Err(e) = spawned {
+        return failed(&format!("{}: {e}", broker.display()));
+    }
+    drop(theirs);
+    // Kept open through the exec, for the VM.
+    let fd = ours.into_raw_fd();
+    // SAFETY: fcntl(2) clearing close-on-exec on a descriptor this process owns.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } != 0 {
+        return failed(&format!(
+            "the VM's grants socket: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // App Sandbox starts the VM in its container: relative paths are of this directory.
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(e) => return failed(&format!("the working directory: {e}")),
+    };
+    let mut with: Vec<OsString> = Vec::with_capacity(args.len() + 4);
+    with.extend(args.first().cloned());
+    with.push("--grants".into());
+    with.push(fd.to_string().into());
+    with.push("--cwd".into());
+    with.push(cwd.into());
+    with.extend(args.iter().skip(1).cloned());
+    instead(SHARDS_VM, &with)
+}
+
+/// `shards vm`: becomes shards-vm.
+#[cfg(not(target_os = "macos"))]
+fn vm(args: &[OsString]) -> ExitCode {
+    instead(SHARDS_VM, args)
 }
 
 fn failed(message: &str) -> ExitCode {

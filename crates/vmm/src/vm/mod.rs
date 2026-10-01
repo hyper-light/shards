@@ -55,8 +55,9 @@ fn check_vsock(snap: &crate::snapshot::Snapshot, host: Option<&VsockHost>) -> Re
 /// names the files the machine had, wherever it is restored from (audit A18).
 #[cfg(hv)]
 fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String> {
-    let resolve =
-        |path: &std::path::Path| std::fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()));
+    let resolve = |path: &std::path::Path| {
+        crate::platform::input_path(path).map_err(|e| format!("{}: {e}", path.display()))
+    };
     Ok(crate::snapshot::MachineConfig {
         vcpus: cfg.vcpus,
         memory_mib: cfg.memory_mib,
@@ -246,7 +247,7 @@ fn initrd(cfg: &Config, room: u64) -> Result<Option<Vec<u8>>, String> {
     use std::io::Read as _;
     let open = |p: &PathBuf| -> Result<(std::fs::File, usize), String> {
         let at = |e: std::io::Error| format!("{}: {e}", p.display());
-        let file = std::fs::File::open(p).map_err(at)?;
+        let file = crate::platform::open_input(p, false).map_err(at)?;
         let len = file.metadata().map_err(at)?.len();
         let len = usize::try_from(len).map_err(|_| format!("{}: {len} bytes", p.display()))?;
         Ok((file, len))

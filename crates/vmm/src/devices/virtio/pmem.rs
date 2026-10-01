@@ -49,7 +49,7 @@ impl std::fmt::Debug for Region {
 impl Region {
     pub fn open(path: &Path) -> Result<Region, String> {
         let err = |e: std::io::Error| format!("{}: {e}", path.display());
-        let file = File::open(path).map_err(err)?;
+        let file = crate::platform::open_input(path, false).map_err(err)?;
         let size = file.metadata().map_err(err)?.len();
         if size == 0 {
             return Err(format!("{}: an empty file cannot back pmem", path.display()));

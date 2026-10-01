@@ -2241,24 +2241,40 @@ impl<D: Disk> Daemon<D> {
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a VM's socket: {e}"))?;
         let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
         let err = io::stderr();
-        let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
-        let child = shards_ipc::spawn(
-            &self.vm,
-            &args,
-            &[
-                (null.as_fd(), 0),
-                (err.as_fd(), 1),
-                (err.as_fd(), 2),
-                (theirs.as_fd(), 3),
-            ],
-            false,
-        )
-        .map_err(|e| format!("starting {}: {e}", self.vm.display()))?;
+        // On macOS the VM is in App Sandbox from its launch and asks the daemon, on a socket
+        // of its own, for the files its arguments name (grant).
+        let grants = if cfg!(target_os = "macos") {
+            Some(UnixStream::pair().map_err(|e| format!("a VM's grants socket: {e}"))?)
+        } else {
+            None
+        };
+        let fds: Vec<_> = [
+            (null.as_fd(), 0),
+            (err.as_fd(), 1),
+            (err.as_fd(), 2),
+            (theirs.as_fd(), 3),
+        ]
+        .into_iter()
+        .chain(grants.as_ref().map(|(_, granted)| (granted.as_fd(), 4)))
+        .collect();
+        let given = grants
+            .iter()
+            .flat_map(|_| [OsStr::new("--grants"), OsStr::new("4")]);
+        let args: Vec<&OsStr> = args
+            .iter()
+            .take(1)
+            .map(OsString::as_os_str)
+            .chain(given)
+            .chain(args.iter().skip(1).map(OsString::as_os_str))
+            .collect();
+        let child = shards_ipc::spawn(&self.vm, &args, &fds, false)
+            .map_err(|e| format!("starting {}: {e}", self.vm.display()))?;
+        let grants = grants.map(|(grants, _)| grants);
         let vm = Arc::new(child);
         let watched = vm.clone();
         let watching = std::thread::Builder::new()
             .name("warm vm".into())
-            .spawn_scoped(threads, move || self.watch(threads, &watched, ours, dest));
+            .spawn_scoped(threads, move || self.watch(threads, &watched, ours, grants, dest));
         if let Err(e) = watching {
             let _ = vm.kill(libc::SIGKILL);
             return Err(format!("watching VM {}: {e}", vm.id()));
@@ -2273,11 +2289,19 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         child: &Arc<shards_ipc::Child>,
         socket: UnixStream,
+        grants: Option<UnixStream>,
         dest: For,
     ) {
         let pid = child.id();
         let began = Instant::now();
-        let ready = ready(&socket, pid);
+        // What it asks to reach comes first: it opens nothing until it has it.
+        let granted = match &grants {
+            #[cfg(target_os = "macos")]
+            Some(link) => grant(link, pid),
+            _ => Ok(()),
+        };
+        drop(grants);
+        let ready = granted.and_then(|()| ready(&socket, pid));
         match &dest {
             For::Pool(dir) => {
                 let mut state = lock(&self.state);
@@ -2404,6 +2428,15 @@ fn new_log(dir: &Path) -> io::Result<Log> {
     Ok(Log {
         dir: File::open(dir)?,
     })
+}
+
+/// Answers what VM `pid` asks to reach until it has all it needs and closes the link,
+/// each request within [`READY_TIMEOUT`] (macOS, grant).
+#[cfg(target_os = "macos")]
+fn grant(link: &UnixStream, pid: u32) -> Result<(), String> {
+    link.set_read_timeout(Some(READY_TIMEOUT))
+        .map_err(|e| format!("VM {pid}: {e}"))?;
+    crate::grant_answer::serve(link).map_err(|e| format!("VM {pid}: {e}"))
 }
 
 /// Waits for a starting VM to say it is ready.

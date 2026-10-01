@@ -359,7 +359,7 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     let snapshot::Pinned {
         snapshot: snap,
         memory: memory_file,
-        generation,
+        path: generation,
         name,
     } = snapshot::read(&cfg.dir)?;
     check_vcpus(snap.config.vcpus)?;

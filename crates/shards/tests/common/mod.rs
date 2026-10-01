@@ -267,10 +267,11 @@ fn binaries() -> &'static Path {
             let copy = temp.join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
             std::fs::copy(path, &copy).unwrap();
             if cfg!(target_os = "macos") && bin == "shards-vm" {
+                // In App Sandbox, as releases sign it (resources/vm.entitlements).
                 let st = Command::new("codesign")
                     .arg("--entitlements")
-                    .arg(workspace().join("resources/hvf.entitlements"))
-                    .args(["--force", "-s", "-"])
+                    .arg(workspace().join("resources/vm.entitlements"))
+                    .args(["-o", "runtime", "--force", "-s", "-"])
                     .arg(&copy)
                     .stderr(Stdio::null())
                     .status()

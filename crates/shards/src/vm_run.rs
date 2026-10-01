@@ -119,6 +119,20 @@ impl Common {
             }
             "--vsock" => self.vsock = Some(PathBuf::from(value("--vsock")?)),
             "--logs-in" => self.logs_in = Some(PathBuf::from(value("--logs-in")?)),
+            "--cwd" => {
+                let dir = PathBuf::from(value("--cwd")?);
+                if !dir.is_absolute() {
+                    return Err(format!("--cwd: {} is not an absolute path", dir.display()));
+                }
+                CWD.set(dir).map_err(|_| "--cwd given twice".to_string())?;
+            }
+            "--grants" => {
+                let fd = text(value("--grants")?)?;
+                let fd = fd
+                    .parse::<i32>()
+                    .map_err(|_| format!("--grants: {fd:?} is not a descriptor"))?;
+                grants(fd)?;
+            }
             "-e" | "--env" => w.env.push(text(value("--env")?)?),
             "-w" | "--workdir" => w.workdir = text(value("--workdir")?)?,
             "-u" | "--user" => w.user = text(value("--user")?)?,
@@ -833,14 +847,13 @@ fn max_rss_kib() -> u64 {
     0
 }
 
-/// Runs a started VM to its end: console, timing report, exit code. A template must end
-/// in its snapshot.
-/// Starts the VM `cfg` describes, once this process has confined itself to the files it
-/// names, the snapshot directory it saves to, its vsock sockets' directory and `logs`
-/// (D30).
+/// Starts the VM `cfg` describes, once this process is confined to the files it names, the
+/// snapshot directory it saves to, its vsock socket and `logs`: on Linux by Landlock, on
+/// macOS by what its spawner grants it (D30).
 fn start(cfg: &Config, logs: Option<&Path>) -> Result<(Handle, Running), String> {
-    // Whole paths: Seatbelt matches a file opened by a relative path against its rules
-    // as named, and a snapshot records its files by absolute path anyway.
+    // Whole paths: grants and Landlock's rules name each file whole, a VM on macOS runs in
+    // its sandbox's container rather than the caller's directory, and a snapshot records
+    // its files by absolute path anyway.
     let mut cfg = cfg.clone();
     for path in [Some(&mut cfg.kernel), cfg.initrd.as_mut(), cfg.init.as_mut()]
         .into_iter()
@@ -891,7 +904,15 @@ fn restore_vm(cfg: &RestoreConfig, logs: Option<&Path>) -> Result<(Handle, Runni
     }
     let logs = logs.map(absolute).transpose()?;
     let (cfg, logs) = (&cfg, logs.as_deref());
+    // A host that runs no VM says so, before its files are confined: the check reads no
+    // input of the VM's.
+    vm::check_host()?;
     let mut paths = crate::confine::Paths::default();
+    // The snapshot says which files it restores against: on macOS it is granted first, to
+    // be read for them.
+    #[cfg(target_os = "macos")]
+    granted_template(&cfg.dir)?;
+    #[cfg(not(target_os = "macos"))]
     paths.read_under.push(cfg.dir.clone());
     for (path, read_only) in shards_vmm::snapshot::backing_files(&cfg.dir)? {
         let list = if read_only {
@@ -907,17 +928,21 @@ fn restore_vm(cfg: &RestoreConfig, logs: Option<&Path>) -> Result<(Handle, Runni
         cfg.vsock.as_ref().and_then(|v| v.path.as_deref()),
         logs,
     );
-    // A host that runs no VM says so, before its files are confined: the check reads no
-    // input of the VM's.
-    vm::check_host()?;
     confine(&paths)?;
     vm::restore(cfg)
 }
 
 /// `path` made whole against the working directory.
 fn absolute(path: &Path) -> Result<PathBuf, String> {
-    std::path::absolute(path).map_err(|e| format!("{}: {e}", path.display()))
+    match CWD.get() {
+        Some(cwd) if path.is_relative() => Ok(cwd.join(path)),
+        _ => std::path::absolute(path).map_err(|e| format!("{}: {e}", path.display())),
+    }
 }
+
+/// The directory relative paths are of (`--cwd DIR`): `shards vm`'s own on macOS, where App
+/// Sandbox starts a VM process in its container instead.
+static CWD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// The directories a VM writes in: the snapshot it saves and a warm VM's container logs;
 /// and the one holding the vsock socket path it was given, if any.
@@ -929,21 +954,135 @@ fn written(
 ) {
     paths.write_under.extend(snapshot.map(Path::to_path_buf));
     // Landlock holds a directory by its inode, so the one a snapshot goes to is made now,
-    // as its snapshot would make it (confine.rs, `landlock`).
+    // as its snapshot would make it (confine.rs, `landlock`). On macOS the spawner makes it
+    // as it grants it: a sandboxed process makes nothing outside its grants.
+    #[cfg(target_os = "linux")]
     if let Some(dir) = snapshot {
         let _ = std::fs::create_dir_all(dir);
     }
+    #[cfg(target_os = "macos")]
+    {
+        paths.vsock = vsock.map(Path::to_path_buf);
+    }
+    #[cfg(not(target_os = "macos"))]
     paths
         .sockets_under
         .extend(vsock.and_then(Path::parent).map(Path::to_path_buf));
     paths.write_under.extend(logs.map(Path::to_path_buf));
 }
 
-/// Applies `paths` where the OS confines by path: Seatbelt on macOS, Landlock on Linux
-/// (D30), beside Linux's seccomp filter, which is on the whole process already.
+/// The socket this VM asks its spawner for access on (`--grants FD`): one a process, as
+/// its VM is.
+#[cfg(target_os = "macos")]
+static GRANTS: std::sync::OnceLock<std::os::unix::net::UnixStream> = std::sync::OnceLock::new();
+
+/// Takes the socket at `fd` to ask the spawner for access on (macOS).
+#[cfg(target_os = "macos")]
+fn grants(fd: i32) -> Result<(), String> {
+    let link = crate::warm::inherited_socket("--grants", fd)?;
+    GRANTS.set(link).map_err(|_| "--grants given twice".to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn grants(_: i32) -> Result<(), String> {
+    Err("--grants: macOS alone grants a VM its files".into())
+}
+
+/// On macOS, where the VM process is in App Sandbox from its launch, asks its spawner for
+/// `wanted` (grant). It fails closed, as Landlock does: a VM process not signed into App
+/// Sandbox starts no VM.
+#[cfg(target_os = "macos")]
+fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
+    if !crate::grant_ask::sandboxed() {
+        return Err(
+            "shards-vm is not signed into App Sandbox, which confines every VM on macOS: sign it \
+             with resources/vm.entitlements"
+                .into(),
+        );
+    }
+    let link = GRANTS
+        .get()
+        .ok_or("nothing was granted to this VM: start it with `shards vm`, which grants it its files")?;
+    crate::grant_ask::obtain(link, wanted)
+}
+
+/// `paths` as the VM asks for them: files it reads read-only, files it writes read-write,
+/// and the directories it writes in made first. A directory cannot be granted read-only
+/// (PM M70): a restore asks for its template's files instead.
+#[cfg(target_os = "macos")]
+fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
+    use crate::grant::Access;
+    if !paths.read_under.is_empty() {
+        return Err("a directory cannot be granted read-only under App Sandbox".into());
+    }
+    if !paths.sockets_under.is_empty() {
+        return Err("a directory of sockets cannot be granted under App Sandbox".into());
+    }
+    let wanted: Vec<crate::grant::Wanted> = paths
+        .read
+        .iter()
+        .map(|p| (Access::Read, p.clone()))
+        .chain(paths.write.iter().map(|p| (Access::Write, p.clone())))
+        .chain(paths.write_under.iter().map(|p| (Access::MakeDir, p.clone())))
+        .chain(paths.vsock.iter().map(|p| (Access::Listen, p.clone())))
+        .collect();
+    ask(&wanted)
+}
+
+/// Has the spawner dial, beside `vsock`, every host port the guest connects to: App
+/// Sandbox lets this process dial nothing outside its container (PM M67).
+#[cfg(target_os = "macos")]
+fn dial_through_spawner(vsock: &Path) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt as _;
+    static DIALING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let mut prefix = vsock.as_os_str().as_bytes().to_vec();
+    prefix.push(b'_');
+    shards_vmm::platform::set_dialer(Box::new(move |target: &Path| {
+        let port = target
+            .as_os_str()
+            .as_bytes()
+            .strip_prefix(prefix.as_slice())
+            .and_then(|p| std::str::from_utf8(p).ok())
+            .and_then(|p| p.parse::<u32>().ok())
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a vsock host port"))?;
+        let link = GRANTS.get().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotConnected, "no spawner to dial through")
+        })?;
+        // A request and its answer at a time.
+        let _one = DIALING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::grant_ask::dial(link, port)
+    }))
+}
+
+/// A restore's template, as a VM in App Sandbox is granted it: its pointer, then the
+/// files of the generation it names, never its directory.
+#[cfg(target_os = "macos")]
+fn granted_template(dir: &Path) -> Result<(), String> {
+    use crate::grant::Access;
+    ask(&[(Access::ReadIfThere, shards_vmm::snapshot::pointer(dir))])?;
+    let ([state, memory], working_set) = shards_vmm::snapshot::generation_files(dir)?;
+    ask(&[
+        (Access::Read, state),
+        (Access::Read, memory),
+        (Access::ReadIfThere, working_set),
+    ])
+}
+
+/// Applies `paths` where the OS confines by path: App Sandbox's grants on macOS, Landlock
+/// on Linux (D30), beside Linux's seccomp filter, which is on the whole process already.
 fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
+    // The last it asks for: the link closes, and the spawner grants nothing more, unless
+    // the guest's connections to host ports go through it.
     #[cfg(target_os = "macos")]
-    return crate::confine::seatbelt(paths);
+    return granted(paths).and_then(|()| match &paths.vsock {
+        Some(vsock) => dial_through_spawner(vsock),
+        None => {
+            if let Some(link) = GRANTS.get() {
+                let _ = link.shutdown(std::net::Shutdown::Both);
+            }
+            Ok(())
+        }
+    });
     #[cfg(target_os = "linux")]
     return crate::confine::landlock(paths);
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -953,6 +1092,8 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
     }
 }
 
+/// Runs a started VM to its end: console, timing report, exit code. A template must end
+/// in its snapshot.
 fn supervise(started: Result<(Handle, Running), String>, console: Console, template: bool) -> ExitCode {
     let (handle, running) = match started {
         Ok(v) => v,

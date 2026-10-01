@@ -41,23 +41,29 @@ impl Link {
 }
 
 fn daemon_socket(fd: RawFd) -> Result<UnixStream, String> {
+    inherited_socket("--warm", fd)
+}
+
+/// The socket a spawner left this process at descriptor `fd`, named by option `flag`:
+/// owned from here on, and closed on exec.
+pub fn inherited_socket(flag: &str, fd: RawFd) -> Result<UnixStream, String> {
     if fd < 3 {
-        return Err(format!("--warm {fd}: not a descriptor of its own"));
+        return Err(format!("{flag} {fd}: not a descriptor of its own"));
     }
     // SAFETY: fstat(2) into a zeroed stat buffer; any descriptor number is safe to ask about.
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     // SAFETY: as above.
     if unsafe { libc::fstat(fd, &mut st) } != 0 {
-        return Err(format!("--warm {fd}: {}", io::Error::last_os_error()));
+        return Err(format!("{flag} {fd}: {}", io::Error::last_os_error()));
     }
     if st.st_mode & libc::S_IFMT != libc::S_IFSOCK {
-        return Err(format!("--warm {fd}: not a socket"));
+        return Err(format!("{flag} {fd}: not a socket"));
     }
-    // SAFETY: an open socket the daemon left for this process alone, owned from here on.
+    // SAFETY: an open socket the spawner left for this process alone, owned from here on.
     let socket = unsafe { UnixStream::from_raw_fd(fd) };
     // SAFETY: fcntl(2) on a descriptor we own.
     if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
-        return Err(format!("--warm {fd}: {}", io::Error::last_os_error()));
+        return Err(format!("{flag} {fd}: {}", io::Error::last_os_error()));
     }
     Ok(socket)
 }

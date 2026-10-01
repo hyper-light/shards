@@ -28,6 +28,27 @@ fn main() {
 fn build() -> Result<(), String> {
     let mut out = io::stdout().lock();
     let _ = writeln!(out, "cargo::rerun-if-env-changed=SHARDS_INIT_BINARY");
+    // shards-vm runs in App Sandbox on macOS, which takes a tool's identity from an
+    // Info.plist in its __TEXT,__info_plist section: without one, it is killed at launch
+    // (docs/research/macos-confinement.md §2).
+    if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos") {
+        let manifest =
+            PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is not set")?);
+        let plist = manifest
+            .join("..")
+            .join("..")
+            .join("resources")
+            .join("vm-Info.plist");
+        let plist = plist
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", plist.display()))?;
+        let _ = writeln!(out, "cargo::rerun-if-changed={}", plist.display());
+        let _ = writeln!(
+            out,
+            "cargo::rustc-link-arg-bin=shards-vm=-Wl,-sectcreate,__TEXT,__info_plist,{}",
+            plist.display()
+        );
+    }
     // Only Unix hosts run VMs from `shardsd` yet.
     if env::var("CARGO_CFG_TARGET_FAMILY").is_ok_and(|f| !f.split(',').any(|f| f == "unix")) {
         return Ok(());

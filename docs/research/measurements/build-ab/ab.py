@@ -17,8 +17,13 @@ guest (request to status, the VM's clock) and the rest. Each iteration runs both
 back to back, in alternating order, so their difference cancels what the host was doing
 then: the median of those differences is reported with a bootstrap 95% interval.
 
-AB_PAUSE (seconds, default 0.01) is the pause after each run, in which its daemon refills
+AB_PAUSE (seconds, default 0.3) is the pause after each run, in which its daemon refills
 its pool: long enough, and no arm's refill overlaps the next run.
+
+On macOS the two builds' VM processes share one App Sandbox identity, and a launch after
+the other build's pays about 100 ms (M72): each refill does, off the run's path, so a
+pause shorter than that puts it on the next run's; the default leaves room for it. Compare launches themselves with one
+build (grant-broker/ab.py).
 
     python3 ab.py OLD_DIR NEW_DIR IMAGE N [COMMAND...]
 """
@@ -58,7 +63,7 @@ for i in range(n):
     for name in order:
         samples[name].append(run(*arms[name]))
         # The pool refills between a user's runs.
-        time.sleep(float(os.environ.get("AB_PAUSE", "0.01")))
+        time.sleep(float(os.environ.get("AB_PAUSE", "0.3")))
 
 
 def q(v, f):

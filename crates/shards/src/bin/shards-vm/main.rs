@@ -10,6 +10,12 @@ use std::process::ExitCode;
 
 #[path = "../../confine.rs"]
 mod confine;
+#[cfg(target_os = "macos")]
+#[path = "../../grant.rs"]
+mod grant;
+#[cfg(target_os = "macos")]
+#[path = "../../grant_ask.rs"]
+mod grant_ask;
 #[path = "../../spec.rs"]
 mod spec;
 #[path = "../../terminal.rs"]

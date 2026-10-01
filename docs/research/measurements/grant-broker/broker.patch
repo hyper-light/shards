@@ -1,0 +1,90 @@
+diff --git a/crates/shards/src/daemon.rs b/crates/shards/src/daemon.rs
+index e9d5920..722c4bd 100644
+--- a/crates/shards/src/daemon.rs
++++ b/crates/shards/src/daemon.rs
+@@ -2238,6 +2238,7 @@ impl<D: Disk> Daemon<D> {
+         args: &[OsString],
+         dest: For,
+     ) -> Result<Arc<shards_ipc::Child>, String> {
++        let t0 = Instant::now();
+         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a VM's socket: {e}"))?;
+         let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+         let err = io::stderr();
+@@ -2270,11 +2271,27 @@ impl<D: Disk> Daemon<D> {
+         let child = shards_ipc::spawn(&self.vm, &args, &fds, false)
+             .map_err(|e| format!("starting {}: {e}", self.vm.display()))?;
+         let grants = grants.map(|(grants, _)| grants);
++        // MEASUREMENT (grant-broker): SHARDS_GRANT_BROKER=spawn has a `shardsd grants`
++        // process answer the VM, as `shards vm` does, in place of this daemon's thread.
++        let mut broker = None;
++        let grants = match grants {
++            Some(link) if std::env::var_os("SHARDS_GRANT_BROKER").is_some_and(|v| v == "spawn") => {
++                let bin = self.vm.with_file_name("shardsd");
++                broker = Some(
++                    shards_ipc::spawn(&bin, &[OsStr::new("grants")], &[(link.as_fd(), 3), (err.as_fd(), 2)], false)
++                        .map_err(|e| format!("starting the broker: {e}"))?,
++                );
++                None
++            }
++            g => g,
++        };
+         let vm = Arc::new(child);
+         let watched = vm.clone();
+         let watching = std::thread::Builder::new()
+             .name("warm vm".into())
+-            .spawn_scoped(threads, move || self.watch(threads, &watched, ours, grants, dest));
++            .spawn_scoped(threads, move || {
++                self.watch(threads, &watched, ours, grants, dest, t0, broker)
++            });
+         if let Err(e) = watching {
+             let _ = vm.kill(libc::SIGKILL);
+             return Err(format!("watching VM {}: {e}", vm.id()));
+@@ -2291,6 +2308,8 @@ impl<D: Disk> Daemon<D> {
+         socket: UnixStream,
+         grants: Option<UnixStream>,
+         dest: For,
++        t0: Instant,
++        broker: Option<shards_ipc::Child>,
+     ) {
+         let pid = child.id();
+         let began = Instant::now();
+@@ -2302,6 +2321,12 @@ impl<D: Disk> Daemon<D> {
+         };
+         drop(grants);
+         let ready = granted.and_then(|()| ready(&socket, pid));
++        if ready.is_ok() {
++            log(&format!("grant-broker ready-us {}", t0.elapsed().as_micros()));
++        }
++        if let Some(broker) = broker {
++            let _ = broker.wait();
++        }
+         match &dest {
+             For::Pool(dir) => {
+                 let mut state = lock(&self.state);
+diff --git a/crates/shards/src/grant_ask.rs b/crates/shards/src/grant_ask.rs
+index a9ff94f..7b8b52c 100644
+--- a/crates/shards/src/grant_ask.rs
++++ b/crates/shards/src/grant_ask.rs
+@@ -183,8 +183,21 @@ pub fn obtain(link: &std::os::unix::net::UnixStream, wanted: &[Wanted]) -> Resul
+     use shards_ipc::kind;
+     shards_ipc::send(link, kind::GRANT, &encode(wanted)?, &[])
+         .map_err(|e| format!("asking for access: {e}"))?;
++    // MEASUREMENT (grant-broker): how long this VM's first ask waits for its answer.
++    static FIRST: std::sync::Once = std::sync::Once::new();
++    let asked = std::time::Instant::now();
+     for (access, path) in wanted {
+-        let answer = shards_ipc::recv(link)
++        let answer = shards_ipc::recv(link);
++        FIRST.call_once(|| {
++            use std::io::Write as _;
++            let _ = writeln!(std::io::stderr(), "grant-broker wait-us {}", asked.elapsed().as_micros());
++        });
++        let answer = answer;
++        {
++            use std::io::Write as _;
++            let _ = writeln!(std::io::stderr(), "grant-broker answer-us {:?} {}", access, asked.elapsed().as_micros());
++        }
++        let answer = answer
+             .map_err(|e| format!("the grant for {}: {e}", path.display()))?
+             .ok_or_else(|| format!("the spawner went before granting {}", path.display()))?;
+         match answer.kind {
