@@ -691,9 +691,8 @@ mod tests {
         write_segment(dir, 0, records, indexed);
     }
 
-    /// Writes records as segment `seq`.
-    fn write_segment(dir: &Path, seq: u64, records: &[(u8, u64, Vec<u8>)], indexed: bool) {
-        let (log_name, index_name) = log_segment(seq);
+    /// `records` as a log's bytes and its index's, the log starting at offset `base`.
+    fn encode(records: &[(u8, u64, Vec<u8>)], base: u64, indexed: bool) -> (Vec<u8>, Vec<u8>) {
         let mut log = Vec::new();
         let mut index = Vec::new();
         for (stream, at, bytes) in records {
@@ -701,7 +700,7 @@ mod tests {
             if bytes.is_empty() && indexed {
                 continue;
             }
-            let mut entry = log.len() as u64;
+            let mut entry = base + log.len() as u64;
             if *stream == LOG_STDERR {
                 entry |= INDEX_STDERR;
             }
@@ -714,6 +713,29 @@ mod tests {
             log.extend(bytes);
             index.extend(entry.to_be_bytes());
         }
+        (log, index)
+    }
+
+    /// Appends `record` to segment 0 and its index, as the writer does.
+    fn append(dir: &Path, record: &(u8, u64, Vec<u8>)) {
+        use std::io::Write as _;
+        let (log_name, index_name) = log_segment(0);
+        let base = std::fs::metadata(dir.join(&log_name)).unwrap().len();
+        let (log, index) = encode(std::slice::from_ref(record), base, true);
+        let open = |name: &str| {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(dir.join(name))
+                .unwrap()
+        };
+        open(&log_name).write_all(&log).unwrap();
+        open(&index_name).write_all(&index).unwrap();
+    }
+
+    /// Writes records as segment `seq`.
+    fn write_segment(dir: &Path, seq: u64, records: &[(u8, u64, Vec<u8>)], indexed: bool) {
+        let (log_name, index_name) = log_segment(seq);
+        let (log, index) = encode(records, 0, indexed);
         std::fs::write(dir.join(log_name), log).unwrap();
         if indexed {
             std::fs::write(dir.join(index_name), index).unwrap();
@@ -1118,7 +1140,10 @@ mod tests {
                 Ok(true)
             };
             for upto in 0..=records.len() {
-                write(&dir, &records[..upto], true);
+                // Each record appended as the writer appends it, the log read again.
+                if let Some(record) = upto.checked_sub(1).and_then(|i| records.get(i)) {
+                    append(&dir, record);
+                }
                 let log = LogFile::open(&dir).unwrap();
                 reader.read(&log, &mut each).unwrap();
             }
