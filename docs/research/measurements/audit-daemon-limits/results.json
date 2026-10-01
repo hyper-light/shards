@@ -1,0 +1,92 @@
+{
+  "metadata": {
+    "captured_utc": "2026-09-30T01:05:46.154725+00:00",
+    "baseline": "329d00a5d98135956664f7bcec5d289dab1fb8a2",
+    "head_at_probe": "bd0b2e4b516c370bea5ced21426fb79615c88263",
+    "git_status": [
+      " M crates/vmm/src/devices/virtio/block.rs",
+      " M crates/vmm/src/devices/virtio/mod.rs",
+      " M crates/vmm/src/devices/virtio/pmem.rs",
+      " M crates/vmm/src/devices/virtio/queue.rs",
+      " M crates/vmm/src/devices/virtio/vsock/mod.rs",
+      "?? crates/vmm/src/devices/virtio/worker.rs",
+      "?? docs/research/measurements/audit-daemon-limits/",
+      "?? docs/research/measurements/audit-vmm-controls/"
+    ],
+    "host": "Adas-MacBook-Pro-2.local",
+    "os": "macOS-26.4.1-arm64-arm-64bit",
+    "architecture": "arm64",
+    "source_sha256": {
+      "crates/shards/src/daemon.rs": "cb5411161ea73e48893a89014bf84ad3ced863664bd82ab628fd3b2cb3dc50f0",
+      "crates/shards/src/daemon/commands.rs": "53203b7e8f85f5d30a7817e3467ef3e1f170b64a43bf1ad34b3725123110c922",
+      "crates/shards/src/run.rs": "8ee426f79a2f96a632d0e220feaf6692af55b3b0181ce3862413ec23d621b853",
+      "crates/ipc/src/lib.rs": "d1248bdf6b35e1bb20855084a61d6667ba81ce4cc4ff413834d770a7c8f232e3",
+      "crates/ipc/src/unix.rs": "a2ecd6dd494ced68b98b0f5ba75922e20cf8eea0f46e4663153b43b6e9df9689",
+      "crates/image/src/reference.rs": "1a82610c7c34eed255cf9e3f8fd7d53cf6d22f71def2dca7eae780bf0426da98"
+    },
+    "source_matches_baseline": {
+      "crates/shards/src/daemon.rs": true,
+      "crates/shards/src/daemon/commands.rs": true,
+      "crates/shards/src/run.rs": true,
+      "crates/ipc/src/lib.rs": true,
+      "crates/ipc/src/unix.rs": true,
+      "crates/image/src/reference.rs": true
+    },
+    "daemon_binary": "/Users/adalundhe/Projects/shards/target/audit-daemon-limits/release/shardsd",
+    "daemon_sha256": "5bf188d8fcf9bd6862d438d574c77ced94aeaf8918a26136f783f1fb855416f7",
+    "vm_binary": "/Users/adalundhe/Projects/shards/target/audit-daemon-limits/release/shards-vm",
+    "vm_sha256": "407538311232733d314c6291ab1461a8c51e21bf4802d1f71ebb6ca2c78aa66d",
+    "method": "Fresh daemon per sample, valid START/SCM_RIGHTS with explicit unused guest paths and malformed image. Passed stderr is prefilled until EAGAIN, then blocking restored. Observe STOP for configured period; drain pipe and wait for daemon EOF/exit. No guest or VM runs. Release-to-exit times describe the probe recovery, not a product speed benchmark.",
+    "hardware": "Mac17,6\nApple M5 Max\n137438953472"
+  },
+  "summary": {
+    "n": 3,
+    "release_to_exit_ns": {
+      "p50": 251491833,
+      "p90": 252584000,
+      "p99": 252584000,
+      "max": 252584000
+    }
+  },
+  "samples": [
+    {
+      "prefilled_stderr_bytes": 65536,
+      "run_answered_before_stop": false,
+      "stop_completed_while_stderr_full": false,
+      "daemon_alive_while_stderr_full": true,
+      "held_observation_ns": 1504505416,
+      "release_to_daemon_exit_ns": 252584000,
+      "exit_status": 0,
+      "prefill_bytes_drained": 65643,
+      "stderr_after_release": "",
+      "daemon_log": "shards daemon 72382: serving /private/tmp/shards-daemon-limits-ll986xl8 on /private/tmp/shards-daemon-limits-ll986xl8/daemon.sock, with up to 1048575 descriptors open\nshards daemon 72382: exiting\n",
+      "vm_started": false
+    },
+    {
+      "prefilled_stderr_bytes": 65536,
+      "run_answered_before_stop": false,
+      "stop_completed_while_stderr_full": false,
+      "daemon_alive_while_stderr_full": true,
+      "held_observation_ns": 1504674625,
+      "release_to_daemon_exit_ns": 251491833,
+      "exit_status": 0,
+      "prefill_bytes_drained": 65536,
+      "stderr_after_release": "shards: Error response from daemon: invalid reference format\n\nRun 'shards run --help' for more information\n",
+      "daemon_log": "shards daemon 72698: serving /private/tmp/shards-daemon-limits-f0q6v97_ on /private/tmp/shards-daemon-limits-f0q6v97_/daemon.sock, with up to 1048575 descriptors open\nshards daemon 72698: exiting\n",
+      "vm_started": false
+    },
+    {
+      "prefilled_stderr_bytes": 65536,
+      "run_answered_before_stop": false,
+      "stop_completed_while_stderr_full": false,
+      "daemon_alive_while_stderr_full": true,
+      "held_observation_ns": 1503382000,
+      "release_to_daemon_exit_ns": 3103083,
+      "exit_status": 0,
+      "prefill_bytes_drained": 65536,
+      "stderr_after_release": "shards: Error response from daemon: invalid reference format\n\nRun 'shards run --help' for more information\n",
+      "daemon_log": "shards daemon 72940: serving /private/tmp/shards-daemon-limits-2bg3at92 on /private/tmp/shards-daemon-limits-2bg3at92/daemon.sock, with up to 1048575 descriptors open\nshards daemon 72940: exiting\n",
+      "vm_started": false
+    }
+  ]
+}

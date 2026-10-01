@@ -1505,6 +1505,26 @@ stack inside the VMM, is superseded by it.
 - **Not now:** a VM-to-VM switch (networking.md R8; VMs reach each other through published
   ports first), an administrator-provisioned TAP tier (R2), GPU networking (R9).
 
+### Other engines: shards' runtime alone runs its microVMs (D32)
+
+Docker, Compose and Kubernetes do not run shards microVMs, as a containerd shim, Docker
+runtime or RuntimeClass. The user asked for that only if every guarantee held fully
+(AGENTFILE_ARCH.md Q15), and three fail by the engines' design:
+
+- **Networking.** The engine makes the VM's network namespace and veth after the runtime
+  has started it, and `-p` is DNAT in the host's namespace that never reaches the runtime
+  [moby 0fed273: daemon/start_linux.go:17-41; daemon/libnetwork/drivers/bridge/
+  port_mapping_linux.go:26]. `EXPOSE ... FOR`, `NETWORK` and `CONNECT` cannot hold there,
+  nor D31's network process.
+- **Confinement on macOS.** Docker Desktop's engine runs in its own Linux VM, where App
+  Sandbox (D30) does not exist.
+- **Rootless.** dockerd and containerd run as root; Kata ships rootless only for QEMU, off
+  by default.
+
+Docker's own microVMs, Docker Sandboxes, are not a Docker runtime either. shards stays an
+OCI citizen where that costs nothing: registries, the Agentfile's BuildKit frontend, and
+Compose files that shards reads. Evidence: docs/research/oci-engines.md.
+
 ## 3. Components
 
 ```

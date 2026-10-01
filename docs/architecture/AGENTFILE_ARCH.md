@@ -285,6 +285,11 @@ Given 2026-10-01.
   and the other directives. If that cannot be done fully, other engines run them through
   shards' runtime alone. To decide, research how Docker and the others build and run
   microVMs today.
+  - **Decided by that research:** shards' runtime alone (architecture.md D32,
+    docs/research/oci-engines.md). The engines own the network namespace and port
+    publishing outside any runtime's reach, App Sandbox cannot exist inside Docker
+    Desktop's VM, and they run as root. Images and agents stay OCI objects in registries,
+    and Agentfiles build with `docker buildx` through the frontend.
 - **Q16, the file.** It is an `Agentfile` (a plain `Dockerfile` builds too). `shards
   build` reads both, and a BuildKit frontend named by a `# syntax=` line lets `docker
   buildx build` build an Agentfile as well.
