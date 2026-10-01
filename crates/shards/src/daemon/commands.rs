@@ -169,7 +169,7 @@ fn linux_signal(n: i64) -> Option<u32> {
     known.then(|| u32::try_from(n).ok()).flatten()
 }
 
-impl Daemon {
+impl<D: crate::containers::Disk> Daemon<D> {
     /// Runs container command `argv` for a client, answering on `reply`, and returns its
     /// exit status, the client being `asker`.
     pub(super) fn command(self: &Arc<Self>, argv: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
@@ -427,7 +427,7 @@ impl Daemon {
                         }
                     }
                     let removal = lock(&self.containers)
-                        .remove(&id)
+                        .remove(&self.disk, &id)
                         .map_err(|e| cannot(&e.to_string()))?;
                     removal.map_or(Ok(true), complete)
                 })();

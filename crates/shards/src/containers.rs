@@ -6,7 +6,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -81,7 +80,7 @@ const MAX_RECORD: u64 = 8 << 20;
 
 /// What the registry does to the disk, so that a test can fail it, cut it short or lose
 /// power under it. [`Real`] is the host's filesystem.
-pub trait Disk: Send + Sync + std::fmt::Debug {
+pub trait Disk: Send + Sync + std::fmt::Debug + 'static {
     /// Makes `dir`, private to its user, if it is not there.
     fn create_dir(&self, dir: &Path) -> io::Result<()>;
     /// The names in `dir`.
@@ -167,7 +166,6 @@ impl Disk for Real {
 #[derive(Debug)]
 pub struct Registry {
     root: PathBuf,
-    disk: Arc<dyn Disk>,
     by_id: BTreeMap<String, Container>,
     /// The containers whose records are behind.
     behind: BTreeSet<String>,
@@ -183,7 +181,7 @@ impl Registry {
     /// The containers kept under `containers` in `home`, as dockerd restores its own when
     /// it starts (moby daemon/daemon.go restore). What `note` hears goes to the log.
     pub fn open(home: &Path, note: &mut dyn FnMut(String)) -> io::Result<Registry> {
-        Registry::open_on(home.join("containers"), Arc::new(Real), note)
+        Registry::open_on(home.join("containers"), &Real, note)
     }
 
     /// The containers kept in `root` on `disk`, reconciled with whatever a crash or a
@@ -198,29 +196,28 @@ impl Registry {
     /// - A record that cannot be read gives way to its next version, whole, where a power
     ///   loss kept that from its rename; otherwise it is left as it is, and noted, as
     ///   dockerd leaves a container it cannot load.
-    pub fn open_on(root: PathBuf, disk: Arc<dyn Disk>, note: &mut dyn FnMut(String)) -> io::Result<Registry> {
+    pub fn open_on(root: PathBuf, disk: &dyn Disk, note: &mut dyn FnMut(String)) -> io::Result<Registry> {
         disk.create_dir(&root)?;
         let mut registry = Registry {
             root,
-            disk,
             by_id: BTreeMap::new(),
             behind: BTreeSet::new(),
             leaving: BTreeMap::new(),
             arriving: BTreeMap::new(),
         };
         let mut removed = false;
-        for name in registry.disk.list(&registry.root)? {
+        for name in disk.list(&registry.root)? {
             let dir = registry.root.join(&name);
             if name.starts_with('.') {
                 if name.ends_with(".removing") {
-                    removed |= registry.gone(&dir, note);
+                    removed |= Registry::gone(disk, &dir, note);
                 }
                 continue;
             }
-            let c = match load(&*registry.disk, &dir, &name, RECORD) {
+            let c = match load(disk, &dir, &name, RECORD) {
                 Loaded::Record(c) => {
                     // A next version a crash kept from its rename: never seen.
-                    match registry.disk.remove_file(&dir.join(NEW_RECORD)) {
+                    match disk.remove_file(&dir.join(NEW_RECORD)) {
                         Ok(()) => {}
                         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                         Err(e) => note(format!("{}: {e}", dir.join(NEW_RECORD).display())),
@@ -228,16 +225,16 @@ impl Registry {
                     c
                 }
                 Loaded::Missing => {
-                    removed |= registry.gone(&dir, note);
+                    removed |= Registry::gone(disk, &dir, note);
                     continue;
                 }
                 // A record whose rename outlasted a power loss, and its bytes did not: the
                 // next version, whole, is the container's, if a power loss kept it from
                 // its rename.
-                Loaded::Unreadable(why) => match load(&*registry.disk, &dir, &name, NEW_RECORD) {
+                Loaded::Unreadable(why) => match load(disk, &dir, &name, NEW_RECORD) {
                     Loaded::Record(c) => {
                         note(format!("{}: {why}; its next version is taken", dir.display()));
-                        if let Err(e) = registry.disk.rename(&dir.join(NEW_RECORD), &dir.join(RECORD)) {
+                        if let Err(e) = disk.rename(&dir.join(NEW_RECORD), &dir.join(RECORD)) {
                             note(format!("{}: {e}", dir.join(NEW_RECORD).display()));
                         }
                         c
@@ -249,12 +246,12 @@ impl Registry {
                 },
             };
             if c.auto_remove {
-                removed |= registry.gone(&dir, note);
+                removed |= Registry::gone(disk, &dir, note);
                 continue;
             }
             registry.by_id.insert(c.id.clone(), c);
         }
-        if removed && let Err(e) = registry.disk.sync_dir(&registry.root) {
+        if removed && let Err(e) = disk.sync_dir(&registry.root) {
             note(format!("{}: {e}", registry.root.display()));
         }
         let lost: Vec<String> = registry
@@ -265,7 +262,7 @@ impl Registry {
             .collect();
         let at = now();
         for id in lost {
-            let ended = registry.update(&id, |c| {
+            let ended = registry.update(disk, &id, |c| {
                 if c.state == State::Running {
                     c.state = State::Exited;
                     c.finished = c.finished.or(Some(at));
@@ -280,8 +277,8 @@ impl Registry {
     }
 
     /// Removes `dir` and all it holds; whether it went.
-    fn gone(&self, dir: &Path, note: &mut dyn FnMut(String)) -> bool {
-        match self.disk.remove_dir_all(dir) {
+    fn gone(disk: &dyn Disk, dir: &Path, note: &mut dyn FnMut(String)) -> bool {
+        match disk.remove_dir_all(dir) {
             Ok(()) => true,
             Err(e) => {
                 note(format!("{}: {e}", dir.display()));
@@ -335,7 +332,6 @@ impl Registry {
     pub fn arrival(&self, id: &str) -> Option<(Recorder, Container)> {
         let c = self.arriving.get(id)?.clone();
         let recorder = Recorder {
-            disk: self.disk.clone(),
             root: self.root.clone(),
         };
         Some((recorder, c))
@@ -366,7 +362,7 @@ impl Registry {
     /// stands, since it happened. An error says its record could not be written and is
     /// behind. A container with no record is an error: whoever changes one owns it until
     /// it goes (audit A06).
-    pub fn update(&mut self, id: &str, f: impl FnOnce(&mut Container)) -> io::Result<()> {
+    pub fn update(&mut self, disk: &dyn Disk, id: &str, f: impl FnOnce(&mut Container)) -> io::Result<()> {
         // A reserved container's change waits in its reservation, for its record.
         if let Some(c) = self.arriving.get_mut(id) {
             f(c);
@@ -377,7 +373,7 @@ impl Registry {
             .get_mut(id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no record of the container"))?;
         f(c);
-        match write(&*self.disk, &self.root, c) {
+        match write(disk, &self.root, c) {
             Ok(()) => {
                 self.behind.remove(id);
                 Ok(())
@@ -390,10 +386,10 @@ impl Registry {
     }
 
     /// Writes again the records that are behind, and returns the IDs of those it wrote.
-    pub fn catch_up(&mut self) -> Vec<String> {
+    pub fn catch_up(&mut self, disk: &dyn Disk) -> Vec<String> {
         let mut written = Vec::new();
         for id in std::mem::take(&mut self.behind) {
-            match self.by_id.get(&id).map(|c| write(&*self.disk, &self.root, c)) {
+            match self.by_id.get(&id).map(|c| write(disk, &self.root, c)) {
                 Some(Ok(())) => written.push(id),
                 Some(Err(_)) => {
                     self.behind.insert(id);
@@ -407,12 +403,12 @@ impl Registry {
     /// Takes the container with `id` out of sight: its directory is set aside first, so
     /// that a failure leaves it as it was. Its name stays held until the removal is
     /// durable ([`Removal::sync`], then [`release`](Self::release)).
-    pub fn remove(&mut self, id: &str) -> io::Result<Option<Removal>> {
+    pub fn remove(&mut self, disk: &dyn Disk, id: &str) -> io::Result<Option<Removal>> {
         if !self.by_id.contains_key(id) {
             return Ok(None);
         }
         let aside = self.root.join(format!(".{id}.removing"));
-        match self.disk.rename(&self.root.join(id), &aside) {
+        match disk.rename(&self.root.join(id), &aside) {
             Ok(()) => {}
             // Its directory went by other hands: nothing to set aside.
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -427,7 +423,6 @@ impl Registry {
             container: c,
             root: self.root.clone(),
             aside,
-            disk: self.disk.clone(),
         }))
     }
 
@@ -466,13 +461,12 @@ fn load(disk: &dyn Disk, dir: &Path, name: &str, file: &str) -> Loaded {
 /// Writes a reserved container's record ([`Registry::arrival`]).
 #[derive(Debug)]
 pub struct Recorder {
-    disk: Arc<dyn Disk>,
     root: PathBuf,
 }
 
 impl Recorder {
-    pub fn write(&self, c: &Container) -> io::Result<()> {
-        write(&*self.disk, &self.root, c)
+    pub fn write(&self, disk: &dyn Disk, c: &Container) -> io::Result<()> {
+        write(disk, &self.root, c)
     }
 }
 
@@ -490,19 +484,18 @@ pub struct Removal {
     pub container: Container,
     root: PathBuf,
     aside: PathBuf,
-    disk: Arc<dyn Disk>,
 }
 
 impl Removal {
     /// Makes the removal durable: the containers' directory is synced, so that no crash
     /// brings the container back. Slow (PM M46), so done outside the registry's lock.
-    pub fn sync(&self) -> io::Result<()> {
-        self.disk.sync_dir(&self.root)
+    pub fn sync(&self, disk: &dyn Disk) -> io::Result<()> {
+        disk.sync_dir(&self.root)
     }
 
     /// Deletes what was set aside. What a failure leaves, the next start deletes.
-    pub fn delete(&self) -> io::Result<()> {
-        match self.disk.remove_dir_all(&self.aside) {
+    pub fn delete(&self, disk: &dyn Disk) -> io::Result<()> {
+        match disk.remove_dir_all(&self.aside) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
         }
@@ -563,13 +556,13 @@ mod tests {
 
     /// Creates `c` as the daemon does: reserved, its record written, then seen; or, if the
     /// write fails, seen with its record behind.
-    fn create(r: &mut Registry, c: Container) -> io::Result<()> {
+    fn create(r: &mut Registry, disk: &dyn Disk, c: Container) -> io::Result<()> {
         let id = c.id.clone();
         r.reserve(c);
         let Some((recorder, c)) = r.arrival(&id) else {
             return Err(io::Error::other("not reserved"));
         };
-        match recorder.write(&c) {
+        match recorder.write(disk, &c) {
             Ok(()) if r.admit(&id, &c) => Ok(()),
             Ok(()) => Err(io::Error::other("changed as it was written")),
             Err(e) => {
@@ -587,7 +580,7 @@ mod tests {
     /// Makes the directory a spare would have made for `id`, then creates `c` in it.
     fn made(r: &mut Registry, c: Container) {
         std::fs::create_dir_all(r.dir(&c.id)).unwrap();
-        create(r, c).unwrap();
+        create(r, &Real, c).unwrap();
     }
 
     /// The host's filesystem, which fails its `at`th operation (counting from 0), and with
@@ -661,13 +654,8 @@ mod tests {
         }
     }
 
-    fn faulty(home: &Path, disk: Faulty) -> (Registry, Arc<Faulty>) {
-        let disk = Arc::new(disk);
-        let r = Registry::open_on(home.join("containers"), disk.clone(), &mut |note| {
-            panic!("noted: {note}")
-        })
-        .unwrap();
-        (r, disk)
+    fn faulty(home: &Path, disk: &Faulty) -> Registry {
+        Registry::open_on(home.join("containers"), disk, &mut |note| panic!("noted: {note}")).unwrap()
     }
 
     #[test]
@@ -706,10 +694,12 @@ mod tests {
     fn a_container_with_no_record_cannot_change() {
         let home = temp_home("missing");
         let mut registry = open(&home);
-        let e = registry.update("gone", |c| c.exit_code = Some(1)).unwrap_err();
+        let e = registry
+            .update(&Real, "gone", |c| c.exit_code = Some(1))
+            .unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::NotFound);
         made(&mut registry, container("here", "here", State::Created));
-        registry.update("here", |c| c.exit_code = Some(1)).unwrap();
+        registry.update(&Real, "here", |c| c.exit_code = Some(1)).unwrap();
         assert_eq!(registry.get("here").unwrap().exit_code, Some(1));
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -767,10 +757,10 @@ mod tests {
         );
         assert!(again.name_taken("one").is_some());
         let mut again = again;
-        let removal = again.remove("aa").unwrap().unwrap();
-        removal.sync().unwrap();
+        let removal = again.remove(&Real, "aa").unwrap().unwrap();
+        removal.sync(&Real).unwrap();
         again.release("aa");
-        removal.delete().unwrap();
+        removal.delete(&Real).unwrap();
         assert!(!home.join("containers/aa").exists());
         assert!(open(&home).get("aa").is_none());
         let _ = std::fs::remove_dir_all(&home);
@@ -789,14 +779,14 @@ mod tests {
         assert!(r.get("aa").is_none() && r.named("one").is_none(), "not seen yet");
         assert!(r.name_taken("one").is_some(), "its name held");
         let (recorder, first) = r.arrival("aa").unwrap();
-        r.update("aa", |c| c.state = State::Running).unwrap();
+        r.update(&Real, "aa", |c| c.state = State::Running).unwrap();
         assert!(r.get("aa").is_none(), "a change is no record");
-        recorder.write(&first).unwrap();
+        recorder.write(&Real, &first).unwrap();
         assert!(!r.admit("aa", &first), "changed as it was written");
         assert!(r.get("aa").is_none());
         let (recorder, second) = r.arrival("aa").unwrap();
         assert_eq!(second.state, State::Running);
-        recorder.write(&second).unwrap();
+        recorder.write(&Real, &second).unwrap();
         assert!(r.admit("aa", &second));
         assert_eq!(r.get("aa").map(|c| c.state), Some(State::Running));
         assert_eq!(
@@ -808,12 +798,13 @@ mod tests {
 
         // Opening makes and lists the directory, reads the record the last opening
         // reconciled, and removes a leftover; the next write is the create's.
-        let (mut r, _) = faulty(&home, Faulty::at(4, false));
+        let disk = Faulty::at(4, false);
+        let mut r = faulty(&home, &disk);
         std::fs::create_dir_all(r.dir("bb")).unwrap();
-        let e = create(&mut r, container("bb", "two", State::Created)).unwrap_err();
+        let e = create(&mut r, &disk, container("bb", "two", State::Created)).unwrap_err();
         assert!(e.to_string().contains("injected at write"), "{e}");
         assert!(r.get("bb").is_some(), "seen, its record behind");
-        assert_eq!(r.catch_up(), vec!["bb".to_string()]);
+        assert_eq!(r.catch_up(&disk), vec!["bb".to_string()]);
         assert!(open(&home).get("bb").is_some());
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -829,15 +820,16 @@ mod tests {
         // Opening makes and lists the directory, reads the record, removes a leftover,
         // and writes and renames the record of the run it could not follow; then the
         // update writes and renames, and the rename fails.
-        let (mut r, _) = faulty(&home, Faulty::at(7, false));
+        let disk = Faulty::at(7, false);
+        let mut r = faulty(&home, &disk);
         // The reopening ended the run it could not follow; the next writes are ours.
         assert_eq!(r.get("aa").unwrap().exit_code, Some(255));
-        let e = r.update("aa", |c| c.exit_code = Some(3)).unwrap_err();
+        let e = r.update(&disk, "aa", |c| c.exit_code = Some(3)).unwrap_err();
         assert!(e.to_string().contains("injected at rename"), "{e}");
         assert_eq!(r.get("aa").unwrap().exit_code, Some(3), "it happened");
         assert_eq!(open(&home).get("aa").unwrap().exit_code, Some(255), "behind");
-        assert_eq!(r.catch_up(), vec!["aa".to_string()]);
-        assert!(r.catch_up().is_empty());
+        assert_eq!(r.catch_up(&disk), vec!["aa".to_string()]);
+        assert!(r.catch_up(&disk).is_empty());
         assert_eq!(open(&home).get("aa").unwrap().exit_code, Some(3));
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -850,17 +842,18 @@ mod tests {
         let mut r = open(&home);
         made(&mut r, container("aa", "one", State::Exited));
         drop(r);
-        let (mut r, _) = faulty(&home, Faulty::at(4, false));
-        let e = r.remove("aa").unwrap_err();
+        let disk = Faulty::at(4, false);
+        let mut r = faulty(&home, &disk);
+        let e = r.remove(&disk, "aa").unwrap_err();
         assert!(e.to_string().contains("injected at rename"), "{e}");
         assert!(r.get("aa").is_some());
         assert!(r.name_taken("one").is_some());
         assert!(open(&home).get("aa").is_some());
-        let removal = r.remove("aa").unwrap().unwrap();
+        let removal = r.remove(&disk, "aa").unwrap().unwrap();
         assert!(r.get("aa").is_none());
-        removal.sync().unwrap();
+        removal.sync(&disk).unwrap();
         r.release("aa");
-        removal.delete().unwrap();
+        removal.delete(&disk).unwrap();
         assert!(open(&home).get("aa").is_none());
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -872,11 +865,11 @@ mod tests {
         let home = temp_home("leaving");
         let mut r = open(&home);
         made(&mut r, container("aa", "one", State::Exited));
-        let removal = r.remove("aa").unwrap().unwrap();
+        let removal = r.remove(&Real, "aa").unwrap().unwrap();
         assert!(r.get("aa").is_none(), "out of sight at once");
         assert!(r.named("one").is_none(), "and by its name");
         assert_eq!(r.name_taken("one").map(|c| c.id.as_str()), Some("aa"));
-        removal.sync().unwrap();
+        removal.sync(&Real).unwrap();
         r.release("aa");
         assert!(r.name_taken("one").is_none());
         // Its files, left by a delete that failed, go at the next start.
@@ -966,24 +959,24 @@ mod tests {
                 started: None,
                 ..container("life", "life", State::Created)
             };
-            if disk.create_dir(&r.dir("life")).is_err() || create(r, c).is_err() {
+            if disk.create_dir(&r.dir("life")).is_err() || create(r, disk, c).is_err() {
                 return;
             }
-            let _ = r.update("life", |c| c.state = State::Running);
+            let _ = r.update(disk, "life", |c| c.state = State::Running);
             let removal = if auto_remove {
-                r.remove("life")
+                r.remove(disk, "life")
             } else {
-                let _ = r.update("life", |c| {
+                let _ = r.update(disk, "life", |c| {
                     c.state = State::Exited;
                     c.exit_code = Some(3);
                 });
-                r.remove("life")
+                r.remove(disk, "life")
             };
             if let Ok(Some(removal)) = removal
-                && removal.sync().is_ok()
+                && removal.sync(disk).is_ok()
             {
                 r.release("life");
-                let _ = removal.delete();
+                let _ = removal.delete(disk);
             }
         }
         for auto_remove in [false, true] {
@@ -992,9 +985,10 @@ mod tests {
             made(&mut r, container("other", "other", State::Exited));
             drop(r);
             // A life without a crash, for its steps.
-            let (mut r, disk) = faulty(&home, Faulty::default());
+            let disk = Faulty::default();
+            let mut r = faulty(&home, &disk);
             let opened = disk.ops.load(Ordering::SeqCst);
-            live(&mut r, &*disk, auto_remove);
+            live(&mut r, &disk, auto_remove);
             let steps: Vec<String> = disk.log.lock().unwrap()[opened..].to_vec();
             let at = |what: &str, n: usize| {
                 steps
@@ -1015,13 +1009,14 @@ mod tests {
                 let mut r = open(&home);
                 made(&mut r, container("other", "other", State::Exited));
                 drop(r);
-                let (r, disk) = faulty(&home, Faulty::default());
+                let disk = Faulty::default();
+                let r = faulty(&home, &disk);
                 let opened = disk.ops.load(Ordering::SeqCst);
                 drop(r);
-                let disk = Arc::new(Faulty::at(opened + crash, true));
+                let disk = Faulty::at(opened + crash, true);
                 let mut r =
-                    Registry::open_on(home.join("containers"), disk.clone(), &mut |n| panic!("{n}")).unwrap();
-                live(&mut r, &*disk, auto_remove);
+                    Registry::open_on(home.join("containers"), &disk, &mut |n| panic!("{n}")).unwrap();
+                live(&mut r, &disk, auto_remove);
                 drop(r);
                 let again = open(&home);
                 let what = format!("--rm {auto_remove}, a crash at step {crash} of {steps:?}");
@@ -1275,14 +1270,14 @@ mod tests {
         let mut base = Tree::new();
         base.insert(PathBuf::from("/model"), None);
         // `other` was created long enough ago to be on stable storage.
-        let setup = Arc::new(Lossy::with(base));
-        let mut r = Registry::open_on(root.clone(), setup.clone(), &mut |n| panic!("{n}")).unwrap();
+        let setup = Lossy::with(base);
+        let mut r = Registry::open_on(root.clone(), &setup, &mut |n| panic!("{n}")).unwrap();
         setup.create_dir(&r.dir("other")).unwrap();
-        create(&mut r, container("other", "other", State::Exited)).unwrap();
+        create(&mut r, &setup, container("other", "other", State::Exited)).unwrap();
         let stable = setup.model.lock().unwrap().seen.clone();
 
-        let disk = Arc::new(Lossy::with(stable.clone()));
-        let mut r = Registry::open_on(root.clone(), disk.clone(), &mut |n| panic!("{n}")).unwrap();
+        let disk = Lossy::with(stable.clone());
+        let mut r = Registry::open_on(root.clone(), &disk, &mut |n| panic!("{n}")).unwrap();
         let mut written: Vec<(String, Vec<u8>)> = Vec::new();
         let mut keep = |r: &Registry, id: &str| {
             written.push((id.to_string(), serde_json::to_vec(r.get(id).unwrap()).unwrap()));
@@ -1292,23 +1287,23 @@ mod tests {
             ..container(id, "life", State::Created)
         };
         disk.create_dir(&r.dir("one")).unwrap();
-        create(&mut r, life("one")).unwrap();
+        create(&mut r, &disk, life("one")).unwrap();
         keep(&r, "one");
-        r.update("one", |c| c.state = State::Running).unwrap();
+        r.update(&disk, "one", |c| c.state = State::Running).unwrap();
         keep(&r, "one");
-        r.update("one", |c| {
+        r.update(&disk, "one", |c| {
             c.state = State::Exited;
             c.exit_code = Some(3);
         })
         .unwrap();
         keep(&r, "one");
-        let removal = r.remove("one").unwrap().unwrap();
-        removal.sync().unwrap();
+        let removal = r.remove(&disk, "one").unwrap().unwrap();
+        removal.sync(&disk).unwrap();
         let durable = disk.model.lock().unwrap().ops.len();
         r.release("one");
-        removal.delete().unwrap();
+        removal.delete(&disk).unwrap();
         disk.create_dir(&r.dir("two")).unwrap();
-        create(&mut r, life("two")).unwrap();
+        create(&mut r, &disk, life("two")).unwrap();
         keep(&r, "two");
         let ops = disk.model.lock().unwrap().ops.clone();
 
@@ -1335,9 +1330,9 @@ mod tests {
                     })
                     .map(str::to_string)
                     .collect();
-                let lossy = Arc::new(Lossy::with(tree.clone()));
+                let lossy = Lossy::with(tree.clone());
                 let mut notes = Vec::new();
-                let again = Registry::open_on(root.clone(), lossy.clone(), &mut |n| notes.push(n))
+                let again = Registry::open_on(root.clone(), &lossy, &mut |n| notes.push(n))
                     .unwrap_or_else(|e| panic!("{what}: {e}"));
                 assert!(again.get("other").is_some(), "{what}");
                 for id in &recovered {

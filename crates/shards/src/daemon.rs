@@ -29,7 +29,7 @@ use shards_ipc::{Identity, Run, kind};
 use shards_registry::http::Cancel;
 use shards_vmm::vm::Config;
 
-use crate::containers::{self, Container, Registry, Removal, State as Life};
+use crate::containers::{self, Container, Disk, Real, Registry, Removal, State as Life};
 
 mod commands;
 mod demand;
@@ -324,7 +324,7 @@ enum Claim {
     Failed(String),
 }
 
-struct Daemon {
+struct Daemon<D: Disk = Real> {
     home: PathBuf,
     /// shards-vm, beside this binary: each VM runs in a process of its own.
     vm: PathBuf,
@@ -370,6 +370,10 @@ struct Daemon {
     ending: AtomicBool,
     /// Every run's container.
     containers: Mutex<Registry>,
+    /// Where the containers' records are kept: the host's file system, or a test's. Each
+    /// of the registry's writes, and each record or removal finished outside its lock,
+    /// borrows it.
+    disk: D,
     /// A reserved container was let be seen.
     arrived: Condvar,
     /// Where reserved containers' records go to be written, in order, by one thread, once
@@ -394,9 +398,9 @@ struct Daemon {
 
 /// A client in hand, by its number: counted until its run is handed over or refused, or
 /// its command answered.
-struct Busy<'a>(&'a Daemon, u64);
+struct Busy<'a, D: Disk>(&'a Daemon<D>, u64);
 
-impl Drop for Busy<'_> {
+impl<D: Disk> Drop for Busy<'_, D> {
     fn drop(&mut self) {
         *lock(&self.0.last) = Instant::now();
         // Under the lock the listener waits with, so its wakeup is not lost.
@@ -600,7 +604,9 @@ fn serve() -> Result<(), String> {
     let vm = shards_ipc::vm_binary(&exe);
     let containers = Registry::open(&home, &mut |note| log(note))
         .map_err(|e| format!("{}: {e}", home.join("containers").display()))?;
-    let daemon = Arc::new(Daemon::new(home, vm, identity, settings, containers, home_lock));
+    let daemon = Arc::new(Daemon::new(
+        home, vm, identity, settings, containers, Real, home_lock,
+    ));
     daemon.make_spare();
     log(format!(
         "serving {} on {}, with up to {} descriptors open",
@@ -669,7 +675,7 @@ fn take_lock(home: &Path, socket: &Path) -> Result<Option<File>, String> {
     }
 }
 
-impl Daemon {
+impl<D: Disk> Daemon<D> {
     /// A daemon of `home`, whose lock it holds, serving no run yet.
     fn new(
         home: PathBuf,
@@ -677,8 +683,9 @@ impl Daemon {
         identity: Identity,
         settings: Settings,
         containers: Registry,
+        disk: D,
         home_lock: File,
-    ) -> Daemon {
+    ) -> Daemon<D> {
         Daemon {
             home,
             vm,
@@ -705,6 +712,7 @@ impl Daemon {
             resolved: Condvar::new(),
             ending: AtomicBool::new(false),
             containers: Mutex::new(containers),
+            disk,
             arrived: Condvar::new(),
             recorder: Mutex::default(),
             waiters: Mutex::default(),
@@ -1236,7 +1244,7 @@ impl Daemon {
             let Some((recorder, c)) = lock(&self.containers).arrival(id) else {
                 return;
             };
-            let written = recorder.write(&c);
+            let written = recorder.write(&self.disk, &c);
             let mut registry = lock(&self.containers);
             let seen = match written {
                 Ok(()) => registry.admit(id, &c),
@@ -1355,12 +1363,12 @@ impl Daemon {
         end: impl FnOnce(&mut Container),
     ) -> Option<Removal> {
         if registry.get(id)?.auto_remove {
-            match registry.remove(id) {
+            match registry.remove(&self.disk, id) {
                 Ok(removal) => return removal,
                 Err(e) => log(format!("container {id}: removing it: {e}")),
             }
         }
-        if let Err(e) = registry.update(id, end) {
+        if let Err(e) = registry.update(&self.disk, id, end) {
             log(format!("container {id}: its record is behind: {e}"));
         }
         None
@@ -1372,14 +1380,14 @@ impl Daemon {
     /// is returned.
     pub(super) fn complete(&self, removal: &Removal) -> io::Result<()> {
         let id = &removal.container.id;
-        let synced = removal.sync();
+        let synced = removal.sync(&self.disk);
         match &synced {
             Ok(()) => lock(&self.containers).release(id),
             Err(e) => log(format!(
                 "container {id}: its removal may not outlast a crash, and its name stays held: {e}"
             )),
         }
-        if let Err(e) = removal.delete() {
+        if let Err(e) = removal.delete(&self.disk) {
             log(format!(
                 "container {id}: deleting its files: {e}; the next start deletes them"
             ));
@@ -1479,7 +1487,7 @@ impl Daemon {
             for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
                 waiter.hear(0);
             }
-            return registry.remove(id);
+            return registry.remove(&self.disk, id);
         }
     }
 
@@ -1566,7 +1574,7 @@ impl Daemon {
         // its run goes on: a short run's client can have its status first. The answer
         // waits for every record being written, each a local write away.
         let mut registry = lock(&self.containers);
-        for id in registry.catch_up() {
+        for id in registry.catch_up(&self.disk) {
             log(format!("container {id}: its record is written again"));
         }
         while registry.any_arriving() {
@@ -1610,14 +1618,16 @@ impl Daemon {
         log(format!(
             "container {id}: {lost} bytes of its output could not be kept in its log"
         ));
-        if let Err(e) = lock(&self.containers).update(id, |c| c.log_lost = c.log_lost.saturating_add(lost)) {
+        if let Err(e) =
+            lock(&self.containers).update(&self.disk, id, |c| c.log_lost = c.log_lost.saturating_add(lost))
+        {
             log(format!("container {id}: its record is behind: {e}"));
         }
     }
 
     fn run_started(&self, id: &str, inbox: &mut Inbox) {
         inbox.started = true;
-        let recorded = lock(&self.containers).update(id, |c| {
+        let recorded = lock(&self.containers).update(&self.disk, id, |c| {
             c.state = Life::Running;
             c.started = Some(containers::now());
         });
@@ -2448,8 +2458,8 @@ mod tests {
     /// A daemon of a home of its own, which starts no VM itself: its tests play the warm
     /// VMs, over socket pairs, and hold each step of a run's start as long as they like
     /// (audit A06).
-    struct Test {
-        daemon: Arc<Daemon>,
+    struct Test<D: Disk = Real> {
+        daemon: Arc<Daemon<D>>,
         home: PathBuf,
         /// The processes of the warm VMs played, ended with the test.
         vms: Mutex<Vec<Arc<shards_ipc::Child>>>,
@@ -2457,11 +2467,14 @@ mod tests {
 
     impl Test {
         fn new(tag: &str) -> Test {
-            Test::on(tag, Arc::new(Real))
+            Test::on(tag, Real)
         }
+    }
 
-        /// A daemon whose containers are kept on `disk`.
-        fn on(tag: &str, disk: Arc<dyn Disk>) -> Test {
+    impl<D: Disk> Test<D> {
+        /// A daemon whose containers are kept on `disk`, which the test reaches as
+        /// `t.daemon.disk`.
+        fn on(tag: &str, disk: D) -> Test<D> {
             // A home of its own: a daemon's refill thread may still make a spare container
             // as its test ends, and must not make it in another test's home.
             static HOMES: AtomicUsize = AtomicUsize::new(0);
@@ -2469,9 +2482,10 @@ mod tests {
             let home = std::env::temp_dir().join(format!("shards-daemon-{tag}-{}-{n}", std::process::id()));
             let _ = std::fs::remove_dir_all(&home);
             std::fs::create_dir_all(&home).unwrap();
-            let containers =
-                Registry::open_on(home.join("containers"), disk, &mut |note| panic!("noted: {note}"))
-                    .unwrap();
+            let containers = Registry::open_on(home.join("containers"), &disk, &mut |note| {
+                panic!("noted: {note}")
+            })
+            .unwrap();
             let home_lock = File::create(home.join("daemon.lock")).unwrap();
             let daemon = Daemon::new(
                 home.clone(),
@@ -2485,6 +2499,7 @@ mod tests {
                     logs: DEFAULT_LOGS,
                 },
                 containers,
+                disk,
                 home_lock,
             );
             Test {
@@ -2582,7 +2597,7 @@ mod tests {
         }
 
         /// Waits until what `f` finds of the daemon holds.
-        fn until(&self, what: &str, f: impl Fn(&Daemon) -> bool) {
+        fn until(&self, what: &str, f: impl Fn(&Daemon<D>) -> bool) {
             let deadline = Instant::now() + PATIENCE;
             while !f(&self.daemon) {
                 assert!(Instant::now() < deadline, "{what}");
@@ -2595,7 +2610,7 @@ mod tests {
         }
     }
 
-    impl Drop for Test {
+    impl<D: Disk> Drop for Test<D> {
         fn drop(&mut self) {
             for vm in lock(&self.vms).drain(..) {
                 let _ = vm.kill(libc::SIGKILL);
@@ -2618,7 +2633,7 @@ mod tests {
         run: std::thread::JoinHandle<Result<(), String>>,
     }
 
-    fn ask(daemon: &Arc<Daemon>, args: &[&str]) -> (u8, String, String) {
+    fn ask<D: Disk>(daemon: &Arc<Daemon<D>>, args: &[&str]) -> (u8, String, String) {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
         let asker = commands::Asker {
@@ -3248,7 +3263,7 @@ mod tests {
 
     /// `shards ARGS` as its client asks the daemon, reading as the daemon answers: status,
     /// stdout and stderr, as bytes.
-    fn ask_bytes(daemon: &Arc<Daemon>, args: &[&str]) -> (u8, Vec<u8>, Vec<u8>) {
+    fn ask_bytes<D: Disk>(daemon: &Arc<Daemon<D>>, args: &[&str]) -> (u8, Vec<u8>, Vec<u8>) {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let reader = std::thread::spawn(move || {
             let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -3490,8 +3505,8 @@ mod tests {
     /// ended, and its client have its status, before its record is written.
     #[test]
     fn a_command_sees_a_container_whose_record_is_being_written() {
-        let held = Arc::new(Held::default());
-        let t = Test::on("settle-arriving", held.clone());
+        let t = Test::on("settle-arriving", Held::default());
+        let held = &t.daemon.disk;
         held.holding_writes.store(true, Ordering::SeqCst);
         let id = t.reserve("racer");
         let (answered, settled) = std::sync::mpsc::channel();
@@ -3572,27 +3587,35 @@ mod tests {
     /// (audit A15).
     #[test]
     fn a_name_is_let_go_only_once_its_removal_is_durable() {
-        let held = Arc::new(Held::default());
-        let t = Test::on("name-held", held.clone());
+        let t = Test::on("name-held", Held::default());
+        let held = &t.daemon.disk;
         let id = t.create("racer");
-        let removal = lock(&t.daemon.containers).remove(&id).unwrap().unwrap();
-        let daemon = t.daemon.clone();
-        let completing = std::thread::spawn(move || daemon.complete(&removal));
-        let deadline = Instant::now() + PATIENCE;
-        while !held.syncing.load(Ordering::SeqCst) {
-            assert!(Instant::now() < deadline, "the removal was never synced");
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(lock(&t.daemon.containers).get(&id).is_none(), "out of sight");
-        assert_eq!(
-            lock(&t.daemon.containers)
+        let removal = lock(&t.daemon.containers)
+            .remove(&t.daemon.disk, &id)
+            .unwrap()
+            .unwrap();
+        std::thread::scope(|scope| {
+            let completing = scope.spawn(|| t.daemon.complete(&removal));
+            let deadline = Instant::now() + PATIENCE;
+            while !held.syncing.load(Ordering::SeqCst) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let syncing = held.syncing.load(Ordering::SeqCst);
+            let seen = lock(&t.daemon.containers).get(&id).is_some();
+            let holder = lock(&t.daemon.containers)
                 .name_taken("racer")
-                .map(|c| c.id.clone()),
-            Some(id.clone()),
-            "its name was let go before the removal was durable"
-        );
-        held.let_through();
-        completing.join().unwrap().unwrap();
+                .map(|c| c.id.clone());
+            // Through before anything is asserted, so that the scope can end.
+            held.let_through();
+            assert!(syncing, "the removal was never synced");
+            assert!(!seen, "out of sight");
+            assert_eq!(
+                holder,
+                Some(id.clone()),
+                "its name was let go before the removal was durable"
+            );
+            completing.join().unwrap().unwrap();
+        });
         assert!(lock(&t.daemon.containers).name_taken("racer").is_none());
         assert!(!t.home.join("containers").join(&id).exists());
     }
@@ -3601,11 +3624,11 @@ mod tests {
     /// (audit A15).
     #[test]
     fn a_record_behind_is_written_before_a_command_is_answered() {
-        let held = Arc::new(Held::default());
-        let t = Test::on("behind", held.clone());
+        let t = Test::on("behind", Held::default());
+        let held = &t.daemon.disk;
         let id = t.create("racer");
         held.failing.store(true, Ordering::SeqCst);
-        let e = lock(&t.daemon.containers).update(&id, |c| c.exit_code = Some(9));
+        let e = lock(&t.daemon.containers).update(&t.daemon.disk, &id, |c| c.exit_code = Some(9));
         assert!(e.is_err());
         held.failing.store(false, Ordering::SeqCst);
         let on_disk = || {
@@ -3621,8 +3644,8 @@ mod tests {
     /// is seen (audit A15).
     #[test]
     fn a_change_while_a_record_is_written_is_written_before_it_is_seen() {
-        let held = Arc::new(Held::default());
-        let t = Test::on("arriving", held.clone());
+        let t = Test::on("arriving", Held::default());
+        let held = &t.daemon.disk;
         held.holding_writes.store(true, Ordering::SeqCst);
         let id = t.reserve("racer");
         let deadline = Instant::now() + PATIENCE;
@@ -3631,7 +3654,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         lock(&t.daemon.containers)
-            .update(&id, |c| c.exit_code = Some(5))
+            .update(&t.daemon.disk, &id, |c| c.exit_code = Some(5))
             .unwrap();
         assert!(lock(&t.daemon.containers).get(&id).is_none(), "not seen yet");
         held.let_through();
