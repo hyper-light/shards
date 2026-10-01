@@ -249,6 +249,18 @@ never resolve a name to the wrong kind. Where a directive may name either (`VOLU
   alone resolves to that kind;
 - a name that belongs to both kinds (a `HARNESS main` and an `AGENT main`) is a build
   error unless `--type` says which is meant. It never defaults to one kind.
+- That error helps the user fix it. It names the directive and its line, the ambiguous
+  name, and where each of the agent and the harness of that name is declared, and it shows
+  the directive rewritten both ways, for example:
+
+  ```
+  Agentfile:12: VOLUME ./data /data FOR main: "main" names both an agent and a harness
+    AGENT main is declared at line 3
+    HARNESS main is declared at line 7
+  Say which with --type:
+    VOLUME --type=agent ./data /data FOR main
+    VOLUME --type=harness ./data /data FOR main
+  ```
 
 ## 5. Communication between agents in a microVM
 
