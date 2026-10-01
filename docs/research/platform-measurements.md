@@ -2542,3 +2542,44 @@ revision before comparing a changed API/implementation.
   read-only and the instruction runs again; on no guest memory it is skipped, as KVM skips
   it. `daemon.rs`'s `runs_may_clean_the_cache_over_their_image` runs `DC CVAU` over an
   image file in a first run and a restored one; without the change the first fails.
+
+### M75. Starting sandboxed VM processes at once: launches, and forks
+
+- **Question.** In an open-loop run of the arrival benchmark (`benches/arrival.rs`, rates 2
+  to 160 per second for 10 s each, revision 8929f92), no request failed and the daemon kept
+  up to 160 per second, but p99 rose early: 118 ms at 10 per second, where p90 was 14 ms.
+  Replayed at 10 per second for 30 s with each run's timing line, the slowest were in the
+  first 1.2 s, as the pool grew to the demand, and the slowest of all (309 ms) went to a
+  VM whose own clock had it ready 5 ms after `main`: the time went before `main`. How do
+  sandboxed launches scale when several start at once? And would forking VM processes
+  from one sandboxed process, which a child inherits without a launch, avoid it?
+- **Method.** `docs/research/measurements/app-sandbox/concurrent.py`: K launches of
+  shards-vm `--version` at once, signed into App Sandbox and not, 64 each. `zygote.c`: a
+  process in App Sandbox (with the hypervisor entitlement) starts K children at once,
+  by `posix_spawn` of itself or by `fork`, 64 each; each child creates and destroys a
+  Hypervisor.framework VM and must be refused a file under `$HOME` outside its container,
+  which an unsandboxed process reads. macOS 26.4.1, Apple M5 Max, 2026-10-01, load
+  average 7.
+- **Results** (p50 / p90 / max, ms).
+
+| At once | shards-vm, App Sandbox | shards-vm, no sandbox | probe launched | probe forked |
+|---|---|---|---|---|
+| 1 | 6.9 / 7.4 / 8.2 | 3.6 / 3.8 / 501.5 (first launch) | 7.5 / 13.8 / 32.3 | 0.80 / 0.92 / 1.04 |
+| 4 | 9.5 / 11.5 / 11.7 | 3.4 / 3.7 / 3.9 | 14.5 / 20.5 / 25.6 | 0.89 / 1.70 / 1.97 |
+| 16 | 18.6 / 27.2 / 28.9 | 3.7 / 4.4 / 4.8 | 34.5 / 50.3 / 54.3 | 3.49 / 5.77 / 6.60 |
+| 32 | 30.6 / 47.3 / 51.1 | 3.9 / 4.2 / 4.6 | 46.0 / 73.1 / 78.5 | 6.61 / 11.94 / 13.65 |
+
+  Every child, launched or forked, made its VM and was refused the outside file: a forked
+  child keeps the sandbox.
+- **Consequence.**
+  - Sandboxed launches queue on something the system serializes; unsandboxed ones do not.
+    A burst of refills pays it, off a run's path while the pool holds VMs, and on it when
+    the pool is short, as in the replay's first second.
+  - Forking VM processes from one sandboxed process would start them 7 ms sooner and keep
+    their sandbox, but every VM would share that process's address-space layout: one
+    leaked address would serve against every VM. Android's zygote showed that sharing
+    exploitable, and Morula answered it with a fresh process prepared ahead for each use
+    (Lee et al., "From Zygote to Morula: Fortifying Weakened ASLR on Android", IEEE S&P
+    2014). shards' warm pool already is that: each VM process launched fresh, ahead of its
+    request. VM processes are not forked; what to make better is how far ahead the pool
+    launches when demand rises (D26), measured from this benchmark.
