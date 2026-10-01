@@ -143,7 +143,9 @@ VOLUME [OPTIONS...] <path> [<dest>] [FOR <agent_name>]
 - With `FOR <agent_name>`, it is available to that agent's workload/workspace alone.
 - Options:
   - `--chown=<agent_name>/<user_id>/...`;
-  - `--chmod=<permissions>`.
+  - `--chmod=<permissions>`;
+  - `--type=<harness|agent|default>` (added 2026-10-01): whether the names after `FOR`
+    are harnesses or agents (§4.10).
 
 ### 4.6 `NETWORK`
 
@@ -178,6 +180,8 @@ CONNECT [OPTIONS...] <agent> [<agent> ...]
 ```
 
 - Exactly one of `WITH` and `TO` is required.
+- `--type=<harness|agent>` (added 2026-10-01) says whether the names are harnesses or
+  agents (§4.10).
 - Several agents may follow `CONNECT`, `WITH` and `TO`, and several networks may follow
   `ON`.
 - `WITH` connects them both ways, for every agent attached to the networks: each may send
@@ -190,10 +194,11 @@ CONNECT [OPTIONS...] <agent> [<agent> ...]
 
 ### 4.8 `HARNESS`
 
-Added 2026-10-01.
+Added 2026-10-01, and revised the same day: a harness has no agents until `ATTACH` grants
+them.
 
 ```
-HARNESS <name> FROM <source>[:<tag>] [FOR <agent_a> <agent_b> ...] [TO <dest_path>]
+HARNESS <name> FROM <source>[:<tag>] [TO <dest_path>]
 ```
 
 - `<name>` is required, and names the harness.
@@ -209,16 +214,39 @@ HARNESS <name> FROM <source>[:<tag>] [FOR <agent_a> <agent_b> ...] [TO <dest_pat
 
 - A harness is a file artifact. The build unpacks it to `/harness/<name>`, or to
   `TO <dest_path>` if given.
-- **Which agents it gets.**
-  - Without `FOR`, every agent declared before the `HARNESS` line is made available to
-    it. With `AGENT my_custom ...` and `AGENT my_other_custom ...` above it, the harness
-    gets both.
-  - With `FOR`, it gets only the agents it names.
-- **`VOLUME` and `CONNECT`** name harnesses as they name agents. That is how a harness is
-  granted volumes and paths and attached to networks.
+- **It has no agents** by default. `ATTACH` (§4.9) grants it agents.
+- **`VOLUME` and `CONNECT`** name harnesses as they name agents, told apart by `--type`
+  (§4.5, §4.7). That is how a harness is granted volumes and paths and attached to
+  networks.
 - **Deny by default.** A harness is held to the same deny-by-default rules and file
   permissions as an agent (§4.2, §8): no network, nothing outside its own directory, and
   read-only except where a directive grants more.
+
+### 4.9 `ATTACH`
+
+Added 2026-10-01. `ATTACH` is the working name; the user proposed `ENABLE`, then
+`ATTACH`.
+
+```
+ATTACH <agent_a> [<agent_b> ...] FOR <harness_a> [<harness_b> ...]
+```
+
+- It is a permission and nothing more: every harness named may access every agent named.
+  Installing and using the agent is the harness's own work, for example with short
+  scripts.
+- Without it, a harness can access no agent. Grants are explicit, in lines of their own,
+  apart from where agents and harnesses are fetched, and they do not depend on the order
+  of the file.
+- It names only agents after `ATTACH` and only harnesses after `FOR`, so its names are
+  never ambiguous.
+
+### 4.10 Names of agents and harnesses
+
+Agents and harnesses may share a name: users do unexpected things, and the build must
+never resolve a name to the wrong kind. So where a directive may name either (`VOLUME`,
+`CONNECT`), a name that belongs to both an agent and a harness is a build error unless
+`--type` says which is meant; it never defaults to one kind. A name that belongs to one
+kind alone resolves to that kind.
 
 ## 5. Communication between agents in a microVM
 
@@ -301,24 +329,26 @@ Recorded as found. The answers the review has given so far are in §8.
 17. **The in-VM server.** What identities and keys encrypt and authorize its traffic?
     How is its reach tied to `NETWORK`, `CONNECT`, `MCP ... FOR` and `EXPOSE`? What does
     "code-mode" MCP mean exactly, and from which source?
-18. **`HARNESS`.**
-    - What is a harness, and what does "made available" give it: a way to send the
-      agents requests and drive their runs (through the in-VM server of §5), or reads of
-      their directories? Reading their directories would break the agents' total
-      isolation (§8), unless that is the exception meant.
+18. **`HARNESS` and `ATTACH`.**
     - Does a harness run as a workload/workspace of its own in the in-VM runtime, as an
       agent does, with its own private scratch directory?
-    - Does "every agent declared before it" mean only the agents above the `HARNESS`
-      line, so that one declared later is left out? Or is it every agent in the file?
-    - Is it an error for `FOR` to name an agent that was never declared?
+    - What does `ATTACH` let a harness do with an agent: send it requests and drive its
+      runs (through the in-VM server of §5), read the agent's directory, or both? Reading
+      it is an exception to the agents' total isolation (§8).
+    - Is it an error for `ATTACH` to name an agent or a harness that was never declared?
+    - The keyword: `ATTACH` already describes agents joining networks (§4.6, §4.7), and
+      `docker attach` means joining a container's streams. Is a different word wanted,
+      or does the networks' wording change?
     - Its artifact: is it its own OSI type (`application/vnd.osi.harness.v1`, beside
       `vnd.osi.agent.v1`)? And is "unzipped" a zip archive, or the tar+zstd layers agents
       use?
     - What does `[:<tag>]` mean for a git URL (a ref?), an http URL or a path? How does
       the build tell a tag from a colon in the source: a URL's port, `C:\` on Windows, a
       path with a colon in it?
-    - Do agents and harnesses share one namespace of names, so that `VOLUME ... FOR` and
-      `CONNECT` cannot be ambiguous? Do skills and MCP servers reach harnesses too?
+    - What does `VOLUME --type=default` mean: Docker's own `VOLUME`, a mount point with no
+      agent or harness scope? May `FOR` follow it?
+    - Do skills and MCP servers reach harnesses too, and do `SKILL`, `MCP` and `NETWORK`
+      take `--type`?
     - Does unpacking to `/harness/<name>` omit the tag, where agents go to
       `/agents/<name>[_<tag>]`?
 
