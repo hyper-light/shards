@@ -8,7 +8,8 @@ evidence.
 
 shards microVMs build on Firecracker's model, and they must be OCI objects like any other.
 A spec-compliant Dockerfile builds one. A small set of added directives declares the agents
-a microVM runs, their skills and MCP servers, their volumes, and the networks between them.
+a microVM runs, their skills and MCP servers, the harnesses that drive them, their volumes, and
+the networks between them.
 Everything is denied by default.
 
 ## 1. OCI compliance
@@ -187,6 +188,38 @@ CONNECT [OPTIONS...] <agent> [<agent> ...]
   - agents after `TO` may not send requests to agents after `CONNECT`; they may only
     respond.
 
+### 4.8 `HARNESS`
+
+Added 2026-10-01.
+
+```
+HARNESS <name> FROM <source>[:<tag>] [FOR <agent_a> <agent_b> ...] [TO <dest_path>]
+```
+
+- `<name>` is required, and names the harness.
+- `FROM <source>[:<tag>]` names where the harness comes from, with an optional tag, as
+  `AGENT` does. The build detects the kind of source and fetches the harness that way:
+
+  | Source | The build |
+  |---|---|
+  | git URL | clones it |
+  | http(s) URL | downloads it, respecting HTTPS |
+  | path on the build host | copies it, as `COPY` copies |
+  | OCI reference | pulls it from its registry |
+
+- A harness is a file artifact. The build unpacks it to `/harness/<name>`, or to
+  `TO <dest_path>` if given.
+- **Which agents it gets.**
+  - Without `FOR`, every agent declared before the `HARNESS` line is made available to
+    it. With `AGENT my_custom ...` and `AGENT my_other_custom ...` above it, the harness
+    gets both.
+  - With `FOR`, it gets only the agents it names.
+- **`VOLUME` and `CONNECT`** name harnesses as they name agents. That is how a harness is
+  granted volumes and paths and attached to networks.
+- **Deny by default.** A harness is held to the same deny-by-default rules and file
+  permissions as an agent (§4.2, §8): no network, nothing outside its own directory, and
+  read-only except where a directive grants more.
+
 ## 5. Communication between agents in a microVM
 
 Networks between agents need more than the directives:
@@ -212,7 +245,7 @@ Networks between agents need more than the directives:
   per VM, each isolated as a container would be, without being containers. It is where the
   workloads/workspaces of §4.2 live. Mounts go to one workload, some or all, attached once
   (architecture.md D17). That is how `VOLUME ... FOR`, `SKILL ... FOR` and `MCP ... FOR`
-  would reach their agents.
+  would reach their agents, and `HARNESS ... FOR` its harnesses.
 - **Isolation per agent and per microVM**, of network, devices and permissions, is already
   a requirement of that runtime, and `EXPOSE`, `NETWORK` and `CONNECT` extend it.
 
@@ -268,6 +301,26 @@ Recorded as found. The answers the review has given so far are in §8.
 17. **The in-VM server.** What identities and keys encrypt and authorize its traffic?
     How is its reach tied to `NETWORK`, `CONNECT`, `MCP ... FOR` and `EXPOSE`? What does
     "code-mode" MCP mean exactly, and from which source?
+18. **`HARNESS`.**
+    - What is a harness, and what does "made available" give it: a way to send the
+      agents requests and drive their runs (through the in-VM server of §5), or reads of
+      their directories? Reading their directories would break the agents' total
+      isolation (§8), unless that is the exception meant.
+    - Does a harness run as a workload/workspace of its own in the in-VM runtime, as an
+      agent does, with its own private scratch directory?
+    - Does "every agent declared before it" mean only the agents above the `HARNESS`
+      line, so that one declared later is left out? Or is it every agent in the file?
+    - Is it an error for `FOR` to name an agent that was never declared?
+    - Its artifact: is it its own OSI type (`application/vnd.osi.harness.v1`, beside
+      `vnd.osi.agent.v1`)? And is "unzipped" a zip archive, or the tar+zstd layers agents
+      use?
+    - What does `[:<tag>]` mean for a git URL (a ref?), an http URL or a path? How does
+      the build tell a tag from a colon in the source: a URL's port, `C:\` on Windows, a
+      path with a colon in it?
+    - Do agents and harnesses share one namespace of names, so that `VOLUME ... FOR` and
+      `CONNECT` cannot be ambiguous? Do skills and MCP servers reach harnesses too?
+    - Does unpacking to `/harness/<name>` omit the tag, where agents go to
+      `/agents/<name>[_<tag>]`?
 
 ## 8. Answers from the review
 
