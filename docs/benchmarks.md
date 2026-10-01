@@ -497,6 +497,47 @@ D26). On a runner with the same CPU as the entry above, the command fell from 81
 runner: 26–39 ms less for a pooled `alpine true` on 5 AMD runners (PM M33). The rest is
 mostly waiting on the outer hypervisor.
 
+## Build (`docs/research/measurements/build-context/bench.py`)
+
+`bench.py SHARDS_BIN WORKDIR FILES BYTES RUNS`
+
+Method:
+- Each context is `FROM alpine:3.22` and `COPY . /app` over FILES files of BYTES random
+  bytes, from a fixed seed, in directories of 100.
+- Each round runs `shards build -q` and `docker build --no-cache -q` once, alternating
+  which goes first, after one warm-up of each (base images pulled, caches warm). Docker
+  runs with `--no-cache` because shards has no build cache yet.
+- Wall time is spawn to exit; percentiles are nearest-rank.
+
+### Runs
+
+**2026-10-01, a clone per context file** · 7760035 · Apple M5 Max, macOS 26.4.1 · Docker
+29.3.1 (BuildKit v0.28.1, containerd image store) · load average 30–37 from other work
+
+| Context | n | shards p50 | p90 | p99 | max | Docker p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|---|---|---|
+| 10 × 1 KB | 20 | 52 ms | 93 ms | 97 ms | 97 ms | 313 ms | 339 ms | 357 ms | 357 ms |
+| 1,000 × 10 KB | 10 | 377 ms | 426 ms | 433 ms | 433 ms | 659 ms | 696 ms | 707 ms | 707 ms |
+| 10,000 × 10 KB | 10 | 2954 ms | 3472 ms | 4636 ms | 4636 ms | 3080 ms | 3287 ms | 3307 ms | 3307 ms |
+| 50,000 × 1 KB | 5 | **91047 ms** | 133750 ms | 133750 ms | 133750 ms | 6293 ms | 6697 ms | 6697 ms | 6697 ms |
+| 100 × 10 MB | 5 | 2481 ms | 2826 ms | 2826 ms | 2826 ms | 20165 ms | 21709 ms | 21709 ms | 21709 ms |
+
+Taking each file by its own clone cost more than it saved for small files: making, opening
+and removing 50,000 of them (PM M76).
+
+**2026-10-01, small files packed** · this revision · same host, OS and Docker · load
+average 32–35
+
+| Context | n | shards p50 | p90 | p99 | max | Docker p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|---|---|---|
+| 10,000 × 10 KB | 10 | **679 ms** | 801 ms | 1045 ms | 1045 ms | 3375 ms | 3488 ms | 3496 ms | 3496 ms |
+| 50,000 × 1 KB | 5 | **2305 ms** | 2987 ms | 2987 ms | 2987 ms | 4943 ms | 5354 ms | 5354 ms | 5354 ms |
+| 100 × 10 MB | 5 | **2251 ms** | 2960 ms | 2960 ms | 2960 ms | 19305 ms | 24613 ms | 24613 ms | 24613 ms |
+
+Files under 1 MiB go into one pack, larger ones are cloned. shards builds each context
+faster than Docker: 5.0× at 10,000 files, 2.1× at 50,000, 8.6× at 1 GB. The host was
+loaded throughout; a quiet host's numbers are not yet recorded.
+
 ## Firecracker (`crates/shards/benches/firecracker.rs`)
 
 `cargo bench -p shards --bench firecracker [-- --runs N --cpus N --memory MIB]` (Linux, KVM)

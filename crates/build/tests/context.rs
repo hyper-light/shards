@@ -132,15 +132,23 @@ fn an_edit_after_the_context_is_read_does_not_reach_the_build() {
 }
 
 /// A file rewritten without pause while it is taken is a state the file was in, or
-/// refused as changing, and a refusal leaves nothing behind. Each version is one write,
-/// so every state the file passes through is a whole version, and a snapshot mixing
-/// two could only be a torn read.
+/// refused as changing, and a refusal adds nothing to the stage. Each version is one
+/// write, so every state the file passes through is a whole version, and a snapshot
+/// mixing two could only be a torn read. Both ways of taking it: a large file cloned, a
+/// small one packed.
 #[test]
 fn a_file_written_while_it_is_taken_is_one_version_or_refused() {
-    use std::io::{Seek, SeekFrom, Write};
-    let dir = tmp("snapshot-race");
+    race(4 << 20);
+    race(64 << 10);
+}
+
+fn race(size: usize) {
+    use shards_build::host::{Stage, Taken};
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let dir = tmp(&format!("snapshot-race-{size}"));
+    let stage_dir = dir.join("stage");
+    std::fs::create_dir(&stage_dir).unwrap();
     let src = dir.join("f");
-    let size = 4 << 20;
     std::fs::write(&src, vec![b'a'; size]).unwrap();
     let stop = std::sync::atomic::AtomicBool::new(false);
     // Stops the writer however the checks end, a failed assertion included: the scope
@@ -151,6 +159,8 @@ fn a_file_written_while_it_is_taken_is_one_version_or_refused() {
             self.0.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
+    let mut taken = Vec::new();
+    let mut stage = Stage::new(&stage_dir).unwrap();
     std::thread::scope(|s| {
         let _stop = Stop(&stop);
         s.spawn(|| {
@@ -163,22 +173,44 @@ fn a_file_written_while_it_is_taken_is_one_version_or_refused() {
                 assert_eq!(written, size, "one write, one version");
             }
         });
-        for i in 0..200 {
-            let dst = dir.join(format!("s{i}"));
-            match shards_build::host::snapshot(&src, &dst) {
-                Ok(snap) => {
-                    let b = std::fs::read(&dst).unwrap();
-                    assert_eq!(b.len() as u64, snap.size);
-                    assert!(b.iter().all(|&c| c == b[0]), "snapshot {i} mixes versions");
-                    std::fs::remove_file(&dst).unwrap();
+        for _ in 0..200 {
+            match stage.take(&src) {
+                Ok((snap, t)) => {
+                    assert_eq!(snap.size, size as u64);
+                    taken.push(t);
                 }
-                Err(e) => {
-                    assert!(e.to_string().contains("file changed as the build read it"), "{e}");
-                    assert!(!dst.exists(), "a refused snapshot leaves nothing");
-                }
+                Err(e) => assert!(e.to_string().contains("file changed as the build read it"), "{e}"),
             }
         }
     });
+    let pack_path = stage.pack_path();
+    stage.finish().unwrap();
+    let mut pack = std::fs::File::open(&pack_path).unwrap();
+    let packed = taken.iter().filter(|t| matches!(t, Taken::Pack(_))).count();
+    assert_eq!(
+        pack.metadata().unwrap().len(),
+        (packed * size) as u64,
+        "a refusal adds nothing"
+    );
+    for (i, t) in taken.iter().enumerate() {
+        let b = match t {
+            Taken::File(p) => std::fs::read(p).unwrap(),
+            Taken::Pack(at) => {
+                let mut b = vec![0u8; size];
+                pack.seek(SeekFrom::Start(*at)).unwrap();
+                pack.read_exact(&mut b).unwrap();
+                b
+            }
+        };
+        assert!(b.iter().all(|&c| c == b[0]), "snapshot {i} mixes versions");
+    }
+    let files = std::fs::read_dir(&stage_dir).unwrap().count();
+    let cloned = taken.iter().filter(|t| matches!(t, Taken::File(_))).count();
+    assert_eq!(
+        files,
+        cloned + 1,
+        "the pack, and a file per clone kept, none refused"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -188,7 +220,10 @@ fn a_symlink_put_in_a_files_place_is_not_followed() {
     let dir = tmp("snapshot-link");
     std::fs::write(dir.join("outside"), b"secret").unwrap();
     std::os::unix::fs::symlink(dir.join("outside"), dir.join("f")).unwrap();
-    let e = shards_build::host::snapshot(&dir.join("f"), &dir.join("s")).unwrap_err();
-    assert!(!dir.join("s").exists(), "{e}");
+    std::fs::create_dir(dir.join("stage")).unwrap();
+    let mut stage = shards_build::host::Stage::new(&dir.join("stage")).unwrap();
+    let e = stage.take(&dir.join("f")).unwrap_err();
+    stage.finish().unwrap();
+    assert_eq!(std::fs::metadata(dir.join("stage/pack")).unwrap().len(), 0, "{e}");
     std::fs::remove_dir_all(&dir).unwrap();
 }

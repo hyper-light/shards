@@ -2583,3 +2583,32 @@ revision before comparing a changed API/implementation.
     2014). shards' warm pool already is that: each VM process launched fresh, ahead of its
     request. VM processes are not forked; what to make better is how far ahead the pool
     launches when demand rises (D26), measured from this benchmark.
+
+### M76. Taking a context file into a build's stage: a clone, or the pack
+
+- **Question.** `shards build` takes one version of every context file into a stage
+  private to the build (D33). An APFS clone copies no data, but makes a file the build
+  later opens and removes; appending the bytes to one pack file copies them, but makes no
+  file. Which costs less, and from what size?
+- **Method.** `docs/research/measurements/build-context/clone.py DIR 2000 10`: each sample
+  takes 2,000 files of one size into a fresh directory, by `fclonefileat` and then the
+  unlinks the stage's removal does, or by reading each into one pack file and removing that;
+  the two alternate which goes first. Microseconds per file, n = 10 samples per size and
+  method. 2026-10-01, Apple M5 Max, macOS 26.4.1, APFS; load average 37 from other work.
+
+| Size | Clone p50 | p90 | p99 | max | Pack p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|---|---|
+| 1 KiB | 193.7 | 220.2 | 239.1 | 239.1 | 23.6 | 41.5 | 59.4 | 59.4 |
+| 16 KiB | 220.9 | 519.8 | 686.2 | 686.2 | 31.2 | 45.0 | 45.0 | 45.0 |
+| 64 KiB | 376.8 | 486.8 | 640.3 | 640.3 | 82.1 | 144.0 | 171.6 | 171.6 |
+| 256 KiB | 333.1 | 482.9 | 609.7 | 609.7 | 97.9 | 246.4 | 255.0 | 255.0 |
+| 1 MiB | 215.5 | 332.0 | 632.8 | 632.8 | 274.6 | 400.4 | 537.8 | 537.8 |
+| 4 MiB | 216.3 | 235.8 | 375.9 | 375.9 | 2329.2 | 2968.9 | 7238.6 | 7238.6 |
+
+- **Result.** A clone costs about 200 µs whatever the size; packing grows with it. Below
+  1 MiB packing is cheaper at every percentile, at 1 MiB they meet, and at 4 MiB the clone
+  is ten times faster.
+- **Consequence.** The stage packs files under 1 MiB and clones the rest
+  (`crates/build/src/host.rs` `CLONE_MIN`). With a clone per file, a context of 50,000
+  files of 1 KiB took 91 s to build, against Docker's 6.3 s; packed, 2.3 s against 4.9
+  (benchmarks.md, Build).

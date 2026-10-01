@@ -47,7 +47,12 @@ pub fn load(
     let root = host::eval_symlinks(dir).map_err(|e| Error(format!("resolve {}: {e}", dir.display())))?;
     let mut sent = walk(&root, filters)?;
     reset_hardlinks(&mut sent);
-    receive(&root, sent, sources, now, stage)
+    let mut taker = host::Stage::new(stage).map_err(|e| Error(format!("{}: {e}", stage.display())))?;
+    let pack = std::fs::File::open(taker.pack_path()).map_err(|e| Error(e.to_string()))?;
+    let pack = sources.archive(pack).map_err(|e| Error(e.to_string()))?;
+    let fs = receive(&root, sent, sources, now, &mut taker, pack)?;
+    taker.finish().map_err(|e| Error(e.to_string()))?;
+    Ok(fs)
 }
 
 /// hardlinks.go WithHardlinkReset, which the sender walks through: a file whose link
@@ -429,9 +434,9 @@ fn receive(
     sent: Vec<(Vec<u8>, Stat)>,
     sources: &mut Sources,
     now: (i64, u32),
-    stage: &Path,
+    stage: &mut host::Stage,
+    pack: u32,
 ) -> Result<Fs, Error> {
-    let mut taken = 0u64;
     let mut fs = Fs::new(
         Tree::new(Meta {
             mode: 0o755,
@@ -472,15 +477,18 @@ fn receive(
             fs.create(&p, syscall_mode(mode)).map_err(os)?;
         } else {
             // The bytes and the stat they go with, as one version of the file.
-            let snap = stage.join(taken.to_string());
-            taken += 1;
             let src = host::path(root, &rel);
-            let got = host::snapshot(&src, &snap).map_err(|e| Error(format!("{}: {e}", src.display())))?;
+            let (got, taken) = stage
+                .take(&src)
+                .map_err(|e| Error(format!("{}: {e}", src.display())))?;
             st.mode = (st.mode & !(fm::PERM | fm::SETUID | fm::SETGID | fm::STICKY)) | got.mode;
             st.size = got.size;
             st.mtime = got.mtime;
             let id = fs.create(&p, syscall_mode(st.mode)).map_err(os)?;
-            let data = sources.host(snap, st.size).map_err(|e| Error(e.to_string()))?;
+            let data = match taken {
+                host::Taken::Pack(offset) => shards_image::erofs::DataRef { source: pack, offset },
+                host::Taken::File(path) => sources.host(path, st.size).map_err(|e| Error(e.to_string()))?,
+            };
             fs.set_data(id, st.size, data);
         }
         rewrite(&mut fs, &p, &st).map_err(os)?;

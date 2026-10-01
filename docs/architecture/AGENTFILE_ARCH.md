@@ -398,6 +398,12 @@ Recorded as found. The answers the review has given so far are in §8.
        another shipped, which the rule that agents cannot read one another (§8) has to
        allow explicitly. Open.
 
+20. **Relays, declassifiers and MCP instances** (raised 2026-10-01).
+    - The syntax that names an agent a relay for another (§9.5), and a declassifier: a
+      `CONNECT` option, a directive of their own, or a grant on `NETWORK`?
+    - How long a shared MCP server's instance for one caller lives (§9.6): one run of the
+      agent, one session, or the microVM's life, and whether it keeps state between calls.
+
 ## 8. Answers from the review
 
 Given 2026-10-01.
@@ -502,10 +508,54 @@ devices and sockets where it expects files, and reads with bounded sizes, so a s
 FIFO or a giant file an agent planted cannot redirect, stall or exhaust a component with
 more access.
 
-### 9.5 Tests
+### 9.5 What reaches past a domain through another
+
+An agent attached to an internal-only network shared with an agent that may reach the
+world can have that agent carry its data out, by asking it, or by injecting instructions
+into what it reads. Each connection is allowed; the escape is in the second agent, whose
+judgment is no control. Two rules close it, neither relying on an agent:
+
+- **At build time, reach is transitive.** For every agent and harness, the build computes
+  what it reaches through every edge: networks, `VOLUME ... FOR` shared, `ATTACH`, MCP
+  servers. An internal-only agent with any path to one that may reach the world reaches
+  the world, and that is a build error naming the path (`B -> network internal -> A ->
+  network world`), unless the Agentfile names `A` a relay for `B` (§7 Q20). Authority
+  flows along every edge, so the closure is checked, not each edge alone.
+- **At run time, data carries labels** (information flow control: Flume, Krohn et al.,
+  SOSP 2007; HiStar, Zeldovich et al., OSDI 2006). Every message through the in-VM server
+  (§5) carries its sender's label. A process that receives internal-only data takes that
+  label, and the egress gate refuses what carries it. An agent that serves others handles
+  each request in a confined process of its own, labelled by that request alone, so serving
+  `B` taints only the work done for `B`. Only a declassifier the Agentfile grants lets
+  labelled data out.
+- **Not covered:** covert timing channels (one agent modulating load or the timing of
+  allowed requests). Labels at process granularity do not close them, and this spec does
+  not claim to.
+
+### 9.6 MCP tool calls
+
+A tool runs with the grants of the agent or harness that called it, never more. An MCP
+server is otherwise a deputy: an agent with no filesystem or network grants could reach
+whatever the server reaches by asking it.
+
+- **A local server declared `FOR` one agent** runs inside that agent's confinement, a child
+  of its process tree, so its tools inherit everything of §9.3.
+- **A server shared by several** never holds the union of their grants. Each caller gets an
+  instance of its own, in its own confinement, made at its first call, so no call reaches
+  another caller's grants, nor its data through the server's state (§7 Q20).
+- **A remote server** is egress from its caller. Calling it takes the caller's own grant to
+  reach it; under §9.5 an internal-only agent, or one holding internal-only data, calls none.
+  Remote tools act outside the microVM: what shards holds is what the caller may send.
+- **Results carry labels.** A tool's result carries its server's label joined with what it
+  read for the caller, so what a tool fetched does not pass the rules of §9.5.
+
+### 9.7 Tests
 
 Each escape above has an end-to-end test in a real microVM that must fail closed: an agent
 following a planted symlink, using a hard link, running a set-user-ID binary, reading a
 sibling's `/proc` or tracing it; a harness handed a symlink, a FIFO and an oversized file;
-and Agentfiles that try each build-time escape of §9.2. Each guard is mutation-checked: the
+an internal-only agent having a connected agent send its data out; an agent with no grants
+asking a local MCP tool to read outside its directory, a shared server to read another
+agent's files, and a remote server to send anything; and Agentfiles that try each
+build-time escape of §9.2 and each transitive reach of §9.5. Each guard is mutation-checked: the
 suite fails without it.

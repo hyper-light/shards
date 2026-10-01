@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::copy::fm;
@@ -256,8 +256,8 @@ fn get(c: &std::ffi::CStr, name: &std::ffi::CStr) -> io::Result<Vec<u8>> {
     })
 }
 
-/// What a snapshot of a regular file holds: its bytes, private to the build, and the
-/// mode, size and time they had when taken.
+/// What a snapshot of a regular file holds: the mode, size and time its bytes had when
+/// taken.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     /// Go's FileMode bits.
@@ -266,24 +266,138 @@ pub struct Snapshot {
     pub mtime: (i64, u32),
 }
 
-/// Takes a snapshot of the regular file `src` at `dst`, which must not exist: one
-/// version of its bytes, which no later edit of `src` changes. The source is held open
-/// throughout, so a rename over it does not matter, and is never followed through a
-/// symlink put in its place. A copy-on-write clone where the file system makes one
-/// (APFS's fclonefileat, Btrfs's and XFS's FICLONE), else a copy.
+/// The smallest file a stage clones rather than packs. Measured on APFS
+/// (docs/research/measurements/build-context/clone.py, platform-measurements.md M76): a
+/// clone and its removal cost about 200 µs whatever the size, reading a file into the pack
+/// 24 µs at 1 KiB and 98 µs at 256 KiB; at 1 MiB they meet, and at 4 MiB the clone is ten
+/// times faster.
+pub const CLONE_MIN: u64 = 1 << 20;
+
+/// Where a stage put a file's bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Taken {
+    /// A clone, or copy, of its own.
+    File(PathBuf),
+    /// At this offset of the stage's pack.
+    Pack(u64),
+}
+
+/// A directory private to one build that holds one version of each context file, which
+/// no later edit of the file changes. Files under [`CLONE_MIN`] are appended to one pack
+/// file, so taking one makes and removes no file; larger ones are copy-on-write clones
+/// where the file system makes them (APFS's fclonefileat, Btrfs's and XFS's FICLONE),
+/// else copies.
 ///
-/// A file that changes while it is taken has no one version to take, and is refused, as
-/// GNU tar reports "file changed as we read it": its identity, size, mtime and ctime are
-/// read before and after, and Linux and macOS move ctime on every write, which nothing
-/// can set back.
+/// A source is held open while it is taken, never through a symlink put in its place nor
+/// blocking on a FIFO. One that changes while it is taken has no one version to take and
+/// is refused, as GNU tar reports "file changed as we read it": its identity, size, mtime
+/// and ctime are read before and after, and Linux and macOS move ctime on every write,
+/// which nothing can set back. On Windows the source is opened sharing reads only, so no
+/// one writes it meanwhile.
+#[derive(Debug)]
+pub struct Stage {
+    dir: PathBuf,
+    pack: io::BufWriter<fs::File>,
+    len: u64,
+    next: u64,
+    buf: Vec<u8>,
+}
+
+impl Stage {
+    /// A stage in `dir`, which exists and is the build's own.
+    pub fn new(dir: &Path) -> io::Result<Stage> {
+        let pack = fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(dir.join("pack"))?;
+        Ok(Stage {
+            dir: dir.to_path_buf(),
+            pack: io::BufWriter::with_capacity(1 << 20, pack),
+            len: 0,
+            next: 0,
+            buf: Vec::new(),
+        })
+    }
+
+    /// The pack's path, to read it from.
+    pub fn pack_path(&self) -> PathBuf {
+        self.dir.join("pack")
+    }
+
+    /// Writes out what the pack holds, for it to be read.
+    pub fn finish(mut self) -> io::Result<()> {
+        io::Write::flush(&mut self.pack)
+    }
+
+    fn changed(src: &Path) -> io::Error {
+        io::Error::other(format!("{}: file changed as the build read it", src.display()))
+    }
+
+    /// Takes one version of the regular file `src`.
+    pub fn take(&mut self, src: &Path) -> io::Result<(Snapshot, Taken)> {
+        let (f, before) = open(src)?;
+        if !before.is_file() {
+            return Err(io::Error::other(format!("{}: not a regular file", src.display())));
+        }
+        let size = before.len();
+        let taken = if size >= CLONE_MIN {
+            let dst = self.dir.join(self.next.to_string());
+            self.next += 1;
+            if !clone(&f, &dst)? {
+                copy(&f, &dst)?;
+            }
+            if !unchanged(&f, &before)? {
+                fs::remove_file(&dst)?;
+                return Err(Self::changed(src));
+            }
+            Taken::File(dst)
+        } else {
+            self.buf.clear();
+            io::Read::read_to_end(&mut io::Read::take(&f, size + 1), &mut self.buf)?;
+            if self.buf.len() as u64 != size || !unchanged(&f, &before)? {
+                return Err(Self::changed(src));
+            }
+            io::Write::write_all(&mut self.pack, &self.buf)?;
+            let at = self.len;
+            self.len += size;
+            Taken::Pack(at)
+        };
+        Ok((
+            Snapshot {
+                mode: mode_of(&before),
+                size,
+                mtime: since_epoch(&before),
+            },
+            taken,
+        ))
+    }
+}
+
 #[cfg(unix)]
-pub fn snapshot(src: &Path, dst: &Path) -> io::Result<Snapshot> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+fn open(src: &Path) -> io::Result<(fs::File, fs::Metadata)> {
+    use std::os::unix::fs::OpenOptionsExt;
     let f = fs::File::options()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(src)?;
-    let version = |m: &fs::Metadata| {
+    let m = f.metadata()?;
+    Ok((f, m))
+}
+
+#[cfg(windows)]
+fn open(src: &Path) -> io::Result<(fs::File, fs::Metadata)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // FILE_SHARE_READ: others may read, not write or delete, while it is held.
+    let f = fs::File::options().read(true).share_mode(0x1).open(src)?;
+    let m = f.metadata()?;
+    Ok((f, m))
+}
+
+/// Whether `f` is as `before` was: its identity, size, mtime and ctime.
+#[cfg(unix)]
+fn unchanged(f: &fs::File, before: &fs::Metadata) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let v = |m: &fs::Metadata| {
         (
             m.dev(),
             m.ino(),
@@ -294,22 +408,20 @@ pub fn snapshot(src: &Path, dst: &Path) -> io::Result<Snapshot> {
             m.ctime_nsec(),
         )
     };
-    let before = f.metadata()?;
-    if !before.is_file() {
-        return Err(io::Error::other(format!("{}: not a regular file", src.display())));
-    }
-    if !clone(&f, dst)? {
-        copy(&f, dst)?;
-    }
-    let after = f.metadata()?;
-    if version(&before) != version(&after) {
-        fs::remove_file(dst)?;
-        return Err(io::Error::other(format!(
-            "{}: file changed as the build read it",
-            src.display()
-        )));
-    }
-    let st = before.mode();
+    Ok(v(before) == v(&f.metadata()?))
+}
+
+/// On Windows no one could write it meanwhile.
+#[cfg(windows)]
+fn unchanged(_: &fs::File, _: &fs::Metadata) -> io::Result<bool> {
+    Ok(true)
+}
+
+/// Go's FileMode permission and set-ID bits of a regular file.
+#[cfg(unix)]
+fn mode_of(m: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    let st = m.mode();
     let mut mode = st & 0o777;
     if st & 0o4000 != 0 {
         mode |= fm::SETUID;
@@ -320,15 +432,18 @@ pub fn snapshot(src: &Path, dst: &Path) -> io::Result<Snapshot> {
     if st & 0o1000 != 0 {
         mode |= fm::STICKY;
     }
-    Ok(Snapshot {
-        mode,
-        size: before.size(),
-        mtime: since_epoch(&before),
-    })
+    mode
+}
+
+/// Go's 0666, or 0444 read-only, made executable and capped at 0755, as fsutil sends
+/// Windows files.
+#[cfg(windows)]
+fn mode_of(m: &fs::Metadata) -> u32 {
+    let mode = if m.permissions().readonly() { 0o444 } else { 0o666 };
+    ((mode & fm::PERM) | 0o111) & 0o755
 }
 
 /// Copies what `f` holds to a new file `dst`, from its start.
-#[cfg(unix)]
 fn copy(f: &fs::File, dst: &Path) -> io::Result<()> {
     use std::io::{Seek, SeekFrom};
     let mut src = f;
@@ -375,29 +490,10 @@ fn clone(f: &fs::File, dst: &Path) -> io::Result<bool> {
     }
 }
 
-/// On Windows the source is opened sharing reads only, so no one writes it while it is
-/// copied, and its metadata is read through that handle.
+/// Windows has no clone shards makes yet: a copy.
 #[cfg(windows)]
-pub fn snapshot(src: &Path, dst: &Path) -> io::Result<Snapshot> {
-    use std::os::windows::fs::OpenOptionsExt;
-    // FILE_SHARE_READ: others may read, not write or delete, while it is held.
-    let mut f = fs::File::options().read(true).share_mode(0x1).open(src)?;
-    let m = f.metadata()?;
-    if !m.is_file() {
-        return Err(io::Error::other(format!(
-            "{}: no longer a regular file",
-            src.display()
-        )));
-    }
-    let mut out = fs::File::options().write(true).create_new(true).open(dst)?;
-    io::copy(&mut f, &mut out)?;
-    let mut mode = if m.permissions().readonly() { 0o444 } else { 0o666 };
-    mode = ((mode & fm::PERM) | 0o111) & 0o755;
-    Ok(Snapshot {
-        mode,
-        size: m.len(),
-        mtime: since_epoch(&m),
-    })
+fn clone(_: &fs::File, _: &Path) -> io::Result<bool> {
+    Ok(false)
 }
 
 /// `filepath.EvalSymlinks`, as fsutil.NewFS resolves the context's directory.
