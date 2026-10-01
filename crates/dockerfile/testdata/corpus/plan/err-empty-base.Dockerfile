@@ -1,0 +1,2 @@
+ARG B=
+FROM $B

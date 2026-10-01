@@ -1,0 +1,2 @@
+FROM withconfig
+ENTRYPOINT ["/other"]

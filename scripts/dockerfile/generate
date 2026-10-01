@@ -6,6 +6,11 @@
 # - crates/dockerfile/testdata/parse.json and lex.json, what BuildKit's parser and lexer
 #   make of them and of crates/dockerfile/testdata/corpus and lex-cases.json, which the
 #   crate's tests expect byte for byte (oracle/main.go);
+# - crates/dockerfile/testdata/instructions.json and plan.json, the typed instructions and
+#   the build plan (Dockerfile2LLB's graph, image config and warnings, with the fake base
+#   images of images.json) BuildKit makes of the corpus;
+# - crates/dockerfile/testdata/configs-answers.json, what Go's encoding/json makes of each
+#   image config in configs.json, read into BuildKit's DockerOCIImage and written back;
 # - crates/dockerfile/src/tables.rs, Go's character classes the parser and lexer use.
 #
 #   scripts/dockerfile/generate [BUILDKIT_CHECKOUT]

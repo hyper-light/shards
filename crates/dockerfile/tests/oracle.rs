@@ -448,3 +448,50 @@ fn instructions_parse_as_buildkits_do() {
         failures.join("\n")
     );
 }
+
+/// A config's text: a string, or `{"base64": ...}` for text that is not UTF-8.
+fn config_text(v: &Value) -> Vec<u8> {
+    if let Some(s) = v.as_str() {
+        return s.as_bytes().to_vec();
+    }
+    let enc = v["base64"].as_str().unwrap().trim_end_matches('=');
+    let digit = |c: u8| -> u32 {
+        match c {
+            b'A'..=b'Z' => u32::from(c - b'A'),
+            b'a'..=b'z' => u32::from(c - b'a') + 26,
+            b'0'..=b'9' => u32::from(c - b'0') + 52,
+            b'+' => 62,
+            _ => 63,
+        }
+    };
+    let mut out = Vec::new();
+    for chunk in enc.as_bytes().chunks(4) {
+        let n = chunk.iter().fold(0u32, |n, &c| n << 6 | digit(c)) << (6 * (4 - chunk.len()));
+        out.extend_from_slice(&n.to_be_bytes()[1..chunk.len()]);
+    }
+    out
+}
+
+/// Image configs read as Go reads one into a `DockerOCIImage`, and written as
+/// `json.Marshal` writes it: every case of testdata/configs.json, byte for byte, errors
+/// included.
+#[test]
+fn image_configs_read_and_write_as_gos() {
+    use shards_dockerfile::image::Image;
+    let answers = load("configs-answers.json");
+    let answers = answers.as_array().unwrap();
+    assert_eq!(answers.len(), load("configs.json").as_array().unwrap().len());
+    for a in answers {
+        let text = config_text(&a["input"]);
+        let got = match Image::from_json(&text) {
+            Err(e) => serde_json::json!({ "error": quote(&e) }),
+            Ok(image) => match image.to_json() {
+                Err(e) => serde_json::json!({ "marshal_error": quote(&e) }),
+                Ok(config) => serde_json::json!({ "config": config }),
+            },
+        };
+        let mut want = a.clone();
+        want.as_object_mut().unwrap().remove("input");
+        assert_eq!(got, want, "{}", String::from_utf8_lossy(&text));
+    }
+}

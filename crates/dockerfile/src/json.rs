@@ -1,10 +1,31 @@
-//! A JSON array of strings, as BuildKit reads one with Go's `encoding/json`
-//! (`parser/line_parsers.go`, `parseJSON`): the text must be valid JSON as Go's scanner
-//! checks it, nesting at most 10,000 deep, and strings decode as Go decodes them, an
-//! invalid byte or a lone surrogate becoming U+FFFD. The scan is iterative, its stack on
-//! the heap, so no nesting exhausts a thread's stack.
+//! JSON as Go's `encoding/json` reads and writes it.
+//!
+//! Reading: the text must be valid JSON as Go's scanner checks it, nesting at most 10,000
+//! deep, and strings decode as Go decodes them, an invalid byte or a lone surrogate becoming
+//! U+FFFD. The scan is iterative, its stack on the heap, so no nesting exhausts a thread's
+//! stack. BuildKit reads a JSON array of strings this way (`parser/line_parsers.go`,
+//! `parseJSON`), and an image's config.
+//!
+//! Writing: strings escaped as `encodeState.string` escapes them with HTML escaping on, as
+//! `json.Marshal` does, so documents BuildKit writes come out byte for byte.
+
+use std::fmt::Write as _;
 
 use crate::go;
+
+/// A JSON value. Strings are Go strings, bytes; numbers keep their text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Value {
+    Null,
+    Bool(bool),
+    Number(Vec<u8>),
+    /// The string decoded, and its text as written where that differs (an escape, or a
+    /// byte that is not UTF-8): Go reads a time from the text as written.
+    String(Vec<u8>, Option<Vec<u8>>),
+    Array(Vec<Value>),
+    /// Members in order, duplicates kept, as Go's decoder meets them.
+    Object(Vec<(Vec<u8>, Value)>),
+}
 
 /// What a JSON array of strings is, if `text` is one.
 pub(crate) enum Array {
@@ -16,143 +37,137 @@ pub(crate) enum Array {
     Not,
 }
 
+pub(crate) fn array(text: &[u8]) -> Array {
+    match parse(text) {
+        Ok(Value::Array(elements)) => {
+            let mut strings = Vec::with_capacity(elements.len());
+            for e in elements {
+                match e {
+                    Value::String(s, _) => strings.push(s),
+                    _ => return Array::NotStrings,
+                }
+            }
+            Array::Strings(strings)
+        }
+        _ => Array::Not,
+    }
+}
+
 /// Go's scanner refuses JSON nested deeper than this (`encoding/json` scanner.go,
 /// `maxNestingDepth`).
 const MAX_DEPTH: usize = 10_000;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Container {
-    Array,
-    Object,
+/// A container being read, and what it holds so far.
+enum Open {
+    Array(Vec<Value>),
+    /// The members so far, and the key whose value comes next.
+    Object(Vec<(Vec<u8>, Value)>, Option<Vec<u8>>),
 }
 
-/// Where the scan is within the innermost container.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Expect {
-    /// A value, or `]` closing an array just opened.
-    ValueOrEnd,
-    /// A value.
-    Value,
-    /// `,` or the container's end.
-    CommaOrEnd,
-    /// A key (`"..."`), or `}` closing an object just opened.
-    KeyOrEnd,
-    /// A key.
-    Key,
-    /// `:` after a key.
-    Colon,
-}
+/// The message of Go's `SyntaxError` for running out of input.
+const END: &[u8] = b"unexpected end of JSON input";
 
-pub(crate) fn array(text: &[u8]) -> Array {
+/// `text` as one JSON value with only whitespace around it, or Go's `SyntaxError` message
+/// for the first thing its scanner refuses.
+pub(crate) fn parse(text: &[u8]) -> Result<Value, Vec<u8>> {
     let mut s = Scan { b: text, at: 0 };
-    s.space();
-    if s.peek() != Some(b'[') {
-        return Array::Not;
-    }
-    let mut stack: Vec<Container> = Vec::new();
-    let mut expect = Expect::Value;
-    // The top-level array's elements: each a string, or not.
-    let mut strings = Vec::new();
-    let mut all_strings = true;
-    loop {
+    let mut stack: Vec<Open> = Vec::new();
+    let value = 'outer: loop {
         s.space();
-        let Some(c) = s.peek() else {
-            return Array::Not;
-        };
-        let top = stack.last().copied();
-        match expect {
-            Expect::Value | Expect::ValueOrEnd => {
-                if expect == Expect::ValueOrEnd && c == b']' {
-                    s.at += 1;
-                    stack.pop();
-                    expect = Expect::CommaOrEnd;
-                } else {
-                    let at_top = stack.len() == 1;
-                    match c {
-                        b'[' | b'{' => {
-                            if stack.len() >= MAX_DEPTH {
-                                return Array::Not;
-                            }
-                            s.at += 1;
-                            if at_top {
-                                all_strings = false;
-                            }
-                            if c == b'[' {
-                                stack.push(Container::Array);
-                                expect = Expect::ValueOrEnd;
-                            } else {
-                                stack.push(Container::Object);
-                                expect = Expect::KeyOrEnd;
-                            }
-                            continue;
-                        }
-                        b'"' => {
-                            let Some(v) = s.string() else {
-                                return Array::Not;
-                            };
-                            if at_top {
-                                strings.push(v);
-                            }
-                        }
-                        _ => {
-                            if !s.scalar() {
-                                return Array::Not;
-                            }
-                            if at_top {
-                                all_strings = false;
-                            }
-                        }
-                    }
-                    expect = Expect::CommaOrEnd;
-                }
-            }
-            Expect::CommaOrEnd => match (c, top) {
-                (b',', Some(Container::Array)) => {
-                    s.at += 1;
-                    expect = Expect::Value;
-                }
-                (b',', Some(Container::Object)) => {
-                    s.at += 1;
-                    expect = Expect::Key;
-                }
-                (b']', Some(Container::Array)) | (b'}', Some(Container::Object)) => {
-                    s.at += 1;
-                    stack.pop();
-                }
-                _ => return Array::Not,
-            },
-            Expect::Key | Expect::KeyOrEnd => {
-                if expect == Expect::KeyOrEnd && c == b'}' {
-                    s.at += 1;
-                    stack.pop();
-                    expect = Expect::CommaOrEnd;
-                } else if c == b'"' && s.string().is_some() {
-                    expect = Expect::Colon;
-                } else {
-                    return Array::Not;
-                }
-            }
-            Expect::Colon => {
-                if c != b':' {
-                    return Array::Not;
+        // A value, or the end of the container just opened.
+        let c = s.peek().ok_or(END)?;
+        let mut done = match c {
+            b'[' | b'{' => {
+                if stack.len() >= MAX_DEPTH {
+                    return Err(fail(c, "exceeded max depth"));
                 }
                 s.at += 1;
-                expect = Expect::Value;
+                s.space();
+                let next = s.peek().ok_or(END)?;
+                if c == b'[' {
+                    if next == b']' {
+                        s.at += 1;
+                        Value::Array(Vec::new())
+                    } else {
+                        stack.push(Open::Array(Vec::new()));
+                        continue;
+                    }
+                } else if next == b'}' {
+                    s.at += 1;
+                    Value::Object(Vec::new())
+                } else {
+                    let key = s.key()?;
+                    stack.push(Open::Object(Vec::new(), Some(key)));
+                    continue;
+                }
+            }
+            b'"' => {
+                let start = s.at;
+                let text = s.string()?;
+                let raw = go::span(s.b, start + 1, s.at - 1);
+                let raw = (raw != text.as_slice()).then(|| raw.to_vec());
+                Value::String(text, raw)
+            }
+            _ => s.scalar()?,
+        };
+        // Add the value to its container, closing what ends. A value outside any
+        // container is the document's.
+        loop {
+            let Some(top) = stack.last_mut() else {
+                break 'outer done;
+            };
+            match top {
+                Open::Array(elements) => elements.push(done),
+                Open::Object(members, key) => members.push((key.take().unwrap_or_default(), done)),
+            }
+            s.space();
+            let c = s.peek().ok_or(END)?;
+            match (c, &mut *top) {
+                (b',', Open::Array(_)) => {
+                    s.at += 1;
+                    break;
+                }
+                (b',', Open::Object(_, key)) => {
+                    s.at += 1;
+                    s.space();
+                    *key = Some(s.key()?);
+                    break;
+                }
+                (b']', Open::Array(_)) | (b'}', Open::Object(..)) => {
+                    s.at += 1;
+                    done = match stack.pop() {
+                        Some(Open::Array(elements)) => Value::Array(elements),
+                        Some(Open::Object(members, _)) => Value::Object(members),
+                        None => return Err(END.to_vec()),
+                    };
+                }
+                (_, Open::Array(_)) => return Err(fail(c, "after array element")),
+                (_, Open::Object(..)) => return Err(fail(c, "after object key:value pair")),
             }
         }
-        if stack.is_empty() {
-            break;
-        }
-    }
+    };
     s.space();
-    if s.at != text.len() {
-        return Array::Not;
+    match s.peek() {
+        None => Ok(value),
+        Some(c) => Err(fail(c, "after top-level value")),
     }
-    if all_strings {
-        Array::Strings(strings)
-    } else {
-        Array::NotStrings
-    }
+}
+
+/// `SyntaxError`'s message for byte `c` where the scanner wanted something else:
+/// `"invalid character " + quoteChar(c) + " " + context`.
+fn fail(c: u8, context: &str) -> Vec<u8> {
+    let quoted = match c {
+        b'\'' => r"'\''".to_string(),
+        b'"' => "'\"'".to_string(),
+        // string(c) is the rune c: a byte past ASCII is its Latin-1 character.
+        _ => {
+            let mut rune = Vec::new();
+            go::push(&mut rune, u32::from(c));
+            let q = go::quote(&rune);
+            format!("'{}'", q.get(1..q.len().saturating_sub(1)).unwrap_or_default())
+        }
+    };
+    format!("invalid character {quoted} {context}").into_bytes()
 }
 
 struct Scan<'a> {
@@ -165,6 +180,25 @@ impl Scan<'_> {
         self.b.get(self.at).copied()
     }
 
+    /// The next byte, which must be there.
+    fn next(&mut self) -> Result<u8, Vec<u8>> {
+        let c = self.peek().ok_or(END)?;
+        self.at += 1;
+        Ok(c)
+    }
+
+    /// The next byte within a literal, a number or an escape: at the end of the input,
+    /// a space, as Go's scanner feeds one to the state it is in (`scanner.eof`).
+    fn inner(&mut self) -> u8 {
+        match self.peek() {
+            Some(c) => {
+                self.at += 1;
+                c
+            }
+            None => b' ',
+        }
+    }
+
     /// JSON's whitespace, the only kind Go's scanner skips.
     fn space(&mut self) {
         while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
@@ -172,45 +206,81 @@ impl Scan<'_> {
         }
     }
 
-    /// `true`, `false`, `null` or a number; whether it was one.
-    fn scalar(&mut self) -> bool {
-        for word in [b"true".as_slice(), b"false", b"null"] {
-            if go::tail(self.b, self.at).starts_with(word) {
-                self.at += word.len();
-                return true;
-            }
+    /// A member's key and the `:` after it.
+    fn key(&mut self) -> Result<Vec<u8>, Vec<u8>> {
+        let c = self.peek().ok_or(END)?;
+        if c != b'"' {
+            return Err(fail(c, "looking for beginning of object key string"));
         }
-        self.number()
+        let key = self.string()?;
+        self.space();
+        let c = self.next()?;
+        if c != b':' {
+            return Err(fail(c, "after object key"));
+        }
+        Ok(key)
     }
 
-    /// `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`
-    fn number(&mut self) -> bool {
+    /// `true`, `false`, `null` or a number.
+    fn scalar(&mut self) -> Result<Value, Vec<u8>> {
+        let c = self.next()?;
+        let (rest, value): (&[u8], Value) = match c {
+            b't' => (b"rue", Value::Bool(true)),
+            b'f' => (b"alse", Value::Bool(false)),
+            b'n' => (b"ull", Value::Null),
+            b'-' | b'0'..=b'9' => {
+                self.at -= 1;
+                return self.number();
+            }
+            _ => return Err(fail(c, "looking for beginning of value")),
+        };
+        let word = match c {
+            b't' => "true",
+            b'f' => "false",
+            _ => "null",
+        };
+        for &want in rest {
+            let got = self.inner();
+            if got != want {
+                return Err(fail(
+                    got,
+                    &format!("in literal {word} (expecting '{}')", char::from(want)),
+                ));
+            }
+        }
+        Ok(value)
+    }
+
+    /// `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`, ending where Go's scanner ends it.
+    fn number(&mut self) -> Result<Value, Vec<u8>> {
+        let start = self.at;
         if self.peek() == Some(b'-') {
             self.at += 1;
         }
-        match self.peek() {
-            Some(b'0') => self.at += 1,
-            Some(b'1'..=b'9') => self.digits(),
-            _ => return false,
+        match self.inner() {
+            b'0' => {}
+            b'1'..=b'9' => self.digits(),
+            c => return Err(fail(c, "in numeric literal")),
         }
         if self.peek() == Some(b'.') {
             self.at += 1;
-            if !matches!(self.peek(), Some(b'0'..=b'9')) {
-                return false;
+            match self.inner() {
+                b'0'..=b'9' => self.digits(),
+                c => return Err(fail(c, "after decimal point in numeric literal")),
             }
-            self.digits();
         }
         if matches!(self.peek(), Some(b'e' | b'E')) {
             self.at += 1;
-            if matches!(self.peek(), Some(b'+' | b'-')) {
-                self.at += 1;
+            let mut c = self.inner();
+            if matches!(c, b'+' | b'-') {
+                c = self.inner();
             }
-            if !matches!(self.peek(), Some(b'0'..=b'9')) {
-                return false;
+            if !c.is_ascii_digit() {
+                return Err(fail(c, "in exponent of numeric literal"));
             }
             self.digits();
         }
-        true
+        Ok(Value::Number(go::span(self.b, start, self.at).to_vec()))
     }
 
     fn digits(&mut self) {
@@ -220,58 +290,55 @@ impl Scan<'_> {
     }
 
     /// A string, decoded as Go's `unquoteBytes` decodes it.
-    fn string(&mut self) -> Option<Vec<u8>> {
+    fn string(&mut self) -> Result<Vec<u8>, Vec<u8>> {
         self.at += 1;
         let mut out = Vec::new();
         loop {
-            let c = self.peek()?;
+            let c = self.peek().ok_or(END)?;
             match c {
                 b'"' => {
                     self.at += 1;
-                    return Some(out);
+                    return Ok(out);
                 }
                 b'\\' => {
                     self.at += 1;
-                    let simple = match self.peek()? {
-                        b'"' => Some(b'"'),
-                        b'\\' => Some(b'\\'),
-                        b'/' => Some(b'/'),
-                        b'b' => Some(0x08),
-                        b'f' => Some(0x0c),
-                        b'n' => Some(b'\n'),
-                        b'r' => Some(b'\r'),
-                        b't' => Some(b'\t'),
-                        b'u' => None,
-                        _ => return None,
-                    };
-                    if let Some(byte) = simple {
-                        out.push(byte);
-                        self.at += 1;
-                        continue;
-                    }
-                    self.at += 1;
-                    let r = hex4(go::tail(self.b, self.at))?;
-                    self.at += 4;
-                    if (0xD800..0xDC00).contains(&r) {
-                        // A pair, if a low surrogate's escape follows.
-                        let low = go::tail(self.b, self.at)
-                            .strip_prefix(b"\\u")
-                            .and_then(hex4)
-                            .filter(|l| (0xDC00..0xE000).contains(l));
-                        match low {
-                            Some(l) => {
-                                self.at += 6;
-                                go::push(&mut out, 0x10000 + ((r - 0xD800) << 10) + (l - 0xDC00));
+                    let e = self.inner();
+                    let simple = match e {
+                        b'"' => b'"',
+                        b'\\' => b'\\',
+                        b'/' => b'/',
+                        b'b' => 0x08,
+                        b'f' => 0x0c,
+                        b'n' => b'\n',
+                        b'r' => b'\r',
+                        b't' => b'\t',
+                        b'u' => {
+                            let r = self.hex4()?;
+                            if (0xD800..0xDC00).contains(&r) {
+                                // A pair, if a low surrogate's escape follows.
+                                let low = go::tail(self.b, self.at)
+                                    .strip_prefix(b"\\u")
+                                    .and_then(hex4)
+                                    .filter(|l| (0xDC00..0xE000).contains(l));
+                                match low {
+                                    Some(l) => {
+                                        self.at += 6;
+                                        go::push(&mut out, 0x10000 + ((r - 0xD800) << 10) + (l - 0xDC00));
+                                    }
+                                    None => go::push(&mut out, go::RUNE_ERROR),
+                                }
+                            } else if (0xDC00..0xE000).contains(&r) {
+                                go::push(&mut out, go::RUNE_ERROR);
+                            } else {
+                                go::push(&mut out, r);
                             }
-                            None => go::push(&mut out, go::RUNE_ERROR),
+                            continue;
                         }
-                    } else if (0xDC00..0xE000).contains(&r) {
-                        go::push(&mut out, go::RUNE_ERROR);
-                    } else {
-                        go::push(&mut out, r);
-                    }
+                        _ => return Err(fail(e, "in string escape code")),
+                    };
+                    out.push(simple);
                 }
-                0..=0x1f => return None,
+                0..=0x1f => return Err(fail(c, "in string literal")),
                 0x80.. => {
                     let (r, w) = go::decode(go::tail(self.b, self.at));
                     go::push(&mut out, r);
@@ -284,6 +351,19 @@ impl Scan<'_> {
             }
         }
     }
+
+    /// The four hex digits of a `\u` escape.
+    fn hex4(&mut self) -> Result<u32, Vec<u8>> {
+        let mut r = 0;
+        for _ in 0..4 {
+            let c = self.inner();
+            let d = char::from(c)
+                .to_digit(16)
+                .ok_or_else(|| fail(c, "in \\u hexadecimal character escape"))?;
+            r = r * 16 + d;
+        }
+        Ok(r)
+    }
 }
 
 /// Four hex digits at the start of `b`, as a number.
@@ -291,6 +371,52 @@ fn hex4(b: &[u8]) -> Option<u32> {
     b.get(..4)?
         .iter()
         .try_fold(0u32, |r, &d| Some(r * 16 + char::from(d).to_digit(16)?))
+}
+
+/// Appends `s` as a JSON string, as `json.Marshal` writes it: `<`, `>` and `&` escaped for
+/// HTML, U+2028 and U+2029 escaped, an invalid byte as `\ufffd`.
+pub(crate) fn write_string(out: &mut String, s: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push('"');
+    let mut at = 0;
+    while at < s.len() {
+        let (r, w) = go::decode(go::tail(s, at));
+        at += w.max(1);
+        match r {
+            0x22 => out.push_str("\\\""),
+            0x5c => out.push_str("\\\\"),
+            0x08 => out.push_str("\\b"),
+            0x0c => out.push_str("\\f"),
+            0x0a => out.push_str("\\n"),
+            0x0d => out.push_str("\\r"),
+            0x09 => out.push_str("\\t"),
+            0..=0x1f | 0x3c | 0x3e | 0x26 => {
+                out.push_str("\\u00");
+                for nibble in [r >> 4, r & 0xf] {
+                    out.push(char::from(HEX.get(nibble as usize).copied().unwrap_or(b'0')));
+                }
+            }
+            0x2028 | 0x2029 => {
+                let _ = write!(out, "\\u{r:04x}");
+            }
+            // An invalid byte decodes to U+FFFD one byte wide, written as Go writes it.
+            go::RUNE_ERROR if w == 1 => out.push_str("\\ufffd"),
+            _ => out.push(char::from_u32(r).unwrap_or('\u{FFFD}')),
+        }
+    }
+    out.push('"');
+}
+
+/// Appends `items` as a JSON array of strings.
+pub(crate) fn write_strings(out: &mut String, items: &[Vec<u8>]) {
+    out.push('[');
+    for (i, s) in items.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        write_string(out, s);
+    }
+    out.push(']');
 }
 
 #[cfg(test)]
@@ -308,5 +434,76 @@ mod tests {
         assert!(matches!(array(b" [\"a\", \"b\"] "), Array::Strings(v) if v.len() == 2));
         assert!(matches!(array(b"[\"a\", {\"k\": [1]}]"), Array::NotStrings));
         assert!(matches!(array(b"[\"a\" \"b\"]"), Array::Not));
+    }
+
+    /// Values parse whole, members in order with duplicates kept, and nothing malformed.
+    #[test]
+    fn values_parse_as_go_scans_them() {
+        let v = parse(br#" {"a": [1, -2.5e3, true, null], "b": {}, "a": "\u00e9\ud800x"} "#).unwrap();
+        assert_eq!(
+            v,
+            Value::Object(vec![
+                (
+                    b"a".to_vec(),
+                    Value::Array(vec![
+                        Value::Number(b"1".to_vec()),
+                        Value::Number(b"-2.5e3".to_vec()),
+                        Value::Bool(true),
+                        Value::Null,
+                    ])
+                ),
+                (b"b".to_vec(), Value::Object(vec![])),
+                (
+                    b"a".to_vec(),
+                    Value::String("é\u{FFFD}x".as_bytes().to_vec(), Some(br"\u00e9\ud800x".to_vec()))
+                ),
+            ])
+        );
+        // Go's own messages; tests/oracle.rs holds the rest, as image configs.
+        let cases: &[(&[u8], &[u8])] = &[
+            (&b"{\"a\" 1}"[..], &b"invalid character '1' after object key"[..]),
+            (
+                &b"{\"a\":1,}"[..],
+                &b"invalid character '}' looking for beginning of object key string"[..],
+            ),
+            (
+                &b"[1,]"[..],
+                &b"invalid character ']' looking for beginning of value"[..],
+            ),
+            (&b"[01]"[..], &b"invalid character '1' after array element"[..]),
+            (
+                &b"{1:2}"[..],
+                &b"invalid character '1' looking for beginning of object key string"[..],
+            ),
+            (
+                &b"\"a\x0ab\""[..],
+                &b"invalid character '\\n' in string literal"[..],
+            ),
+        ];
+        for (bad, want) in cases {
+            assert_eq!(
+                String::from_utf8_lossy(&parse(bad).unwrap_err()),
+                String::from_utf8_lossy(want),
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+        let deep = [b"[".repeat(MAX_DEPTH + 1), b"]".repeat(MAX_DEPTH + 1)].concat();
+        assert_eq!(
+            parse(&deep).unwrap_err(),
+            b"invalid character '[' exceeded max depth"
+        );
+        assert_eq!(parse(b"\"x\""), Ok(Value::String(b"x".to_vec(), None)));
+    }
+
+    /// Strings are written as `json.Marshal` writes them.
+    #[test]
+    fn strings_are_written_as_go_writes_them() {
+        let mut out = String::new();
+        write_string(&mut out, b"a\"\\<>&\x01\x7f\n\t\xff\xc3\xa9\xe2\x80\xa8");
+        assert_eq!(
+            out,
+            "\"a\\\"\\\\\\u003c\\u003e\\u0026\\u0001\x7f\\n\\t\\ufffdé\\u2028\""
+        );
     }
 }

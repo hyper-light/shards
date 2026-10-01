@@ -10,6 +10,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +23,15 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/moby/buildkit/client/llb/sourceresolver"
+	"github.com/moby/buildkit/frontend/dockerfile/dockerfile2llb"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
+	"github.com/moby/buildkit/frontend/dockerui"
+	"github.com/moby/buildkit/solver/pb"
+	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
+	digest "github.com/opencontainers/go-digest"
+	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
+	"google.golang.org/protobuf/encoding/protojson"
 	"github.com/moby/buildkit/frontend/dockerfile/linter"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/buildkit/frontend/dockerfile/shell"
@@ -326,6 +336,170 @@ func command(c any) map[string]any {
 	return out
 }
 
+// The base images a plan may use, by the reference BuildKit resolves (testdata/images.json).
+type fakeImage struct {
+	Ref    string          `json:"ref"`
+	Digest string          `json:"digest"`
+	Config json.RawMessage `json:"config"`
+}
+
+type resolver map[string]fakeImage
+
+func (r resolver) ResolveImageConfig(_ context.Context, ref string, _ sourceresolver.Opt) (string, digest.Digest, []byte, error) {
+	img, ok := r[ref]
+	if !ok {
+		return "", "", nil, fmt.Errorf("%s: not found", ref)
+	}
+	return img.Ref, digest.Digest(img.Digest), img.Config, nil
+}
+
+// A plan's options, from FILE.opts.json beside a corpus file.
+type planOpts struct {
+	BuildArgs map[string]string `json:"build_args"`
+	Target    string            `json:"target"`
+	Labels    map[string]string `json:"labels"`
+	Hostname  string            `json:"hostname"`
+}
+
+// What BuildKit's Dockerfile2LLB plans for a file: every operation of its graph, in an
+// order each input comes before what uses it, with inputs by that order; each op's
+// metadata; the image config; and the build checks' warnings. Or its error.
+func planFile(root, rel string, images resolver) map[string]any {
+	data, err := os.ReadFile(filepath.Join(root, rel))
+	if err != nil {
+		panic(err)
+	}
+	out := map[string]any{"file": rel}
+	var opts planOpts
+	if o, err := os.ReadFile(filepath.Join(root, rel+".opts.json")); err == nil {
+		if err := json.Unmarshal(o, &opts); err != nil {
+			panic(err)
+		}
+	}
+	var warnings []string
+	platform := ocispecs.Platform{OS: "linux", Architecture: "amd64"}
+	caps := pb.Caps.CapSet(pb.Caps.All())
+	res, err := dockerfile2llb.Dockerfile2LLB(context.Background(), data, dockerfile2llb.ConvertOpt{
+		Config: dockerui.Config{
+			BuildArgs:      opts.BuildArgs,
+			Target:         opts.Target,
+			Labels:         opts.Labels,
+			Hostname:       opts.Hostname,
+			BuildPlatforms: []ocispecs.Platform{platform},
+		},
+		TargetPlatform: &platform,
+		MetaResolver:   images,
+		LLBCaps:        &caps,
+		Warn: func(rule, desc, url, msg string, loc []parser.Range) {
+			warnings = append(warnings, q(fmt.Sprintf("%s|%s|%s", rule, msg, rangesText(loc))))
+		},
+	})
+	out["warnings"] = warnings
+	if err != nil {
+		out["error"] = q(err.Error())
+		var le *parser.LocationError
+		if errors.As(err, &le) {
+			var locs [][][2]int
+			for _, rs := range le.Locations {
+				locs = append(locs, ranges(rs))
+			}
+			out["location"] = locs
+		}
+		return out
+	}
+	img, err := json.Marshal(res.Image)
+	if err != nil {
+		panic(err)
+	}
+	// The config's bytes, as BuildKit writes them: their digest is the image's.
+	out["image"] = string(img)
+	def, err := res.State.Marshal(context.Background())
+	if err != nil {
+		out["marshal_error"] = q(err.Error())
+		return out
+	}
+	ops := map[digest.Digest]*pb.Op{}
+	var last digest.Digest
+	for _, dt := range def.Def {
+		var op pb.Op
+		if err := op.UnmarshalVT(dt); err != nil {
+			panic(err)
+		}
+		d := digest.FromBytes(dt)
+		ops[d] = &op
+		last = d
+	}
+	index := map[digest.Digest]int{}
+	var order []digest.Digest
+	var visit func(d digest.Digest)
+	visit = func(d digest.Digest) {
+		if _, ok := index[d]; ok {
+			return
+		}
+		for _, in := range ops[d].Inputs {
+			visit(digest.Digest(in.Digest))
+		}
+		index[d] = len(order)
+		order = append(order, d)
+	}
+	// A build of scratch alone marshals no ops.
+	if last != "" {
+		visit(last)
+	}
+	list := []any{}
+	for _, d := range order {
+		op := ops[d]
+		inputs := []any{}
+		for _, in := range op.Inputs {
+			inputs = append(inputs, []any{index[digest.Digest(in.Digest)], in.Index})
+		}
+		op.Inputs = nil
+		b, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(op)
+		if err != nil {
+			panic(err)
+		}
+		var v map[string]any
+		if err := json.Unmarshal(b, &v); err != nil {
+			panic(err)
+		}
+		v["inputs"] = inputs
+		// A local source's unique ID and a progress group's ID are random.
+		if src, ok := v["source"].(map[string]any); ok {
+			if attrs, ok := src["attrs"].(map[string]any); ok {
+				if _, ok := attrs["local.unique"]; ok {
+					attrs["local.unique"] = "*"
+				}
+			}
+		}
+		if md, ok := def.Metadata[d]; ok {
+			mb, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(md.ToPB())
+			if err != nil {
+				panic(err)
+			}
+			var mv map[string]any
+			if err := json.Unmarshal(mb, &mv); err != nil {
+				panic(err)
+			}
+			delete(mv, "caps")
+			if pg, ok := mv["progress_group"].(map[string]any); ok {
+				pg["id"] = "*"
+			}
+			v["metadata"] = mv
+		}
+		list = append(list, v)
+	}
+	out["ops"] = list
+	return out
+}
+
+func rangesText(rs []parser.Range) string {
+	var lines []string
+	for _, r := range rs {
+		lines = append(lines, fmt.Sprintf("%d-%d", r.Start.Line, r.End.Line))
+	}
+	return strings.Join(lines, ",")
+}
+
 // A lexer case: the lexer's settings, the environment, and the input.
 type lexCase struct {
 	Escape     string   `json:"escape"`
@@ -440,6 +614,46 @@ func table(name, doc string, in func(r rune) bool) string {
 	return b.String()
 }
 
+// What Go makes of each image config in configs.json (a string, or {"base64": ...} for
+// text that is not UTF-8): json.Unmarshal into the DockerOCIImage BuildKit reads a base
+// image's config into, then json.Marshal of it, as BuildKit writes the config it builds.
+func configsFile(testdata string) {
+	data, err := os.ReadFile(filepath.Join(testdata, "configs.json"))
+	if err != nil {
+		panic(err)
+	}
+	var cases []json.RawMessage
+	if err := json.Unmarshal(data, &cases); err != nil {
+		panic(err)
+	}
+	var out []map[string]any
+	for _, raw := range cases {
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil {
+			var enc struct{ Base64 string }
+			if err := json.Unmarshal(raw, &enc); err != nil {
+				panic(err)
+			}
+			b, err := base64.StdEncoding.DecodeString(enc.Base64)
+			if err != nil {
+				panic(err)
+			}
+			text = string(b)
+		}
+		r := map[string]any{"input": raw}
+		var img dockerspec.DockerOCIImage
+		if err := json.Unmarshal([]byte(text), &img); err != nil {
+			r["error"] = q(err.Error())
+		} else if b, err := json.Marshal(img); err != nil {
+			r["marshal_error"] = q(err.Error())
+		} else {
+			r["config"] = string(b)
+		}
+		out = append(out, r)
+	}
+	writeJSON(filepath.Join(testdata, "configs-answers.json"), out)
+}
+
 func writeJSON(path string, v any) {
 	b, err := json.MarshalIndent(v, "", " ")
 	if err != nil {
@@ -473,6 +687,22 @@ func main() {
 		insts = append(insts, instructionsFile(testdata, f))
 	}
 	writeJSON(filepath.Join(testdata, "instructions.json"), insts)
+	var images resolver
+	imgData, err := os.ReadFile(filepath.Join(testdata, "images.json"))
+	if err != nil {
+		panic(err)
+	}
+	if err := json.Unmarshal(imgData, &images); err != nil {
+		panic(err)
+	}
+	var plans []map[string]any
+	for _, f := range files {
+		if strings.HasPrefix(f, "corpus/plan/") {
+			plans = append(plans, planFile(testdata, f, images))
+		}
+	}
+	writeJSON(filepath.Join(testdata, "plan.json"), plans)
+	configsFile(testdata)
 
 	cases := buildkitCases(filepath.Join(testdata, "buildkit/shell"))
 	extra, err := os.ReadFile(filepath.Join(testdata, "lex-cases.json"))

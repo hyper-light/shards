@@ -1,0 +1,138 @@
+{
+ "docker.io/library/alpine:latest": {
+  "config": {
+   "architecture": "amd64",
+   "config": {
+    "Cmd": [
+     "/bin/sh"
+    ],
+    "Env": [
+     "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+   },
+   "created": "2026-01-01T00:00:00Z",
+   "history": [
+    {
+     "created_by": "base",
+     "empty_layer": false
+    }
+   ],
+   "os": "linux",
+   "rootfs": {
+    "diff_ids": [
+     "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    ],
+    "type": "layers"
+   }
+  },
+  "digest": "sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c",
+  "ref": "docker.io/library/alpine:latest"
+ },
+ "docker.io/library/empty:latest": {
+  "config": {
+   "architecture": "amd64",
+   "config": {},
+   "created": "2026-01-01T00:00:00Z",
+   "history": [
+    {
+     "created_by": "nothing",
+     "empty_layer": true
+    }
+   ],
+   "os": "linux",
+   "rootfs": {
+    "diff_ids": [],
+    "type": "layers"
+   }
+  },
+  "digest": "sha256:0dbc44ab3ee0e15bb15734f56cdac8688ce9150803743eb863791592cafba11a",
+  "ref": "docker.io/library/empty:latest"
+ },
+ "docker.io/library/nopath:latest": {
+  "config": {
+   "architecture": "amd64",
+   "config": {
+    "Env": [
+     "HOME=/root"
+    ]
+   },
+   "created": "2026-01-01T00:00:00Z",
+   "history": [
+    {
+     "created_by": "base",
+     "empty_layer": false
+    }
+   ],
+   "os": "linux",
+   "rootfs": {
+    "diff_ids": [
+     "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    ],
+    "type": "layers"
+   }
+  },
+  "digest": "sha256:35b77b224d0d6917ad63ccf974b798d00093af813d71affbc292fb9bc298844e",
+  "ref": "docker.io/library/nopath:latest"
+ },
+ "docker.io/library/withconfig:latest": {
+  "config": {
+   "architecture": "amd64",
+   "config": {
+    "Cmd": [
+     "serve"
+    ],
+    "Entrypoint": [
+     "/entry"
+    ],
+    "Env": [
+     "PATH=/opt/bin:/usr/bin",
+     "LANG=C.UTF-8",
+     "FOO=base"
+    ],
+    "ExposedPorts": {
+     "8080/tcp": {}
+    },
+    "Healthcheck": {
+     "Interval": 30000000000,
+     "Test": [
+      "CMD",
+      "true"
+     ]
+    },
+    "Labels": {
+     "base": "yes"
+    },
+    "OnBuild": [
+     "RUN echo onbuild-run",
+     "ENV TRIGGERED=1"
+    ],
+    "Shell": [
+     "/bin/bash",
+     "-lc"
+    ],
+    "StopSignal": "SIGINT",
+    "User": "app",
+    "Volumes": {
+     "/data": {}
+    },
+    "WorkingDir": "/srv/app"
+   },
+   "created": "2026-01-01T00:00:00Z",
+   "history": [
+    {
+     "created_by": "base",
+     "empty_layer": false
+    }
+   ],
+   "os": "linux",
+   "rootfs": {
+    "diff_ids": [
+     "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    ],
+    "type": "layers"
+   }
+  },
+  "digest": "sha256:29dfe4bc1db70e704f32007adbb490cbac67873e386e5df778a73e40ba789935",
+  "ref": "docker.io/library/withconfig:latest"
+ }
+}

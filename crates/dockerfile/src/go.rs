@@ -430,6 +430,295 @@ pub(crate) fn trim_space(b: &[u8]) -> &[u8] {
     trim_right_space(trim_left_space(b))
 }
 
+/// `path.Clean`: the shortest path naming what `p` names, lexically: one slash between
+/// elements, no `.` elements, `..` eating the element before it, and none at the root.
+pub(crate) fn clean(p: &[u8]) -> Vec<u8> {
+    if p.is_empty() {
+        return b".".to_vec();
+    }
+    let rooted = p.first() == Some(&b'/');
+    let mut out: Vec<u8> = Vec::with_capacity(p.len());
+    if rooted {
+        out.push(b'/');
+    }
+    // Where `..` stops: after the root, or after the `..` elements that lead.
+    let mut dotdot = out.len();
+    for element in p.split(|&b| b == b'/') {
+        match element {
+            b"" | b"." => {}
+            b".." => {
+                if out.len() > dotdot {
+                    // Back to the slash before the last element, or its start.
+                    let mut end = out.len() - 1;
+                    while end > dotdot && out.get(end) != Some(&b'/') {
+                        end -= 1;
+                    }
+                    out.truncate(end);
+                } else if !rooted {
+                    if !out.is_empty() {
+                        out.push(b'/');
+                    }
+                    out.extend_from_slice(b"..");
+                    dotdot = out.len();
+                }
+            }
+            _ => {
+                if (rooted && out.len() != 1) || (!rooted && !out.is_empty()) {
+                    out.push(b'/');
+                }
+                out.extend_from_slice(element);
+            }
+        }
+    }
+    if out.is_empty() {
+        out.push(b'.');
+    }
+    out
+}
+
+/// `path.Join`: the non-empty elements joined by slashes, cleaned; empty if all are.
+pub(crate) fn join(elements: &[&[u8]]) -> Vec<u8> {
+    let parts: Vec<&[u8]> = elements.iter().copied().filter(|e| !e.is_empty()).collect();
+    if parts.is_empty() {
+        return Vec::new();
+    }
+    clean(&parts.join(&b'/'))
+}
+
+/// `strings.EqualFold(s, name)` for an ASCII `name`, as Go's `encoding/json` matches a
+/// key to a field: the only runes beyond ASCII whose case-folding orbit holds an ASCII
+/// letter are U+212A KELVIN SIGN (with `k`) and U+017F LATIN SMALL LETTER LONG S (with
+/// `s`) (Unicode's CaseFolding.txt; Go's `unicode.SimpleFold`).
+pub(crate) fn equal_fold_ascii(s: &[u8], name: &[u8]) -> bool {
+    let mut runes = runes(s).map(|(r, _)| r);
+    for &c in name {
+        let Some(r) = runes.next() else {
+            return false;
+        };
+        let folds = match r {
+            0x212A => c.eq_ignore_ascii_case(&b'k'),
+            0x17F => c.eq_ignore_ascii_case(&b's'),
+            _ => u8::try_from(r).is_ok_and(|b| b.is_ascii() && b.eq_ignore_ascii_case(&c)),
+        };
+        if !folds {
+            return false;
+        }
+    }
+    runes.next().is_none()
+}
+
+/// A time as Go's `time.Parse(time.RFC3339, ...)` reads it: its wall clock where it was
+/// written, and that place's offset from UTC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Time {
+    pub year: u32,
+    pub month: u32,
+    pub day: u32,
+    pub hour: u32,
+    pub minute: u32,
+    pub second: u32,
+    pub nanosecond: u32,
+    /// Seconds east of UTC.
+    pub offset: i32,
+}
+
+const RFC3339: &[u8] = b"2006-01-02T15:04:05Z07:00";
+
+fn is_leap(year: u32) -> bool {
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
+}
+
+fn days_in(month: u32, year: u32) -> u32 {
+    match month {
+        2 if is_leap(year) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+/// `getnum`: one or two digits, two if `fixed`.
+fn getnum(s: &[u8], fixed: bool) -> Option<(u32, &[u8])> {
+    let d = |i: usize| {
+        s.get(i)
+            .filter(|c| c.is_ascii_digit())
+            .map(|&c| u32::from(c - b'0'))
+    };
+    let first = d(0)?;
+    match d(1) {
+        Some(second) => Some((first * 10 + second, tail(s, 2))),
+        None if fixed => None,
+        None => Some((first, tail(s, 1))),
+    }
+}
+
+/// `time.Parse(time.RFC3339, value)`, which `Time.UnmarshalJSON` uses: more lenient than
+/// RFC 3339 (a one-digit hour, a comma before the fraction, offsets to 24:60), and failing
+/// with its error's text.
+pub fn parse_rfc3339(value: &[u8]) -> Result<Time, Vec<u8>> {
+    let quoted = |b: &[u8]| time_quote(b);
+    let cannot = |rest: &[u8], elem: &[u8]| -> Vec<u8> {
+        [
+            b"parsing time ".as_slice(),
+            &quoted(value),
+            b" as ",
+            &quoted(RFC3339),
+            b": cannot parse ",
+            &quoted(rest),
+            b" as ",
+            &quoted(elem),
+        ]
+        .concat()
+    };
+    let range = |what: &str| -> Vec<u8> {
+        [
+            b"parsing time ".as_slice(),
+            &quoted(value),
+            b": ",
+            what.as_bytes(),
+            b" out of range",
+        ]
+        .concat()
+    };
+    let skip = |rest: &'_ [u8], lit: u8| -> Option<usize> { (rest.first() == Some(&lit)).then_some(1) };
+
+    let mut rest = value;
+    // 2006
+    let year = match rest.get(..4) {
+        Some(p) if p.iter().all(u8::is_ascii_digit) => {
+            p.iter().fold(0u32, |y, &c| y * 10 + u32::from(c - b'0'))
+        }
+        _ => return Err(cannot(rest, b"2006")),
+    };
+    rest = tail(rest, 4);
+    // -01
+    rest = tail(rest, skip(rest, b'-').ok_or_else(|| cannot(rest, b"-"))?);
+    let (month, r) = getnum(rest, true).ok_or_else(|| cannot(rest, b"01"))?;
+    if !(1..=12).contains(&month) {
+        return Err(range("month"));
+    }
+    rest = r;
+    // -02
+    rest = tail(rest, skip(rest, b'-').ok_or_else(|| cannot(rest, b"-"))?);
+    let (day, r) = getnum(rest, true).ok_or_else(|| cannot(rest, b"02"))?;
+    rest = r;
+    // T15
+    rest = tail(rest, skip(rest, b'T').ok_or_else(|| cannot(rest, b"T"))?);
+    let (hour, r) = getnum(rest, false).ok_or_else(|| cannot(rest, b"15"))?;
+    if hour >= 24 {
+        return Err(range("hour"));
+    }
+    rest = r;
+    // :04
+    rest = tail(rest, skip(rest, b':').ok_or_else(|| cannot(rest, b":"))?);
+    let (minute, r) = getnum(rest, true).ok_or_else(|| cannot(rest, b"04"))?;
+    if minute >= 60 {
+        return Err(range("minute"));
+    }
+    rest = r;
+    // :05, and any fraction after it
+    rest = tail(rest, skip(rest, b':').ok_or_else(|| cannot(rest, b":"))?);
+    let (second, r) = getnum(rest, true).ok_or_else(|| cannot(rest, b"05"))?;
+    if second >= 60 {
+        return Err(range("second"));
+    }
+    rest = r;
+    let mut nanosecond = 0;
+    if matches!(rest.first(), Some(b'.' | b',')) && rest.get(1).is_some_and(u8::is_ascii_digit) {
+        let n = 1 + tail(rest, 1).iter().take_while(|c| c.is_ascii_digit()).count();
+        // parseNanoseconds: at most nine digits count.
+        let digits = span(rest, 1, n.min(10));
+        let mut ns = digits.iter().fold(0u32, |v, &c| v * 10 + u32::from(c - b'0'));
+        for _ in digits.len()..9 {
+            ns *= 10;
+        }
+        nanosecond = ns;
+        rest = tail(rest, n);
+    }
+    // Z07:00
+    let offset = if rest.first() == Some(&b'Z') {
+        rest = tail(rest, 1);
+        0
+    } else {
+        let zone = rest;
+        if rest.len() < 6 || rest.get(3) != Some(&b':') {
+            return Err(cannot(zone, b"Z07:00"));
+        }
+        // Go parses the hour, then the minute if the hour parsed; reports a value out of
+        // range before a malformed one, the minute's range over the hour's.
+        let two = |b: &[u8]| getnum(b, true).map(|(n, _)| n);
+        let hr = two(span(rest, 1, 3));
+        let mm = hr.and_then(|_| two(span(rest, 4, 6)));
+        if mm.is_some_and(|m| m > 60) {
+            return Err(range("time zone offset minute"));
+        }
+        if hr.is_some_and(|h| h > 24) {
+            return Err(range("time zone offset hour"));
+        }
+        let (Some(hr), Some(mm)) = (hr, mm) else {
+            return Err(cannot(zone, b"Z07:00"));
+        };
+        let sign = match rest.first() {
+            Some(b'+') => 1,
+            Some(b'-') => -1,
+            _ => return Err(cannot(zone, b"Z07:00")),
+        };
+        rest = tail(rest, 6);
+        sign * i32::try_from((hr * 60 + mm) * 60).unwrap_or_default()
+    };
+    if !rest.is_empty() {
+        return Err([
+            b"parsing time ".as_slice(),
+            &quoted(value),
+            b": extra text: ",
+            &quoted(rest),
+        ]
+        .concat());
+    }
+    if day < 1 || day > days_in(month, year) {
+        return Err(range("day"));
+    }
+    Ok(Time {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        nanosecond,
+        offset,
+    })
+}
+
+impl Time {
+    /// `Time.MarshalJSON`'s text without its quotes: RFC 3339 with the fraction's trailing
+    /// zeros dropped, and `Z` for UTC. Fails where Go's does, for an offset of 24 hours or
+    /// more.
+    pub fn rfc3339_nano(&self) -> Result<String, Vec<u8>> {
+        // The wall clock in its own zone is the one parsed: Go adds the offset back.
+        let mut out = format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+            self.year, self.month, self.day, self.hour, self.minute, self.second
+        );
+        if self.nanosecond != 0 {
+            let frac = format!("{:09}", self.nanosecond);
+            out.push('.');
+            out.push_str(frac.trim_end_matches('0'));
+        }
+        if self.offset == 0 {
+            out.push('Z');
+            return Ok(out);
+        }
+        let zone = self.offset / 60;
+        let (sign, zone) = if zone < 0 { ('-', -zone) } else { ('+', zone) };
+        if zone / 60 >= 24 {
+            return Err(b"Time.MarshalJSON: timezone hour outside of range [0,23]".to_vec());
+        }
+        let _ = write!(out, "{sign}{:02}:{:02}", zone / 60, zone % 60);
+        Ok(out)
+    }
+}
+
 /// `b` in double quotes, escaped as `strconv.Quote` escapes it: an invalid byte as `\xNN`.
 pub fn quote(b: &[u8]) -> String {
     let mut out = String::with_capacity(b.len() + 2);
@@ -508,5 +797,74 @@ mod tests {
         assert_eq!(quote(b"a\"b\\c\n\x01\x7f\xff"), r#""a\"b\\c\n\x01\x7f\xff""#);
         assert_eq!(quote("é\u{a0}\u{2028}😀".as_bytes()), "\"é\\u00a0\\u2028😀\"");
         assert_eq!(trim_space(" \u{85}a b\u{a0}\t".as_bytes()), b"a b");
+    }
+
+    /// Paths clean and join as Go's `path` package does them.
+    #[test]
+    fn paths_are_gos() {
+        for (p, want) in [
+            ("", "."),
+            ("/", "/"),
+            ("a/b/../c", "a/c"),
+            ("/../a", "/a"),
+            ("../../a/..", "../.."),
+            ("a/../..", ".."),
+            ("//a//b/./", "/a/b"),
+            ("./", "."),
+            ("a/b/c/../../..", "."),
+            ("/a/..", "/"),
+            ("../a/../b", "../b"),
+        ] {
+            assert_eq!(clean(p.as_bytes()), want.as_bytes(), "{p}");
+        }
+        assert_eq!(join(&[b"/", b"a", b"", b"../b/"]), b"/b");
+        assert_eq!(join(&[b"", b""]), b"");
+        assert!(equal_fold_ascii("\u{212A}ey".as_bytes(), b"KEY"));
+        assert!(equal_fold_ascii("\u{17F}".as_bytes(), b"s"));
+        assert!(!equal_fold_ascii(b"ke", b"key"));
+        assert!(!equal_fold_ascii("\u{130}".as_bytes(), b"i"));
+    }
+    /// Times parse and print as Go 1.26's `Time.UnmarshalJSON` and `MarshalJSON` do; the
+    /// answers are Go's. tests/oracle.rs holds the rest, as image configs' times.
+    #[test]
+    fn times_parse_and_print_as_gos() {
+        enum Want {
+            Ok(&'static [u8]),
+            Err(&'static [u8]),
+            MErr(&'static [u8]),
+        }
+        use Want::{Err, MErr, Ok};
+        let cases: &[(&[u8], Want)] = &[
+            (
+                b"2024-02-30T00:00:00Z",
+                Err(b"parsing time \"2024-02-30T00:00:00Z\": day out of range"),
+            ),
+            (
+                b"2024-01-02T03:04:05+01:61",
+                Err(b"parsing time \"2024-01-02T03:04:05+01:61\": time zone offset minute out of range"),
+            ),
+            (b"2024-01-02T03:04:05Z", Ok(b"2024-01-02T03:04:05Z")),
+            (b"2024-01-02T03:04:05.120000000Z", Ok(b"2024-01-02T03:04:05.12Z")),
+            (b"2024-01-02T3:04:05Z", Ok(b"2024-01-02T03:04:05Z")),
+            (b"2024-01-02T03:04:05,5+01:30", Ok(b"2024-01-02T03:04:05.5+01:30")),
+            (b"2024-01-02T03:04:05-00:00", Ok(b"2024-01-02T03:04:05Z")),
+            (
+                b"2024-01-02T03:04:05+24:00",
+                MErr(b"Time.MarshalJSON: timezone hour outside of range [0,23]"),
+            ),
+        ];
+        for (input, want) in cases {
+            let got = parse_rfc3339(input);
+            let shown = String::from_utf8_lossy(input);
+            match want {
+                Ok(text) => assert_eq!(got.unwrap().rfc3339_nano().unwrap().as_bytes(), *text, "{shown}"),
+                MErr(text) => assert_eq!(got.unwrap().rfc3339_nano().unwrap_err(), *text, "{shown}"),
+                Err(text) => assert_eq!(
+                    String::from_utf8_lossy(&got.unwrap_err()),
+                    String::from_utf8_lossy(text),
+                    "{shown}"
+                ),
+            }
+        }
     }
 }

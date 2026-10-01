@@ -1,0 +1,4 @@
+ARG BASE=nopath
+FROM $BASE
+ARG X
+RUN echo $X
