@@ -3,8 +3,8 @@
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::io::{self, Read, Write};
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -105,11 +105,41 @@ pub(crate) enum After {
 trait Io: Read + Write {}
 impl<T: Read + Write> Io for T {}
 
+/// A connection a server holds: its socket, to shut down, and its thread.
+type Held = (TcpStream, std::thread::JoinHandle<()>);
+
 /// A scripted server: its port, the connections it accepted, and every request it read.
+/// Dropped, it stops: its threads end and are joined, its connections closed.
 pub(crate) struct Server {
     pub port: u16,
     accepted: Arc<AtomicUsize>,
     requests: Arc<Mutex<Vec<String>>>,
+    /// Set as the server goes; its accept loop then returns.
+    stopping: Arc<AtomicBool>,
+    /// The connections in hand, to shut down as the server goes, and their threads.
+    conns: Arc<Mutex<Vec<Held>>>,
+    acceptor: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        // Wakes the accept loop, which then sees it is stopping.
+        drop(TcpStream::connect(("127.0.0.1", self.port)));
+        if let Some(acceptor) = self.acceptor.take() {
+            let _ = acceptor.join();
+        }
+        let conns = std::mem::take(
+            &mut *self
+                .conns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for (tcp, thread) in conns {
+            let _ = tcp.shutdown(Shutdown::Both);
+            let _ = thread.join();
+        }
+    }
 }
 
 impl Server {
@@ -156,14 +186,35 @@ pub(crate) fn route(
     let port = listener.local_addr().unwrap().port();
     let accepted = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let (count, seen) = (accepted.clone(), requests.clone());
+    let stopping = Arc::new(AtomicBool::new(false));
+    let conns = Arc::new(Mutex::new(Vec::new()));
+    let (count, seen, stop, held) = (
+        accepted.clone(),
+        requests.clone(),
+        stopping.clone(),
+        conns.clone(),
+    );
     let answer = Arc::new(answer);
-    std::thread::spawn(move || {
+    let acceptor = std::thread::spawn(move || {
         for tcp in listener.incoming() {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
             let Ok(tcp) = tcp else { return };
             count.fetch_add(1, Ordering::SeqCst);
+            let Ok(ours) = tcp.try_clone() else { return };
             let (tls, seen, answer) = (tls.clone(), seen.clone(), answer.clone());
-            std::thread::spawn(move || {
+            let Ok(closer) = tcp.try_clone() else { return };
+            let thread = std::thread::spawn(move || {
+                // However it ends, the connection closes with it: the server's clone,
+                // kept to shut it down, would otherwise hold it open.
+                struct Closes(TcpStream);
+                impl Drop for Closes {
+                    fn drop(&mut self) {
+                        let _ = self.0.shutdown(Shutdown::Both);
+                    }
+                }
+                let _closes = Closes(closer);
                 let _ = tcp.set_read_timeout(Some(Duration::from_secs(10)));
                 let mut io: Box<dyn Io> = match &tls {
                     Some(config) => Box::new(StreamOwned::new(
@@ -184,12 +235,16 @@ pub(crate) fn route(
                     }
                 }
             });
+            held.lock().unwrap().push((ours, thread));
         }
     });
     Server {
         port,
         accepted,
         requests,
+        stopping,
+        conns,
+        acceptor: Some(acceptor),
     }
 }
 
@@ -230,4 +285,40 @@ fn read_request(io: &mut Box<dyn Io>) -> io::Result<Vec<u8>> {
     io.read_exact(&mut body)?;
     head.extend(body);
     Ok(head)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A server dropped is gone: its accept loop has returned and its listener closed, so
+    /// its port refuses connections, and a connection it held is closed.
+    #[test]
+    fn a_dropped_server_leaves_nothing_running() {
+        let server = serve(
+            None,
+            vec![(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+                After::Keep,
+            )],
+        );
+        let port = server.port;
+        let mut held = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        held.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        let mut answer = [0u8; 38];
+        held.read_exact(&mut answer).unwrap();
+        drop(server);
+        assert_eq!(
+            TcpStream::connect(("127.0.0.1", port))
+                .map_err(|e| e.kind())
+                .err(),
+            Some(io::ErrorKind::ConnectionRefused)
+        );
+        held.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        assert_eq!(
+            held.read(&mut [0u8; 1]).unwrap(),
+            0,
+            "the connection it held is closed"
+        );
+    }
 }
