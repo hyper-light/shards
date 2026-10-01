@@ -1,0 +1,894 @@
+[
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${XXX:-000}xx",
+  "ours": {
+   "words": [
+    "\"he000xx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${PWD:-000}xx",
+  "ours": {
+   "words": [
+    "\"he/homexx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${XXX:-$PWD}xx",
+  "ours": {
+   "words": [
+    "\"he/homexx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${XXX:-${PWD:-yyy}}xx",
+  "ours": {
+   "words": [
+    "\"he/homexx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${XXX:-${YYY:-yyy}}xx",
+  "ours": {
+   "words": [
+    "\"heyyyxx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${PWD?}",
+  "ours": {
+   "words": [
+    "\"he/home\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${PWD:?}",
+  "ours": {
+   "words": [
+    "\"he/home\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${NULL?}",
+  "ours": {
+   "words": [
+    "\"he\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${XXX:+${PWD}}xx",
+  "ours": {
+   "words": [
+    "\"hexx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${PWD:+${XXX}}xx",
+  "ours": {
+   "words": [
+    "\"hexx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${PWD:+${SHELL}}xx",
+  "ours": {
+   "words": [
+    "\"hebashxx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${XXX:+000}xx",
+  "ours": {
+   "words": [
+    "\"hexx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${PWD:+000}xx",
+  "ours": {
+   "words": [
+    "\"he000xx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${PWD:+${PWD}:}xx",
+  "ours": {
+   "words": [
+    "\"he/home:xx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${XXX:-\\$PWD:}xx",
+  "ours": {
+   "words": [
+    "\"he$PWD:xx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "he${XXX:-\\${PWD}z}xx",
+  "ours": {
+   "words": [
+    "\"he${PWDz}xx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "안녕${XXX:-000}xx",
+  "ours": {
+   "words": [
+    "\"안녕000xx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "안녕${PWD:-000}xx",
+  "ours": {
+   "words": [
+    "\"안녕/homexx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "안녕${XXX:-$PWD}xx",
+  "ours": {
+   "words": [
+    "\"안녕/homexx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "안녕${XXX:-${PWD:-yyy}}xx",
+  "ours": {
+   "words": [
+    "\"안녕/homexx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "안녕${XXX:-${YYY:-yyy}}xx",
+  "ours": {
+   "words": [
+    "\"안녕yyyxx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "안녕${XXX:+${PWD}}xx",
+  "ours": {
+   "words": [
+    "\"안녕xx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "안녕${PWD:+${XXX}}xx",
+  "ours": {
+   "words": [
+    "\"안녕xx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "안녕${PWD:+${SHELL}}xx",
+  "ours": {
+   "words": [
+    "\"안녕bashxx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "안녕${XXX:+000}xx",
+  "ours": {
+   "words": [
+    "\"안녕xx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "안녕${PWD:+000}xx",
+  "ours": {
+   "words": [
+    "\"안녕000xx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "안녕${PWD:+${PWD}:}xx",
+  "ours": {
+   "words": [
+    "\"안녕/home:xx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "안녕${XXX:-\\$PWD:}xx",
+  "ours": {
+   "words": [
+    "\"안녕$PWD:xx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "PWD=/home",
+   "SHELL=bash",
+   "KOREAN=한국어",
+   "NULL="
+  ],
+  "input": "안녕${XXX:-\\${PWD}z}xx",
+  "ours": {
+   "words": [
+    "\"안녕${PWDz}xx\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}",
+  "ours": {
+   "words": [
+    "\"hellohello\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}",
+  "ours": {
+   "words": [
+    "\"hello${C:-hello}\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}",
+  "ours": {
+   "words": [
+    "\"hellohello\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}",
+  "ours": {
+   "words": [
+    "\"hello${C:-hello}\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}",
+  "ours": {
+   "words": [
+    "\"hellohello\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}",
+  "ours": {
+   "words": [
+    "\"hello${C:-hello}\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}",
+  "ours": {
+   "words": [
+    "\"hellohello\""
+   ]
+  }
+ },
+ {
+  "kind": "lex",
+  "reason": "BuildKit's lexer shares one word buffer with the ${...} expansions inside a word, and each expansion with a modifier empties it, losing what came before in the word; shards keeps a buffer per level, so the words match the expanded word (src/lex.rs).",
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}",
+  "ours": {
+   "words": [
+    "\"hello${C:-hello}\""
+   ]
+  }
+ },
+ {
+  "kind": "parse",
+  "file": "corpus/bytes.Dockerfile",
+  "reason": "BuildKit reads a flag's bytes as Latin-1 characters, re-encoding each non-ASCII byte and splitting at bytes 0x85 and 0xA0; shards reads flags as UTF-8, as every other argument (src/parser.rs).",
+  "ours": {
+   "children": [
+    {
+     "attributes": [],
+     "dump": "\"from \\\"alpine\\\"\"",
+     "end_line": 1,
+     "flags": [],
+     "heredocs": [],
+     "original": "\"FROM alpine\"",
+     "prev_comment": [],
+     "start_line": 1
+    },
+    {
+     "attributes": [],
+     "dump": "\"run \\\"echo \\\\xff\\\\xfe café\\\"\"",
+     "end_line": 2,
+     "flags": [],
+     "heredocs": [],
+     "original": "\"RUN echo \\xff\\xfe café\"",
+     "prev_comment": [],
+     "start_line": 2
+    },
+    {
+     "attributes": [],
+     "dump": "\"copy [\\\"--a=\\\"] \\\"b\\\\xff\\\" \\\"c\\\" \\\"d\\\"\"",
+     "end_line": 3,
+     "flags": [
+      "\"--a=\""
+     ],
+     "heredocs": [],
+     "original": "\"COPY --a=\\u00a0b\\xff c d\"",
+     "prev_comment": [],
+     "start_line": 3
+    },
+    {
+     "attributes": [],
+     "dump": "\"label \\\"k\\\" \\\"�\\\" \\\"=\\\" \\\"x\\\" \\\"y\\\" \\\"=\\\"\"",
+     "end_line": 4,
+     "flags": [],
+     "heredocs": [],
+     "original": "\"LABEL k=\\xe9 \\u0085x=y\"",
+     "prev_comment": [],
+     "start_line": 4
+    },
+    {
+     "attributes": [],
+     "dump": "\"arg \\\"n\\\" \\\"v\\\"\"",
+     "end_line": 5,
+     "flags": [],
+     "heredocs": [],
+     "original": "\"ARG n\\u00a0v\"",
+     "prev_comment": [],
+     "start_line": 5
+    }
+   ],
+   "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo \\\\xff\\\\xfe café\\\")\\n(copy [\\\"--a=\\\"] \\\"b\\\\xff\\\" \\\"c\\\" \\\"d\\\")\\n(label \\\"k\\\" \\\"�\\\" \\\"=\\\" \\\"x\\\" \\\"y\\\" \\\"=\\\")\\n(arg \\\"n\\\" \\\"v\\\")\"",
+   "escape": "\"\\\\\"",
+   "warnings": []
+  }
+ },
+ {
+  "kind": "parse",
+  "file": "corpus/flags-unicode.Dockerfile",
+  "reason": "BuildKit reads a flag's bytes as Latin-1 characters, re-encoding each non-ASCII byte and splitting at bytes 0x85 and 0xA0; shards reads flags as UTF-8, as every other argument (src/parser.rs).",
+  "ours": {
+   "children": [
+    {
+     "attributes": [],
+     "dump": "\"from \\\"alpine\\\"\"",
+     "end_line": 1,
+     "flags": [],
+     "heredocs": [],
+     "original": "\"FROM alpine\"",
+     "prev_comment": [],
+     "start_line": 1
+    },
+    {
+     "attributes": [],
+     "dump": "\"copy [\\\"--chown=josé\\\" \\\"--x=\\\"] \\\"y\\\" \\\"a\\\" \\\"b\\\"\"",
+     "end_line": 2,
+     "flags": [
+      "\"--chown=josé\"",
+      "\"--x=\""
+     ],
+     "heredocs": [],
+     "original": "\"COPY --chown=josé --x=\\u00a0y a b\"",
+     "prev_comment": [],
+     "start_line": 2
+    }
+   ],
+   "dump": "\"(from \\\"alpine\\\")\\n(copy [\\\"--chown=josé\\\" \\\"--x=\\\"] \\\"y\\\" \\\"a\\\" \\\"b\\\")\"",
+   "escape": "\"\\\\\"",
+   "warnings": []
+  }
+ }
+]

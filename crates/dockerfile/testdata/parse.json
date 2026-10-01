@@ -1,0 +1,4994 @@
+[
+ {
+  "file": "buildkit/parser-negative/empty_dockerfile/Dockerfile",
+  "error": "\"file with no instructions\"",
+  "location": [
+   [
+    [
+     0,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "buildkit/parser-negative/env_no_value/Dockerfile",
+  "error": "\"ENV must have two arguments\"",
+  "location": [
+   [
+    [
+     3,
+     3
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "buildkit/parser-negative/only_comments/Dockerfile",
+  "error": "\"file with no instructions\"",
+  "location": [
+   [
+    [
+     3,
+     3
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "buildkit/parser-negative/shykes-nested-json/Dockerfile",
+  "error": "\"when using JSON array syntax, arrays must be comprised of strings only\"",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "buildkit/parser/ADD-COPY-with-JSON/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"ubuntu:14.04\\\")\\n(label \\\"maintainer\\\" \\\"Seongyeol Lim \u003cseongyeol37@gmail.com\u003e\\\" \\\"\\\")\\n(copy \\\".\\\" \\\"/go/src/github.com/docker/docker\\\")\\n(add \\\".\\\" \\\"/\\\")\\n(add \\\"null\\\" \\\"/\\\")\\n(copy \\\"nullfile\\\" \\\"/tmp\\\")\\n(add \\\"vimrc\\\" \\\"/tmp\\\")\\n(copy \\\"bashrc\\\" \\\"/tmp\\\")\\n(copy \\\"test file\\\" \\\"/tmp\\\")\\n(add \\\"test file\\\" \\\"/tmp/test file\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"ubuntu:14.04\\\"\"",
+    "original": "\"FROM\\tubuntu:14.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"maintainer\\\" \\\"Seongyeol Lim \u003cseongyeol37@gmail.com\u003e\\\" \\\"\\\"\"",
+    "original": "\"LABEL\\tmaintainer\\tSeongyeol Lim \u003cseongyeol37@gmail.com\u003e\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"/go/src/github.com/docker/docker\\\"\"",
+    "original": "\"COPY\\t.\\t/go/src/github.com/docker/docker\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\".\\\" \\\"/\\\"\"",
+    "original": "\"ADD\\t\\t.\\t/\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"null\\\" \\\"/\\\"\"",
+    "original": "\"ADD\\t\\tnull /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"nullfile\\\" \\\"/tmp\\\"\"",
+    "original": "\"COPY\\tnullfile /tmp\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"vimrc\\\" \\\"/tmp\\\"\"",
+    "original": "\"ADD\\t\\t[ \\\"vimrc\\\", \\\"/tmp\\\" ]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"bashrc\\\" \\\"/tmp\\\"\"",
+    "original": "\"COPY\\t[ \\\"bashrc\\\", \\\"/tmp\\\" ]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"test file\\\" \\\"/tmp\\\"\"",
+    "original": "\"COPY\\t[ \\\"test file\\\", \\\"/tmp\\\" ]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"test file\\\" \\\"/tmp/test file\\\"\"",
+    "original": "\"ADD\\t\\t[ \\\"test file\\\", \\\"/tmp/test file\\\" ]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/args/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(arg \\\"foo\\\" \\\"bar=baz\\\")\\n(from \\\"ubuntu\\\")\\n(arg \\\"abc=\\\\\\\"123 456\\\\\\\"\\\" \\\"def\\\")\"",
+  "children": [
+   {
+    "dump": "\"arg \\\"foo\\\" \\\"bar=baz\\\"\"",
+    "original": "\"ARG foo bar=baz\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"ubuntu\\\"\"",
+    "original": "\"FROM ubuntu\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"abc=\\\\\\\"123 456\\\\\\\"\\\" \\\"def\\\"\"",
+    "original": "\"ARG abc=\\\"123 456\\\" def\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/brimstone-consuldock/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"brimstone/ubuntu:14.04\\\")\\n(label \\\"maintainer\\\" \\\"brimstone@the.narro.ws\\\" \\\"\\\")\\n(env \\\"GOPATH\\\" \\\"/go\\\" \\\"\\\")\\n(entrypoint \\\"/usr/local/bin/consuldock\\\")\\n(run \\\"apt-get update \\\\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.clean     \u0026\u0026 apt-get --no-install-recommends install -y git golang ca-certificates     \u0026\u0026 apt-get clean     \u0026\u0026 rm -rf /var/lib/apt/lists \\\\t\u0026\u0026 go get -v github.com/brimstone/consuldock     \u0026\u0026 mv $GOPATH/bin/consuldock /usr/local/bin/consuldock \\\\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.dirty \\\\t\u0026\u0026 apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^\u003e/ {print $2}') \\\\t\u0026\u0026 rm /tmp/dpkg.* \\\\t\u0026\u0026 rm -rf $GOPATH\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"brimstone/ubuntu:14.04\\\"\"",
+    "original": "\"FROM brimstone/ubuntu:14.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"maintainer\\\" \\\"brimstone@the.narro.ws\\\" \\\"\\\"\"",
+    "original": "\"LABEL maintainer brimstone@the.narro.ws\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"GOPATH\\\" \\\"/go\\\" \\\"\\\"\"",
+    "original": "\"ENV GOPATH /go\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [
+     "\"TORUN -v /var/run/docker.sock:/var/run/docker.sock\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"entrypoint \\\"/usr/local/bin/consuldock\\\"\"",
+    "original": "\"ENTRYPOINT [\\\"/usr/local/bin/consuldock\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [
+     "\"Set our command\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update \\\\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.clean     \u0026\u0026 apt-get --no-install-recommends install -y git golang ca-certificates     \u0026\u0026 apt-get clean     \u0026\u0026 rm -rf /var/lib/apt/lists \\\\t\u0026\u0026 go get -v github.com/brimstone/consuldock     \u0026\u0026 mv $GOPATH/bin/consuldock /usr/local/bin/consuldock \\\\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.dirty \\\\t\u0026\u0026 apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^\u003e/ {print $2}') \\\\t\u0026\u0026 rm /tmp/dpkg.* \\\\t\u0026\u0026 rm -rf $GOPATH\\\"\"",
+    "original": "\"RUN apt-get update \\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.clean     \u0026\u0026 apt-get --no-install-recommends install -y git golang ca-certificates     \u0026\u0026 apt-get clean     \u0026\u0026 rm -rf /var/lib/apt/lists \\t\u0026\u0026 go get -v github.com/brimstone/consuldock     \u0026\u0026 mv $GOPATH/bin/consuldock /usr/local/bin/consuldock \\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.dirty \\t\u0026\u0026 apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^\u003e/ {print $2}') \\t\u0026\u0026 rm /tmp/dpkg.* \\t\u0026\u0026 rm -rf $GOPATH\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 26,
+    "prev_comment": [
+     "\"Install the packages we need, clean up after them and us\""
+    ],
+    "heredocs": null
+   }
+  ],
+  "warnings": [
+   "\"Empty continuation line found in: RUN apt-get update \\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.clean     \u0026\u0026 apt-get --no-install-recommends install -y git golang ca-certificates     \u0026\u0026 apt-get clean     \u0026\u0026 rm -rf /var/lib/apt/lists \\t\u0026\u0026 go get -v github.com/brimstone/consuldock     \u0026\u0026 mv $GOPATH/bin/consuldock /usr/local/bin/consuldock \\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.dirty \\t\u0026\u0026 apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^\u003e/ {print $2}') \\t\u0026\u0026 rm /tmp/dpkg.* \\t\u0026\u0026 rm -rf $GOPATH|https://docs.docker.com/go/dockerfile/rule/no-empty-continuation/|26\""
+  ]
+ },
+ {
+  "file": "buildkit/parser/brimstone-docker-consul/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"brimstone/ubuntu:14.04\\\")\\n(cmd)\\n(entrypoint \\\"/usr/bin/consul\\\" \\\"agent\\\" \\\"-server\\\" \\\"-data-dir=/consul\\\" \\\"-client=0.0.0.0\\\" \\\"-ui-dir=/webui\\\")\\n(expose \\\"8500\\\" \\\"8600\\\" \\\"8400\\\" \\\"8301\\\" \\\"8302\\\")\\n(run \\\"apt-get update     \u0026\u0026 apt-get --no-install-recommends install -y unzip wget \\\\t\u0026\u0026 apt-get clean \\\\t\u0026\u0026 rm -rf /var/lib/apt/lists\\\")\\n(run \\\"cd /tmp     \u0026\u0026 wget https://dl.bintray.com/mitchellh/consul/0.3.1_web_ui.zip        -O web_ui.zip     \u0026\u0026 unzip web_ui.zip     \u0026\u0026 mv dist /webui     \u0026\u0026 rm web_ui.zip\\\")\\n(run \\\"apt-get update \\\\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.clean     \u0026\u0026 apt-get --no-install-recommends install -y unzip wget     \u0026\u0026 apt-get clean     \u0026\u0026 rm -rf /var/lib/apt/lists     \u0026\u0026 cd /tmp     \u0026\u0026 wget https://dl.bintray.com/mitchellh/consul/0.3.1_web_ui.zip        -O web_ui.zip     \u0026\u0026 unzip web_ui.zip     \u0026\u0026 mv dist /webui     \u0026\u0026 rm web_ui.zip \\\\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.dirty \\\\t\u0026\u0026 apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^\u003e/ {print $2}') \\\\t\u0026\u0026 rm /tmp/dpkg.*\\\")\\n(env \\\"GOPATH\\\" \\\"/go\\\" \\\"\\\")\\n(run \\\"apt-get update \\\\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.clean     \u0026\u0026 apt-get --no-install-recommends install -y git golang ca-certificates build-essential     \u0026\u0026 apt-get clean     \u0026\u0026 rm -rf /var/lib/apt/lists \\\\t\u0026\u0026 go get -v github.com/hashicorp/consul \\\\t\u0026\u0026 mv $GOPATH/bin/consul /usr/bin/consul \\\\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.dirty \\\\t\u0026\u0026 apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^\u003e/ {print $2}') \\\\t\u0026\u0026 rm /tmp/dpkg.* \\\\t\u0026\u0026 rm -rf $GOPATH\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"brimstone/ubuntu:14.04\\\"\"",
+    "original": "\"FROM brimstone/ubuntu:14.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd\"",
+    "original": "\"CMD []\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"entrypoint \\\"/usr/bin/consul\\\" \\\"agent\\\" \\\"-server\\\" \\\"-data-dir=/consul\\\" \\\"-client=0.0.0.0\\\" \\\"-ui-dir=/webui\\\"\"",
+    "original": "\"ENTRYPOINT [\\\"/usr/bin/consul\\\", \\\"agent\\\", \\\"-server\\\", \\\"-data-dir=/consul\\\", \\\"-client=0.0.0.0\\\", \\\"-ui-dir=/webui\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"8500\\\" \\\"8600\\\" \\\"8400\\\" \\\"8301\\\" \\\"8302\\\"\"",
+    "original": "\"EXPOSE 8500 8600 8400 8301 8302\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update     \u0026\u0026 apt-get --no-install-recommends install -y unzip wget \\\\t\u0026\u0026 apt-get clean \\\\t\u0026\u0026 rm -rf /var/lib/apt/lists\\\"\"",
+    "original": "\"RUN apt-get update     \u0026\u0026 apt-get --no-install-recommends install -y unzip wget \\t\u0026\u0026 apt-get clean \\t\u0026\u0026 rm -rf /var/lib/apt/lists\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"cd /tmp     \u0026\u0026 wget https://dl.bintray.com/mitchellh/consul/0.3.1_web_ui.zip        -O web_ui.zip     \u0026\u0026 unzip web_ui.zip     \u0026\u0026 mv dist /webui     \u0026\u0026 rm web_ui.zip\\\"\"",
+    "original": "\"RUN cd /tmp     \u0026\u0026 wget https://dl.bintray.com/mitchellh/consul/0.3.1_web_ui.zip        -O web_ui.zip     \u0026\u0026 unzip web_ui.zip     \u0026\u0026 mv dist /webui     \u0026\u0026 rm web_ui.zip\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 19,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update \\\\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.clean     \u0026\u0026 apt-get --no-install-recommends install -y unzip wget     \u0026\u0026 apt-get clean     \u0026\u0026 rm -rf /var/lib/apt/lists     \u0026\u0026 cd /tmp     \u0026\u0026 wget https://dl.bintray.com/mitchellh/consul/0.3.1_web_ui.zip        -O web_ui.zip     \u0026\u0026 unzip web_ui.zip     \u0026\u0026 mv dist /webui     \u0026\u0026 rm web_ui.zip \\\\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.dirty \\\\t\u0026\u0026 apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^\u003e/ {print $2}') \\\\t\u0026\u0026 rm /tmp/dpkg.*\\\"\"",
+    "original": "\"RUN apt-get update \\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.clean     \u0026\u0026 apt-get --no-install-recommends install -y unzip wget     \u0026\u0026 apt-get clean     \u0026\u0026 rm -rf /var/lib/apt/lists     \u0026\u0026 cd /tmp     \u0026\u0026 wget https://dl.bintray.com/mitchellh/consul/0.3.1_web_ui.zip        -O web_ui.zip     \u0026\u0026 unzip web_ui.zip     \u0026\u0026 mv dist /webui     \u0026\u0026 rm web_ui.zip \\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.dirty \\t\u0026\u0026 apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^\u003e/ {print $2}') \\t\u0026\u0026 rm /tmp/dpkg.*\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 21,
+    "end_line": 36,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"GOPATH\\\" \\\"/go\\\" \\\"\\\"\"",
+    "original": "\"ENV GOPATH /go\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 38,
+    "end_line": 38,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update \\\\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.clean     \u0026\u0026 apt-get --no-install-recommends install -y git golang ca-certificates build-essential     \u0026\u0026 apt-get clean     \u0026\u0026 rm -rf /var/lib/apt/lists \\\\t\u0026\u0026 go get -v github.com/hashicorp/consul \\\\t\u0026\u0026 mv $GOPATH/bin/consul /usr/bin/consul \\\\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.dirty \\\\t\u0026\u0026 apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^\u003e/ {print $2}') \\\\t\u0026\u0026 rm /tmp/dpkg.* \\\\t\u0026\u0026 rm -rf $GOPATH\\\"\"",
+    "original": "\"RUN apt-get update \\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.clean     \u0026\u0026 apt-get --no-install-recommends install -y git golang ca-certificates build-essential     \u0026\u0026 apt-get clean     \u0026\u0026 rm -rf /var/lib/apt/lists \\t\u0026\u0026 go get -v github.com/hashicorp/consul \\t\u0026\u0026 mv $GOPATH/bin/consul /usr/bin/consul \\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.dirty \\t\u0026\u0026 apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^\u003e/ {print $2}') \\t\u0026\u0026 rm /tmp/dpkg.* \\t\u0026\u0026 rm -rf $GOPATH\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 40,
+    "end_line": 52,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ],
+  "warnings": [
+   "\"Empty continuation line found in: RUN apt-get update \\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.clean     \u0026\u0026 apt-get --no-install-recommends install -y unzip wget     \u0026\u0026 apt-get clean     \u0026\u0026 rm -rf /var/lib/apt/lists     \u0026\u0026 cd /tmp     \u0026\u0026 wget https://dl.bintray.com/mitchellh/consul/0.3.1_web_ui.zip        -O web_ui.zip     \u0026\u0026 unzip web_ui.zip     \u0026\u0026 mv dist /webui     \u0026\u0026 rm web_ui.zip \\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.dirty \\t\u0026\u0026 apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^\u003e/ {print $2}') \\t\u0026\u0026 rm /tmp/dpkg.*|https://docs.docker.com/go/dockerfile/rule/no-empty-continuation/|36\"",
+   "\"Empty continuation line found in: RUN apt-get update \\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.clean     \u0026\u0026 apt-get --no-install-recommends install -y git golang ca-certificates build-essential     \u0026\u0026 apt-get clean     \u0026\u0026 rm -rf /var/lib/apt/lists \\t\u0026\u0026 go get -v github.com/hashicorp/consul \\t\u0026\u0026 mv $GOPATH/bin/consul /usr/bin/consul \\t\u0026\u0026 dpkg -l | awk '/^ii/ {print $2}' \u003e /tmp/dpkg.dirty \\t\u0026\u0026 apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^\u003e/ {print $2}') \\t\u0026\u0026 rm /tmp/dpkg.* \\t\u0026\u0026 rm -rf $GOPATH|https://docs.docker.com/go/dockerfile/rule/no-empty-continuation/|52\""
+  ]
+ },
+ {
+  "file": "buildkit/parser/continue-at-eof/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine:3.5\\\")\\n(run \\\"something\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine:3.5\\\"\"",
+    "original": "\"FROM alpine:3.5\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"something\\\"\"",
+    "original": "\"RUN something \"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/continueIndent/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"ubuntu:14.04\\\")\\n(run \\\"echo hello  world  goodnight    moon  lightning\\\")\\n(run \\\"echo hello    world\\\")\\n(run \\\"echo hello  world\\\")\\n(run \\\"echo hello goodbyefrog\\\")\\n(run \\\"echo hello  world\\\")\\n(run \\\"echo hi   world  goodnight\\\")\\n(run \\\"echo goodbyefrog\\\")\\n(run \\\"echo goodbyefrog\\\")\\n(run \\\"echo hello this is some more useful stuff\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"ubuntu:14.04\\\"\"",
+    "original": "\"FROM ubuntu:14.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo hello  world  goodnight    moon  lightning\\\"\"",
+    "original": "\"RUN echo hello  world  goodnight    moon  lightning\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo hello    world\\\"\"",
+    "original": "\"RUN echo hello    world\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo hello  world\\\"\"",
+    "original": "\"RUN echo hello  world\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo hello goodbyefrog\\\"\"",
+    "original": "\"RUN echo hello goodbyefrog\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 13,
+    "end_line": 15,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo hello  world\\\"\"",
+    "original": "\"RUN echo hello  world\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 16,
+    "end_line": 17,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo hi   world  goodnight\\\"\"",
+    "original": "\"RUN echo hi   world  goodnight\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 18,
+    "end_line": 24,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo goodbyefrog\\\"\"",
+    "original": "\"RUN echo goodbyefrog\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 25,
+    "end_line": 26,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo goodbyefrog\\\"\"",
+    "original": "\"RUN echo goodbyefrog\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 27,
+    "end_line": 29,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo hello this is some more useful stuff\\\"\"",
+    "original": "\"RUN echo hello this is some more useful stuff\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 31,
+    "end_line": 36,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ],
+  "warnings": [
+   "\"Empty continuation line found in: RUN echo hello this is some more useful stuff|https://docs.docker.com/go/dockerfile/rule/no-empty-continuation/|36\""
+  ]
+ },
+ {
+  "file": "buildkit/parser/cpuguy83-nagios/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"cpuguy83/ubuntu\\\")\\n(env \\\"NAGIOS_HOME\\\" \\\"/opt/nagios\\\" \\\"\\\")\\n(env \\\"NAGIOS_USER\\\" \\\"nagios\\\" \\\"\\\")\\n(env \\\"NAGIOS_GROUP\\\" \\\"nagios\\\" \\\"\\\")\\n(env \\\"NAGIOS_CMDUSER\\\" \\\"nagios\\\" \\\"\\\")\\n(env \\\"NAGIOS_CMDGROUP\\\" \\\"nagios\\\" \\\"\\\")\\n(env \\\"NAGIOSADMIN_USER\\\" \\\"nagiosadmin\\\" \\\"\\\")\\n(env \\\"NAGIOSADMIN_PASS\\\" \\\"nagios\\\" \\\"\\\")\\n(env \\\"APACHE_RUN_USER\\\" \\\"nagios\\\" \\\"\\\")\\n(env \\\"APACHE_RUN_GROUP\\\" \\\"nagios\\\" \\\"\\\")\\n(env \\\"NAGIOS_TIMEZONE\\\" \\\"UTC\\\" \\\"\\\")\\n(run \\\"sed -i 's/universe/universe multiverse/' /etc/apt/sources.list\\\")\\n(run \\\"apt-get update \u0026\u0026 apt-get --no-install-recommends install -y iputils-ping netcat build-essential snmp snmpd snmp-mibs-downloader php5-cli apache2 libapache2-mod-php5 runit bc postfix bsd-mailx\\\")\\n(run \\\"( egrep -i  \\\\\\\"^${NAGIOS_GROUP}\\\\\\\" /etc/group || groupadd $NAGIOS_GROUP ) \u0026\u0026 ( egrep -i \\\\\\\"^${NAGIOS_CMDGROUP}\\\\\\\" /etc/group || groupadd $NAGIOS_CMDGROUP )\\\")\\n(run \\\"( id -u $NAGIOS_USER || useradd --system $NAGIOS_USER -g $NAGIOS_GROUP -d $NAGIOS_HOME ) \u0026\u0026 ( id -u $NAGIOS_CMDUSER || useradd --system -d $NAGIOS_HOME -g $NAGIOS_CMDGROUP $NAGIOS_CMDUSER )\\\")\\n(add \\\"http://downloads.sourceforge.net/project/nagios/nagios-3.x/nagios-3.5.1/nagios-3.5.1.tar.gz?r=http%3A%2F%2Fwww.nagios.org%2Fdownload%2Fcore%2Fthanks%2F%3Ft%3D1398863696\u0026ts=1398863718\u0026use_mirror=superb-dca3\\\" \\\"/tmp/nagios.tar.gz\\\")\\n(run \\\"cd /tmp \u0026\u0026 tar -zxvf nagios.tar.gz \u0026\u0026 cd nagios  \u0026\u0026 ./configure --prefix=${NAGIOS_HOME} --exec-prefix=${NAGIOS_HOME} --enable-event-broker --with-nagios-command-user=${NAGIOS_CMDUSER} --with-command-group=${NAGIOS_CMDGROUP} --with-nagios-user=${NAGIOS_USER} --with-nagios-group=${NAGIOS_GROUP} \u0026\u0026 make all \u0026\u0026 make install \u0026\u0026 make install-config \u0026\u0026 make install-commandmode \u0026\u0026 cp sample-config/httpd.conf /etc/apache2/conf.d/nagios.conf\\\")\\n(add \\\"http://www.nagios-plugins.org/download/nagios-plugins-1.5.tar.gz\\\" \\\"/tmp/\\\")\\n(run \\\"cd /tmp \u0026\u0026 tar -zxvf nagios-plugins-1.5.tar.gz \u0026\u0026 cd nagios-plugins-1.5 \u0026\u0026 ./configure --prefix=${NAGIOS_HOME} \u0026\u0026 make \u0026\u0026 make install\\\")\\n(run \\\"sed -i.bak 's/.*\\\\\\\\=www\\\\\\\\-data//g' /etc/apache2/envvars\\\")\\n(run \\\"export DOC_ROOT=\\\\\\\"DocumentRoot $(echo $NAGIOS_HOME/share)\\\\\\\"; sed -i \\\\\\\"s,DocumentRoot.*,$DOC_ROOT,\\\\\\\" /etc/apache2/sites-enabled/000-default\\\")\\n(run \\\"ln -s ${NAGIOS_HOME}/bin/nagios /usr/local/bin/nagios \u0026\u0026 mkdir -p /usr/share/snmp/mibs \u0026\u0026 chmod 0755 /usr/share/snmp/mibs \u0026\u0026 touch /usr/share/snmp/mibs/.foo\\\")\\n(run \\\"echo \\\\\\\"use_timezone=$NAGIOS_TIMEZONE\\\\\\\" \u003e\u003e ${NAGIOS_HOME}/etc/nagios.cfg \u0026\u0026 echo \\\\\\\"SetEnv TZ \\\\\\\\\\\\\\\"${NAGIOS_TIMEZONE}\\\\\\\\\\\\\\\"\\\\\\\" \u003e\u003e /etc/apache2/conf.d/nagios.conf\\\")\\n(run \\\"mkdir -p ${NAGIOS_HOME}/etc/conf.d \u0026\u0026 mkdir -p ${NAGIOS_HOME}/etc/monitor \u0026\u0026 ln -s /usr/share/snmp/mibs ${NAGIOS_HOME}/libexec/mibs\\\")\\n(run \\\"echo \\\\\\\"cfg_dir=${NAGIOS_HOME}/etc/conf.d\\\\\\\" \u003e\u003e ${NAGIOS_HOME}/etc/nagios.cfg\\\")\\n(run \\\"echo \\\\\\\"cfg_dir=${NAGIOS_HOME}/etc/monitor\\\\\\\" \u003e\u003e ${NAGIOS_HOME}/etc/nagios.cfg\\\")\\n(run \\\"download-mibs \u0026\u0026 echo \\\\\\\"mibs +ALL\\\\\\\" \u003e /etc/snmp/snmp.conf\\\")\\n(run \\\"sed -i 's,/bin/mail,/usr/bin/mail,' /opt/nagios/etc/objects/commands.cfg \u0026\u0026   sed -i 's,/usr/usr,/usr,' /opt/nagios/etc/objects/commands.cfg\\\")\\n(run \\\"cp /etc/services /var/spool/postfix/etc/\\\")\\n(run \\\"mkdir -p /etc/sv/nagios \u0026\u0026 mkdir -p /etc/sv/apache \u0026\u0026 rm -rf /etc/sv/getty-5 \u0026\u0026 mkdir -p /etc/sv/postfix\\\")\\n(add \\\"nagios.init\\\" \\\"/etc/sv/nagios/run\\\")\\n(add \\\"apache.init\\\" \\\"/etc/sv/apache/run\\\")\\n(add \\\"postfix.init\\\" \\\"/etc/sv/postfix/run\\\")\\n(add \\\"postfix.stop\\\" \\\"/etc/sv/postfix/finish\\\")\\n(add \\\"start.sh\\\" \\\"/usr/local/bin/start_nagios\\\")\\n(env \\\"APACHE_LOCK_DIR\\\" \\\"/var/run\\\" \\\"\\\")\\n(env \\\"APACHE_LOG_DIR\\\" \\\"/var/log/apache2\\\" \\\"\\\")\\n(expose \\\"80\\\")\\n(volume \\\"/opt/nagios/var\\\" \\\"/opt/nagios/etc\\\" \\\"/opt/nagios/libexec\\\" \\\"/var/log/apache2\\\" \\\"/usr/share/snmp/mibs\\\")\\n(cmd \\\"/usr/local/bin/start_nagios\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"cpuguy83/ubuntu\\\"\"",
+    "original": "\"FROM cpuguy83/ubuntu\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"NAGIOS_HOME\\\" \\\"/opt/nagios\\\" \\\"\\\"\"",
+    "original": "\"ENV NAGIOS_HOME /opt/nagios\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"NAGIOS_USER\\\" \\\"nagios\\\" \\\"\\\"\"",
+    "original": "\"ENV NAGIOS_USER nagios\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"NAGIOS_GROUP\\\" \\\"nagios\\\" \\\"\\\"\"",
+    "original": "\"ENV NAGIOS_GROUP nagios\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"NAGIOS_CMDUSER\\\" \\\"nagios\\\" \\\"\\\"\"",
+    "original": "\"ENV NAGIOS_CMDUSER nagios\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"NAGIOS_CMDGROUP\\\" \\\"nagios\\\" \\\"\\\"\"",
+    "original": "\"ENV NAGIOS_CMDGROUP nagios\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"NAGIOSADMIN_USER\\\" \\\"nagiosadmin\\\" \\\"\\\"\"",
+    "original": "\"ENV NAGIOSADMIN_USER nagiosadmin\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"NAGIOSADMIN_PASS\\\" \\\"nagios\\\" \\\"\\\"\"",
+    "original": "\"ENV NAGIOSADMIN_PASS nagios\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"APACHE_RUN_USER\\\" \\\"nagios\\\" \\\"\\\"\"",
+    "original": "\"ENV APACHE_RUN_USER nagios\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"APACHE_RUN_GROUP\\\" \\\"nagios\\\" \\\"\\\"\"",
+    "original": "\"ENV APACHE_RUN_GROUP nagios\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"NAGIOS_TIMEZONE\\\" \\\"UTC\\\" \\\"\\\"\"",
+    "original": "\"ENV NAGIOS_TIMEZONE UTC\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"sed -i 's/universe/universe multiverse/' /etc/apt/sources.list\\\"\"",
+    "original": "\"RUN sed -i 's/universe/universe multiverse/' /etc/apt/sources.list\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 13,
+    "end_line": 13,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update \u0026\u0026 apt-get --no-install-recommends install -y iputils-ping netcat build-essential snmp snmpd snmp-mibs-downloader php5-cli apache2 libapache2-mod-php5 runit bc postfix bsd-mailx\\\"\"",
+    "original": "\"RUN apt-get update \u0026\u0026 apt-get --no-install-recommends install -y iputils-ping netcat build-essential snmp snmpd snmp-mibs-downloader php5-cli apache2 libapache2-mod-php5 runit bc postfix bsd-mailx\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"( egrep -i  \\\\\\\"^${NAGIOS_GROUP}\\\\\\\" /etc/group || groupadd $NAGIOS_GROUP ) \u0026\u0026 ( egrep -i \\\\\\\"^${NAGIOS_CMDGROUP}\\\\\\\" /etc/group || groupadd $NAGIOS_CMDGROUP )\\\"\"",
+    "original": "\"RUN ( egrep -i  \\\"^${NAGIOS_GROUP}\\\" /etc/group || groupadd $NAGIOS_GROUP ) \u0026\u0026 ( egrep -i \\\"^${NAGIOS_CMDGROUP}\\\" /etc/group || groupadd $NAGIOS_CMDGROUP )\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 15,
+    "end_line": 15,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"( id -u $NAGIOS_USER || useradd --system $NAGIOS_USER -g $NAGIOS_GROUP -d $NAGIOS_HOME ) \u0026\u0026 ( id -u $NAGIOS_CMDUSER || useradd --system -d $NAGIOS_HOME -g $NAGIOS_CMDGROUP $NAGIOS_CMDUSER )\\\"\"",
+    "original": "\"RUN ( id -u $NAGIOS_USER || useradd --system $NAGIOS_USER -g $NAGIOS_GROUP -d $NAGIOS_HOME ) \u0026\u0026 ( id -u $NAGIOS_CMDUSER || useradd --system -d $NAGIOS_HOME -g $NAGIOS_CMDGROUP $NAGIOS_CMDUSER )\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 16,
+    "end_line": 16,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"http://downloads.sourceforge.net/project/nagios/nagios-3.x/nagios-3.5.1/nagios-3.5.1.tar.gz?r=http%3A%2F%2Fwww.nagios.org%2Fdownload%2Fcore%2Fthanks%2F%3Ft%3D1398863696\u0026ts=1398863718\u0026use_mirror=superb-dca3\\\" \\\"/tmp/nagios.tar.gz\\\"\"",
+    "original": "\"ADD http://downloads.sourceforge.net/project/nagios/nagios-3.x/nagios-3.5.1/nagios-3.5.1.tar.gz?r=http%3A%2F%2Fwww.nagios.org%2Fdownload%2Fcore%2Fthanks%2F%3Ft%3D1398863696\u0026ts=1398863718\u0026use_mirror=superb-dca3 /tmp/nagios.tar.gz\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 18,
+    "end_line": 18,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"cd /tmp \u0026\u0026 tar -zxvf nagios.tar.gz \u0026\u0026 cd nagios  \u0026\u0026 ./configure --prefix=${NAGIOS_HOME} --exec-prefix=${NAGIOS_HOME} --enable-event-broker --with-nagios-command-user=${NAGIOS_CMDUSER} --with-command-group=${NAGIOS_CMDGROUP} --with-nagios-user=${NAGIOS_USER} --with-nagios-group=${NAGIOS_GROUP} \u0026\u0026 make all \u0026\u0026 make install \u0026\u0026 make install-config \u0026\u0026 make install-commandmode \u0026\u0026 cp sample-config/httpd.conf /etc/apache2/conf.d/nagios.conf\\\"\"",
+    "original": "\"RUN cd /tmp \u0026\u0026 tar -zxvf nagios.tar.gz \u0026\u0026 cd nagios  \u0026\u0026 ./configure --prefix=${NAGIOS_HOME} --exec-prefix=${NAGIOS_HOME} --enable-event-broker --with-nagios-command-user=${NAGIOS_CMDUSER} --with-command-group=${NAGIOS_CMDGROUP} --with-nagios-user=${NAGIOS_USER} --with-nagios-group=${NAGIOS_GROUP} \u0026\u0026 make all \u0026\u0026 make install \u0026\u0026 make install-config \u0026\u0026 make install-commandmode \u0026\u0026 cp sample-config/httpd.conf /etc/apache2/conf.d/nagios.conf\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 19,
+    "end_line": 19,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"http://www.nagios-plugins.org/download/nagios-plugins-1.5.tar.gz\\\" \\\"/tmp/\\\"\"",
+    "original": "\"ADD http://www.nagios-plugins.org/download/nagios-plugins-1.5.tar.gz /tmp/\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 20,
+    "end_line": 20,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"cd /tmp \u0026\u0026 tar -zxvf nagios-plugins-1.5.tar.gz \u0026\u0026 cd nagios-plugins-1.5 \u0026\u0026 ./configure --prefix=${NAGIOS_HOME} \u0026\u0026 make \u0026\u0026 make install\\\"\"",
+    "original": "\"RUN cd /tmp \u0026\u0026 tar -zxvf nagios-plugins-1.5.tar.gz \u0026\u0026 cd nagios-plugins-1.5 \u0026\u0026 ./configure --prefix=${NAGIOS_HOME} \u0026\u0026 make \u0026\u0026 make install\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 21,
+    "end_line": 21,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"sed -i.bak 's/.*\\\\\\\\=www\\\\\\\\-data//g' /etc/apache2/envvars\\\"\"",
+    "original": "\"RUN sed -i.bak 's/.*\\\\=www\\\\-data//g' /etc/apache2/envvars\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 23,
+    "end_line": 23,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"export DOC_ROOT=\\\\\\\"DocumentRoot $(echo $NAGIOS_HOME/share)\\\\\\\"; sed -i \\\\\\\"s,DocumentRoot.*,$DOC_ROOT,\\\\\\\" /etc/apache2/sites-enabled/000-default\\\"\"",
+    "original": "\"RUN export DOC_ROOT=\\\"DocumentRoot $(echo $NAGIOS_HOME/share)\\\"; sed -i \\\"s,DocumentRoot.*,$DOC_ROOT,\\\" /etc/apache2/sites-enabled/000-default\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 24,
+    "end_line": 24,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"ln -s ${NAGIOS_HOME}/bin/nagios /usr/local/bin/nagios \u0026\u0026 mkdir -p /usr/share/snmp/mibs \u0026\u0026 chmod 0755 /usr/share/snmp/mibs \u0026\u0026 touch /usr/share/snmp/mibs/.foo\\\"\"",
+    "original": "\"RUN ln -s ${NAGIOS_HOME}/bin/nagios /usr/local/bin/nagios \u0026\u0026 mkdir -p /usr/share/snmp/mibs \u0026\u0026 chmod 0755 /usr/share/snmp/mibs \u0026\u0026 touch /usr/share/snmp/mibs/.foo\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 26,
+    "end_line": 26,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo \\\\\\\"use_timezone=$NAGIOS_TIMEZONE\\\\\\\" \u003e\u003e ${NAGIOS_HOME}/etc/nagios.cfg \u0026\u0026 echo \\\\\\\"SetEnv TZ \\\\\\\\\\\\\\\"${NAGIOS_TIMEZONE}\\\\\\\\\\\\\\\"\\\\\\\" \u003e\u003e /etc/apache2/conf.d/nagios.conf\\\"\"",
+    "original": "\"RUN echo \\\"use_timezone=$NAGIOS_TIMEZONE\\\" \u003e\u003e ${NAGIOS_HOME}/etc/nagios.cfg \u0026\u0026 echo \\\"SetEnv TZ \\\\\\\"${NAGIOS_TIMEZONE}\\\\\\\"\\\" \u003e\u003e /etc/apache2/conf.d/nagios.conf\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 28,
+    "end_line": 28,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"mkdir -p ${NAGIOS_HOME}/etc/conf.d \u0026\u0026 mkdir -p ${NAGIOS_HOME}/etc/monitor \u0026\u0026 ln -s /usr/share/snmp/mibs ${NAGIOS_HOME}/libexec/mibs\\\"\"",
+    "original": "\"RUN mkdir -p ${NAGIOS_HOME}/etc/conf.d \u0026\u0026 mkdir -p ${NAGIOS_HOME}/etc/monitor \u0026\u0026 ln -s /usr/share/snmp/mibs ${NAGIOS_HOME}/libexec/mibs\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 30,
+    "end_line": 30,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo \\\\\\\"cfg_dir=${NAGIOS_HOME}/etc/conf.d\\\\\\\" \u003e\u003e ${NAGIOS_HOME}/etc/nagios.cfg\\\"\"",
+    "original": "\"RUN echo \\\"cfg_dir=${NAGIOS_HOME}/etc/conf.d\\\" \u003e\u003e ${NAGIOS_HOME}/etc/nagios.cfg\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 31,
+    "end_line": 31,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo \\\\\\\"cfg_dir=${NAGIOS_HOME}/etc/monitor\\\\\\\" \u003e\u003e ${NAGIOS_HOME}/etc/nagios.cfg\\\"\"",
+    "original": "\"RUN echo \\\"cfg_dir=${NAGIOS_HOME}/etc/monitor\\\" \u003e\u003e ${NAGIOS_HOME}/etc/nagios.cfg\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 32,
+    "end_line": 32,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"download-mibs \u0026\u0026 echo \\\\\\\"mibs +ALL\\\\\\\" \u003e /etc/snmp/snmp.conf\\\"\"",
+    "original": "\"RUN download-mibs \u0026\u0026 echo \\\"mibs +ALL\\\" \u003e /etc/snmp/snmp.conf\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 33,
+    "end_line": 33,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"sed -i 's,/bin/mail,/usr/bin/mail,' /opt/nagios/etc/objects/commands.cfg \u0026\u0026   sed -i 's,/usr/usr,/usr,' /opt/nagios/etc/objects/commands.cfg\\\"\"",
+    "original": "\"RUN sed -i 's,/bin/mail,/usr/bin/mail,' /opt/nagios/etc/objects/commands.cfg \u0026\u0026   sed -i 's,/usr/usr,/usr,' /opt/nagios/etc/objects/commands.cfg\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 35,
+    "end_line": 36,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"cp /etc/services /var/spool/postfix/etc/\\\"\"",
+    "original": "\"RUN cp /etc/services /var/spool/postfix/etc/\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 37,
+    "end_line": 37,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"mkdir -p /etc/sv/nagios \u0026\u0026 mkdir -p /etc/sv/apache \u0026\u0026 rm -rf /etc/sv/getty-5 \u0026\u0026 mkdir -p /etc/sv/postfix\\\"\"",
+    "original": "\"RUN mkdir -p /etc/sv/nagios \u0026\u0026 mkdir -p /etc/sv/apache \u0026\u0026 rm -rf /etc/sv/getty-5 \u0026\u0026 mkdir -p /etc/sv/postfix\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 39,
+    "end_line": 39,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"nagios.init\\\" \\\"/etc/sv/nagios/run\\\"\"",
+    "original": "\"ADD nagios.init /etc/sv/nagios/run\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 40,
+    "end_line": 40,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"apache.init\\\" \\\"/etc/sv/apache/run\\\"\"",
+    "original": "\"ADD apache.init /etc/sv/apache/run\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 41,
+    "end_line": 41,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"postfix.init\\\" \\\"/etc/sv/postfix/run\\\"\"",
+    "original": "\"ADD postfix.init /etc/sv/postfix/run\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 42,
+    "end_line": 42,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"postfix.stop\\\" \\\"/etc/sv/postfix/finish\\\"\"",
+    "original": "\"ADD postfix.stop /etc/sv/postfix/finish\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 43,
+    "end_line": 43,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"start.sh\\\" \\\"/usr/local/bin/start_nagios\\\"\"",
+    "original": "\"ADD start.sh /usr/local/bin/start_nagios\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 45,
+    "end_line": 45,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"APACHE_LOCK_DIR\\\" \\\"/var/run\\\" \\\"\\\"\"",
+    "original": "\"ENV APACHE_LOCK_DIR /var/run\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 47,
+    "end_line": 47,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"APACHE_LOG_DIR\\\" \\\"/var/log/apache2\\\" \\\"\\\"\"",
+    "original": "\"ENV APACHE_LOG_DIR /var/log/apache2\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 48,
+    "end_line": 48,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"80\\\"\"",
+    "original": "\"EXPOSE 80\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 50,
+    "end_line": 50,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"/opt/nagios/var\\\" \\\"/opt/nagios/etc\\\" \\\"/opt/nagios/libexec\\\" \\\"/var/log/apache2\\\" \\\"/usr/share/snmp/mibs\\\"\"",
+    "original": "\"VOLUME [\\\"/opt/nagios/var\\\", \\\"/opt/nagios/etc\\\", \\\"/opt/nagios/libexec\\\", \\\"/var/log/apache2\\\", \\\"/usr/share/snmp/mibs\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 52,
+    "end_line": 52,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"/usr/local/bin/start_nagios\\\"\"",
+    "original": "\"CMD [\\\"/usr/local/bin/start_nagios\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 54,
+    "end_line": 54,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/docker/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"ubuntu:14.04\\\")\\n(label \\\"maintainer\\\" \\\"Tianon Gravi \u003cadmwiggin@gmail.com\u003e (@tianon)\\\" \\\"\\\")\\n(run \\\"apt-get update \u0026\u0026 DEBIAN_FRONTEND=noninteractive apt-get --no-install-recommends install -yq \\\\tapt-utils \\\\taufs-tools \\\\tautomake \\\\tbtrfs-tools \\\\tbuild-essential \\\\tcurl \\\\tdpkg-sig \\\\tgit \\\\tiptables \\\\tlibapparmor-dev \\\\tlibcap-dev \\\\tmercurial \\\\tpandoc \\\\tparallel \\\\treprepro \\\\truby1.9.1 \\\\truby1.9.1-dev \\\\ts3cmd=1.1.0* \\\\t--no-install-recommends\\\")\\n(run \\\"git clone --no-checkout https://git.fedorahosted.org/git/lvm2.git /usr/local/lvm2 \u0026\u0026 cd /usr/local/lvm2 \u0026\u0026 git checkout -q v2_02_103\\\")\\n(run \\\"cd /usr/local/lvm2 \u0026\u0026 ./configure --enable-static_link \u0026\u0026 make device-mapper \u0026\u0026 make install_device-mapper\\\")\\n(run \\\"curl -sSL https://golang.org/dl/go1.3.src.tar.gz | tar -v -C /usr/local -xz\\\")\\n(env \\\"PATH\\\" \\\"/usr/local/go/bin:$PATH\\\" \\\"\\\")\\n(env \\\"GOPATH\\\" \\\"/go:/go/src/github.com/docker/docker/vendor\\\" \\\"\\\")\\n(run \\\"cd /usr/local/go/src \u0026\u0026 ./make.bash --no-clean 2\u003e\u00261\\\")\\n(env \\\"DOCKER_CROSSPLATFORMS\\\" \\\"linux/386 linux/arm \\\\tdarwin/amd64 darwin/386 \\\\tfreebsd/amd64 freebsd/386 freebsd/arm\\\" \\\"\\\")\\n(env \\\"GOARM\\\" \\\"5\\\" \\\"\\\")\\n(run \\\"cd /usr/local/go/src \u0026\u0026 bash -xc 'for platform in $DOCKER_CROSSPLATFORMS; do GOOS=${platform%/*} GOARCH=${platform##*/} ./make.bash --no-clean 2\u003e\u00261; done'\\\")\\n(run \\\"go get golang.org/x/tools/cmd/cover\\\")\\n(run \\\"gem install --no-rdoc --no-ri fpm --version 1.0.2\\\")\\n(run \\\"git clone -b buildroot-2014.02 https://github.com/jpetazzo/docker-busybox.git /docker-busybox\\\")\\n(run \\\"/bin/echo -e '[default]\\\\\\\\naccess_key=$AWS_ACCESS_KEY\\\\\\\\nsecret_key=$AWS_SECRET_KEY' \u003e /.s3cfg\\\")\\n(run \\\"git config --global user.email 'docker-dummy@example.com'\\\")\\n(run \\\"groupadd -r docker\\\")\\n(run \\\"useradd --create-home --gid docker unprivilegeduser\\\")\\n(volume \\\"/var/lib/docker\\\")\\n(workdir \\\"/go/src/github.com/docker/docker\\\")\\n(env \\\"DOCKER_BUILDTAGS\\\" \\\"apparmor selinux\\\" \\\"\\\")\\n(entrypoint \\\"hack/dind\\\")\\n(copy \\\".\\\" \\\"/go/src/github.com/docker/docker\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"ubuntu:14.04\\\"\"",
+    "original": "\"FROM\\tubuntu:14.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 18,
+    "end_line": 18,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"maintainer\\\" \\\"Tianon Gravi \u003cadmwiggin@gmail.com\u003e (@tianon)\\\" \\\"\\\"\"",
+    "original": "\"LABEL\\tmaintainer\\tTianon Gravi \u003cadmwiggin@gmail.com\u003e (@tianon)\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 19,
+    "end_line": 19,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update \u0026\u0026 DEBIAN_FRONTEND=noninteractive apt-get --no-install-recommends install -yq \\\\tapt-utils \\\\taufs-tools \\\\tautomake \\\\tbtrfs-tools \\\\tbuild-essential \\\\tcurl \\\\tdpkg-sig \\\\tgit \\\\tiptables \\\\tlibapparmor-dev \\\\tlibcap-dev \\\\tmercurial \\\\tpandoc \\\\tparallel \\\\treprepro \\\\truby1.9.1 \\\\truby1.9.1-dev \\\\ts3cmd=1.1.0* \\\\t--no-install-recommends\\\"\"",
+    "original": "\"RUN\\tapt-get update \u0026\u0026 DEBIAN_FRONTEND=noninteractive apt-get --no-install-recommends install -yq \\tapt-utils \\taufs-tools \\tautomake \\tbtrfs-tools \\tbuild-essential \\tcurl \\tdpkg-sig \\tgit \\tiptables \\tlibapparmor-dev \\tlibcap-dev \\tmercurial \\tpandoc \\tparallel \\treprepro \\truby1.9.1 \\truby1.9.1-dev \\ts3cmd=1.1.0* \\t--no-install-recommends\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 22,
+    "end_line": 41,
+    "prev_comment": [
+     "\"Packaged dependencies\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"git clone --no-checkout https://git.fedorahosted.org/git/lvm2.git /usr/local/lvm2 \u0026\u0026 cd /usr/local/lvm2 \u0026\u0026 git checkout -q v2_02_103\\\"\"",
+    "original": "\"RUN\\tgit clone --no-checkout https://git.fedorahosted.org/git/lvm2.git /usr/local/lvm2 \u0026\u0026 cd /usr/local/lvm2 \u0026\u0026 git checkout -q v2_02_103\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 44,
+    "end_line": 44,
+    "prev_comment": [
+     "\"Get lvm2 source for compiling statically\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"cd /usr/local/lvm2 \u0026\u0026 ./configure --enable-static_link \u0026\u0026 make device-mapper \u0026\u0026 make install_device-mapper\\\"\"",
+    "original": "\"RUN\\tcd /usr/local/lvm2 \u0026\u0026 ./configure --enable-static_link \u0026\u0026 make device-mapper \u0026\u0026 make install_device-mapper\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 49,
+    "end_line": 49,
+    "prev_comment": [
+     "\"see https://git.fedorahosted.org/cgit/lvm2.git/refs/tags for release tags\"",
+     "\"note: we don't use \\\"git clone -b\\\" above because it then spews big nasty warnings about 'detached HEAD' state that we can't silence as easily as we can silence them using \\\"git checkout\\\" directly\"",
+     "\"Compile and install lvm2\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"curl -sSL https://golang.org/dl/go1.3.src.tar.gz | tar -v -C /usr/local -xz\\\"\"",
+    "original": "\"RUN\\tcurl -sSL https://golang.org/dl/go1.3.src.tar.gz | tar -v -C /usr/local -xz\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 53,
+    "end_line": 53,
+    "prev_comment": [
+     "\"see https://git.fedorahosted.org/cgit/lvm2.git/tree/INSTALL\"",
+     "\"Install Go\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"PATH\\\" \\\"/usr/local/go/bin:$PATH\\\" \\\"\\\"\"",
+    "original": "\"ENV\\tPATH\\t/usr/local/go/bin:$PATH\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 54,
+    "end_line": 54,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"GOPATH\\\" \\\"/go:/go/src/github.com/docker/docker/vendor\\\" \\\"\\\"\"",
+    "original": "\"ENV\\tGOPATH\\t/go:/go/src/github.com/docker/docker/vendor\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 55,
+    "end_line": 55,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"cd /usr/local/go/src \u0026\u0026 ./make.bash --no-clean 2\u003e\u00261\\\"\"",
+    "original": "\"RUN\\tcd /usr/local/go/src \u0026\u0026 ./make.bash --no-clean 2\u003e\u00261\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 56,
+    "end_line": 56,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"DOCKER_CROSSPLATFORMS\\\" \\\"linux/386 linux/arm \\\\tdarwin/amd64 darwin/386 \\\\tfreebsd/amd64 freebsd/386 freebsd/arm\\\" \\\"\\\"\"",
+    "original": "\"ENV\\tDOCKER_CROSSPLATFORMS\\t\\tlinux/386 linux/arm \\tdarwin/amd64 darwin/386 \\tfreebsd/amd64 freebsd/386 freebsd/arm\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 59,
+    "end_line": 62,
+    "prev_comment": [
+     "\"Compile Go for cross compilation\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"GOARM\\\" \\\"5\\\" \\\"\\\"\"",
+    "original": "\"ENV\\tGOARM\\t5\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 64,
+    "end_line": 64,
+    "prev_comment": [
+     "\"(set an explicit GOARM of 5 for maximum compatibility)\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"cd /usr/local/go/src \u0026\u0026 bash -xc 'for platform in $DOCKER_CROSSPLATFORMS; do GOOS=${platform%/*} GOARCH=${platform##*/} ./make.bash --no-clean 2\u003e\u00261; done'\\\"\"",
+    "original": "\"RUN\\tcd /usr/local/go/src \u0026\u0026 bash -xc 'for platform in $DOCKER_CROSSPLATFORMS; do GOOS=${platform%/*} GOARCH=${platform##*/} ./make.bash --no-clean 2\u003e\u00261; done'\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 65,
+    "end_line": 65,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"go get golang.org/x/tools/cmd/cover\\\"\"",
+    "original": "\"RUN\\tgo get golang.org/x/tools/cmd/cover\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 68,
+    "end_line": 68,
+    "prev_comment": [
+     "\"Grab Go's cover tool for dead-simple code coverage testing\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"gem install --no-rdoc --no-ri fpm --version 1.0.2\\\"\"",
+    "original": "\"RUN\\tgem install --no-rdoc --no-ri fpm --version 1.0.2\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 71,
+    "end_line": 71,
+    "prev_comment": [
+     "\"TODO replace FPM with some very minimal debhelper stuff\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"git clone -b buildroot-2014.02 https://github.com/jpetazzo/docker-busybox.git /docker-busybox\\\"\"",
+    "original": "\"RUN\\tgit clone -b buildroot-2014.02 https://github.com/jpetazzo/docker-busybox.git /docker-busybox\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 74,
+    "end_line": 74,
+    "prev_comment": [
+     "\"Get the \\\"busybox\\\" image source so we can build locally instead of pulling\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"/bin/echo -e '[default]\\\\\\\\naccess_key=$AWS_ACCESS_KEY\\\\\\\\nsecret_key=$AWS_SECRET_KEY' \u003e /.s3cfg\\\"\"",
+    "original": "\"RUN\\t/bin/echo -e '[default]\\\\naccess_key=$AWS_ACCESS_KEY\\\\nsecret_key=$AWS_SECRET_KEY' \u003e /.s3cfg\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 77,
+    "end_line": 77,
+    "prev_comment": [
+     "\"Setup s3cmd config\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"git config --global user.email 'docker-dummy@example.com'\\\"\"",
+    "original": "\"RUN\\tgit config --global user.email 'docker-dummy@example.com'\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 80,
+    "end_line": 80,
+    "prev_comment": [
+     "\"Set user.email so crosbymichael's in-container merge commits go smoothly\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"groupadd -r docker\\\"\"",
+    "original": "\"RUN groupadd -r docker\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 83,
+    "end_line": 83,
+    "prev_comment": [
+     "\"Add an unprivileged user to be used for tests which need it\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"useradd --create-home --gid docker unprivilegeduser\\\"\"",
+    "original": "\"RUN useradd --create-home --gid docker unprivilegeduser\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 84,
+    "end_line": 84,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"/var/lib/docker\\\"\"",
+    "original": "\"VOLUME\\t/var/lib/docker\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 86,
+    "end_line": 86,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"/go/src/github.com/docker/docker\\\"\"",
+    "original": "\"WORKDIR\\t/go/src/github.com/docker/docker\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 87,
+    "end_line": 87,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"DOCKER_BUILDTAGS\\\" \\\"apparmor selinux\\\" \\\"\\\"\"",
+    "original": "\"ENV\\tDOCKER_BUILDTAGS\\tapparmor selinux\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 88,
+    "end_line": 88,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"entrypoint \\\"hack/dind\\\"\"",
+    "original": "\"ENTRYPOINT\\t[\\\"hack/dind\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 91,
+    "end_line": 91,
+    "prev_comment": [
+     "\"Wrap all commands in the \\\"docker-in-docker\\\" script to allow nested containers\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"/go/src/github.com/docker/docker\\\"\"",
+    "original": "\"COPY\\t.\\t/go/src/github.com/docker/docker\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 94,
+    "end_line": 94,
+    "prev_comment": [
+     "\"Upload docker source\""
+    ],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/env/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"ubuntu\\\")\\n(env \\\"name\\\" \\\"value\\\" \\\"\\\")\\n(env \\\"name\\\" \\\"value\\\" \\\"=\\\")\\n(env \\\"name\\\" \\\"value\\\" \\\"=\\\" \\\"name2\\\" \\\"value2\\\" \\\"=\\\")\\n(env \\\"name\\\" \\\"\\\\\\\"value value1\\\\\\\"\\\" \\\"=\\\")\\n(env \\\"name\\\" \\\"value\\\\\\\\ value2\\\" \\\"=\\\")\\n(env \\\"name\\\" \\\"\\\\\\\"value'quote space'value2\\\\\\\"\\\" \\\"=\\\")\\n(env \\\"name\\\" \\\"'value\\\\\\\"double quote\\\\\\\"value2'\\\" \\\"=\\\")\\n(env \\\"name\\\" \\\"value\\\\\\\\ value2\\\" \\\"=\\\" \\\"name2\\\" \\\"value2\\\\\\\\ value3\\\" \\\"=\\\")\\n(env \\\"name\\\" \\\"\\\\\\\"a\\\\\\\\\\\\\\\"b\\\\\\\"\\\" \\\"=\\\")\\n(env \\\"name\\\" \\\"\\\\\\\"a\\\\\\\\'b\\\\\\\"\\\" \\\"=\\\")\\n(env \\\"name\\\" \\\"'a\\\\\\\\'b'\\\" \\\"=\\\")\\n(env \\\"name\\\" \\\"'a\\\\\\\\'b''\\\" \\\"=\\\")\\n(env \\\"name\\\" \\\"'a\\\\\\\\\\\\\\\"b'\\\" \\\"=\\\")\\n(env \\\"name\\\" \\\"\\\\\\\"''\\\\\\\"\\\" \\\"=\\\")\\n(env \\\"name\\\" \\\"value\\\" \\\"=\\\" \\\"name1\\\" \\\"value1\\\" \\\"=\\\" \\\"name2\\\" \\\"\\\\\\\"value2a            value2b\\\\\\\"\\\" \\\"=\\\" \\\"name3\\\" \\\"\\\\\\\"value3a\\\\\\\\n\\\\\\\\\\\\\\\"value3b\\\\\\\\\\\\\\\"\\\\\\\"\\\" \\\"=\\\" \\\"name4\\\" \\\"\\\\\\\"value4a\\\\\\\\\\\\\\\\nvalue4b\\\\\\\"\\\" \\\"=\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"ubuntu\\\"\"",
+    "original": "\"FROM ubuntu\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"value\\\" \\\"\\\"\"",
+    "original": "\"ENV name value\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"value\\\" \\\"=\\\"\"",
+    "original": "\"ENV name=value\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"value\\\" \\\"=\\\" \\\"name2\\\" \\\"value2\\\" \\\"=\\\"\"",
+    "original": "\"ENV name=value name2=value2\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"\\\\\\\"value value1\\\\\\\"\\\" \\\"=\\\"\"",
+    "original": "\"ENV name=\\\"value value1\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"value\\\\\\\\ value2\\\" \\\"=\\\"\"",
+    "original": "\"ENV name=value\\\\ value2\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"\\\\\\\"value'quote space'value2\\\\\\\"\\\" \\\"=\\\"\"",
+    "original": "\"ENV name=\\\"value'quote space'value2\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"'value\\\\\\\"double quote\\\\\\\"value2'\\\" \\\"=\\\"\"",
+    "original": "\"ENV name='value\\\"double quote\\\"value2'\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"value\\\\\\\\ value2\\\" \\\"=\\\" \\\"name2\\\" \\\"value2\\\\\\\\ value3\\\" \\\"=\\\"\"",
+    "original": "\"ENV name=value\\\\ value2 name2=value2\\\\ value3\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"\\\\\\\"a\\\\\\\\\\\\\\\"b\\\\\\\"\\\" \\\"=\\\"\"",
+    "original": "\"ENV name=\\\"a\\\\\\\"b\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"\\\\\\\"a\\\\\\\\'b\\\\\\\"\\\" \\\"=\\\"\"",
+    "original": "\"ENV name=\\\"a\\\\'b\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"'a\\\\\\\\'b'\\\" \\\"=\\\"\"",
+    "original": "\"ENV name='a\\\\'b'\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"'a\\\\\\\\'b''\\\" \\\"=\\\"\"",
+    "original": "\"ENV name='a\\\\'b''\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 13,
+    "end_line": 13,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"'a\\\\\\\\\\\\\\\"b'\\\" \\\"=\\\"\"",
+    "original": "\"ENV name='a\\\\\\\"b'\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"\\\\\\\"''\\\\\\\"\\\" \\\"=\\\"\"",
+    "original": "\"ENV name=\\\"''\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 15,
+    "end_line": 15,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"name\\\" \\\"value\\\" \\\"=\\\" \\\"name1\\\" \\\"value1\\\" \\\"=\\\" \\\"name2\\\" \\\"\\\\\\\"value2a            value2b\\\\\\\"\\\" \\\"=\\\" \\\"name3\\\" \\\"\\\\\\\"value3a\\\\\\\\n\\\\\\\\\\\\\\\"value3b\\\\\\\\\\\\\\\"\\\\\\\"\\\" \\\"=\\\" \\\"name4\\\" \\\"\\\\\\\"value4a\\\\\\\\\\\\\\\\nvalue4b\\\\\\\"\\\" \\\"=\\\"\"",
+    "original": "\"ENV name=value     name1=value1     name2=\\\"value2a            value2b\\\"     name3=\\\"value3a\\\\n\\\\\\\"value3b\\\\\\\"\\\" \\tname4=\\\"value4a\\\\\\\\nvalue4b\\\" \"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 18,
+    "end_line": 23,
+    "prev_comment": [
+     "\"don't put anything after the next line - it must be the last line of the\"",
+     "\"Dockerfile and it must end with \\\\\""
+    ],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/escape-after-comment/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"image\\\")\\n(label \\\"maintainer\\\" \\\"foo@bar.com\\\" \\\"\\\")\\n(env \\\"GOPATH\\\" \\\"\\\\\\\\go\\\" \\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"image\\\"\"",
+    "original": "\"FROM image\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [
+     "\"Comment here. Should not be looking for the following parser directive.\"",
+     "\"Hence the following line will be ignored, and the subsequent backslash\"",
+     "\"continuation will be the default.\"",
+     "\"escape = `\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"maintainer\\\" \\\"foo@bar.com\\\" \\\"\\\"\"",
+    "original": "\"LABEL maintainer foo@bar.com\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"GOPATH\\\" \\\"\\\\\\\\go\\\" \\\"\\\"\"",
+    "original": "\"ENV GOPATH \\\\go\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/escape-nonewline/Dockerfile",
+  "escape": "\"`\"",
+  "dump": "\"(from \\\"image\\\")\\n(label \\\"maintainer\\\" \\\"foo@bar.com\\\" \\\"\\\")\\n(env \\\"GOPATH\\\" \\\"\\\\\\\\go\\\" \\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"image\\\"\"",
+    "original": "\"FROM image\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [
+     "\"There is no white space line after the directives. This still succeeds, but goes\"",
+     "\"against best practices.\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"maintainer\\\" \\\"foo@bar.com\\\" \\\"\\\"\"",
+    "original": "\"LABEL maintainer foo@bar.com\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"GOPATH\\\" \\\"\\\\\\\\go\\\" \\\"\\\"\"",
+    "original": "\"ENV GOPATH \\\\go\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/escape-with-syntax/Dockerfile",
+  "escape": "\"`\"",
+  "dump": "\"(from \\\"image\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"image\\\"\"",
+    "original": "\"FROM     image\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/escape/Dockerfile",
+  "escape": "\"`\"",
+  "dump": "\"(from \\\"image\\\")\\n(label \\\"maintainer\\\" \\\"foo@bar.com\\\" \\\"\\\")\\n(env \\\"GOPATH\\\" \\\"\\\\\\\\go\\\" \\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"image\\\"\"",
+    "original": "\"FROM image\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"maintainer\\\" \\\"foo@bar.com\\\" \\\"\\\"\"",
+    "original": "\"LABEL maintainer foo@bar.com\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"GOPATH\\\" \\\"\\\\\\\\go\\\" \\\"\\\"\"",
+    "original": "\"ENV GOPATH \\\\go\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/escapes/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"ubuntu:14.04\\\")\\n(label \\\"maintainer\\\" \\\"Erik \\\\\\\\\\\\\\\\Hollensbe \u003cerik@hollensbe.org\u003e\\\\\\\\\\\\\\\"\\\" \\\"\\\")\\n(run \\\"apt-get \\\\\\\\update \u0026\u0026   apt-get \\\\\\\\\\\\\\\"install znc -y\\\")\\n(add \\\"\\\\\\\\conf\\\\\\\\\\\\\\\\\\\\\\\"\\\" \\\"/.znc\\\")\\n(run \\\"foo bar baz\\\")\\n(cmd \\\"/usr\\\\\\\\\\\\\\\"/bin/znc\\\" \\\"-f\\\" \\\"-r\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"ubuntu:14.04\\\"\"",
+    "original": "\"FROM ubuntu:14.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"maintainer\\\" \\\"Erik \\\\\\\\\\\\\\\\Hollensbe \u003cerik@hollensbe.org\u003e\\\\\\\\\\\\\\\"\\\" \\\"\\\"\"",
+    "original": "\"LABEL maintainer Erik \\\\\\\\Hollensbe \u003cerik@hollensbe.org\u003e\\\\\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get \\\\\\\\update \u0026\u0026   apt-get \\\\\\\\\\\\\\\"install znc -y\\\"\"",
+    "original": "\"RUN apt-get \\\\update \u0026\u0026   apt-get \\\\\\\"install znc -y\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"\\\\\\\\conf\\\\\\\\\\\\\\\\\\\\\\\"\\\" \\\"/.znc\\\"\"",
+    "original": "\"ADD \\\\conf\\\\\\\\\\\" /.znc\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"foo bar baz\\\"\"",
+    "original": "\"RUN foo bar baz\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"/usr\\\\\\\\\\\\\\\"/bin/znc\\\" \\\"-f\\\" \\\"-r\\\"\"",
+    "original": "\"CMD [ \\\"\\\\/usr\\\\\\\\\\\\\\\"/bin/znc\\\", \\\"-f\\\", \\\"-r\\\" ]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ],
+  "warnings": [
+   "\"Empty continuation line found in: RUN foo bar baz|https://docs.docker.com/go/dockerfile/rule/no-empty-continuation/|12\""
+  ]
+ },
+ {
+  "file": "buildkit/parser/flags/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"scratch\\\")\\n(copy \\\"foo\\\" \\\"/tmp/\\\")\\n(copy [\\\"--user=me\\\"] \\\"foo\\\" \\\"/tmp/\\\")\\n(copy [\\\"--doit=true\\\"] \\\"foo\\\" \\\"/tmp/\\\")\\n(copy [\\\"--user=me\\\" \\\"--doit=true\\\"] \\\"foo\\\" \\\"/tmp/\\\")\\n(copy [\\\"--doit=true\\\"] \\\"foo\\\" \\\"/tmp/\\\")\\n(copy \\\"foo\\\" \\\"/tmp/\\\")\\n(cmd [\\\"--doit\\\"] \\\"a\\\" \\\"b\\\")\\n(cmd [\\\"--doit=true\\\"] \\\"a\\\" \\\"b\\\")\\n(cmd [\\\"--doit\\\"])\"",
+  "children": [
+   {
+    "dump": "\"from \\\"scratch\\\"\"",
+    "original": "\"FROM scratch\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"foo\\\" \\\"/tmp/\\\"\"",
+    "original": "\"COPY foo /tmp/\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--user=me\\\"] \\\"foo\\\" \\\"/tmp/\\\"\"",
+    "original": "\"COPY --user=me foo /tmp/\"",
+    "flags": [
+     "\"--user=me\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--doit=true\\\"] \\\"foo\\\" \\\"/tmp/\\\"\"",
+    "original": "\"COPY --doit=true foo /tmp/\"",
+    "flags": [
+     "\"--doit=true\""
+    ],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--user=me\\\" \\\"--doit=true\\\"] \\\"foo\\\" \\\"/tmp/\\\"\"",
+    "original": "\"COPY --user=me --doit=true foo /tmp/\"",
+    "flags": [
+     "\"--user=me\"",
+     "\"--doit=true\""
+    ],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--doit=true\\\"] \\\"foo\\\" \\\"/tmp/\\\"\"",
+    "original": "\"COPY --doit=true -- foo /tmp/\"",
+    "flags": [
+     "\"--doit=true\""
+    ],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"foo\\\" \\\"/tmp/\\\"\"",
+    "original": "\"COPY -- foo /tmp/\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd [\\\"--doit\\\"] \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"CMD --doit [ \\\"a\\\", \\\"b\\\" ]\"",
+    "flags": [
+     "\"--doit\""
+    ],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd [\\\"--doit=true\\\"] \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"CMD --doit=true -- [ \\\"a\\\", \\\"b\\\" ]\"",
+    "flags": [
+     "\"--doit=true\""
+    ],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd [\\\"--doit\\\"]\"",
+    "original": "\"CMD --doit -- [ ]\"",
+    "flags": [
+     "\"--doit\""
+    ],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/health/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"debian\\\")\\n(add \\\"check.sh\\\" \\\"main.sh\\\" \\\"/app/\\\")\\n(cmd \\\"/app/main.sh\\\")\\n(healthcheck)\\n(healthcheck [\\\"--interval=5s\\\" \\\"--timeout=3s\\\" \\\"--retries=3\\\"] \\\"CMD\\\" \\\"/app/check.sh --quiet\\\")\\n(healthcheck \\\"CMD\\\")\\n(healthcheck \\\"CMD\\\" \\\"a b\\\")\\n(healthcheck [\\\"--timeout=3s\\\"] \\\"CMD\\\" \\\"foo\\\")\\n(healthcheck \\\"CONNECT\\\" \\\"TCP 7000\\\")\\n(healthcheck [\\\"--start-period=0s\\\" \\\"--start-interval=0s\\\" \\\"--interval=5s\\\" \\\"--timeout=0s\\\" \\\"--retries=0\\\"] \\\"CMD\\\" \\\"foo\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"debian\\\"\"",
+    "original": "\"FROM debian\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"check.sh\\\" \\\"main.sh\\\" \\\"/app/\\\"\"",
+    "original": "\"ADD check.sh main.sh /app/\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"/app/main.sh\\\"\"",
+    "original": "\"CMD /app/main.sh\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck\"",
+    "original": "\"HEALTHCHECK\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--interval=5s\\\" \\\"--timeout=3s\\\" \\\"--retries=3\\\"] \\\"CMD\\\" \\\"/app/check.sh --quiet\\\"\"",
+    "original": "\"HEALTHCHECK --interval=5s --timeout=3s --retries=3   CMD /app/check.sh --quiet\"",
+    "flags": [
+     "\"--interval=5s\"",
+     "\"--timeout=3s\"",
+     "\"--retries=3\""
+    ],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck \\\"CMD\\\"\"",
+    "original": "\"HEALTHCHECK CMD\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck \\\"CMD\\\" \\\"a b\\\"\"",
+    "original": "\"HEALTHCHECK   CMD   a b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--timeout=3s\\\"] \\\"CMD\\\" \\\"foo\\\"\"",
+    "original": "\"HEALTHCHECK --timeout=3s CMD [\\\"foo\\\"]\"",
+    "flags": [
+     "\"--timeout=3s\""
+    ],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck \\\"CONNECT\\\" \\\"TCP 7000\\\"\"",
+    "original": "\"HEALTHCHECK CONNECT TCP 7000\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--start-period=0s\\\" \\\"--start-interval=0s\\\" \\\"--interval=5s\\\" \\\"--timeout=0s\\\" \\\"--retries=0\\\"] \\\"CMD\\\" \\\"foo\\\"\"",
+    "original": "\"HEALTHCHECK --start-period=0s --start-interval=0s --interval=5s --timeout=0s --retries=0 CMD [\\\"foo\\\"]\"",
+    "flags": [
+     "\"--start-period=0s\"",
+     "\"--start-interval=0s\"",
+     "\"--interval=5s\"",
+     "\"--timeout=0s\"",
+     "\"--retries=0\""
+    ],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/influxdb/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"ubuntu:14.04\\\")\\n(run \\\"apt-get update \u0026\u0026 apt-get install wget -y\\\")\\n(run \\\"wget http://s3.amazonaws.com/influxdb/influxdb_latest_amd64.deb\\\")\\n(run \\\"dpkg -i influxdb_latest_amd64.deb\\\")\\n(run \\\"rm -r /opt/influxdb/shared\\\")\\n(volume \\\"/opt/influxdb/shared\\\")\\n(cmd \\\"/usr/bin/influxdb --pidfile /var/run/influxdb.pid -config /opt/influxdb/shared/config.toml\\\")\\n(expose \\\"8083\\\")\\n(expose \\\"8086\\\")\\n(expose \\\"8090\\\")\\n(expose \\\"8099\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"ubuntu:14.04\\\"\"",
+    "original": "\"FROM ubuntu:14.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update \u0026\u0026 apt-get install wget -y\\\"\"",
+    "original": "\"RUN apt-get update \u0026\u0026 apt-get install wget -y\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"wget http://s3.amazonaws.com/influxdb/influxdb_latest_amd64.deb\\\"\"",
+    "original": "\"RUN wget http://s3.amazonaws.com/influxdb/influxdb_latest_amd64.deb\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"dpkg -i influxdb_latest_amd64.deb\\\"\"",
+    "original": "\"RUN dpkg -i influxdb_latest_amd64.deb\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"rm -r /opt/influxdb/shared\\\"\"",
+    "original": "\"RUN rm -r /opt/influxdb/shared\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"/opt/influxdb/shared\\\"\"",
+    "original": "\"VOLUME /opt/influxdb/shared\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"/usr/bin/influxdb --pidfile /var/run/influxdb.pid -config /opt/influxdb/shared/config.toml\\\"\"",
+    "original": "\"CMD /usr/bin/influxdb --pidfile /var/run/influxdb.pid -config /opt/influxdb/shared/config.toml\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"8083\\\"\"",
+    "original": "\"EXPOSE 8083\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"8086\\\"\"",
+    "original": "\"EXPOSE 8086\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 13,
+    "end_line": 13,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"8090\\\"\"",
+    "original": "\"EXPOSE 8090\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"8099\\\"\"",
+    "original": "\"EXPOSE 8099\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 15,
+    "end_line": 15,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/jeztah-invalid-json-json-inside-string-double/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(cmd \\\"\\\\\\\"[\\\\\\\\\\\\\\\"echo\\\\\\\\\\\\\\\", \\\\\\\\\\\\\\\"Phew, I just managed to escaped those double quotes\\\\\\\\\\\\\\\"]\\\\\\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"cmd \\\"\\\\\\\"[\\\\\\\\\\\\\\\"echo\\\\\\\\\\\\\\\", \\\\\\\\\\\\\\\"Phew, I just managed to escaped those double quotes\\\\\\\\\\\\\\\"]\\\\\\\"\\\"\"",
+    "original": "\"CMD \\\"[\\\\\\\"echo\\\\\\\", \\\\\\\"Phew, I just managed to escaped those double quotes\\\\\\\"]\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/jeztah-invalid-json-json-inside-string/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(cmd \\\"'[\\\\\\\"echo\\\\\\\", \\\\\\\"Well, JSON in a string is JSON too?\\\\\\\"]'\\\")\"",
+  "children": [
+   {
+    "dump": "\"cmd \\\"'[\\\\\\\"echo\\\\\\\", \\\\\\\"Well, JSON in a string is JSON too?\\\\\\\"]'\\\"\"",
+    "original": "\"CMD '[\\\"echo\\\", \\\"Well, JSON in a string is JSON too?\\\"]'\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/jeztah-invalid-json-single-quotes/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(cmd \\\"['echo','single quotes are invalid JSON']\\\")\"",
+  "children": [
+   {
+    "dump": "\"cmd \\\"['echo','single quotes are invalid JSON']\\\"\"",
+    "original": "\"CMD ['echo','single quotes are invalid JSON']\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/jeztah-invalid-json-unterminated-bracket/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(cmd \\\"[\\\\\\\"echo\\\\\\\", \\\\\\\"Please, close the brackets when you're done\\\\\\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"cmd \\\"[\\\\\\\"echo\\\\\\\", \\\\\\\"Please, close the brackets when you're done\\\\\\\"\\\"\"",
+    "original": "\"CMD [\\\"echo\\\", \\\"Please, close the brackets when you're done\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/jeztah-invalid-json-unterminated-string/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(cmd \\\"[\\\\\\\"echo\\\\\\\", \\\\\\\"look ma, no quote!]\\\")\"",
+  "children": [
+   {
+    "dump": "\"cmd \\\"[\\\\\\\"echo\\\\\\\", \\\\\\\"look ma, no quote!]\\\"\"",
+    "original": "\"CMD [\\\"echo\\\", \\\"look ma, no quote!]\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/json/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(cmd)\\n(cmd \\\"\\\")\\n(cmd \\\"a\\\")\\n(cmd \\\"a\\\" \\\"b\\\")\\n(cmd \\\"a\\\" \\\"b\\\")\\n(cmd \\\"a\\\" \\\"b\\\")\\n(cmd \\\"a\\\" \\\"b\\\")\\n(cmd \\\"abc 123\\\" \\\"♥\\\" \\\"☃\\\" \\\"\\\\\\\" \\\\\\\\ / \\\\b \\\\f \\\\n \\\\r \\\\t \\\\x00\\\")\"",
+  "children": [
+   {
+    "dump": "\"cmd\"",
+    "original": "\"CMD []\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"\\\"\"",
+    "original": "\"CMD [\\\"\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"a\\\"\"",
+    "original": "\"CMD [\\\"a\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"CMD [\\\"a\\\",\\\"b\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"CMD [ \\\"a\\\", \\\"b\\\" ]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"CMD [\\t\\\"a\\\",\\t\\\"b\\\"\\t]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"CMD\\t[\\t\\\"a\\\",\\t\\\"b\\\"\\t]\\t\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"abc 123\\\" \\\"♥\\\" \\\"☃\\\" \\\"\\\\\\\" \\\\\\\\ / \\\\b \\\\f \\\\n \\\\r \\\\t \\\\x00\\\"\"",
+    "original": "\"CMD [\\\"abc 123\\\", \\\"♥\\\", \\\"☃\\\", \\\"\\\\\\\" \\\\\\\\ \\\\/ \\\\b \\\\f \\\\n \\\\r \\\\t \\\\u0000\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/kartar-entrypoint-oddities/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"ubuntu:14.04\\\")\\n(label \\\"maintainer\\\" \\\"James Turnbull \\\\\\\"james@example.com\\\\\\\"\\\" \\\"\\\")\\n(env \\\"REFRESHED_AT\\\" \\\"2014-06-01\\\" \\\"\\\")\\n(run \\\"apt-get update\\\")\\n(run \\\"apt-get --no-install-recommends install -y redis-server redis-tools\\\")\\n(expose \\\"6379\\\")\\n(entrypoint \\\"/usr/bin/redis-server\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"ubuntu:14.04\\\"\"",
+    "original": "\"FROM ubuntu:14.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"maintainer\\\" \\\"James Turnbull \\\\\\\"james@example.com\\\\\\\"\\\" \\\"\\\"\"",
+    "original": "\"LABEL maintainer James Turnbull \\\"james@example.com\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"REFRESHED_AT\\\" \\\"2014-06-01\\\" \\\"\\\"\"",
+    "original": "\"ENV REFRESHED_AT 2014-06-01\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update\\\"\"",
+    "original": "\"RUN apt-get update\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get --no-install-recommends install -y redis-server redis-tools\\\"\"",
+    "original": "\"RUN apt-get --no-install-recommends install -y redis-server redis-tools\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"6379\\\"\"",
+    "original": "\"EXPOSE 6379\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"entrypoint \\\"/usr/bin/redis-server\\\"\"",
+    "original": "\"ENTRYPOINT [ \\\"/usr/bin/redis-server\\\" ]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/lk4d4-the-edge-case-generator/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"busybox:buildroot-2014.02\\\")\\n(label \\\"maintainer\\\" \\\"docker \u003cdocker@docker.io\u003e\\\" \\\"\\\")\\n(onbuild (run \\\"echo\\\" \\\"test\\\"))\\n(onbuild (run \\\"echo test\\\"))\\n(onbuild (copy \\\".\\\" \\\"/\\\"))\\n(run \\\"ls\\\" \\\"-la\\\")\\n(run \\\"echo\\\" \\\"'1234'\\\")\\n(run \\\"echo \\\\\\\"1234\\\\\\\"\\\")\\n(run \\\"echo 1234\\\")\\n(run \\\"echo '1234' \u0026\u0026     echo \\\\\\\"456\\\\\\\" \u0026\u0026     echo 789\\\")\\n(run \\\"sh -c 'echo root:testpass         \u003e /tmp/passwd'\\\")\\n(run \\\"mkdir -p /test /test2 /test3/test\\\")\\n(env \\\"SCUBA\\\" \\\"1 DUBA 3\\\" \\\"\\\")\\n(env \\\"SCUBA\\\" \\\"\\\\\\\"1 DUBA 3\\\\\\\"\\\" \\\"\\\")\\n(cmd \\\"echo\\\" \\\"test\\\")\\n(cmd \\\"echo test\\\")\\n(cmd \\\"echo \\\\\\\"test\\\\\\\"\\\")\\n(cmd \\\"echo 'test'\\\")\\n(cmd \\\"echo 'test' | wc -\\\")\\n(expose \\\"3000\\\")\\n(expose \\\"9000\\\" \\\"5000\\\" \\\"6000\\\")\\n(user \\\"docker\\\")\\n(user \\\"docker:root\\\")\\n(volume \\\"/test\\\")\\n(volume \\\"/test\\\" \\\"/test2\\\")\\n(volume \\\"/test3\\\")\\n(workdir \\\"/test\\\")\\n(add \\\".\\\" \\\"/\\\")\\n(copy \\\".\\\" \\\"copy\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"busybox:buildroot-2014.02\\\"\"",
+    "original": "\"FROM busybox:buildroot-2014.02\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"maintainer\\\" \\\"docker \u003cdocker@docker.io\u003e\\\" \\\"\\\"\"",
+    "original": "\"LABEL maintainer docker \u003cdocker@docker.io\u003e\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (run \\\"echo\\\" \\\"test\\\")\"",
+    "original": "\"ONBUILD RUN [\\\"echo\\\", \\\"test\\\"]\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (run \\\"echo test\\\")\"",
+    "original": "\"ONBUILD RUN echo test\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (copy \\\".\\\" \\\"/\\\")\"",
+    "original": "\"ONBUILD COPY . /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"ls\\\" \\\"-la\\\"\"",
+    "original": "\"RUN [\\\"ls\\\", \\\"-la\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [
+     "\"RUN Commands \\\\\"",
+     "\"linebreak in comment \\\\\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo\\\" \\\"'1234'\\\"\"",
+    "original": "\"RUN [\\\"echo\\\", \\\"'1234'\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 13,
+    "end_line": 13,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo \\\\\\\"1234\\\\\\\"\\\"\"",
+    "original": "\"RUN echo \\\"1234\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo 1234\\\"\"",
+    "original": "\"RUN echo 1234\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 15,
+    "end_line": 15,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo '1234' \u0026\u0026     echo \\\\\\\"456\\\\\\\" \u0026\u0026     echo 789\\\"\"",
+    "original": "\"RUN echo '1234' \u0026\u0026     echo \\\"456\\\" \u0026\u0026     echo 789\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 16,
+    "end_line": 18,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"sh -c 'echo root:testpass         \u003e /tmp/passwd'\\\"\"",
+    "original": "\"RUN    sh -c 'echo root:testpass         \u003e /tmp/passwd'\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 19,
+    "end_line": 20,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"mkdir -p /test /test2 /test3/test\\\"\"",
+    "original": "\"RUN mkdir -p /test /test2 /test3/test\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 21,
+    "end_line": 21,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"SCUBA\\\" \\\"1 DUBA 3\\\" \\\"\\\"\"",
+    "original": "\"ENV SCUBA 1 DUBA 3\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 24,
+    "end_line": 24,
+    "prev_comment": [
+     "\"ENV \\\\\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"SCUBA\\\" \\\"\\\\\\\"1 DUBA 3\\\\\\\"\\\" \\\"\\\"\"",
+    "original": "\"ENV SCUBA \\\"1 DUBA 3\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 25,
+    "end_line": 25,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"echo\\\" \\\"test\\\"\"",
+    "original": "\"CMD [\\\"echo\\\", \\\"test\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 28,
+    "end_line": 28,
+    "prev_comment": [
+     "\"CMD \\\\\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"echo test\\\"\"",
+    "original": "\"CMD echo test\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 29,
+    "end_line": 29,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"echo \\\\\\\"test\\\\\\\"\\\"\"",
+    "original": "\"CMD echo \\\"test\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 30,
+    "end_line": 30,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"echo 'test'\\\"\"",
+    "original": "\"CMD echo 'test'\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 31,
+    "end_line": 31,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"echo 'test' | wc -\\\"\"",
+    "original": "\"CMD echo 'test' | wc -\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 32,
+    "end_line": 32,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"3000\\\"\"",
+    "original": "\"EXPOSE 3000\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 35,
+    "end_line": 35,
+    "prev_comment": [
+     "\"EXPOSE\\\\\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"9000\\\" \\\"5000\\\" \\\"6000\\\"\"",
+    "original": "\"EXPOSE 9000 5000 6000\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 36,
+    "end_line": 36,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"user \\\"docker\\\"\"",
+    "original": "\"USER docker\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 38,
+    "end_line": 38,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"user \\\"docker:root\\\"\"",
+    "original": "\"USER docker:root\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 39,
+    "end_line": 39,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"/test\\\"\"",
+    "original": "\"VOLUME [\\\"/test\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 41,
+    "end_line": 41,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"/test\\\" \\\"/test2\\\"\"",
+    "original": "\"VOLUME [\\\"/test\\\", \\\"/test2\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 42,
+    "end_line": 42,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"/test3\\\"\"",
+    "original": "\"VOLUME /test3\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 43,
+    "end_line": 43,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"/test\\\"\"",
+    "original": "\"WORKDIR /test\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 45,
+    "end_line": 45,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\".\\\" \\\"/\\\"\"",
+    "original": "\"ADD . /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 47,
+    "end_line": 47,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"copy\\\"\"",
+    "original": "\"COPY . copy\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 48,
+    "end_line": 48,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/mail/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"ubuntu:14.04\\\")\\n(run \\\"apt-get update -qy \u0026\u0026 apt-get install mutt offlineimap vim-nox abook elinks curl tmux cron zsh -y\\\")\\n(add \\\".muttrc\\\" \\\"/\\\")\\n(add \\\".offlineimaprc\\\" \\\"/\\\")\\n(add \\\".tmux.conf\\\" \\\"/\\\")\\n(add \\\"mutt\\\" \\\"/.mutt\\\")\\n(add \\\"vim\\\" \\\"/.vim\\\")\\n(add \\\"vimrc\\\" \\\"/.vimrc\\\")\\n(add \\\"crontab\\\" \\\"/etc/crontab\\\")\\n(run \\\"chmod 644 /etc/crontab\\\")\\n(run \\\"mkdir /Mail\\\")\\n(run \\\"mkdir /.offlineimap\\\")\\n(run \\\"echo \\\\\\\"export TERM=screen-256color\\\\\\\" \u003e/.zshenv\\\")\\n(cmd \\\"setsid cron; tmux -2\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"ubuntu:14.04\\\"\"",
+    "original": "\"FROM ubuntu:14.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update -qy \u0026\u0026 apt-get install mutt offlineimap vim-nox abook elinks curl tmux cron zsh -y\\\"\"",
+    "original": "\"RUN apt-get update -qy \u0026\u0026 apt-get install mutt offlineimap vim-nox abook elinks curl tmux cron zsh -y\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\".muttrc\\\" \\\"/\\\"\"",
+    "original": "\"ADD .muttrc /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\".offlineimaprc\\\" \\\"/\\\"\"",
+    "original": "\"ADD .offlineimaprc /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\".tmux.conf\\\" \\\"/\\\"\"",
+    "original": "\"ADD .tmux.conf /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"mutt\\\" \\\"/.mutt\\\"\"",
+    "original": "\"ADD mutt /.mutt\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"vim\\\" \\\"/.vim\\\"\"",
+    "original": "\"ADD vim /.vim\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"vimrc\\\" \\\"/.vimrc\\\"\"",
+    "original": "\"ADD vimrc /.vimrc\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"crontab\\\" \\\"/etc/crontab\\\"\"",
+    "original": "\"ADD crontab /etc/crontab\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"chmod 644 /etc/crontab\\\"\"",
+    "original": "\"RUN chmod 644 /etc/crontab\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"mkdir /Mail\\\"\"",
+    "original": "\"RUN mkdir /Mail\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"mkdir /.offlineimap\\\"\"",
+    "original": "\"RUN mkdir /.offlineimap\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 13,
+    "end_line": 13,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo \\\\\\\"export TERM=screen-256color\\\\\\\" \u003e/.zshenv\\\"\"",
+    "original": "\"RUN echo \\\"export TERM=screen-256color\\\" \u003e/.zshenv\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"setsid cron; tmux -2\\\"\"",
+    "original": "\"CMD setsid cron; tmux -2\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 16,
+    "end_line": 16,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/multiple-volumes/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"foo\\\")\\n(volume \\\"/opt/nagios/var\\\" \\\"/opt/nagios/etc\\\" \\\"/opt/nagios/libexec\\\" \\\"/var/log/apache2\\\" \\\"/usr/share/snmp/mibs\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"foo\\\"\"",
+    "original": "\"FROM foo\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"/opt/nagios/var\\\" \\\"/opt/nagios/etc\\\" \\\"/opt/nagios/libexec\\\" \\\"/var/log/apache2\\\" \\\"/usr/share/snmp/mibs\\\"\"",
+    "original": "\"VOLUME /opt/nagios/var /opt/nagios/etc /opt/nagios/libexec /var/log/apache2 /usr/share/snmp/mibs\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/mumble/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"ubuntu:14.04\\\")\\n(run \\\"apt-get update \u0026\u0026 apt-get install libcap2-bin mumble-server -y\\\")\\n(add \\\"./mumble-server.ini\\\" \\\"/etc/mumble-server.ini\\\")\\n(cmd \\\"/usr/sbin/murmurd\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"ubuntu:14.04\\\"\"",
+    "original": "\"FROM ubuntu:14.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update \u0026\u0026 apt-get install libcap2-bin mumble-server -y\\\"\"",
+    "original": "\"RUN apt-get update \u0026\u0026 apt-get install libcap2-bin mumble-server -y\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"./mumble-server.ini\\\" \\\"/etc/mumble-server.ini\\\"\"",
+    "original": "\"ADD ./mumble-server.ini /etc/mumble-server.ini\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"/usr/sbin/murmurd\\\"\"",
+    "original": "\"CMD /usr/sbin/murmurd\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/nginx/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"ubuntu:14.04\\\")\\n(label \\\"maintainer\\\" \\\"Erik Hollensbe \u003cerik@hollensbe.org\u003e\\\" \\\"\\\")\\n(run \\\"apt-get update \u0026\u0026 apt-get install nginx-full -y\\\")\\n(run \\\"rm -rf /etc/nginx\\\")\\n(add \\\"etc\\\" \\\"/etc/nginx\\\")\\n(run \\\"chown -R root:root /etc/nginx\\\")\\n(run \\\"/usr/sbin/nginx -qt\\\")\\n(run \\\"mkdir /www\\\")\\n(cmd \\\"/usr/sbin/nginx\\\")\\n(volume \\\"/www\\\")\\n(expose \\\"80\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"ubuntu:14.04\\\"\"",
+    "original": "\"FROM ubuntu:14.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"maintainer\\\" \\\"Erik Hollensbe \u003cerik@hollensbe.org\u003e\\\" \\\"\\\"\"",
+    "original": "\"LABEL maintainer Erik Hollensbe \u003cerik@hollensbe.org\u003e\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update \u0026\u0026 apt-get install nginx-full -y\\\"\"",
+    "original": "\"RUN apt-get update \u0026\u0026 apt-get install nginx-full -y\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"rm -rf /etc/nginx\\\"\"",
+    "original": "\"RUN rm -rf /etc/nginx\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"etc\\\" \\\"/etc/nginx\\\"\"",
+    "original": "\"ADD etc /etc/nginx\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"chown -R root:root /etc/nginx\\\"\"",
+    "original": "\"RUN chown -R root:root /etc/nginx\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"/usr/sbin/nginx -qt\\\"\"",
+    "original": "\"RUN /usr/sbin/nginx -qt\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"mkdir /www\\\"\"",
+    "original": "\"RUN mkdir /www\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"/usr/sbin/nginx\\\"\"",
+    "original": "\"CMD [\\\"/usr/sbin/nginx\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"/www\\\"\"",
+    "original": "\"VOLUME /www\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 13,
+    "end_line": 13,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"80\\\"\"",
+    "original": "\"EXPOSE 80\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/tf2/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"ubuntu:12.04\\\")\\n(expose \\\"27015\\\")\\n(expose \\\"27005\\\")\\n(expose \\\"26901\\\")\\n(expose \\\"27020\\\")\\n(run \\\"apt-get update \u0026\u0026 apt-get install libc6-dev-i386 curl unzip -y\\\")\\n(run \\\"mkdir -p /steam\\\")\\n(run \\\"curl http://media.steampowered.com/client/steamcmd_linux.tar.gz | tar vxz -C /steam\\\")\\n(add \\\"./script\\\" \\\"/steam/script\\\")\\n(run \\\"/steam/steamcmd.sh +runscript /steam/script\\\")\\n(run \\\"curl http://mirror.pointysoftware.net/alliedmodders/mmsource-1.10.0-linux.tar.gz | tar vxz -C /steam/tf2/tf\\\")\\n(run \\\"curl http://mirror.pointysoftware.net/alliedmodders/sourcemod-1.5.3-linux.tar.gz | tar vxz -C /steam/tf2/tf\\\")\\n(add \\\"./server.cfg\\\" \\\"/steam/tf2/tf/cfg/server.cfg\\\")\\n(add \\\"./ctf_2fort.cfg\\\" \\\"/steam/tf2/tf/cfg/ctf_2fort.cfg\\\")\\n(add \\\"./sourcemod.cfg\\\" \\\"/steam/tf2/tf/cfg/sourcemod/sourcemod.cfg\\\")\\n(run \\\"rm -r /steam/tf2/tf/addons/sourcemod/configs\\\")\\n(add \\\"./configs\\\" \\\"/steam/tf2/tf/addons/sourcemod/configs\\\")\\n(run \\\"mkdir -p /steam/tf2/tf/addons/sourcemod/translations/en\\\")\\n(run \\\"cp /steam/tf2/tf/addons/sourcemod/translations/*.txt /steam/tf2/tf/addons/sourcemod/translations/en\\\")\\n(cmd \\\"cd /steam/tf2 \u0026\u0026 ./srcds_run -port 27015 +ip 0.0.0.0 +map ctf_2fort -autoupdate -steam_dir /steam -steamcmd_script /steam/script +tf_bot_quota 12 +tf_bot_quota_mode fill\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"ubuntu:12.04\\\"\"",
+    "original": "\"FROM ubuntu:12.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"27015\\\"\"",
+    "original": "\"EXPOSE 27015\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"27005\\\"\"",
+    "original": "\"EXPOSE 27005\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"26901\\\"\"",
+    "original": "\"EXPOSE 26901\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"27020\\\"\"",
+    "original": "\"EXPOSE 27020\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update \u0026\u0026 apt-get install libc6-dev-i386 curl unzip -y\\\"\"",
+    "original": "\"RUN apt-get update \u0026\u0026 apt-get install libc6-dev-i386 curl unzip -y\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"mkdir -p /steam\\\"\"",
+    "original": "\"RUN mkdir -p /steam\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"curl http://media.steampowered.com/client/steamcmd_linux.tar.gz | tar vxz -C /steam\\\"\"",
+    "original": "\"RUN curl http://media.steampowered.com/client/steamcmd_linux.tar.gz | tar vxz -C /steam\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"./script\\\" \\\"/steam/script\\\"\"",
+    "original": "\"ADD ./script /steam/script\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"/steam/steamcmd.sh +runscript /steam/script\\\"\"",
+    "original": "\"RUN /steam/steamcmd.sh +runscript /steam/script\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"curl http://mirror.pointysoftware.net/alliedmodders/mmsource-1.10.0-linux.tar.gz | tar vxz -C /steam/tf2/tf\\\"\"",
+    "original": "\"RUN curl http://mirror.pointysoftware.net/alliedmodders/mmsource-1.10.0-linux.tar.gz | tar vxz -C /steam/tf2/tf\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 13,
+    "end_line": 13,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"curl http://mirror.pointysoftware.net/alliedmodders/sourcemod-1.5.3-linux.tar.gz | tar vxz -C /steam/tf2/tf\\\"\"",
+    "original": "\"RUN curl http://mirror.pointysoftware.net/alliedmodders/sourcemod-1.5.3-linux.tar.gz | tar vxz -C /steam/tf2/tf\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"./server.cfg\\\" \\\"/steam/tf2/tf/cfg/server.cfg\\\"\"",
+    "original": "\"ADD ./server.cfg /steam/tf2/tf/cfg/server.cfg\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 15,
+    "end_line": 15,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"./ctf_2fort.cfg\\\" \\\"/steam/tf2/tf/cfg/ctf_2fort.cfg\\\"\"",
+    "original": "\"ADD ./ctf_2fort.cfg /steam/tf2/tf/cfg/ctf_2fort.cfg\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 16,
+    "end_line": 16,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"./sourcemod.cfg\\\" \\\"/steam/tf2/tf/cfg/sourcemod/sourcemod.cfg\\\"\"",
+    "original": "\"ADD ./sourcemod.cfg /steam/tf2/tf/cfg/sourcemod/sourcemod.cfg\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 17,
+    "end_line": 17,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"rm -r /steam/tf2/tf/addons/sourcemod/configs\\\"\"",
+    "original": "\"RUN rm -r /steam/tf2/tf/addons/sourcemod/configs\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 18,
+    "end_line": 18,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"./configs\\\" \\\"/steam/tf2/tf/addons/sourcemod/configs\\\"\"",
+    "original": "\"ADD ./configs /steam/tf2/tf/addons/sourcemod/configs\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 19,
+    "end_line": 19,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"mkdir -p /steam/tf2/tf/addons/sourcemod/translations/en\\\"\"",
+    "original": "\"RUN mkdir -p /steam/tf2/tf/addons/sourcemod/translations/en\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 20,
+    "end_line": 20,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"cp /steam/tf2/tf/addons/sourcemod/translations/*.txt /steam/tf2/tf/addons/sourcemod/translations/en\\\"\"",
+    "original": "\"RUN cp /steam/tf2/tf/addons/sourcemod/translations/*.txt /steam/tf2/tf/addons/sourcemod/translations/en\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 21,
+    "end_line": 21,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"cd /steam/tf2 \u0026\u0026 ./srcds_run -port 27015 +ip 0.0.0.0 +map ctf_2fort -autoupdate -steam_dir /steam -steamcmd_script /steam/script +tf_bot_quota 12 +tf_bot_quota_mode fill\\\"\"",
+    "original": "\"CMD cd /steam/tf2 \u0026\u0026 ./srcds_run -port 27015 +ip 0.0.0.0 +map ctf_2fort -autoupdate -steam_dir /steam -steamcmd_script /steam/script +tf_bot_quota 12 +tf_bot_quota_mode fill\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 23,
+    "end_line": 23,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/trailing-backslash/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"hello-world\\\")\\n(env \\\"A\\\" \\\"path\\\" \\\"\\\")\\n(env \\\"B\\\" \\\"another\\\\\\\\\\\\\\\\path\\\" \\\"\\\")\\n(env \\\"C\\\" \\\"trailing\\\\\\\\\\\\\\\\backslash\\\\\\\\\\\\\\\\\\\" \\\"\\\")\\n(env \\\"D\\\" \\\"This should not be appended to C\\\" \\\"\\\")\\n(env \\\"E\\\" \\\"helloworld\\\" \\\"\\\")\\n(env \\\"F\\\" \\\"hello world\\\" \\\"\\\")\\n(env \\\"G\\\" \\\"hello world\\\" \\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"hello-world\\\"\"",
+    "original": "\"FROM hello-world\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [
+     "\"https://github.com/docker/for-win/issues/5254\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"A\\\" \\\"path\\\" \\\"\\\"\"",
+    "original": "\"ENV A path\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"B\\\" \\\"another\\\\\\\\\\\\\\\\path\\\" \\\"\\\"\"",
+    "original": "\"ENV B another\\\\\\\\path\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"C\\\" \\\"trailing\\\\\\\\\\\\\\\\backslash\\\\\\\\\\\\\\\\\\\" \\\"\\\"\"",
+    "original": "\"ENV C trailing\\\\\\\\backslash\\\\\\\\\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"D\\\" \\\"This should not be appended to C\\\" \\\"\\\"\"",
+    "original": "\"ENV D This should not be appended to C\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"E\\\" \\\"helloworld\\\" \\\"\\\"\"",
+    "original": "\"ENV E helloworld\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"F\\\" \\\"hello world\\\" \\\"\\\"\"",
+    "original": "\"ENV F hello world\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 12,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"G\\\" \\\"hello world\\\" \\\"\\\"\"",
+    "original": "\"ENV G hello world\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 15,
+    "end_line": 17,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/weechat/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"ubuntu:14.04\\\")\\n(run \\\"apt-get update -qy \u0026\u0026 apt-get install tmux zsh weechat-curses -y\\\")\\n(add \\\".weechat\\\" \\\"/.weechat\\\")\\n(add \\\".tmux.conf\\\" \\\"/\\\")\\n(run \\\"echo \\\\\\\"export TERM=screen-256color\\\\\\\" \u003e/.zshenv\\\")\\n(cmd \\\"zsh -c weechat\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"ubuntu:14.04\\\"\"",
+    "original": "\"FROM ubuntu:14.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update -qy \u0026\u0026 apt-get install tmux zsh weechat-curses -y\\\"\"",
+    "original": "\"RUN apt-get update -qy \u0026\u0026 apt-get install tmux zsh weechat-curses -y\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\".weechat\\\" \\\"/.weechat\\\"\"",
+    "original": "\"ADD .weechat /.weechat\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\".tmux.conf\\\" \\\"/\\\"\"",
+    "original": "\"ADD .tmux.conf /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo \\\\\\\"export TERM=screen-256color\\\\\\\" \u003e/.zshenv\\\"\"",
+    "original": "\"RUN echo \\\"export TERM=screen-256color\\\" \u003e/.zshenv\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"zsh -c weechat\\\"\"",
+    "original": "\"CMD zsh -c weechat\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "buildkit/parser/znc/Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"ubuntu:14.04\\\")\\n(label \\\"maintainer\\\" \\\"Erik Hollensbe \u003cerik@hollensbe.org\u003e\\\" \\\"\\\")\\n(run \\\"apt-get update \u0026\u0026 apt-get install znc -y\\\")\\n(add \\\"conf\\\" \\\"/.znc\\\")\\n(cmd \\\"/usr/bin/znc\\\" \\\"-f\\\" \\\"-r\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"ubuntu:14.04\\\"\"",
+    "original": "\"FROM ubuntu:14.04\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"maintainer\\\" \\\"Erik Hollensbe \u003cerik@hollensbe.org\u003e\\\" \\\"\\\"\"",
+    "original": "\"LABEL maintainer Erik Hollensbe \u003cerik@hollensbe.org\u003e\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"apt-get update \u0026\u0026 apt-get install znc -y\\\"\"",
+    "original": "\"RUN apt-get update \u0026\u0026 apt-get install znc -y\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"conf\\\" \\\"/.znc\\\"\"",
+    "original": "\"ADD conf /.znc\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"/usr/bin/znc\\\" \\\"-f\\\" \\\"-r\\\"\"",
+    "original": "\"CMD [ \\\"/usr/bin/znc\\\", \\\"-f\\\", \\\"-r\\\" ]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/backslash-eof.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo\\\"\"",
+    "original": "\"RUN echo \"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/bom.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"x\\\"\"",
+    "original": "\"RUN x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/bytes-env.Dockerfile",
+  "error": "\"ENV must have two arguments\"",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "corpus/bytes-high.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"a\\\\xf5\\\\x80\\\\x80\\\\x80b \\\\xf8\\\\x88\\\\x80\\\\x80\\\\x80 𐀀 \\\\xf4\\\\x90\\\\x80\\\\x80\\\")\\n(env \\\"x\\\" \\\"����\\\" \\\"=\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"a\\\\xf5\\\\x80\\\\x80\\\\x80b \\\\xf8\\\\x88\\\\x80\\\\x80\\\\x80 𐀀 \\\\xf4\\\\x90\\\\x80\\\\x80\\\"\"",
+    "original": "\"RUN a\\xf5\\x80\\x80\\x80b \\xf8\\x88\\x80\\x80\\x80 𐀀 \\xf4\\x90\\x80\\x80\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"x\\\" \\\"����\\\" \\\"=\\\"\"",
+    "original": "\"ENV x=\\xf5\\x80\\x80\\x80\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/bytes.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo \\\\xff\\\\xfe café\\\")\\n(copy [\\\"--a=Â\\\"] \\\"b\\\\xff\\\" \\\"c\\\" \\\"d\\\")\\n(label \\\"k\\\" \\\"�\\\" \\\"=\\\" \\\"x\\\" \\\"y\\\" \\\"=\\\")\\n(arg \\\"n\\\" \\\"v\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo \\\\xff\\\\xfe café\\\"\"",
+    "original": "\"RUN echo \\xff\\xfe café\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--a=Â\\\"] \\\"b\\\\xff\\\" \\\"c\\\" \\\"d\\\"\"",
+    "original": "\"COPY --a=\\u00a0b\\xff c d\"",
+    "flags": [
+     "\"--a=Â\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"k\\\" \\\"�\\\" \\\"=\\\" \\\"x\\\" \\\"y\\\" \\\"=\\\"\"",
+    "original": "\"LABEL k=\\xe9 \\u0085x=y\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"n\\\" \\\"v\\\"\"",
+    "original": "\"ARG n\\u00a0v\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/comments.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"a # not a comment\\\")\\n(run \\\"b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [
+     "\"first\"",
+     "\"second\"",
+     "\"third\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"a # not a comment\\\"\"",
+    "original": "\"RUN a # not a comment\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [
+     "\"# indented\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"b\\\"\"",
+    "original": "\"RUN b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/continuation-escaped.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo \\\\\\\\\\\\\\\\\\\\\\\\\\\")\\n(run \\\"x\\\")\\n(run \\\"echo \\\\\\\\\\\\\\\\\\\")\\n(run \\\"y   z\\\")\\n(run \\\"w\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo \\\\\\\\\\\\\\\\\\\\\\\\\\\"\"",
+    "original": "\"RUN echo \\\\\\\\\\\\\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"x\\\"\"",
+    "original": "\"RUN x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo \\\\\\\\\\\\\\\\\\\"\"",
+    "original": "\"RUN echo \\\\\\\\\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"y   z\\\"\"",
+    "original": "\"RUN y   z\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"w\\\"\"",
+    "original": "\"RUN w\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/crlf.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo a   b\\\")\\n(cmd \\\"x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo a   b\\\"\"",
+    "original": "\"RUN echo a   b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"x\\\"\"",
+    "original": "\"CMD x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [
+     "\"comment\""
+    ],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/directive-bad-escape.Dockerfile",
+  "error": "\"invalid escape token 'x' does not match ` or \\\\\"",
+  "location": [
+   [
+    [
+     0,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "corpus/directive-late.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo a  b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo a  b\\\"\"",
+    "original": "\"RUN echo a  b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 4,
+    "prev_comment": [
+     "\"escape=`\""
+    ],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/directive-space.Dockerfile",
+  "error": "\"invalid escape token ' ' does not match ` or \\\\\"",
+  "location": [
+   [
+    [
+     0,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "corpus/directive-tabs.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/directive-twice.Dockerfile",
+  "error": "\"only one escape parser directive can be used\"",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "corpus/directive-values.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/directives.Dockerfile",
+  "escape": "\"`\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo a   b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo a   b\\\"\"",
+    "original": "\"RUN echo a   b\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/empty-continuation.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo a   b   c\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo a   b   c\\\"\"",
+    "original": "\"RUN echo a   b   c\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ],
+  "warnings": [
+   "\"Empty continuation line found in: RUN echo a   b   c|https://docs.docker.com/go/dockerfile/rule/no-empty-continuation/|6\""
+  ]
+ },
+ {
+  "file": "corpus/env-bad.Dockerfile",
+  "error": "\"Syntax error - can't find = in \\\"b\\\". Must be of the form: name=value\"",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "corpus/env-empty.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(env)\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env\"",
+    "original": "\"ENV\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/env-label.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(env \\\"A\\\" \\\"1\\\" \\\"=\\\" \\\"B\\\" \\\"\\\\\\\"two words\\\\\\\"\\\" \\\"=\\\" \\\"C\\\" \\\"'3'\\\" \\\"=\\\")\\n(env \\\"legacy\\\" \\\"value with spaces\\\" \\\"\\\")\\n(label \\\"a\\\" \\\"b\\\" \\\"=\\\" \\\"\\\\\\\"c d\\\\\\\"\\\" \\\"e\\\" \\\"=\\\")\\n(arg \\\"X\\\" \\\"Y=1\\\" \\\"Z=\\\\\\\"\\\\\\\"\\\")\\n(arg)\\n(env \\\"legacy2\\\" \\\"tabbed value\\\" \\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"A\\\" \\\"1\\\" \\\"=\\\" \\\"B\\\" \\\"\\\\\\\"two words\\\\\\\"\\\" \\\"=\\\" \\\"C\\\" \\\"'3'\\\" \\\"=\\\"\"",
+    "original": "\"ENV A=1 B=\\\"two words\\\" C='3'\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"legacy\\\" \\\"value with spaces\\\" \\\"\\\"\"",
+    "original": "\"ENV legacy value with spaces\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"label \\\"a\\\" \\\"b\\\" \\\"=\\\" \\\"\\\\\\\"c d\\\\\\\"\\\" \\\"e\\\" \\\"=\\\"\"",
+    "original": "\"LABEL a=b \\\"c d\\\"=e\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"X\\\" \\\"Y=1\\\" \\\"Z=\\\\\\\"\\\\\\\"\\\"\"",
+    "original": "\"ARG X Y=1 Z=\\\"\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg\"",
+    "original": "\"ARG\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"legacy2\\\" \\\"tabbed value\\\" \\\"\\\"\"",
+    "original": "\"ENV legacy2\\t  tabbed value\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/flags-unicode.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy [\\\"--chown=josÃ©\\\" \\\"--x=Â\\\"] \\\"y\\\" \\\"a\\\" \\\"b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--chown=josÃ©\\\" \\\"--x=Â\\\"] \\\"y\\\" \\\"a\\\" \\\"b\\\"\"",
+    "original": "\"COPY --chown=josé --x=\\u00a0y a b\"",
+    "flags": [
+     "\"--chown=josÃ©\"",
+     "\"--x=Â\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/flags.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy [\\\"--from=a\\\" \\\"--chown=x y\\\"] \\\"'--chmod=0755'\\\" \\\"src\\\" \\\"dst\\\")\\n(copy \\\"--notaflag\\\" \\\"x\\\")\\n(run [\\\"--mount=type=cache,target=/x\\\" \\\"--network=none\\\"] \\\"echo hi\\\")\\n(add [\\\"--checksum=sha256:00\\\"] \\\"http://x\\\" \\\"y\\\")\\n(copy [\\\"--a b\\\"] \\\"c\\\" \\\"d\\\")\\n(copy [\\\"--x=q\\\\\\\"r\\\"] \\\"s\\\" \\\"t\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=a\\\" \\\"--chown=x y\\\"] \\\"'--chmod=0755'\\\" \\\"src\\\" \\\"dst\\\"\"",
+    "original": "\"COPY --from=a --chown=\\\"x y\\\" '--chmod=0755' src dst\"",
+    "flags": [
+     "\"--from=a\"",
+     "\"--chown=x y\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"--notaflag\\\" \\\"x\\\"\"",
+    "original": "\"COPY -- --notaflag x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=cache,target=/x\\\" \\\"--network=none\\\"] \\\"echo hi\\\"\"",
+    "original": "\"RUN --mount=type=cache,target=/x --network=none echo hi\"",
+    "flags": [
+     "\"--mount=type=cache,target=/x\"",
+     "\"--network=none\""
+    ],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--checksum=sha256:00\\\"] \\\"http://x\\\" \\\"y\\\"\"",
+    "original": "\"ADD --checksum=sha256:00 --  http://x y\"",
+    "flags": [
+     "\"--checksum=sha256:00\""
+    ],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--a b\\\"] \\\"c\\\" \\\"d\\\"\"",
+    "original": "\"COPY --a\\\\ b c d\"",
+    "flags": [
+     "\"--a b\""
+    ],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--x=q\\\\\\\"r\\\"] \\\"s\\\" \\\"t\\\"\"",
+    "original": "\"COPY --x=\\\"q\\\\\\\"r\\\" s t\"",
+    "flags": [
+     "\"--x=q\\\"r\""
+    ],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/healthcheck.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(healthcheck [\\\"--interval=5s\\\"] \\\"CMD\\\" \\\"curl\\\" \\\"x\\\")\\n(healthcheck \\\"NONE\\\")\\n(healthcheck \\\"CMD\\\" \\\"curl -f http://localhost/\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck [\\\"--interval=5s\\\"] \\\"CMD\\\" \\\"curl\\\" \\\"x\\\"\"",
+    "original": "\"HEALTHCHECK --interval=5s CMD [\\\"curl\\\", \\\"x\\\"]\"",
+    "flags": [
+     "\"--interval=5s\""
+    ],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck \\\"NONE\\\"\"",
+    "original": "\"HEALTHCHECK NONE\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck \\\"CMD\\\" \\\"curl -f http://localhost/\\\"\"",
+    "original": "\"HEALTHCHECK CMD curl -f http://localhost/\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/heredocs.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine:3.6\\\")\\n(env \\\"NAME\\\" \\\"me\\\" \\\"=\\\")\\n(run \\\"ls\\\")\\n(user \\\"\u003c\u003cINVALID\\\")\\n(invalid \\\"\\\")\\n(run \\\"\u003c\u003cEMPTY\\\")\\n(run \\\"3\u003c\u003cEMPTY2\\\")\\n(run \\\"\\\\\\\"\u003c\u003cNOHEREDOC\\\\\\\"\\\")\\n(run \\\"\u003c\u003cINDENT\\\")\\n(run \\\"\u003c\u003c-UNINDENT\\\")\\n(run \\\"\u003c\u003c-UNINDENT2\\\")\\n(run \\\"\u003c\u003c-EXPAND\\\")\\n(run \\\"\u003c\u003c-'NOEXPAND'\\\")\\n(run \\\"\u003c\u003cCOPY\\\")\\n(run \\\"\u003c\u003cCOMMENT\\\")\\n(run [\\\"--mount=type=cache,target=/foo\\\"] \\\"\u003c\u003cMOUNT\\\")\\n(copy \\\"\u003c\u003cFILE1\\\" \\\"\u003c\u003cFILE2\\\" \\\"/dest\\\")\\n(copy \\\"\u003c\u003cEOF\\\" \\\"/quotes\\\")\\n(copy \\\"\u003c\u003cX\\\" \\\"\u003c\u003cY\\\" \\\"/dest\\\")\\n(run \\\"\u003c\u003cCOMPLEX python3\\\")\\n(copy \\\"\u003c\u003cfile.txt\\\" \\\"/dest\\\")\\n(run \\\"\u003c\u003ceo'f'\\\")\\n(run \\\"\u003c\u003ceo\\\\\\\\'f\\\")\\n(run \\\"\u003c\u003c'e'o\\\\\\\\'f\\\")\\n(run \\\"\u003c\u003c'one two'\\\")\\n(run \\\"\u003c\u003c$EOF\\\")\\n(run \\\"\u003c\u003c  EOF\\\")\\n(run \\\"\u003c\u003c  EOF  \u003e foo\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine:3.6\\\"\"",
+    "original": "\"FROM alpine:3.6\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"NAME\\\" \\\"me\\\" \\\"=\\\"\"",
+    "original": "\"ENV NAME=me\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"ls\\\"\"",
+    "original": "\"RUN ls\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"user \\\"\u003c\u003cINVALID\\\"\"",
+    "original": "\"USER \u003c\u003cINVALID\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"invalid \\\"\\\"\"",
+    "original": "\"INVALID\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003cEMPTY\\\"\"",
+    "original": "\"RUN \u003c\u003cEMPTY\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EMPTY\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"3\u003c\u003cEMPTY2\\\"\"",
+    "original": "\"RUN 3\u003c\u003cEMPTY2\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 15,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EMPTY2\"",
+      "fd": 3,
+      "expand": true,
+      "chomp": false,
+      "content": "\"\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\\\\\\\"\u003c\u003cNOHEREDOC\\\\\\\"\\\"\"",
+    "original": "\"RUN \\\"\u003c\u003cNOHEREDOC\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 17,
+    "end_line": 17,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003cINDENT\\\"\"",
+    "original": "\"RUN \u003c\u003cINDENT\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 19,
+    "end_line": 22,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"INDENT\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"\\tfoo\\n\\tbar\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003c-UNINDENT\\\"\"",
+    "original": "\"RUN \u003c\u003c-UNINDENT\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 24,
+    "end_line": 27,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"UNINDENT\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": true,
+      "content": "\"\\tbaz\\n\\tquux\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003c-UNINDENT2\\\"\"",
+    "original": "\"RUN \u003c\u003c-UNINDENT2\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 29,
+    "end_line": 32,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"UNINDENT2\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": true,
+      "content": "\"\\tbaz\\n\\tquux\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003c-EXPAND\\\"\"",
+    "original": "\"RUN \u003c\u003c-EXPAND\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 34,
+    "end_line": 36,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EXPAND\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": true,
+      "content": "\"\\texpand $NAME\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003c-'NOEXPAND'\\\"\"",
+    "original": "\"RUN \u003c\u003c-'NOEXPAND'\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 38,
+    "end_line": 40,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"NOEXPAND\"",
+      "fd": 0,
+      "expand": false,
+      "chomp": true,
+      "content": "\"\\tdon't expand $NAME\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003cCOPY\\\"\"",
+    "original": "\"RUN \u003c\u003cCOPY\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 42,
+    "end_line": 45,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"COPY\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"echo hello world\\necho foo bar\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003cCOMMENT\\\"\"",
+    "original": "\"RUN \u003c\u003cCOMMENT\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 47,
+    "end_line": 51,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"COMMENT\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"# internal comment\\necho hello world\\necho foo bar # trailing comment\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=cache,target=/foo\\\"] \\\"\u003c\u003cMOUNT\\\"\"",
+    "original": "\"RUN --mount=type=cache,target=/foo \u003c\u003cMOUNT\"",
+    "flags": [
+     "\"--mount=type=cache,target=/foo\""
+    ],
+    "attributes": null,
+    "start_line": 53,
+    "end_line": 55,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"MOUNT\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"echo hello\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"copy \\\"\u003c\u003cFILE1\\\" \\\"\u003c\u003cFILE2\\\" \\\"/dest\\\"\"",
+    "original": "\"COPY \u003c\u003cFILE1 \u003c\u003cFILE2 /dest\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 57,
+    "end_line": 61,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"FILE1\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"content 1\\n\""
+     },
+     {
+      "name": "\"FILE2\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"content 2\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"copy \\\"\u003c\u003cEOF\\\" \\\"/quotes\\\"\"",
+    "original": "\"COPY \u003c\u003cEOF /quotes\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 63,
+    "end_line": 66,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"\\\"foo\\\"\\n'bar'\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"copy \\\"\u003c\u003cX\\\" \\\"\u003c\u003cY\\\" \\\"/dest\\\"\"",
+    "original": "\"COPY \u003c\u003cX \u003c\u003cY /dest\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 68,
+    "end_line": 72,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"X\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"Y\\n\""
+     },
+     {
+      "name": "\"Y\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"X\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003cCOMPLEX python3\\\"\"",
+    "original": "\"RUN \u003c\u003cCOMPLEX python3\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 74,
+    "end_line": 76,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"COMPLEX\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"print('hello world')\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"copy \\\"\u003c\u003cfile.txt\\\" \\\"/dest\\\"\"",
+    "original": "\"COPY \u003c\u003cfile.txt /dest\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 78,
+    "end_line": 80,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"file.txt\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"hello world\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003ceo'f'\\\"\"",
+    "original": "\"RUN \u003c\u003ceo'f'\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 82,
+    "end_line": 84,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"eof\"",
+      "fd": 0,
+      "expand": false,
+      "chomp": false,
+      "content": "\"echo foo\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003ceo\\\\\\\\'f\\\"\"",
+    "original": "\"RUN \u003c\u003ceo\\\\'f\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 86,
+    "end_line": 88,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"eo'f\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"echo foo\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003c'e'o\\\\\\\\'f\\\"\"",
+    "original": "\"RUN \u003c\u003c'e'o\\\\'f\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 90,
+    "end_line": 92,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"eo'f\"",
+      "fd": 0,
+      "expand": false,
+      "chomp": false,
+      "content": "\"echo foo\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003c'one two'\\\"\"",
+    "original": "\"RUN \u003c\u003c'one two'\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 94,
+    "end_line": 96,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"one two\"",
+      "fd": 0,
+      "expand": false,
+      "chomp": false,
+      "content": "\"echo bar\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003c$EOF\\\"\"",
+    "original": "\"RUN \u003c\u003c$EOF\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 98,
+    "end_line": 99,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"$EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003c  EOF\\\"\"",
+    "original": "\"RUN \u003c\u003c  EOF\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 101,
+    "end_line": 102,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"\""
+     }
+    ]
+   },
+   {
+    "dump": "\"run \\\"\u003c\u003c  EOF  \u003e foo\\\"\"",
+    "original": "\"RUN \u003c\u003c  EOF  \u003e foo\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 104,
+    "end_line": 105,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"\""
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "file": "corpus/json-bool.Dockerfile",
+  "error": "\"when using JSON array syntax, arrays must be comprised of strings only\"",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "corpus/json-not-strings.Dockerfile",
+  "error": "\"when using JSON array syntax, arrays must be comprised of strings only\"",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "corpus/json-null.Dockerfile",
+  "error": "\"when using JSON array syntax, arrays must be comprised of strings only\"",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "corpus/json-numbers.Dockerfile",
+  "error": "\"when using JSON array syntax, arrays must be comprised of strings only\"",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "corpus/json.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(cmd \\\"a\\\" \\\"bé\\\" \\\"�x\\\" \\\"\\\\t\\\\n\\\")\\n(entrypoint \\\"x\\\")\\n(run \\\"[\\\\\\\"unterminated\\\")\\n(run \\\"[\\\\\\\"a\\\\\\\"] trailing\\\")\\n(run)\\n(run \\\"[\\\\\\\"a\\\\\\\",]\\\")\\n(run \\\"{\\\\\\\"a\\\\\\\": \\\\\\\"b\\\\\\\"}\\\")\\n(run \\\"[\\\\\\\"\\\\\\\\x41\\\\\\\"]\\\")\\n(run \\\"[\\\\\\\"a\\\\\\\"\\\\t,\\\")\\n(\\\"b\\\"] \\\"\\\")\\n(run \\\"/\\\" \\\"A�\\\")\\n(shell \\\"/bin/bash\\\" \\\"-c\\\")\\n(volume \\\"/a\\\" \\\"/b\\\")\\n(volume \\\"/c\\\" \\\"/d\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"a\\\" \\\"bé\\\" \\\"�x\\\" \\\"\\\\t\\\\n\\\"\"",
+    "original": "\"CMD [\\\"a\\\", \\\"b\\\\u00e9\\\", \\\"\\\\ud800x\\\", \\\"\\\\t\\\\n\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"entrypoint \\\"x\\\"\"",
+    "original": "\"ENTRYPOINT [ \\\"x\\\" ]  \"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"[\\\\\\\"unterminated\\\"\"",
+    "original": "\"RUN [\\\"unterminated\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"[\\\\\\\"a\\\\\\\"] trailing\\\"\"",
+    "original": "\"RUN [\\\"a\\\"] trailing\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run\"",
+    "original": "\"RUN []\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"[\\\\\\\"a\\\\\\\",]\\\"\"",
+    "original": "\"RUN [\\\"a\\\",]\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"{\\\\\\\"a\\\\\\\": \\\\\\\"b\\\\\\\"}\\\"\"",
+    "original": "\"RUN {\\\"a\\\": \\\"b\\\"}\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"[\\\\\\\"\\\\\\\\x41\\\\\\\"]\\\"\"",
+    "original": "\"RUN [\\\"\\\\x41\\\"]\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"[\\\\\\\"a\\\\\\\"\\\\t,\\\"\"",
+    "original": "\"RUN [\\\"a\\\"\\t,\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"\\\"b\\\"] \\\"\\\"\"",
+    "original": "\"\\\"b\\\"]\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"/\\\" \\\"A�\\\"\"",
+    "original": "\"RUN  [ \\\"\\\\/\\\" ,\\\"\\\\u0041\\\\uDC00\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"shell \\\"/bin/bash\\\" \\\"-c\\\"\"",
+    "original": "\"SHELL [\\\"/bin/bash\\\",\\\"-c\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 13,
+    "end_line": 13,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"/a\\\" \\\"/b\\\"\"",
+    "original": "\"VOLUME [\\\"/a\\\", \\\"/b\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"volume \\\"/c\\\" \\\"/d\\\"\"",
+    "original": "\"VOLUME /c /d\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 15,
+    "end_line": 15,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/label-single.Dockerfile",
+  "error": "\"LABEL must have two arguments\"",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "corpus/onbuild-nested.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(onbuild (onbuild (run \\\"x\\\")))\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (onbuild (run \\\"x\\\"))\"",
+    "original": "\"ONBUILD ONBUILD RUN x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/onbuild.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(onbuild (run \\\"echo hi\\\"))\\n(onbuild (copy \\\"\u003c\u003cEOF\\\" \\\"/x\\\"))\\n(onbuild)\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (run \\\"echo hi\\\")\"",
+    "original": "\"ONBUILD RUN echo hi\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"onbuild (copy \\\"\u003c\u003cEOF\\\" \\\"/x\\\")\"",
+    "original": "\"ONBUILD COPY \u003c\u003cEOF /x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"hello\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"onbuild\"",
+    "original": "\"ONBUILD\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/unicode-lower.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(workdir \\\"/x\\\")\\n(healthcheck \\\"NONE\\\")\\n(rün \\\"\\\")\\n(maintainer \\\"me\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"/x\\\"\"",
+    "original": "\"WORKDİR /x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"healthcheck \\\"NONE\\\"\"",
+    "original": "\"HEALTHCHECK NONE\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"rün \\\"\\\"\"",
+    "original": "\"RÜN x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"maintainer \\\"me\\\"\"",
+    "original": "\"maintainer me\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/unknown.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(nope \\\"\\\")\\n(agent \\\"\\\")\\n(expose \\\"80/tcp\\\" \\\"443\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"nope \\\"\\\"\"",
+    "original": "\"NOPE something here\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"agent \\\"\\\"\"",
+    "original": "\"AGENT main FROM some.registry/x\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"expose \\\"80/tcp\\\" \\\"443\\\"\"",
+    "original": "\"expose 80/tcp 443\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/unterminated-heredoc.Dockerfile",
+  "error": "\"unterminated heredoc\"",
+  "location": [
+   [
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     3
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "corpus/whitespace.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"base\\\")\\n(run \\\"echo  a\\\\t\\\\tb\\\")\\n(workdir \\\"/x y\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"base\\\"\"",
+    "original": "\"FROM\\talpine\\v\\fAS\\tbase\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo  a\\\\t\\\\tb\\\"\"",
+    "original": "\"RUN\\techo  a\\t\\tb  \"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"/x y\\\"\"",
+    "original": "\"WORKDIR   /x y  \"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ }
+]

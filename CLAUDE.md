@@ -62,4 +62,6 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 - `crates/abi`: constants shared by the VMM and the guest.
 - `crates/cmdline`: command lines as the Docker CLI reads them, and its texts.
   - A command's flags are in `commands.rs`; the ones it serves are listed again in `scripts/docker-cli/oracle_test.go` (`served`). After changing either, run `scripts/docker-cli/generate`, which regenerates the tables and the real docker/cli's golden answers that the tests match byte for byte.
+- `crates/dockerfile`: Dockerfiles as BuildKit reads them, the parser and the shell-like lexer, for `shards build`.
+  - Held byte for byte to BuildKit's own code by `tests/oracle.rs`, against what `scripts/dockerfile/generate` (pinned to moby/buildkit dockerfile/1.27.1) records BuildKit making of `testdata/corpus` and `lex-cases.json`; rerun it after changing either. Each deliberate difference is in `testdata/deviations.json`, with its reason.
 - `crates/ipc`: what the CLI, the daemon and warm VMs say to each other (`lib.rs`), and on Unix the transport, messages with file descriptors, plus `spawn`, which gives a child only the descriptors named for it (`unix.rs`).
