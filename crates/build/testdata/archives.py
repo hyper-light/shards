@@ -61,10 +61,14 @@ replace = tar([
     {"name": "merge/new", "data": "n"},
 ])
 dot = tar([{"name": "./", "type": "dir", "mode": 0o700}, {"name": "./in-dot", "data": "d"}])
+big_first = tar([{"name": "big", "data": "".join(chr(97 + i % 26) for i in range(3_000_000))}, {"name": "after", "data": "a"}])
+# 64 MiB of zeros in one entry, and 5,000 empty files: for the build's limits.
+bomb = tar([{"name": "zeros", "data": "\0" * (64 << 20)}])
+many = tar([{"name": f"d{n // 100}/f{n}"} for n in range(5000)])
 times = tar([{"name": "old", "data": "o", "mtime": -5}, {"name": "far", "data": "f", "mtime": 99999999999}])
 print(json.dumps({k: base64.b64encode(v).decode() for k, v in {
     "simple.tar": simple, "simple.tar.gz": gz(simple), "simple.tar.bz2": bz2.compress(simple),
     "simple.tar.xz": lzma.compress(simple, format=lzma.FORMAT_XZ), "simple.tar.zst": zst,
-    "evil.tar": evil, "implied.tar": implied, "replace.tar": replace, "dot.tar": dot, "times.tar": times,
+    "evil.tar": evil, "implied.tar": implied, "replace.tar": replace, "dot.tar": dot, "times.tar": times, "big-first.tar.gz": gz(big_first), "bomb.tar.gz": gz(bomb), "many.tar.gz": gz(many),
     "plain.gz": gz(b"just text\n"), "fake.tar": b"not an archive at all\n" * 40,
 }.items()}))

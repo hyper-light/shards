@@ -235,7 +235,13 @@ fn run(case: &Value, mem: &mut Sources) -> Result<Vec<u8>, String> {
                 };
                 let stage = std::env::temp_dir().join(format!("shards-oracle-unpack-{}", std::process::id()));
                 std::fs::create_dir_all(&stage).unwrap();
-                let r = ops::copy(&src, &mut upper, &action, ch, mem, &stage);
+                let mut budget = shards_build::archive::Budget::new(shards_image::store::Limits::none());
+                let mut io = shards_build::archive::Unpack {
+                    sources: mem,
+                    stage: &stage,
+                    budget: &mut budget,
+                };
+                let r = ops::copy(&src, &mut upper, &action, ch, &mut io);
                 let _ = std::fs::remove_dir_all(&stage);
                 r
             }

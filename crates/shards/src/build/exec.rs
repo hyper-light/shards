@@ -68,6 +68,8 @@ pub struct Exec<'a> {
     stages: Vec<store::Stage>,
     /// Where ADD's archives are decompressed, dropped after `sources` too.
     unpack: Option<store::Stage>,
+    /// What the build's ADDs may unpack, together.
+    budget: shards_build::archive::Budget,
 }
 
 /// One slot of a file operation: an input, an action's mount, or its committed result.
@@ -90,6 +92,7 @@ impl<'a> Exec<'a> {
             unpacked: Vec::new(),
             stages: Vec::new(),
             unpack: None,
+            budget: shards_build::archive::Budget::new(*limits),
         }
     }
 
@@ -424,7 +427,12 @@ impl<'a> Exec<'a> {
                     exclude_patterns: exclude_patterns.clone(),
                 };
                 let stage = self.unpack_stage()?;
-                ops::copy(&from, &mut fs, &action, ch, &mut self.sources, &stage)
+                let mut io = shards_build::archive::Unpack {
+                    sources: &mut self.sources,
+                    stage: &stage,
+                    budget: &mut self.budget,
+                };
+                ops::copy(&from, &mut fs, &action, ch, &mut io)
             }
         };
         r.map_err(|e| e.0)?;

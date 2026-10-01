@@ -385,3 +385,34 @@ fn add_unpacks_archives_of_every_compression_in_the_vm() {
     );
     assert_eq!(ran.stdout, want, "{shown}");
 }
+
+/// An archive that decompresses past the image limits stops the build, as a pull of
+/// such an image stops, and leaves nothing behind in the store.
+#[test]
+fn add_stops_at_the_image_limits_and_leaves_nothing() {
+    let (image, _) = served();
+    for (archive_name, setting, limit) in [
+        ("bomb.tar.gz", "SHARDS_MAX_IMAGE_BYTES", "16777216"),
+        ("many.tar.gz", "SHARDS_MAX_IMAGE_ENTRIES", "1000"),
+    ] {
+        let home = TempDir::new(&format!("build-limit-home-{setting}"));
+        let ctx = context(
+            &format!("build-limit-ctx-{setting}"),
+            &format!("FROM {image}\nADD {archive_name} /x/\n"),
+        );
+        std::fs::write(ctx.join(archive_name), archive(archive_name)).unwrap();
+        let limit = std::ffi::OsString::from(limit);
+        let env = [("SHARDS_HOME", home.as_os_str()), (setting, limit.as_os_str())];
+        let r = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env, TIMEOUT);
+        let shown = format!("--- stdout\n{}\n--- stderr\n{}", r.stdout, r.stderr);
+        assert_eq!(r.status, Some(1), "{shown}");
+        // ADD's own limit, before the archive is written out whole: not the export's.
+        assert!(r.stderr.contains("ERROR: the archives ADD unpacks"), "{shown}");
+        assert!(r.stderr.contains(&format!("({setting})")), "{shown}");
+        let left: Vec<_> = std::fs::read_dir(home.join("images/ingest"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert!(left.is_empty(), "left in ingest/: {left:?}\n{shown}");
+    }
+}

@@ -1609,6 +1609,18 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
        does; `tests/build.rs` boots one image of every compression. Where moby runs `xz`
        and `unpigz` and fails without them, shards decodes gzip, bzip2, xz and zstd
        in-process, in pure Rust (PM M77).
+     - Stress-tested 2026-10-01: an archive 2,000 directories deep unpacks (1.5 s,
+       46 MB), one of a million entries in 9 s at 915 MB of memory (about 900 bytes an
+       entry, to be brought down). A 20 GB gzip bomb exposed two faults, now fixed: it was
+       not unpacked at all, as an archive whose first file is past the bytes read to
+       detect it was taken for no archive (the tar reader read on into that file's data;
+       it now skips data when the next entry is asked for, as Go's does); and nothing
+       bounded what ADD may unpack. A build's ADDs now hold to the limits a pull holds to
+       (`SHARDS_MAX_IMAGE_BYTES`, `_ENTRIES`, `_METADATA`, `SHARDS_KEEP_FREE`), stopping
+       at the step that passes them, with nothing left in the store.
+     - Open: untagged images. A build without `-t`, and the image a moved tag named,
+       stay in the store, as Docker keeps dangling images until they are pruned; shards
+       has no `images`, `rmi` or `image prune` yet to show and remove them.
      - Next: ADD's URLs and git sources, then RUN (step 3).
   3. RUN in a booted VM without a network, and its layer.
   4. Cache keys, then RUN's network, mounts and builder templates.

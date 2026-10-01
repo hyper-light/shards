@@ -86,6 +86,9 @@ pub struct Reader<R> {
     done: bool,
     /// Names and hard links as the archive holds them, uncleaned and unchecked.
     raw: bool,
+    /// The last entry's data, skipped when the next is asked for, as Go's Reader skips
+    /// it: an entry's header is read without its data being reached.
+    owed: Option<u64>,
 }
 
 impl<R: Read> Reader<R> {
@@ -95,6 +98,7 @@ impl<R: Read> Reader<R> {
             pos: 0,
             done: false,
             raw: false,
+            owed: None,
         }
     }
 
@@ -108,6 +112,10 @@ impl<R: Read> Reader<R> {
 
     /// The next entry, or `None` at the end of the archive.
     pub fn next_entry(&mut self) -> Result<Option<Entry>, Error> {
+        if let Some(size) = self.owed.take() {
+            self.skip(size)?;
+            self.pad(size)?;
+        }
         let mut pax = BTreeMap::new();
         let mut long_name = Vec::new();
         let mut long_link = Vec::new();
@@ -242,8 +250,7 @@ impl<R: Read> Reader<R> {
             xattrs,
             offset: self.pos,
         };
-        self.skip(size)?;
-        self.pad(size)?;
+        self.owed = Some(size);
         Ok(entry)
     }
 

@@ -1027,7 +1027,10 @@ const LOOK_EVERY: u64 = 64 << 20;
 /// The room a build has on its filesystem: looked at as it starts, and again every
 /// `LOOK_EVERY` bytes written, so it stops before it would leave less than `keep_free`,
 /// give or take what it wrote since.
-struct Room {
+/// The room a file system has for what is written to it: past `Limits::keep_free`, the
+/// writing stops (audit A10). Free space is looked at again every `LOOK_EVERY` bytes.
+#[derive(Debug)]
+pub struct Room {
     dir: PathBuf,
     keep_free: u64,
     available: fn(&Path) -> io::Result<u64>,
@@ -1035,7 +1038,7 @@ struct Room {
 }
 
 impl Room {
-    fn new(dir: &Path, limits: &Limits) -> io::Result<Room> {
+    pub fn new(dir: &Path, limits: &Limits) -> io::Result<Room> {
         let mut room = Room {
             dir: dir.to_path_buf(),
             keep_free: limits.keep_free,
@@ -1062,7 +1065,7 @@ impl Room {
         Ok(())
     }
 
-    fn wrote(&mut self, n: usize) -> io::Result<()> {
+    pub fn wrote(&mut self, n: usize) -> io::Result<()> {
         self.since = self.since.saturating_add(n as u64);
         if self.since >= LOOK_EVERY {
             self.look()?;

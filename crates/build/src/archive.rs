@@ -13,6 +13,7 @@ use std::path::Path;
 
 use shards_dockerfile::go;
 use shards_image::erofs::{DataRef, Kind, Source};
+use shards_image::store::{Limits, Room};
 use shards_image::tar::{self, Type};
 
 use crate::Error;
@@ -22,6 +23,89 @@ use crate::vfs::{self, Errno, Fs, PathError};
 
 /// moby's ImpliedDirectoryMode.
 const IMPLIED_DIR_MODE: u32 = 0o755;
+
+/// How much of an archive's stream is decompressed to tell whether it is one: its first
+/// header, with the largest PAX header Go reads (1 MiB) before it.
+const DETECT: usize = 2 << 20;
+
+/// What the archives a build's ADDs unpack may take, together: the limits an image pull
+/// holds to (audit A10), so a small archive that decompresses without end, or holds
+/// millions of entries, stops the build before it fills the disk or the memory.
+#[derive(Debug)]
+pub struct Budget {
+    limits: Limits,
+    bytes: u64,
+    entries: u64,
+    metadata: u64,
+}
+
+impl Budget {
+    pub fn new(limits: Limits) -> Budget {
+        Budget {
+            limits,
+            bytes: 0,
+            entries: 0,
+            metadata: 0,
+        }
+    }
+
+    fn entry(&mut self, e: &tar::Entry) -> Result<(), Error> {
+        self.entries += 1;
+        let held = e
+            .xattrs
+            .iter()
+            .fold(e.path.len() + e.link.len(), |n, (k, v)| n + k.len() + v.len());
+        self.metadata = self.metadata.saturating_add(held as u64);
+        if self.entries > self.limits.entries {
+            return Err(Error(format!(
+                "the archives ADD unpacks hold more than {} entries (SHARDS_MAX_IMAGE_ENTRIES)",
+                self.limits.entries
+            )));
+        }
+        if self.metadata > self.limits.metadata {
+            return Err(Error(format!(
+                "the archives ADD unpacks have names, links and xattrs past {} bytes (SHARDS_MAX_IMAGE_METADATA)",
+                self.limits.metadata
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// What unpacking needs beside the snapshots: where file bytes are read and decompressed
+/// archives kept, and the build's budget.
+#[derive(Debug)]
+pub struct Unpack<'a> {
+    pub sources: &'a mut Sources,
+    pub stage: &'a Path,
+    pub budget: &'a mut Budget,
+}
+
+/// Writes a decompressed archive, held to the budget and to the room its file system has.
+struct Bounded<'a, W> {
+    out: W,
+    budget: &'a mut Budget,
+    room: Room,
+}
+
+impl<W: Write> Write for Bounded<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.budget.bytes = self.budget.bytes.saturating_add(buf.len() as u64);
+        if self.budget.bytes > self.budget.limits.bytes {
+            return Err(io::Error::other(format!(
+                "the archives ADD unpacks decompress to more than {} bytes (SHARDS_MAX_IMAGE_BYTES)",
+                self.budget.limits.bytes
+            )));
+        }
+        self.room.wrote(buf.len())?;
+        self.out.write_all(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
 
 /// The compressions moby's Detect knows, in the order it tries them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +196,7 @@ struct Head(Vec<u8>);
 impl Write for Head {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.0.extend_from_slice(buf);
-        if self.0.len() >= 64 << 10 {
+        if self.0.len() >= DETECT {
             return Err(io::Error::other("enough"));
         }
         Ok(buf.len())
@@ -161,8 +245,8 @@ fn header_mode(mode: u32) -> u32 {
 }
 
 /// unpack.go unpack, for one source already known to be an archive: decompressed into
-/// `stage`, then chrootarchive.Untar's Unpack into `dest_path`, with `owner` for every
-/// entry when the action names one.
+/// the stage within the build's budget, then chrootarchive.Untar's Unpack into
+/// `dest_path`, with `owner` for every entry when the action names one.
 #[allow(clippy::too_many_arguments)]
 pub fn unpack(
     src: &Fs,
@@ -172,8 +256,7 @@ pub fn unpack(
     ch: Chown,
     owner: Option<User>,
     tm: Option<(i64, u32)>,
-    sources: &mut Sources,
-    stage: &Path,
+    io: &mut Unpack<'_>,
 ) -> Result<(), Error> {
     let p = copy::root_path(src, s)?;
     let (size, data) = regular(src, &p)
@@ -182,32 +265,39 @@ pub fn unpack(
     copy::mkdir_all(dest, &dest_dir, IMPLIED_DIR_MODE, ch, tm)?;
 
     // The archive, decompressed once into the stage, read from there by its entries.
-    let path = stage.join(format!("unpack-{}", next_id()));
-    {
-        let mut out = io::BufWriter::new(
-            File::options()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .map_err(|e| Error(e.to_string()))?,
-        );
+    let path = io.stage.join(format!("unpack-{}", next_id()));
+    let written = (|| {
+        let file = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| Error(e.to_string()))?;
+        let room = Room::new(io.stage, &io.budget.limits).map_err(|e| Error(e.to_string()))?;
+        let mut out = Bounded {
+            out: io::BufWriter::new(file),
+            budget: &mut *io.budget,
+            room,
+        };
         decompress(
             DataReader {
-                src: sources,
+                src: &mut *io.sources,
                 data,
                 size,
                 at: 0,
             },
             &mut out,
         )?;
-        out.flush().map_err(|e| Error(e.to_string()))?;
-    }
-    let source = sources
+        out.flush().map_err(|e| Error(e.to_string()))
+    })();
+    // A failure ends the build, and its stage goes with it.
+    written?;
+    let source = io
+        .sources
         .archive(File::open(&path).map_err(|e| Error(e.to_string()))?)
         .map_err(|e| Error(e.to_string()))?;
 
     dest.chroot(&dest_dir).map_err(os)?;
-    let r = untar(dest, &path, source, owner);
+    let r = untar(dest, &path, source, owner, io.budget);
     dest.unchroot();
     r
 }
@@ -219,7 +309,13 @@ fn next_id() -> u64 {
 }
 
 /// moby's Unpack and createTarFile, inside the chroot.
-fn untar(dest: &mut Fs, archive: &Path, source: u32, owner: Option<User>) -> Result<(), Error> {
+fn untar(
+    dest: &mut Fs,
+    archive: &Path,
+    source: u32,
+    owner: Option<User>,
+    budget: &mut Budget,
+) -> Result<(), Error> {
     let file = File::open(archive).map_err(|e| Error(e.to_string()))?;
     let mut reader = tar::Reader::raw(BufReader::new(file));
     let mut dirs: Vec<(Vec<u8>, (i64, u32))> = Vec::new();
@@ -229,6 +325,7 @@ fn untar(dest: &mut Fs, archive: &Path, source: u32, owner: Option<User>) -> Res
             Ok(None) => break,
             Err(e) => return Err(Error(e.to_string())),
         };
+        budget.entry(&entry)?;
         // filepath.Clean keeps a leading `..`, which joining to the root then removes.
         let name = go::clean(&entry.path);
         if name != b"/" {

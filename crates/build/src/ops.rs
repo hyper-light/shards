@@ -10,11 +10,8 @@ use shards_dockerfile::llb::{OpChown, OpUser};
 use shards_image::erofs::{DataRef, Kind, Source};
 
 use crate::Error;
-use std::path::Path;
-
 use crate::archive;
 use crate::copy::{self, Chown, CopyInfo, User};
-use crate::data::Sources;
 use crate::vfs::{self, Errno, Fs, PathError};
 
 /// The largest /etc/passwd or /etc/group read (user_linux.go maxUserFileBytes).
@@ -146,16 +143,14 @@ pub struct CopyAction {
 }
 
 /// BuildKit's docopy, from `src` into `dest`. An action that may unpack (ADD's) unpacks
-/// each local archive into the destination ([`archive::unpack`]), reading its bytes
-/// through `sources` and decompressing it into `stage`, and copies what is not one. An
-/// owner the action names owns every entry it unpacks.
+/// each local archive into the destination ([`archive::unpack`]), within `io`'s budget,
+/// and copies what is not one. An owner the action names owns every entry it unpacks.
 pub fn copy(
     src: &Fs,
     dest: &mut Fs,
     action: &CopyAction,
     ch: Chown,
-    sources: &mut Sources,
-    stage: &Path,
+    io: &mut archive::Unpack<'_>,
 ) -> Result<(), Error> {
     let owner = match ch {
         Chown::To(u) => Some(u),
@@ -196,8 +191,8 @@ pub fn copy(
         vec![src_path]
     };
     for s in matches {
-        if action.attempt_unpack && archive::is_archive(src, &s, sources)? {
-            archive::unpack(src, &s, dest, &dest_path, ch, owner, ci.utime, sources, stage)?;
+        if action.attempt_unpack && archive::is_archive(src, &s, io.sources)? {
+            archive::unpack(src, &s, dest, &dest_path, ch, owner, ci.utime, io)?;
             continue;
         }
         copy::copy(src, &s, dest, &dest_path, &ci)?;
