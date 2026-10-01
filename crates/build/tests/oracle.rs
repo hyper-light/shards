@@ -108,10 +108,18 @@ fn tree(entries: &Value, mem: &mut Sources) -> Tree {
         let kind = match ty {
             "dir" => Kind::Dir(BTreeMap::new()),
             "file" => {
-                let data = e.get("data").and_then(Value::as_str).unwrap_or("").as_bytes();
+                let data = match e.get("data_b64").and_then(Value::as_str) {
+                    Some(b) => unbase64(b),
+                    None => e
+                        .get("data")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .as_bytes()
+                        .to_vec(),
+                };
                 Kind::File {
                     size: data.len() as u64,
-                    data: mem.bytes(data.to_vec()).unwrap(),
+                    data: mem.bytes(data).unwrap(),
                 }
             }
             "symlink" => Kind::Symlink(e["target"].as_str().unwrap().as_bytes().to_vec()),
@@ -217,7 +225,7 @@ fn run(case: &Value, mem: &mut Sources) -> Result<Vec<u8>, String> {
                     mode_str: s("mode_str"),
                     follow_symlink: flag(a, "follow_symlink"),
                     dir_copy_contents: flag(a, "dir_copy_contents"),
-                    attempt_unpack: false,
+                    attempt_unpack: flag(a, "attempt_unpack"),
                     create_dest_path: flag(a, "create_dest_path"),
                     allow_wildcard: flag(a, "allow_wildcard"),
                     allow_empty_wildcard: flag(a, "allow_empty_wildcard"),
@@ -225,7 +233,11 @@ fn run(case: &Value, mem: &mut Sources) -> Result<Vec<u8>, String> {
                     include_patterns: strings(a, "include"),
                     exclude_patterns: strings(a, "exclude"),
                 };
-                ops::copy(&src, &mut upper, &action, ch)
+                let stage = std::env::temp_dir().join(format!("shards-oracle-unpack-{}", std::process::id()));
+                std::fs::create_dir_all(&stage).unwrap();
+                let r = ops::copy(&src, &mut upper, &action, ch, mem, &stage);
+                let _ = std::fs::remove_dir_all(&stage);
+                r
             }
             // The oracle's deletion, os.RemoveAll, for the differ's whiteouts.
             "remove" => upper

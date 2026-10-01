@@ -1,0 +1,364 @@
+//! ADD's archives, as BuildKit unpacks a local one (dockerfile/1.27.1's
+//! solver/llbsolver/file/unpack.go, over moby/go-archive's compression.DecompressStream
+//! and chrootarchive.Untar): a regular file that decompresses to a readable tar is unpacked
+//! into the destination, its paths resolved as if the destination were the root, so
+//! nothing in it, `../` names and absolute symlinks included, reaches past it.
+//!
+//! Where moby runs `xz` and `unpigz` as programs, and fails on a host without them,
+//! shards decodes gzip, bzip2, xz and zstd in-process (PM M77).
+
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::path::Path;
+
+use shards_dockerfile::go;
+use shards_image::erofs::{DataRef, Kind, Source};
+use shards_image::tar::{self, Type};
+
+use crate::Error;
+use crate::copy::{self, Chown, User};
+use crate::data::Sources;
+use crate::vfs::{self, Errno, Fs, PathError};
+
+/// moby's ImpliedDirectoryMode.
+const IMPLIED_DIR_MODE: u32 = 0o755;
+
+/// The compressions moby's Detect knows, in the order it tries them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Compression {
+    None,
+    Bzip2,
+    Gzip,
+    Xz,
+    Zstd,
+}
+
+/// compression.Detect, over the first bytes of a stream.
+fn detect(head: &[u8]) -> Compression {
+    if head.starts_with(&[0x42, 0x5A, 0x68]) {
+        Compression::Bzip2
+    } else if head.starts_with(&[0x1F, 0x8B, 0x08]) {
+        Compression::Gzip
+    } else if head.starts_with(&[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]) {
+        Compression::Xz
+    } else if head.starts_with(&[0x28, 0xB5, 0x2F, 0xFD])
+        || (head.len() >= 8
+            && head
+                .get(..4)
+                .and_then(|b| <[u8; 4]>::try_from(b).ok())
+                .is_some_and(|b| u32::from_le_bytes(b) & 0xFFFF_FFF0 == 0x184D_2A50))
+    {
+        Compression::Zstd
+    } else {
+        Compression::None
+    }
+}
+
+/// A file's bytes in a snapshot, read in order.
+struct DataReader<'a> {
+    src: &'a mut dyn Source,
+    data: DataRef,
+    size: u64,
+    at: u64,
+}
+
+impl Read for DataReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = usize::try_from((self.size - self.at).min(buf.len() as u64)).unwrap_or(0);
+        let chunk = buf.get_mut(..n).unwrap_or_default();
+        if n > 0 {
+            self.src.read_at(self.data, self.at, chunk)?;
+        }
+        self.at += n as u64;
+        Ok(n)
+    }
+}
+
+/// Decompresses `input`, as DecompressStream detects it, into `out`.
+fn decompress(input: impl Read, out: &mut dyn Write) -> Result<(), Error> {
+    let mut input = BufReader::with_capacity(1 << 16, input);
+    let head = input.fill_buf().map_err(|e| Error(e.to_string()))?;
+    let head = head.get(..head.len().min(10)).unwrap_or_default().to_vec();
+    let io_err = |e: io::Error| Error(e.to_string());
+    match detect(&head) {
+        Compression::None => io::copy(&mut input, out).map(drop).map_err(io_err),
+        Compression::Gzip => io::copy(&mut flate2::bufread::MultiGzDecoder::new(input), out)
+            .map(drop)
+            .map_err(io_err),
+        Compression::Bzip2 => io::copy(&mut bzip2::bufread::MultiBzDecoder::new(input), out)
+            .map(drop)
+            .map_err(io_err),
+        Compression::Xz => io::copy(&mut lzma_rust2::XzReader::new(input, true), out)
+            .map(drop)
+            .map_err(io_err),
+        Compression::Zstd => {
+            shards_image::store::decode_zstd(&mut input, out).map_err(|e| Error(e.to_string()))
+        }
+    }
+}
+
+/// A regular file at `p` in `fs`, its symlinks followed: its size and data.
+fn regular(fs: &Fs, p: &[u8]) -> Option<(u64, DataRef)> {
+    let id = fs.lstat(p).ok()?;
+    match fs.node(id).map(|n| &n.kind) {
+        Some(Kind::File { size, data }) => Some((*size, *data)),
+        _ => None,
+    }
+}
+
+/// Writes nowhere, failing once more than a header's worth has been asked of it.
+struct Head(Vec<u8>);
+
+impl Write for Head {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.extend_from_slice(buf);
+        if self.0.len() >= 64 << 10 {
+            return Err(io::Error::other("enough"));
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// unpack.go isArchivePath: a regular file whose stream decompresses to a tar with a
+/// first entry Go reads.
+pub fn is_archive(src: &Fs, p: &[u8], sources: &mut Sources) -> Result<bool, Error> {
+    let p = copy::root_path(src, p)?;
+    let Some((size, data)) = regular(src, &p) else {
+        return Ok(false);
+    };
+    let mut head = Head(Vec::new());
+    let reader = DataReader {
+        src: sources,
+        data,
+        size,
+        at: 0,
+    };
+    // A stream that fails to decompress past its start is no archive, as Go's Next fails.
+    let _ = decompress(reader, &mut head);
+    Ok(matches!(tar::Reader::raw(&head.0[..]).next_entry(), Ok(Some(_))))
+}
+
+fn os(e: PathError) -> Error {
+    Error(e.to_string())
+}
+
+/// moby's boundTime: a time before 1970 or past Go's range is 1970.
+fn bound(sec: i64, nsec: u32) -> (i64, u32) {
+    if !(0..=9_223_372_036).contains(&sec) || (sec == 9_223_372_036 && nsec > 854_775_807) {
+        (0, 0)
+    } else {
+        (sec, nsec)
+    }
+}
+
+/// Go's FileMode of a tar header, as syscall bits: permission, set-ID and sticky.
+fn header_mode(mode: u32) -> u32 {
+    mode & 0o7777
+}
+
+/// unpack.go unpack, for one source already known to be an archive: decompressed into
+/// `stage`, then chrootarchive.Untar's Unpack into `dest_path`, with `owner` for every
+/// entry when the action names one.
+#[allow(clippy::too_many_arguments)]
+pub fn unpack(
+    src: &Fs,
+    s: &[u8],
+    dest: &mut Fs,
+    dest_path: &[u8],
+    ch: Chown,
+    owner: Option<User>,
+    tm: Option<(i64, u32)>,
+    sources: &mut Sources,
+    stage: &Path,
+) -> Result<(), Error> {
+    let p = copy::root_path(src, s)?;
+    let (size, data) = regular(src, &p)
+        .ok_or_else(|| Error(format!("{}: not a regular file", String::from_utf8_lossy(s))))?;
+    let dest_dir = copy::root_path(dest, dest_path)?;
+    copy::mkdir_all(dest, &dest_dir, IMPLIED_DIR_MODE, ch, tm)?;
+
+    // The archive, decompressed once into the stage, read from there by its entries.
+    let path = stage.join(format!("unpack-{}", next_id()));
+    {
+        let mut out = io::BufWriter::new(
+            File::options()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|e| Error(e.to_string()))?,
+        );
+        decompress(
+            DataReader {
+                src: sources,
+                data,
+                size,
+                at: 0,
+            },
+            &mut out,
+        )?;
+        out.flush().map_err(|e| Error(e.to_string()))?;
+    }
+    let source = sources
+        .archive(File::open(&path).map_err(|e| Error(e.to_string()))?)
+        .map_err(|e| Error(e.to_string()))?;
+
+    dest.chroot(&dest_dir).map_err(os)?;
+    let r = untar(dest, &path, source, owner);
+    dest.unchroot();
+    r
+}
+
+fn next_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    N.fetch_add(1, Ordering::Relaxed)
+}
+
+/// moby's Unpack and createTarFile, inside the chroot.
+fn untar(dest: &mut Fs, archive: &Path, source: u32, owner: Option<User>) -> Result<(), Error> {
+    let file = File::open(archive).map_err(|e| Error(e.to_string()))?;
+    let mut reader = tar::Reader::raw(BufReader::new(file));
+    let mut dirs: Vec<(Vec<u8>, (i64, u32))> = Vec::new();
+    loop {
+        let entry = match reader.next_entry() {
+            Ok(Some(e)) => e,
+            Ok(None) => break,
+            Err(e) => return Err(Error(e.to_string())),
+        };
+        // filepath.Clean keeps a leading `..`, which joining to the root then removes.
+        let name = go::clean(&entry.path);
+        if name != b"/" {
+            let parent = copy::dir(&name);
+            let parent_path = vfs::join(b"/", &parent);
+            if let Err(e) = dest.lstat(&parent_path)
+                && e.errno == Errno::NoEnt
+            {
+                implied_dirs(dest, &parent_path)?;
+            }
+        }
+        let path = vfs::join(b"/", &name);
+        if let Ok(id) = dest.lstat(&path) {
+            let is_dir = dest.is_dir(id);
+            if is_dir && name == b"." {
+                continue;
+            }
+            if !is_dir || entry.kind != Type::Dir {
+                dest.remove_all(&path).map_err(os)?;
+            }
+        }
+        let mode = header_mode(entry.mode);
+        match entry.kind {
+            Type::Dir => {
+                let exists = dest.lstat(&path).ok().is_some_and(|id| dest.is_dir(id));
+                if !exists {
+                    dest.mkdir(&path, mode).map_err(os)?;
+                }
+            }
+            Type::File => {
+                let id = dest.create(&path, mode).map_err(os)?;
+                dest.set_data(
+                    id,
+                    entry.size,
+                    DataRef {
+                        source,
+                        offset: entry.offset,
+                    },
+                );
+            }
+            Type::BlockDevice | Type::CharDevice | Type::Fifo => {
+                let kind = match entry.kind {
+                    Type::BlockDevice => Kind::BlockDevice {
+                        major: entry.devmajor,
+                        minor: entry.devminor,
+                    },
+                    Type::CharDevice => Kind::CharDevice {
+                        major: entry.devmajor,
+                        minor: entry.devminor,
+                    },
+                    _ => Kind::Fifo,
+                };
+                dest.mknod(&path, kind, mode).map_err(os)?;
+            }
+            Type::HardLink => {
+                let target = vfs::join(b"/", &entry.link);
+                dest.link(&target, &path).map_err(os)?;
+            }
+            Type::Symlink => {
+                dest.symlink(&entry.link, &path).map_err(os)?;
+            }
+        }
+        let (uid, gid) = owner.map_or((entry.uid, entry.gid), |u| (u.uid, u.gid));
+        dest.lchown(&path, uid, gid).map_err(|e| {
+            Error(format!(
+                "failed to Lchown {:?} for UID {}, GID {}: {e}",
+                String::from_utf8_lossy(&path),
+                entry.uid,
+                entry.gid
+            ))
+        })?;
+        for (k, v) in &entry.xattrs {
+            if let Err(e) = dest.setxattr(&path, k, v, false) {
+                // BestEffortXattrs: what the file system refuses is left out.
+                if !matches!(e.errno, Errno::NotSup | Errno::Perm) {
+                    return Err(Error(e.errno.text().to_string()));
+                }
+            }
+        }
+        let times = bound(entry.mtime, entry.mtime_nsec);
+        // A hard link's attributes go to its file, unless it names a symlink.
+        let links_to_file = |dest: &Fs| {
+            dest.lstat(&vfs::join(b"/", &entry.link))
+                .ok()
+                .and_then(|id| dest.node(id))
+                .is_some_and(|n| !matches!(n.kind, Kind::Symlink(_)))
+        };
+        match entry.kind {
+            Type::HardLink => {
+                if links_to_file(dest) {
+                    dest.chmod(&path, mode).map_err(os)?;
+                    dest.utimes(&path, times).map_err(os)?;
+                }
+            }
+            Type::Symlink => dest.utimes(&path, times).map_err(os)?,
+            _ => {
+                dest.chmod(&path, mode).map_err(os)?;
+                dest.utimes(&path, times).map_err(os)?;
+            }
+        }
+        if entry.kind == Type::Dir {
+            dirs.push((path, times));
+        }
+    }
+    for (path, times) in dirs {
+        dest.utimes(&path, times).map_err(os)?;
+    }
+    Ok(())
+}
+
+/// user.MkdirAllAndChown(path, 0755, 0, 0, WithOnlyNew): the directories made, and only
+/// they, owned by root.
+fn implied_dirs(dest: &mut Fs, path: &[u8]) -> Result<(), Error> {
+    let mut missing = Vec::new();
+    let mut p = path.to_vec();
+    while p != b"/" {
+        if matches!(dest.stat(&p), Err(ref e) if e.errno == Errno::NoEnt) {
+            missing.push(p.clone());
+        }
+        p = copy::dir(&p);
+    }
+    for d in missing.iter().rev() {
+        match dest.mkdir(d, IMPLIED_DIR_MODE) {
+            Ok(_) => {}
+            Err(e) if e.errno == Errno::Exist => {}
+            Err(e) => return Err(os(e)),
+        }
+    }
+    for d in &missing {
+        dest.lchown(d, 0, 0).map_err(os)?;
+    }
+    Ok(())
+}

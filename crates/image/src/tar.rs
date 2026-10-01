@@ -84,6 +84,8 @@ pub struct Reader<R> {
     inner: R,
     pos: u64,
     done: bool,
+    /// Names and hard links as the archive holds them, uncleaned and unchecked.
+    raw: bool,
 }
 
 impl<R: Read> Reader<R> {
@@ -92,7 +94,16 @@ impl<R: Read> Reader<R> {
             inner,
             pos: 0,
             done: false,
+            raw: false,
         }
+    }
+
+    /// A reader that leaves names and hard-link targets as the archive holds them, for
+    /// an unpacker that applies its own rules to them (moby's, for ADD).
+    pub fn raw(inner: R) -> Reader<R> {
+        let mut r = Reader::new(inner);
+        r.raw = true;
+        r
     }
 
     /// The next entry, or `None` at the end of the archive.
@@ -210,9 +221,9 @@ impl<R: Read> Reader<R> {
             }
             _ => (0, 0),
         };
-        let path = clean(&name)?;
+        let path = if self.raw { name } else { clean(&name)? };
         let link = match kind {
-            Type::HardLink => clean(&link)?,
+            Type::HardLink if !self.raw => clean(&link)?,
             _ => link,
         };
         let entry = Entry {

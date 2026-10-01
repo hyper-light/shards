@@ -145,6 +145,10 @@ pub struct Fs {
     /// Seconds and nanoseconds since 1970.
     pub now: (i64, u32),
     pub upper: Upper,
+    /// Where paths resolve from: the snapshot's root, or a directory [`Fs::chroot`] made
+    /// the root, and that directory's names from the snapshot's root.
+    root: NodeId,
+    root_names: Vec<Vec<u8>>,
 }
 
 impl Fs {
@@ -153,7 +157,32 @@ impl Fs {
             tree,
             now,
             upper: Upper::default(),
+            root: Tree::ROOT,
+            root_names: Vec::new(),
         }
+    }
+
+    /// `chroot(2)`: paths resolve from `dir` as from the root, `..` never leaves it, and an
+    /// absolute symlink starts again at it. What changes is still recorded by its path
+    /// from the snapshot's root.
+    pub fn chroot(&mut self, dir: &[u8]) -> Result<(), PathError> {
+        let (id, canon) = self.lookup("chroot", dir, true)?;
+        if !self.is_dir(id) {
+            return fail("chroot", dir, Errno::NotDir);
+        }
+        self.root = id;
+        self.root_names = canon
+            .split(|&c| c == b'/')
+            .filter(|n| !n.is_empty())
+            .map(<[u8]>::to_vec)
+            .collect();
+        Ok(())
+    }
+
+    /// Back to the snapshot's own root.
+    pub fn unchroot(&mut self) {
+        self.root = Tree::ROOT;
+        self.root_names.clear();
     }
 
     /// Starts a step on this snapshot: nothing is changed yet.
@@ -202,13 +231,13 @@ impl Fs {
         let mut todo: Vec<Vec<u8>> = Vec::new();
         let mut trailing = path.ends_with(b"/");
         push_elements(&mut todo, path);
-        let mut stack: Vec<NodeId> = vec![Tree::ROOT];
+        let mut stack: Vec<NodeId> = vec![self.root];
         // The names of the directories on `stack` past the root, and of `current` when it
         // is not a directory.
-        let mut names: Vec<Vec<u8>> = Vec::new();
+        let mut names: Vec<Vec<u8>> = self.root_names.clone();
         let mut leaf: Option<Vec<u8>> = None;
         let mut links = 0u32;
-        let mut current = Tree::ROOT;
+        let mut current = self.root;
         while let Some(name) = todo.pop() {
             let last = todo.is_empty();
             if !self.is_dir(current) {
@@ -228,7 +257,7 @@ impl Fs {
                     stack.pop();
                     names.pop();
                 }
-                current = stack.last().copied().unwrap_or(Tree::ROOT);
+                current = stack.last().copied().unwrap_or(self.root);
                 if last {
                     trailing = true;
                 }
@@ -260,8 +289,8 @@ impl Fs {
                 }
                 if target.first() == Some(&b'/') {
                     stack.truncate(1);
-                    names.clear();
-                    current = Tree::ROOT;
+                    names.truncate(self.root_names.len());
+                    current = self.root;
                 }
                 if target.ends_with(b"/") && last {
                     trailing = true;

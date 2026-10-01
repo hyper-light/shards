@@ -46,6 +46,7 @@ type entry struct {
 	GID    int               `json:"gid"`
 	Mtime  *[2]int64         `json:"mtime"`
 	Data   string            `json:"data"`
+	Data64 string            `json:"data_b64"`
 	Target string            `json:"target"`
 	Major  uint32            `json:"major"`
 	Minor  uint32            `json:"minor"`
@@ -78,6 +79,7 @@ type action struct {
 	CreateDestPath     bool     `json:"create_dest_path"`
 	AllowWildcard      bool     `json:"allow_wildcard"`
 	AllowEmptyWildcard bool     `json:"allow_empty_wildcard"`
+	AttemptUnpack      bool     `json:"attempt_unpack"`
 	Include            []string `json:"include"`
 	UID                int      `json:"uid"`
 	GID                int      `json:"gid"`
@@ -207,7 +209,13 @@ func materialize(t *testing.T, root string, entries []entry) {
 			err = os.Mkdir(p, 0700)
 			dirs = append(dirs, dirTime{p, tm})
 		case "file":
-			err = os.WriteFile(p, []byte(e.Data), 0600)
+			data := []byte(e.Data)
+			if e.Data64 != "" {
+				if data, err = base64.StdEncoding.DecodeString(e.Data64); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = os.WriteFile(p, data, 0600)
 		case "symlink":
 			err = os.Symlink(e.Target, p)
 		case "hardlink":
@@ -345,6 +353,7 @@ func run(t *testing.T, c testCase, work string) answer {
 				FollowSymlink: a.FollowSymlink, DirCopyContents: a.DirCopyContents,
 				CreateDestPath: a.CreateDestPath, AllowWildcard: a.AllowWildcard,
 				AllowEmptyWildcard: a.AllowEmptyWildcard, Timestamp: a.Timestamp,
+				AttemptUnpackDockerCompatibility: a.AttemptUnpack,
 				IncludePatterns: a.Include, ExcludePatterns: a.Exclude,
 			}, u, nil)
 		case "remove":

@@ -3,6 +3,7 @@
 
 use std::fmt;
 
+pub mod archive;
 pub mod context;
 pub mod copy;
 pub mod data;

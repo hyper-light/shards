@@ -299,3 +299,89 @@ fn a_staged_build_copies_from_its_stages_and_images() {
     );
     assert!(base.stdout.contains("/out missing"), "{shown}");
 }
+
+/// The archives `crates/build/testdata/archives.py` writes, by name.
+fn archive(name: &str) -> Vec<u8> {
+    let all: serde_json::Value =
+        serde_json::from_str(include_str!("../../build/testdata/archives.json")).unwrap();
+    let b64 = all[name].as_str().unwrap();
+    let val = |c: u8| -> u32 {
+        match c {
+            b'A'..=b'Z' => u32::from(c - b'A'),
+            b'a'..=b'z' => u32::from(c - b'a') + 26,
+            b'0'..=b'9' => u32::from(c - b'0') + 52,
+            b'+' => 62,
+            _ => 63,
+        }
+    };
+    let mut out = Vec::new();
+    for chunk in b64.as_bytes().chunks(4) {
+        let digits: Vec<u8> = chunk.iter().copied().filter(|&c| c != b'=').collect();
+        let n = digits
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &c)| n | (val(c) << (18 - 6 * i)));
+        out.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8][..digits.len() - 1]);
+    }
+    out
+}
+
+#[test]
+fn add_unpacks_archives_of_every_compression_in_the_vm() {
+    let (image, _) = served();
+    let home = TempDir::new("build-add-home");
+    let ctx = context(
+        "build-add-ctx",
+        &format!(
+            "FROM {image}\n\
+             ADD simple.tar.xz /x/\n\
+             ADD simple.tar.gz /g/\n\
+             ADD simple.tar.bz2 /b/\n\
+             ADD simple.tar.zst /z\n\
+             ADD fake.tar /f/\n\
+             USER root\n\
+             CMD [\"stat\", \"/x/a/x\", \"/x/a/s\", \"/x/a/l\", \"/x/b\", \"/g/b\", \"/b/a/x\", \"/z/b\", \"/f/fake.tar\"]\n"
+        ),
+    );
+    for name in [
+        "simple.tar.xz",
+        "simple.tar.gz",
+        "simple.tar.bz2",
+        "simple.tar.zst",
+        "fake.tar",
+    ] {
+        std::fs::write(ctx.join(name), archive(name)).unwrap();
+    }
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let built = run_shards_env(&["build"], &["-t", "add:1", ctx.to_str().unwrap()], &env, TIMEOUT);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
+    assert_eq!(built.status, Some(0), "{shown}");
+
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let ran = run_shards_env(&["run"], &["--pull", "never", "--rm", "add:1"], &env, TIMEOUT);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{shown}");
+    // a/x is the file a/h links to: the link's header, the archive's later word, set it.
+    let fake = String::from_utf8(archive("fake.tar"))
+        .unwrap()
+        .replace('\n', "\\n");
+    let want = format!(
+        "/x/a/x file 644 0:0 6\n= x-data\n\
+         /x/a/s file 4755 0:0 4\n= suid\n\
+         /x/a/l symlink 777 0:0 1\n-> x\n\
+         /x/b file 644 0:0 3\n= top\n\
+         /g/b file 644 0:0 3\n= top\n\
+         /b/a/x file 644 0:0 6\n= x-data\n\
+         /z/b file 644 0:0 3\n= top\n\
+         /f/fake.tar file 644 0:0 {}\n= {fake}\n",
+        archive("fake.tar").len()
+    );
+    assert_eq!(ran.stdout, want, "{shown}");
+}

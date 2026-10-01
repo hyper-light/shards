@@ -66,6 +66,8 @@ pub struct Exec<'a> {
     unpacked: Vec<Unpacked>,
     /// Where the context's files are snapshotted; dropped after `sources`, which reads them.
     stages: Vec<store::Stage>,
+    /// Where ADD's archives are decompressed, dropped after `sources` too.
+    unpack: Option<store::Stage>,
 }
 
 /// One slot of a file operation: an input, an action's mount, or its committed result.
@@ -87,6 +89,7 @@ impl<'a> Exec<'a> {
             sources: Sources::default(),
             unpacked: Vec::new(),
             stages: Vec::new(),
+            unpack: None,
         }
     }
 
@@ -129,6 +132,17 @@ impl<'a> Exec<'a> {
         }
         self.unpacked.extend(tars);
         Ok(())
+    }
+
+    /// The stage ADD decompresses archives into, made at the first.
+    fn unpack_stage(&mut self) -> Result<std::path::PathBuf, String> {
+        if self.unpack.is_none() {
+            self.unpack = Some(self.store.stage().map_err(err)?);
+        }
+        self.unpack
+            .as_ref()
+            .map(|s| s.path().to_path_buf())
+            .ok_or_else(|| "no stage".to_string())
     }
 
     /// A base image's snapshot, from its layers.
@@ -409,7 +423,8 @@ impl<'a> Exec<'a> {
                     include_patterns: include_patterns.clone(),
                     exclude_patterns: exclude_patterns.clone(),
                 };
-                ops::copy(&from, &mut fs, &action, ch)
+                let stage = self.unpack_stage()?;
+                ops::copy(&from, &mut fs, &action, ch, &mut self.sources, &stage)
             }
         };
         r.map_err(|e| e.0)?;

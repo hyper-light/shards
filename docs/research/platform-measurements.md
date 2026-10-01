@@ -2612,3 +2612,28 @@ revision before comparing a changed API/implementation.
   (`crates/build/src/host.rs` `CLONE_MIN`). With a clone per file, a context of 50,000
   files of 1 KiB took 91 s to build, against Docker's 6.3 s; packed, 2.3 s against 4.9
   (benchmarks.md, Build).
+
+### M77. Pure-Rust xz and bzip2 decoders, against the tools that write them
+
+- **Question.** ADD unpacks a local archive compressed with gzip, bzip2, xz or zstd
+  (moby/go-archive's DecompressStream). moby runs the `xz` program for xz, so BuildKit
+  fails to ADD a `.tar.xz` where `xz` is not installed (`exec: "xz": executable file not
+  found in $PATH`, seen in scripts/build/generate's container before it installed xz).
+  shards decodes in-process, in pure Rust. Which decoders decode everything the tools
+  write?
+- **Method.** `docs/research/measurements/decompress/cases.sh DIR` writes, with XZ Utils
+  5.8.4 and bzip2 1.0.8: xz with each check (none, CRC32, CRC64, SHA-256), the x86 and
+  ARM64 BCJ filters, delta, several blocks, an empty input, two streams concatenated, and
+  two with stream padding between them; bzip2 one stream, two concatenated and empty; and
+  one corrupt and one truncated file of each. `cargo run --release --manifest-path
+  docs/research/measurements/decompress/Cargo.toml -- DIR` decodes each. 2026-10-01, Apple
+  M5 Max, macOS 26.4.1.
+- **Result.** lzma-rust2 0.21.0 (features `std`, `xz`) decodes every xz case byte for byte
+  and refuses the corrupt and truncated ones. xz4rust 0.2.3 decodes only the first of
+  concatenated or padded streams, which `xz -d` decodes whole. bzip2 0.6.1 on its default
+  libbz2-rs-sys backend decodes every bzip2 case and refuses the corrupt and truncated.
+- **Consequence.** `crates/build` decodes xz with lzma-rust2 and bzip2 with bzip2, as
+  well as gzip with flate2 and zstd with the store's ruzstd decoder. Built without its
+  `optimization` feature, lzma-rust2 forbids unsafe code. With `xz` installed for BuildKit,
+  the ADD cases of `crates/build/testdata/ops.json`, one archive of each compression among
+  them, unpack byte for byte as BuildKit unpacks them.

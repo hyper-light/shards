@@ -1601,7 +1601,15 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
          digest. A push compresses.
        - Refs record what a reference resolved to, so a stored image reports the index
          digest Docker reports, as a fresh pull does.
-     - Next: ADD's archives and URLs, then RUN (step 3).
+     - Done: ADD's local archives, as BuildKit unpacks them (moby/go-archive's
+       DecompressStream and chrootarchive.Untar): every entry resolved inside the
+       destination as a chroot resolves it, so `../` names and absolute symlinks stay in
+       it. 17 more oracle cases, among them each compression, an escape attempt, implied
+       parents, replaced paths and out-of-range times, unpack byte for byte as BuildKit
+       does; `tests/build.rs` boots one image of every compression. Where moby runs `xz`
+       and `unpigz` and fails without them, shards decodes gzip, bzip2, xz and zstd
+       in-process, in pure Rust (PM M77).
+     - Next: ADD's URLs and git sources, then RUN (step 3).
   3. RUN in a booted VM without a network, and its layer.
   4. Cache keys, then RUN's network, mounts and builder templates.
 

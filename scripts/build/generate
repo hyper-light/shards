@@ -8,8 +8,9 @@
 #
 # The oracle mounts overlayfs and chowns, mknods and sets security.* xattrs as BuildKit's
 # daemon does, so it runs as root in a privileged Linux container (Docker's), on an
-# ext4 volume as BuildKit's snapshots sit on one. Only this generator needs Docker; the
-# tests replay its answers.
+# ext4 volume as BuildKit's snapshots sit on one, with `xz` installed, which BuildKit runs
+# to unpack .tar.xz (moby/go-archive). Only this generator needs Docker; the tests replay
+# its answers.
 #
 #   scripts/build/generate [BUILDKIT_CHECKOUT]
 set -eu
@@ -63,4 +64,4 @@ docker run --rm --privileged --platform "linux/$arch" \
 	-v "$out:/oracle:ro" -v "$data:/data" --mount type=volume,dst=/work \
 	-e SHARDS_OPS=/data/ops.json -e SHARDS_OPS_OUT=/data/ops-answers.json \
 	-e SHARDS_WORK=/work \
-	"$image" /oracle/oracle.test -test.run '^TestShardsOracle$' -test.count=1
+	"$image" sh -c "apk add --no-cache --quiet xz && exec /oracle/oracle.test -test.run '^TestShardsOracle\$' -test.count=1"

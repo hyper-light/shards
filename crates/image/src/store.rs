@@ -1138,6 +1138,13 @@ fn compression(head: &[u8]) -> Compression {
 /// its window may not pass 512 MiB. klauspost exempts single-segment frames up to 64 GiB,
 /// which it buffers whole; we cap those too.
 fn zstd(src: &mut BufReader<File>, out: &mut Sink<'_>) -> Result<(), Error> {
+    decode_zstd(src, out)
+}
+
+/// Decodes every zstd frame of `src` to `out`, skipping skippable frames, with each
+/// frame's checksum checked and windows no larger than klauspost/compress decodes, as
+/// containerd and moby decode zstd.
+pub fn decode_zstd(src: &mut dyn BufRead, out: &mut dyn Write) -> Result<(), Error> {
     use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
     use ruzstd::decoding::{FrameDecoder, StreamingDecoder};
     let mut frame = FrameDecoder::new();
