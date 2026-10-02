@@ -190,7 +190,13 @@ pub fn source(case: &Value, mem: &mut Sources) -> Fs {
 
 /// Runs `actions` on `upper`, whose step started on `lower`, copying from `src`; what
 /// fails is BuildKit's message.
-pub fn run_actions(lower: &Fs, src: &Fs, upper: &mut Fs, actions: &Value, mem: &mut Sources) -> Result<(), String> {
+pub fn run_actions(
+    lower: &Fs,
+    src: &Fs,
+    upper: &mut Fs,
+    actions: &Value,
+    mem: &mut Sources,
+) -> Result<(), String> {
     for a in actions.as_array().unwrap() {
         let chown = owner(a);
         let ch = match &chown {
@@ -284,4 +290,3 @@ thread_local! {
     /// Context directories made, removed once their cases' layers are written.
     pub static CONTEXT_DIRS: std::cell::RefCell<Vec<std::path::PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
 }
-

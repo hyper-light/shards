@@ -205,6 +205,14 @@ fn run_step(lower: &Fs, src: &Fs, upper: &mut Fs, actions: &Value, mem: &mut Sou
             ),
             "setxattr" => upper.setxattr(&s(a, "path"), &s(a, "key"), &s(a, "value"), false),
             "socket" => upper.mknod(&s(a, "path"), Kind::Socket, 0o755).map(|_| ()),
+            // Rewrites a file's bytes in place, as open(O_TRUNC) and a write do: its node
+            // stays the same.
+            "rewrite" => upper.create(&s(a, "path"), 0o644).map(|id| {
+                let bytes = s(a, "data");
+                let len = bytes.len() as u64;
+                let data = mem.bytes(bytes).unwrap();
+                upper.set_data(id, len, data);
+            }),
             _ => {
                 run_actions(lower, src, upper, &Value::Array(vec![a.clone()]), mem)?;
                 Ok(())
@@ -379,7 +387,11 @@ fn link(old: &str, new: &str) -> Value {
 /// reason the stack gives up.
 fn steps() -> Vec<(&'static str, Value, Option<&'static str>)> {
     vec![
-        ("two commits", json!([[mkfile("/new1", "1")], [mkdir("/etc/d2")]]), None),
+        (
+            "two commits",
+            json!([[mkfile("/new1", "1")], [mkdir("/etc/d2")]]),
+            None,
+        ),
         (
             "a whiteout of a lower file, a step after another",
             json!([[mkfile("/etc/n", "n")], [remove("/etc/keep")]]),
@@ -387,20 +399,31 @@ fn steps() -> Vec<(&'static str, Value, Option<&'static str>)> {
         ),
         (
             "an opaque directory remade with a file as it was",
-            json!([[remove("/data"), mkdir("/data"), mkfile("/data/a", "a"),
-                    utimes("/data/a", 1_600_000_000, 500)]]),
+            json!([[
+                remove("/data"),
+                mkdir("/data"),
+                mkfile("/data/a", "a"),
+                utimes("/data/a", 1_600_000_000, 500)
+            ]]),
             None,
         ),
         (
             "an opaque directory remade with a file of other bytes, size and time as they were",
-            json!([[remove("/data"), mkdir("/data"), mkfile("/data/a", "b"),
-                    utimes("/data/a", 1_600_000_000, 500)]]),
+            json!([[
+                remove("/data"),
+                mkdir("/data"),
+                mkfile("/data/a", "b"),
+                utimes("/data/a", 1_600_000_000, 500)
+            ]]),
             Some("content a layer leaves as the lower's"),
         ),
         (
             "a file made again as it was",
-            json!([[remove("/etc/keep"), mkfile("/etc/keep", "keep"),
-                    utimes("/etc/keep", 1_600_000_000, 500)]]),
+            json!([[
+                remove("/etc/keep"),
+                mkfile("/etc/keep", "keep"),
+                utimes("/etc/keep", 1_600_000_000, 500)
+            ]]),
             None,
         ),
         (
@@ -418,10 +441,17 @@ fn steps() -> Vec<(&'static str, Value, Option<&'static str>)> {
             json!([[{"kind": "chmod", "path": "/hl1", "mode": 0o600}]]),
             Some("a hard link only some of whose names a layer has"),
         ),
-        ("one name of a base hard link removed", json!([[remove("/hl2")]]), None),
+        (
+            "one name of a base hard link removed",
+            json!([[remove("/hl2")]]),
+            None,
+        ),
         (
             "a directory whose mtime alone changes, which the differ leaves",
-            json!([[mkfile("/var/log/tmp", "t"), remove("/var/log/tmp")], [mkfile("/x", "x")]]),
+            json!([
+                [mkfile("/var/log/tmp", "t"), remove("/var/log/tmp")],
+                [mkfile("/x", "x")]
+            ]),
             None,
         ),
         (
@@ -431,14 +461,21 @@ fn steps() -> Vec<(&'static str, Value, Option<&'static str>)> {
         ),
         (
             "nanosecond mtimes on new files and base directories",
-            json!([[mkfile("/ns", "n"), utimes("/ns", 1_700_000_000, 999),
-                    utimes("/etc", 1_700_000_001, 123)]]),
+            json!([[
+                mkfile("/ns", "n"),
+                utimes("/ns", 1_700_000_000, 999),
+                utimes("/etc", 1_700_000_001, 123)
+            ]]),
             None,
         ),
         (
             "user xattrs on new and base files, and a base directory written as a parent",
-            json!([[mkfile("/u", "u"), setxattr("/u", "user.new", "1"),
-                    setxattr("/etc/keep", "user.more", "2"), mkfile("/etc/added", "a")]]),
+            json!([[
+                mkfile("/u", "u"),
+                setxattr("/u", "user.new", "1"),
+                setxattr("/etc/keep", "user.more", "2"),
+                mkfile("/etc/added", "a")
+            ]]),
             None,
         ),
         (
@@ -449,14 +486,20 @@ fn steps() -> Vec<(&'static str, Value, Option<&'static str>)> {
         ),
         (
             "times layers cannot hold",
-            json!([[mkfile("/old", "o"), utimes("/old", -5, 7), mkfile("/far", "f"),
-                    utimes("/far", 9_300_000_000, 1)]]),
+            json!([[
+                mkfile("/old", "o"),
+                utimes("/old", -5, 7),
+                mkfile("/far", "f"),
+                utimes("/far", 9_300_000_000, 1)
+            ]]),
             None,
         ),
         (
             "a capability on a new file",
-            json!([[mkfile("/cap", "c"),
-                    setxattr("/cap", "security.capability", "\u{1}\u{0}\u{0}\u{2}")]]),
+            json!([[
+                mkfile("/cap", "c"),
+                setxattr("/cap", "security.capability", "\u{1}\u{0}\u{0}\u{2}")
+            ]]),
             None,
         ),
         (
@@ -466,7 +509,11 @@ fn steps() -> Vec<(&'static str, Value, Option<&'static str>)> {
                      "mode": 0, "timestamp": -1}]]),
             None,
         ),
-        ("a new socket, which layers leave out", json!([[{"kind": "socket", "path": "/sock"}]]), None),
+        (
+            "a new socket, which layers leave out",
+            json!([[{"kind": "socket", "path": "/sock"}]]),
+            None,
+        ),
         (
             "a socket over a lower file",
             json!([[remove("/etc/keep"), {"kind": "socket", "path": "/etc/keep"}]]),
@@ -510,4 +557,31 @@ fn steps_stack_to_their_snapshot_or_give_up_saying_why() {
     }
     eprintln!("steps: {snapshot} from the snapshot, {layers} from the layers");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// A file the stack already keeps as the layers have it (made again as it was), whose
+/// bytes a later step then rewrites in place in a way the differ cannot see (the same size, and the same mtime to
+/// the nanosecond, so sameDirent does not compare content): the layers keep the old
+/// bytes. The stack must not take the snapshot's new ones; it gives up on them. No file
+/// operation rewrites a file in place today (fsutil's copy removes its target first), but
+/// a RUN step's programs do.
+#[test]
+fn a_kept_file_whose_bytes_change_unseen_is_not_taken_from_the_snapshot() {
+    let rewrite = |path: &str, data: &str| json!({"kind": "rewrite", "path": path, "data": data});
+    let case = json!({
+        "name": "kept, then rewritten unseen",
+        "lower": base(),
+        "src": [],
+        "steps": [
+            [mkfile("/w", "hello"), utimes("/w", 1_650_000_000, 111)],
+            // Made again as it was: the differ judges it the same, so the layers keep
+            // the first node, and the stack keeps what they hold for the new one.
+            [remove("/w"), mkfile("/w", "hello"), utimes("/w", 1_650_000_000, 111)],
+            [rewrite("/w", "world"), utimes("/w", 1_650_000_000, 111)],
+        ],
+    });
+    assert_eq!(
+        check(&case),
+        Path::Layers("content a layer leaves as the lower's".into())
+    );
 }

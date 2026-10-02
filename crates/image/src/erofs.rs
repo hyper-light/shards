@@ -181,11 +181,20 @@ pub type EntryId = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
     Dir(Dir),
-    File { size: u64, data: DataRef },
+    File {
+        size: u64,
+        data: DataRef,
+    },
     /// Its target: boxed, 16 bytes, not a vector's 24.
     Symlink(Box<[u8]>),
-    CharDevice { major: u32, minor: u32 },
-    BlockDevice { major: u32, minor: u32 },
+    CharDevice {
+        major: u32,
+        minor: u32,
+    },
+    BlockDevice {
+        major: u32,
+        minor: u32,
+    },
     Fifo,
     Socket,
 }
@@ -1701,7 +1710,10 @@ mod tests {
             tree.node(tree.child(Tree::ROOT, b"suid").unwrap())
                 .unwrap()
                 .meta
-                .xattrs.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<BTreeMap<_, _>>()
+                .xattrs
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<BTreeMap<_, _>>()
         );
         // `.` and `..` point where they should.
         let etc = r.lookup("etc");

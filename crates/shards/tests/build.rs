@@ -50,7 +50,10 @@ fn assert_rootfs_is_its_layers(home: &std::path::Path, reference: &str) {
     let built = std::fs::read(&path).unwrap();
     std::fs::remove_file(&path).unwrap();
     let stacked = std::fs::read(store.rootfs(&layers, &Limits::none()).unwrap()).unwrap();
-    assert!(built == stacked, "{reference}: the build's root filesystem is not its layers'");
+    assert!(
+        built == stacked,
+        "{reference}: the build's root filesystem is not its layers'"
+    );
 }
 
 #[test]

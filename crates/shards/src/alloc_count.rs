@@ -133,7 +133,10 @@ pub fn phase(name: &str) {
     // vmmap's summary of the process as the phases SHARDS_VMMAP names end (macOS).
     if std::env::var("SHARDS_VMMAP").is_ok_and(|v| v.split(',').any(|p| p == name)) {
         let pid = std::process::id().to_string();
-        if let Ok(out) = std::process::Command::new("vmmap").args(["--summary", &pid]).output() {
+        if let Ok(out) = std::process::Command::new("vmmap")
+            .args(["--summary", &pid])
+            .output()
+        {
             let _ = writeln!(std::io::stderr(), "vmmap-at {name}");
             let _ = std::io::stderr().write_all(&out.stdout);
         }

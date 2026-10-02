@@ -99,17 +99,21 @@ impl Bits {
 
     /// The ids in the set, in order.
     pub fn iter(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.0.iter().enumerate().flat_map(|(i, &w)| {
-            (0..64)
-                .filter(move |b| w >> b & 1 == 1)
-                .map(move |b| i * 64 + b)
-        })
+        self.0
+            .iter()
+            .enumerate()
+            .flat_map(|(i, &w)| (0..64).filter(move |b| w >> b & 1 == 1).map(move |b| i * 64 + b))
     }
 }
 
 /// Writes the layer of the step that made `upper` from `lower` to `out`, and says what it
 /// holds.
-pub fn write_layer(lower: &Fs, upper: &Fs, data: &mut dyn Source, out: &mut dyn Write) -> Result<Record, Error> {
+pub fn write_layer(
+    lower: &Fs,
+    upper: &Fs,
+    data: &mut dyn Source,
+    out: &mut dyn Write,
+) -> Result<Record, Error> {
     let mut cw = ChangeWriter {
         tw: Writer::new(out),
         upper,
@@ -370,10 +374,7 @@ impl ChangeWriter<'_> {
         let last = name.rsplit(|&c| c == b'/').next().unwrap_or_default();
         if last.starts_with(WHITEOUT_PREFIX) {
             rec.unsure.get_or_insert_with(|| {
-                format!(
-                    "{:?} reads as a whiteout",
-                    String::from_utf8_lossy(&hdr.name)
-                )
+                format!("{:?} reads as a whiteout", String::from_utf8_lossy(&hdr.name))
             });
         }
         if hdr.typeflag == writer::SYMLINK && (hdr.linkname.is_empty() || hdr.linkname.len() >= PATH_MAX) {
