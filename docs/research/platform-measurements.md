@@ -2884,3 +2884,33 @@ revision before comparing a changed API/implementation.
   memory, Docker's capacity, and pays this; memory plugged as a build needs it would pay
   only for what the build uses. For scale, BuildKit in Docker Desktop's VM took 0.83 s
   uncached for the same build, against shards' 0.42 to 0.45 s warm.
+
+### M83. How a VM process and its network process move frames
+
+- **Question.** A VM with a network gets it from a network process of its own (D31). Its
+  frames cross between the two processes; networking.md E2 left how open. Apple's model
+  for a third-party stack is a connected datagram socket [VZFileHandleNetworkDeviceAttachment.h],
+  which carries frames up to 65,561 bytes once SO_SNDBUF and SO_RCVBUF are raised
+  (verified). But macOS fails a full Unix datagram socket's send with ENOBUFS rather than
+  blocking, and poll(2) reports it writable all the while (verified: POLLOUT with three
+  64 KiB frames queued and the fourth refused), so a sender has no way to wait but to
+  retry.
+- **Method.** `docs/research/measurements/net-transport`: two processes, as the VM process
+  and its network process; one way, frames of 1514, 9014 and 65561 bytes for 2 s each;
+  then 20,000 round trips of a 64-byte frame. Datagrams (send retried on ENOBUFS), a
+  stream socket with each frame's length before it, and a ring of 64 slots in shared
+  memory, the receiver spinning 2,000 times before it sleeps on a pipe the sender writes
+  only then. 2026-10-02, Apple M5 Max, macOS 26.4.1, load average 22.
+- **Result.**
+
+  | Transport | 1514 B | 9014 B | 65561 B | 64 B round trip p50 / p99 / max |
+  |---|---|---|---|---|
+  | Unix datagrams | 11.5 Gbit/s | 55.0 Gbit/s | 75.0 Gbit/s | 22.1 / 118.2 / 348.5 µs |
+  | Unix stream | 5.9 Gbit/s | 23.3 Gbit/s | 11.8 Gbit/s | 22.2 / 111.5 / 475.4 µs |
+  | Shared ring | 131.5 Gbit/s | 158.0 Gbit/s | 369.6 Gbit/s | 0.8 / 1.0 / 83.1 µs |
+
+- **Consequence.** Frames cross in a shared ring: 5 to 30 times the datagrams' throughput,
+  a 25th of their latency, and backpressure that is the ring's own. The network process
+  maps the ring alone, never guest memory, so D31's isolation holds: the VM process copies
+  between the virtqueues and the ring. The ring's latency comes of a receiver that spins
+  before it sleeps; what that spin costs an idle VM is measured with the device.

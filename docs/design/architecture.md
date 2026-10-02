@@ -1498,13 +1498,13 @@ stack inside the VMM, is superseded by it.
   restores do no network work (networking.md R3; [RFC 2131 §4.4.1; RFC 4862 §5.4]). A VM
   with no network gets no device (networking.md R7: absent device, no attack surface).
 - **Open, measured before it is built** (networking.md §4):
-  - *The data path between the two processes* (E2). Frames over a connected datagram socket,
-    batched, as Apple's own model for third-party stacks carries them
-    [VZFileHandleNetworkDeviceAttachment.h:13-49], against a vhost-user backend reading the
-    virtqueues from shared guest memory, which passt reports as "maximum one copy" [passt:
-    about] but which gives the network process the guest's memory. Throughput at MTU
-    1500/9000/65520, CPU per byte, and p99 of TCP_RR decide it, with TSO/GSO and a large MTU
-    in both [Cai21 §3.1].
+  - *The data path between the two processes* (E2), **decided (PM M83):** a ring of frame
+    slots in memory the two processes share, not the datagram socket Apple's model uses
+    [VZFileHandleNetworkDeviceAttachment.h:13-49], whose sends macOS refuses with ENOBUFS
+    while poll calls it writable, nor a vhost-user backend, which would give the network
+    process the guest's memory. The VM process copies between the virtqueues and the
+    ring; the ring moved 131 to 370 Gbit/s and a round trip in 0.8 µs, where datagrams
+    moved 11 to 75 Gbit/s in 22 µs.
   - *Its cost per VM* (E2, D14): RSS idle and with 1k and 10k connections, beside a VM's
     own (M64), and the start: the network process is spawned and paired with a warm VM
     before its request, and must cost a restore nothing (E1).
