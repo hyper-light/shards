@@ -1391,6 +1391,14 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         end: impl FnOnce(&mut Container),
     ) -> Option<Removal> {
+        // Its record is written first ([`await_arrival`](Self::await_arrival)): a
+        // container still arriving is not yet in sight, and its end would be lost.
+        if registry.is_arriving(id) {
+            log(format!(
+                "container {id}: ended before its record was written; the end is lost"
+            ));
+            return None;
+        }
         if registry.get(id)?.auto_remove {
             match registry.remove(&self.disk, id) {
                 Ok(removal) => return removal,
@@ -1738,6 +1746,9 @@ impl<D: Disk> Daemon<D> {
                 (code, Some(said))
             }
         };
+        // A run may end before its container's record is written: it is ended once the
+        // record is, as one that never started is (`not_started`).
+        self.await_arrival(id);
         let removal = {
             let mut registry = lock(&self.containers);
             let removal = self.end_container(&mut registry, id, |c| {
@@ -3888,6 +3899,33 @@ mod tests {
                 settled.recv_timeout(PATIENCE).unwrap();
             });
             assert!(lock(&t.daemon.containers).get(&id).is_some());
+        });
+    }
+
+    /// A run that ends before its container's record is written keeps its end: the record
+    /// says how it exited, and `wait` hears its code. Before, the end was dropped, the
+    /// container stayed running in sight, and `wait` said 0 (seen 2026-10-02 under
+    /// parallel E2E runs, which slow the record's write).
+    #[test]
+    fn a_run_that_ends_before_its_record_is_written_keeps_its_end() {
+        let t = Test::on("end-arriving", Held::default());
+        t.run(|t| {
+            let held = &t.daemon.disk;
+            held.holding_writes.store(true, Ordering::SeqCst);
+            let id = t.reserve("racer");
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            serve(&vm, 3);
+            t.until("the record's write is held", |d| {
+                d.disk.writing.load(Ordering::SeqCst)
+            });
+            std::thread::sleep(Duration::from_millis(50));
+            held.let_through();
+            joined(starting.run).unwrap();
+            let record = t.record(&id).unwrap();
+            assert_eq!((record.state, record.exit_code), (Life::Exited, Some(3)));
+            assert_eq!(t.ask(&["wait", "racer"]), (0, "3\n".into(), String::new()));
         });
     }
 

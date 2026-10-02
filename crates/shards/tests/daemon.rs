@@ -983,10 +983,14 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     }
     let (image, _) = served();
     let home = home_with("daemon-demand");
+    // The keep-alive outlasts the spacing of runs well apart below, which a loaded host
+    // stretches.
+    const KEEP: Duration = Duration::from_secs(10);
+    let keep = KEEP.as_secs().to_string();
     let env: [(&str, &OsStr); 3] = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_POOL", "3".as_ref()),
-        ("SHARDS_POOL_KEEP", "4".as_ref()),
+        ("SHARDS_POOL_KEEP", keep.as_ref()),
     ];
     let templates = home.join("templates");
     let warm = || processes_with(&templates.to_string_lossy()).len();
@@ -1007,12 +1011,24 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         let run = run_shards_env(&["run"], &args, &env, TIMEOUT);
         assert_eq!(run.status, Some(0), "{}", run.stderr);
     };
-    // Runs a second apart, far past a refill: each is served by the one VM refilled for
-    // the run before.
+    // Runs well apart: each is served by the one VM refilled for the run before. "Apart"
+    // is past the pool's refill window, SRTT + 4·RTTVAR of its refills (RFC 6298, as
+    // demand.rs keeps it), which refills of at most M keep under 5·M: each run waits at
+    // least that past the slowest refill seen here, which is as long as a refill or
+    // longer, and at least a second.
+    let mut slowest = Duration::ZERO;
     for _ in 0..4 {
         run();
+        let ended = Instant::now();
+        settled("a refill", &|n| n >= 1);
+        slowest = slowest.max(ended.elapsed());
+        let apart = (slowest * 5).max(Duration::from_secs(1));
+        assert!(
+            apart < KEEP,
+            "refills of {slowest:?} leave no room under the keep-alive"
+        );
         settled("one run at a time", &|n| n == 1);
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(apart);
     }
     // Three at once: the pool keeps more for the next burst, never past its most.
     let burst: Vec<_> = (0..3)
@@ -1035,6 +1051,7 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     std::thread::sleep(Duration::from_millis(500));
     assert!(warm() <= 3, "{} warm, past the pool's most", warm());
     // Unclaimed past its keep-alive: nothing, until the next run.
+    std::thread::sleep(KEEP);
     settled("past the keep-alive", &|n| n == 0);
     run();
     settled("after the keep-alive", &|n| n >= 1);
