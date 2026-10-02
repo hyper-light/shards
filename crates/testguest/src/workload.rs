@@ -58,6 +58,7 @@ pub fn main() -> ! {
         "trap" => trap(arg(1)),
         "tty" => tty(arg(1)),
         "vsock" => vsock(args.get(1..).unwrap_or_default()),
+        "loopback" => loopback(),
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -263,6 +264,55 @@ fn report() -> i32 {
 }
 
 /// Copies stdin to stdout.
+/// Sends a byte to itself over TCP on 127.0.0.1, on ::1, and from any address to its own
+/// host name as the C library resolves it, and prints how each went.
+fn loopback() -> i32 {
+    use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+    let mut code = 0;
+    let mut name = [0u8; 256];
+    // SAFETY: a buffer of the given length.
+    let named = unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) } == 0;
+    let end = name.iter().position(|&b| b == 0).unwrap_or(0);
+    let own = String::from_utf8_lossy(name.get(..end).unwrap_or_default()).into_owned();
+    for addr in ["127.0.0.1:0", "[::1]:0", "own name"] {
+        let tried = (|| -> io::Result<()> {
+            let (listener, to) = if addr == "own name" {
+                if !named {
+                    return Err(io::Error::last_os_error());
+                }
+                let listener = TcpListener::bind("0.0.0.0:0")?;
+                let port = listener.local_addr()?.port();
+                let to = (own.as_str(), port)
+                    .to_socket_addrs()?
+                    .next()
+                    .ok_or_else(|| io::Error::other("no address"))?;
+                (listener, to)
+            } else {
+                let listener = TcpListener::bind(addr)?;
+                let to = listener.local_addr()?;
+                (listener, to)
+            };
+            let mut client = TcpStream::connect(to)?;
+            client.write_all(b"x")?;
+            let (mut server, _) = listener.accept()?;
+            let mut byte = [0u8; 1];
+            server.read_exact(&mut byte)?;
+            if byte != *b"x" {
+                return Err(io::Error::other("a different byte"));
+            }
+            Ok(())
+        })();
+        let _ = match tried {
+            Ok(()) => writeln!(io::stdout(), "{addr} ok"),
+            Err(e) => {
+                code = 1;
+                writeln!(io::stdout(), "{addr} {e}")
+            }
+        };
+    }
+    code
+}
+
 fn cat() -> i32 {
     let mut buf = vec![0u8; 64 * 1024];
     let (mut stdin, mut stdout) = (io::stdin().lock(), io::stdout().lock());

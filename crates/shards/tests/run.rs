@@ -297,6 +297,47 @@ fn stdio_carries_bulk_data_both_ways() {
     assert_eq!(shards_testguest::first_mismatch(9, 0, &out.stdout), None);
 }
 
+/// What Docker gives every container beside its image, in place of what the image has
+/// there: `/etc/hostname` naming the run, `/etc/hosts` as Docker writes it, `/etc/mtab` a
+/// link to `/proc/mounts` (moby daemon/initlayer/setup_unix.go), and loopback up.
+#[test]
+fn a_run_has_the_files_docker_gives_a_container_and_loopback() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = TempDir::new("run-container-files");
+    let image = workload_image(&dir);
+    let paths = ["/etc/hostname", "/etc/hosts", "/etc/mtab", "/etc/hosts.image"];
+    let out = run(
+        &image,
+        &["--hostname", "box"],
+        &[&["/bin/testguest", "stat"][..], &paths[..]].concat(),
+        b"",
+    );
+    assert_eq!(out.status, Some(0), "{out}");
+    // Docker's /etc/hosts, measured (Docker Desktop, 2026-10-02), with the run's own name
+    // on the loopback, where Docker has the container's address.
+    let hosts = "127.0.0.1\tlocalhost\\n::1\tlocalhost ip6-localhost ip6-loopback\\n\
+                 fe00::\tip6-localnet\\nff00::\tip6-mcastprefix\\nff02::1\tip6-allnodes\\n\
+                 ff02::2\tip6-allrouters\\n127.0.1.1\tbox\\n";
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!(
+            "/etc/hostname file 644 0:0 4\n= box\\n\n\
+             /etc/hosts file 644 0:0 162\n= {hosts}\n\
+             /etc/mtab symlink 777 0:0 12\n-> /proc/mounts\n\
+             /etc/hosts.image file 644 0:0 12\n= image hosts\\n\n"
+        ),
+        "{out}"
+    );
+    let out = run(&image, &[], &["/bin/testguest", "loopback"], b"");
+    assert_eq!(
+        (out.status, String::from_utf8_lossy(&out.stdout).into_owned()),
+        (Some(0), "127.0.0.1:0 ok\n[::1]:0 ok\nown name ok\n".to_string()),
+        "{out}"
+    );
+}
+
 #[test]
 fn templates_restore_into_runs_of_their_own() {
     if cannot_run_vms() || cannot_snapshot() {
@@ -362,6 +403,19 @@ fn templates_restore_into_runs_of_their_own() {
         get(&second, "hostname"),
         "each run has its own name"
     );
+    // In /etc/hostname too, though the template made the file before it was saved.
+    for name in ["one", "a-longer-name"] {
+        let out = restore(
+            &template,
+            &["--hostname", name],
+            &["/bin/testguest", "stat", "/etc/hostname"],
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("/etc/hostname file 644 0:0 {}\n= {name}\\n\n", name.len() + 1),
+            "{out}"
+        );
+    }
     assert_eq!(get(&second, "mount /"), "overlay");
 }
 

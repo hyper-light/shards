@@ -1197,7 +1197,11 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   - **Not yet:** `docker attach`, and Docker's `detachKeys` in its config file.
 - **Known gaps** (flags parsed and refused): `ps --format`, `--filter` and `--size`, and
   `run`'s ports, volumes, networks, limits, restart policies and `--sig-proxy=false`.
-  `/etc/hostname`, `/etc/hosts` and `/etc/resolv.conf` come with networking.
+  Like Docker's, every run has loopback up and its own `/etc/hostname`, `/etc/hosts`
+  (Docker's lines, and the run's name on 127.0.1.1 until the VM has an address of its
+  own) and `/etc/mtab` (a link to `/proc/mounts`), in place of what the image has there,
+  as ordinary files a workload may change (PM M81). `/etc/resolv.conf` comes with
+  networking.
 - **Tests:** E2E with booted VMs, so they need no snapshots: a container outlives its
   run until `rm`, and `wait` reports its status; names are unique, and `--rm` leaves
   nothing; `stop` ends a command by SIGTERM (143) and `kill -s USR1` reaches it; `rm`

@@ -29,6 +29,17 @@ const CHUNK: usize = 64 * 1024;
 /// they run is still correct, only slower to restore.
 const SELFTESTS_WAIT: Duration = Duration::from_secs(2);
 
+/// `/etc/hosts` as Docker writes it for every container (moby
+/// daemon/libnetwork/etchosts/etchosts.go, `Build`): the guest's IPv6 is enabled, so the
+/// variant without it (`BuildNoIPv6`) does not apply. Each run adds its own name
+/// ([`set_hostname`]).
+const HOSTS: &[u8] = b"127.0.0.1\tlocalhost\n\
+::1\tlocalhost ip6-localhost ip6-loopback\n\
+fe00::\tip6-localnet\n\
+ff00::\tip6-mcastprefix\n\
+ff02::1\tip6-allnodes\n\
+ff02::2\tip6-allrouters\n";
+
 /// Why the workload did not run, and the status to report.
 struct Failure {
     status: u32,
@@ -231,6 +242,116 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     ] {
         mkdir(target)?;
         mount(source, target, fstype, flags, data)?;
+    }
+    container_files()?;
+    loopback_up()
+}
+
+/// What Docker gives every container beside its image (moby daemon/initlayer/setup_unix.go),
+/// alike for every run, so made before any snapshot: `/etc/mtab` as a link to `/proc/mounts`,
+/// `/etc/hosts` ([`HOSTS`]), and `/etc/hostname`, which each run fills ([`set_hostname`]).
+/// Each replaces whatever the image has there, as Docker's do: 89 of 99 official images
+/// ship an `/etc/hostname` left from their build, and amazonlinux an empty `/etc/mtab`.
+/// They are files of the run's own, in the overlay's upper layer: unlike Docker's bind
+/// mounts, a workload may replace or rename them as it may any other file.
+fn container_files() -> Result<(), Failure> {
+    use std::os::unix::fs::DirBuilderExt;
+    let etc = std::fs::symlink_metadata("/etc");
+    if etc.as_ref().is_ok_and(|m| !m.is_dir()) {
+        // A directory over whatever else the image has there, as Docker's init layer
+        // above the image is.
+        std::fs::remove_file("/etc").map_err(|e| setup_failed(format!("replacing /etc: {e}")))?;
+    }
+    if etc.as_ref().map_or(true, |m| !m.is_dir()) {
+        std::fs::DirBuilder::new()
+            .mode(0o755)
+            .create("/etc")
+            .map_err(|e| setup_failed(format!("mkdir /etc: {e}")))?;
+    }
+    replace("/etc/mtab", |path| {
+        std::os::unix::fs::symlink("/proc/mounts", path)
+    })?;
+    write_file("/etc/hosts", HOSTS)?;
+    write_file("/etc/hostname", b"")
+}
+
+/// Puts a new file at `path` with `make`, in place of whatever is there but a directory,
+/// never through a link.
+fn replace(path: &str, make: impl FnOnce(&str) -> io::Result<()>) -> Result<(), Failure> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => {
+            return Err(setup_failed(format!("replacing {path}: {e}")));
+        }
+        _ => {}
+    }
+    make(path).map_err(|e| setup_failed(format!("writing {path}: {e}")))
+}
+
+/// Puts a new root-owned file of mode 0644 holding `bytes` at `path` ([`replace`]).
+fn write_file(path: &str, bytes: &[u8]) -> Result<(), Failure> {
+    use std::os::unix::fs::OpenOptionsExt;
+    replace(path, |path| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o644)
+            .open(path)?
+            .write_all(bytes)
+    })
+}
+
+/// Where a run's own name points until the VM has a network of its own: an address of
+/// the loopback, so that the name reaches the VM itself, as Debian names a host without a
+/// permanent IP (Debian Reference, 5.1.1 "The hostname resolution"). Docker maps it to
+/// the container's address (moby daemon/libnetwork/sandbox_dns_unix.go, makeHostsRecs);
+/// without that, a program that looks itself up (Java's `InetAddress.getLocalHost`)
+/// fails. With guest networking (D31), the VM's address takes its place.
+const OWN_ADDRESS: &[u8] = b"127.0.1.1";
+
+/// Names the run in `/etc/hostname` and `/etc/hosts`, as Docker does: the name and a
+/// newline, and the name on a line of its own after [`HOSTS`]'s, both of mode 0644
+/// (moby daemon/libnetwork/sandbox_dns_unix.go).
+fn set_hostname(name: &[u8]) -> Result<(), Failure> {
+    let mut bytes = Vec::with_capacity(name.len() + 1);
+    bytes.extend_from_slice(name);
+    bytes.push(b'\n');
+    write_file("/etc/hostname", &bytes)?;
+    let mut hosts = Vec::with_capacity(HOSTS.len() + OWN_ADDRESS.len() + name.len() + 2);
+    hosts.extend_from_slice(HOSTS);
+    hosts.extend_from_slice(OWN_ADDRESS);
+    hosts.push(b'\t');
+    hosts.extend_from_slice(&bytes);
+    write_file("/etc/hosts", &hosts)
+}
+
+/// Brings the loopback interface up, as every container's network namespace has it,
+/// `--network none` included: the kernel then gives it 127.0.0.1/8 and ::1
+/// (netdevice(7), SIOCSIFFLAGS).
+fn loopback_up() -> Result<(), Failure> {
+    let failed = |what: &str| setup_failed(format!("bringing up lo: {what}: {}", io::Error::last_os_error()));
+    // SAFETY: socket(2) with constant arguments.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(failed("socket"));
+    }
+    // SAFETY: a descriptor just opened, owned from here on.
+    let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+    // SAFETY: ifreq is plain data, for which all zeroes is valid.
+    let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
+    for (dst, src) in req.ifr_name.iter_mut().zip(b"lo") {
+        *dst = *src as libc::c_char;
+    }
+    // SAFETY: an ifreq naming an interface, which the kernel fills in.
+    if unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCGIFFLAGS as libc::Ioctl, &mut req) } != 0 {
+        return Err(failed("SIOCGIFFLAGS"));
+    }
+    // SAFETY: SIOCGIFFLAGS filled the flags member of the union.
+    unsafe {
+        req.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
+    }
+    // SAFETY: the ifreq as read, with IFF_UP added.
+    if unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFFLAGS as libc::Ioctl, &req) } != 0 {
+        return Err(failed("SIOCSIFFLAGS"));
     }
     Ok(())
 }
@@ -516,6 +637,7 @@ impl Standby {
                     io::Error::last_os_error()
                 )));
             }
+            set_hostname(&spec.hostname)?;
         }
         let (passwd, group) = (standby.passwd.as_deref(), standby.group.as_deref());
         let ExecUser { uid, gid, groups } = user::resolve(&spec.user, passwd, group).map_err(setup_failed)?;

@@ -554,6 +554,21 @@ pub fn workload_image(dir: &Path) -> PathBuf {
     let etc = dir_node(&mut tree, Tree::ROOT, "etc", 0o755, 0);
     file(&mut tree, etc, "passwd", 0o644, PASSWD.into());
     file(&mut tree, etc, "group", 0o644, GROUP.into());
+    // What real images leave where Docker puts files of its own: the name of the
+    // container they were built in, amazonlinux's empty /etc/mtab, and an /etc/hosts that
+    // is a link, which a run must replace and never write through.
+    file(&mut tree, etc, "hostname", 0o644, b"buildkitsandbox\n".to_vec());
+    file(&mut tree, etc, "mtab", 0o644, Vec::new());
+    file(&mut tree, etc, "hosts.image", 0o644, b"image hosts\n".to_vec());
+    tree.insert(
+        etc,
+        b"hosts",
+        Node {
+            kind: Kind::Symlink(Box::from(&b"hosts.image"[..])),
+            meta: meta(0o777, 0),
+        },
+    )
+    .unwrap();
     let home = dir_node(&mut tree, Tree::ROOT, "home", 0o755, 0);
     dir_node(&mut tree, home, "app", 0o755, 1000);
     dir_node(&mut tree, Tree::ROOT, "tmp", 0o1777, 0);

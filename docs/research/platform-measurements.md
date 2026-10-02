@@ -2826,3 +2826,32 @@ revision before comparing a changed API/implementation.
   16.5 million allocations for a million entries, 8 for each in the file operations and
   8 in the differ, and the snapshot itself, 94 bytes an entry, which the export now
   holds while the writer adds its 36.
+
+### M81. The files Docker gives a container, and loopback, in every run
+
+- **Question.** A shards VM had loopback down (127.0.0.1 unreachable) and the image's own
+  `/etc/hostname`, `/etc/hosts` and `/etc/mtab`, where Docker gives every container its
+  own (moby daemon/initlayer/setup_unix.go). Of the 50 most pulled official images (both
+  architectures, 99 images), 89 ship an `/etc/hostname` left from their build, 49 an
+  `/etc/hosts`, 23 an `/etc/mtab` (amazonlinux's an empty file); none has an `/etc` that
+  is not a directory. shards-init now brings loopback up and writes `/etc/mtab` and
+  Docker's `/etc/hosts` lines before the template's snapshot, and at run start
+  `/etc/hostname` and `/etc/hosts` with the run's own name on 127.0.1.1 (D16). Does the
+  run-start part cost a run anything?
+- **Method.** `docs/research/measurements/build-ab/ab.py OLD NEW alpine:3.22 300 true`,
+  OLD at ab0457c and NEW with the change, each restoring its own template (M79).
+  2026-10-02, Apple M5 Max, macOS 26.4.1, load average 30 to 32 from other work.
+- **Result.** Paired differences, NEW minus OLD, median with bootstrap 95% interval: the
+  command's time in the guest +16 µs [+4, +41]; the client's wall clock −16 µs [−79, +88].
+
+  | Arm | n | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | command, OLD | 300 | 820 µs | 1083 µs | 1266 µs | 1270 µs |
+  | command, NEW | 300 | 831 µs | 1142 µs | 1293 µs | 1423 µs |
+  | wall, OLD | 300 | 5763 µs | 6494 µs | 7410 µs | 8232 µs |
+  | wall, NEW | 300 | 5771 µs | 6595 µs | 7408 µs | 7549 µs |
+
+- **Consequence.** The two files at run start cost the guest about 16 µs, within the tens
+  of µs that restores differ by from template to template (M29), which this comparison of
+  two templates cannot separate; the wall clock shows no cost. Both arms' medians, 5.8 ms
+  at this load, are above the 5 ms target, as were M79's 5.2 ms at load 21 to 31.
