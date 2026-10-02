@@ -823,7 +823,7 @@ of 2026-10-02:
 | `EXPOSE` | done (config) | **missing**: `run -P`, `-p` need D31 |
 | `VOLUME` | done (config) | **missing**: anonymous volumes at run |
 | `docker exec` (`-d`, `-i`, `-t`, `-e`, `-u`, `-w`, `--detach-keys`) | n/a | done (E2E, mutation-checked): a process forked by the guest's init beside the workload, its spec composed from the run's as dockerd composes it, its stdio on a connection of its own to the VM, which takes only those naming a token init alone was sent; refusals in dockerd's and runc's words and codes. 3.83 ms p50, 5.55 ms p99 end to end, against `docker exec`'s 64.21 ms and 81.02 ms (n=100, this host, 2026-10-02). `--env-file`, `--privileged` **missing** |
-| `HEALTHCHECK` (`--interval`, `--timeout`, `--start-period`, `--start-interval`, `--retries`, `NONE`) | done (config) | **missing**: checks, `ps` status, `inspect` health |
+| `HEALTHCHECK` (`--interval`, `--timeout`, `--start-period`, `--start-interval`, `--retries`, `NONE`) | done (config) | done (E2E, mutation-checked): probes as dockerd's monitor runs them (moby daemon/health.go), each an exec beside the command, killed at its timeout; `run --health-*` and `--no-healthcheck` with the CLI's and dockerd's checks and words, merged with the image's; `ps` status. **Missing**: `inspect`'s health record (kept, not yet shown) |
 | `STOPSIGNAL` | done (config) | done: `stop` sends the image's, or `run --stop-signal`'s, and waits `--stop-timeout` (E2E) |
 | `ONBUILD` | triggers planned (oracle); run when their steps are | n/a |
 | Build cache by step and whole image; `--cache-from/--cache-to`, `--no-cache` | **missing** | n/a |

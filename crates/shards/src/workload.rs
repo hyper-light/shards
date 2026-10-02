@@ -541,9 +541,17 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<Option<u8
             .name("exec-client".into())
             .spawn(move || {
                 while let Ok(Some(m)) = shards_ipc::recv(&client) {
-                    if m.kind == shards_ipc::kind::RESIZE && Size::decode(&m.payload).is_some() {
-                        let resize = [&id.to_be_bytes()[..], &m.payload].concat();
-                        to_guest(to, kind::EXEC_RESIZE, &resize);
+                    match m.kind {
+                        shards_ipc::kind::RESIZE if Size::decode(&m.payload).is_some() => {
+                            let resize = [&id.to_be_bytes()[..], &m.payload].concat();
+                            to_guest(to, kind::EXEC_RESIZE, &resize);
+                        }
+                        // The daemon's, for a health check past its timeout.
+                        shards_ipc::kind::SIGNAL if m.payload.len() == 4 => {
+                            let signal = [&id.to_be_bytes()[..], &m.payload].concat();
+                            to_guest(to, kind::EXEC_SIGNAL, &signal);
+                        }
+                        _ => {}
                     }
                 }
             })

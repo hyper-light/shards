@@ -1,4 +1,626 @@
 {
+  "durations": [
+    {
+      "value": "10m",
+      "ns": 600000000000,
+      "shown": "10m0s"
+    },
+    {
+      "value": "1h30m",
+      "ns": 5400000000000,
+      "shown": "1h30m0s"
+    },
+    {
+      "value": "1.5h",
+      "ns": 5400000000000,
+      "shown": "1h30m0s"
+    },
+    {
+      "value": ".5s",
+      "ns": 500000000,
+      "shown": "500ms"
+    },
+    {
+      "value": "5.s",
+      "ns": 5000000000,
+      "shown": "5s"
+    },
+    {
+      "value": "-10m",
+      "ns": -600000000000,
+      "shown": "-10m0s"
+    },
+    {
+      "value": "+10m",
+      "ns": 600000000000,
+      "shown": "10m0s"
+    },
+    {
+      "value": "0",
+      "ns": 0,
+      "shown": "0s"
+    },
+    {
+      "value": "0s",
+      "ns": 0,
+      "shown": "0s"
+    },
+    {
+      "value": "-0",
+      "ns": 0,
+      "shown": "0s"
+    },
+    {
+      "value": "1us",
+      "ns": 1000,
+      "shown": "1µs"
+    },
+    {
+      "value": "1µs",
+      "ns": 1000,
+      "shown": "1µs"
+    },
+    {
+      "value": "1μs",
+      "ns": 1000,
+      "shown": "1µs"
+    },
+    {
+      "value": "3ns",
+      "ns": 3,
+      "shown": "3ns"
+    },
+    {
+      "value": "300ms",
+      "ns": 300000000,
+      "shown": "300ms"
+    },
+    {
+      "value": "1h1h",
+      "ns": 7200000000000,
+      "shown": "2h0m0s"
+    },
+    {
+      "value": "",
+      "ns": 0,
+      "error": "time: invalid duration \"\""
+    },
+    {
+      "value": "h",
+      "ns": 0,
+      "error": "time: invalid duration \"h\""
+    },
+    {
+      "value": "1",
+      "ns": 0,
+      "error": "time: missing unit in duration \"1\""
+    },
+    {
+      "value": "1x",
+      "ns": 0,
+      "error": "time: unknown unit \"x\" in duration \"1x\""
+    },
+    {
+      "value": "1.2.3s",
+      "ns": 0,
+      "error": "time: missing unit in duration \"1.2.3s\""
+    },
+    {
+      "value": "9223372036854775807ns",
+      "ns": 9223372036854775807,
+      "shown": "2562047h47m16.854775807s"
+    },
+    {
+      "value": "9223372036854775808ns",
+      "ns": 0,
+      "error": "time: invalid duration \"9223372036854775808ns\""
+    },
+    {
+      "value": "2562047h47m16.854775807s",
+      "ns": 9223372036854775807,
+      "shown": "2562047h47m16.854775807s"
+    },
+    {
+      "value": "2562047h47m16.854775808s",
+      "ns": 0,
+      "error": "time: invalid duration \"2562047h47m16.854775808s\""
+    },
+    {
+      "value": "-2562047h47m16.854775808s",
+      "ns": -9223372036854775808,
+      "shown": "-2562047h47m16.854775808s"
+    },
+    {
+      "value": "1.0000000000000000000001s",
+      "ns": 1000000000,
+      "shown": "1s"
+    },
+    {
+      "value": "0.1h",
+      "ns": 360000000000,
+      "shown": "6m0s"
+    },
+    {
+      "value": "1.123456789123h",
+      "ns": 4044444440842,
+      "shown": "1h7m24.444440842s"
+    },
+    {
+      "value": ".s",
+      "ns": 0,
+      "error": "time: invalid duration \".s\""
+    },
+    {
+      "value": "-.s",
+      "ns": 0,
+      "error": "time: invalid duration \"-.s\""
+    },
+    {
+      "value": "1e9s",
+      "ns": 0,
+      "error": "time: unknown unit \"e\" in duration \"1e9s\""
+    },
+    {
+      "value": "1 s",
+      "ns": 0,
+      "error": "time: unknown unit \" s\" in duration \"1 s\""
+    },
+    {
+      "value": "2013-01-02T13:23:37Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37Z\""
+    },
+    {
+      "value": "2013-01-02T13:23:37",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.123456789Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37.123456789Z\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.1Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37.1Z\""
+    },
+    {
+      "value": "2013-01-02T13:23:37,5Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37,5Z\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.123456789",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37.123456789\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.1234567891234Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37.1234567891234Z\""
+    },
+    {
+      "value": "2013-01-02T13",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13\""
+    },
+    {
+      "value": "2013-01-02T13:23",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23\""
+    },
+    {
+      "value": "2013-01-02T13Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13Z\""
+    },
+    {
+      "value": "2013-01-02T13:23Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23Z\""
+    },
+    {
+      "value": "2013-01-02T13:23:37+01:00",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37+01:00\""
+    },
+    {
+      "value": "2013-01-02T13:23:37-05:30",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37-05:30\""
+    },
+    {
+      "value": "2013-01-02T13:23+01:00",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23+01:00\""
+    },
+    {
+      "value": "2013-01-02T13+01:00",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13+01:00\""
+    },
+    {
+      "value": "2013-01-02",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02\""
+    },
+    {
+      "value": "2013-01-02Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02Z\""
+    },
+    {
+      "value": "2013-01-02+01:00",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02+01:00\""
+    },
+    {
+      "value": "2013-01-02-05:00",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02-05:00\""
+    },
+    {
+      "value": "2013-01-02T13:23:37z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37z\""
+    },
+    {
+      "value": "2013-01-02t13:23:37Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02t13:23:37Z\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.5",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37.5\""
+    },
+    {
+      "value": "2013-13-02",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-13-02\""
+    },
+    {
+      "value": "2013-00-02",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-00-02\""
+    },
+    {
+      "value": "2013-02-30",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-02-30\""
+    },
+    {
+      "value": "2013-01-02T24:00:00Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T24:00:00Z\""
+    },
+    {
+      "value": "2013-01-02T13:60:00Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:60:00Z\""
+    },
+    {
+      "value": "2013-01-02T13:23:60Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:60Z\""
+    },
+    {
+      "value": "2013-01-02T13:23:37+25:00",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37+25:00\""
+    },
+    {
+      "value": "2013-01-02T13:23:37+01:61",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37+01:61\""
+    },
+    {
+      "value": "2013-01-02T13:23:37*01:00",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37*01:00\""
+    },
+    {
+      "value": "2013-01-02T13:23:37+0100",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37+0100\""
+    },
+    {
+      "value": "2013-01-02T1:23:37Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T1:23:37Z\""
+    },
+    {
+      "value": "2013-1-02",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-1-02\""
+    },
+    {
+      "value": "13-01-02",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"13-01-02\""
+    },
+    {
+      "value": "2013/01/02",
+      "ns": 0,
+      "error": "time: unknown unit \"/\" in duration \"2013/01/02\""
+    },
+    {
+      "value": "2013-01-02T13:23:37Zextra",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37Zextra\""
+    },
+    {
+      "value": "2013-01-02x",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02x\""
+    },
+    {
+      "value": "2013-01-02T13:23:37 ",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37 \""
+    },
+    {
+      "value": "-x",
+      "ns": 0,
+      "error": "time: invalid duration \"-x\""
+    },
+    {
+      "value": "x",
+      "ns": 0,
+      "error": "time: invalid duration \"x\""
+    },
+    {
+      "value": "Z",
+      "ns": 0,
+      "error": "time: invalid duration \"Z\""
+    },
+    {
+      "value": "T",
+      "ns": 0,
+      "error": "time: invalid duration \"T\""
+    },
+    {
+      "value": "2013-01-02T",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T\""
+    },
+    {
+      "value": "2013-01-02T13:",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37.Z\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37.\""
+    },
+    {
+      "value": "２０１３-01-02",
+      "ns": 0,
+      "error": "time: invalid duration \"\\xef\\xbc\\x92\\xef\\xbc\\x90\\xef\\xbc\\x91\\xef\\xbc\\x93-01-02\""
+    },
+    {
+      "value": "2013-01-02T13:23:37é",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37\\xc3\\xa9\""
+    },
+    {
+      "value": "2013-01-02T13:23:37\"x",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37\\\"x\""
+    },
+    {
+      "value": "2013-01-02T13:23:37\\x",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37\\\\x\""
+    },
+    {
+      "value": "2024-02-29",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2024-02-29\""
+    },
+    {
+      "value": "2023-02-29",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2023-02-29\""
+    },
+    {
+      "value": "0000-01-01",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"0000-01-01\""
+    },
+    {
+      "value": "9999-12-31T23:59:59Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"9999-12-31T23:59:59Z\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.999999999999Z",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37.999999999999Z\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.123-01:00",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"2013-01-02T13:23:37.123-01:00\""
+    },
+    {
+      "value": "1600000000",
+      "ns": 0,
+      "error": "time: missing unit in duration \"1600000000\""
+    },
+    {
+      "value": "1600000000.5",
+      "ns": 0,
+      "error": "time: missing unit in duration \"1600000000.5\""
+    },
+    {
+      "value": "1600000000.123456789",
+      "ns": 0,
+      "error": "time: missing unit in duration \"1600000000.123456789\""
+    },
+    {
+      "value": "1.+5",
+      "ns": 0,
+      "error": "time: unknown unit \"+\" in duration \"1.+5\""
+    },
+    {
+      "value": "1.2.3",
+      "ns": 0,
+      "error": "time: missing unit in duration \"1.2.3\""
+    },
+    {
+      "value": "+5",
+      "ns": 0,
+      "error": "time: missing unit in duration \"+5\""
+    },
+    {
+      "value": "-5",
+      "ns": 0,
+      "error": "time: missing unit in duration \"-5\""
+    },
+    {
+      "value": "1e9",
+      "ns": 0,
+      "error": "time: unknown unit \"e\" in duration \"1e9\""
+    },
+    {
+      "value": "99999999999999999999",
+      "ns": 0,
+      "error": "time: invalid duration \"99999999999999999999\""
+    },
+    {
+      "value": "1.99999999999999999999",
+      "ns": 0,
+      "error": "time: missing unit in duration \"1.99999999999999999999\""
+    },
+    {
+      "value": "1.-5",
+      "ns": 0,
+      "error": "time: unknown unit \"-\" in duration \"1.-5\""
+    },
+    {
+      "value": "",
+      "ns": 0,
+      "shown": "0s"
+    },
+    {
+      "value": "",
+      "ns": 1,
+      "shown": "1ns"
+    },
+    {
+      "value": "",
+      "ns": 999,
+      "shown": "999ns"
+    },
+    {
+      "value": "",
+      "ns": 1000,
+      "shown": "1µs"
+    },
+    {
+      "value": "",
+      "ns": 1500,
+      "shown": "1.5µs"
+    },
+    {
+      "value": "",
+      "ns": 999999,
+      "shown": "999.999µs"
+    },
+    {
+      "value": "",
+      "ns": 1000000,
+      "shown": "1ms"
+    },
+    {
+      "value": "",
+      "ns": 1234567,
+      "shown": "1.234567ms"
+    },
+    {
+      "value": "",
+      "ns": 999999999,
+      "shown": "999.999999ms"
+    },
+    {
+      "value": "",
+      "ns": 1000000000,
+      "shown": "1s"
+    },
+    {
+      "value": "",
+      "ns": 1500000000,
+      "shown": "1.5s"
+    },
+    {
+      "value": "",
+      "ns": 59999999999,
+      "shown": "59.999999999s"
+    },
+    {
+      "value": "",
+      "ns": 60000000000,
+      "shown": "1m0s"
+    },
+    {
+      "value": "",
+      "ns": 90000000000,
+      "shown": "1m30s"
+    },
+    {
+      "value": "",
+      "ns": 3599999999999,
+      "shown": "59m59.999999999s"
+    },
+    {
+      "value": "",
+      "ns": 3600000000000,
+      "shown": "1h0m0s"
+    },
+    {
+      "value": "",
+      "ns": 3661001000000,
+      "shown": "1h1m1.001s"
+    },
+    {
+      "value": "",
+      "ns": 86400000000000,
+      "shown": "24h0m0s"
+    },
+    {
+      "value": "",
+      "ns": -1,
+      "shown": "-1ns"
+    },
+    {
+      "value": "",
+      "ns": -1500000000,
+      "shown": "-1.5s"
+    },
+    {
+      "value": "",
+      "ns": -3661001000000,
+      "shown": "-1h1m1.001s"
+    },
+    {
+      "value": "",
+      "ns": 9223372036854775807,
+      "shown": "2562047h47m16.854775807s"
+    },
+    {
+      "value": "",
+      "ns": -9223372036854775808,
+      "shown": "-2562047h47m16.854775808s"
+    }
+  ],
   "now_ns": 1790679937123456789,
   "since": [
     {

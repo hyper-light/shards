@@ -12,7 +12,7 @@
       "run",
       "--help"
     ],
-    "stdout": "Usage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate and run a new container from an image\n\nAliases:\n  shards container run, shards run\n\nOptions:\n  -d, --detach               Run container in background and print\n                             container ID\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n      --entrypoint string    Overwrite the default ENTRYPOINT of the image\n  -e, --env list             Set environment variables\n      --help                 Print usage\n  -h, --hostname string      Container host name\n      --init                 Run an init inside the container that\n                             forwards signals and reaps processes\n  -i, --interactive          Keep STDIN open even if not attached\n      --name string          Assign a name to the container\n      --network network      Connect a container to a network\n      --pull string          Pull image before running (\"always\",\n                             \"missing\", \"never\") (default \"missing\")\n      --rm                   Automatically remove the container and its\n                             associated anonymous volumes when it exits\n      --stop-signal string   Signal to stop the container\n      --stop-timeout int     Timeout (in seconds) to stop a container\n  -t, --tty                  Allocate a pseudo-TTY\n  -u, --user string          Username or UID (format:\n                             \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n  -w, --workdir string       Working directory inside the container\n",
+    "stdout": "Usage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate and run a new container from an image\n\nAliases:\n  shards container run, shards run\n\nOptions:\n  -d, --detach                           Run container in background and\n                                         print container ID\n      --detach-keys string               Override the key sequence for\n                                         detaching a container\n      --entrypoint string                Overwrite the default ENTRYPOINT\n                                         of the image\n  -e, --env list                         Set environment variables\n      --health-cmd string                Command to run to check health\n      --health-interval duration         Time between running the check\n                                         (ms|s|m|h) (default 0s)\n      --health-retries int               Consecutive failures needed to\n                                         report unhealthy\n      --health-start-interval duration   Time between running the check\n                                         during the start period\n                                         (ms|s|m|h) (default 0s)\n      --health-start-period duration     Start period for the container\n                                         to initialize before starting\n                                         health-retries countdown\n                                         (ms|s|m|h) (default 0s)\n      --health-timeout duration          Maximum time to allow one check\n                                         to run (ms|s|m|h) (default 0s)\n      --help                             Print usage\n  -h, --hostname string                  Container host name\n      --init                             Run an init inside the container\n                                         that forwards signals and reaps\n                                         processes\n  -i, --interactive                      Keep STDIN open even if not attached\n      --name string                      Assign a name to the container\n      --network network                  Connect a container to a network\n      --no-healthcheck                   Disable any container-specified\n                                         HEALTHCHECK\n      --pull string                      Pull image before running\n                                         (\"always\", \"missing\", \"never\")\n                                         (default \"missing\")\n      --rm                               Automatically remove the\n                                         container and its associated\n                                         anonymous volumes when it exits\n      --stop-signal string               Signal to stop the container\n      --stop-timeout int                 Timeout (in seconds) to stop a\n                                         container\n  -t, --tty                              Allocate a pseudo-TTY\n  -u, --user string                      Username or UID (format:\n                                         \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n  -w, --workdir string                   Working directory inside the\n                                         container\n",
     "stderr": "",
     "status": 0
   },
@@ -118,6 +118,79 @@
       "alpine"
     ],
     "stdout": "RUN --network= \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--health-cmd",
+      "true",
+      "--health-interval",
+      "1m30.5s",
+      "--health-retries",
+      "2",
+      "--health-timeout=500ms",
+      "--health-start-period",
+      "1h",
+      "--health-start-interval",
+      "2s",
+      "alpine"
+    ],
+    "stdout": "RUN --health-cmd=true --health-interval=1m30.5s --health-retries=2 --health-start-interval=2s --health-start-period=1h0m0s --health-timeout=500ms \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--health-interval",
+      "x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"--health-interval\" flag: time: invalid duration \"x\"\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--health-interval",
+      "1",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"1\" for \"--health-interval\" flag: time: missing unit in duration \"1\"\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--health-timeout",
+      "1q",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"1q\" for \"--health-timeout\" flag: time: unknown unit \"q\" in duration \"1q\"\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--health-interval=-1s",
+      "alpine"
+    ],
+    "stdout": "RUN --health-interval=-1s \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--no-healthcheck",
+      "alpine"
+    ],
+    "stdout": "RUN --no-healthcheck=true \"alpine\"\n",
     "stderr": "",
     "status": 0
   },

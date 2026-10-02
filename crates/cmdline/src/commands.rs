@@ -44,6 +44,33 @@ pub static RUN: Command = Command {
             "Overwrite the default ENTRYPOINT of the image",
         ),
         Flag::many("env", Some(b'e'), "list", "Set environment variables"),
+        Flag::string("health-cmd", None, "", "Command to run to check health"),
+        Flag::duration(
+            "health-interval",
+            None,
+            "Time between running the check (ms|s|m|h) (default 0s)",
+        ),
+        Flag::int(
+            "health-retries",
+            None,
+            "0",
+            "Consecutive failures needed to report unhealthy",
+        ),
+        Flag::duration(
+            "health-start-interval",
+            None,
+            "Time between running the check during the start period (ms|s|m|h) (default 0s)",
+        ),
+        Flag::duration(
+            "health-start-period",
+            None,
+            "Start period for the container to initialize before starting health-retries countdown (ms|s|m|h) (default 0s)",
+        ),
+        Flag::duration(
+            "health-timeout",
+            None,
+            "Maximum time to allow one check to run (ms|s|m|h) (default 0s)",
+        ),
         Flag::bool("help", None, "Print usage"),
         Flag::string("hostname", Some(b'h'), "", "Container host name"),
         // shards-init is every guest's PID 1, and does what docker-init does: it forwards
@@ -63,6 +90,11 @@ pub static RUN: Command = Command {
             .sharing("network")
             .hidden(),
         Flag::many("network", None, "network", "Connect a container to a network"),
+        Flag::bool(
+            "no-healthcheck",
+            None,
+            "Disable any container-specified HEALTHCHECK",
+        ),
         Flag::string(
             "pull",
             None,
@@ -131,12 +163,6 @@ env-file - m - -\n\
 expose - m - -\n\
 gpus - m - -\n\
 group-add - m - -\n\
-health-cmd - s - -\n\
-health-interval - s 0s -\n\
-health-retries - i 0 -\n\
-health-start-interval - s 0s -\n\
-health-start-period - s 0s -\n\
-health-timeout - s 0s -\n\
 io-maxbandwidth - s 0 -\n\
 io-maxiops - s 0 -\n\
 ip - s <nil> -\n\
@@ -157,7 +183,6 @@ memory-swappiness - i -1 -\n\
 mount - m - -\n\
 net-alias - m - network-alias\n\
 network-alias - m - -\n\
-no-healthcheck - b false -\n\
 oom-kill-disable - b false -\n\
 oom-score-adj - i 0 -\n\
 pid - s - -\n\

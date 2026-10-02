@@ -310,8 +310,23 @@ pub struct Run {
     pub stop_signal: Option<String>,
     /// `--stop-timeout`, in seconds, if given.
     pub stop_timeout: Option<i64>,
+    /// The `--health-*` settings, or `--no-healthcheck`'s `NONE`, if any was given.
+    pub health: Option<Health>,
     /// The daemon binary this client would start.
     pub daemon: Identity,
+}
+
+/// A health check as a run sets it, or as an image's merged with a run's: its test
+/// (`CMD ...`, `CMD-SHELL cmd`, `NONE`, or empty for the image's), then durations in
+/// nanoseconds and the retries, each 0 for "not set" (moby HealthConfig).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Health {
+    pub test: Vec<String>,
+    pub interval: i64,
+    pub timeout: i64,
+    pub start_period: i64,
+    pub start_interval: i64,
+    pub retries: i64,
 }
 
 /// What a run asks of its endpoint on one network, as the CLI read it: addresses as
@@ -418,6 +433,16 @@ impl Run {
             e.encode(&mut w);
         }
         put_opt(&mut w, self.stop_signal.as_deref());
+        match &self.health {
+            Some(h) => {
+                w.push(1);
+                put_list(&mut w, &h.test);
+                for n in [h.interval, h.timeout, h.start_period, h.start_interval, h.retries] {
+                    w.extend_from_slice(&n.to_be_bytes());
+                }
+            }
+            None => w.push(0),
+        }
         match self.stop_timeout {
             Some(t) => {
                 w.push(1);
@@ -469,6 +494,20 @@ impl Run {
                 (0..n).map(|_| Endpoint::decode(&mut r)).collect::<Option<_>>()?
             },
             stop_signal: r.opt()?,
+            health: if r.flag()? {
+                let test = r.list()?;
+                let mut n = || r.take(8).and_then(|b| b.try_into().ok()).map(i64::from_be_bytes);
+                Some(Health {
+                    test,
+                    interval: n()?,
+                    timeout: n()?,
+                    start_period: n()?,
+                    start_interval: n()?,
+                    retries: n()?,
+                })
+            } else {
+                None
+            },
             stop_timeout: if r.flag()? {
                 Some(i64::from_be_bytes(r.take(8)?.try_into().ok()?))
             } else {
@@ -721,6 +760,14 @@ mod tests {
             ],
             stop_signal: Some("SIGUSR1".into()),
             stop_timeout: Some(-1),
+            health: Some(Health {
+                test: vec!["CMD-SHELL".into(), "true".into()],
+                interval: 1,
+                timeout: 2,
+                start_period: 3,
+                start_interval: 4,
+                retries: -5,
+            }),
             daemon: Identity {
                 dev: 1,
                 ino: 2,

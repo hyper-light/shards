@@ -853,3 +853,99 @@ fn an_images_stop_signal_is_what_stop_sends() {
     let waited = run_shards_env(&["wait"], &["usr1"], &env, TIMEOUT);
     assert_eq!(waited.stdout, "138\n", "{}", waited.stderr);
 }
+
+/// An image's `HEALTHCHECK` runs as dockerd runs it: each probe an exec beside the
+/// command, the container `(health: starting)` until the first result, then `(healthy)`,
+/// or `(unhealthy)` once failures, or probes past their timeout, reach its retries; a
+/// run's `--health-*` overrides the image's.
+#[test]
+fn an_images_healthcheck_runs_as_dockerd_runs_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-health-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let build = |tag: &str, check: &str| {
+        let ctx = context(
+            &format!("build-health-{tag}"),
+            &format!("FROM {image}\nHEALTHCHECK {check}\nCMD [\"sleep\"]\n"),
+        );
+        let built = run_shards_env(
+            &["build"],
+            &["-t", &format!("{tag}:1"), ctx.to_str().unwrap()],
+            &env,
+            TIMEOUT,
+        );
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+    };
+    build(
+        "good",
+        "--interval=200ms CMD [\"/bin/testguest\", \"exit\", \"0\"]",
+    );
+    build(
+        "bad",
+        "--interval=200ms --retries=2 CMD [\"/bin/testguest\", \"exit\", \"1\"]",
+    );
+    build(
+        "slow",
+        "--interval=200ms --timeout=100ms --retries=1 CMD [\"/bin/testguest\", \"sleep\"]",
+    );
+    for (name, image, options) in [
+        ("good", "good:1", &[][..]),
+        ("bad", "bad:1", &[][..]),
+        ("slow", "slow:1", &[][..]),
+        // The run's retries over the image's: unhealthy only after 50 failures.
+        ("patient", "bad:1", &["--health-retries", "50"][..]),
+    ] {
+        let mut args = vec!["-d", "--name", name];
+        args.extend_from_slice(options);
+        args.push(image);
+        let ran = run_shards_env(&["run"], &args, &env, TIMEOUT);
+        assert_eq!(ran.status, Some(0), "{}", ran.stderr);
+    }
+    let status = |name: &str| {
+        let ps = run_shards_env(&["ps"], &["--no-trunc"], &env, TIMEOUT);
+        ps.stdout
+            .lines()
+            .find(|l| l.ends_with(&format!(" {name}")))
+            .map(|l| {
+                let up = l.find("Up ").unwrap_or(0);
+                l.get(up..).unwrap_or_default().to_string()
+            })
+            .unwrap_or_default()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let wanted = [
+        ("good", "(healthy)"),
+        ("bad", "(unhealthy)"),
+        ("slow", "(unhealthy)"),
+        ("patient", "(health: starting)"),
+    ];
+    loop {
+        let now: Vec<(String, String)> = wanted.iter().map(|(n, _)| (n.to_string(), status(n))).collect();
+        if wanted
+            .iter()
+            .zip(&now)
+            .all(|((_, want), (_, got))| got.contains(want))
+        {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{now:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Five more probes, each failing: two would have done for the image's retries.
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        status("patient").contains("(health: starting)"),
+        "{}",
+        status("patient")
+    );
+    for name in ["good", "bad", "slow", "patient"] {
+        let _ = run_shards_env(&["rm"], &["-f", name], &env, TIMEOUT);
+    }
+}

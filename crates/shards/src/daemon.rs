@@ -33,6 +33,7 @@ use crate::containers::{self, Container, Disk, Real, Registry, Removal, State as
 
 mod commands;
 mod demand;
+mod health;
 mod logs;
 mod network;
 use crate::run::{Boot, Prepared};
@@ -192,11 +193,20 @@ enum RunState {
     Tracked(Tracked),
 }
 
+/// What a run was composed of, which each `exec` in its container starts from, and its
+/// health check with the shell a `CMD-SHELL` one runs in.
+struct Base {
+    options: crate::spec::Options,
+    health: Option<(shards_ipc::Health, Vec<String>)>,
+}
+
 /// What a run's registration keeps of its request: a detached client, until it is told
 /// whether its command started, and what each `exec` in its container starts from.
 struct Keep<'a> {
     detached: Option<&'a UnixStream>,
     options: crate::spec::Options,
+    /// Its health check, and the shell a `CMD-SHELL` one runs in.
+    health: Option<(shards_ipc::Health, Vec<String>)>,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -207,8 +217,9 @@ struct Keep<'a> {
 /// serialize their record writes, and asking each run's thread would add a round trip per
 /// run to every command (docs/audit/2026-09-30_arc.md).
 struct Tracked {
-    /// What its run was composed of, which each `exec` starts from.
-    options: crate::spec::Options,
+    /// What its run was composed of: read, never changed, by each `exec` and health
+    /// probe, on threads of their own, which share it rather than copy it each time.
+    base: Arc<Base>,
     socket: Arc<UnixStream>,
     vm: Arc<shards_ipc::Child>,
     inbox: Arc<Mutex<Inbox>>,
@@ -413,6 +424,8 @@ struct Daemon<D: Disk = Real> {
     next_waiter: AtomicU64,
     /// Numbers each exec handed to a VM (`kind::EXEC_RUN`).
     next_exec: AtomicU64,
+    /// Each running container's health, if it has a check: in memory, as dockerd keeps it.
+    health: Mutex<HashMap<String, health::State>>,
     /// The containers `shards rm` is removing.
     removing: Mutex<HashSet<String>>,
     /// A container's ID, directory and log, made ahead of the run that takes them.
@@ -750,6 +763,7 @@ impl<D: Disk> Daemon<D> {
             waiters: Mutex::default(),
             next_waiter: AtomicU64::new(0),
             next_exec: AtomicU64::new(0),
+            health: Mutex::new(HashMap::new()),
             removing: Mutex::default(),
             spare: Mutex::default(),
             saved: AtomicU64::new(0),
@@ -910,6 +924,14 @@ impl<D: Disk> Daemon<D> {
                 };
                 // The client's descriptors are closed by now: its run goes on in the VM.
                 if let Some((id, inbox)) = handed {
+                    // Its health checks, beside it, as dockerd's monitor runs them.
+                    let watched = id.clone();
+                    if let Err(e) = std::thread::Builder::new()
+                        .name("health".into())
+                        .spawn_scoped(threads, move || self.monitor_health(&watched))
+                    {
+                        log(format!("container {id}: its health checks' thread: {e}"));
+                    }
                     self.follow(&id, &inbox);
                 }
             });
@@ -1149,6 +1171,7 @@ impl<D: Disk> Daemon<D> {
             Keep {
                 detached,
                 options: prepared.options.clone(),
+                health: prepared.health.clone().map(|h| (h, prepared.shell.clone())),
             },
             || self.warm_for(threads, &prepared, &start, &say),
         );
@@ -1192,7 +1215,15 @@ impl<D: Disk> Daemon<D> {
             match handed {
                 // The warm VM serves the client from here, and ours close. A detached
                 // client waits for the daemon to say whether its command started.
-                Ok(()) => return Ok(self.register(ready, id, keep.detached, keep.options.clone())),
+                Ok(()) => {
+                    return Ok(self.register(
+                        ready,
+                        id,
+                        keep.detached,
+                        keep.options.clone(),
+                        keep.health.clone(),
+                    ));
+                }
                 Err(Untaken::Surely(e)) => {
                     log(format!("warm VM {} did not take a run: {e}", ready.vm.id()));
                     let _ = ready.vm.kill(libc::SIGKILL);
@@ -1205,7 +1236,13 @@ impl<D: Disk> Daemon<D> {
                         ready.vm.id()
                     ));
                     let _ = ready.vm.kill(libc::SIGKILL);
-                    return Ok(self.register(ready, id, keep.detached, keep.options.clone()));
+                    return Ok(self.register(
+                        ready,
+                        id,
+                        keep.detached,
+                        keep.options.clone(),
+                        keep.health.clone(),
+                    ));
                 }
             }
         }
@@ -1248,6 +1285,27 @@ impl<D: Disk> Daemon<D> {
             .as_deref()
             .map(commands::parse_signal)
             .transpose()?;
+        if let Some(h) = &prepared.health {
+            // dockerd's floor for each duration set (daemon/container.go, translate:
+            // containertypes.MinimumDuration), and no negative retries.
+            const MINIMUM_NS: i64 = 1_000_000;
+            for (ns, what) in [(h.interval, "Interval"), (h.timeout, "Timeout")] {
+                if ns != 0 && ns < MINIMUM_NS {
+                    return Err(format!("{what} in Healthcheck cannot be less than 1ms"));
+                }
+            }
+            if h.retries < 0 {
+                return Err("Retries in Healthcheck cannot be negative".into());
+            }
+            for (ns, what) in [
+                (h.start_period, "StartPeriod"),
+                (h.start_interval, "StartInterval"),
+            ] {
+                if ns != 0 && ns < MINIMUM_NS {
+                    return Err(format!("{what} in Healthcheck cannot be less than 1ms"));
+                }
+            }
+        }
         let mut registry = lock(&self.containers);
         let name = match &run.name {
             Some(given) => {
@@ -1593,6 +1651,7 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         detached: Option<&UnixStream>,
         options: crate::spec::Options,
+        health: Option<(shards_ipc::Health, Vec<String>)>,
     ) -> Arc<Mutex<Inbox>> {
         // Runs last as long as their commands.
         let _ = ready.socket.set_read_timeout(None);
@@ -1616,7 +1675,7 @@ impl<D: Disk> Daemon<D> {
             execs_in_flight: Vec::new(),
         }));
         let tracked = Tracked {
-            options,
+            base: Arc::new(Base { options, health }),
             socket,
             vm: ready.vm,
             inbox: inbox.clone(),
@@ -2942,6 +3001,8 @@ mod tests {
                 lease: None,
                 stop_signal: None,
                 options: crate::spec::Options::default(),
+                health: None,
+                shell: Vec::new(),
             };
             self.t.daemon.create(&run, &prepared, &id).unwrap();
             self.t.daemon.record_arrival(self.threads, &id);
@@ -2972,6 +3033,7 @@ mod tests {
                     Keep {
                         detached: None,
                         options: crate::spec::Options::default(),
+                        health: None,
                     },
                     acquire,
                 )?;

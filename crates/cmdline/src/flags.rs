@@ -20,6 +20,9 @@ pub enum Kind {
     String,
     /// Text given any number of times, each kept; the name is its type in `--help`.
     Many(&'static str),
+    /// A time, read as Go's `time.ParseDuration` reads it, in nanoseconds; shown as
+    /// `Duration.String` shows it.
+    Duration,
 }
 
 /// A command's flag.
@@ -89,6 +92,10 @@ impl Flag {
         Flag::new(name, short, Kind::String, default, usage)
     }
 
+    pub const fn duration(name: &'static str, short: Option<u8>, usage: &'static str) -> Flag {
+        Flag::new(name, short, Kind::Duration, "0s", usage)
+    }
+
     pub const fn many(
         name: &'static str,
         short: Option<u8>,
@@ -152,6 +159,7 @@ impl Flag {
             Kind::Int => self.default == "0",
             Kind::String => self.default.is_empty(),
             Kind::Many(_) => matches!(self.default, "false" | "<nil>" | "" | "0"),
+            Kind::Duration => matches!(self.default, "0" | "0s"),
         }
     }
 }
@@ -327,6 +335,7 @@ impl Parsed {
             .map(|f| {
                 let shown = match self.value(f.name) {
                     Some(Value::Bool(b)) => b.to_string(),
+                    Some(Value::Int(n)) if f.kind == Kind::Duration => crate::gotime::format_duration(*n),
                     Some(Value::Int(n)) => n.to_string(),
                     Some(Value::Text(s)) => s.clone(),
                     Some(Value::Many(v)) if v.is_empty() => String::new(),
@@ -496,6 +505,9 @@ pub fn parse(
 fn is_default(f: &Flag, value: &Value) -> bool {
     match value {
         Value::Bool(b) => go::parse_bool(f.default).is_ok_and(|d| d == *b),
+        Value::Int(n) if f.kind == Kind::Duration => {
+            crate::gotime::duration(f.default).is_ok_and(|d| d == *n)
+        }
         Value::Int(n) => go::parse_int(f.default).is_ok_and(|d| d == *n),
         Value::Text(s) => s == f.default,
         Value::Many(v) => v.is_empty(),
@@ -654,6 +666,7 @@ fn set(
         (Kind::Bool, _) => Value::Bool(go::parse_bool(value).map_err(|e| invalid(e.to_string()))?),
         (Kind::Int, _) => Value::Int(go::parse_int(value).map_err(|e| invalid(e.to_string()))?),
         (Kind::String, _) => Value::Text(value.to_string()),
+        (Kind::Duration, _) => Value::Int(crate::gotime::duration(value).map_err(invalid)?),
         (Kind::Many(_), before) => {
             let mut all = match before {
                 Some(Value::Many(all)) => all,
@@ -739,6 +752,7 @@ fn unquote_usage(f: &Flag) -> (String, String) {
         Kind::Int => "int",
         Kind::String => "string",
         Kind::Many(t) => t,
+        Kind::Duration => "duration",
     };
     (type_name.to_string(), usage.to_string())
 }

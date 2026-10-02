@@ -190,6 +190,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         }
     };
     let (image, cmd) = parsed.args.split_first().ok_or("an image is required")?;
+    let health = health(parsed)?;
     let attachments = parsed
         .many("network")
         .iter()
@@ -234,8 +235,52 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
             .changed("stop-signal")
             .then(|| parsed.string("stop-signal").to_string()),
         stop_timeout: parsed.changed("stop-timeout").then(|| parsed.int("stop-timeout")),
+        health,
         ..Run::default()
     })
+}
+
+/// The health check the command line sets, as the CLI reads it (docker/cli
+/// cli/command/container/opts.go, parse): `NONE` for `--no-healthcheck`, which no other
+/// `--health-*` may join; otherwise what the `--health-*` flags say, none negative, and
+/// `--health-cmd` as `CMD-SHELL`; or nothing, for the image's.
+fn health(parsed: &Parsed) -> Result<Option<shards_ipc::Health>, String> {
+    let given = shards_ipc::Health {
+        test: match parsed.string("health-cmd") {
+            "" => Vec::new(),
+            cmd => vec!["CMD-SHELL".into(), cmd.into()],
+        },
+        interval: parsed.int("health-interval"),
+        timeout: parsed.int("health-timeout"),
+        start_period: parsed.int("health-start-period"),
+        start_interval: parsed.int("health-start-interval"),
+        retries: parsed.int("health-retries"),
+    };
+    let any = given != shards_ipc::Health::default();
+    if parsed.bool("no-healthcheck") {
+        if any {
+            return Err("--no-healthcheck conflicts with --health-* options".into());
+        }
+        return Ok(Some(shards_ipc::Health {
+            test: vec!["NONE".into()],
+            ..shards_ipc::Health::default()
+        }));
+    }
+    if !any {
+        return Ok(None);
+    }
+    for (value, flag) in [
+        (given.interval, "--health-interval"),
+        (given.timeout, "--health-timeout"),
+        (given.retries, "--health-retries"),
+        (given.start_period, "--health-start-period"),
+        (given.start_interval, "--health-start-interval"),
+    ] {
+        if value < 0 {
+            return Err(format!("{flag} cannot be negative"));
+        }
+    }
+    Ok(Some(given))
 }
 
 /// Rows and columns of this process's stdout, or 0×0 if it is not a terminal.

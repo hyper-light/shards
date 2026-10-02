@@ -202,13 +202,17 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         // One being started is seen through, as `docker exec` finds it started or not.
         self.await_start(&id);
-        let runs = lock(&self.runs);
-        let Some(RunState::Tracked(run)) = runs.get(&id) else {
-            return refuse(&format!(
-                "Error response from daemon: container {id} is not running"
-            ));
+        // What the exec needs of the run, taken out of `runs` before its inbox is locked:
+        // its follower holds the inbox while it ends the run, which takes `runs`.
+        let (base, socket, inbox) = match lock(&self.runs).get(&id) {
+            Some(RunState::Tracked(run)) => (run.base.clone(), run.socket.clone(), run.inbox.clone()),
+            _ => {
+                return refuse(&format!(
+                    "Error response from daemon: container {id} is not running"
+                ));
+            }
         };
-        let base = &run.options;
+        let base = &base.options;
         let options = crate::spec::Options {
             argv: exec.cmd,
             env: base.env.iter().chain(&exec.env).cloned().collect(),
@@ -251,11 +255,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 ));
             }
         };
-        lock(&run.inbox).execs_in_flight.push((number, held));
+        lock(&inbox).execs_in_flight.push((number, held));
         let fds = [conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
-        if let Err(e) = shards_ipc::send(&run.socket, kind::EXEC_RUN, &payload, &fds) {
-            lock(&run.inbox).execs_in_flight.retain(|(n, _)| *n != number);
-            drop(runs);
+        if let Err(e) = shards_ipc::send(&socket, kind::EXEC_RUN, &payload, &fds) {
+            lock(&inbox).execs_in_flight.retain(|(n, _)| *n != number);
             refuse(&format!(
                 "Error response from daemon: the container's microVM: {e}"
             ));
@@ -653,6 +656,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         list.sort_by_key(|c| std::cmp::Reverse(c.created));
         list.truncate(last.unwrap_or(usize::MAX));
         let at = now();
+        let health = lock(&self.health);
         let listed: Vec<Listed> = list
             .iter()
             .map(|c| Listed {
@@ -660,7 +664,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 image: c.image.clone(),
                 command: command_line(&c.command),
                 created: c.created,
-                status: status(c, at),
+                status: status(c, at, health.get(&c.id).map(|h| h.status)),
                 name: c.name.clone(),
             })
             .collect();
@@ -1180,10 +1184,17 @@ fn human_duration(ns: u128) -> String {
 }
 
 /// A container's status as dockerd words it (moby daemon/container/state.go): up for how
-/// long, or exited with what status how long ago, or created and never started.
-fn status(c: &Container, at: u128) -> String {
+/// long, with its health if it has a check, or exited with what status how long ago, or
+/// created and never started.
+fn status(c: &Container, at: u128, health: Option<super::health::Status>) -> String {
     match (c.state, c.started, c.finished) {
-        (Life::Running, Some(started), _) => format!("Up {}", human_duration(at.saturating_sub(started))),
+        (Life::Running, Some(started), _) => {
+            let up = human_duration(at.saturating_sub(started));
+            match health {
+                Some(h) => format!("Up {up} ({})", h.shown()),
+                None => format!("Up {up}"),
+            }
+        }
         (_, None, _) => "Created".into(),
         (_, Some(_), Some(finished)) => format!(
             "Exited ({}) {} ago",

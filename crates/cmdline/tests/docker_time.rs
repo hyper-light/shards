@@ -31,3 +31,30 @@ fn timestamps_are_read_as_the_docker_client_and_dockerd_read_them() {
         assert_eq!(parse_unix_timestamp(value), want, "{value:?}");
     }
 }
+
+/// Durations read as Go's `time.ParseDuration` reads them, errors included, and shown as
+/// `Duration.String` shows them: every answer in docker-time.json's `durations`.
+#[test]
+fn durations_are_read_and_shown_as_go_reads_and_shows_them() {
+    let golden: serde_json::Value = serde_json::from_str(include_str!("docker-time.json")).unwrap();
+    let cases = golden["durations"].as_array().unwrap();
+    assert!(cases.len() > 50);
+    for case in cases {
+        let value = case["value"].as_str().unwrap();
+        let ns = case["ns"].as_i64().unwrap();
+        let shown = case["shown"].as_str().unwrap_or_default();
+        if !value.is_empty() {
+            match shards_cmdline::gotime::duration(value) {
+                Ok(d) => assert_eq!(
+                    (d, ""),
+                    (ns, case["error"].as_str().unwrap_or_default()),
+                    "{value:?}"
+                ),
+                Err(e) => assert_eq!(e, case["error"].as_str().unwrap_or_default(), "{value:?}"),
+            }
+        }
+        if !shown.is_empty() {
+            assert_eq!(shards_cmdline::gotime::format_duration(ns), shown, "{ns}");
+        }
+    }
+}

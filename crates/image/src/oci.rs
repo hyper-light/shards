@@ -117,6 +117,30 @@ pub struct RunConfig {
     pub working_dir: Option<String>,
     #[serde(default)]
     pub stop_signal: Option<String>,
+    #[serde(default)]
+    pub healthcheck: Option<HealthConfig>,
+    /// The shell `CMD-SHELL` health checks run in (the image's `SHELL`).
+    #[serde(default)]
+    pub shell: Option<Vec<String>>,
+}
+
+/// A `HEALTHCHECK` as an image config holds it: its test, then durations in nanoseconds,
+/// each 0 for "not set" (moby api/types/container HealthConfig).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct HealthConfig {
+    #[serde(default)]
+    pub test: Option<Vec<String>>,
+    #[serde(default)]
+    pub interval: i64,
+    #[serde(default)]
+    pub timeout: i64,
+    #[serde(default)]
+    pub start_period: i64,
+    #[serde(default)]
+    pub start_interval: i64,
+    #[serde(default)]
+    pub retries: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

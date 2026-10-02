@@ -49,6 +49,47 @@ pub struct Prepared {
     pub stop_signal: Option<String>,
     /// What the run was composed of: the base of each `exec` in its container.
     pub options: crate::spec::Options,
+    /// Its health check: the run's merged with its image's.
+    pub health: Option<shards_ipc::Health>,
+    /// The shell a `CMD-SHELL` health check runs in: the image's `SHELL`, or `/bin/sh -c`.
+    pub shell: Vec<String>,
+}
+
+/// The health check a run's container has, as dockerd merges the run's with its image's
+/// (moby daemon/commit.go, merge): the run's, or the image's where the run gives none; a
+/// run's test that is empty, and each of its durations and retries that is 0, the
+/// image's.
+fn merge_health(
+    run: Option<&shards_ipc::Health>,
+    image: Option<&shards_image::oci::HealthConfig>,
+) -> Option<shards_ipc::Health> {
+    let image = image.map(|h| shards_ipc::Health {
+        test: h.test.clone().unwrap_or_default(),
+        interval: h.interval,
+        timeout: h.timeout,
+        start_period: h.start_period,
+        start_interval: h.start_interval,
+        retries: h.retries,
+    });
+    let Some(run) = run else {
+        return image;
+    };
+    let Some(image) = image else {
+        return Some(run.clone());
+    };
+    let or = |given: i64, theirs: i64| if given == 0 { theirs } else { given };
+    Some(shards_ipc::Health {
+        test: if run.test.is_empty() {
+            image.test
+        } else {
+            run.test.clone()
+        },
+        interval: or(run.interval, image.interval),
+        timeout: or(run.timeout, image.timeout),
+        start_period: or(run.start_period, image.start_period),
+        start_interval: or(run.start_interval, image.start_interval),
+        retries: or(run.retries, image.retries),
+    })
 }
 
 /// The daemon's half: finds the request's image in `home`, pulling it as `docker run`
@@ -138,6 +179,17 @@ pub fn prepare(
         lease: Some(lease),
         stop_signal,
         options,
+        health: merge_health(
+            request.health.as_ref(),
+            image.config.config.as_ref().and_then(|c| c.healthcheck.as_ref()),
+        ),
+        shell: image
+            .config
+            .config
+            .as_ref()
+            .and_then(|c| c.shell.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| vec!["/bin/sh".into(), "-c".into()]),
     })
 }
 
@@ -287,7 +339,50 @@ mod tests {
             cmd: Some(strings(&["serve", "--port", "80"])),
             working_dir: Some("/srv".into()),
             stop_signal: None,
+            healthcheck: None,
+            shell: None,
         }
+    }
+
+    /// A run's health check merged with its image's as dockerd merges them (measured
+    /// against dockerd 29.3.1, 2026-10-02).
+    #[test]
+    fn health_checks_merge_as_dockerd_merges_them() {
+        let image = shards_image::oci::HealthConfig {
+            test: Some(vec!["CMD-SHELL".into(), "echo img".into()]),
+            interval: 7_000_000_000,
+            timeout: 3_000_000_000,
+            retries: 4,
+            ..Default::default()
+        };
+        let run = |h: shards_ipc::Health| merge_health(Some(&h), Some(&image)).unwrap();
+        let cmd = |c: &str| vec!["CMD-SHELL".to_string(), c.to_string()];
+        let merged = run(shards_ipc::Health {
+            test: cmd("echo run"),
+            retries: 9,
+            ..Default::default()
+        });
+        assert_eq!(
+            (merged.test, merged.interval, merged.timeout, merged.retries),
+            (cmd("echo run"), 7_000_000_000, 3_000_000_000, 9)
+        );
+        let merged = run(shards_ipc::Health {
+            timeout: 2_000_000_000,
+            ..Default::default()
+        });
+        assert_eq!(
+            (merged.test, merged.timeout, merged.retries),
+            (cmd("echo img"), 2_000_000_000, 4)
+        );
+        let none = run(shards_ipc::Health {
+            test: vec!["NONE".into()],
+            ..Default::default()
+        });
+        assert_eq!(
+            (none.test, none.interval),
+            (vec!["NONE".to_string()], 7_000_000_000)
+        );
+        assert_eq!(merge_health(None, None), None);
     }
 
     /// dockerd's merge, case by case (moby `daemon/commit.go`).

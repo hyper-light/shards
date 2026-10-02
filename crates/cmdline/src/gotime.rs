@@ -10,27 +10,34 @@ const NS: i128 = 1_000_000_000;
 /// `time.ParseDuration`: nanoseconds, or `None` where Go returns an error, which
 /// GetTimestamp never shows.
 pub fn parse_duration(s: &str) -> Option<i64> {
-    let mut s = s.as_bytes();
+    duration(s).ok()
+}
+
+/// `time.ParseDuration`: nanoseconds, or Go's error, as pflag shows it for a duration
+/// flag.
+pub fn duration(orig: &str) -> Result<i64, String> {
+    let invalid = || format!("time: invalid duration {}", quote(orig));
+    let mut s = orig.as_bytes();
     let mut negative = false;
     if let Some((&c @ (b'-' | b'+'), rest)) = s.split_first() {
         negative = c == b'-';
         s = rest;
     }
     if s == b"0" {
-        return Some(0);
+        return Ok(0);
     }
     if s.is_empty() {
-        return None;
+        return Err(invalid());
     }
     const LIMIT: u64 = 1 << 63;
     let mut d: u64 = 0;
     while !s.is_empty() {
-        let first = *s.first()?;
+        let first = *s.first().ok_or_else(invalid)?;
         if !(first == b'.' || first.is_ascii_digit()) {
-            return None;
+            return Err(invalid());
         }
         let before = s.len();
-        let (v, rest) = leading_int(s)?;
+        let (v, rest) = leading_int(s).ok_or_else(invalid)?;
         s = rest;
         let pre = before != s.len();
         let (mut f, mut scale, mut post) = (0u64, 1f64, false);
@@ -41,14 +48,14 @@ pub fn parse_duration(s: &str) -> Option<i64> {
             post = before != s.len();
         }
         if !pre && !post {
-            return None;
+            return Err(invalid());
         }
         let unit_len = s
             .iter()
             .position(|&c| c == b'.' || c.is_ascii_digit())
             .unwrap_or(s.len());
         if unit_len == 0 {
-            return None;
+            return Err(format!("time: missing unit in duration {}", quote(orig)));
         }
         let (unit, rest) = s.split_at(unit_len);
         s = rest;
@@ -60,10 +67,16 @@ pub fn parse_duration(s: &str) -> Option<i64> {
             b"s" => 1_000_000_000,
             b"m" => 60_000_000_000,
             b"h" => 3_600_000_000_000,
-            _ => return None,
+            _ => {
+                return Err(format!(
+                    "time: unknown unit {} in duration {}",
+                    quote(&String::from_utf8_lossy(unit)),
+                    quote(orig)
+                ));
+            }
         };
         if v > LIMIT / unit {
-            return None;
+            return Err(invalid());
         }
         let mut v = v * unit;
         if f > 0 {
@@ -74,20 +87,83 @@ pub fn parse_duration(s: &str) -> Option<i64> {
                 clippy::cast_sign_loss
             )]
             let fraction = (f as f64 * (unit as f64 / scale)) as u64;
-            v = v.checked_add(fraction)?;
+            v = v.checked_add(fraction).ok_or_else(invalid)?;
             if v > LIMIT {
-                return None;
+                return Err(invalid());
             }
         }
-        d = d.checked_add(v)?;
+        d = d.checked_add(v).ok_or_else(invalid)?;
         if d > LIMIT {
-            return None;
+            return Err(invalid());
         }
     }
     if negative {
-        return Some(0i64.wrapping_sub_unsigned(d));
+        return Ok(0i64.wrapping_sub_unsigned(d));
     }
-    i64::try_from(d).ok()
+    i64::try_from(d).map_err(|_| invalid())
+}
+
+/// The `time` package's own `quote`: in double quotes, `"` and `\` escaped, and every
+/// byte of a character below a space or past ASCII as `\xNN`.
+fn quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        if c < ' ' || !c.is_ascii() {
+            let mut bytes = [0u8; 4];
+            for b in c.encode_utf8(&mut bytes).bytes() {
+                out.push_str(&format!("\\x{b:02x}"));
+            }
+        } else {
+            if c == '"' || c == '\\' {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `time.Duration.String`: `72h3m0.5s`, and below a second `1.2ms`, `3µs`, `5ns`; `0s`.
+pub fn format_duration(d: i64) -> String {
+    // The digits of `v` with `prec` of them after a point, less trailing zeros, the point
+    // too if none are left (fmtFrac, fmtInt).
+    fn frac(v: u64, prec: u32) -> (u64, String) {
+        let p = 10u64.pow(prec);
+        let digits = format!("{:0width$}", v % p, width = prec as usize);
+        let digits = digits.trim_end_matches('0');
+        (
+            v / p,
+            if digits.is_empty() {
+                String::new()
+            } else {
+                format!(".{digits}")
+            },
+        )
+    }
+    if d == 0 {
+        return "0s".into();
+    }
+    let u = d.unsigned_abs();
+    let text = if u < 1_000_000_000 {
+        let (prec, unit) = match u {
+            0..1_000 => (0, "ns"),
+            1_000..1_000_000 => (3, "µs"),
+            _ => (6, "ms"),
+        };
+        let (int, fraction) = frac(u, prec);
+        format!("{int}{fraction}{unit}")
+    } else {
+        let (secs, fraction) = frac(u, 9);
+        let (s, m) = (secs % 60, secs / 60);
+        match (m / 60, m % 60) {
+            (0, 0) => format!("{s}{fraction}s"),
+            (0, m) => format!("{m}m{s}{fraction}s"),
+            (h, m) => format!("{h}h{m}m{s}{fraction}s"),
+        }
+    };
+    if d < 0 { format!("-{text}") } else { text }
 }
 
 /// Go's `leadingInt`: the digits at the start of `s`, or `None` past 1<<63.
