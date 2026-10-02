@@ -131,6 +131,18 @@ impl<W: Write> Writer<W> {
         Ok(())
     }
 
+    /// Copies the current member's data from `src`, all it is owed, file to file where
+    /// the OS can (`io::copy`'s specializations): an error if `src` ends short.
+    pub fn copy(&mut self, src: impl std::io::Read) -> Result<u64, Error> {
+        let owed = self.remaining;
+        let n = std::io::copy(&mut src.take(owed), &mut self.out)?;
+        self.remaining -= n;
+        if n != owed {
+            return bad(format!("archive/tar: {n} bytes where {owed} were owed"));
+        }
+        Ok(n)
+    }
+
     /// Pads out the last member and writes the two zero blocks that end an archive.
     pub fn finish(mut self) -> Result<W, Error> {
         self.flush()?;

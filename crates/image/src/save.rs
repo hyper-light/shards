@@ -14,15 +14,13 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::PathBuf;
 
 use crate::oci::{self, Document};
 use crate::reference::{Digest, Reference};
 use crate::store::{Held, Image, Store};
 use crate::{Error, bad};
-
-const BLOCK: usize = 512;
 
 /// An image asked for, and the name it was asked by, if a name: a reference's record
 /// name (`docker.io/library/alpine:3.22`).
@@ -40,7 +38,7 @@ enum Content {
 }
 
 /// Writes the images `asked` names to `out`.
-pub fn save(store: &Store, asked: &[Asked<'_>], out: &mut dyn Write) -> Result<(), Error> {
+pub fn save<W: Write>(store: &Store, asked: &[Asked<'_>], out: W) -> Result<(), Error> {
     let mut records: BTreeMap<String, (u32, Content)> = BTreeMap::new();
     let mut index_entries = Vec::with_capacity(asked.len());
     // Each image once, with the names asked for it, in order of first asking.
@@ -91,26 +89,29 @@ pub fn save(store: &Store, asked: &[Asked<'_>], out: &mut dyn Write) -> Result<(
             Content::Bytes(br#"{"imageLayoutVersion":"1.0.0"}"#.to_vec()),
         ),
     );
+    let mut tar = crate::tar::writer::Writer::new(out);
     for (name, (mode, content)) in &records {
+        let (typeflag, size) = match content {
+            Content::Dir => (crate::tar::writer::DIR, 0),
+            Content::Bytes(b) => (crate::tar::writer::REG, b.len() as u64),
+            Content::File(_, len) => (crate::tar::writer::REG, *len),
+        };
+        tar.header(&crate::tar::writer::Header {
+            name: name.clone().into_bytes(),
+            typeflag,
+            mode: i64::from(*mode),
+            size: i64::try_from(size).map_err(|e| Error(e.to_string()))?,
+            ..Default::default()
+        })?;
         match content {
-            Content::Dir => out.write_all(&header(name, *mode, 0, b'5')?)?,
-            Content::Bytes(b) => {
-                out.write_all(&header(name, *mode, b.len() as u64, b'0')?)?;
-                out.write_all(b)?;
-                pad(out, b.len() as u64)?;
-            }
-            Content::File(path, len) => {
-                out.write_all(&header(name, *mode, *len, b'0')?)?;
-                let copied = io::copy(&mut File::open(path)?, out)?;
-                if copied != *len {
-                    return bad(format!("{}: {copied} bytes where {len} were", path.display()));
-                }
-                pad(out, *len)?;
+            Content::Dir => {}
+            Content::Bytes(b) => tar.write(b)?,
+            Content::File(path, _) => {
+                tar.copy(File::open(path)?)?;
             }
         }
     }
-    out.write_all(&[0u8; 2 * BLOCK])?;
-    out.flush()?;
+    tar.finish()?.flush()?;
     Ok(())
 }
 
@@ -238,58 +239,6 @@ fn docker_manifest(store: &Store, image: &Image, names: &[String]) -> Result<Str
     ))
 }
 
-/// A USTAR header as Go's archive/tar writes one for `name`: octal fields zero-padded
-/// and NUL-ended, the checksum as six digits, a NUL and a space.
-fn header(name: &str, mode: u32, size: u64, kind: u8) -> Result<[u8; BLOCK], Error> {
-    let mut h = [0u8; BLOCK];
-    let name = name.as_bytes();
-    if name.len() > 100 {
-        return bad(format!(
-            "{}: a name past 100 bytes",
-            String::from_utf8_lossy(name)
-        ));
-    }
-    let field = |h: &mut [u8; BLOCK], at: usize, width: usize, value: u64| {
-        let digits = format!("{value:0w$o}", w = width - 1);
-        if let Some(slot) = h.get_mut(at..at + width - 1) {
-            slot.copy_from_slice(digits.as_bytes().get(..width - 1).unwrap_or_default());
-        }
-    };
-    if let Some(slot) = h.get_mut(..name.len()) {
-        slot.copy_from_slice(name);
-    }
-    if size >= 8u64.pow(11) {
-        return bad("a record past USTAR's 8 GiB");
-    }
-    field(&mut h, 100, 8, u64::from(mode));
-    field(&mut h, 108, 8, 0);
-    field(&mut h, 116, 8, 0);
-    field(&mut h, 124, 12, size);
-    field(&mut h, 136, 12, 0);
-    h[156] = kind;
-    h[257..263].copy_from_slice(b"ustar\0");
-    h[263..265].copy_from_slice(b"00");
-    field(&mut h, 329, 8, 0);
-    field(&mut h, 337, 8, 0);
-    // The checksum, its own field counted as spaces.
-    h[148..156].copy_from_slice(b"        ");
-    let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
-    let digits = format!("{sum:06o}");
-    h[148..154].copy_from_slice(digits.as_bytes().get(..6).unwrap_or(b"000000"));
-    h[154] = 0;
-    h[155] = b' ';
-    Ok(h)
-}
-
-/// Zeros to the end of `len`'s last block.
-fn pad(out: &mut dyn Write, len: u64) -> io::Result<()> {
-    let rem = (len % BLOCK as u64) as usize;
-    if rem != 0 {
-        out.write_all([0u8; BLOCK].get(..BLOCK - rem).unwrap_or_default())?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -299,8 +248,16 @@ mod tests {
     /// save` wrote (dockerd 29.3.1, 2026-10-02): `blobs/`, a directory, mode 0755.
     #[test]
     fn headers_are_written_as_go_writes_them() {
-        let h = header("blobs/", 0o755, 0, b'5').unwrap();
-        let mut want = [0u8; BLOCK];
+        let mut tar = crate::tar::writer::Writer::new(Vec::new());
+        tar.header(&crate::tar::writer::Header {
+            name: b"blobs/".to_vec(),
+            typeflag: crate::tar::writer::DIR,
+            mode: 0o755,
+            ..Default::default()
+        })
+        .unwrap();
+        let h = tar.finish().unwrap();
+        let mut want = [0u8; 512];
         let mut put = |at: usize, bytes: &[u8]| want[at..at + bytes.len()].copy_from_slice(bytes);
         put(0, b"blobs/");
         put(100, b"0000755\0");
@@ -313,6 +270,6 @@ mod tests {
         put(257, b"ustar\x0000");
         put(329, b"0000000\0");
         put(337, b"0000000\0");
-        assert_eq!(h, want);
+        assert_eq!(&h[..512], &want[..]);
     }
 }

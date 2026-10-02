@@ -308,8 +308,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             asked.push(shards_image::save::Asked { image, name });
         }
         let written = out.try_clone().map_err(|e| e.to_string()).and_then(|fd| {
-            let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::from(fd));
-            shards_image::save::save(&store, &asked, &mut w).map_err(|e| e.to_string())
+            let w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::from(fd));
+            shards_image::save::save(&store, &asked, w).map_err(|e| e.to_string())
         });
         match written {
             Ok(()) => 0,
