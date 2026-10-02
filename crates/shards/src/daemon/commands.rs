@@ -373,7 +373,15 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// The ID of the container `reference` names: all of its ID, its name, or the start of
     /// its ID and of no other's (moby daemon/container.go, GetContainer).
     pub(super) fn resolve(&self, reference: &str) -> Result<String, String> {
-        let registry = lock(&self.containers);
+        // A container exists from its creation, as dockerd's does: one whose record is
+        // still being written is waited for, not missed.
+        let mut registry = lock(&self.containers);
+        while !reference.is_empty() && registry.arriving_as(reference) {
+            registry = self
+                .arrived
+                .wait(registry)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
         if !reference.is_empty() {
             if registry.get(reference).is_some() {
                 return Ok(reference.to_string());

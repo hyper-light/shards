@@ -4230,6 +4230,33 @@ mod tests {
         });
     }
 
+    /// A container is found from its creation, as dockerd's is: `exec` right after an
+    /// attached run starts, while its record is being written, finds it, not "No such
+    /// container" (seen 2026-10-02 under the parallel suite).
+    #[test]
+    fn a_container_whose_record_is_being_written_is_found() {
+        let t = Test::on("resolve-arriving", Held::default());
+        t.run(|t| {
+            let held = &t.daemon.disk;
+            held.holding_writes.store(true, Ordering::SeqCst);
+            let id = t.reserve("racer");
+            let (answered, found) = std::sync::mpsc::channel();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    answered.send(t.daemon.resolve("racer")).unwrap();
+                });
+                let early = found.recv_timeout(Duration::from_millis(200));
+                held.let_through();
+                assert!(
+                    early.is_err(),
+                    "answered while its record was being written: {early:?}"
+                );
+                assert_eq!(found.recv_timeout(PATIENCE).unwrap(), Ok(id.clone()));
+            });
+            assert_eq!(t.daemon.resolve(id.get(..12).unwrap()), Ok(id.clone()));
+        });
+    }
+
     /// A run that ends before its container's record is written keeps its end: the record
     /// says how it exited, and `wait` hears its code. Before, the end was dropped, the
     /// container stayed running in sight, and `wait` said 0 (seen 2026-10-02 under

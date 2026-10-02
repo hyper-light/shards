@@ -346,6 +346,15 @@ impl Registry {
         !self.arriving.is_empty()
     }
 
+    /// Whether a reserved container, its record not yet written, may be what `reference`
+    /// names: its ID, its name, or the start of its ID.
+    pub fn arriving_as(&self, reference: &str) -> bool {
+        let name = reference.strip_prefix('/').unwrap_or(reference);
+        self.arriving
+            .values()
+            .any(|c| c.id.starts_with(reference) || c.name == name)
+    }
+
     /// Whether the container with `id` is reserved, its record not yet written.
     pub fn is_arriving(&self, id: &str) -> bool {
         self.arriving.contains_key(id)
