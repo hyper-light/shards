@@ -217,8 +217,71 @@ pub struct Run {
     /// `-t`: the command's stdio is a pseudo-terminal, of this many rows and columns
     /// (0 for either: the kernel's default).
     pub tty: Option<(u16, u16)>,
+    /// `--network`: the network mode, the first network named or `default`, and the
+    /// endpoints asked of networks, as the CLI asks dockerd for them (HostConfig's
+    /// NetworkMode and NetworkingConfig's EndpointsConfig, docker/cli parseNetworkOpts).
+    pub network: String,
+    pub endpoints: Vec<Endpoint>,
     /// The daemon binary this client would start.
     pub daemon: Identity,
+}
+
+/// What a run asks of its endpoint on one network, as the CLI read it: addresses as
+/// given (the daemon checks them), empty where not asked.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Endpoint {
+    pub network: String,
+    pub aliases: Vec<String>,
+    pub ipv4: String,
+    pub ipv6: String,
+    pub link_local: Vec<String>,
+    pub mac: String,
+    /// Driver options, each key once.
+    pub driver_opts: Vec<(String, String)>,
+    pub gw_priority: i64,
+}
+
+impl Endpoint {
+    fn encode(&self, w: &mut Vec<u8>) {
+        put_str(w, &self.network);
+        put_list(w, &self.aliases);
+        put_str(w, &self.ipv4);
+        put_str(w, &self.ipv6);
+        put_list(w, &self.link_local);
+        put_str(w, &self.mac);
+        w.extend_from_slice(
+            &u32::try_from(self.driver_opts.len())
+                .unwrap_or(u32::MAX)
+                .to_be_bytes(),
+        );
+        for (k, v) in &self.driver_opts {
+            put_str(w, k);
+            put_str(w, v);
+        }
+        w.extend_from_slice(&self.gw_priority.to_be_bytes());
+    }
+
+    fn decode(r: &mut Reader<'_>) -> Option<Endpoint> {
+        Some(Endpoint {
+            network: r.str()?,
+            aliases: r.list()?,
+            ipv4: r.str()?,
+            ipv6: r.str()?,
+            link_local: r.list()?,
+            mac: r.str()?,
+            driver_opts: {
+                let n = r.u32()? as usize;
+                // Each takes at least its two 4-byte lengths.
+                if n > r.0.len() / 8 {
+                    return None;
+                }
+                (0..n)
+                    .map(|_| Some((r.str()?, r.str()?)))
+                    .collect::<Option<_>>()?
+            },
+            gw_priority: i64::from_be_bytes(r.take(8)?.try_into().ok()?),
+        })
+    }
 }
 
 impl Run {
@@ -257,6 +320,15 @@ impl Run {
             }
             None => w.push(0),
         }
+        put_str(&mut w, &self.network);
+        w.extend_from_slice(
+            &u32::try_from(self.endpoints.len())
+                .unwrap_or(u32::MAX)
+                .to_be_bytes(),
+        );
+        for e in &self.endpoints {
+            e.encode(&mut w);
+        }
         put_identity(&mut w, &self.daemon);
         w
     }
@@ -290,6 +362,15 @@ impl Run {
                 Some((u16::from_be_bytes([a, b]), u16::from_be_bytes([c, d])))
             } else {
                 None
+            },
+            network: r.str()?,
+            endpoints: {
+                let n = r.u32()? as usize;
+                // Each takes at least 36 bytes: seven 4-byte lengths and its priority.
+                if n > r.0.len() / 36 {
+                    return None;
+                }
+                (0..n).map(|_| Endpoint::decode(&mut r)).collect::<Option<_>>()?
             },
             daemon: r.identity()?,
         };
@@ -495,6 +576,20 @@ mod tests {
             detach: true,
             remove: true,
             tty: Some((24, 300)),
+            network: "bridge".into(),
+            endpoints: vec![
+                Endpoint {
+                    network: "bridge".into(),
+                    aliases: vec!["a".into()],
+                    ipv4: "172.17.0.9".into(),
+                    ipv6: "fd00::5".into(),
+                    link_local: vec!["169.254.1.1".into(), "fe80::2".into()],
+                    mac: "02:11:22:33:44:55".into(),
+                    driver_opts: vec![("k".into(), "v".into()), ("l".into(), String::new())],
+                    gw_priority: -7,
+                },
+                Endpoint::default(),
+            ],
             daemon: Identity {
                 dev: 1,
                 ino: 2,

@@ -13,10 +13,11 @@ use std::process::ExitCode;
 
 #[cfg(unix)]
 use shards_ipc::Identity;
-use shards_ipc::{Pull, Run};
+use shards_ipc::{Endpoint, Pull, Run};
 
 use shards_cmdline::commands::RUN;
 use shards_cmdline::flags::{Flag, Parsed};
+use shards_cmdline::network;
 use shards_cmdline::term;
 
 use crate::NOT_RUN;
@@ -27,7 +28,7 @@ pub fn run(path: &str, args: &[OsString]) -> ExitCode {
         Ok(argv) => argv,
         Err(e) => return crate::failed(&e),
     };
-    let parsed = match crate::read(&RUN, path, &argv, &validate_env) {
+    let parsed = match crate::read(&RUN, path, &argv, &validate) {
         Ok(parsed) => parsed,
         Err(answered) => return answered,
     };
@@ -80,9 +81,14 @@ fn refuse(why: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// `-e`'s values as the CLI's `opts.ValidateEnv` takes them: `NAME=VALUE` as given, and
-/// `NAME` alone with its value here, if it has one (docker/cli opts/env.go).
-fn validate_env(flag: &Flag, value: &str) -> Result<String, String> {
+/// Flag values the CLI checks as it reads them: `--network`'s as `NetworkOpt.Set` reads
+/// them (docker/cli opts/network.go), and `-e`'s as `opts.ValidateEnv` takes them:
+/// `NAME=VALUE` as given, and `NAME` alone with its value here, if it has one
+/// (docker/cli opts/env.go).
+fn validate(flag: &Flag, value: &str) -> Result<String, String> {
+    if matches!(flag.name, "network" | "net") {
+        return network::attachment(value).map(|_| value.to_string());
+    }
     if flag.name != "env" {
         return Ok(value.to_string());
     }
@@ -119,6 +125,24 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         }
     };
     let (image, cmd) = parsed.args.split_first().ok_or("an image is required")?;
+    let attachments = parsed
+        .many("network")
+        .iter()
+        .map(|v| network::attachment(v))
+        .collect::<Result<Vec<_>, _>>()?;
+    let endpoints = network::endpoints(&attachments)?
+        .into_iter()
+        .map(|a| Endpoint {
+            network: a.target,
+            aliases: a.aliases,
+            ipv4: a.ipv4.map(|a| a.to_string()).unwrap_or_default(),
+            ipv6: a.ipv6.map(|a| a.to_string()).unwrap_or_default(),
+            link_local: a.link_local.iter().map(ToString::to_string).collect(),
+            mac: a.mac,
+            driver_opts: a.driver_opts,
+            gw_priority: a.gw_priority,
+        })
+        .collect();
     let given = |name: &str| Some(parsed.string(name).to_string()).filter(|v| !v.is_empty());
     Ok(Run {
         image: image.clone(),
@@ -139,6 +163,8 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         remove: parsed.bool("rm"),
         // Sized as the CLI's stdout is, even detached (docker/cli create.go, ConsoleSize).
         tty: parsed.bool("tty").then(stdout_size),
+        network: network::mode(&attachments).to_string(),
+        endpoints,
         ..Run::default()
     })
 }
@@ -192,7 +218,7 @@ mod tests {
 
     fn asked(argv: &[&str]) -> Result<Run, String> {
         let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-        match flags::parse(&RUN, "shards run", &argv, &validate_env) {
+        match flags::parse(&RUN, "shards run", &argv, &validate) {
             Outcome::Run(parsed) => request(&parsed),
             Outcome::Fail { text, .. } => Err(text),
             Outcome::Help { .. } => Err("help".into()),

@@ -34,6 +34,7 @@ use crate::containers::{self, Container, Disk, Real, Registry, Removal, State as
 mod commands;
 mod demand;
 mod logs;
+mod network;
 use crate::run::{Boot, Prepared};
 use crate::segments::log_segment;
 use crate::spec::{LogRetention, NOT_RUN};
@@ -1027,6 +1028,15 @@ impl<D: Disk> Daemon<D> {
             let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
             return None;
         }
+        // Its networks as dockerd checks them before it makes the container; what fails
+        // as it starts fails once the container is made.
+        let start = match network::check(&run, |name| self.resolve(name).is_ok()) {
+            Ok(start) => start,
+            Err(e) => {
+                refuse(&e);
+                return None;
+            }
+        };
         // The container's ID first: it names the command's host unless the run does
         // (moby daemon/container.go).
         let (id, container_log) = match self.new_container() {
@@ -1091,10 +1101,11 @@ impl<D: Disk> Daemon<D> {
             vec![conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()]
         };
         fds.extend([container_log.log.as_fd(), container_log.index.as_fd()]);
-        // On Docker's default bridge, the host's resolvers as Docker gives a container
-        // them (the legacy transform: no loopback ones), read as the run starts.
+        // The host's resolvers as dockerd gives a container them, on its bridge or on
+        // none (the legacy transform, neither with IPv6), read as the run starts.
         prepared.spec.resolv = Some(crate::build::step::resolv(
             &std::fs::read("/etc/resolv.conf").unwrap_or_default(),
+            false,
         ));
         // The flags, the retention's two u64s, then the spec, in one allocation (audit D10).
         let mut payload = Vec::with_capacity(17 + prepared.spec.encoded_len().unwrap_or(0));
@@ -1104,7 +1115,7 @@ impl<D: Disk> Daemon<D> {
         prepared.spec.encode_into(&mut payload);
         let detached = run.detach.then_some(conn);
         let started = self.start_run(threads, &id, &payload, &fds, detached, || {
-            self.warm_for(threads, &prepared, &say)
+            self.warm_for(threads, &prepared, &start, &say)
         });
         // Its VM has its root filesystem, or never will.
         drop(prepared.lease.take());
@@ -1931,13 +1942,21 @@ impl<D: Disk> Daemon<D> {
         &'s self,
         threads: &'s Threads<'s, 'e>,
         prepared: &Prepared,
+        start: &network::Start,
         say: &dyn Fn(&str),
     ) -> Result<Ready, String> {
         // Docker's default bridge: the guest on a network of its own (D31), named on its
-        // kernel command line, so that its templates are apart from any without one.
+        // kernel command line, so that its templates are apart from those of guests on
+        // none.
+        let net = match start {
+            network::Start::Attach(net) => *net,
+            network::Start::Fails(why) => return Err(why.clone()),
+        };
         let on_network = |cfg: &mut Config| {
-            cfg.cmdline.push(' ');
-            cfg.cmdline.push_str(&shards_net::docker_cmdline());
+            if net == network::Net::Bridge {
+                cfg.cmdline.push(' ');
+                cfg.cmdline.push_str(&shards_net::docker_cmdline());
+            }
         };
         let guest = match &prepared.boot {
             Boot::Given(cfg) => {

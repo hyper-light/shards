@@ -64,10 +64,12 @@ pub fn hosts(hostname: &[u8], extra: &[HostIp]) -> Vec<u8> {
 }
 
 /// `/etc/resolv.conf` made from the host's as BuildKit makes it for a step without the
-/// host's network (util/resolvconf: Parse, TransformForLegacyNw(true), Generate(false)):
-/// nameservers less loopback ones, or Google's when none remain; the last `search`;
-/// every `options`; other lines as they were; no comments.
-pub fn resolv(host: &[u8]) -> Vec<u8> {
+/// host's network (util/resolvconf: Parse, TransformForLegacyNw(true), Generate(false)),
+/// and as dockerd makes it for a container on a network without IPv6
+/// (TransformForLegacyNw(false)): nameservers less loopback ones, and less IPv6 ones
+/// without `ipv6`, or Google's when none remain; the last `search`; every `options`;
+/// other lines as they were; no comments, which name the engine that wrote them.
+pub fn resolv(host: &[u8], ipv6: bool) -> Vec<u8> {
     let text = String::from_utf8_lossy(host);
     let mut nameservers: Vec<IpAddr> = Vec::new();
     let mut search: Vec<&str> = Vec::new();
@@ -93,7 +95,8 @@ pub fn resolv(host: &[u8]) -> Vec<u8> {
             _ => other.push(line),
         }
     }
-    nameservers.retain(|a| !loopback(a));
+    // netip's Is6 holds for an IPv4-mapped address too.
+    nameservers.retain(|a| !loopback(a) && (ipv6 || a.is_ipv4()));
     if nameservers.is_empty() {
         nameservers = [
             "8.8.8.8",
@@ -102,7 +105,8 @@ pub fn resolv(host: &[u8]) -> Vec<u8> {
             "2001:4860:4860::8844",
         ]
         .iter()
-        .filter_map(|a| a.parse().ok())
+        .filter_map(|a| a.parse::<IpAddr>().ok())
+        .filter(|a| ipv6 || a.is_ipv4())
         .collect();
     }
     let mut out = String::new();
@@ -186,12 +190,23 @@ mod tests {
     fn resolv_conf_is_the_hosts_less_loopback() {
         let host = b"# mDNSResponder\nnameserver 127.0.0.53\nnameserver ::ffff:127.0.0.1\nnameserver 192.168.1.1\nnameserver fe80:0:0::1\nsearch a b\nsearch home.lan\noptions ndots:2\noptions edns0\nsortlist 10.0.0.0\r\n";
         assert_eq!(
-            String::from_utf8(resolv(host)).unwrap(),
+            String::from_utf8(resolv(host, true)).unwrap(),
             "nameserver 192.168.1.1\nnameserver fe80::1\nsearch home.lan\noptions ndots:2 edns0\nsortlist 10.0.0.0\n"
         );
         assert_eq!(
-            String::from_utf8(resolv(b"nameserver 127.0.0.1\n")).unwrap(),
+            String::from_utf8(resolv(b"nameserver 127.0.0.1\n", true)).unwrap(),
             "nameserver 8.8.8.8\nnameserver 8.8.4.4\nnameserver 2001:4860:4860::8888\nnameserver 2001:4860:4860::8844\n"
+        );
+        // Without IPv6, as dockerd writes it for its default bridge (moby
+        // daemon/libnetwork/internal/resolvconf, docker-v29.3.1).
+        let mapped = b"nameserver ::ffff:10.0.0.1\nnameserver 2001:db8::1\nnameserver 192.168.1.1\n";
+        assert_eq!(
+            String::from_utf8(resolv(mapped, false)).unwrap(),
+            "nameserver 192.168.1.1\n"
+        );
+        assert_eq!(
+            String::from_utf8(resolv(b"nameserver 2001:db8::1\n", false)).unwrap(),
+            "nameserver 8.8.8.8\nnameserver 8.8.4.4\n"
         );
     }
 

@@ -213,7 +213,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
 
     /// The ID of the container `reference` names: all of its ID, its name, or the start of
     /// its ID and of no other's (moby daemon/container.go, GetContainer).
-    fn resolve(&self, reference: &str) -> Result<String, String> {
+    pub(super) fn resolve(&self, reference: &str) -> Result<String, String> {
         let registry = lock(&self.containers);
         if !reference.is_empty() {
             if registry.get(reference).is_some() {

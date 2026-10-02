@@ -8,8 +8,12 @@
 use shards_cmdline::commands::{self, RUN};
 use shards_cmdline::flags::{self, Flag, Outcome};
 
-/// The CLI's `opts.ValidateEnv` in the oracle's environment, where only B is set.
+/// The CLI's `opts.ValidateEnv` in the oracle's environment, where only B is set, and
+/// its `NetworkOpt.Set`.
 fn validate(flag: &Flag, value: &str) -> Result<String, String> {
+    if matches!(flag.name, "network" | "net") {
+        return shards_cmdline::network::attachment(value).map(|_| value.to_string());
+    }
     if flag.name != "env" {
         return Ok(value.to_string());
     }

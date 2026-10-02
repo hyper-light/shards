@@ -330,6 +330,8 @@ impl Parsed {
                     Some(Value::Int(n)) => n.to_string(),
                     Some(Value::Text(s)) => s.clone(),
                     Some(Value::Many(v)) if v.is_empty() => String::new(),
+                    // NetworkOpt prints as nothing, whatever it holds.
+                    Some(Value::Many(_)) if matches!(f.kind, Kind::Many("network")) => String::new(),
                     // pflag's string slices and arrays print as one CSV record.
                     Some(Value::Many(v)) if matches!(f.kind, Kind::Many("stringArray" | "strings")) => {
                         format!("[{}]", csv_record(v))

@@ -1014,4 +1014,116 @@ fn a_run_is_on_a_network_as_docker_runs_it() {
     let resolv = files.stdout.split("/etc/resolv.conf").nth(1).unwrap_or_default();
     assert!(resolv.contains("nameserver "), "{files}");
     assert!(!resolv.contains("nameserver 127."), "{files}");
+    // dockerd's bridge has no IPv6, and its transform drops IPv6 resolvers.
+    let resolv = resolv.split("\n/").next().unwrap_or_default();
+    assert!(
+        !resolv
+            .split("\\n")
+            .any(|l| l.starts_with("nameserver") && l.contains(':')),
+        "{files}"
+    );
+}
+
+/// `--network none`: a loopback alone, as dockerd's `none` gives a container. The run
+/// reaches nothing, and its own name is on the loopback, not a bridge's address; it still
+/// has the host's resolvers, as dockerd's does.
+#[test]
+fn a_run_on_network_none_reaches_nothing() {
+    let Some((home, image)) = home("containers-none") else {
+        return;
+    };
+    let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    server.set_nonblocking(true).unwrap();
+    let host = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+        .and_then(|s| s.local_addr());
+    let Ok(host) = host else {
+        eprintln!("SKIP: this host has no route to give a guest an address of it");
+        return;
+    };
+    let to = format!("{}:{}", host.ip(), server.local_addr().unwrap().port());
+    let ran = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "root", "--network", "none"],
+        &["tcp", &to],
+    );
+    assert_eq!(ran.status, Some(1), "{ran}");
+    assert!(ran.stdout.starts_with("tcp error "), "{ran}");
+    assert!(server.accept().is_err(), "a run on none reached the host");
+    let files = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "root", "--network=none", "--hostname", "box"],
+        &["stat", "/etc/hosts", "/etc/resolv.conf"],
+    );
+    assert_eq!(files.status, Some(0), "{files}");
+    assert!(files.stdout.contains("127.0.1.1\tbox\\n"), "{files}");
+    assert!(!files.stdout.contains("172.17."), "{files}");
+    assert!(files.stdout.contains("nameserver "), "{files}");
+}
+
+/// What dockerd says of networks a run cannot have, and when: a network that does not
+/// exist fails the start, the container left created with 128 (`--rm` takes it); what
+/// shards does not do yet, and what dockerd refuses outright, make no container.
+#[test]
+fn a_run_on_a_network_it_cannot_have_says_why_as_dockerd_does() {
+    let Some((home, image)) = home("containers-badnet") else {
+        return;
+    };
+    let help = "\n\nRun 'shards run --help' for more information\n";
+    let missing = run_in(&home, &image, &["--name", "lost", "--network", "foo"], &["true"]);
+    assert_eq!(
+        (missing.status, missing.stderr.as_str()),
+        (
+            Some(125),
+            format!("shards: Error response from daemon: failed to set up container networking: network foo not found{help}").as_str()
+        ),
+        "{missing}"
+    );
+    let all = shards_in(&home, &["ps", "-a"]);
+    let rows: Vec<&str> = all.stdout.lines().skip(1).collect();
+    assert!(
+        matches!(rows.as_slice(), [row] if row.contains(" Created ") && row.ends_with(" lost")),
+        "{all}"
+    );
+    let waited = shards_in(&home, &["wait", "lost"]);
+    assert_eq!(waited.stdout, "128\n", "{waited}");
+    let removed = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "bridge", "--network", "none"],
+        &["true"],
+    );
+    assert_eq!(removed.status, Some(125), "{removed}");
+    assert!(
+        removed
+            .stderr
+            .contains("one of the networks in private (none) mode"),
+        "{removed}"
+    );
+    for (options, said) in [
+        (
+            &["--network", "host"][..],
+            "shards: Error response from daemon: \"--network host\" is not supported by shards yet",
+        ),
+        (
+            &["--network", "name=bridge,ip=172.17.0.9"][..],
+            "shards: Error response from daemon: invalid config for network bridge: invalid endpoint settings:\nuser-specified IP address is supported on user-defined networks only",
+        ),
+        (
+            &["--network", "container:x", "--hostname", "h"][..],
+            "shards: Error response from daemon: conflicting options: hostname and the network mode",
+        ),
+        (&["--network", ""][..], "shards: no name set for network"),
+    ] {
+        let refused = run_in(&home, &image, options, &["true"]);
+        assert_eq!(
+            (refused.status, refused.stderr.as_str()),
+            (Some(125), format!("{said}{help}").as_str()),
+            "{refused}"
+        );
+    }
+    let all = shards_in(&home, &["ps", "-aq"]);
+    assert_eq!(all.stdout.lines().count(), 1, "{all}");
 }

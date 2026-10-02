@@ -755,7 +755,7 @@ impl Exec<'_> {
         } else {
             p.hostname.clone()
         };
-        let resolv = super::step::resolv(&std::fs::read("/etc/resolv.conf").unwrap_or_default());
+        let resolv = super::step::resolv(&std::fs::read("/etc/resolv.conf").unwrap_or_default(), true);
         let mut mounts = Vec::new();
         for m in op.mounts.iter().filter(|m| m.dest != b"/") {
             let mount = match &m.kind {

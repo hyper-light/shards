@@ -58,6 +58,11 @@ pub static RUN: Command = Command {
         Flag::string("kernel-memory", None, "0", "Kernel memory limit (deprecated)")
             .deprecated("and no longer supported by the kernel"),
         Flag::string("name", None, "", "Assign a name to the container"),
+        // One value, `--net` and `--network` alike (docker/cli opts.go addFlags).
+        Flag::many("net", None, "network", "Connect a container to a network")
+            .sharing("network")
+            .hidden(),
+        Flag::many("network", None, "network", "Connect a container to a network"),
         Flag::string(
             "pull",
             None,
@@ -143,9 +148,7 @@ memory-reservation - s 0 -\n\
 memory-swap - s 0 -\n\
 memory-swappiness - i -1 -\n\
 mount - m - -\n\
-net - m - network\n\
 net-alias - m - network-alias\n\
-network - m - -\n\
 network-alias - m - -\n\
 no-healthcheck - b false -\n\
 oom-kill-disable - b false -\n\

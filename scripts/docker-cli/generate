@@ -7,6 +7,9 @@
 #   oracle_test.go, which crates/cmdline/tests/docker_cli.rs expects shards to give;
 # - crates/shards/src/daemon/docker-ps.json, the CLI's `ps` tables of the containers in
 #   ps_test.go, which daemon/commands.rs's tests expect shards to print;
+# - crates/cmdline/tests/go-network.json, what the CLI makes of `--network` values
+#   (network_test.go): Go's address and MAC parsers, NetworkOpt.Set and run's parse, which
+#   crates/cmdline/tests/network.rs expects shards_cmdline::network to make of them;
 # - crates/cmdline/tests/docker-time.json, what the client sends dockerd for `logs
 #   --since` and `--until` and what dockerd makes of it (time/main.go), for
 #   crates/cmdline/src/gotime.rs's tests. dockerd's side is moby's, fetched at the tag the
@@ -48,9 +51,11 @@ curl -fsSL -A shards-dev -o "$cli/shards-time/daemon/timestamp.go" \
 	"https://raw.githubusercontent.com/moby/moby/$moby/daemon/internal/timestamp/timestamp.go"
 cp "$here/oracle_test.go" "$cli/cmd/docker/zz_shards_oracle_test.go"
 cp "$here/ps_test.go" "$cli/cli/command/formatter/zz_shards_ps_test.go"
+cp "$here/network_test.go" "$cli/cli/command/container/zz_shards_network_test.go"
 cleanup() {
 	rm -rf "$cli/shards-tables" "$cli/shards-time" "$cli/cmd/docker/zz_shards_oracle_test.go" \
-		"$cli/cli/command/formatter/zz_shards_ps_test.go"
+		"$cli/cli/command/formatter/zz_shards_ps_test.go" \
+		"$cli/cli/command/container/zz_shards_network_test.go"
 }
 trap 'cleanup; [ -z "${1:-}" ] && rm -rf "$cli"' EXIT
 cd "$cli"
@@ -60,3 +65,5 @@ SHARDS_ORACLE_OUT="$root/crates/cmdline/tests/docker-cli.json" \
 	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsOracle$' ./cmd/docker/
 SHARDS_PS_OUT="$root/crates/shards/src/daemon/docker-ps.json" \
 	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsPs$' ./cli/command/formatter/
+SHARDS_NETWORK_OUT="$root/crates/cmdline/tests/go-network.json" \
+	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsNetwork$' ./cli/command/container/

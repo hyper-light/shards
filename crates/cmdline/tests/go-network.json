@@ -1,0 +1,1212 @@
+{
+  "addrs": [
+    {
+      "in": "172.17.0.9",
+      "out": "172.17.0.9"
+    },
+    {
+      "in": "::ffff:172.17.0.9",
+      "out": "::ffff:172.17.0.9"
+    },
+    {
+      "in": "fe80::1%eth0",
+      "out": "fe80::1%eth0"
+    },
+    {
+      "in": "::",
+      "out": "::"
+    },
+    {
+      "in": "::1",
+      "out": "::1"
+    },
+    {
+      "in": "1:2:3:4:5:6:1.2.3.4",
+      "out": "1:2:3:4:5:6:102:304"
+    },
+    {
+      "in": "::1.2.3.4",
+      "out": "::102:304"
+    },
+    {
+      "in": "0:0:1:0:0:0:0:1",
+      "out": "0:0:1::1"
+    },
+    {
+      "in": "1:0:0:2:0:0:0:3",
+      "out": "1:0:0:2::3"
+    },
+    {
+      "in": "1:0:0:2:0:0:3:4",
+      "out": "1::2:0:0:3:4"
+    },
+    {
+      "in": "2001:DB8::1",
+      "out": "2001:db8::1"
+    },
+    {
+      "in": "1:2:3:4:5:6:7::",
+      "out": "1:2:3:4:5:6:7:0"
+    },
+    {
+      "in": "::ffff:0.0.0.0",
+      "out": "::ffff:0.0.0.0"
+    },
+    {
+      "in": "0.0.0.0",
+      "out": "0.0.0.0"
+    },
+    {
+      "in": "255.255.255.255",
+      "out": "255.255.255.255"
+    },
+    {
+      "in": "foo",
+      "err": "ParseAddr(\"foo\"): unable to parse IP"
+    },
+    {
+      "in": "",
+      "err": "ParseAddr(\"\"): unable to parse IP"
+    },
+    {
+      "in": "1.2.3",
+      "err": "ParseAddr(\"1.2.3\"): IPv4 address too short"
+    },
+    {
+      "in": "1.2.3.4.5",
+      "err": "ParseAddr(\"1.2.3.4.5\"): IPv4 address too long"
+    },
+    {
+      "in": "01.2.3.4",
+      "err": "ParseAddr(\"01.2.3.4\"): IPv4 field has octet with leading zero"
+    },
+    {
+      "in": "256.2.3.4",
+      "err": "ParseAddr(\"256.2.3.4\"): IPv4 field has value \u003e255"
+    },
+    {
+      "in": "1..3.4",
+      "err": "ParseAddr(\"1..3.4\"): IPv4 field must have at least one digit (at \".3.4\")"
+    },
+    {
+      "in": ".1.2.3",
+      "err": "ParseAddr(\".1.2.3\"): IPv4 field must have at least one digit (at \".1.2.3\")"
+    },
+    {
+      "in": "1.2.3.",
+      "err": "ParseAddr(\"1.2.3.\"): IPv4 field must have at least one digit (at \".\")"
+    },
+    {
+      "in": "1.2.3.x",
+      "err": "ParseAddr(\"1.2.3.x\"): unexpected character (at \"x\")"
+    },
+    {
+      "in": "%eth0",
+      "err": "ParseAddr(\"%eth0\"): missing IPv6 address"
+    },
+    {
+      "in": "fe80::1%",
+      "err": "ParseAddr(\"fe80::1%\"): zone must be a non-empty string"
+    },
+    {
+      "in": "1::2::3",
+      "err": "ParseAddr(\"1::2::3\"): multiple :: in address (at \":3\")"
+    },
+    {
+      "in": "12345::",
+      "err": "ParseAddr(\"12345::\"): each group must have 4 or less digits (at \"12345::\")"
+    },
+    {
+      "in": "1:2",
+      "err": "ParseAddr(\"1:2\"): address string too short"
+    },
+    {
+      "in": "1:",
+      "err": "ParseAddr(\"1:\"): colon must be followed by more characters (at \":\")"
+    },
+    {
+      "in": ":1",
+      "err": "ParseAddr(\":1\"): each colon-separated field must have at least one digit (at \":1\")"
+    },
+    {
+      "in": "1:2:3:4:5:6:7:8:9",
+      "err": "ParseAddr(\"1:2:3:4:5:6:7:8:9\"): trailing garbage after address (at \"9\")"
+    },
+    {
+      "in": "1:2:3:4:5:6:7::8",
+      "err": "ParseAddr(\"1:2:3:4:5:6:7::8\"): the :: must expand to at least one field of zeros"
+    },
+    {
+      "in": "1:2:3:4:1.2.3.4",
+      "err": "ParseAddr(\"1:2:3:4:1.2.3.4\"): embedded IPv4 address must replace the final 2 fields of the address (at \"1.2.3.4\")"
+    },
+    {
+      "in": "1:2:3:4:5:6:7:1.2.3.4",
+      "err": "ParseAddr(\"1:2:3:4:5:6:7:1.2.3.4\"): embedded IPv4 address must replace the final 2 fields of the address (at \"1.2.3.4\")"
+    },
+    {
+      "in": "::ffff:1.2.3",
+      "err": "ParseAddr(\"::ffff:1.2.3\"): IPv4 address too short"
+    },
+    {
+      "in": "::ffff:1.2.3.4.5",
+      "err": "ParseAddr(\"::ffff:1.2.3.4.5\"): IPv4 address too long"
+    },
+    {
+      "in": "1:2:3:4:5:6:7:8:1.2.3.4",
+      "err": "ParseAddr(\"1:2:3:4:5:6:7:8:1.2.3.4\"): trailing garbage after address (at \"1.2.3.4\")"
+    },
+    {
+      "in": "1:2:3:4:5:6::1.2.3.4",
+      "err": "ParseAddr(\"1:2:3:4:5:6::1.2.3.4\"): the :: must expand to at least one field of zeros"
+    },
+    {
+      "in": "::1%a%b",
+      "out": "::1%a%b"
+    },
+    {
+      "in": "1:2:3:4:5:6:7:8",
+      "out": "1:2:3:4:5:6:7:8"
+    },
+    {
+      "in": "1:2:3:4:5:6:7:8::",
+      "err": "ParseAddr(\"1:2:3:4:5:6:7:8::\"): the :: must expand to at least one field of zeros"
+    },
+    {
+      "in": "g::",
+      "err": "ParseAddr(\"g::\"): each colon-separated field must have at least one digit (at \"g::\")"
+    },
+    {
+      "in": "1:g::",
+      "err": "ParseAddr(\"1:g::\"): each colon-separated field must have at least one digit (at \"g::\")"
+    },
+    {
+      "in": "1.2.3.4%eth0",
+      "err": "ParseAddr(\"1.2.3.4%eth0\"): unexpected character (at \"%eth0\")"
+    },
+    {
+      "in": "é",
+      "err": "ParseAddr(\"é\"): unable to parse IP"
+    },
+    {
+      "in": "1.é",
+      "err": "ParseAddr(\"1.é\"): unexpected character (at \"é\")"
+    }
+  ],
+  "macs": [
+    {
+      "in": "02:11:22:33:44:55",
+      "ok": true
+    },
+    {
+      "in": "02-11-22-33-44-55",
+      "ok": true
+    },
+    {
+      "in": "0211.2233.4455",
+      "ok": true
+    },
+    {
+      "in": "021122334455",
+      "ok": true
+    },
+    {
+      "in": "02:11:22:33:44:55:66:77",
+      "ok": true
+    },
+    {
+      "in": "0211.2233.4455.6677",
+      "ok": true
+    },
+    {
+      "in": "0211223344556677",
+      "ok": true
+    },
+    {
+      "in": "00:00:00:00:fe:80:00:00:00:00:00:00:02:00:5e:10:00:00:00:01",
+      "ok": true
+    },
+    {
+      "in": "zz",
+      "ok": false
+    },
+    {
+      "in": "",
+      "ok": false
+    },
+    {
+      "in": "02:11:22:33:44",
+      "ok": false
+    },
+    {
+      "in": "02:11:22:33:44:5g",
+      "ok": false
+    },
+    {
+      "in": "02:11-22:33:44:55",
+      "ok": false
+    },
+    {
+      "in": "0211223344",
+      "ok": false
+    },
+    {
+      "in": "02112233445g",
+      "ok": false
+    },
+    {
+      "in": "0211.2233.44:5",
+      "ok": false
+    },
+    {
+      "in": "02:11:22:33:44:55:",
+      "ok": false
+    },
+    {
+      "in": "02:11:22:33:44:555",
+      "ok": false
+    },
+    {
+      "in": "02:11:22:33:44:55:66",
+      "ok": false
+    },
+    {
+      "in": "0211.2233.445",
+      "ok": false
+    },
+    {
+      "in": "0211:2233:4455",
+      "ok": false
+    },
+    {
+      "in": "02112233445566",
+      "ok": false
+    }
+  ],
+  "attachments": [
+    {
+      "in": "bridge",
+      "target": "bridge",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "none",
+      "target": "none",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=",
+      "target": "name=",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "my net",
+      "target": "my net",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "a=",
+      "target": "a=",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "=b",
+      "target": "=b",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=Bridge",
+      "target": "bridge",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "NAME=bridge",
+      "target": "bridge",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=bridge,alias=x,alias=y",
+      "target": "bridge",
+      "aliases": [
+        "x",
+        "y"
+      ],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": " name = bridge ",
+      "target": " name = bridge ",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=bridge,ip=172.17.0.9,ip6=fd00::5,link-local-ip=169.254.1.1,link-local-ip=fe80::2",
+      "target": "bridge",
+      "aliases": [],
+      "ipv4": "172.17.0.9",
+      "ipv6": "fd00::5",
+      "link_local": [
+        "169.254.1.1",
+        "fe80::2"
+      ],
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=bridge,mac-address=02:11:22:33:44:55",
+      "target": "bridge",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "02:11:22:33:44:55",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=bridge,mac-address=ZZ",
+      "target": "bridge",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "zz",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=bridge,driver-opt=a=1,driver-opt=b=2,driver-opt=a=3",
+      "target": "bridge",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": {
+        "a": "3",
+        "b": "2"
+      },
+      "gw_priority": 0
+    },
+    {
+      "in": "name=bridge,driver-opt=A = B ",
+      "target": "bridge",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": {
+        "a": "b"
+      },
+      "gw_priority": 0
+    },
+    {
+      "in": "name=bridge,gw-priority=7",
+      "target": "bridge",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 7
+    },
+    {
+      "in": "name=bridge,gw-priority=-7",
+      "target": "bridge",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": -7
+    },
+    {
+      "in": "name=bridge,gw-priority=+7",
+      "target": "bridge",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 7
+    },
+    {
+      "in": "name=bridge,gw-priority=x",
+      "err": "invalid gw-priority (x): invalid syntax",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=bridge,gw-priority=",
+      "err": "invalid gw-priority (): invalid syntax",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=bridge,gw-priority=1_0",
+      "err": "invalid gw-priority (1_0): invalid syntax",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=bridge,gw-priority=99999999999999999999",
+      "err": "invalid gw-priority (99999999999999999999): value out of range",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=bridge,gw-priority=0x10",
+      "err": "invalid gw-priority (0x10): invalid syntax",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "a=b",
+      "err": "invalid field key a",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=x,nope",
+      "err": "invalid field nope",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=x,=y",
+      "err": "invalid field =y",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "alias=x",
+      "err": "network name/id is not specified",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=x,ip=y",
+      "err": "ParseAddr(\"y\"): unable to parse IP",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=x,ip=",
+      "err": "ParseAddr(\"\"): unable to parse IP",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=x,ip6=1.2.3",
+      "err": "ParseAddr(\"1.2.3\"): IPv4 address too short",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=x,link-local-ip=q",
+      "err": "ParseAddr(\"q\"): unable to parse IP",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=x,driver-opt=y",
+      "err": "invalid key value pair format in driver options",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=x,driver-opt==y",
+      "err": "invalid key value pair format in driver options",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=İX",
+      "target": "name=İX",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=xİ",
+      "target": "xi",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=xΣΑΣ",
+      "target": "xσασ",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=x,alias=İ",
+      "target": "x",
+      "aliases": [
+        "i"
+      ],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=a\"b",
+      "err": "parse error on line 1, column 7: bare \" in non-quoted-field",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "\"name=a\"x",
+      "err": "parse error on line 1, column 8: extraneous or missing \" in quoted-field",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "\"name=a",
+      "err": "parse error on line 1, column 8: extraneous or missing \" in quoted-field",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "\"name=a\nb",
+      "err": "record on line 1; parse error on line 2, column 2: extraneous or missing \" in quoted-field",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "\"name=a,b\"",
+      "target": "a,b",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "\n\nname=x\nname=y",
+      "target": "x",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "\"name=a\"\"b\",alias=c",
+      "target": "a\"b",
+      "aliases": [
+        "c"
+      ],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "alias=x,\"name=y\nz\"\"\",alias=w",
+      "target": "y\nz\"",
+      "aliases": [
+        "x",
+        "w"
+      ],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "alias=a,\"name=b\r\nc\"",
+      "target": "b\nc",
+      "aliases": [
+        "a"
+      ],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=a\r",
+      "target": "a",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "\"name=a\nb\nc",
+      "err": "record on line 1; parse error on line 3, column 2: extraneous or missing \" in quoted-field",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=a\r\n",
+      "target": "a",
+      "aliases": [],
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=a,",
+      "err": "invalid field ",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": ",name=a",
+      "err": "invalid field ",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=a,,alias=b",
+      "err": "invalid field ",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "\"name=a\" ",
+      "err": "parse error on line 1, column 8: extraneous or missing \" in quoted-field",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=a\"",
+      "err": "parse error on line 1, column 7: bare \" in non-quoted-field",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "x\nname=y",
+      "err": "invalid field x",
+      "target": "",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    },
+    {
+      "in": "name=ΣΑΣ",
+      "target": "name=ΣΑΣ",
+      "aliases": null,
+      "ipv4": "",
+      "ipv6": "",
+      "link_local": null,
+      "mac": "",
+      "driver_opts": null,
+      "gw_priority": 0
+    }
+  ],
+  "runs": [
+    {
+      "networks": [],
+      "mode": "default",
+      "endpoints": [
+        "default"
+      ]
+    },
+    {
+      "networks": [
+        "none"
+      ],
+      "mode": "none",
+      "endpoints": []
+    },
+    {
+      "networks": [
+        "bridge"
+      ],
+      "mode": "bridge",
+      "endpoints": []
+    },
+    {
+      "networks": [
+        "default"
+      ],
+      "mode": "default",
+      "endpoints": []
+    },
+    {
+      "networks": [
+        "host"
+      ],
+      "mode": "host",
+      "endpoints": []
+    },
+    {
+      "networks": [
+        "container:x"
+      ],
+      "mode": "container:x",
+      "endpoints": []
+    },
+    {
+      "networks": [
+        "mine"
+      ],
+      "mode": "mine",
+      "endpoints": []
+    },
+    {
+      "networks": [
+        ""
+      ],
+      "err": "no name set for network",
+      "mode": "",
+      "endpoints": null
+    },
+    {
+      "networks": [
+        " "
+      ],
+      "err": "no name set for network",
+      "mode": "",
+      "endpoints": null
+    },
+    {
+      "networks": [
+        "bridge",
+        "none"
+      ],
+      "mode": "bridge",
+      "endpoints": [
+        "bridge",
+        "none"
+      ]
+    },
+    {
+      "networks": [
+        "none",
+        "bridge"
+      ],
+      "mode": "none",
+      "endpoints": [
+        "bridge",
+        "none"
+      ]
+    },
+    {
+      "networks": [
+        "none",
+        "none"
+      ],
+      "err": "network \"none\" is specified multiple times",
+      "mode": "",
+      "endpoints": null
+    },
+    {
+      "networks": [
+        "bridge",
+        "mine"
+      ],
+      "err": "conflicting options: cannot attach both user-defined and non-user-defined network-modes",
+      "mode": "",
+      "endpoints": null
+    },
+    {
+      "networks": [
+        "mine",
+        "bridge"
+      ],
+      "err": "conflicting options: cannot attach both user-defined and non-user-defined network-modes",
+      "mode": "",
+      "endpoints": null
+    },
+    {
+      "networks": [
+        "mine",
+        "theirs"
+      ],
+      "mode": "mine",
+      "endpoints": [
+        "mine",
+        "theirs"
+      ]
+    },
+    {
+      "networks": [
+        "name=bridge,gw-priority=0"
+      ],
+      "mode": "bridge",
+      "endpoints": []
+    },
+    {
+      "networks": [
+        "name=bridge,gw-priority=1"
+      ],
+      "mode": "bridge",
+      "endpoints": [
+        "bridge"
+      ]
+    },
+    {
+      "networks": [
+        "name=none,alias=x"
+      ],
+      "err": "network-scoped aliases are only supported for user-defined networks",
+      "mode": "",
+      "endpoints": null
+    },
+    {
+      "networks": [
+        "name=mine,alias=x"
+      ],
+      "mode": "mine",
+      "endpoints": [
+        "mine"
+      ]
+    },
+    {
+      "networks": [
+        "name=bridge,mac-address=zz"
+      ],
+      "err": "zz is not a valid mac address",
+      "mode": "",
+      "endpoints": null
+    },
+    {
+      "networks": [
+        "name=bridge,mac-address= 02:11:22:33:44:55 "
+      ],
+      "mode": "bridge",
+      "endpoints": [
+        "bridge"
+      ]
+    },
+    {
+      "networks": [
+        "name=bridge,ip=172.17.0.9"
+      ],
+      "mode": "bridge",
+      "endpoints": [
+        "bridge"
+      ]
+    },
+    {
+      "networks": [
+        "bridge",
+        "default"
+      ],
+      "mode": "bridge",
+      "endpoints": [
+        "bridge",
+        "default"
+      ]
+    },
+    {
+      "networks": [
+        "default",
+        "default"
+      ],
+      "err": "network \"default\" is specified multiple times",
+      "mode": "",
+      "endpoints": null
+    },
+    {
+      "networks": [
+        "name=bridge,driver-opt=a=b"
+      ],
+      "mode": "bridge",
+      "endpoints": [
+        "bridge"
+      ]
+    },
+    {
+      "networks": [
+        "bridge",
+        "name=bridge,alias=x"
+      ],
+      "err": "network-scoped aliases are only supported for user-defined networks",
+      "mode": "",
+      "endpoints": null
+    },
+    {
+      "networks": [
+        "container:x",
+        "none"
+      ],
+      "mode": "container:x",
+      "endpoints": [
+        "container:x",
+        "none"
+      ]
+    },
+    {
+      "networks": [
+        "a=b"
+      ],
+      "err": "invalid argument \"a=b\" for \"--network\" flag: invalid field key a",
+      "mode": "",
+      "endpoints": null
+    },
+    {
+      "networks": [
+        "name=x,ip=y"
+      ],
+      "err": "invalid argument \"name=x,ip=y\" for \"--network\" flag: ParseAddr(\"y\"): unable to parse IP",
+      "mode": "",
+      "endpoints": null
+    }
+  ]
+}
