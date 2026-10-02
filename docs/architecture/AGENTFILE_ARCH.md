@@ -716,6 +716,79 @@ refused by name.
   should be offered as a rebuildable Agentfile, which needs its build context, rather
   than `FROM` by digest.
 
+## 12. Recommended answers to §7, for the review
+
+Written 2026-10-02, as §11's last paragraph asks: each item is built on the answer here
+until the review changes it. The first four fix the grammar the parser reads.
+
+1. **Directories carry names, never tags (Q3, Q4, Q18).** An agent unpacks to
+   `/agents/<name>`, a harness to `/harness/<name>`, an unscoped MCP server to
+   `/mcp/<name>`, and what `SKILL … FOR` and `MCP … FOR` grant an agent under
+   `/agents/<name>.d/{skills,mcp}/`. A tag may itself hold `_`, `.` and `-` (OCI
+   distribution-spec's tag grammar `[A-Za-z0-9_][A-Za-z0-9._-]{0,127}`), so
+   `<name>_<tag>` cannot be split back, and §4.10 already makes names unique. The
+   version an agent came at lives in its config and in the normalized Agentfile. The
+   grant directory stands beside the agent's own, not in it: the agent's directory is
+   its signed artifact, read-only, holding only what the artifact holds (§9.1).
+2. **A source's version is the source's own syntax (Q18).** An OCI reference keeps its
+   `:tag` or `@digest`, as `FROM` reads one; a git URL names its ref and subdirectory as
+   BuildKit's git contexts do (`url#ref:subdir`); an http(s) URL and a path take no
+   version, and a `:<tag>` after them is an error. That ends the confusion of a tag
+   with a URL's port, `C:\`, or a colon in a path.
+3. **A remote MCP server's port is its URL's (Q6).** A URL without a port means its
+   scheme's default, 443 for `https` and 80 for `http` (RFC 3986 §3.2.3, RFC 9110
+   §4.2), as every client reads it; the spec's 8000 would send `https://host/` to a
+   port the server never meant. `[:<port>]` after a path, git URL or OCI artifact means
+   nothing and is refused.
+4. **`AGENT` has no `AS` (Q2).** `AGENT <name> FROM <source> [TO <path>]`: the name is
+   first and required, as `ARG <name>` and `ENV <name>` name theirs. `AS` would give
+   one directive two ways to name the same thing; `AGENT AS main FROM …` is refused,
+   with the line rewritten.
+5. **MCP servers are offered, not imposed (Q5).** Declaring one, local or remote, makes
+   it reachable and discoverable through the in-VM server (§5) for the agents in scope;
+   whether an agent connects is the agent's.
+6. **`EXPOSE` (Q7).** An egress port is the destination port of outgoing connections,
+   to any destination the networks allow. The protocol suffix stays on the port and
+   `AS` follows it: `EXPOSE 3000/udp AS ingress`. `shards run -p` and `-P` publish
+   ingress ports only; publishing a port declared `AS egress` is an error. `EXPOSE …
+   FOR <network>` opens the port at the microVM's boundary for that network's members;
+   `NETWORK --expose/--ingress/--egress` opens it on the network between its members.
+   They are two boundaries, and a flow crossing both needs both.
+7. **`NETWORK`'s port options (Q8)** are as §4.6 reads them: `--expose` both ways,
+   `--ingress`, `--egress`.
+8. **`VOLUME <source> <dest>` (Q10).** One argument is Docker's `VOLUME`, a mount point
+   that gets an anonymous volume at run. Two name a volume by name, as Compose's
+   `volumes:` does, never a host path: a build records no host path, and `shards run
+   -v` binds one at run time. The image config's `Volumes` lists the destination, so
+   Docker and Kubernetes still see a mount point; the name and its `FOR` travel in the
+   normalized Agentfile.
+9. **`--chown` (Q11)** is Docker's `--chown=<user>[:<group>]`, read in the domain it
+   names. `--chown=<agent>` means that agent's own uid and gid, which the runtime
+   assigns; numbers are allowed.
+10. **`CONNECT` (Q13, Q14).** Its only option is `--target-kind` until relays are
+    designed (12.14). Every agent a `CONNECT` names must be allowed by each network's
+    `FOR`; otherwise the build fails, naming the agent, the network and both lines.
+11. **Harnesses (Q18).** A harness runs as a domain of its own (§9.3). `ATTACH` lets it
+    drive an agent through the in-VM server (send requests, read results) and nothing
+    more: no read of the agent's directory, which would break §8's isolation. Naming an
+    agent or harness never declared is a build error. The keyword stays `ATTACH`; the
+    networks' wording becomes "join". Its artifact is `application/vnd.osi.harness.v1`,
+    with the same tar+zstd content layers as an agent's. A `CONNECT` that needs both
+    kinds is written as two `CONNECT`s. `SKILL`, `MCP` and `NETWORK` take
+    `--target-kind` as `VOLUME` does.
+12. **`SKILL --from=<agent>` (Q19.6)** is allowed: it copies, at build time, a skill
+    the agent's config lists into the other's grants. That is a declaration in the
+    Agentfile, not one agent reading another at run time.
+13. **MCP instances (Q20)** live for one run of their caller and keep no state between
+    runs: state kept longer would carry one run's data into the next.
+14. **Relays and declassifiers (Q20)** wait for their own design; until then a path the
+    closure finds (§9.5) is always a build error.
+15. **Spawning (Q21).** `AGENT` and `HARNESS` take `--processes=<n|none>`. `none`
+    installs the no-spawn filter of §9.9; without it a domain's `pids.max` is the
+    microVM's own limit, until a measured default replaces it.
+16. **Agentfiles from images (Q22)** are of one image, `FROM` it by digest, its history
+    as comments. Compose files and rebuildable `RUN` history are later work.
+
 ## 11. Conformance: every directive, at build and at run
 
 The Dockerfile reference (docs.docker.com/reference/dockerfile, read 2026-10-02) and
