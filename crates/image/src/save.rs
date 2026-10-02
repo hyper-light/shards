@@ -242,7 +242,6 @@ fn docker_manifest(store: &Store, image: &Image, names: &[String]) -> Result<Str
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::*;
 
     /// A header as Go's archive/tar writes it, by the first one of an archive `docker
     /// save` wrote (dockerd 29.3.1, 2026-10-02): `blobs/`, a directory, mode 0755.
