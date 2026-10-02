@@ -22,7 +22,7 @@ use shards_build::{Error as BuildError, diff};
 use shards_dockerfile::export::Layer;
 use shards_dockerfile::go::Time;
 use shards_dockerfile::llb::{OpAction, OpActionKind, OpChown, OpUser};
-use shards_image::erofs::{self, Meta, Tree};
+use shards_image::erofs::{self, DataRef, Kind, Meta, Node, Tree};
 use shards_image::layer;
 use shards_image::reference::Digest;
 use shards_image::store::{self, Limits, Store, Unpacked};
@@ -231,9 +231,10 @@ impl<'a> Exec<'a> {
         let lower = base.as_ref().map_or(&empty, |b| &*b.fs);
         let mut w = self.store.writer().map_err(err)?;
         crate::phase("step");
-        let record = diff::write_layer(lower, &fs, &mut self.sources, &mut w).map_err(|e| e.0)?;
+        let mut record = diff::write_layer(lower, &fs, &mut self.sources, &mut w).map_err(|e| e.0)?;
         crate::phase("layer");
         let (digest, size) = w.commit().map_err(err)?;
+        let data = std::mem::take(&mut record.data);
         crate::phase("blob");
         let stack = base
             .as_ref()
@@ -243,6 +244,22 @@ impl<'a> Exec<'a> {
             )
             .commit(lower, &fs, record, size, &mut self.sources)
             .map_err(|e| e.0)?;
+        // The files the layer holds are read from it from now on: the stored bytes its
+        // digest covers, not the build's copies, so the image has the layer's bytes. The
+        // same bytes, read from elsewhere: no change of the step's.
+        if !data.is_empty() {
+            let blob = std::fs::File::open(self.store.blob_path(&digest)).map_err(err)?;
+            let source = self.sources.archive(blob).map_err(err)?;
+            for (id, offset) in data {
+                if let Some(Node {
+                    kind: Kind::File { data, .. },
+                    ..
+                }) = fs.unrecorded_tree().node_mut(id)
+                {
+                    *data = DataRef { source, offset };
+                }
+            }
+        }
         let t = now();
         let mut created = Time::from_unix(t.0);
         created.nanosecond = t.1;

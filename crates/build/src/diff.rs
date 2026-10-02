@@ -60,6 +60,10 @@ pub struct Record {
     pub unsure: Option<String>,
     /// Whether the upper tree has a socket the layer leaves out.
     pub sockets: bool,
+    /// Where each regular file the layer holds has its bytes in it, by node: so that
+    /// once the layer is stored, the snapshot's files are read from it, the bytes the
+    /// layer's digest covers.
+    pub data: Vec<(NodeId, u64)>,
     /// The layer's entries, and an upper bound on the bytes of their names, link targets
     /// and xattrs, as Store::rootfs counts them against its limits.
     pub entries: u64,
@@ -391,7 +395,7 @@ impl ChangeWriter<'_> {
     /// they ever part, the stack gives up rather than write another image. A header starts
     /// at the first block boundary after what went before: the previous member's data is
     /// padded out as the header is written.
-    fn written(&mut self, hdr: &Header, node: &Node) -> Result<(), Error> {
+    fn written(&mut self, hdr: &Header, id: NodeId, node: &Node) -> Result<(), Error> {
         let start = self.tw.get_mut().at;
         let mut kept = std::mem::take(&mut self.kept);
         kept.clear();
@@ -399,10 +403,18 @@ impl ChangeWriter<'_> {
         let written = self.header(hdr);
         let kept = self.tw.get_mut().header.take().unwrap_or_default();
         written?;
-        let skip = usize::try_from(start.next_multiple_of(512) - start).unwrap_or(usize::MAX);
+        let begin = start.next_multiple_of(512);
+        let skip = usize::try_from(begin - start).unwrap_or(usize::MAX);
         let entry = kept
             .get(skip..)
             .and_then(|bytes| tar::Reader::new(bytes).next_entry().ok().flatten());
+        if let Some(e) = &entry
+            && e.kind == Type::File
+            && e.size > 0
+            && let Some(at) = begin.checked_add(e.offset)
+        {
+            self.rec.data.push((id, at));
+        }
         if !entry.is_some_and(|e| stacks_as_predicted(&e, hdr, node)) {
             self.rec.unsure.get_or_insert_with(|| {
                 format!(
@@ -535,7 +547,7 @@ impl ChangeWriter<'_> {
             hdr.pax.insert([PAX_XATTR, CAPABILITY].concat(), cap.clone());
         }
         self.include_parents(&hdr)?;
-        self.written(&hdr, node)?;
+        self.written(&hdr, id, node)?;
         self.note(id, &hdr);
         if hdr.typeflag == writer::REG
             && hdr.size > 0
@@ -551,7 +563,7 @@ impl ChangeWriter<'_> {
                 hdr.linkname = source.clone();
                 hdr.size = 0;
                 self.include_parents(&hdr)?;
-                self.written(&hdr, node)?;
+                self.written(&hdr, id, node)?;
                 self.note(id, &hdr);
             }
         }
