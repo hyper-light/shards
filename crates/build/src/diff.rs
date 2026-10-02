@@ -40,6 +40,7 @@ pub fn write_layer(lower: &Fs, upper: &Fs, data: &mut dyn Source, out: &mut dyn 
         inode_src: HashMap::new(),
         inode_refs: HashMap::new(),
         added_dirs: BTreeSet::new(),
+        last_parent: Vec::new(),
         data,
     };
     let walk = Walk { lower, upper };
@@ -248,6 +249,9 @@ struct ChangeWriter<'a> {
     inode_src: HashMap<NodeId, Vec<u8>>,
     inode_refs: HashMap<NodeId, Vec<Vec<u8>>>,
     added_dirs: BTreeSet<Vec<u8>>,
+    /// The parent [`ChangeWriter::include_parents`] found in `added_dirs` last: the next
+    /// entry's, nearly always, needs no lookup.
+    last_parent: Vec<u8>,
     data: &'a mut dyn Source,
 }
 
@@ -380,11 +384,15 @@ impl ChangeWriter<'_> {
             name = name.get(..name.len() - 1).unwrap_or_default();
         }
         let parent = dir(name);
-        if !name.is_empty() && name != b"." && parent != b"." && !self.added_dirs.contains(&parent) {
-            self.added_dirs.insert(parent.clone());
-            let abs = vfs::join(b"/", &parent);
-            let id = self.upper.stat(&abs).map_err(|e| Error(e.to_string()))?;
-            self.handle(Change::Modify, &abs, Some(id))?;
+        // Once found in `added_dirs`, or found to need no entry, a parent stays so.
+        if parent != self.last_parent {
+            if !name.is_empty() && name != b"." && parent != b"." && !self.added_dirs.contains(&parent) {
+                self.added_dirs.insert(parent.clone());
+                let abs = vfs::join(b"/", &parent);
+                let id = self.upper.stat(&abs).map_err(|e| Error(e.to_string()))?;
+                self.handle(Change::Modify, &abs, Some(id))?;
+            }
+            self.last_parent = parent;
         }
         if hdr.typeflag == writer::DIR {
             self.added_dirs.insert(name.to_vec());

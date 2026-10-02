@@ -247,13 +247,23 @@ fn put_string(b: &mut [u8], s: &[u8]) {
     }
 }
 
-/// Go's formatOctal: zero-padded, leaving room for a NUL; 0 when it does not fit.
+/// Go's formatOctal: zero-padded, leaving room for a NUL; 0 when it does not fit. The
+/// digits go straight into the field, right to left: what Go's FormatInt, padding and
+/// formatString make of a value that fits, with no string between.
 fn put_octal(b: &mut [u8], x: i64) {
-    let x = if fits_octal(b.len(), x) { x } else { 0 };
-    let s = format!("{x:o}");
-    let pad = b.len().saturating_sub(s.len() + 1);
-    let s = format!("{}{s}", "0".repeat(pad));
-    put_string(b, s.as_bytes());
+    let mut x = if fits_octal(b.len(), x) {
+        x.unsigned_abs()
+    } else {
+        0
+    };
+    let Some((nul, digits)) = b.split_last_mut() else {
+        return;
+    };
+    *nul = 0;
+    for d in digits.iter_mut().rev() {
+        *d = b'0' + (x & 7) as u8;
+        x >>= 3;
+    }
 }
 
 /// The V7 and USTAR fields of `hdr`, with its name and link as given.

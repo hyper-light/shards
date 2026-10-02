@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 use sha2::{Digest as _, Sha256, Sha384, Sha512};
 
@@ -365,12 +366,22 @@ impl Drop for Stage {
 
 /// A blob being written, hashed as it goes; [`BlobWriter::commit`] stores it under its
 /// SHA-256 digest. Dropped uncommitted, it is removed.
+///
+/// A thread of its own hashes and writes what it is given, a piece at a time, so whoever
+/// makes the blob waits for neither: a layer's SHA-256 alone took a sixth of the time a
+/// build spent making a layer of a million entries (PM M78).
 pub struct BlobWriter {
-    partial: Partial,
-    hasher: Hasher,
+    piece: Vec<u8>,
+    to: Option<mpsc::SyncSender<Vec<u8>>>,
+    /// Pieces the thread is done with, to be filled again.
+    back: mpsc::Receiver<Vec<u8>>,
+    worker: Option<std::thread::JoinHandle<io::Result<(Partial, Hasher)>>>,
     size: u64,
     blobs: PathBuf,
 }
+
+/// How many pieces may wait for a blob's writer: what the two hold between them.
+const PIECES: usize = 2;
 
 impl std::fmt::Debug for BlobWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -378,26 +389,97 @@ impl std::fmt::Debug for BlobWriter {
     }
 }
 
-impl Write for BlobWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let n = self.partial.write(buf)?;
-        self.hasher.update(buf.get(..n).unwrap_or_default());
-        self.size += n as u64;
-        Ok(n)
+impl BlobWriter {
+    fn new(mut partial: Partial, blobs: PathBuf) -> Result<BlobWriter, Error> {
+        let (to, from) = mpsc::sync_channel::<Vec<u8>>(PIECES);
+        let (give_back, back) = mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("blob-writer".into())
+            .spawn(move || {
+                let mut hasher = Hasher::new(Algorithm::Sha256);
+                for mut piece in from {
+                    hasher.update(&piece);
+                    partial.write_all(&piece)?;
+                    piece.clear();
+                    // The writer may be gone, done with its last piece.
+                    let _ = give_back.send(piece);
+                }
+                Ok((partial, hasher))
+            })?;
+        Ok(BlobWriter {
+            piece: Vec::with_capacity(CHUNK),
+            to: Some(to),
+            back,
+            worker: Some(worker),
+            size: 0,
+            blobs,
+        })
     }
 
-    fn flush(&mut self) -> io::Result<()> {
-        self.partial.flush()
+    /// Hands the full piece to the thread. If the thread has stopped, its error.
+    fn send(&mut self) -> io::Result<()> {
+        let fresh = self.back.try_recv().unwrap_or_else(|_| Vec::with_capacity(CHUNK));
+        let piece = std::mem::replace(&mut self.piece, fresh);
+        let sent = self.to.as_ref().map(|to| to.send(piece));
+        match sent {
+            Some(Ok(())) => Ok(()),
+            _ => Err(match self.finish() {
+                Err(e) => io::Error::other(e.0),
+                Ok(_) => io::Error::other("the blob's writer stopped"),
+            }),
+        }
+    }
+
+    /// Ends the thread once it has everything: what it wrote, and the hash, or its error.
+    fn finish(&mut self) -> Result<(Partial, Hasher), Error> {
+        drop(self.to.take());
+        let worker = self
+            .worker
+            .take()
+            .ok_or_else(|| Error("the blob's writer is already done".into()))?;
+        match worker.join() {
+            Ok(r) => Ok(r?),
+            Err(_) => bad("the blob's writer failed"),
+        }
+    }
+
+    /// Moves the blob into place (fsync, then rename), returning its digest and size.
+    pub fn commit(mut self) -> Result<(Digest, u64), Error> {
+        if !self.piece.is_empty() {
+            self.send()?;
+        }
+        let (partial, hasher) = self.finish()?;
+        let digest = hasher.finish();
+        let to = self.blobs.join(digest.algorithm().name()).join(digest.hex());
+        partial.commit(&to)?;
+        Ok((digest, self.size))
     }
 }
 
-impl BlobWriter {
-    /// Moves the blob into place (fsync, then rename), returning its digest and size.
-    pub fn commit(self) -> Result<(Digest, u64), Error> {
-        let digest = self.hasher.finish();
-        let to = self.blobs.join(digest.algorithm().name()).join(digest.hex());
-        self.partial.commit(&to)?;
-        Ok((digest, self.size))
+impl Write for BlobWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = buf.len().min(CHUNK - self.piece.len());
+        self.piece.extend_from_slice(buf.get(..n).unwrap_or_default());
+        self.size += n as u64;
+        if self.piece.len() == CHUNK {
+            self.send()?;
+        }
+        Ok(n)
+    }
+
+    /// Everything given so far goes to the thread; [`BlobWriter::commit`] waits for it.
+    fn flush(&mut self) -> io::Result<()> {
+        if self.piece.is_empty() {
+            return Ok(());
+        }
+        self.send()
+    }
+}
+
+impl Drop for BlobWriter {
+    /// Uncommitted, the thread ends and the partial file with it.
+    fn drop(&mut self) {
+        let _ = self.finish();
     }
 }
 
@@ -924,12 +1006,10 @@ impl Store {
 
     /// A new blob, written by the caller.
     pub fn writer(&self) -> Result<BlobWriter, Error> {
-        Ok(BlobWriter {
-            partial: Partial::create(&self.root.join("ingest"))?,
-            hasher: Hasher::new(Algorithm::Sha256),
-            size: 0,
-            blobs: self.root.join("blobs"),
-        })
+        BlobWriter::new(
+            Partial::create(&self.root.join("ingest"))?,
+            self.root.join("blobs"),
+        )
     }
 
     /// `layers`' archives, each decompressed and checked, together taking no more than
@@ -1357,6 +1437,35 @@ mod tests {
             Err(e) => assert!(e.to_string().contains("not its DiffID"), "{e}"),
             Ok(_) => panic!("a changed blob was taken"),
         }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A blob written in writes of any size, across its thread's pieces, is stored under
+    /// the digest of exactly its bytes; one dropped uncommitted leaves nothing behind.
+    #[test]
+    fn blobs_written_in_any_pieces_are_stored_whole() {
+        let root = temp("blob-writer");
+        let store = Store::open(&root).unwrap();
+        let blob: Vec<u8> = (0..CHUNK * 3 + 777).map(|i| (i % 253) as u8).collect();
+        for step in [1, 4096, CHUNK - 1, CHUNK, CHUNK + 1, blob.len()] {
+            let mut w = store.writer().unwrap();
+            for c in blob.chunks(step) {
+                w.write_all(c).unwrap();
+            }
+            let (digest, size) = w.commit().unwrap();
+            assert_eq!(
+                (digest.clone(), size),
+                (sha256(&blob), blob.len() as u64),
+                "writes of {step}"
+            );
+            assert_eq!(fs::read(store.blob_path(&digest)).unwrap(), blob);
+        }
+        let empty = store.writer().unwrap().commit().unwrap();
+        assert_eq!(empty, (sha256(b""), 0));
+        let mut w = store.writer().unwrap();
+        w.write_all(&blob).unwrap();
+        drop(w);
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
         let _ = fs::remove_dir_all(&root);
     }
 

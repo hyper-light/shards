@@ -42,6 +42,11 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static A: Counting = Counting;
 
+thread_local! {
+    /// When the last step ended: each step's line says how long it took.
+    static CLOCK: std::cell::Cell<std::time::Instant> = std::cell::Cell::new(std::time::Instant::now());
+}
+
 struct One(File);
 
 impl Source for One {
@@ -57,8 +62,13 @@ fn mb(n: usize) -> f64 {
 
 fn step(name: &str, entries: u64) {
     let (live, peak) = (LIVE.load(Ordering::Relaxed), PEAK.load(Ordering::Relaxed));
+    let ms = CLOCK.with(|c| {
+        let now = std::time::Instant::now();
+        let ms = now.duration_since(c.replace(now)).as_secs_f64() * 1e3;
+        ms
+    });
     println!(
-        "{name:<8} live {:>8.1} MB ({:>4} B/entry)  peak {:>8.1} MB ({:>4} B/entry)",
+        "{name:<8} {ms:>7.1} ms  live {:>8.1} MB ({:>4} B/entry)  peak {:>8.1} MB ({:>4} B/entry)",
         mb(live),
         live as u64 / entries.max(1),
         mb(peak),

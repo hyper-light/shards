@@ -8,8 +8,9 @@
 //! shards decodes gzip, bzip2, xz and zstd in-process (PM M77).
 
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::mpsc;
 
 use shards_dockerfile::go;
 use shards_image::erofs::{DataRef, Kind, Source};
@@ -34,7 +35,15 @@ const DETECT: usize = 2 << 20;
 #[derive(Debug)]
 pub struct Budget {
     limits: Limits,
+    /// Decompressed: counted where the archive is decompressed.
     bytes: u64,
+    /// Entries and their metadata: counted where they are unpacked.
+    held: Held,
+}
+
+/// What the entries the build's ADDs unpacked hold.
+#[derive(Debug, Default)]
+struct Held {
     entries: u64,
     metadata: u64,
 }
@@ -44,28 +53,29 @@ impl Budget {
         Budget {
             limits,
             bytes: 0,
-            entries: 0,
-            metadata: 0,
+            held: Held::default(),
         }
     }
+}
 
-    fn entry(&mut self, e: &tar::Entry) -> Result<(), Error> {
+impl Held {
+    fn entry(&mut self, limits: &Limits, e: &tar::Entry) -> Result<(), Error> {
         self.entries += 1;
         let held = e
             .xattrs
             .iter()
             .fold(e.path.len() + e.link.len(), |n, (k, v)| n + k.len() + v.len());
         self.metadata = self.metadata.saturating_add(held as u64);
-        if self.entries > self.limits.entries {
+        if self.entries > limits.entries {
             return Err(Error(format!(
                 "the archives ADD unpacks hold more than {} entries (SHARDS_MAX_IMAGE_ENTRIES)",
-                self.limits.entries
+                limits.entries
             )));
         }
-        if self.metadata > self.limits.metadata {
+        if self.metadata > limits.metadata {
             return Err(Error(format!(
                 "the archives ADD unpacks have names, links and xattrs past {} bytes (SHARDS_MAX_IMAGE_METADATA)",
-                self.limits.metadata
+                limits.metadata
             )));
         }
         Ok(())
@@ -81,24 +91,105 @@ pub struct Unpack<'a> {
     pub budget: &'a mut Budget,
 }
 
-/// Writes a decompressed archive, held to the budget and to the room its file system has.
-struct Bounded<'a, W> {
-    out: W,
-    budget: &'a mut Budget,
-    room: Room,
+/// How much of a decompressed archive goes over to the unpacker at once, and how many such
+/// pieces may wait for it: what the two hold between them.
+const PIECE: usize = 256 << 10;
+const PIECES: usize = 4;
+
+/// Where an archive is decompressed to: pieces sent to the unpacker as they fill, the
+/// bytes held to the build's budget.
+struct Pieces<'a> {
+    to: mpsc::SyncSender<Vec<u8>>,
+    piece: Vec<u8>,
+    bytes: &'a mut u64,
+    limit: u64,
 }
 
-impl<W: Write> Write for Bounded<'_, W> {
+impl Pieces<'_> {
+    fn send(&mut self) -> io::Result<()> {
+        let piece = std::mem::replace(&mut self.piece, Vec::with_capacity(PIECE));
+        self.to
+            .send(piece)
+            .map_err(|_| io::Error::other("the archive's unpacker stopped"))
+    }
+}
+
+impl Write for Pieces<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.budget.bytes = self.budget.bytes.saturating_add(buf.len() as u64);
-        if self.budget.bytes > self.budget.limits.bytes {
+        // What fits in this piece is taken, and counted; the rest comes again.
+        let n = buf.len().min(PIECE - self.piece.len());
+        *self.bytes = self.bytes.saturating_add(n as u64);
+        if *self.bytes > self.limit {
             return Err(io::Error::other(format!(
                 "the archives ADD unpacks decompress to more than {} bytes (SHARDS_MAX_IMAGE_BYTES)",
-                self.budget.limits.bytes
+                self.limit
             )));
         }
+        self.piece.extend_from_slice(buf.get(..n).unwrap_or_default());
+        if self.piece.len() == PIECE {
+            self.send()?;
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.piece.is_empty() {
+            return Ok(());
+        }
+        self.send()
+    }
+}
+
+/// The decompressed archive, as the unpacker reads it: the pieces, in order, until the
+/// decompressor is done.
+struct Stream {
+    from: mpsc::Receiver<Vec<u8>>,
+    piece: Vec<u8>,
+    at: usize,
+}
+
+impl Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        while self.at >= self.piece.len() {
+            match self.from.recv() {
+                Ok(piece) => {
+                    self.piece = piece;
+                    self.at = 0;
+                }
+                Err(_) => return Ok(0),
+            }
+        }
+        let rest = self.piece.get(self.at..).unwrap_or_default();
+        let n = rest.len().min(buf.len());
+        if let (Some(to), Some(from)) = (buf.get_mut(..n), rest.get(..n)) {
+            to.copy_from_slice(from);
+        }
+        self.at += n;
+        Ok(n)
+    }
+}
+
+impl Stream {
+    /// Reads what is left, so the decompressor runs to its end and says whether the
+    /// whole stream was sound, as it did when it ran before anything was unpacked.
+    fn drain(&mut self) {
+        while self.from.recv().is_ok() {}
+    }
+}
+
+/// The contents of an archive's regular files, written to the stage as the archive is
+/// unpacked, held to the room its file system has: the one thing of the archive kept.
+struct Contents {
+    out: BufWriter<File>,
+    room: Room,
+    at: u64,
+}
+
+impl Write for Contents {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.room.wrote(buf.len())?;
         self.out.write_all(buf)?;
+        self.at += buf.len() as u64;
         Ok(buf.len())
     }
 
@@ -244,9 +335,15 @@ fn header_mode(mode: u32) -> u32 {
     mode & 0o7777
 }
 
-/// unpack.go unpack, for one source already known to be an archive: decompressed into
-/// the stage within the build's budget, then chrootarchive.Untar's Unpack into
-/// `dest_path`, with `owner` for every entry when the action names one.
+/// unpack.go unpack, for one source already known to be an archive: decompressed and
+/// unpacked at once, with chrootarchive.Untar's Unpack into `dest_path`, and `owner` for
+/// every entry when the action names one.
+///
+/// moby decompresses into the unpacker as a stream too. Here a thread decompresses, within
+/// the build's budget, while this one unpacks, and only regular files' contents are kept,
+/// in the stage: an archive is never written out whole (PM M78). A stream the decompressor
+/// cannot read to its end fails the step with the decompressor's error, whatever the
+/// unpacker made of what came before, as when the whole was decompressed first.
 #[allow(clippy::too_many_arguments)]
 pub fn unpack(
     src: &Fs,
@@ -264,40 +361,59 @@ pub fn unpack(
     let dest_dir = copy::root_path(dest, dest_path)?;
     copy::mkdir_all(dest, &dest_dir, IMPLIED_DIR_MODE, ch, tm)?;
 
-    // The archive, decompressed once into the stage, read from there by its entries.
+    let e = |e: io::Error| Error(e.to_string());
     let path = io.stage.join(format!("unpack-{}", next_id()));
-    let written = (|| {
-        let file = File::options()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|e| Error(e.to_string()))?;
-        let room = Room::new(io.stage, &io.budget.limits).map_err(|e| Error(e.to_string()))?;
-        let mut out = Bounded {
-            out: io::BufWriter::new(file),
-            budget: &mut *io.budget,
-            room,
-        };
-        decompress(
-            DataReader {
-                src: &mut *io.sources,
-                data,
-                size,
-                at: 0,
-            },
-            &mut out,
-        )?;
-        out.flush().map_err(|e| Error(e.to_string()))
-    })();
-    // A failure ends the build, and its stage goes with it.
-    written?;
-    let source = io
-        .sources
-        .archive(File::open(&path).map_err(|e| Error(e.to_string()))?)
-        .map_err(|e| Error(e.to_string()))?;
+    let file = File::options()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(e)?;
+    // Read once everything is written: its files' contents, where the snapshot finds them.
+    let source = io.sources.archive(File::open(&path).map_err(e)?).map_err(e)?;
+    let mut contents = Contents {
+        out: BufWriter::with_capacity(PIECE, file),
+        room: Room::new(io.stage, &io.budget.limits).map_err(e)?,
+        at: 0,
+    };
+    let limits = io.budget.limits;
+    let Budget { bytes, held, .. } = &mut *io.budget;
+    let sources = &mut *io.sources;
 
     dest.chroot(&dest_dir).map_err(os)?;
-    let r = untar(dest, &path, source, owner, io.budget);
+    let r = std::thread::scope(|scope| {
+        let (to, from) = mpsc::sync_channel(PIECES);
+        let decompressor = std::thread::Builder::new()
+            .name("add-decompress".into())
+            .spawn_scoped(scope, move || {
+                let mut out = Pieces {
+                    to,
+                    piece: Vec::with_capacity(PIECE),
+                    bytes,
+                    limit: limits.bytes,
+                };
+                let reader = DataReader {
+                    src: sources,
+                    data,
+                    size,
+                    at: 0,
+                };
+                decompress(reader, &mut out)?;
+                out.flush().map_err(|e| Error(e.to_string()))
+            })
+            .map_err(e)?;
+        let mut stream = Stream {
+            from,
+            piece: Vec::new(),
+            at: 0,
+        };
+        let unpacked = untar(dest, &mut stream, &mut contents, source, owner, &limits, held)
+            .and_then(|()| contents.flush().map_err(e));
+        stream.drain();
+        let decompressed = decompressor
+            .join()
+            .map_err(|_| Error("decompressing the archive failed".into()))?;
+        decompressed.and(unpacked)
+    });
     dest.unchroot();
     r
 }
@@ -311,21 +427,28 @@ fn next_id() -> u64 {
 /// moby's Unpack and createTarFile, inside the chroot.
 fn untar(
     dest: &mut Fs,
-    archive: &Path,
+    archive: &mut dyn Read,
+    contents: &mut Contents,
     source: u32,
     owner: Option<User>,
-    budget: &mut Budget,
+    limits: &Limits,
+    held: &mut Held,
 ) -> Result<(), Error> {
-    let file = File::open(archive).map_err(|e| Error(e.to_string()))?;
-    let mut reader = tar::Reader::raw(BufReader::new(file));
+    let mut reader = tar::Reader::raw(archive);
     let mut dirs: Vec<(Vec<u8>, (i64, u32))> = Vec::new();
     loop {
-        let entry = match reader.next_entry() {
+        let mut entry = match reader.next_entry() {
             Ok(Some(e)) => e,
             Ok(None) => break,
             Err(e) => return Err(Error(e.to_string())),
         };
-        budget.entry(&entry)?;
+        held.entry(limits, &entry)?;
+        // A regular file's contents go to the stage, read from there once it is written:
+        // where its offset now says.
+        if entry.kind == Type::File {
+            entry.offset = contents.at;
+            reader.copy_data(contents).map_err(|e| Error(e.to_string()))?;
+        }
         // filepath.Clean keeps a leading `..`, which joining to the root then removes.
         let name = go::clean(&entry.path);
         if name != b"."
@@ -550,4 +673,60 @@ fn implied_dirs(dest: &mut Fs, path: &[u8]) -> Result<(), Error> {
         dest.lchown(d, 0, 0).map_err(os)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// Writes `total` patterned bytes in writes of `step` through pieces held to `limit`,
+    /// reading them back on another thread: whether the writes were taken, and what came
+    /// through.
+    fn through(total: usize, step: usize, limit: u64) -> (io::Result<()>, Vec<u8>, u64) {
+        let data: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
+        let (to, from) = mpsc::sync_channel(PIECES);
+        let mut bytes = 0u64;
+        let got = std::thread::scope(|scope| {
+            let reader = scope.spawn(move || {
+                let mut s = Stream {
+                    from,
+                    piece: Vec::new(),
+                    at: 0,
+                };
+                let mut got = Vec::new();
+                s.read_to_end(&mut got).unwrap();
+                got
+            });
+            let mut out = Pieces {
+                to,
+                piece: Vec::with_capacity(PIECE),
+                bytes: &mut bytes,
+                limit,
+            };
+            let r = data
+                .chunks(step)
+                .try_for_each(|c| out.write_all(c))
+                .and_then(|()| out.flush());
+            drop(out);
+            (r, reader.join().unwrap())
+        });
+        (got.0, got.1, bytes)
+    }
+
+    /// Every byte is counted once, whatever the writes' sizes against the pieces', and
+    /// arrives in order: a stream exactly at the limit passes, one byte more does not.
+    #[test]
+    fn pieces_count_each_byte_once_and_keep_its_order() {
+        let total = PIECE * 3 + 1234;
+        for step in [1000, PIECE - 1, PIECE, PIECE * 2 + 7] {
+            let (r, got, bytes) = through(total, step, total as u64);
+            r.unwrap();
+            assert_eq!(bytes, total as u64, "writes of {step}");
+            assert_eq!(got, (0..total).map(|i| (i % 251) as u8).collect::<Vec<_>>());
+            let (r, _, _) = through(total, step, total as u64 - 1);
+            let e = r.unwrap_err().to_string();
+            assert!(e.contains("decompress to more than"), "{e}");
+        }
+    }
 }

@@ -254,6 +254,22 @@ impl<R: Read> Reader<R> {
         Ok(entry)
     }
 
+    /// The last entry's data, copied to `out` instead of skipped: for a reader of a stream,
+    /// which cannot come back for it. Nothing is copied twice, and nothing when the entry
+    /// has no data.
+    pub fn copy_data(&mut self, out: &mut dyn io::Write) -> Result<u64, Error> {
+        let Some(size) = self.owed.take() else {
+            return Ok(0);
+        };
+        let n = io::copy(&mut (&mut self.inner).take(size), out)?;
+        self.pos += n;
+        if n != size {
+            return bad("archive ends inside a member");
+        }
+        self.pad(size)?;
+        Ok(n)
+    }
+
     /// The next block: `None` at the end of the stream, an error if it ends inside one.
     fn block(&mut self) -> Result<Option<[u8; BLOCK]>, Error> {
         let mut b = [0u8; BLOCK];

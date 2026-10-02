@@ -2734,6 +2734,19 @@ revision before comparing a changed API/implementation.
   `security.capability`, the one extended attribute a layer keeps, which no case had
   covered. `run.sh`, n 3: 215, 217 and 225 MB; user time 3.5 to 3.7 s, from 5.9 s; the ADD
   step 3.2 s and the export 1.4 s of wall time.
+- **Fifth round.** ADD had decompressed an archive whole into the stage (512 MB written
+  for a million empty files) before unpacking it. Now a thread decompresses into a
+  bounded channel of 256 KiB pieces, counting the bytes against the build's limit, while
+  the unpacker reads the stream, and only regular files' contents go to the stage; the
+  decompressor's error comes first, as it did when it ran first. A blob is hashed and
+  written by a thread of its own; the tar writer puts octal fields' digits straight into
+  the header, where it had formatted two strings for each; and the differ checks a
+  parent against those already written only when it changes. `run.sh`, n 3: 219, 221 and
+  222 MB; user time 2.82 to 2.92 s; the ADD step 1.4 s and the export 1.4 s. One run took
+  5.6 s of wall time to the others' 3.2 and 3.6 with the same CPU time, on a host whose
+  load average was 54 from other work; what it waited on is not yet measured. The export
+  is now most of what is left: `layer::apply` reads back, twice, the layer the build
+  wrote moments before.
 
 ### M79. The signal port dialled before the workload starts
 
