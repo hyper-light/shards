@@ -6,6 +6,8 @@
 
 pub mod block;
 pub mod mmio;
+#[cfg(unix)]
+pub mod net;
 pub mod pmem;
 pub mod queue;
 #[cfg(unix)]

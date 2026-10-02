@@ -80,6 +80,9 @@ struct Common {
     snapshot_dir: Option<PathBuf>,
     then: AfterSnapshot,
     vsock: Option<PathBuf>,
+    /// A network device, and its network process's side (D31).
+    #[cfg(unix)]
+    net: Option<shards_vmm::devices::virtio::net::NetHost>,
     workload: Options,
     /// Whether a workload option was given.
     workload_options: bool,
@@ -92,6 +95,8 @@ impl Common {
             snapshot_dir: None,
             then: AfterSnapshot::Stop,
             vsock: None,
+            #[cfg(unix)]
+            net: None,
             workload: Options::default(),
             workload_options: false,
         }
@@ -115,6 +120,13 @@ impl Common {
                 }
             }
             "--vsock" => self.vsock = Some(PathBuf::from(value("--vsock")?)),
+            #[cfg(unix)]
+            "--net" => {
+                if self.net.is_some() {
+                    return Err("--net given twice".into());
+                }
+                self.net = Some(net_host(&text(value("--net")?)?)?);
+            }
             "--cwd" => {
                 let dir = PathBuf::from(value("--cwd")?);
                 if !dir.is_absolute() {
@@ -229,6 +241,10 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     cfg.snapshot = common.policy();
     cfg.console = common.console;
     cfg.vsock = common.vsock.map(VsockHost::at);
+    #[cfg(unix)]
+    {
+        cfg.net = common.net.take();
+    }
     let command = !common.workload.argv.is_empty();
     if let Some(fd) = warm {
         let rootfs = rootfs.ok_or("--warm needs --rootfs")?;
@@ -321,6 +337,8 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         snapshot: common.policy(),
         hold,
         vsock: common.vsock.map(VsockHost::at),
+        #[cfg(unix)]
+        net: common.net.take(),
         // Restored ahead of its request: the prefetch costs the request nothing.
         prefetch: hold || warm.is_some(),
         // A warm VM's request ends the recording as it ends a template's (RECORD_FOR).
@@ -954,6 +972,50 @@ fn written(paths: &mut crate::confine::Paths, snapshot: Option<&Path>, vsock: Op
 /// its VM is.
 #[cfg(target_os = "macos")]
 static GRANTS: std::sync::OnceLock<std::os::unix::net::UnixStream> = std::sync::OnceLock::new();
+
+/// `--net REGION,WAKE_ME,WAKE_PEER,MAC`: the frame ring and doorbells its spawner left this
+/// process at those descriptors, which it owns from here on, and the guest's MAC.
+#[cfg(unix)]
+fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, String> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let parts: Vec<&str> = spec.split(',').collect();
+    let [region, me, peer, mac] = parts.as_slice() else {
+        return Err(format!("--net {spec}: not REGION,WAKE_ME,WAKE_PEER,MAC"));
+    };
+    let mut seen = Vec::new();
+    let mut adopt = |what: &str, v: &str| -> Result<std::sync::Arc<OwnedFd>, String> {
+        let fd: i32 = v
+            .parse()
+            .map_err(|_| format!("--net: {what} {v:?} is not a descriptor"))?;
+        // SAFETY: fcntl(2) asks whether the descriptor is open.
+        if fd < 3 || seen.contains(&fd) || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+            return Err(format!("--net: {what} {fd} is not a descriptor of its own"));
+        }
+        seen.push(fd);
+        // SAFETY: an open descriptor the spawner left for this process alone, owned from
+        // here on, closed on exec.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        // SAFETY: as above.
+        Ok(std::sync::Arc::new(unsafe { OwnedFd::from_raw_fd(fd) }))
+    };
+    let region = adopt("REGION", region)?;
+    let wake_me = adopt("WAKE_ME", me)?;
+    let wake_peer = adopt("WAKE_PEER", peer)?;
+    let octets: Vec<u8> = mac
+        .split(':')
+        .map(|h| u8::from_str_radix(h, 16))
+        .collect::<Result<_, _>>()
+        .map_err(|_| format!("--net: {mac:?} is not a MAC"))?;
+    let mac: [u8; 6] = octets
+        .try_into()
+        .map_err(|_| format!("--net: {mac:?} is not a MAC"))?;
+    Ok(shards_vmm::devices::virtio::net::NetHost {
+        region,
+        wake_me,
+        wake_peer,
+        mac,
+    })
+}
 
 /// Takes the socket at `fd` to ask the spawner for access on (macOS).
 #[cfg(target_os = "macos")]

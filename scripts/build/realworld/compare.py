@@ -23,7 +23,7 @@ tag = f"shards-real-{name}:1"
 resources = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "resources")
 bins = os.path.join(work, "bin")
 os.makedirs(bins)
-for b in ("shards", "shardsd", "shards-vm"):
+for b in ("shards", "shardsd", "shards-vm", "shards-net"):
     shutil.copy2(os.path.join(bindir, b), os.path.join(bins, b))
     if sys.platform == "darwin":
         sign = ["--entitlements", os.path.join(resources, "vm.entitlements"), "-o", "runtime"] if b == "shards-vm" \

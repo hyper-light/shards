@@ -256,7 +256,7 @@ fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
     console: Console,
-    vsock: Option<&super::VsockHost>,
+    hosts: super::Hosts<'_>,
 ) -> Result<Assembled, String> {
     let ram = config
         .memory_mib
@@ -285,7 +285,8 @@ fn assemble(
     let irqs = vm.irqs();
     debug!("VM created and RAM mapped");
 
-    let slots = config.disks.len() + regions.len() + usize::from(config.vsock);
+    let slots =
+        config.disks.len() + regions.len() + usize::from(config.vsock) + usize::from(config.net.is_some());
     if slots as u64 > layout::VIRTIO_MMIO_MAX {
         return Err(format!(
             "at most {} virtio devices are supported",
@@ -326,10 +327,22 @@ fn assemble(
         add_virtio(&mut bus, Box::new(pmem::Pmem::new(region, gpa)))?;
     }
     if config.vsock {
-        let host = vsock.ok_or("the machine has a vsock device but no host side for it")?;
+        let host = hosts
+            .vsock
+            .ok_or("the machine has a vsock device but no host side for it")?;
         add_virtio(
             &mut bus,
             Box::new(vsock::Vsock::new(host.clone(), vsock::GUEST_CID)?),
+        )?;
+    }
+    #[cfg(unix)]
+    if config.net.is_some() {
+        let host = hosts
+            .net
+            .ok_or("the machine has a network device but no network process for it")?;
+        add_virtio(
+            &mut bus,
+            Box::new(crate::devices::virtio::net::Net::new(host.clone())?),
         )?;
     }
     let control = Arc::new(Control::default());
@@ -385,7 +398,12 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     debug!("kernel loaded");
 
     let config = super::machine_config(cfg)?;
-    let a = assemble(&memory, &config, cfg.console, cfg.vsock.as_ref())?;
+    let hosts = super::Hosts {
+        vsock: cfg.vsock.as_ref(),
+        #[cfg(unix)]
+        net: cfg.net.as_ref(),
+    };
+    let a = assemble(&memory, &config, cfg.console, hosts)?;
     let tables = acpi::build(cfg.vcpus, &a.virtio)?.blobs;
     let access = memory.access().map_err(|e| e.to_string())?;
     for (addr, bytes) in tables {
@@ -440,10 +458,19 @@ pub fn restore(
     snap: &Snapshot,
     memory_file: &File,
     console: Console,
-    vsock: Option<&super::VsockHost>,
+    hosts: super::Hosts<'_>,
     working_set: Vec<hv::Touch>,
 ) -> Result<Machine, String> {
-    super::check_vsock(snap, vsock)?;
+    super::check_vsock(snap, hosts.vsock)?;
+    #[cfg(unix)]
+    if snap.config.net.is_some() != hosts.net.is_some() {
+        return Err(match snap.config.net {
+            Some(_) => {
+                "the snapshot has a network device: give the restored VM its own network process".into()
+            }
+            None => "the snapshot has no network device for a network process".into(),
+        });
+    }
     let (vm_state, vcpus) = decode_state(&snap.arch)?;
     if vcpus.len() != snap.config.vcpus as usize {
         return Err(format!(
@@ -455,7 +482,7 @@ pub fn restore(
     let (_, ranges) = ram_ranges(snap.config.memory_mib)?;
     let memory =
         Arc::new(GuestMemory::from_file(&ranges, memory_file).map_err(|e| format!("snapshot memory: {e}"))?);
-    let a = assemble(&memory, &snap.config, console, vsock)?;
+    let a = assemble(&memory, &snap.config, console, hosts)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))

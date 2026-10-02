@@ -159,6 +159,12 @@ fn serve() -> io::Result<()> {
     }
     std::env::set_current_dir("/")?;
     swap_on()?;
+    loopback_up()?;
+    // A builder with a network: eth0 as the host named it, which a step with the default
+    // network shares, as BuildKit's steps share its host's.
+    if let Some((addr, prefix, gateway)) = crate::net::from_cmdline() {
+        crate::net::configure(addr, prefix, gateway)?;
+    }
     let conn = dial(build::PORT, true)?;
     let mut b = Builder {
         conn,
@@ -356,11 +362,17 @@ impl Builder {
         let (err_r, err_w) = pipe()?;
         // The child's setup failure, if any, as text: closed on its exec.
         let (fail_r, fail_w) = pipe()?;
+        // The builder's own network for the default, as BuildKit's host network; loopback
+        // alone, in a namespace of the step's own, for none.
+        let net = match step.network {
+            Network::None => libc::CLONE_NEWNET,
+            Network::Default => 0,
+        };
         let flags = libc::CLONE_NEWNS
             | libc::CLONE_NEWPID
             | libc::CLONE_NEWUTS
             | libc::CLONE_NEWIPC
-            | libc::CLONE_NEWNET
+            | net
             | libc::CLONE_NEWCGROUP;
         // SAFETY: clone(2) as fork(2) with new namespaces: no new stack, so the child runs
         // on a copy of this one, as fork's does. init is single-threaded.
@@ -779,8 +791,8 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
     if unsafe { libc::sethostname(step.hostname.as_ptr().cast(), step.hostname.len()) } != 0 {
         return Err(os_err("sethostname"));
     }
-    match step.network {
-        Network::None => loopback_up()?,
+    if step.network == Network::None {
+        loopback_up()?;
     }
     for &(resource, soft, hard) in &step.rlimits {
         let limit = libc::rlimit {

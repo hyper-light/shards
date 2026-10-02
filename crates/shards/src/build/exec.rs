@@ -725,9 +725,10 @@ impl Exec<'_> {
         }
         let network = match op.network {
             NetMode::Host if !op.network_host => return Err("network.host is not allowed".into()),
-            // A step's network is its own loopback until the guest has a network of its own
-            // (D31).
-            NetMode::None | NetMode::Sandbox | NetMode::Host => Network::None,
+            NetMode::None => Network::None,
+            // The builder's own network: BuildKit's default gives a step its host's, and
+            // the builder VM is the host it has; host networking is the same, granted.
+            NetMode::Sandbox | NetMode::Host => Network::Default,
         };
         let passwd = self.user_file(&root.fs, b"/etc/passwd");
         let group = self.user_file(&root.fs, b"/etc/group");

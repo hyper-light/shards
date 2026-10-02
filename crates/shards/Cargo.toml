@@ -26,6 +26,12 @@ path = "src/main.rs"
 name = "shards-vm"
 path = "src/bin/shards-vm/main.rs"
 
+# One microVM's network process (D31): its guest's flows to the host's sockets, apart from
+# the VM process, which stays without TCP.
+[[bin]]
+name = "shards-net"
+path = "src/bin/shards-net/main.rs"
+
 [lints]
 workspace = true
 
@@ -36,6 +42,8 @@ alloc-count = []
 
 [dependencies]
 shards-abi = { path = "../abi" }
+shards-net = { path = "../net" }
+shards-netring = { path = "../netring" }
 shards-user = { path = "../user" }
 shards-build = { path = "../build" }
 shards-cmdline = { path = "../cmdline" }

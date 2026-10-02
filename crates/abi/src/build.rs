@@ -74,6 +74,8 @@ pub enum Network {
     /// Its own loopback alone.
     #[default]
     None,
+    /// The builder's network, as BuildKit's steps have their host's.
+    Default,
 }
 
 /// A step: what to run, as whom, where, on what.
@@ -156,6 +158,7 @@ impl Step {
         }
         out.push(match self.network {
             Network::None => 0,
+            Network::Default => 1,
         });
         out.push(u8::from(self.insecure));
         put_len(&mut out, self.mounts.len());
@@ -229,6 +232,7 @@ impl Step {
         let resolv = r.bytes()?;
         let network = match r.u8()? {
             0 => Network::None,
+            1 => Network::Default,
             _ => return None,
         };
         let insecure = r.flag()?;

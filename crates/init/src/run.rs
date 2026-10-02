@@ -244,7 +244,12 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         mount(source, target, fstype, flags, data)?;
     }
     container_files()?;
-    loopback_up().map_err(|e| setup_failed(e.to_string()))
+    loopback_up().map_err(|e| setup_failed(e.to_string()))?;
+    // A VM with a network: eth0 as the host named it, before any snapshot.
+    if let Some((addr, prefix, gateway)) = crate::net::from_cmdline() {
+        crate::net::configure(addr, prefix, gateway).map_err(|e| setup_failed(format!("eth0: {e}")))?;
+    }
+    Ok(())
 }
 
 /// What Docker gives every container beside its image (moby daemon/initlayer/setup_unix.go),

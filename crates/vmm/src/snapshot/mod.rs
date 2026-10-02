@@ -52,7 +52,8 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///    own bytes, with their identities.
 /// 7: arm64's GIC as the backend's own serialization of the device, not its registers.
 /// 8: x86's TSC offsets, so every vCPU's TSC comes back in step with the others'.
-const VERSION: u32 = 8;
+/// 9: MachineConfig records the machine's network device, by its MAC, if it has one.
+const VERSION: u32 = 9;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -79,6 +80,9 @@ pub struct MachineConfig {
     /// Whether a vsock device follows the pmem devices. Its host socket path is not
     /// recorded: a restored VM needs a path of its own.
     pub vsock: bool,
+    /// The network device's MAC, if a network device follows the vsock device: its
+    /// network process is the restore's own.
+    pub net: Option<[u8; 6]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,6 +269,8 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
     w.seq(&pmem, |w, path| w.bytes(path));
     w.seq(identities, |w, identity| identity.encode(w));
     w.bool(s.config.vsock);
+    w.bool(s.config.net.is_some());
+    w.bytes(&s.config.net.unwrap_or_default());
     w.bytes(&s.arch);
     w.bytes(&s.devices);
     Ok(w.into_bytes())
@@ -325,6 +331,13 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
         )));
     }
     let vsock = r.bool()?;
+    let has_net = r.bool()?;
+    let mac = r.bytes(6)?;
+    let net = match <[u8; 6]>::try_from(mac) {
+        Ok(m) if has_net => Some(m),
+        Ok(_) => None,
+        Err(_) => return Err(DecodeError("a MAC that is not six bytes".into())),
+    };
     let arch_state = r.bytes(usize::MAX)?.to_vec();
     let devices = r.bytes(usize::MAX)?.to_vec();
     r.finish()?;
@@ -336,6 +349,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 disks,
                 pmem,
                 vsock,
+                net,
             },
             arch: arch_state,
             devices,
@@ -796,6 +810,7 @@ mod tests {
                 disks: vec![(dir.join("a.img"), true), (dir.join("b.img"), false)],
                 pmem: vec![dir.join("base.erofs")],
                 vsock: true,
+                net: Some([2, 0, 0, 0, 0, 1]),
             },
             arch: vec![marker, 2, 3],
             devices: vec![9; 100],

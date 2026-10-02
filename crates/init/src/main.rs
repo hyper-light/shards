@@ -6,6 +6,8 @@ mod build;
 mod frames;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "linux")]
+mod net;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod orders;
 #[cfg(target_os = "linux")]

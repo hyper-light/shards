@@ -382,7 +382,11 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
         &snap,
         &memory_file,
         cfg.console,
-        cfg.vsock.as_ref(),
+        super::Hosts {
+            vsock: cfg.vsock.as_ref(),
+            #[cfg(unix)]
+            net: cfg.net.as_ref(),
+        },
         working_set.unwrap_or_default(),
     )?;
     // A working set is saved into the generation it was recorded from.

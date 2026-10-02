@@ -856,6 +856,8 @@ dependencies = [
  "shards-dockerfile",
  "shards-image",
  "shards-ipc",
+ "shards-net",
+ "shards-netring",
  "shards-registry",
  "shards-testguest",
  "shards-user",
@@ -927,6 +929,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-net"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "shards-netring",
+]
+
+[[package]]
 name = "shards-netring"
 version = "0.1.0"
 dependencies = [
@@ -971,6 +981,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "shards-abi",
+ "shards-netring",
  "windows-sys 0.61.2",
 ]
 

@@ -60,6 +60,7 @@ pub fn main() -> ! {
         "vsock" => vsock(args.get(1..).unwrap_or_default()),
         "loopback" => loopback(),
         "fs" => fs(args.get(1..).unwrap_or_default()),
+        "tcp" => tcp(arg(1)),
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -280,6 +281,23 @@ fn report() -> i32 {
 }
 
 /// Copies stdin to stdout.
+/// Connects to `addr` (IP:PORT), reads until the far end closes, and prints what came:
+/// `tcp N BYTES` then the bytes.
+fn tcp(addr: &str) -> i32 {
+    use std::io::Read as _;
+    let mut got = Vec::new();
+    match std::net::TcpStream::connect(addr).and_then(|mut s| s.read_to_end(&mut got)) {
+        Ok(n) => {
+            let _ = writeln!(io::stdout(), "tcp {n} {}", String::from_utf8_lossy(&got).trim_end());
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "tcp error {e}");
+            1
+        }
+    }
+}
+
 /// File operations, in order: `mkdir:P`, `write:P=DATA`, `link:OLD:NEW`, `symlink:T:P`,
 /// `rm:P`, `chmod:OCTAL:P`. Stops at the first that fails, saying which.
 fn fs(ops: &[String]) -> i32 {

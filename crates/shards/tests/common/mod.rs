@@ -261,7 +261,7 @@ pub fn shards_vm() -> &'static Path {
     V.get_or_init(|| binaries().join(format!("shards-vm{}", std::env::consts::EXE_SUFFIX)))
 }
 
-/// The directory holding this build's `shards`, `shardsd` and `shards-vm`.
+/// The directory holding this build's `shards`, `shardsd`, `shards-vm` and `shards-net`.
 fn binaries() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
     V.get_or_init(|| {
@@ -269,6 +269,7 @@ fn binaries() -> &'static Path {
             ("shards", Path::new(env!("CARGO_BIN_EXE_shards"))),
             ("shardsd", Path::new(env!("CARGO_BIN_EXE_shardsd"))),
             ("shards-vm", Path::new(env!("CARGO_BIN_EXE_shards-vm"))),
+            ("shards-net", Path::new(env!("CARGO_BIN_EXE_shards-net"))),
         ];
         let digest: String = {
             use sha2::Digest;

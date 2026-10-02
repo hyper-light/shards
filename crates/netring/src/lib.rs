@@ -61,6 +61,9 @@ pub struct Region {
 // SAFETY: the region is a mapping both sides reach only through atomics and raw-pointer
 // copies, never references; moving it between threads changes nothing of that.
 unsafe impl Send for Region {}
+// SAFETY: as above: shared, the region is reached through atomics and raw-pointer copies
+// alone, by one producer and one consumer of each direction.
+unsafe impl Sync for Region {}
 
 /// The region's size: the controls' page and two rings.
 pub const SIZE: usize = CONTROL + 2 * RING;
@@ -68,8 +71,7 @@ pub const SIZE: usize = CONTROL + 2 * RING;
 impl Region {
     /// A new region, zeroed: shared memory that only its descriptor names.
     pub fn create() -> io::Result<Region> {
-        let fd = platform::shared_memory(SIZE)?;
-        Region::map(fd)
+        Region::map(memory()?)
     }
 
     /// Maps the region a peer made and handed over as `fd`. Its size must be [`SIZE`].
@@ -153,6 +155,12 @@ impl Drop for Region {
         // SAFETY: the mapping made in `map`, unmapped once.
         unsafe { libc::munmap(self.base.cast(), self.len) };
     }
+}
+
+/// Shared memory for a region, zeroed and unmapped: for a spawner that hands it to the
+/// two processes that map it.
+pub fn memory() -> io::Result<OwnedFd> {
+    platform::shared_memory(SIZE)
 }
 
 /// A doorbell: a pipe's two ends, the read end for the side that sleeps on it, the write
@@ -300,6 +308,41 @@ impl Producer<'_> {
         Ok(true)
     }
 
+    /// Writes one frame of `n` bytes if there is room now: `fill` gets where to copy them
+    /// and copies all `n`. `None` if there is no room, the consumer asked to ring this
+    /// side's doorbell once it makes some; `Some(false)` if `n` is past [`MAX_FRAME`].
+    /// Never waits: a device thread that must also drain the other way cannot.
+    pub fn try_push_with(&mut self, n: usize, fill: impl FnOnce(*mut u8)) -> Result<Option<bool>, Broken> {
+        if n > MAX_FRAME {
+            return Ok(Some(false));
+        }
+        if !self.room(n)? {
+            let c = self.control();
+            c.producer_waits.0.store(1, Ordering::SeqCst);
+            if !self.room(n)? {
+                return Ok(None);
+            }
+            c.producer_waits.0.store(0, Ordering::SeqCst);
+        }
+        let c = self.control();
+        let mut head = c.head.0.load(Ordering::Relaxed);
+        let mut at = (head % RING as u64) as usize;
+        if at + padded(n) > RING {
+            self.write_header(at, (RING - at - HEADER) as u32, PAD);
+            head += (RING - at) as u64;
+            at = 0;
+        }
+        self.write_header(at, n as u32, FRAME);
+        // SAFETY: `at + HEADER .. + n` lies in the ring: the record fits before its end.
+        fill(unsafe { self.ring.add(at + HEADER) });
+        c.head.0.store(head + padded(n) as u64, Ordering::Release);
+        fence(Ordering::SeqCst);
+        if c.consumer_waits.0.swap(0, Ordering::SeqCst) == 1 {
+            ring_bell(&self.doorbell);
+        }
+        Ok(Some(true))
+    }
+
     fn write_header(&self, at: usize, len: u32, kind: u32) {
         let [a, b, c, d] = len.to_le_bytes();
         let [e, f, g, i] = kind.to_le_bytes();
@@ -358,6 +401,32 @@ impl Consumer<'_> {
             self.control().consumer_waits.0.store(0, Ordering::SeqCst);
         }
         Ok(ready)
+    }
+
+    /// The next frame's length, if one is ready, without taking it.
+    pub fn peek_len(&self) -> Result<Option<usize>, Broken> {
+        if !self.ready()? {
+            return Ok(None);
+        }
+        let c = self.control();
+        let mut tail = c.tail.0.load(Ordering::Relaxed);
+        let head = c.head.0.load(Ordering::Acquire);
+        let mut at = (tail % RING as u64) as usize;
+        let (mut len, mut kind) = self.read_header(at);
+        if kind == PAD {
+            let skip = RING - at;
+            if len as usize != skip - HEADER || head - tail <= skip as u64 {
+                return Err(Broken("its padding is not to the end"));
+            }
+            tail += skip as u64;
+            at = 0;
+            (len, kind) = self.read_header(at);
+        }
+        let n = len as usize;
+        if kind != FRAME || n > MAX_FRAME || at + padded(n) > RING || head - tail < padded(n) as u64 {
+            return Err(Broken("a frame's length runs past what was written"));
+        }
+        Ok(Some(n))
     }
 
     /// Takes the next frame, if any, giving `take` its length and a function that copies

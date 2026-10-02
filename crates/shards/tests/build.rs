@@ -290,6 +290,57 @@ fn run_steps_run_in_a_builder_as_buildkit_runs_them() {
     );
 }
 
+/// A `RUN` step reaches the network through its builder's network process, as BuildKit's
+/// steps reach their host's: here a server on this host, at the host's own address (its
+/// loopback and the gateway are no guest's to reach). With `--network=none` it reaches
+/// nothing.
+#[test]
+fn run_steps_reach_the_network_unless_it_is_none() {
+    use std::io::Write as _;
+    if common::cannot_run_vms() {
+        return;
+    }
+    // This host's address on its default route: a UDP connect sends nothing.
+    let host = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+        .and_then(|s| s.local_addr());
+    let Ok(host) = host else {
+        eprintln!("SKIP: this host has no route to give a guest an address of it");
+        return;
+    };
+    let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = server.local_addr().unwrap().port();
+    let serving = std::thread::spawn(move || {
+        let (mut c, _) = server.accept().unwrap();
+        c.write_all(b"hello from the host\n").unwrap();
+    });
+    let (image, _) = served();
+    let home = TempDir::new("build-net-home");
+    let to = format!("{}:{port}", host.ip());
+    let ctx = context(
+        "build-net-ctx",
+        &format!(
+            "FROM {image}\nRUN [\"/bin/testguest\", \"tcp\", \"{to}\"]\nRUN --network=none [\"/bin/testguest\", \"tcp\", \"{to}\"]\n"
+        ),
+    );
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+    ];
+    let built = run_shards_env(&["build"], &["--progress=plain", ctx.to_str().unwrap()], &env, TIMEOUT);
+    serving.join().unwrap();
+    assert!(
+        built.stderr.contains(" tcp 20 hello from the host\n"),
+        "{}",
+        built.stderr
+    );
+    // The step without a network fails, and the build with it.
+    assert_eq!(built.status, Some(1), "{}", built.stderr);
+    assert!(built.stderr.contains(" tcp error "), "{}", built.stderr);
+}
+
 #[test]
 fn a_dockerfile_error_shows_its_lines() {
     let home = TempDir::new("build-error-home");

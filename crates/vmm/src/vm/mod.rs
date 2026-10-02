@@ -39,6 +39,14 @@ pub use unsupported::{
     Handle, Running, accept_working_set, check_host, max_vcpus, restore, start, working_set_limit,
 };
 
+/// The host sides of a VM's devices that live outside it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Hosts<'a> {
+    pub vsock: Option<&'a VsockHost>,
+    #[cfg(unix)]
+    pub net: Option<&'a crate::devices::virtio::net::NetHost>,
+}
+
 /// A snapshot's vsock device and the restore's socket path come together or not at all.
 #[cfg(hv)]
 fn check_vsock(snap: &crate::snapshot::Snapshot, host: Option<&VsockHost>) -> Result<(), String> {
@@ -72,6 +80,10 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
             .map(|p| resolve(p))
             .collect::<Result<_, String>>()?,
         vsock: cfg.vsock.is_some(),
+        #[cfg(unix)]
+        net: cfg.net.as_ref().map(|n| n.mac),
+        #[cfg(not(unix))]
+        net: None,
     })
 }
 
@@ -124,6 +136,9 @@ pub struct Config {
     pub pmem: Vec<PathBuf>,
     /// A virtio-vsock device, and where its host side is.
     pub vsock: Option<VsockHost>,
+    /// A virtio-net device, and the network process's side of it (D31).
+    #[cfg(unix)]
+    pub net: Option<crate::devices::virtio::net::NetHost>,
 }
 
 /// The host side of a VM's virtio-vsock device.
@@ -166,6 +181,8 @@ impl Config {
             snapshot: None,
             pmem: Vec::new(),
             vsock: None,
+            #[cfg(unix)]
+            net: None,
         }
     }
 }
@@ -184,6 +201,10 @@ pub struct RestoreConfig {
     /// This VM's vsock device's host side. A snapshot with a vsock device needs one: the
     /// original VM may still hold its own path.
     pub vsock: Option<VsockHost>,
+    /// This VM's network process's side of its network device. A snapshot with one needs
+    /// one: a network process serves one VM alone.
+    #[cfg(unix)]
+    pub net: Option<crate::devices::virtio::net::NetHost>,
     /// Prefetch the snapshot's working set, if it has one, before the guest runs: for a
     /// restore ahead of its request, which it moves off the request's path (PM M30).
     pub prefetch: bool,
