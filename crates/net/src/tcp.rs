@@ -87,6 +87,9 @@ pub struct Conn {
     sent_at: Option<Instant>,
     retries: u32,
     pub closed: bool,
+    /// The ring to the guest had no room for a segment of bytes: the connection sends
+    /// again once it has ([`Conn::unblock`]).
+    blocked: bool,
 }
 
 /// Where segments for the guest are written: the caller's frame builder.
@@ -130,6 +133,7 @@ impl Conn {
             sent_at: None,
             retries: 0,
             closed: false,
+            blocked: false,
         })
     }
 
@@ -158,6 +162,7 @@ impl Conn {
             sent_at: Some(Instant::now()),
             retries: 0,
             closed: false,
+            blocked: false,
         };
         c.send_syn(out);
         c
@@ -343,6 +348,7 @@ impl Conn {
             return;
         }
         let mss = usize::from(self.guest_mss.min(MSS)).max(1);
+        self.blocked = false;
         loop {
             let sent =
                 (self.snd_nxt.wrapping_sub(self.snd_una) as usize).saturating_sub(usize::from(self.fin_sent));
@@ -364,6 +370,7 @@ impl Conn {
                 None,
                 &chunk,
             ) {
+                self.blocked = true;
                 break;
             }
             self.snd_nxt = self.snd_nxt.wrapping_add(n as u32);
@@ -469,6 +476,18 @@ impl Conn {
         self.send_new(out);
         if self.fin_sent && self.snd_una == self.snd_nxt && self.guest_fin && self.host_shut {
             self.closed = true;
+        }
+    }
+
+    /// Whether a full ring kept its bytes from the guest.
+    pub fn blocked(&self) -> bool {
+        self.blocked
+    }
+
+    /// Sends what a full ring kept from the guest, now that it may have room.
+    pub fn unblock(&mut self, out: &mut dyn ToGuest) {
+        if self.blocked {
+            self.send_new(out);
         }
     }
 

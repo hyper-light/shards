@@ -309,6 +309,11 @@ pub fn serve(
             stack.on_guest_frame(frame.get(..n).unwrap_or_default());
         }
         stack.flush_backlog();
+        // What a full ring kept from the guest goes once it has drained: nothing else
+        // would send it while the connection waits on no timer and reads no socket.
+        if stack.backlog.is_empty() {
+            stack.unblock();
+        }
         // Host sockets, and the ring.
         fds.clear();
         keys.clear();
@@ -372,10 +377,11 @@ pub fn serve(
             .min();
         let busy =
             from_guest.ready().map_err(|e| io::Error::other(e.to_string()))? || !stack.backlog.is_empty();
-        let timeout = if busy {
+        // Asked to be rung for the guest's next frame: one that came before the ask rang
+        // nothing, so the poll does not wait for it.
+        let timeout = if busy || from_guest.arm().map_err(|e| io::Error::other(e.to_string()))? {
             0
         } else {
-            let _ = from_guest.arm();
             next.map_or(-1, |t| {
                 i32::try_from(t.saturating_duration_since(now).as_millis())
                     .unwrap_or(i32::MAX)
@@ -788,6 +794,28 @@ impl<'r> Stack<'r> {
             {
                 let mut o = self.out();
                 c.on_segment(&seg, &mut o);
+            }
+            if !c.closed {
+                self.tcp.insert(key, c);
+            }
+        }
+    }
+
+    /// Connections a full ring held back, sent again.
+    fn unblock(&mut self) {
+        let blocked: Vec<Key> = self
+            .tcp
+            .iter()
+            .filter(|(_, c)| c.blocked())
+            .map(|(k, _)| *k)
+            .collect();
+        for key in blocked {
+            let Some(mut c) = self.tcp.remove(&key) else {
+                continue;
+            };
+            {
+                let mut o = self.out();
+                c.unblock(&mut o);
             }
             if !c.closed {
                 self.tcp.insert(key, c);

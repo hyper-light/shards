@@ -266,7 +266,12 @@ fn run(
     while !stop.load(Ordering::Acquire) {
         let more = match step(&mut s, &mut tx, &mut rx, mem, irq, broken) {
             Ok(Step::More) => true,
-            Ok(Step::Idle) => false,
+            // Asked to be rung for the next frame: one that came before the ask rang
+            // nothing, so it is taken now, not slept past.
+            // A broken ring's frames are never taken.
+            Ok(Step::Idle) => !broken && matches!(rx.arm(), Ok(true)),
+            // The ring's frames wait for the driver's buffers, whose notice wakes this.
+            Ok(Step::Starved) => false,
             Ok(Step::Broken(why)) => {
                 warn!("virtio-net: {why}; the guest's network is cut off");
                 broken = true;
@@ -283,7 +288,6 @@ fn run(
         }
         // Wait for a notification or a frame: the network process rings this side for a
         // frame, or for room once it has drained a full ring.
-        let _ = rx.arm();
         let mut fds = [
             libc::pollfd {
                 fd: waker.read.as_raw_fd(),
@@ -308,7 +312,10 @@ fn run(
 
 enum Step {
     More,
+    /// Nothing to do until the guest or the network process says so.
     Idle,
+    /// Frames wait in the ring for buffers the driver has not given yet.
+    Starved,
     Broken(String),
 }
 
@@ -327,6 +334,7 @@ fn step(
     };
     let mut used = [false; 2];
     let mut more = false;
+    let mut starved = false;
     // Guest → network process.
     let mut sent = 0;
     'tx: loop {
@@ -394,6 +402,7 @@ fn step(
             if with(mem, |a| rxq.enable_notification(a))? {
                 continue;
             }
+            starved = true;
             break;
         }
         let chains = std::mem::take(&mut s.pending_rx);
@@ -416,7 +425,13 @@ fn step(
     if interrupt {
         irq.used_buffer();
     }
-    Ok(if more { Step::More } else { Step::Idle })
+    Ok(if more {
+        Step::More
+    } else if starved {
+        Step::Starved
+    } else {
+        Step::Idle
+    })
 }
 
 fn writable(c: &Chain) -> usize {
