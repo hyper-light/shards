@@ -744,6 +744,12 @@ impl Store {
         Ok(Some(tag))
     }
 
+    /// What wrote the root filesystem at `rootfs`, and the version of its rules
+    /// ([`Store::rootfs_written`]): `<image>.from`, beside it.
+    pub fn rootfs_producer(&self, rootfs: &Path) -> Option<String> {
+        fs::read_to_string(from_path(rootfs)).ok()
+    }
+
     /// Where the root filesystem of the layers with `diff_ids` is kept: by their ChainID.
     fn rootfs_path(&self, diff_ids: &[Digest]) -> Result<PathBuf, Error> {
         let chain = oci::chain_id(diff_ids).ok_or_else(|| Error("an image with no layers".into()))?;
@@ -829,6 +835,11 @@ impl Store {
                 let path = built?.path();
                 if path.extension().is_some_and(|e| e == "erofs") && !rootfs.contains(&path) {
                     remove(&path, &mut collected.rootfs);
+                }
+                // What wrote an image goes with it.
+                if path.extension().is_some_and(|e| e == "from") && !rootfs.contains(&path.with_extension(""))
+                {
+                    let _ = fs::remove_file(&path);
                 }
             }
         }
@@ -1038,7 +1049,14 @@ impl Store {
     /// than `limits` allow (audit A10), and one build at a time goes on in a store,
     /// whichever process asks: a second of the same image finds the first's.
     pub fn rootfs(&self, layers: &[Layer], limits: &Limits) -> Result<PathBuf, Error> {
+        let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
+        let from = from_path(&self.rootfs_path(&diff_ids)?);
         self.rootfs_by(layers, limits, |room, ingest| {
+            // Stacked from the layers: nothing else wrote it, whatever was named before.
+            match fs::remove_file(&from) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
             let (mut bytes, mut entries, mut metadata) = (0u64, 0u64, 0u64);
             let mut tree = layer::root();
             let mut tars = Vec::with_capacity(layers.len());
@@ -1097,13 +1115,24 @@ impl Store {
     /// `write` when it is not built yet: an image of the tree the layers stack to, which
     /// the caller holds, such as a build's last snapshot (shards_build::stack). `write`
     /// writes within the room the store's limits leave, as `rootfs` does.
+    ///
+    /// `producer` names what wrote it and the version of its rules, kept beside it in
+    /// `<image>.from` before the image itself is in place, so that a crash never leaves it
+    /// unnamed: should a producer's rules prove wrong, what they wrote is found and removed,
+    /// and nothing else, as REAPI's action salt disowns a set of results.
     pub fn rootfs_written(
         &self,
         layers: &[Layer],
         limits: &Limits,
+        producer: &str,
         write: impl FnOnce(&mut dyn Write) -> Result<(), Error>,
     ) -> Result<PathBuf, Error> {
+        let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
+        let from = from_path(&self.rootfs_path(&diff_ids)?);
         self.rootfs_by(layers, limits, |room, ingest| {
+            let mut marker = Partial::create(ingest)?;
+            marker.write_all(producer.as_bytes())?;
+            marker.replace(&from)?;
             let mut partial = Partial::create(ingest)?;
             write(&mut Checked {
                 out: &mut partial,
@@ -1332,6 +1361,13 @@ pub fn decode_zstd(src: &mut dyn BufRead, out: &mut dyn Write) -> Result<(), Err
         }
     }
     Ok(())
+}
+
+/// Where what wrote the root filesystem at `rootfs` is named.
+fn from_path(rootfs: &Path) -> PathBuf {
+    let mut name = rootfs.as_os_str().to_os_string();
+    name.push(".from");
+    PathBuf::from(name)
 }
 
 #[cfg(test)]
@@ -2130,6 +2166,53 @@ mod tests {
         let mut w = store.download(&d, blob.len() as u64, &none).unwrap().unwrap();
         w.write(&blob).unwrap();
         w.commit().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// An image written by a producer is named beside it as that producer, before it is
+    /// in place; one stacked from the layers is named by nothing, whatever was named before;
+    /// and what names an image goes when a collection takes the image.
+    #[test]
+    fn what_wrote_an_image_is_kept_beside_it() {
+        let root = temp("producer");
+        let store = Store::open(&root).unwrap();
+        let tar = Writer::default()
+            .member(Member {
+                name: b"f",
+                data: b"x",
+                ..Member::default()
+            })
+            .finish();
+        let layer = stored_layer(&store, &tar);
+        let layers = std::slice::from_ref(&layer);
+        let written = store
+            .rootfs_written(layers, &Limits::none(), "snapshot 1", |out| {
+                let mut tree = layer::root();
+                layer::apply(&mut tree, 0, io::Cursor::new(&tar), &mut |_| Ok(())).unwrap();
+                erofs::write(
+                    &tree,
+                    &mut layer::Archives(vec![io::Cursor::new(tar.clone())]),
+                    out,
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.rootfs_producer(&written).as_deref(), Some("snapshot 1"));
+        fs::remove_file(&written).unwrap();
+        let stacked = store.rootfs(layers, &Limits::none()).unwrap();
+        assert_eq!(stacked, written);
+        assert_eq!(
+            store.rootfs_producer(&stacked),
+            None,
+            "stacked, so named by nothing"
+        );
+        store
+            .rootfs_written(layers, &Limits::none(), "snapshot 1", |_| Ok(()))
+            .unwrap();
+        fs::remove_file(&stacked).unwrap();
+        fs::write(from_path(&stacked), b"snapshot 1").unwrap();
+        store.collect().unwrap();
+        assert!(!from_path(&stacked).exists(), "named with no image, and kept");
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -36,6 +36,12 @@ use crate::Error;
 use crate::diff::{self, Bits, Record};
 use crate::vfs::{CAPABILITY, Fs};
 
+/// What writes a root filesystem from a snapshot, and the version of its rules, kept beside
+/// each image it writes (`Store::rootfs_written`): bumped whenever the rules here change,
+/// so that what an earlier version wrote can be told apart, and removed should it prove
+/// wrong.
+pub const PRODUCER: &str = "snapshot 1";
+
 /// What a stack of layers holds against `Store::rootfs`'s limits: its layers' entries,
 /// the bytes of their names, link targets and xattrs (at most), and the bytes the layers'
 /// archives take uncompressed.

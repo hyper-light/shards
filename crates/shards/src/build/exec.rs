@@ -308,7 +308,7 @@ impl<'a> Exec<'a> {
         let Flat { mut fs, stack } = flat;
         let sources = &mut self.sources;
         self.store
-            .rootfs_written(layers, self.limits, |out| {
+            .rootfs_written(layers, self.limits, shards_build::stack::PRODUCER, |out| {
                 stack
                     .finish(&mut fs)
                     .map_err(|why| shards_image::Error::from(std::io::Error::other(why.to_string())))?;
