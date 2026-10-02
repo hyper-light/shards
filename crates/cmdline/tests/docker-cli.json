@@ -300,6 +300,56 @@
   },
   {
     "argv": [
+      "push",
+      "--help"
+    ],
+    "stdout": "Usage:  shards push [OPTIONS] NAME[:TAG]\n\nUpload an image to a registry\n\nAliases:\n  shards image push, shards push\n\nOptions:\n  -a, --all-tags   Push all tags of an image to the repository\n  -q, --quiet      Suppress verbose output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "push"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards push' requires 1 argument\n\nUsage:  shards push [OPTIONS] NAME[:TAG]\n\nRun 'shards push --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "push",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards push' requires 1 argument\n\nUsage:  shards push [OPTIONS] NAME[:TAG]\n\nRun 'shards push --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "image",
+      "push",
+      "-a",
+      "-q",
+      "x"
+    ],
+    "stdout": "RUN --all-tags=true --quiet=true \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "push",
+      "--platform",
+      "linux/arm64",
+      "x"
+    ],
+    "stdout": "RUN --platform=linux/arm64 \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "load",
       "--help"
     ],

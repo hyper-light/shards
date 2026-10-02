@@ -9,6 +9,7 @@ pub mod certs;
 pub mod credentials;
 pub mod http;
 pub mod pull;
+pub mod push;
 pub mod registry;
 #[cfg(test)]
 mod testing;

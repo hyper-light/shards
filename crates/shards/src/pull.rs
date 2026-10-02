@@ -137,6 +137,25 @@ pub fn run(image: &str, quiet: bool) -> Result<(), String> {
 
 /// Pulls `reference` into the store, until `cancel`, if given, is cancelled. Returns the
 /// pull, and whether the reference already named the same manifest.
+/// A registry to push `reference`'s repository to, with the credentials and TLS a pull
+/// of it would use, and pull access to `mount`, a repository of the same registry its
+/// blobs may be mounted from.
+pub fn registry_for_push(reference: &Reference, mount: Option<&str>) -> Result<Registry, String> {
+    let env = |k: &str| std::env::var(k).ok();
+    let (credentials, warnings) = credentials::lookup(&reference.domain, &env).map_err(|e| e.to_string())?;
+    for warning in warnings {
+        let _ = writeln!(std::io::stderr(), "WARNING: {warning}");
+    }
+    let material = certs::load(registry::host(reference), &env).map_err(|e| e.to_string())?;
+    let config = tls::client_config(material.roots, material.client).map_err(|e| e.to_string())?;
+    let http = Client::new(
+        Box::new(move |_| Ok(config.clone())),
+        &format!("shards/{}", env!("CARGO_PKG_VERSION")),
+    );
+    let mounts: Vec<String> = mount.into_iter().map(String::from).collect();
+    Registry::for_push(http, reference, credentials, &mounts).map_err(|e| e.to_string())
+}
+
 pub fn fetch(
     home: &Path,
     reference: &Reference,

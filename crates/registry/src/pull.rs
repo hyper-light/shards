@@ -995,6 +995,101 @@ mod tests {
         store.tag(&reference.to_string(), &desc, &digest, &[]).unwrap();
     }
 
+    /// A push asks for push access to its repository and pull access to the one it
+    /// mounts from, as containerd's pusher scopes them; a blob there already is not sent,
+    /// one another repository holds is mounted, and the manifest goes last, by its tag.
+    #[test]
+    fn pushes_ask_for_push_access_and_mount_what_they_can() {
+        let dir = temp("push");
+        let store = Store::open(&dir).unwrap();
+        let (config, layer) = (
+            br#"{"architecture":"arm64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#.to_vec(),
+            b"layer".to_vec(),
+        );
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"mediaType":"{}","config":{},"layers":[{}]}}"#,
+            oci::media::OCI_MANIFEST,
+            descriptor("application/vnd.oci.image.config.v1+json", &config),
+            descriptor("application/vnd.oci.image.layer.v1.tar", &layer)
+        )
+        .into_bytes();
+        let reference = Reference::parse("127.0.0.1:1/test/image:v1").unwrap();
+        record(&store, &reference, &manifest, &[&config, &layer]);
+        let tokens: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let asked = tokens.clone();
+        let port = Arc::new(AtomicU16::new(0));
+        let own = port.clone();
+        let (config_digest, layer_digest) = (sha256(&config), sha256(&layer));
+        let server = route(None, move |req: &Seen| {
+            let path = req.target.split('?').next().unwrap_or_default();
+            if path == "/token" {
+                asked.lock().unwrap().push(req.target.clone());
+                let token = format!(r#"{{"token":"{TOKEN}","expires_in":300}}"#);
+                return Some((http("200 OK", &[], token.as_bytes()), After::Keep));
+            }
+            if req.header("authorization") != Some(&format!("Bearer {TOKEN}")) {
+                let challenge = format!(
+                    r#"Bearer realm="http://127.0.0.1:{}/token",service="fake",scope="repository:test/image:pull""#,
+                    own.load(Ordering::SeqCst)
+                );
+                return Some((
+                    http("401 Unauthorized", &[("WWW-Authenticate", challenge)], b""),
+                    After::Keep,
+                ));
+            }
+            let status = match (req.method.as_str(), path) {
+                ("HEAD", p) if p == format!("/v2/test/image/blobs/{layer_digest}") => "200 OK",
+                ("HEAD", _) => "404 Not Found",
+                ("POST", "/v2/test/image/blobs/uploads/")
+                    if req.target.contains(&format!("mount={config_digest}")) =>
+                {
+                    "201 Created"
+                }
+                ("PUT", "/v2/test/image/manifests/v1") => "201 Created",
+                _ => "400 Bad Request",
+            };
+            Some((http(status, &[], b""), After::Keep))
+        });
+        port.store(server.port, Ordering::SeqCst);
+        let at = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+        let registry =
+            Registry::for_push(client(), &at, Credentials::default(), &["team/src".into()]).unwrap();
+        let desc = store.tagged(&reference.to_string()).unwrap().unwrap();
+        let fates = std::sync::Mutex::new(Vec::new());
+        crate::push::push(&registry, &store, &desc, Some("v1"), Some("team/src"), &|d, f| {
+            fates.lock().unwrap().push((d.to_string(), f));
+        })
+        .unwrap();
+        assert_eq!(
+            fates.into_inner().unwrap(),
+            [(sha256(&layer), crate::push::Layer::Exists)]
+        );
+        let decoded: Vec<String> = tokens
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|t| t.replace("%3A", ":").replace("%2F", "/").replace("%2C", ","))
+            .collect();
+        assert!(
+            decoded
+                .iter()
+                .any(|t| t.contains("repository:test/image:pull,push")),
+            "{decoded:?}"
+        );
+        assert!(
+            decoded.iter().any(|t| t.contains("repository:team/src:pull")),
+            "{decoded:?}"
+        );
+        assert!(
+            server
+                .requests()
+                .iter()
+                .any(|r| r.starts_with("PUT /v2/test/image/manifests/v1")),
+            "{:?}",
+            server.requests()
+        );
+    }
+
     /// The audit's A11: what a pull refuses, a stored image is refused for too, with the
     /// same words: layer and DiffID counts that differ, DiffIDs that are not digests, a
     /// config of the wrong type, platform or rootfs type, or past the limit, and layers

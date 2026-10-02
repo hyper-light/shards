@@ -469,6 +469,7 @@ impl Bearer {
                 url: realm,
                 headers: &[("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")],
                 body: body.as_bytes(),
+                file: None,
             },
             &|_| Ok(None),
             Redirects::SameOrigin,
@@ -511,6 +512,7 @@ impl Bearer {
                 url: &url,
                 headers: &[],
                 body: &[],
+                file: None,
             },
             &|hop| Ok(basic.clone().filter(|_| hop.same_origin(realm))),
             Redirects::Anywhere,
@@ -638,6 +640,7 @@ mod tests {
                 url: &url,
                 headers: &[],
                 body: &[],
+                file: None,
             })
             .unwrap()
     }

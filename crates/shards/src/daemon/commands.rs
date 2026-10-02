@@ -12,7 +12,7 @@ use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use shards_cmdline::commands::{
-    self, IMAGE_INSPECT, IMAGES, KILL, LOAD, LOGS, PORT, PS, RM, RMI, SAVE, STOP, TAG, WAIT,
+    self, IMAGE_INSPECT, IMAGES, KILL, LOAD, LOGS, PORT, PS, PUSH, RM, RMI, SAVE, STOP, TAG, WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
@@ -316,6 +316,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.save(&parsed.args, asker, reply)
         } else if std::ptr::eq(command, &LOAD) {
             self.load(asker, reply)
+        } else if std::ptr::eq(command, &PUSH) {
+            self.push(&parsed, asker, reply)
         } else {
             reply.err(&format!("shards: {path} is not a container command"));
             1

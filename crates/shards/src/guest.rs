@@ -213,6 +213,7 @@ fn download(
         url: &url,
         headers: &[],
         body: &[],
+        file: None,
     };
     let mut response = http
         .follow(&request, &|_| Ok(None), Redirects::Anywhere)

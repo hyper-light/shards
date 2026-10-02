@@ -409,6 +409,28 @@ platform - l - -",
     error_prefix: "",
 };
 
+/// `shards push`.
+pub static PUSH: Command = Command {
+    usage: "[OPTIONS] NAME[:TAG]",
+    about: "Upload an image to a registry",
+    aliases: "shards image push, shards push",
+    args: Args::Exactly(1),
+    flags: &[
+        Flag::bool(
+            "all-tags",
+            Some(b'a'),
+            "Push all tags of an image to the repository",
+        ),
+        HELP,
+        Flag::bool("quiet", Some(b'q'), "Suppress verbose output"),
+    ],
+    unserved: "\
+disable-content-trust - b true -\n\
+platform - s - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards tag`.
 pub static TAG: Command = Command {
     usage: "SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]",
@@ -705,6 +727,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["tag", ..] => (&TAG, "shards tag", 1),
         ["save", ..] => (&SAVE, "shards save", 1),
         ["load", ..] => (&LOAD, "shards load", 1),
+        ["push", ..] => (&PUSH, "shards push", 1),
+        ["image", "push", ..] => (&PUSH, "shards image push", 2),
         ["image", "load", ..] => (&LOAD, "shards image load", 2),
         ["image", "save", ..] => (&SAVE, "shards image save", 2),
         ["rmi", ..] => (&RMI, "shards rmi", 1),

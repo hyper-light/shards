@@ -2339,3 +2339,122 @@ fn load_reads_archives_as_docker_load_does() {
         "open /nonexistent.tar: no such file or directory\n"
     );
 }
+
+/// `shards push` as `docker push` uploads images (dockerd 29.3.1's lines; pushed to a
+/// real registry:2 and pulled back by docker, by hand): our platform's manifest alone
+/// when an index's other platforms are not here, with dockerd's note; a layer the
+/// repository has, said so; every tag with `-a`; a blob mounted from another repository
+/// of the registry the image came from; an image of one manifest as it is; and the
+/// refusals.
+#[test]
+fn push_uploads_images_as_docker_push_does() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (index, blobs) = test_index();
+    let (from, _) = registry(index.clone(), blobs.clone());
+    let source = format!("127.0.0.1:{from}/test/image:v1");
+    let (port, repos) = common::writable_registry();
+    let home = TempDir::new("containers-push");
+    let shards = |args: &[&str]| shards_in(&home, args);
+    assert_eq!(shards(&["pull", "-q", &source]).status, Some(0));
+    let repo = format!("127.0.0.1:{port}/team/app");
+    for tag in ["1", "2"] {
+        assert_eq!(
+            shards(&["tag", &source, &format!("{repo}:{tag}")]).status,
+            Some(0)
+        );
+    }
+    let (manifest, layer) = (&blobs[2], &blobs[1]);
+    let short = sha256_digest(layer);
+    let short = short.trim_start_matches("sha256:").get(..12).unwrap();
+    let note = format!(
+        "\n Info -> Not all multiplatform-content is present and only the available single-platform image was pushed\n         {} -> {}\n",
+        sha256_digest(&index),
+        sha256_digest(manifest)
+    );
+    let pushed = shards(&["push", &format!("{repo}:1")]);
+    assert_eq!(
+        (pushed.status, pushed.stdout.clone(), pushed.stderr.as_str()),
+        (
+            Some(0),
+            format!(
+                "The push refers to repository [{repo}]\n{short}: Pushed\n1: digest: {} size: {}\n{note}",
+                sha256_digest(manifest),
+                manifest.len()
+            ),
+            ""
+        ),
+        "{pushed}"
+    );
+    {
+        let r = repos.lock().unwrap();
+        assert_eq!(
+            r.manifests["team/app"]["1"].1, *manifest,
+            "the manifest, byte for byte"
+        );
+        let held: std::collections::BTreeSet<&String> = r.blobs["team/app"].keys().collect();
+        let want: std::collections::BTreeSet<String> =
+            [&blobs[0], &blobs[1]].iter().map(|b| sha256_digest(b)).collect();
+        assert_eq!(
+            held,
+            want.iter().collect(),
+            "its config and layer, not the attestation"
+        );
+    }
+    let again = shards(&["push", &format!("{repo}:1")]);
+    assert!(
+        again.stdout.contains(&format!("{short}: Layer already exists\n")),
+        "{again}"
+    );
+    // Every tag of the repository.
+    let all = shards(&["push", "-a", &repo]);
+    assert_eq!(all.status, Some(0), "{all}");
+    assert!(
+        all.stdout.contains("\n1: digest: ") && all.stdout.contains("\n2: digest: "),
+        "{all}"
+    );
+    assert!(repos.lock().unwrap().manifests["team/app"].contains_key("2"));
+    // Pulled from this registry, pushed to another repository of it: mounted.
+    let other = TempDir::new("containers-push-mount");
+    assert_eq!(
+        shards_in(&other, &["pull", "-q", &format!("{repo}:1")]).status,
+        Some(0)
+    );
+    let target = format!("127.0.0.1:{port}/other/app:1");
+    assert_eq!(
+        shards_in(&other, &["tag", &format!("{repo}:1"), &target]).status,
+        Some(0)
+    );
+    let mounted = shards_in(&other, &["push", &target]);
+    assert!(
+        mounted
+            .stdout
+            .contains(&format!("{short}: Mounted from team/app\n")),
+        "{mounted}"
+    );
+    assert!(
+        repos
+            .lock()
+            .unwrap()
+            .log
+            .iter()
+            .any(|l| l == "POST /v2/other/app/blobs/uploads/"),
+        "a mount is asked with a POST"
+    );
+    // One manifest, as it is; quietly, the name alone.
+    let quiet = shards_in(&other, &["push", "-q", &target]);
+    assert_eq!(
+        (quiet.status, quiet.stdout.as_str()),
+        (Some(0), format!("{target}\n").as_str()),
+        "{quiet}"
+    );
+    // Refusals.
+    let missing = shards(&["push", &format!("{repo}:9")]);
+    assert_eq!(
+        (missing.status, missing.stderr.clone()),
+        (Some(1), format!("tag does not exist: {repo}:9\n"))
+    );
+    let tagged = shards(&["push", "-a", &format!("{repo}:1")]);
+    assert_eq!(tagged.stderr, "tag can't be used with --all-tags/-a\n");
+}

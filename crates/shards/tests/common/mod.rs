@@ -1079,3 +1079,171 @@ pub fn echo(sock: &Path, port: u32, salt: u64, len: usize) -> Result<(), String>
     }
     Ok(())
 }
+
+/// What a writable test registry holds, by repository: blobs by digest, and manifests by
+/// tag and by digest, each with its media type.
+#[derive(Debug, Default)]
+pub struct Repos {
+    pub blobs: std::collections::HashMap<String, std::collections::HashMap<String, Vec<u8>>>,
+    pub manifests: std::collections::HashMap<String, std::collections::HashMap<String, (String, Vec<u8>)>>,
+    /// Each request's method and path, in order.
+    pub log: Vec<String>,
+}
+
+/// A registry on loopback that takes pushes as the distribution spec has them: a blob's
+/// HEAD; an upload begun by a POST, or a mount from another repository, done with a PUT
+/// whose digest is checked; a manifest PUT by tag or digest; and the GETs a pull makes.
+pub fn writable_registry() -> (u16, Arc<std::sync::Mutex<Repos>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let repos = Arc::new(std::sync::Mutex::new(Repos::default()));
+    let held = repos.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let repos = held.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut out = stream;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut length = 0usize;
+                    let mut kind = String::new();
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).unwrap_or(0) <= 2 {
+                            break;
+                        }
+                        let (name, value) = header.split_once(':').unwrap_or_default();
+                        match name.to_ascii_lowercase().as_str() {
+                            "content-length" => length = value.trim().parse().unwrap_or(0),
+                            "content-type" => kind = value.trim().to_string(),
+                            _ => {}
+                        }
+                    }
+                    let mut body = vec![0u8; length];
+                    reader.read_exact(&mut body).unwrap();
+                    let mut parts = line.split(' ');
+                    let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+                    let param = |key: &str| {
+                        query
+                            .split('&')
+                            .find_map(|p| p.strip_prefix(&format!("{key}=")))
+                            .map(|v| v.replace("%3A", ":"))
+                    };
+                    let mut repos = repos.lock().unwrap();
+                    repos.log.push(format!("{method} {path}"));
+                    let rest = path.strip_prefix("/v2/").unwrap_or("");
+                    let (status, headers, reply): (&str, Vec<String>, Vec<u8>) = if path == "/v2/" {
+                        ("200 OK", vec![], vec![])
+                    } else if let Some((repo, upload)) = rest.split_once("/blobs/uploads/") {
+                        let repo = repo.to_string();
+                        if method == "POST" {
+                            let mounted = param("mount").zip(param("from")).and_then(|(d, from)| {
+                                repos
+                                    .blobs
+                                    .get(&from)
+                                    .and_then(|b| b.get(&d))
+                                    .cloned()
+                                    .map(|b| (d, b))
+                            });
+                            match mounted {
+                                Some((d, b)) => {
+                                    repos.blobs.entry(repo.clone()).or_default().insert(d.clone(), b);
+                                    (
+                                        "201 Created",
+                                        vec![format!("Location: /v2/{repo}/blobs/{d}")],
+                                        vec![],
+                                    )
+                                }
+                                None => (
+                                    "202 Accepted",
+                                    vec![format!("Location: /v2/{repo}/blobs/uploads/u{}", repos.log.len())],
+                                    vec![],
+                                ),
+                            }
+                        } else if method == "PUT" && !upload.is_empty() {
+                            let d = param("digest").unwrap_or_default();
+                            if sha256_digest(&body) == d {
+                                repos.blobs.entry(repo).or_default().insert(d, body);
+                                ("201 Created", vec![], vec![])
+                            } else {
+                                (
+                                    "400 Bad Request",
+                                    vec![],
+                                    br#"{"errors":[{"code":"DIGEST_INVALID","message":"digest mismatch"}]}"#
+                                        .to_vec(),
+                                )
+                            }
+                        } else {
+                            ("405 Method Not Allowed", vec![], vec![])
+                        }
+                    } else if let Some((repo, d)) = rest.split_once("/blobs/") {
+                        match repos.blobs.get(repo).and_then(|b| b.get(d)) {
+                            Some(b) => (
+                                "200 OK",
+                                vec![format!("Docker-Content-Digest: {d}")],
+                                if method == "HEAD" {
+                                    b.len().to_string().into_bytes()
+                                } else {
+                                    b.clone()
+                                },
+                            ),
+                            None => ("404 Not Found", vec![], vec![]),
+                        }
+                    } else if let Some((repo, reference)) = rest.split_once("/manifests/") {
+                        let repo = repo.to_string();
+                        if method == "PUT" {
+                            let d = sha256_digest(&body);
+                            let m = repos.manifests.entry(repo).or_default();
+                            m.insert(reference.to_string(), (kind.clone(), body.clone()));
+                            m.insert(d.clone(), (kind.clone(), body));
+                            ("201 Created", vec![format!("Docker-Content-Digest: {d}")], vec![])
+                        } else {
+                            match repos.manifests.get(&repo).and_then(|m| m.get(reference)) {
+                                Some((kind, b)) => (
+                                    "200 OK",
+                                    vec![
+                                        format!("Content-Type: {kind}"),
+                                        format!("Docker-Content-Digest: {}", sha256_digest(b)),
+                                    ],
+                                    if method == "HEAD" {
+                                        b.len().to_string().into_bytes()
+                                    } else {
+                                        b.clone()
+                                    },
+                                ),
+                                None => ("404 Not Found", vec![], vec![]),
+                            }
+                        }
+                    } else {
+                        ("404 Not Found", vec![], vec![])
+                    };
+                    drop(repos);
+                    // A HEAD says the length it would send, and sends nothing.
+                    let (length, sent) = if method == "HEAD" && status.starts_with("200") {
+                        (String::from_utf8(reply).unwrap(), Vec::new())
+                    } else {
+                        (reply.len().to_string(), reply)
+                    };
+                    let mut response = format!("HTTP/1.1 {status}\r\nContent-Length: {length}\r\n");
+                    for h in headers {
+                        response.push_str(&h);
+                        response.push_str("\r\n");
+                    }
+                    response.push_str("\r\n");
+                    let mut bytes = response.into_bytes();
+                    bytes.extend(sent);
+                    if out.write_all(&bytes).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (port, repos)
+}

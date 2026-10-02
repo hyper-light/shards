@@ -92,6 +92,24 @@ impl Url {
         Url::parse(text.split('#').next().unwrap_or_default())
     }
 
+    /// This URL with `key=value` added to its query, the value escaped as Go's
+    /// url.QueryEscape escapes it (all but `A-Za-z0-9-_.~`, a space as `+`).
+    pub fn with_query_pair(&self, key: &str, value: &str) -> Result<Url, Error> {
+        let mut escaped = String::with_capacity(value.len());
+        for b in value.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    escaped.push(b as char)
+                }
+                b' ' => escaped.push('+'),
+                _ => escaped.push_str(&format!("%{b:02X}")),
+            }
+        }
+        let text = self.text.split('#').next().unwrap_or_default();
+        let sep = if text.contains('?') { '&' } else { '?' };
+        Url::parse(&format!("{text}{sep}{key}={escaped}"))
+    }
+
     pub fn scheme(&self) -> Scheme {
         self.scheme
     }
@@ -176,6 +194,21 @@ impl fmt::Display for Url {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    /// A pair added as Go's url.Values encodes it, to a query or none.
+    #[test]
+    fn query_pairs_are_added_as_go_escapes_them() {
+        let u = super::Url::parse("http://127.0.0.1:5000/v2/x/blobs/uploads/abc?_state=a%2Fb").unwrap();
+        assert_eq!(
+            u.with_query_pair("digest", "sha256:0a b~").unwrap().target(),
+            "/v2/x/blobs/uploads/abc?_state=a%2Fb&digest=sha256%3A0a+b~"
+        );
+        let bare = super::Url::parse("https://r.example/v2/x/blobs/uploads/abc").unwrap();
+        assert_eq!(
+            bare.with_query_pair("digest", "d").unwrap().target(),
+            "/v2/x/blobs/uploads/abc?digest=d"
+        );
+    }
+
     use super::*;
 
     #[test]

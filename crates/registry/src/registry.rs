@@ -65,6 +65,90 @@ pub fn host(reference: &Reference) -> &str {
 }
 
 impl Registry {
+    /// A registry to push `reference`'s repository to, as containerd's pusher asks:
+    /// pull and push access to it, and pull access to `mounts`, repositories of the same
+    /// registry its blobs may be mounted from.
+    pub fn for_push(
+        http: Client,
+        reference: &Reference,
+        credentials: Credentials,
+        mounts: &[String],
+    ) -> Result<Registry, Error> {
+        let mut registry = Registry::new(http, reference, credentials)?;
+        registry.scopes = vec![format!("repository:{}:pull,push", reference.path)];
+        registry
+            .scopes
+            .extend(mounts.iter().map(|m| format!("repository:{m}:pull")));
+        Ok(registry)
+    }
+
+    /// Whether the repository has the blob `desc` describes.
+    pub fn has_blob(&self, desc: &Descriptor) -> Result<bool, Error> {
+        let url = self.base.join(&format!("blobs/{}", desc.digest))?;
+        let (response, _) = self.request("HEAD", &url, &[])?;
+        match response.status {
+            200..=299 => Ok(true),
+            404 => Ok(false),
+            _ => Err(refused(response, &desc.digest)),
+        }
+    }
+
+    /// Whether the repository has the manifest `desc` describes.
+    pub fn has_manifest(&self, desc: &Descriptor) -> Result<bool, Error> {
+        let url = self.base.join(&format!("manifests/{}", desc.digest))?;
+        let (response, _) = self.request("HEAD", &url, &[("Accept", &desc.media_type)])?;
+        match response.status {
+            200..=299 => Ok(true),
+            404 => Ok(false),
+            _ => Err(refused(response, &desc.digest)),
+        }
+    }
+
+    /// Uploads the blob `desc` describes from `file`, as containerd's pusher does: mounted
+    /// from `from`, a repository of the same registry, when given and the registry does;
+    /// else an upload begun with a POST and done with one PUT of it all. Whether it was
+    /// mounted.
+    pub fn upload(&self, desc: &Descriptor, file: &std::fs::File, from: Option<&str>) -> Result<bool, Error> {
+        let start = match from {
+            Some(repo) => format!("blobs/uploads/?mount={}&from={repo}", desc.digest),
+            None => "blobs/uploads/".to_string(),
+        };
+        let url = self.base.join(&start)?;
+        let (response, _) = self.send("POST", &url, &[], &[], None)?;
+        let location = match response.status {
+            201 if from.is_some() => return Ok(true),
+            202 => response
+                .header("location")
+                .map(str::to_string)
+                .ok_or_else(|| Error::new(format!("{}: an upload with no Location", desc.digest)))?,
+            _ => return Err(refused(response, &desc.digest)),
+        };
+        let mut put = response.url().join(&location)?;
+        put = put.with_query_pair("digest", &desc.digest)?;
+        let size = desc.size().map_err(|e| Error::new(e.to_string()))?;
+        let (response, _) = self.send(
+            "PUT",
+            &put,
+            &[("Content-Type", "application/octet-stream")],
+            &[],
+            Some((file, size)),
+        )?;
+        match response.status {
+            201 | 204 => Ok(false),
+            _ => Err(refused(response, &desc.digest)),
+        }
+    }
+
+    /// Puts a manifest or index as `reference` names it (a tag or its digest).
+    pub fn put_manifest(&self, reference: &str, media_type: &str, bytes: &[u8]) -> Result<(), Error> {
+        let url = self.base.join(&format!("manifests/{reference}"))?;
+        let (response, _) = self.send("PUT", &url, &[("Content-Type", media_type)], bytes, None)?;
+        match response.status {
+            200..=299 => Ok(()),
+            _ => Err(refused(response, &reference)),
+        }
+    }
+
     pub fn new(http: Client, reference: &Reference, credentials: Credentials) -> Result<Registry, Error> {
         let host = host(reference);
         let mut base = Url::parse(&format!("https://{host}/v2/{}/", reference.path))?;
@@ -93,6 +177,18 @@ impl Registry {
         url: &Url,
         headers: &[(&str, &str)],
     ) -> Result<(Response<'_>, &'a str), Error> {
+        self.send(method, url, headers, &[], None)
+    }
+
+    /// [`request`](Self::request), with a body: `body`, or so much of a file.
+    fn send<'a>(
+        &self,
+        method: &'a str,
+        url: &Url,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        file: Option<(&std::fs::File, u64)>,
+    ) -> Result<(Response<'_>, &'a str), Error> {
         let mut method = method;
         let mut last: Option<u16> = None;
         let mut attempt = 0;
@@ -103,7 +199,8 @@ impl Registry {
                     method,
                     url,
                     headers,
-                    body: &[],
+                    body,
+                    file,
                 },
                 &|hop| self.auth.authorization(&self.http, hop, &self.scopes),
                 Redirects::Anywhere,

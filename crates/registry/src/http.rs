@@ -179,6 +179,9 @@ pub struct Request<'a> {
     /// Fields besides `Host`, `User-Agent` and `Content-Length`, which the client writes.
     pub headers: &'a [(&'a str, &'a str)],
     pub body: &'a [u8],
+    /// A body read from a file instead, so many bytes of it from its start: a blob
+    /// uploaded. Read again from its start whenever the request is sent again.
+    pub file: Option<(&'a std::fs::File, u64)>,
 }
 
 /// Shows no fields, body or query: they can carry credentials.
@@ -297,6 +300,7 @@ impl Client {
         let mut url = req.url.clone();
         let mut method = req.method;
         let mut body = req.body;
+        let mut file = req.file;
         for _ in 0..=MAX_REDIRECTS {
             let authorization = authorize(&url)?;
             let mut headers = req.headers.to_vec();
@@ -308,6 +312,7 @@ impl Client {
                 url: &url,
                 headers: &headers,
                 body,
+                file,
             })?;
             let location = match response.status {
                 301 | 302 | 303 | 307 | 308 => response.header("location").map(str::to_string),
@@ -322,6 +327,7 @@ impl Client {
                     method = "GET";
                 }
                 body = &[];
+                file = None;
             }
             let next = url.join(&location)?;
             if redirects == Redirects::SameOrigin && !next.same_origin(req.url) {
@@ -344,7 +350,9 @@ impl Client {
             ("User-Agent", self.user_agent.clone()),
         ];
         fields.extend(req.headers.iter().map(|(n, v)| (*n, v.to_string())));
-        if !req.body.is_empty() || req.method == "POST" {
+        if let Some((_, len)) = req.file {
+            fields.push(("Content-Length", len.to_string()));
+        } else if !req.body.is_empty() || req.method == "POST" || req.method == "PUT" {
             fields.push(("Content-Length", req.body.len().to_string()));
         }
         for (name, value) in fields {
@@ -363,11 +371,17 @@ impl Client {
     }
 
     fn exchange(&self, mut conn: Conn, req: &Request<'_>, head: &[u8]) -> Result<Response<'_>, Failure> {
-        let written = conn
-            .io
-            .get_mut()
-            .write_all(head)
-            .and_then(|()| conn.io.get_mut().flush());
+        let written = conn.io.get_mut().write_all(head).and_then(|()| {
+            if let Some((mut file, len)) = req.file {
+                use std::io::{Seek as _, SeekFrom};
+                file.seek(SeekFrom::Start(0))?;
+                let sent = io::copy(&mut file.take(len), conn.io.get_mut())?;
+                if sent != len {
+                    return Err(io::Error::other(format!("{sent} of the body's {len} bytes")));
+                }
+            }
+            conn.io.get_mut().flush()
+        });
         if let Err(e) = written {
             return Err(Failure::BeforeResponse(Error::new(format!(
                 "{}: sending: {e}",
@@ -1062,6 +1076,7 @@ mod tests {
             url,
             headers: &[],
             body: &[],
+            file: None,
         })?;
         let mut body = Vec::new();
         response
@@ -1294,6 +1309,7 @@ mod tests {
                 url: &url,
                 headers: &headers,
                 body: &[],
+                file: None,
             };
             let e = plain().send(&request).unwrap_err();
             assert!(e.to_string().contains("invalid"), "{e}");

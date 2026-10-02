@@ -52,6 +52,8 @@ var served = map[string][]string{
 	"image save":    {"help", "output"},
 	"load":          {"help", "input", "quiet"},
 	"image load":    {"help", "input", "quiet"},
+	"push":          {"all-tags", "help", "quiet"},
+	"image push":    {"all-tags", "help", "quiet"},
 	"exec": {"detach", "detach-keys", "env", "help", "interactive", "tty", "user", "workdir"},
 }
 
@@ -84,6 +86,11 @@ var cases = [][]string{
 	{"image", "rm", "--help"},
 	{"image", "ls", "--help"},
 	{"image", "tag", "--help"},
+	{"push", "--help"},
+	{"push"},
+	{"push", "a", "b"},
+	{"image", "push", "-a", "-q", "x"},
+	{"push", "--platform", "linux/arm64", "x"},
 	{"load", "--help"},
 	{"load", "x"},
 	{"image", "load", "-q", "-i", "a.tar"},

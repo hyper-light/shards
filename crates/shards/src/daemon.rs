@@ -40,6 +40,7 @@ mod load;
 mod logs;
 mod network;
 mod publish;
+mod push;
 mod rmi;
 use crate::run::{Boot, Prepared};
 use crate::segments::log_segment;
