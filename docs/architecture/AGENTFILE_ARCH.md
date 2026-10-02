@@ -736,6 +736,7 @@ of 2026-10-02:
 | `ADD` of URLs (`--checksum`, `--unpack`) and git (`--keep-git-dir`, `--checksum`) | **missing** | n/a |
 | `RUN` (shell, exec, heredocs) | **missing** | n/a |
 | `RUN --mount` `bind`, `cache`, `tmpfs`, `secret`, `ssh` | **missing** | n/a |
+| Open defect: `shards wait` gave 0 for a command that could not start, 4 times in 40 parallel runs of `a_command_that_cannot_start_says_why_as_docker_run_does` and once in a full test run (2026-10-02), not since in about 480; the test now prints the daemon's log when it fails | n/a | **to root-cause** |
 | `RUN` on Windows hosts: a builder over WHP and a Windows transport | **missing** | n/a |
 | `RUN`'s sandbox: moby's default seccomp profile, which BuildKit applies to every step (`Seccomp: 2`) | **missing** | n/a |
 | A builder's memory plugged as a build needs it (virtio-mem), not paid at boot (PM M82) | **missing** | n/a |

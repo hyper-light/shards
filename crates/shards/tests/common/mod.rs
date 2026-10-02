@@ -179,6 +179,12 @@ fn guest_binary_in(name: &str, target_dir: &str, env: &[(&str, &str)]) -> PathBu
         "CARGO_TARGET_{}_LINKER",
         guest_target.to_ascii_uppercase().replace('-', "_")
     );
+    // One build at a time, and this process's own copy of what it made: cargo puts its
+    // output in place again on every build, up to date or not, and another test process
+    // reading it meanwhile finds it missing.
+    std::fs::create_dir_all(&target_dir).unwrap();
+    let lock = std::fs::File::create(target_dir.join(".tests.lock")).unwrap();
+    lock.lock().unwrap();
     let st = Command::new("cargo")
         .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
         .env_remove("DYLD_LIBRARY_PATH")
@@ -199,7 +205,26 @@ fn guest_binary_in(name: &str, target_dir: &str, env: &[(&str, &str)]) -> PathBu
         .status()
         .unwrap();
     assert!(st.success(), "building {name}");
-    target_dir.join(guest_target).join("guest").join(name)
+    let built = target_dir.join(&guest_target).join("guest").join(name);
+    let mine = target_dir.join("by-process");
+    // Copies of test processes that have ended go.
+    for e in std::fs::read_dir(&mine).into_iter().flatten().flatten() {
+        let gone = e
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<libc::pid_t>().ok())
+            // SAFETY: kill(2) with signal 0 only asks whether the process exists.
+            .is_some_and(|pid| unsafe { libc::kill(pid, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH));
+        if gone {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+    let own = mine.join(std::process::id().to_string());
+    std::fs::create_dir_all(&own).unwrap();
+    let copy = own.join(name);
+    std::fs::copy(&built, &copy).unwrap();
+    drop(lock);
+    copy
 }
 
 /// The production guest init (PID 1): the one `shardsd` carries, as build.rs made it.
