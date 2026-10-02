@@ -90,6 +90,11 @@ pub struct Writer<W> {
 }
 
 impl<W: Write> Writer<W> {
+    /// Where the archive goes.
+    pub fn get_mut(&mut self) -> &mut W {
+        &mut self.out
+    }
+
     pub fn new(out: W) -> Writer<W> {
         Writer {
             out,

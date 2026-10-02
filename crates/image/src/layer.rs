@@ -306,7 +306,7 @@ impl Layer<'_> {
 }
 
 /// The attributes containerd gives a node made from `entry`.
-fn meta(entry: &Entry, kind: &Kind) -> Meta {
+pub fn meta(entry: &Entry, kind: &Kind) -> Meta {
     let file_or_dir = matches!(kind, Kind::File { .. } | Kind::Dir(_));
     let (mtime, mtime_nsec) = if entry.mtime < 0 || (entry.mtime, entry.mtime_nsec) > MAX_TIME {
         (0, 0)

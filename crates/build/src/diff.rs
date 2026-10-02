@@ -10,10 +10,12 @@
 //! follow the tree the image's layers stack to, without reading the layer back.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::Write;
+use std::io::{self, Write};
 
 use shards_image::erofs::{DataRef, Kind, Node, NodeId, Source, Tree};
+use shards_image::layer;
 use shards_image::tar::writer::{self, Format, Header, Writer};
+use shards_image::tar::{self, Type};
 
 use crate::Error;
 use crate::copy::{base, dir};
@@ -115,7 +117,12 @@ pub fn write_layer(
     out: &mut dyn Write,
 ) -> Result<Record, Error> {
     let mut cw = ChangeWriter {
-        tw: Writer::new(out),
+        tw: Writer::new(Tee {
+            out,
+            at: 0,
+            header: None,
+        }),
+        kept: Vec::new(),
         upper,
         links: upper.links(),
         inode_src: HashMap::new(),
@@ -331,8 +338,33 @@ pub(crate) fn same_content(a: DataRef, b: DataRef, size: u64, data: &mut dyn Sou
 }
 
 /// containerd's ChangeWriter.
+/// The layer on its way out: its bytes counted, and a header's kept while it is written,
+/// to be read back.
+struct Tee<'a> {
+    out: &'a mut dyn Write,
+    at: u64,
+    header: Option<Vec<u8>>,
+}
+
+impl Write for Tee<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.out.write(buf)?;
+        if let Some(h) = &mut self.header {
+            h.extend_from_slice(buf.get(..n).unwrap_or_default());
+        }
+        self.at += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
 struct ChangeWriter<'a> {
-    tw: Writer<&'a mut dyn Write>,
+    tw: Writer<Tee<'a>>,
+    /// The bytes of the header written last, kept for the next.
+    kept: Vec<u8>,
     upper: &'a Fs,
     links: Vec<u32>,
     inode_src: HashMap<NodeId, Vec<u8>>,
@@ -350,6 +382,37 @@ impl ChangeWriter<'_> {
         self.tw
             .header(hdr)
             .map_err(|e| Error(format!("failed to write file header: {e}")))
+    }
+
+    /// Writes `hdr` for `node`, then reads it back from its bytes with the reader
+    /// layer::apply uses and holds what layer::apply would make of it against what the
+    /// stack predicts of the node ([`crate::stack::to_layer`]): the stack's rules are
+    /// checked against the real writer, reader and applier on every entry, so where
+    /// they ever part, the stack gives up rather than write another image. A header starts
+    /// at the first block boundary after what went before: the previous member's data is
+    /// padded out as the header is written.
+    fn written(&mut self, hdr: &Header, node: &Node) -> Result<(), Error> {
+        let start = self.tw.get_mut().at;
+        let mut kept = std::mem::take(&mut self.kept);
+        kept.clear();
+        self.tw.get_mut().header = Some(kept);
+        let written = self.header(hdr);
+        let kept = self.tw.get_mut().header.take().unwrap_or_default();
+        written?;
+        let skip = usize::try_from(start.next_multiple_of(512) - start).unwrap_or(usize::MAX);
+        let entry = kept
+            .get(skip..)
+            .and_then(|bytes| tar::Reader::new(bytes).next_entry().ok().flatten());
+        if !entry.is_some_and(|e| stacks_as_predicted(&e, hdr, node)) {
+            self.rec.unsure.get_or_insert_with(|| {
+                format!(
+                    "{:?} stacks otherwise than predicted",
+                    String::from_utf8_lossy(&hdr.name)
+                )
+            });
+        }
+        self.kept = kept;
+        Ok(())
     }
 
     /// Records the entry `hdr` written for node `id`.
@@ -472,7 +535,7 @@ impl ChangeWriter<'_> {
             hdr.pax.insert([PAX_XATTR, CAPABILITY].concat(), cap.clone());
         }
         self.include_parents(&hdr)?;
-        self.header(&hdr)?;
+        self.written(&hdr, node)?;
         self.note(id, &hdr);
         if hdr.typeflag == writer::REG
             && hdr.size > 0
@@ -488,7 +551,7 @@ impl ChangeWriter<'_> {
                 hdr.linkname = source.clone();
                 hdr.size = 0;
                 self.include_parents(&hdr)?;
-                self.header(&hdr)?;
+                self.written(&hdr, node)?;
                 self.note(id, &hdr);
             }
         }
@@ -534,6 +597,31 @@ impl ChangeWriter<'_> {
         }
         Ok(())
     }
+}
+
+/// Whether entry `e`, read back from the header `hdr` written for `node`, stacks to what
+/// the stack predicts of the node: its path, its attributes as layer::apply sets them, and
+/// what it holds. A hard link's entry names a node written before; its attributes are set
+/// on that node again (layer.rs, `add`).
+fn stacks_as_predicted(e: &tar::Entry, hdr: &Header, node: &Node) -> bool {
+    let mut want = node.meta.clone();
+    crate::stack::to_layer(&node.kind, &mut want);
+    let mut path = hdr.name.as_slice();
+    while let Some(p) = path.strip_suffix(b"/") {
+        path = p;
+    }
+    let holds = match (&node.kind, e.kind) {
+        (_, Type::HardLink) => true,
+        (Kind::File { size, .. }, Type::File) => e.size == *size,
+        (Kind::Dir(_), Type::Dir) | (Kind::Fifo, Type::Fifo) => true,
+        (Kind::Symlink(t), Type::Symlink) => e.link.as_slice() == &t[..],
+        (Kind::CharDevice { major, minor }, Type::CharDevice)
+        | (Kind::BlockDevice { major, minor }, Type::BlockDevice) => {
+            (e.devmajor, e.devminor) == (*major, *minor)
+        }
+        _ => false,
+    };
+    holds && e.path == path && layer::meta(e, &node.kind) == want
 }
 
 #[cfg(test)]
