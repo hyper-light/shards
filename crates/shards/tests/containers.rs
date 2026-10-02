@@ -1335,7 +1335,7 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
         &home,
         &image,
         &["--name", "web", "-p", "127.0.0.1::7001", "-p", "7000"],
-        &["serve", "7000", "3"],
+        &["serve", "7000", "12"],
     );
     let shards = |args: &[&str]| shards_in(&home, args);
     let listed = shards(&["port", "web"]);
@@ -1385,11 +1385,14 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
         let rest = got.split_off(at + 1);
         (String::from_utf8(got).unwrap(), rest)
     };
-    // Eight MiB each way at once: more than either side's windows hold.
+    // Eight MiB each way at once, more than either side's windows hold, ten times: a
+    // wake-up lost between the VM and its network process stalls one (the ring's `arm`).
     let big: Vec<u8> = (0u32..8 << 20).map(|i| (i.wrapping_mul(7) % 251) as u8).collect();
-    let (from, echoed) = exchange(SocketAddr::from(([127, 0, 0, 1], n)), big.clone());
-    assert_eq!(from, "from 172.17.0.1\n");
-    assert!(echoed == big, "{} bytes came back of {}", echoed.len(), big.len());
+    for _ in 0..10 {
+        let (from, echoed) = exchange(SocketAddr::from(([127, 0, 0, 1], n)), big.clone());
+        assert_eq!(from, "from 172.17.0.1\n");
+        assert!(echoed == big, "{} bytes came back of {}", echoed.len(), big.len());
+    }
     let (from, echoed) = exchange(format!("[::1]:{n}").parse().unwrap(), b"over IPv6".to_vec());
     assert_eq!(
         (from.as_str(), echoed.as_slice()),
@@ -1761,4 +1764,102 @@ fn tag_names_an_image_again_as_docker_tag_does() {
             "{args:?}"
         );
     }
+}
+
+/// `shards rmi` as `docker rmi` removes images (dockerd 29.3.1's words and lines): a name
+/// of several untags; the last also deletes; one a container uses must be forced, and
+/// forced, the image stays for its container, dangling, listed only with `images -a`; a
+/// running container's image cannot be removed by ID at all; with `-f`, an image not
+/// found is said and forgiven.
+#[test]
+fn rmi_removes_images_as_docker_rmi_does() {
+    let Some((home, image)) = home("containers-rmi") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let full = shards(&["images", "-q", "--no-trunc"]).stdout.trim().to_string();
+    let id = full
+        .strip_prefix("sha256:")
+        .and_then(|h| h.get(..12))
+        .unwrap()
+        .to_string();
+    assert_eq!(shards(&["tag", &image, "shp/a:1"]).status, Some(0));
+    let untagged = shards(&["rmi", "shp/a:1", "shp/nosuch:1"]);
+    assert_eq!(
+        (
+            untagged.status,
+            untagged.stdout.as_str(),
+            untagged.stderr.as_str()
+        ),
+        (
+            Some(1),
+            "Untagged: shp/a:1\n",
+            "Error response from daemon: No such image: shp/nosuch:1\n"
+        ),
+        "{untagged}"
+    );
+    let forgiven = shards(&["rmi", "-f", "shp/nosuch:1"]);
+    assert_eq!(
+        (forgiven.status, forgiven.stdout.as_str()),
+        (Some(0), ""),
+        "{forgiven}"
+    );
+    // In use by a running container.
+    let ran = run_in(&home, &image, &["-d", "--name", "user"], &["sleep"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let container = ran.stdout.trim().get(..12).unwrap().to_string();
+    let used = shards(&["rmi", &image]);
+    assert_eq!(
+        (used.status, used.stderr.clone()),
+        (
+            Some(1),
+            format!(
+                "Error response from daemon: conflict: unable to delete {image} (must be forced) - container {container} is using its referenced image {id}\n"
+            )
+        ),
+        "{used}"
+    );
+    let hard = shards(&["rmi", "-f", &id]);
+    assert_eq!(
+        hard.stderr,
+        format!(
+            "Error response from daemon: conflict: unable to delete {id} (cannot be forced) - image is being used by running container {container}\n"
+        ),
+        "{hard}"
+    );
+    let soft = shards(&["rmi", "-f", &image]);
+    assert_eq!(
+        (soft.status, soft.stdout.clone()),
+        (Some(0), format!("Untagged: {image}\n")),
+        "{soft}"
+    );
+    // Dangling now: listed with -a alone, and still its container's.
+    assert_eq!(shards(&["images", "-q"]).stdout, "");
+    let all = shards(&["images", "-a"]);
+    let row = all.stdout.lines().nth(1).unwrap_or_default().to_string();
+    assert!(
+        row.starts_with("<untagged>") && row.contains(&id) && row.ends_with(" U    "),
+        "{all}"
+    );
+    assert_eq!(shards(&["stop", "-t", "0", "user"]).status, Some(0));
+    let stopped = shards(&["rmi", &id]);
+    assert!(
+        stopped.stderr.contains(&format!(
+            "(must be forced) - image is being used by stopped container {container}"
+        )),
+        "{stopped}"
+    );
+    assert_eq!(shards(&["rm", "user"]).status, Some(0));
+    let deleted = shards(&["rmi", &id]);
+    assert_eq!(
+        (deleted.status, deleted.stdout.clone()),
+        (Some(0), format!("Deleted: {full}\n")),
+        "{deleted}"
+    );
+    assert_eq!(shards(&["images", "-aq"]).stdout, "");
+    // Its content goes with the daemon's next collection.
+    let blobs = home.join("images/blobs/sha256");
+    eventually("the image's blobs collected", || {
+        std::fs::read_dir(&blobs).map(|d| d.count()).unwrap_or(0) == 0
+    });
 }

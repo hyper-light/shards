@@ -340,6 +340,23 @@ format - s - -",
     error_prefix: "",
 };
 
+/// `shards rmi`.
+pub static RMI: Command = Command {
+    usage: "[OPTIONS] IMAGE [IMAGE...]",
+    about: "Remove one or more images",
+    aliases: "shards image rm, shards image remove, shards rmi",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::bool("force", Some(b'f'), "Force removal of the image"),
+        HELP,
+        Flag::bool("no-prune", None, "Do not delete untagged parents"),
+    ],
+    unserved: "\
+platform - l - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards tag`.
 pub static TAG: Command = Command {
     usage: "SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]",
@@ -634,6 +651,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["port", ..] => (&PORT, "shards port", 1),
         ["images", ..] => (&IMAGES, "shards images", 1),
         ["tag", ..] => (&TAG, "shards tag", 1),
+        ["rmi", ..] => (&RMI, "shards rmi", 1),
+        ["image", "rm" | "remove", ..] => (&RMI, "shards image rm", 2),
         ["image", "tag", ..] => (&TAG, "shards image tag", 2),
         ["image", "ls" | "list", ..] => (&IMAGES, "shards image ls", 2),
         ["container", "port", ..] => (&PORT, "shards container port", 2),

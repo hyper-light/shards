@@ -43,6 +43,10 @@ var served = map[string][]string{
 	"port": {"help"},
 	"images": {"all", "digests", "help", "no-trunc", "quiet", "tree"},
 	"tag":    {"help"},
+	"rmi":    {"force", "help", "no-prune"},
+	"image ls": {"all", "digests", "help", "no-trunc", "quiet", "tree"},
+	"image rm": {"force", "help", "no-prune"},
+	"image tag": {"help"},
 	"exec": {"detach", "detach-keys", "env", "help", "interactive", "tty", "user", "workdir"},
 }
 
@@ -68,6 +72,14 @@ var cases = [][]string{
 	{"run", "-p", "8080:80", "-p", "127.0.0.1::81/udp", "-P", "alpine"},
 	{"run", "--publish=80", "--publish-all=false", "alpine"},
 	{"run", "-p"},
+	{"rmi"},
+	{"rmi", "--help"},
+	{"image", "rm", "-f", "--no-prune", "a", "b"},
+	{"image", "remove", "a"},
+	{"image", "rm", "--help"},
+	{"image", "ls", "--help"},
+	{"image", "tag", "--help"},
+	{"rmi", "--platform", "linux/amd64", "a"},
 	{"tag"},
 	{"tag", "--help"},
 	{"tag", "a"},
@@ -243,8 +255,16 @@ func root(t *testing.T, stdout, stderr *bytes.Buffer) *cobra.Command {
 		if a := c.Annotations["aliases"]; a != "" {
 			c.Annotations["aliases"] = strings.ReplaceAll(a, "docker ", "shards ")
 		}
-		keep, ok := served[c.Name()]
-		if !ok || c.Parent() == nil {
+		if c.Parent() == nil {
+			return
+		}
+		// `image ls` and `image rm` share their names with container commands.
+		key := c.Name()
+		if c.Parent().Name() == "image" {
+			key = "image " + key
+		}
+		keep, ok := served[key]
+		if !ok {
 			return
 		}
 		c.Flags().VisitAll(func(f *pflag.Flag) {

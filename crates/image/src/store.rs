@@ -773,6 +773,31 @@ impl Store {
         sync_dir(&self.root.join(format!("refs/v{REFS_VERSION}")))
     }
 
+    /// Every reference, and what it resolved to. A record that cannot be read is left out.
+    pub fn references(&self) -> Result<Vec<(String, Digest)>, Error> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            let Ok(bytes) = fs::read(entry?.path()) else {
+                continue;
+            };
+            let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) else {
+                continue;
+            };
+            if let Ok(id) = Digest::parse(tag.resolved.as_deref().unwrap_or(&tag.manifest.digest)) {
+                out.push((tag.reference, id));
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// Removes `reference`'s record, durably; what it named stays until a collection
+    /// finds nothing else names it.
+    pub fn untag(&self, reference: &str) -> Result<(), Error> {
+        fs::remove_file(self.tag_path(reference))?;
+        sync_dir(&self.root.join(format!("refs/v{REFS_VERSION}")))
+    }
+
     /// What `reference` resolved to when it was tagged: an index, or its manifest.
     pub fn resolved(&self, reference: &str) -> Result<Option<Digest>, Error> {
         let Some(tag) = self.tag_record(reference)? else {

@@ -141,7 +141,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 return 1;
             }
         }
-        let images = match self.listed(parsed.args.first().map(String::as_str)) {
+        let images = match self.listed(parsed.args.first().map(String::as_str), parsed.bool("all")) {
             Ok(images) => images,
             Err(e) => {
                 reply.err(&format!("Error response from daemon: {e}"));
@@ -171,8 +171,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 
     /// The store's images as dockerd lists them, those with a reference `pattern` matches
-    /// alone, named by those references alone.
-    fn listed(&self, pattern: Option<&str>) -> Result<Vec<Summary>, String> {
+    /// alone, named by those references alone; dangling ones, kept for a container with
+    /// no name of their own, only with `all`.
+    fn listed(&self, pattern: Option<&str>, all: bool) -> Result<Vec<Summary>, String> {
         use shards_image::reference::Reference;
         let Some(store) = self.store()? else {
             return Ok(Vec::new());
@@ -189,6 +190,10 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         for img in stored {
             let (mut tags, mut digests) = (Vec::new(), Vec::new());
             for name in &img.references {
+                // A dangling image's name is not one of its names.
+                if name.starts_with(super::rmi::DANGLING) {
+                    continue;
+                }
                 let Ok(r) = Reference::parse_normalized(name) else {
                     continue;
                 };
@@ -208,7 +213,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     digests.push(digested);
                 }
             }
-            if pattern.is_some() && digests.is_empty() {
+            if (pattern.is_some() || !all) && digests.is_empty() {
                 continue;
             }
             let id = img.id.to_string();
@@ -317,10 +322,84 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 }
 
+impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// `shards rmi IMAGE...` (docker/cli remove.go, runRemove): each image removed as
+    /// dockerd removes it, its lines as it goes, the errors after; with `-f`, those of
+    /// images not found forgiven.
+    pub(super) fn rmi(
+        &self,
+        parsed: &shards_cmdline::flags::Parsed,
+        reply: &super::commands::Reply<'_>,
+    ) -> u8 {
+        use super::rmi::{Record, Records, Removed};
+        struct Store<'s>(&'s shards_image::store::Store);
+        impl Records for Store<'_> {
+            fn untag(&mut self, name: &str) -> Result<(), String> {
+                self.0.untag(name).map_err(|e| e.to_string())
+            }
+            fn alias(&mut self, name: &str, existing: &str) -> Result<(), String> {
+                self.0.alias(name, existing).map_err(|e| e.to_string())
+            }
+        }
+        let force = parsed.bool("force");
+        let store = match self.store() {
+            Ok(store) => store,
+            Err(e) => {
+                reply.err(&format!("Error response from daemon: {e}"));
+                return 1;
+            }
+        };
+        let mut errors: Vec<super::rmi::Refused> = Vec::new();
+        for given in &parsed.args {
+            let removed = match &store {
+                None => Err(super::rmi::Refused {
+                    said: format!("Error response from daemon: {}", not_found(given)),
+                    not_found: true,
+                }),
+                Some(s) => s
+                    .references()
+                    .map_err(|e| super::rmi::Refused {
+                        said: format!("Error response from daemon: {e}"),
+                        not_found: false,
+                    })
+                    .and_then(|records| {
+                        let records: Vec<Record> = records
+                            .into_iter()
+                            .map(|(name, id)| Record { name, id })
+                            .collect();
+                        let users = super::rmi::users(super::lock(&self.containers).all());
+                        super::rmi::delete(&mut Store(s), &records, &users, given, force)
+                    }),
+            };
+            match removed {
+                Ok(removed) => {
+                    for r in removed {
+                        match r {
+                            Removed::Untagged(name) => reply.out(&format!("Untagged: {name}")),
+                            Removed::Deleted(id) => {
+                                reply.out(&format!("Deleted: {id}"));
+                                // What it held goes with the next collection.
+                                self.collect.store(true, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        }
+                    }
+                }
+                Err(e) => errors.push(e),
+            }
+        }
+        if errors.is_empty() {
+            return 0;
+        }
+        let said: Vec<&str> = errors.iter().map(|e| e.said.as_str()).collect();
+        reply.err(&said.join("\n"));
+        u8::from(!force || errors.iter().any(|e| !e.not_found))
+    }
+}
+
 /// dockerd's words for an image it cannot find (moby daemon/images/image.go,
 /// ErrImageDoesNotExist): the reference as given, with `latest` if it names no tag; a
 /// digest as it is.
-fn not_found(given: &str) -> String {
+pub(super) fn not_found(given: &str) -> String {
     use shards_image::reference::AnyReference;
     match AnyReference::parse(given) {
         Ok(AnyReference::Digest(d)) => format!("No such image: {d}"),

@@ -38,6 +38,7 @@ mod images;
 mod logs;
 mod network;
 mod publish;
+mod rmi;
 use crate::run::{Boot, Prepared};
 use crate::segments::log_segment;
 use crate::spec::{LogRetention, NOT_RUN};

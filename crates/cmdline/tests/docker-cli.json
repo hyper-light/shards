@@ -230,6 +230,87 @@
   },
   {
     "argv": [
+      "rmi"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards rmi' requires at least 1 argument\n\nUsage:  shards rmi [OPTIONS] IMAGE [IMAGE...]\n\nSee 'shards rmi --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "rmi",
+      "--help"
+    ],
+    "stdout": "Usage:  shards rmi [OPTIONS] IMAGE [IMAGE...]\n\nRemove one or more images\n\nAliases:\n  shards image rm, shards image remove, shards rmi\n\nOptions:\n  -f, --force      Force removal of the image\n      --no-prune   Do not delete untagged parents\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "rm",
+      "-f",
+      "--no-prune",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --force=true --no-prune=true \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "remove",
+      "a"
+    ],
+    "stdout": "RUN \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "rm",
+      "--help"
+    ],
+    "stdout": "Usage:  shards image rm [OPTIONS] IMAGE [IMAGE...]\n\nRemove one or more images\n\nAliases:\n  shards image rm, shards image remove, shards rmi\n\nOptions:\n  -f, --force      Force removal of the image\n      --no-prune   Do not delete untagged parents\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "ls",
+      "--help"
+    ],
+    "stdout": "Usage:  shards image ls [OPTIONS] [REPOSITORY[:TAG]]\n\nList images\n\nAliases:\n  shards image ls, shards image list, shards images\n\nOptions:\n  -a, --all        Show all images (default hides intermediate and\n                   dangling images)\n      --digests    Show digests\n      --no-trunc   Don't truncate output\n  -q, --quiet      Only show image IDs\n      --tree       List multi-platform images as a tree (EXPERIMENTAL)\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "tag",
+      "--help"
+    ],
+    "stdout": "Usage:  shards image tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]\n\nCreate a tag TARGET_IMAGE that refers to SOURCE_IMAGE\n\nAliases:\n  shards image tag, shards tag\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "rmi",
+      "--platform",
+      "linux/amd64",
+      "a"
+    ],
+    "stdout": "RUN --platform=[linux/amd64] \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "tag"
     ],
     "stdout": "",
