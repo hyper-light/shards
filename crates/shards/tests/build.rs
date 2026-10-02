@@ -23,6 +23,21 @@ fn context(name: &str, dockerfile: &str) -> TempDir {
 
 /// The root filesystem a build wrote of `reference`'s image from its last snapshot is the
 /// one the store stacks of its layers (shards_build::stack), byte for byte.
+/// Which way a build's export went, from the line SHARDS_TIMING (which the tests set) has
+/// it print: "snapshot",
+/// or "layers: " and why.
+fn exported_from(stderr: &str) -> String {
+    let line = stderr
+        .lines()
+        .find_map(|l| l.strip_prefix("shards-export "))
+        .unwrap_or_else(|| panic!("no export line in\n{stderr}"));
+    let v: serde_json::Value = serde_json::from_str(line).unwrap();
+    match v["from"].as_str().unwrap() {
+        "layers" => format!("layers: {}", v["why"].as_str().unwrap()),
+        other => other.to_string(),
+    }
+}
+
 fn assert_rootfs_is_its_layers(home: &std::path::Path, reference: &str) {
     use shards_image::reference::{Digest, Reference};
     use shards_image::store::{Layer, Limits, Store};
@@ -99,7 +114,12 @@ fn an_image_built_of_settings_runs_as_built() {
         q1.stdout
     );
     assert_eq!(id(&q1), id(&q2));
-    assert!(q1.stderr.is_empty(), "-q prints no progress: {}", q1.stderr);
+    // The tests' SHARDS_TIMING adds its machine-readable line; nothing else is printed.
+    assert!(
+        q1.stderr.lines().all(|l| l.starts_with("shards-")),
+        "-q prints no progress: {}",
+        q1.stderr
+    );
     assert!(
         built.stderr.contains(&format!("writing image {} done", id(&q1))),
         "{shown}"
@@ -203,6 +223,11 @@ fn files_a_build_copies_are_in_the_vm_as_built() {
     ] {
         assert!(built.stderr.contains(step), "{step}\n{shown}");
     }
+    // COPY --link after other steps: a merge onto a snapshot the stack does not follow.
+    assert_eq!(
+        exported_from(&built.stderr),
+        "layers: a merge onto a snapshot not in its layers' form"
+    );
     assert_rootfs_is_its_layers(&home, "files:1");
 
     if cannot_run_vms() {
@@ -288,6 +313,8 @@ fn a_staged_build_copies_from_its_stages_and_images() {
         !target.stderr.contains("COPY --from=base"),
         "--target base builds no later stage\n{shown_target}"
     );
+    assert_eq!(exported_from(&built.stderr), "snapshot", "{shown}");
+    assert_eq!(exported_from(&target.stderr), "snapshot", "{shown_target}");
     assert_rootfs_is_its_layers(&home, "stages:1");
     assert_rootfs_is_its_layers(&home, "stages:base");
 
@@ -398,6 +425,7 @@ fn add_unpacks_archives_of_every_compression_in_the_vm() {
     let built = run_shards_env(&["build"], &["-t", "add:1", ctx.to_str().unwrap()], &env, TIMEOUT);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
+    assert_eq!(exported_from(&built.stderr), "snapshot", "{shown}");
     assert_rootfs_is_its_layers(&home, "add:1");
 
     if cannot_run_vms() {

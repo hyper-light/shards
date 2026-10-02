@@ -243,7 +243,7 @@ fn check(case: &Value) -> Path {
     let tally = apply(&mut s0, id, &base);
     let mut layers = vec![base];
     let mut lower = Fs::new(s0, SENTINEL);
-    let mut stack = Stack::layers(tally);
+    let mut stack = Stack::layers(tally, &lower.tree);
     let src = source(case, &mut mem);
     let steps = match case.get("steps") {
         Some(steps) => steps.clone(),
@@ -273,7 +273,7 @@ fn check(case: &Value) -> Path {
             let mut merged = lower.clone();
             let applied = apply(&mut merged.tree, id, &out);
             merged.begin();
-            stack = stack.merge(applied);
+            stack = stack.merge(applied, &merged.tree);
             layers.push(out);
             lower = merged;
             continue;

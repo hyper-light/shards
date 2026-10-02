@@ -68,6 +68,9 @@ pub struct Form {
     /// Whether the snapshot may have sockets, which no layer has.
     sockets: bool,
     tally: Tally,
+    /// The version of the snapshot's tree this describes ([`Tree::version`]): node ids
+    /// are that tree's alone.
+    version: u64,
 }
 
 impl Form {
@@ -154,15 +157,21 @@ fn same_bytes(a: &Kind, b: &Kind, data: &mut dyn Source) -> Result<bool, Error> 
 impl Stack {
     /// A snapshot layer::apply made of its layers from layer::root(), which held `tally`;
     /// or scratch, whose root only differs.
-    pub fn layers(tally: Tally) -> Stack {
+    pub fn layers(tally: Tally, tree: &Tree) -> Stack {
         Stack::Known(Rc::new(Form {
             tally,
+            version: tree.version(),
             ..Form::default()
         }))
     }
 
     pub fn unknown(why: &str) -> Stack {
         Stack::Unknown(why.into())
+    }
+
+    /// Whether this follows `tree`: the very tree, not another or a copy of it.
+    pub fn follows(&self, tree: &Tree) -> bool {
+        matches!(self, Stack::Known(f) if f.version == tree.version())
     }
 
     /// What its layers hold, if followed.
@@ -176,9 +185,9 @@ impl Stack {
     /// A merge's snapshot: layers holding `applied` applied by layer::apply onto this
     /// one. Followed only onto a snapshot that is its layers' tree, which the applied
     /// layers' entries then leave so.
-    pub fn merge(&self, applied: Tally) -> Stack {
+    pub fn merge(&self, applied: Tally, tree: &Tree) -> Stack {
         match self {
-            Stack::Known(f) if f.is_plain() => Stack::layers(f.tally.plus(applied)),
+            Stack::Known(f) if f.is_plain() => Stack::layers(f.tally.plus(applied), tree),
             Stack::Known(_) => Stack::unknown("a merge onto a snapshot not in its layers' form"),
             Stack::Unknown(_) => self.clone(),
         }
@@ -197,6 +206,11 @@ impl Stack {
         let Stack::Known(prev) = self else {
             return Ok(self.clone());
         };
+        // What this follows is the lower tree's, and the upper tree is a clone of it, as
+        // a step's is: otherwise its node ids are not the ones this knows.
+        if prev.version != lower.tree.version() || upper.tree.parent() != lower.tree.version() {
+            return Ok(Stack::unknown("a snapshot other than the one followed"));
+        }
         if let Some(why) = rec.unsure {
             return Ok(Stack::unknown(&why));
         }
@@ -275,6 +289,7 @@ impl Stack {
         }
         next.written.union(&rec.written);
         next.sockets |= rec.sockets;
+        next.version = upper.tree.version();
         next.tally = next.tally.plus(Tally {
             entries: rec.entries,
             metadata: rec.metadata,
@@ -291,6 +306,9 @@ impl Stack {
             Stack::Known(f) => f,
             Stack::Unknown(why) => return Err(why.clone()),
         };
+        if form.version != fs.tree.version() {
+            return Err("a snapshot other than the one followed".into());
+        }
         for id in form.written.iter() {
             if !form.kept.contains_key(&id)
                 && let Some(Node { kind, meta }) = fs.tree.node_mut(id)
@@ -325,5 +343,70 @@ impl Stack {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use shards_image::erofs::{Dir, Meta, Node};
+
+    use super::*;
+    use crate::data::Sources;
+    use crate::diff::write_layer;
+
+    fn fs() -> Fs {
+        let mut tree = layer::root();
+        let dir = Node {
+            kind: Kind::Dir(Dir::default()),
+            meta: Meta {
+                mode: 0o755,
+                ..Meta::default()
+            },
+        };
+        tree.insert(Tree::ROOT, b"d", dir).unwrap();
+        Fs::new(tree, (1_600_000_000, 0))
+    }
+
+    /// A stack follows its own tree: not a copy of it, which is another tree, nor the
+    /// tree once compaction has renumbered its nodes.
+    #[test]
+    fn a_stack_follows_its_tree_alone() {
+        let mut lower = fs();
+        let stack = Stack::layers(Tally::default(), &lower.tree);
+        assert!(stack.follows(&lower.tree));
+        assert!(!stack.follows(&lower.clone().tree));
+        lower.tree.remove(Tree::ROOT, b"d");
+        lower.tree.compact();
+        assert!(!stack.follows(&lower.tree));
+    }
+
+    /// A commit gives up, rather than read node ids as another tree's, unless its lower
+    /// tree is the one followed and its upper tree a copy of that one: so a step on one
+    /// fork of a snapshot is never taken for a step on another.
+    #[test]
+    fn a_commit_of_another_tree_gives_up() {
+        let lower = fs();
+        let stack = Stack::layers(Tally::default(), &lower.tree);
+        let commit = |stack: &Stack, lower: &Fs, upper: &Fs| {
+            let mut out = Vec::new();
+            let rec = write_layer(lower, upper, &mut Sources::default(), &mut out).unwrap();
+            stack
+                .commit(lower, upper, rec, 0, &mut Sources::default())
+                .unwrap()
+        };
+        let mut upper = lower.clone();
+        upper.begin();
+        upper.mkdir(b"/n", 0o755).unwrap();
+        let next = commit(&stack, &lower, &upper);
+        assert!(next.follows(&upper.tree));
+        // A fork of the same snapshot, committed with the first fork's stack.
+        let mut sibling = lower.clone();
+        sibling.begin();
+        let mut child = sibling.clone();
+        child.begin();
+        assert!(matches!(commit(&next, &sibling, &child), Stack::Unknown(_)));
+        // An upper tree that is no copy of the lower.
+        assert!(matches!(commit(&stack, &lower, &fs()), Stack::Unknown(_)));
     }
 }

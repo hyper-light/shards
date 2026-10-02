@@ -171,10 +171,12 @@ impl<'a> Exec<'a> {
     pub fn image(&mut self, layers: Vec<Layer>) -> Result<Ref, String> {
         let mut tree = layer::root();
         let tally = self.apply(&mut tree, &layers)?;
+        let fs = Fs::new(tree, now());
+        let stack = Stack::layers(tally, &fs.tree);
         Ok(Ref {
-            fs: Rc::new(Fs::new(tree, now())),
+            fs: Rc::new(fs),
             layers,
-            stack: Stack::layers(tally),
+            stack,
         })
     }
 
@@ -199,10 +201,12 @@ impl<'a> Exec<'a> {
     /// they stack to.
     pub fn merge(&mut self, inputs: &[Ref]) -> Result<Ref, String> {
         let Some((first, rest)) = inputs.split_first() else {
+            let fs = scratch();
+            let stack = Stack::layers(Tally::default(), &fs.tree);
             return Ok(Ref {
-                fs: Rc::new(scratch()),
+                fs: Rc::new(fs),
                 layers: Vec::new(),
-                stack: Stack::layers(Tally::default()),
+                stack,
             });
         };
         let mut fs = (*first.fs).clone();
@@ -213,10 +217,11 @@ impl<'a> Exec<'a> {
             layers.extend(r.layers.iter().cloned());
         }
         fs.begin();
+        let stack = first.stack.merge(applied, &fs.tree);
         Ok(Ref {
             fs: Rc::new(fs),
             layers,
-            stack: first.stack.merge(applied),
+            stack,
         })
     }
 
@@ -232,7 +237,10 @@ impl<'a> Exec<'a> {
         crate::phase("blob");
         let stack = base
             .as_ref()
-            .map_or_else(|| Stack::layers(Tally::default()), |b| b.stack.clone())
+            .map_or_else(
+                || Stack::layers(Tally::default(), &lower.tree),
+                |b| b.stack.clone(),
+            )
             .commit(lower, &fs, record, size, &mut self.sources)
             .map_err(|e| e.0)?;
         let t = now();
@@ -268,10 +276,13 @@ impl<'a> Exec<'a> {
         if tally.entries > l.entries || tally.metadata > l.metadata || tally.bytes > l.bytes {
             return Err("an image at its limits".into());
         }
-        Ok(Flat {
-            fs: Rc::unwrap_or_clone(r.fs),
-            stack: r.stack,
-        })
+        // The snapshot itself, not a copy: a copy is another tree, whose node ids the
+        // stack does not follow.
+        let fs = Rc::try_unwrap(r.fs).map_err(|_| "a snapshot still shared".to_string())?;
+        if !r.stack.follows(&fs.tree) {
+            return Err("a snapshot other than the one followed".into());
+        }
+        Ok(Flat { fs, stack: r.stack })
     }
 
     /// The root filesystem of `layers`, the image of `flat`, as `Store::rootfs` builds

@@ -322,7 +322,7 @@ impl Index {
 /// directory and name through one hash index and listed through the directory's chain,
 /// and sorted only when listed, as the image and a layer list them. A tree of a million
 /// entries holds one entry record, one name and a slot each (M78).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Tree {
     nodes: Arena<Node>,
     links: Arena<Link>,
@@ -335,6 +335,35 @@ pub struct Tree {
     /// it, and the directories above them, are what the step changed. Steps start at 1:
     /// an entry never marked has 0.
     step: u32,
+    /// This tree's identity, as an inode's generation is one's (ext4, XFS): fresh for every
+    /// tree made, compacted or cloned, so that what was learned of one tree's node ids is
+    /// never taken for another's. A compacted tree's ids mean other nodes.
+    version: u64,
+    /// The version of the tree this one was cloned from, or 0.
+    parent: u64,
+}
+
+/// A version no tree has had: one counter for the process, never reused.
+fn fresh_version() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+impl Clone for Tree {
+    /// A copy is a tree of its own: a fresh version, and the original's as its parent.
+    fn clone(&self) -> Tree {
+        Tree {
+            nodes: self.nodes.clone(),
+            links: self.links.clone(),
+            names: self.names.clone(),
+            index: self.index.clone(),
+            dropped: self.dropped,
+            step: self.step,
+            version: fresh_version(),
+            parent: self.version,
+        }
+    }
 }
 
 fn check_name(name: &[u8]) -> Result<(), Error> {
@@ -364,6 +393,8 @@ impl Tree {
             index: Index::default(),
             dropped: 0,
             step: 0,
+            version: fresh_version(),
+            parent: 0,
         };
         // The first of an empty arena: id 0 always fits.
         let _ = t.nodes.push(Node {
@@ -555,6 +586,16 @@ impl Tree {
             *d = Dir::default();
         }
         self.nodes.push(node)
+    }
+
+    /// This tree's identity ([`Tree`]'s `version`).
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// The version of the tree this one was cloned from, or 0.
+    pub fn parent(&self) -> u64 {
+        self.parent
     }
 
     /// Starts a new step: nothing is stamped with it yet. Steps outnumbering a `u32`

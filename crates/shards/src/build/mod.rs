@@ -670,6 +670,19 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     // never hold memory at once.
     drop(results);
     let flat = target.map(|r| exec.flat(r));
+    // With SHARDS_TIMING set, which way the export goes, and why, for tests and
+    // benchmarks to hold.
+    if std::env::var_os("SHARDS_TIMING").is_some() {
+        let line = match &flat {
+            Some(Ok(_)) => r#"{"from":"snapshot"}"#.to_string(),
+            Some(Err(why)) => format!(
+                r#"{{"from":"layers","why":{}}}"#,
+                serde_json::Value::from(why.as_str())
+            ),
+            None => r#"{"from":"none"}"#.to_string(),
+        };
+        let _ = writeln!(std::io::stderr(), "shards-export {line}");
+    }
     let mut exec = match flat {
         Some(Ok(_)) => Some(exec),
         _ => {
