@@ -233,6 +233,60 @@ enum Path {
     Layers(String),
 }
 
+/// The paths a step changed that it did not record, found by walking both trees whole,
+/// apart from the record: what changed must be among what the step stamped (Tree::mark),
+/// as Git's fsmonitor must report a superset of the changes. A node differs if it is
+/// another node, or the same one with other contents or attributes; a directory whose
+/// entries changed differs as well. A directory made again stands for all below it. A hard-linked file's other names are left out: the
+/// in-memory file system changes the one node all its names share, where overlayfs
+/// without its index copies up only the path changed, which is still to be held against
+/// BuildKit.
+fn unrecorded(lower: &Fs, upper: &Fs) -> Vec<String> {
+    let links = upper.links();
+    let mut missed = Vec::new();
+    let mut todo = vec![(Tree::ROOT, Tree::ROOT, String::new())];
+    while let Some((l, u, path)) = todo.pop() {
+        let mut changed = Vec::new();
+        upper.tree().changed_into(u, &mut changed);
+        let stamped: std::collections::BTreeSet<&[u8]> = changed.iter().map(|(n, _)| *n).collect();
+        let below: std::collections::BTreeMap<Vec<u8>, usize> = lower
+            .tree()
+            .entries(l)
+            .into_iter()
+            .map(|(n, id)| (n.to_vec(), id))
+            .collect();
+        let above: std::collections::BTreeMap<Vec<u8>, usize> = upper
+            .tree()
+            .entries(u)
+            .into_iter()
+            .map(|(n, id)| (n.to_vec(), id))
+            .collect();
+        let names: std::collections::BTreeSet<&Vec<u8>> = below.keys().chain(above.keys()).collect();
+        for name in names {
+            let p = format!("{path}/{}", String::from_utf8_lossy(name));
+            let (b, a) = (below.get(name).copied(), above.get(name).copied());
+            let differs = match (b, a) {
+                (Some(b), Some(a)) => b != a || lower.node(b) != upper.node(a),
+                _ => true,
+            };
+            let shared = a.is_some_and(|a| !upper.is_dir(a) && links.get(a).copied().unwrap_or(0) > 1);
+            if differs && !shared && !stamped.contains(name.as_slice()) {
+                missed.push(p.clone());
+            }
+            // A directory made again is recorded where it was made: the differ then takes
+            // all below it against the lower's (an opaque directory), so only one that is
+            // the same node is walked into.
+            if let (Some(b), Some(a)) = (b, a)
+                && b == a
+                && upper.is_dir(a)
+            {
+                todo.push((b, a, p));
+            }
+        }
+    }
+    missed
+}
+
 /// Runs `case`'s steps over a base image of its lower tree, and checks the image.
 fn check(case: &Value) -> Path {
     let mut mem = Sources::default();
@@ -243,7 +297,7 @@ fn check(case: &Value) -> Path {
     let tally = apply(&mut s0, id, &base);
     let mut layers = vec![base];
     let mut lower = Fs::new(s0, SENTINEL);
-    let mut stack = Stack::layers(tally, &lower.tree);
+    let mut stack = Stack::layers(tally, lower.tree());
     let src = source(case, &mut mem);
     let steps = match case.get("steps") {
         Some(steps) => steps.clone(),
@@ -271,9 +325,9 @@ fn check(case: &Value) -> Path {
             diff::write_layer(&scratch(), &upper, &mut mem, &mut out).unwrap();
             let id = keep(&out, &mut mem);
             let mut merged = lower.clone();
-            let applied = apply(&mut merged.tree, id, &out);
+            let applied = apply(merged.unrecorded_tree(), id, &out);
             merged.begin();
-            stack = stack.merge(applied, &merged.tree);
+            stack = stack.merge(applied, merged.tree());
             layers.push(out);
             lower = merged;
             continue;
@@ -283,6 +337,8 @@ fn check(case: &Value) -> Path {
         if run_step(&lower, &src, &mut upper, step, &mut mem).is_err() {
             return Path::Failed;
         }
+        let missed = unrecorded(&lower, &upper);
+        assert!(missed.is_empty(), "changed but not recorded: {missed:?}");
         let mut out = Vec::new();
         let rec = diff::write_layer(&lower, &upper, &mut mem, &mut out).unwrap();
         stack = stack
@@ -297,7 +353,7 @@ fn check(case: &Value) -> Path {
         Err(why) => Path::Layers(why.to_string()),
         Ok(()) => {
             let mut got = Vec::new();
-            erofs::write(&lower.tree, &mut mem, &mut got).unwrap();
+            erofs::write(lower.tree(), &mut mem, &mut got).unwrap();
             if got != want {
                 return Path::Layers(format!("DIFFERENT IMAGE ({} vs {} bytes)", got.len(), want.len()));
             }

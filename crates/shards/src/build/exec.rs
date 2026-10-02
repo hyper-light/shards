@@ -172,7 +172,7 @@ impl<'a> Exec<'a> {
         let mut tree = layer::root();
         let tally = self.apply(&mut tree, &layers)?;
         let fs = Fs::new(tree, now());
-        let stack = Stack::layers(tally, &fs.tree);
+        let stack = Stack::layers(tally, fs.tree());
         Ok(Ref {
             fs: Rc::new(fs),
             layers,
@@ -202,7 +202,7 @@ impl<'a> Exec<'a> {
     pub fn merge(&mut self, inputs: &[Ref]) -> Result<Ref, String> {
         let Some((first, rest)) = inputs.split_first() else {
             let fs = scratch();
-            let stack = Stack::layers(Tally::default(), &fs.tree);
+            let stack = Stack::layers(Tally::default(), fs.tree());
             return Ok(Ref {
                 fs: Rc::new(fs),
                 layers: Vec::new(),
@@ -213,11 +213,11 @@ impl<'a> Exec<'a> {
         let mut layers = first.layers.clone();
         let mut applied = Tally::default();
         for r in rest {
-            applied = applied.plus(self.apply(&mut fs.tree, &r.layers)?);
+            applied = applied.plus(self.apply(&mut *fs.unrecorded_tree(), &r.layers)?);
             layers.extend(r.layers.iter().cloned());
         }
         fs.begin();
-        let stack = first.stack.merge(applied, &fs.tree);
+        let stack = first.stack.merge(applied, fs.tree());
         Ok(Ref {
             fs: Rc::new(fs),
             layers,
@@ -238,7 +238,7 @@ impl<'a> Exec<'a> {
         let stack = base
             .as_ref()
             .map_or_else(
-                || Stack::layers(Tally::default(), &lower.tree),
+                || Stack::layers(Tally::default(), lower.tree()),
                 |b| b.stack.clone(),
             )
             .commit(lower, &fs, record, size, &mut self.sources)
@@ -279,7 +279,7 @@ impl<'a> Exec<'a> {
         // The snapshot itself, not a copy: a copy is another tree, whose node ids the
         // stack does not follow.
         let fs = Rc::try_unwrap(r.fs).map_err(|_| "a snapshot still shared".to_string())?;
-        if !r.stack.follows(&fs.tree) {
+        if !r.stack.follows(fs.tree()) {
             return Err("a snapshot other than the one followed".into());
         }
         Ok(Flat { fs, stack: r.stack })
@@ -295,8 +295,8 @@ impl<'a> Exec<'a> {
                 stack
                     .finish(&mut fs)
                     .map_err(|why| shards_image::Error::from(std::io::Error::other(why.to_string())))?;
-                fs.tree.drop_index();
-                erofs::write(&fs.tree, sources, out)?;
+                fs.unrecorded_tree().drop_index();
+                erofs::write(fs.tree(), sources, out)?;
                 Ok(())
             })
             .map_err(err)

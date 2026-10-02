@@ -208,7 +208,7 @@ impl Stack {
         };
         // What this follows is the lower tree's, and the upper tree is a clone of it, as
         // a step's is: otherwise its node ids are not the ones this knows.
-        if prev.version != lower.tree.version() || upper.tree.parent() != lower.tree.version() {
+        if prev.version != lower.tree().version() || upper.tree().parent() != lower.tree().version() {
             return Ok(Stack::unknown("a snapshot other than the one followed"));
         }
         if let Some(why) = rec.unsure {
@@ -252,8 +252,8 @@ impl Stack {
         // Ids below `old` are the lower tree's nodes; the rest the step made, and each
         // the upper tree names must be in the layer, or stand for a lower node there,
         // but for sockets.
-        let old = lower.tree.len().min(upper.tree.len());
-        for id in old..upper.tree.len() {
+        let old = lower.tree().len().min(upper.tree().len());
+        for id in old..upper.tree().len() {
             if links(id) > 0
                 && !rec.written.get(id)
                 && !paired.get(id)
@@ -289,7 +289,7 @@ impl Stack {
         }
         next.written.union(&rec.written);
         next.sockets |= rec.sockets;
-        next.version = upper.tree.version();
+        next.version = upper.tree().version();
         next.tally = next.tally.plus(Tally {
             entries: rec.entries,
             metadata: rec.metadata,
@@ -306,22 +306,22 @@ impl Stack {
             Stack::Known(f) => f,
             Stack::Unknown(why) => return Err(why.clone()),
         };
-        if form.version != fs.tree.version() {
+        if form.version != fs.tree().version() {
             return Err("a snapshot other than the one followed".into());
         }
         for id in form.written.iter() {
             if !form.kept.contains_key(&id)
-                && let Some(Node { kind, meta }) = fs.tree.node_mut(id)
+                && let Some(Node { kind, meta }) = fs.unrecorded_tree().node_mut(id)
             {
                 to_layer(kind, meta);
             }
         }
         for (&id, m) in &form.kept {
-            if let Some(n) = fs.tree.node_mut(id) {
+            if let Some(n) = fs.unrecorded_tree().node_mut(id) {
                 n.meta = m.clone();
             }
         }
-        if let Some(n) = fs.tree.node_mut(Tree::ROOT) {
+        if let Some(n) = fs.unrecorded_tree().node_mut(Tree::ROOT) {
             n.meta = root_meta();
         }
         if form.sockets {
@@ -329,9 +329,9 @@ impl Stack {
             let mut gone: Vec<(NodeId, Vec<u8>)> = Vec::new();
             let mut entries = Vec::new();
             while let Some(dir) = todo.pop() {
-                fs.tree.entries_into(dir, &mut entries);
+                fs.tree().entries_into(dir, &mut entries);
                 for &(name, id) in &entries {
-                    match fs.tree.node(id).map(|n| &n.kind) {
+                    match fs.tree().node(id).map(|n| &n.kind) {
                         Some(Kind::Socket) => gone.push((dir, name.to_vec())),
                         Some(Kind::Dir(_)) => todo.push(id),
                         _ => {}
@@ -339,7 +339,7 @@ impl Stack {
                 }
             }
             for (dir, name) in gone {
-                fs.tree.remove(dir, &name);
+                fs.unrecorded_tree().remove(dir, &name);
             }
         }
         Ok(())
@@ -373,12 +373,12 @@ mod tests {
     #[test]
     fn a_stack_follows_its_tree_alone() {
         let mut lower = fs();
-        let stack = Stack::layers(Tally::default(), &lower.tree);
-        assert!(stack.follows(&lower.tree));
-        assert!(!stack.follows(&lower.clone().tree));
-        lower.tree.remove(Tree::ROOT, b"d");
-        lower.tree.compact();
-        assert!(!stack.follows(&lower.tree));
+        let stack = Stack::layers(Tally::default(), lower.tree());
+        assert!(stack.follows(lower.tree()));
+        assert!(!stack.follows(lower.clone().tree()));
+        lower.unrecorded_tree().remove(Tree::ROOT, b"d");
+        lower.unrecorded_tree().compact();
+        assert!(!stack.follows(lower.tree()));
     }
 
     /// A commit gives up, rather than read node ids as another tree's, unless its lower
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn a_commit_of_another_tree_gives_up() {
         let lower = fs();
-        let stack = Stack::layers(Tally::default(), &lower.tree);
+        let stack = Stack::layers(Tally::default(), lower.tree());
         let commit = |stack: &Stack, lower: &Fs, upper: &Fs| {
             let mut out = Vec::new();
             let rec = write_layer(lower, upper, &mut Sources::default(), &mut out).unwrap();
@@ -399,7 +399,7 @@ mod tests {
         upper.begin();
         upper.mkdir(b"/n", 0o755).unwrap();
         let next = commit(&stack, &lower, &upper);
-        assert!(next.follows(&upper.tree));
+        assert!(next.follows(upper.tree()));
         // A fork of the same snapshot, committed with the first fork's stack.
         let mut sibling = lower.clone();
         sibling.begin();

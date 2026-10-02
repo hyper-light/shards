@@ -148,7 +148,9 @@ pub fn type_bits(kind: &Kind) -> u32 {
 /// writing it has changed.
 #[derive(Debug, Clone)]
 pub struct Fs {
-    pub tree: Tree,
+    /// Changed only through the methods below, which record each change as the step's
+    /// ([`Tree::mark`]): what a step changes cannot go unrecorded.
+    tree: Tree,
     /// Seconds and nanoseconds since 1970.
     pub now: (i64, u32),
     pub upper: Upper,
@@ -231,6 +233,19 @@ impl Fs {
 
     fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
         self.tree.node_mut(id)
+    }
+
+    /// The snapshot's tree, to read.
+    pub fn tree(&self) -> &Tree {
+        &self.tree
+    }
+
+    /// The tree, to change without recording the change as this step's: for what is no
+    /// step's change. A merge's layers, applied onto the snapshot the next step starts
+    /// from, and the export's last rewrite of the snapshot into its layers' form, which no
+    /// layer follows.
+    pub fn unrecorded_tree(&mut self) -> &mut Tree {
+        &mut self.tree
     }
 
     pub fn is_dir(&self, id: NodeId) -> bool {

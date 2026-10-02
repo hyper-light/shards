@@ -152,7 +152,7 @@ impl Walk<'_> {
     /// The changes in `path`, which is `dir` in the upper tree.
     fn dir(&self, path: &[u8], dir: NodeId, cw: &mut ChangeWriter<'_>) -> Result<(), Error> {
         let mut changed = Vec::new();
-        self.upper.tree.changed_into(dir, &mut changed);
+        self.upper.tree().changed_into(dir, &mut changed);
         for (name, now) in changed {
             let p = vfs::join(path, name);
             let in_base = match self.lower.lstat(&p) {
@@ -211,7 +211,7 @@ fn double_walk(
     cw: &mut ChangeWriter<'_>,
 ) -> Result<(), Error> {
     let entries = |fs: &Fs, id: NodeId| -> BTreeMap<Vec<u8>, NodeId> {
-        fs.tree
+        fs.tree()
             .entries(id)
             .into_iter()
             .map(|(n, c)| (n.to_vec(), c))
@@ -254,7 +254,7 @@ fn add_all(upper: &Fs, id: NodeId, p: &[u8], cw: &mut ChangeWriter<'_>) -> Resul
 }
 
 fn add_children(upper: &Fs, id: NodeId, p: &[u8], cw: &mut ChangeWriter<'_>) -> Result<(), Error> {
-    for (name, child) in upper.tree.entries(id) {
+    for (name, child) in upper.tree().entries(id) {
         add_all(upper, child, &vfs::join(p, name), cw)?;
     }
     Ok(())

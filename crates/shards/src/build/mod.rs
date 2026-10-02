@@ -765,7 +765,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
 fn context_size(fs: &shards_build::vfs::Fs) -> (u64, u64) {
     let mut seen = std::collections::HashSet::new();
     let (mut files, mut bytes) = (0u64, 0u64);
-    for id in 0..fs.tree.len() {
+    for id in 0..fs.tree().len() {
         if let Some(shards_image::erofs::Node {
             kind: shards_image::erofs::Kind::File { size, data },
             ..
