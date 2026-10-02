@@ -24,6 +24,8 @@ mod guest;
 mod kernel;
 #[cfg(unix)]
 mod names;
+#[cfg(unix)]
+mod netproc;
 mod pull;
 mod run;
 #[cfg(unix)]

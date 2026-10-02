@@ -93,6 +93,8 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
         user: o.user.clone().into_bytes(),
         hostname: hostname.into_bytes(),
         tty: o.tty,
+        // A run on a network gets its resolvers from the daemon as it is handed over.
+        resolv: None,
     };
     if spec.encoded_len().is_none_or(|n| n > run::MAX_PAYLOAD as usize) {
         return Err("the command and its environment are too large".into());

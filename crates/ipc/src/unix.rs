@@ -689,12 +689,45 @@ pub fn spawn_with(
             return Err(e);
         }
         let result = (|| {
-            for (fd, target) in fds {
+            // The file actions run in order, so a source whose number is another's target
+            // would be overwritten before it is read; and one already at its own target
+            // would keep its close-on-exec flag, which dup2 onto itself leaves set (macOS
+            // then closes it at exec, under POSIX_SPAWN_CLOEXEC_DEFAULT). Each source whose
+            // number is any target first moves above every number in play, then
+            // everything goes where it belongs, a dup2 onto another number clearing the
+            // flag, and the moved copies are closed.
+            let targets: Vec<RawFd> = fds.iter().map(|(_, t)| *t).collect();
+            let mut spare = fds
+                .iter()
+                .flat_map(|(fd, t)| [fd.as_raw_fd(), *t])
+                .max()
+                .unwrap_or(2)
+                .saturating_add(1);
+            let mut sources = Vec::with_capacity(fds.len());
+            let mut moved = Vec::new();
+            for (i, (fd, target)) in fds.iter().enumerate() {
+                let src = fd.as_raw_fd();
+                let _ = (i, target);
+                if targets.contains(&src) {
+                    check(libc::posix_spawn_file_actions_adddup2(&mut actions, src, spare))?;
+                    sources.push(spare);
+                    moved.push(spare);
+                    spare = spare.saturating_add(1);
+                } else {
+                    sources.push(src);
+                }
+            }
+            for (src, target) in sources.iter().zip(&targets) {
                 check(libc::posix_spawn_file_actions_adddup2(
                     &mut actions,
-                    fd.as_raw_fd(),
+                    *src,
                     *target,
                 ))?;
+            }
+            for m in moved {
+                if !targets.contains(&m) {
+                    check(libc::posix_spawn_file_actions_addclose(&mut actions, m))?;
+                }
             }
             let mut none: libc::sigset_t = std::mem::zeroed();
             libc::sigemptyset(&mut none);
@@ -903,6 +936,56 @@ mod tests {
         let mut got = String::new();
         r.read_to_string(&mut got).unwrap();
         assert_eq!(got, "given\n");
+    }
+
+    /// Descriptors go where they are given even when each one's number is the other's
+    /// target, a swap, which file actions run in order would get wrong, or its own, close
+    /// on exec as every descriptor of ours is; and nothing moved out of the way on the way
+    /// is left in the child.
+    #[test]
+    fn children_get_swapped_descriptors_each_where_it_belongs() {
+        let (mut ra, wa) = pipe();
+        let (mut rb, wb) = pipe();
+        let (a, b) = (wa.as_raw_fd(), wb.as_raw_fd());
+        // a's writer goes to b's number, and b's to a's.
+        let script = format!(
+            "echo A >&{b}; echo B >&{a}; for fd in $(seq {} 64); do [ -e /dev/fd/$fd ] && echo leaked $fd >&{b}; done; exit 0",
+            a.max(b) + 1
+        );
+        let child = spawn(
+            Path::new("/bin/sh"),
+            &["-c".as_ref(), script.as_ref()],
+            &[(wa.as_fd(), b), (wb.as_fd(), a)],
+            false,
+        )
+        .unwrap();
+        drop((wa, wb));
+        assert_eq!(child.wait().unwrap(), 0);
+        let (mut got_a, mut got_b) = (String::new(), String::new());
+        ra.read_to_string(&mut got_a).unwrap();
+        rb.read_to_string(&mut got_b).unwrap();
+        assert_eq!((got_a.as_str(), got_b.as_str()), ("A\n", "B\n"));
+    }
+
+    #[test]
+    fn a_descriptor_given_its_own_number_reaches_the_child() {
+        let (mut r, w) = pipe();
+        let n = w.as_raw_fd();
+        // SAFETY: fcntl(2) on a descriptor we own: close-on-exec, as ours all are.
+        unsafe { libc::fcntl(n, libc::F_SETFD, libc::FD_CLOEXEC) };
+        let script = format!("echo kept >&{n}");
+        let child = spawn(
+            Path::new("/bin/sh"),
+            &["-c".as_ref(), script.as_ref()],
+            &[(w.as_fd(), n)],
+            false,
+        )
+        .unwrap();
+        drop(w);
+        assert_eq!(child.wait().unwrap(), 0);
+        let mut got = String::new();
+        r.read_to_string(&mut got).unwrap();
+        assert_eq!(got, "kept\n");
     }
 
     /// Even a descriptor left inheritable stays behind (macOS: POSIX_SPAWN_CLOEXEC_DEFAULT).

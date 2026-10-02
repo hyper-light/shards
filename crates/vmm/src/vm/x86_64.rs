@@ -340,10 +340,12 @@ fn assemble(
         let host = hosts
             .net
             .ok_or("the machine has a network device but no network process for it")?;
-        add_virtio(
-            &mut bus,
-            Box::new(crate::devices::virtio::net::Net::new(host.clone())?),
-        )?;
+        let mut host = host.clone();
+        // The machine's own MAC, a snapshot's included: its guest was set up with it.
+        if let Some(mac) = config.net {
+            host.mac = mac;
+        }
+        add_virtio(&mut bus, Box::new(crate::devices::virtio::net::Net::new(host)?))?;
     }
     let control = Arc::new(Control::default());
     bus.mmio.insert(layout::CONTROL, 0x1000, control.clone())?;

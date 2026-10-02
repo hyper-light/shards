@@ -323,7 +323,10 @@ fn set_hostname(name: &[u8]) -> Result<(), Failure> {
     write_file("/etc/hostname", &bytes)?;
     let mut hosts = Vec::with_capacity(HOSTS.len() + OWN_ADDRESS.len() + name.len() + 2);
     hosts.extend_from_slice(HOSTS);
-    hosts.extend_from_slice(OWN_ADDRESS);
+    // The guest's own address on a network, as Docker names a container on its bridge;
+    // the loopback's otherwise.
+    let own = crate::net::from_cmdline().map(|(addr, _, _)| addr.to_string());
+    hosts.extend_from_slice(own.as_deref().map_or(OWN_ADDRESS, str::as_bytes));
     hosts.push(b'\t');
     hosts.extend_from_slice(&bytes);
     write_file("/etc/hosts", &hosts)
@@ -646,6 +649,9 @@ impl Standby {
                 )));
             }
             set_hostname(&spec.hostname)?;
+        }
+        if let Some(r) = &spec.resolv {
+            write_file("/etc/resolv.conf", r)?;
         }
         let (passwd, group) = (standby.passwd.as_deref(), standby.group.as_deref());
         let ExecUser { uid, gid, groups } = user::resolve(&spec.user, passwd, group).map_err(setup_failed)?;

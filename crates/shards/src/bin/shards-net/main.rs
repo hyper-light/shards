@@ -2,7 +2,7 @@
 //! spawner hands it the VM's frame ring and doorbells; it serves the guest's flows until
 //! the VM goes, which its doorbell's hang-up says.
 //!
-//!     shards-net --ring REGION,WAKE_ME,WAKE_PEER --policy allow|deny
+//!     shards-net --ring REGION,WAKE_ME,WAKE_PEER --policy allow|deny --mac MAC
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -21,6 +21,7 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     use std::os::fd::{FromRawFd, OwnedFd};
     let mut ring = None;
+    let mut mac = None;
     // No default: a spawner that forgot to say gets an error, not open access.
     let mut policy = None;
     let mut args = std::env::args_os().skip(1);
@@ -32,6 +33,15 @@ fn run() -> Result<(), String> {
         };
         match a.to_str() {
             Some("--ring") => ring = Some(value(&mut args, "--ring")?),
+            Some("--mac") => {
+                let v = value(&mut args, "--mac")?;
+                let octets: Vec<u8> = v
+                    .split(':')
+                    .map(|h| u8::from_str_radix(h, 16))
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| format!("--mac {v:?} is not a MAC"))?;
+                mac = Some(<[u8; 6]>::try_from(octets).map_err(|_| format!("--mac {v:?} is not a MAC"))?);
+            }
             Some("--policy") => {
                 policy = Some(match value(&mut args, "--policy")?.as_str() {
                     "allow" => shards_net::Policy::AllowAll,
@@ -44,6 +54,8 @@ fn run() -> Result<(), String> {
     }
     let ring = ring.ok_or("--ring is required")?;
     let policy = policy.ok_or("--policy is required")?;
+    // The guest's MAC, which the VM's device has: frames from any other are not its.
+    let mac = mac.ok_or("--mac is required")?;
     let fds: Vec<i32> = ring
         .split(',')
         .map(|v| {
@@ -67,7 +79,8 @@ fn run() -> Result<(), String> {
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     };
     let (region, me, peer) = (adopt(*region)?, adopt(*me)?, adopt(*peer)?);
-    shards_net::serve(region, me, peer, shards_net::Config::docker_default(policy)).map_err(|e| e.to_string())
+    shards_net::serve(region, me, peer, shards_net::Config::docker_default(policy, mac))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(not(unix))]

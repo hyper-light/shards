@@ -47,25 +47,68 @@ pub struct Config {
     pub policy: Policy,
 }
 
-impl Config {
-    /// Docker's default bridge as a container on it sees it (moby
-    /// daemon/libnetwork/drivers/bridge): the first address after the gateway's in
-    /// 172.17.0.0/16, its MAC made of its address (02:42 then the four octets).
-    pub fn docker_default(policy: Policy) -> Config {
-        let guest_ip = Ipv4Addr::new(172, 17, 0, 2);
-        let [a, b, c, d] = guest_ip.octets();
-        Config {
-            guest_mac: [0x02, 0x42, a, b, c, d],
-            guest_ip,
-            gateway_mac: [0x02, 0x42, 172, 17, 0, 1],
-            gateway_ip: Ipv4Addr::new(172, 17, 0, 1),
-            policy,
+/// Docker's default bridge as a container on it sees it: the first address after the
+/// gateway's in 172.17.0.0/16.
+const DOCKER_GUEST_IP: Ipv4Addr = Ipv4Addr::new(172, 17, 0, 2);
+const DOCKER_GATEWAY_IP: Ipv4Addr = Ipv4Addr::new(172, 17, 0, 1);
+
+/// What a guest on Docker's default bridge has on its kernel command line:
+/// `shards_net=ADDR/PREFIX,GATEWAY`.
+pub fn docker_cmdline() -> String {
+    format!("shards_net={DOCKER_GUEST_IP}/16,{DOCKER_GATEWAY_IP}")
+}
+
+/// A fresh guest MAC, random, locally administered and unicast, as current Docker gives
+/// each container (measured under Docker Desktop, 2026-10-02).
+pub fn random_mac() -> io::Result<[u8; 6]> {
+    let mut mac = [0u8; 6];
+    entropy(&mut mac)?;
+    mac[0] = (mac[0] & 0xfe) | 0x02;
+    Ok(mac)
+}
+
+/// `buf` filled from the kernel's random source.
+fn entropy(buf: &mut [u8]) -> io::Result<()> {
+    // getrandom(2), which the libc crate binds on glibc and musl alike; it fills a buffer
+    // of at most 256 bytes at once once the pool is initialized, but a signal can
+    // interrupt it.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    loop {
+        // SAFETY: getrandom(2) into a buffer of ours, of its length.
+        let n = unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
+        if usize::try_from(n).is_ok_and(|n| n == buf.len()) {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        if n >= 0 || e.kind() != io::ErrorKind::Interrupted {
+            return Err(if n >= 0 {
+                io::Error::other("getrandom(2) fell short")
+            } else {
+                e
+            });
         }
     }
+    // getentropy(2) elsewhere, which fills up to 256 bytes or fails.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        // SAFETY: getentropy(2) into a buffer of ours, of its length.
+        if unsafe { libc::getentropy(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
 
-    /// What the guest's kernel command line names: `shards_net=ADDR/PREFIX,GATEWAY`.
-    pub fn cmdline(&self) -> String {
-        format!("shards_net={}/16,{}", self.guest_ip, self.gateway_ip)
+impl Config {
+    /// Docker's default bridge as the guest whose MAC is `guest_mac` sees it.
+    pub fn docker_default(policy: Policy, guest_mac: [u8; 6]) -> Config {
+        Config {
+            guest_mac,
+            guest_ip: DOCKER_GUEST_IP,
+            gateway_mac: [0x02, 0x42, 172, 17, 0, 1],
+            gateway_ip: DOCKER_GATEWAY_IP,
+            policy,
+        }
     }
 
     fn allows(&self, to: Ipv4Addr) -> bool {
@@ -195,7 +238,7 @@ pub fn serve(region: OwnedFd, wake_me: OwnedFd, wake_peer: OwnedFd, cfg: Config)
         tcp: HashMap::new(),
         udp: HashMap::new(),
         buf: vec![0u8; shards_netring::MAX_FRAME],
-        isn: seed(),
+        isn: seed()?,
     };
     let mut frame = vec![0u8; shards_netring::MAX_FRAME];
     let mut fds: Vec<libc::pollfd> = Vec::new();
@@ -309,11 +352,10 @@ fn drain(fd: i32) {
 }
 
 /// A starting point for initial sequence numbers no guest can predict from the last.
-fn seed() -> u32 {
+fn seed() -> io::Result<u32> {
     let mut b = [0u8; 4];
-    // SAFETY: getentropy(3) into a local buffer.
-    unsafe { libc::getentropy(b.as_mut_ptr().cast(), b.len()) };
-    u32::from_ne_bytes(b)
+    entropy(&mut b)?;
+    Ok(u32::from_ne_bytes(b))
 }
 
 impl<'r> Stack<'r> {
@@ -544,5 +586,24 @@ impl<'r> Stack<'r> {
         }
         self.udp
             .retain(|_, f| now.saturating_duration_since(f.last) < UDP_IDLE);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each guest's MAC is its own, and one a host's stack takes as a unicast address of
+    /// a local, not a vendor's, assignment.
+    #[test]
+    fn macs_are_fresh_local_unicast_ones() {
+        let macs: Vec<[u8; 6]> = (0..64).map(|_| random_mac().unwrap()).collect();
+        for mac in &macs {
+            assert_eq!(mac[0] & 0x03, 0x02, "{mac:02x?}");
+        }
+        let mut distinct = macs.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), macs.len());
     }
 }

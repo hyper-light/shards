@@ -21,7 +21,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served, shards, shards_vm, shardsd,
+    Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served, shards, shards_net, shards_vm,
+    shardsd,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -539,7 +540,11 @@ impl Gated {
     fn new(name: &str) -> Gated {
         use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new(name);
-        for (from, to) in [(shards(), "shards"), (shardsd(), "shardsd")] {
+        for (from, to) in [
+            (shards(), "shards"),
+            (shardsd(), "shardsd"),
+            (shards_net(), "shards-net"),
+        ] {
             // A link where there can be one: macOS assesses a copy as a new binary.
             if std::fs::hard_link(from, dir.join(to)).is_err() {
                 std::fs::copy(from, dir.join(to)).unwrap();
@@ -964,4 +969,49 @@ fn logs_carry_lines_longer_than_a_message() {
         want.len()
     );
     assert_eq!(without_vms(&home, &["daemon", "stop"]).status, Some(0));
+}
+
+/// A run is on Docker's default bridge, as `docker run` puts a container (D31): it reaches
+/// a server on this host through its VM's network process, at the host's own address (its
+/// loopback and the gateway are no guest's), its own name is its address in /etc/hosts,
+/// and its resolvers are the host's, none of them loopback ones.
+#[test]
+fn a_run_is_on_a_network_as_docker_runs_it() {
+    use std::io::Write as _;
+    let Some((home, image)) = home("containers-net") else {
+        return;
+    };
+    let host = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+        .and_then(|s| s.local_addr());
+    let Ok(host) = host else {
+        eprintln!("SKIP: this host has no route to give a guest an address of it");
+        return;
+    };
+    let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = server.local_addr().unwrap().port();
+    let serving = std::thread::spawn(move || {
+        if let Ok((mut c, _)) = server.accept() {
+            let _ = c.write_all(b"hello from the host\n");
+        }
+    });
+    let to = format!("{}:{port}", host.ip());
+    let ran = run_in(&home, &image, &["--rm", "-u", "root"], &["tcp", &to]);
+    assert_eq!(
+        (ran.status, ran.stdout.as_str()),
+        (Some(0), "tcp 20 hello from the host\n"),
+        "{ran}"
+    );
+    serving.join().unwrap();
+    let files = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "root", "--hostname", "box"],
+        &["stat", "/etc/hosts", "/etc/resolv.conf"],
+    );
+    assert_eq!(files.status, Some(0), "{files}");
+    assert!(files.stdout.contains("172.17.0.2\tbox\\n"), "{files}");
+    let resolv = files.stdout.split("/etc/resolv.conf").nth(1).unwrap_or_default();
+    assert!(resolv.contains("nameserver "), "{files}");
+    assert!(!resolv.contains("nameserver 127."), "{files}");
 }

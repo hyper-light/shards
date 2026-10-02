@@ -19,6 +19,7 @@ const NLMSG_ERROR: u16 = 2;
 const IFLA_MTU: u16 = 4;
 const IFA_ADDRESS: u16 = 1;
 const IFA_LOCAL: u16 = 2;
+const IFA_BROADCAST: u16 = 4;
 const RTA_GATEWAY: u16 = 5;
 const RTA_OIF: u16 = 4;
 const RT_TABLE_MAIN: u8 = 254;
@@ -61,6 +62,10 @@ pub fn configure(addr: Ipv4Addr, prefix: u8, gateway: Ipv4Addr) -> io::Result<()
     // SAFETY: a descriptor just made.
     let sock = unsafe { OwnedFd::from_raw_fd(fd) };
     let index_i32 = i32::try_from(index).map_err(|_| io::Error::other("an interface index past i32"))?;
+    // No IPv6 on eth0, as Docker's bridge has none (its containers' eth0 has disable_ipv6
+    // set; measured under Docker Desktop, 2026-10-02): no link-local address, no
+    // duplicate address detection to wait on. Before the link is up, so none is made.
+    std::fs::write("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", "1")?;
 
     // The link: up, at the device's MTU (struct ifinfomsg: family, pad, type, index, flags,
     // change).
@@ -78,6 +83,8 @@ pub fn configure(addr: Ipv4Addr, prefix: u8, gateway: Ipv4Addr) -> io::Result<()
     a.extend_from_slice(&index.to_ne_bytes());
     attr(&mut a, IFA_LOCAL, &addr.octets());
     attr(&mut a, IFA_ADDRESS, &addr.octets());
+    let mask = u32::MAX.checked_shr(u32::from(prefix)).unwrap_or(0);
+    attr(&mut a, IFA_BROADCAST, &(u32::from(addr) | mask).to_be_bytes());
     request(&sock, RTM_NEWADDR, NLM_F_CREATE | NLM_F_EXCL, &a)?;
 
     // The default route (struct rtmsg: family, dst and src length, tos, table, protocol,

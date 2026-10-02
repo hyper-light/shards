@@ -40,6 +40,7 @@ pub use unsupported::{
 };
 
 /// The host sides of a VM's devices that live outside it.
+#[cfg(hv)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Hosts<'a> {
     pub vsock: Option<&'a VsockHost>,

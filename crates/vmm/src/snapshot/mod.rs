@@ -177,6 +177,12 @@ pub fn backing_files(dir: &Path) -> Result<Vec<(PathBuf, bool)>, String> {
         .collect())
 }
 
+/// The MAC of the snapshot in `dir`'s network device, if it has one: a VM restored from
+/// it needs a network process of its own.
+pub fn net(dir: &Path) -> Result<Option<[u8; 6]>, String> {
+    Ok(read(dir)?.snapshot.config.net)
+}
+
 /// The files of the generation the snapshot in `dir` is at, for a VM in App Sandbox to be
 /// granted before it reads the snapshot (shards `grant`; PM M70): its state and memory,
 /// and its working set, which it may not have. Its pointer is read as the VM's input.

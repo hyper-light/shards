@@ -141,6 +141,9 @@ struct Ready {
 /// The warm VMs of one template.
 #[derive(Default)]
 struct Pool {
+    /// Its template's network device's MAC, if it has one, once read: each of its VMs
+    /// needs a network process of its own.
+    net: Option<Option<[u8; 6]>>,
     ready: VecDeque<Ready>,
     starting: usize,
     /// Warm VMs in a row that never became ready.
@@ -1088,6 +1091,11 @@ impl<D: Disk> Daemon<D> {
             vec![conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()]
         };
         fds.extend([container_log.log.as_fd(), container_log.index.as_fd()]);
+        // On Docker's default bridge, the host's resolvers as Docker gives a container
+        // them (the legacy transform: no loopback ones), read as the run starts.
+        prepared.spec.resolv = Some(crate::build::step::resolv(
+            &std::fs::read("/etc/resolv.conf").unwrap_or_default(),
+        ));
         // The flags, the retention's two u64s, then the spec, in one allocation (audit D10).
         let mut payload = Vec::with_capacity(17 + prepared.spec.encoded_len().unwrap_or(0));
         payload.push(flags);
@@ -1914,11 +1922,22 @@ impl<D: Disk> Daemon<D> {
         prepared: &Prepared,
         say: &dyn Fn(&str),
     ) -> Result<Ready, String> {
+        // Docker's default bridge: the guest on a network of its own (D31), named on its
+        // kernel command line, so that its templates are apart from any without one.
+        let on_network = |cfg: &mut Config| {
+            cfg.cmdline.push(' ');
+            cfg.cmdline.push_str(&shards_net::docker_cmdline());
+        };
         let guest = match &prepared.boot {
-            Boot::Given(cfg) => return self.cold(threads, cfg, &prepared.rootfs, None),
+            Boot::Given(cfg) => {
+                let mut cfg = cfg.clone();
+                on_network(&mut cfg);
+                return self.cold(threads, &cfg, &prepared.rootfs, None);
+            }
             Boot::Stored(guest) => guest,
         };
-        let cfg = Config::new(guest.kernel.clone(), Some(guest.init.clone()));
+        let mut cfg = Config::new(guest.kernel.clone(), Some(guest.init.clone()));
+        on_network(&mut cfg);
         if !shards_vmm::vm::SNAPSHOTS {
             return self.cold(threads, &cfg, &prepared.rootfs, None);
         }
@@ -2040,8 +2059,20 @@ impl<D: Disk> Daemon<D> {
         };
         // It writes no file of the home: the daemon gives it its container's log (D30).
         let args: Vec<OsString> = vec!["restore".into(), dir.into(), "--warm".into(), "3".into()];
+        // A template that cannot be read gets no network process: its VM then fails to
+        // restore it, as any broken template's does, and the claim finds it broken.
+        let net = match pool.net {
+            Some(net) => net,
+            None => match shards_vmm::snapshot::net(dir) {
+                Ok(net) => *pool.net.insert(net),
+                Err(e) => {
+                    log(format!("reading the template {}: {e}", dir.display()));
+                    None
+                }
+            },
+        };
         for _ in 0..for_runs + ahead {
-            match self.start(threads, &args, For::Pool(dir.to_path_buf())) {
+            match self.start(threads, &args, net, For::Pool(dir.to_path_buf())) {
                 Ok(vm) => {
                     pool.starting += 1;
                     starting.insert(vm.id(), vm);
@@ -2244,8 +2275,14 @@ impl<D: Disk> Daemon<D> {
             args.extend(["--snapshot-dir".into(), fresh.into()]);
         }
         args.extend(["--warm".into(), "3".into()]);
+        // A guest on a network: a fresh MAC, which a template it saves keeps.
+        let net = if cfg.cmdline.contains("shards_net=") {
+            Some(shards_net::random_mac().map_err(|e| format!("a guest's MAC: {e}"))?)
+        } else {
+            None
+        };
         let (tx, rx) = mpsc::channel();
-        self.start(threads, &args, For::Run(tx))?;
+        self.start(threads, &args, net, For::Run(tx))?;
         // A VM given up on ends as its socket closes, the daemon's end dropped with it.
         loop {
             match rx.recv_timeout(TICK_TIME) {
@@ -2262,13 +2299,23 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Starts shards-vm with `args` as a warm VM whose daemon socket is its descriptor 3,
-    /// and watches it.
+    /// on a network of its own if `net` names its MAC, and watches it.
     fn start<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
         args: &[OsString],
+        net: Option<[u8; 6]>,
         dest: For,
     ) -> Result<Arc<shards_ipc::Child>, String> {
+        // Docker's default bridge reaches what the host does, but the host itself (D31).
+        let network = match &net {
+            Some(mac) => Some(crate::netproc::start(
+                &self.vm,
+                shards_net::Policy::AllowAll,
+                mac,
+            )?),
+            None => None,
+        };
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a VM's socket: {e}"))?;
         let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
         let err = io::stderr();
@@ -2287,10 +2334,20 @@ impl<D: Disk> Daemon<D> {
         ]
         .into_iter()
         .chain(grants.as_ref().map(|(_, granted)| (granted.as_fd(), 4)))
+        .chain(network.iter().flat_map(|(_, side)| {
+            let [r, s, w] = crate::netproc::VM_FDS;
+            [
+                (side.region.as_fd(), r),
+                (side.sleeps.as_fd(), s),
+                (side.rings.as_fd(), w),
+            ]
+        }))
         .collect();
+        let net_arg = net.map(|mac| OsString::from(crate::netproc::VmSide::arg(&mac)));
         let given = grants
             .iter()
-            .flat_map(|_| [OsStr::new("--grants"), OsStr::new("4")]);
+            .flat_map(|_| [OsStr::new("--grants"), OsStr::new("4")])
+            .chain(net_arg.iter().flat_map(|a| [OsStr::new("--net"), a.as_os_str()]));
         let args: Vec<&OsStr> = args
             .iter()
             .take(1)
@@ -2298,14 +2355,33 @@ impl<D: Disk> Daemon<D> {
             .chain(given)
             .chain(args.iter().skip(1).map(OsString::as_os_str))
             .collect();
-        let child = shards_ipc::spawn(&self.vm, &args, &fds, false)
-            .map_err(|e| format!("starting {}: {e}", self.vm.display()))?;
+        let child = match shards_ipc::spawn(&self.vm, &args, &fds, false) {
+            Ok(child) => child,
+            Err(e) => {
+                if let Some((net, side)) = network {
+                    drop(side);
+                    crate::netproc::reap(&net);
+                }
+                return Err(format!("starting {}: {e}", self.vm.display()));
+            }
+        };
+        drop(fds);
+        // The VM holds its side of its network now; its network process goes with it.
+        let net_process = network.map(|(net, side)| {
+            drop(side);
+            net
+        });
         let grants = grants.map(|(grants, _)| grants);
         let vm = Arc::new(child);
         let watched = vm.clone();
         let watching = std::thread::Builder::new()
             .name("warm vm".into())
-            .spawn_scoped(threads, move || self.watch(threads, &watched, ours, grants, dest));
+            .spawn_scoped(threads, move || {
+                self.watch(threads, &watched, ours, grants, dest);
+                if let Some(net) = net_process {
+                    crate::netproc::reap(&net);
+                }
+            });
         if let Err(e) = watching {
             let _ = vm.kill(libc::SIGKILL);
             return Err(format!("watching VM {}: {e}", vm.id()));

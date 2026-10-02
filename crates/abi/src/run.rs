@@ -72,6 +72,9 @@ pub struct Spec {
     /// Docker's `--tty`: the workload's stdio is a pty of this size, whose output reaches
     /// the host as [`kind::STDOUT`] alone; `None` for pipes.
     pub tty: Option<Size>,
+    /// The bytes of the run's `/etc/resolv.conf`, for a run on a network: the host's
+    /// resolvers as Docker gives a container on its bridge.
+    pub resolv: Option<Vec<u8>>,
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as
@@ -128,6 +131,10 @@ impl Spec {
             out.push(1);
             out.extend_from_slice(&size.encode());
         }
+        if let Some(r) = &self.resolv {
+            out.push(2);
+            put_bytes(out, r);
+        }
     }
 
     /// The bytes [`encode`](Spec::encode) writes, or `None` past `usize`: measured without
@@ -141,7 +148,8 @@ impl Spec {
         for s in [&self.cwd, &self.user, &self.hostname] {
             n = n.checked_add(4)?.checked_add(s.len())?;
         }
-        n.checked_add(if self.tty.is_some() { 5 } else { 0 })
+        n.checked_add(if self.tty.is_some() { 5 } else { 0 })?
+            .checked_add(self.resolv.as_ref().map_or(0, |r| 5 + r.len()))
     }
 
     /// The spec in `bytes`, or `None` unless they hold exactly one.
@@ -153,12 +161,23 @@ impl Spec {
             cwd: r.bytes()?,
             user: r.bytes()?,
             hostname: r.bytes()?,
-            tty: match r.take(1) {
-                None => None,
-                Some([1]) => Some(Size::decode(r.take(4)?)?),
-                Some(_) => return None,
-            },
+            tty: None,
+            resolv: None,
         };
+        let mut spec = spec;
+        // Optional sections, each once, in order: 1 a terminal, 2 resolv.conf.
+        let mut last = 0u8;
+        while let Some(tag) = r.take(1).and_then(|t| t.first().copied()) {
+            if tag <= last {
+                return None;
+            }
+            last = tag;
+            match tag {
+                1 => spec.tty = Some(Size::decode(r.take(4)?)?),
+                2 => spec.resolv = Some(r.bytes()?),
+                _ => return None,
+            }
+        }
         r.0.is_empty().then_some(spec)
     }
 }
@@ -222,17 +241,33 @@ mod tests {
             user: b"app:staff".to_vec(),
             hostname: b"box".to_vec(),
             tty: Some(Size { rows: 24, cols: 300 }),
+            resolv: Some(b"nameserver 192.168.1.1\n".to_vec()),
         };
         let bytes = spec.encode();
         assert_eq!(Spec::decode(&bytes), Some(spec.clone()));
-        let piped = Spec { tty: None, ..spec };
+        let piped = Spec {
+            tty: None,
+            resolv: None,
+            ..spec.clone()
+        };
         let without = piped.encode();
         assert_eq!(Spec::decode(&without), Some(piped.clone()));
+        let tty_only = Spec {
+            resolv: None,
+            ..spec.clone()
+        };
+        let with_tty = tty_only.encode();
         assert_eq!(Spec::decode(&Spec::default().encode()), Some(Spec::default()));
-        // Frames carry their length, so only a spec cut before its terminal reads as one
-        // without.
+        // Frames carry their length, so only a spec cut where a section ends reads as one:
+        // without its optional sections, or with its terminal alone.
         for cut in 0..bytes.len() {
-            let expected = (cut == without.len()).then(|| piped.clone());
+            let expected = if cut == without.len() {
+                Some(piped.clone())
+            } else if cut == with_tty.len() {
+                Some(tty_only.clone())
+            } else {
+                None
+            };
             assert_eq!(Spec::decode(&bytes[..cut]), expected, "cut at {cut}");
         }
         let mut long = bytes.clone();

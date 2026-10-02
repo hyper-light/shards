@@ -209,12 +209,16 @@ fn guest_binary_in(name: &str, target_dir: &str, env: &[(&str, &str)]) -> PathBu
     let mine = target_dir.join("by-process");
     // Copies of test processes that have ended go.
     for e in std::fs::read_dir(&mine).into_iter().flatten().flatten() {
+        #[cfg(unix)]
         let gone = e
             .file_name()
             .to_str()
             .and_then(|n| n.parse::<libc::pid_t>().ok())
             // SAFETY: kill(2) with signal 0 only asks whether the process exists.
             .is_some_and(|pid| unsafe { libc::kill(pid, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH));
+        // Where processes cannot be asked after so, copies stay until the next clean.
+        #[cfg(not(unix))]
+        let gone = false;
         if gone {
             let _ = std::fs::remove_dir_all(e.path());
         }
@@ -259,6 +263,12 @@ pub fn shardsd() -> &'static Path {
 pub fn shards_vm() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
     V.get_or_init(|| binaries().join(format!("shards-vm{}", std::env::consts::EXE_SUFFIX)))
+}
+
+/// The `shards-net` beside [`shards`]: each networked VM's network process.
+pub fn shards_net() -> &'static Path {
+    static V: OnceLock<PathBuf> = OnceLock::new();
+    V.get_or_init(|| binaries().join(format!("shards-net{}", std::env::consts::EXE_SUFFIX)))
 }
 
 /// The directory holding this build's `shards`, `shardsd`, `shards-vm` and `shards-net`.

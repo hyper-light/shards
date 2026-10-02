@@ -206,35 +206,9 @@ impl Builder {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         // The builder's network: BuildKit's steps reach what their host does, so the
         // network process allows every flow but to the host itself (D31).
-        let net_cfg = shards_net::Config::docker_default(shards_net::Policy::AllowAll);
-        let ring = |e: io::Error| format!("the builder's network: {e}");
-        let region = shards_netring::memory().map_err(ring)?;
-        // The VM sleeps on the first doorbell and rings the second; the network process
-        // the other way round.
-        let (vm_sleeps, net_rings) = shards_netring::doorbell().map_err(ring)?;
-        let (net_sleeps, vm_rings) = shards_netring::doorbell().map_err(ring)?;
-        let net = shards_ipc::spawn(
-            &exe.with_file_name(format!("shards-net{}", std::env::consts::EXE_SUFFIX)),
-            &[
-                "--ring".as_ref(),
-                "3,4,5".as_ref(),
-                "--policy".as_ref(),
-                match net_cfg.policy {
-                    shards_net::Policy::AllowAll => "allow",
-                    shards_net::Policy::DenyAll => "deny",
-                }
-                .as_ref(),
-            ],
-            &[
-                (io::stderr().as_fd(), 2),
-                (region.as_fd(), 3),
-                (net_sleeps.as_fd(), 4),
-                (net_rings.as_fd(), 5),
-            ],
-            false,
-        )
-        .map_err(|e| format!("starting the builder's network: {e}"))?;
-        drop((net_sleeps, net_rings));
+        let mac = shards_net::random_mac().map_err(|e| format!("the builder's MAC: {e}"))?;
+        let (net, side) =
+            crate::netproc::start(&shards_ipc::vm_binary(&exe), shards_net::Policy::AllowAll, &mac)?;
         let mut args: Vec<OsString> = vec![
             "run".into(),
             "--kernel".into(),
@@ -244,7 +218,7 @@ impl Builder {
             "--cmdline".into(),
             format!(
                 "console=ttyS0 earlycon panic=-1 shards_build=1 {}",
-                net_cfg.cmdline()
+                shards_net::docker_cmdline()
             )
             .into(),
             "--cpus".into(),
@@ -254,7 +228,7 @@ impl Builder {
             "--vsock".into(),
             vsock.clone().into(),
             "--net".into(),
-            format!("4,5,6,{}", mac(&net_cfg.guest_mac)).into(),
+            crate::netproc::VmSide::arg(&mac).into(),
             "--no-console".into(),
         ];
         for base in boot.bases {
@@ -272,9 +246,9 @@ impl Builder {
             (null.as_fd(), 0),
             (err.as_fd(), 1),
             (err.as_fd(), 2),
-            (region.as_fd(), 4),
-            (vm_sleeps.as_fd(), 5),
-            (vm_rings.as_fd(), 6),
+            (side.region.as_fd(), crate::netproc::VM_FDS[0]),
+            (side.sleeps.as_fd(), crate::netproc::VM_FDS[1]),
+            (side.rings.as_fd(), crate::netproc::VM_FDS[2]),
         ]
         .into_iter()
         .chain(grants.as_ref().map(|(_, theirs)| (theirs.as_fd(), 3)))
@@ -302,7 +276,7 @@ impl Builder {
         // The two processes hold the ring now: once the VM goes, its network process
         // hears its doorbell hang up and goes too.
         drop(fds);
-        drop((region, vm_sleeps, vm_rings));
+        drop(side);
         if let Some((ours, _)) = grants {
             #[cfg(target_os = "macos")]
             std::thread::Builder::new()
@@ -498,12 +472,6 @@ impl Builder {
     }
 }
 
-/// A MAC as `--net` takes it.
-#[cfg(unix)]
-fn mac(m: &[u8; 6]) -> String {
-    m.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":")
-}
-
 /// Whether `origin` stands on a base image.
 #[cfg(unix)]
 fn has_base(origin: &Origin) -> bool {
@@ -538,16 +506,8 @@ impl Drop for Builder {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        // The network process goes with its VM; it is told outright if it lingers.
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while self.net.try_wait().is_none() {
-            if Instant::now() > deadline {
-                let _ = self.net.kill(libc::SIGKILL);
-                let _ = self.net.wait();
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        // The network process goes with its VM.
+        crate::netproc::reap(&self.net);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

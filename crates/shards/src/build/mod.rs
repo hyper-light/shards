@@ -32,7 +32,7 @@ use shards_registry::pull::{self as registry_pull, Event};
 
 mod builder;
 mod exec;
-mod step;
+pub(crate) mod step;
 
 const PATH: &str = "shards buildx build";
 

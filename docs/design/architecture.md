@@ -1497,6 +1497,10 @@ stack inside the VMM, is superseded by it.
   template is saved, with a static address and no DHCP or duplicate-address detection, so
   restores do no network work (networking.md R3; [RFC 2131 §4.4.1; RFC 4862 §5.4]). A VM
   with no network gets no device (networking.md R7: absent device, no attack surface).
+- **Built so far.** Builds' `RUN` steps and `shards run` are on Docker's default bridge:
+  the guest is 172.17.0.2/16 behind 172.17.0.1, with a random, locally administered MAC
+  as Docker gives a container, which a template keeps and its restores reuse; the daemon
+  starts each VM's network process beside it and hands the VM its side of the ring.
 - **Open, measured before it is built** (networking.md §4):
   - *The data path between the two processes* (E2), **decided (PM M83):** a ring of frame
     slots in memory the two processes share, not the datagram socket Apple's model uses

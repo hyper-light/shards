@@ -322,6 +322,7 @@ fn a_rebuilt_binary_replaces_the_daemon() {
     std::fs::copy(shards(), &other).unwrap();
     std::fs::copy(shardsd(), bin.join("shardsd")).unwrap();
     std::fs::copy(shards_vm(), bin.join("shards-vm")).unwrap();
+    std::fs::copy(common::shards_net(), bin.join("shards-net")).unwrap();
     let out = Command::new(&other)
         .args(["run", "--pull", "never", &image, "exit", "0"])
         .env("SHARDS_HOME", &*home)

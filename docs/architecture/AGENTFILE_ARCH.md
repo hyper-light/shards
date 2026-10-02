@@ -734,13 +734,14 @@ of 2026-10-02:
 | `COPY` (`--from`, `--chmod`, `--chown`, `--link`, `--parents`, `--exclude`, heredocs) | done (BuildKit's actions, byte for byte) | n/a |
 | `ADD` of local files and archives (`--chmod`, `--chown`, `--link`, `--exclude`, `--unpack`) | done | n/a |
 | `ADD` of URLs (`--checksum`, `--unpack`) and git (`--keep-git-dir`, `--checksum`) | **missing** | n/a |
-| `RUN` (shell, exec, heredocs) | **missing** | n/a |
-| `RUN --mount` `bind`, `cache`, `tmpfs`, `secret`, `ssh` | **missing** | n/a |
+| `RUN` (shell, exec, heredocs) | done, in one builder microVM per build (D34); heredocs planned as BuildKit plans them (oracle), **not yet run** by an E2E test | n/a |
+| `RUN --mount` `bind`, `cache`, `tmpfs`, `secret`, `ssh` | `bind`, `tmpfs`, and `cache` within one build carried out, **untested** E2E; `secret` has no source until `--secret` is served; `ssh` **missing** | n/a |
 | Open defect: `shards wait` gave 0 for a command that could not start, 4 times in 40 parallel runs of `a_command_that_cannot_start_says_why_as_docker_run_does` and once in a full test run (2026-10-02), not since in about 480; the test now prints the daemon's log when it fails | n/a | **to root-cause** |
 | `RUN` on Windows hosts: a builder over WHP and a Windows transport | **missing** | n/a |
 | `RUN`'s sandbox: moby's default seccomp profile, which BuildKit applies to every step (`Seccomp: 2`) | **missing** | n/a |
 | A builder's memory plugged as a build needs it (virtio-mem), not paid at boot (PM M82) | **missing** | n/a |
-| `RUN --network` `default`, `none`, `host`; `--security`; `--device` | **missing**; `default` needs guest networking (D31) | n/a |
+| `RUN --network` `default`, `none`, `host`; `--security`; `--device` | `default` and `none` done (D31, E2E); `host` and `--security=insecure` only under `--allow`, `host` given the builder's own network; `--device` **missing** | n/a |
+| `docker run`'s network | n/a | Docker's default bridge done (D31, E2E): egress through the VM's network process, the run's own name at its address in `/etc/hosts`, the host's resolvers as Docker gives them; **missing**: `--network none`, `host` and named networks, `-p`/`-P`, the DNS policy, the network process's confinement (seccomp, Landlock, App Sandbox), its costs (E1, E2) |
 | `EXPOSE` | done (config) | **missing**: `run -P`, `-p` need D31 |
 | `VOLUME` | done (config) | **missing**: anonymous volumes at run |
 | `HEALTHCHECK` (`--interval`, `--timeout`, `--start-period`, `--start-interval`, `--retries`, `NONE`) | done (config) | **missing**: checks, `ps` status, `inspect` health |
