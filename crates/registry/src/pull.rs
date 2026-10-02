@@ -70,6 +70,8 @@ pub fn pull(
     let _lease = store.lease()?;
     let top = registry.resolve(store, reference)?;
     let resolved = top.digest()?;
+    // The attestations of the manifest chosen, as dockerd keeps them: provenance and SBOMs.
+    let mut attestations: Vec<Descriptor> = Vec::new();
     let (manifest_desc, manifest) = match document(registry, store, &top)? {
         Document::Manifest(m) => (top, m),
         Document::Index(index) => {
@@ -86,6 +88,15 @@ pub fn pull(
                     offered.join(", ")
                 ))
             })?;
+            attestations = index
+                .manifests
+                .iter()
+                .filter(|d| {
+                    d.annotations.get(ATTESTATION_TYPE).map(String::as_str) == Some(ATTESTATION)
+                        && d.annotations.get(ATTESTATION_FOR) == Some(&chosen.digest)
+                })
+                .cloned()
+                .collect();
             match document(registry, store, chosen)? {
                 Document::Manifest(m) => (chosen.clone(), m),
                 Document::Index(_) => {
@@ -126,6 +137,9 @@ pub fn pull(
     let rootfs = store.rootfs(&layers, limits)?;
     let mut contents = vec![manifest_digest.clone(), manifest.config.digest()?];
     contents.extend(layers.iter().map(|l| l.blob.clone()));
+    for attestation in &attestations {
+        contents.extend(fetch_attestation(registry, store, &name, attestation, limits)?);
+    }
     store.tag_from(
         &reference.to_string(),
         &manifest_desc,
@@ -139,6 +153,34 @@ pub fn pull(
         config,
         rootfs,
     })
+}
+
+/// An index's tell for a manifest that attests to another (BuildKit's attestations).
+const ATTESTATION_TYPE: &str = "vnd.docker.reference.type";
+const ATTESTATION: &str = "attestation-manifest";
+const ATTESTATION_FOR: &str = "vnd.docker.reference.digest";
+
+/// Fetches an attestation manifest, its config and layers, kept as they are: what it
+/// fetched, by digest. Its layers are statements, never unpacked.
+fn fetch_attestation(
+    registry: &Registry,
+    store: &Store,
+    name: &str,
+    desc: &Descriptor,
+    limits: &Limits,
+) -> Result<Vec<Digest>, Error> {
+    let Document::Manifest(attestation) = document(registry, store, desc)? else {
+        return Err(Error::new(format!("{name}: an attestation that is an index")));
+    };
+    let mut fetched = vec![desc.digest()?];
+    for part in std::iter::once(&attestation.config).chain(&attestation.layers) {
+        let digest = part.digest()?;
+        if !store.has(&digest) {
+            registry.fetch_blob(store, part, limits, &|_| {})?;
+        }
+        fetched.push(digest);
+    }
+    Ok(fetched)
 }
 
 /// The image `reference` names, if it has been pulled for one of `targets`: from the

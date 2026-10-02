@@ -1623,6 +1623,12 @@ fn images_lists_what_was_pulled_as_docker_images_does() {
         .unwrap()
         .map(|v| dir_bytes(&v.unwrap().path()))
         .sum();
+    // A pull keeps our platform's attestation, as dockerd does, and collections keep it:
+    // the index, our manifest, config and layer, the attestation's manifest, config and
+    // statement.
+    let blobs = home.join("images/blobs/sha256");
+    let count = || std::fs::read_dir(&blobs).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(count(), 7);
     let listed = shards(&["images"]);
     assert_eq!(listed.status, Some(0), "{listed}");
     let lines: Vec<&str> = listed.stdout.lines().collect();
@@ -1683,6 +1689,8 @@ fn images_lists_what_was_pulled_as_docker_images_does() {
         .unwrap();
     assert!(mine.ends_with(" U    "), "{tree}");
     assert_eq!(shards(&["rm", "-f", "user"]).status, Some(0));
+    // The daemon has had its collection, due since the pull, by now: still all seven.
+    assert_eq!(count(), 7);
     // A pattern, matched as Go's path.Match matches the familiar and whole names.
     let none = shards(&["images", "nothing"]);
     assert_eq!(none.stdout.lines().count(), 1, "{none}");
@@ -1882,8 +1890,10 @@ fn image_inspect_describes_images_as_docker_does() {
     let image = format!("127.0.0.1:{port}/test/image:v1");
     let home = TempDir::new("containers-inspect");
     let shards = |args: &[&str]| shards_in(&home, args);
-    assert_eq!(shards(&["pull", "-q", &image]).status, Some(0));
-    assert_eq!(shards(&["tag", &image, "other:1"]).status, Some(0));
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let tagged = shards(&["tag", &image, "other:1"]);
+    assert_eq!(tagged.status, Some(0), "{tagged}");
     let id = sha256_digest(&index);
     let arch = if cfg!(target_arch = "aarch64") {
         "arm64"

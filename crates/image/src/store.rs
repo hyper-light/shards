@@ -784,6 +784,9 @@ impl Store {
     /// Has `reference` name what `existing` names, as `docker tag` does, replacing what it
     /// named. What it names is durable already, as `existing`'s record is.
     pub fn alias(&self, reference: &str, existing: &str) -> Result<(), Error> {
+        // Its record is written through `ingest/`, which a collection empties: none runs
+        // meanwhile.
+        let _lease = self.lease()?;
         let Some(tag) = self.tag_record(existing)? else {
             return bad(format!("{existing}: no such reference"));
         };
@@ -1125,10 +1128,31 @@ impl Store {
             let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) else {
                 continue;
             };
-            // What it resolved to, an index, is kept as containerd keeps it: the list of
-            // the image's platforms (`images --tree`).
+            // What it resolved to, an index, is kept as containerd keeps it, with what it
+            // names that is here: the image's platforms (`images --tree`), and the
+            // attestations a pull kept.
             if let Some(resolved) = tag.resolved.as_deref().and_then(|d| Digest::parse(d).ok()) {
                 blobs.insert(self.blob_path(&resolved));
+                if let Ok(index) = fs::read(self.blob_path(&resolved))
+                    && let Ok(index) = serde_json::from_slice::<oci::Index>(&index)
+                {
+                    for desc in &index.manifests {
+                        let Ok(Held::Whole(bytes)) = self.held(desc, oci::MAX_MANIFEST) else {
+                            continue;
+                        };
+                        if let Ok(digest) = desc.digest() {
+                            blobs.insert(self.blob_path(&digest));
+                        }
+                        if let Ok(oci::Document::Manifest(m)) = oci::parse_document(&bytes, &desc.media_type)
+                        {
+                            for part in std::iter::once(&m.config).chain(&m.layers) {
+                                if let Ok(d) = part.digest() {
+                                    blobs.insert(self.blob_path(&d));
+                                }
+                            }
+                        }
+                    }
+                }
             }
             let Ok(digest) = tag.manifest.digest() else {
                 continue;
@@ -1679,6 +1703,38 @@ mod tests {
     }
 
     /// A descriptor of `size` bytes named `digest`.
+    /// A name given while collections run is never lost: its record goes through
+    /// `ingest/`, which a collection empties, so the alias holds a lease.
+    #[test]
+    fn names_given_during_collections_are_kept() {
+        let root = temp("alias-collect");
+        let store = Store::open(&root).unwrap();
+        let blob = b"manifest".to_vec();
+        let d = sha256(&blob);
+        store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
+        store
+            .tag("docker.io/library/a:1", &described(&d, blob.len()), &d, &[])
+            .unwrap();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    let _ = store.collect().unwrap();
+                }
+            });
+            for n in 0..40 {
+                let name = format!("docker.io/library/b:{n}");
+                let aliased = store.alias(&name, "docker.io/library/a:1");
+                if aliased.is_err() {
+                    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                aliased.unwrap();
+            }
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert_eq!(store.references().unwrap().len(), 41);
+    }
+
     /// Images are listed by what their references resolved to, newest first: each one's
     /// references, its index's manifests (the attestation told apart, the one not here
     /// not whole), and the bytes of it here, the index's among them.

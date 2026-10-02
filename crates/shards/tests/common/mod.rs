@@ -860,26 +860,44 @@ pub fn test_image_with(variant: Option<&[u8]>) -> (Vec<u8>, Vec<Vec<u8>>) {
 /// The test image behind an index, as multi-platform images are served: its manifest
 /// for this host's platform, one for another architecture that is never fetched, and an
 /// attestation for ours, as BuildKit writes one. Returns the index and its blobs, the
-/// manifests among them.
+/// manifests among them: the image's config, layer and manifest first, then the
+/// attestation's manifest, config and statement, then the other platform's attestation.
 pub fn test_index() -> (Vec<u8>, Vec<Vec<u8>>) {
     let (manifest, mut blobs) = test_image();
     let (arch, other) = match std::env::consts::ARCH {
         "aarch64" => ("arm64", "amd64"),
         _ => ("amd64", "arm64"),
     };
-    let attestation = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","size":2},"layers":[]}"#.to_vec();
+    // An attestation as BuildKit writes one: an empty config, and an in-toto statement.
+    let (att_config, statement) = (
+        b"{}".to_vec(),
+        br#"{"_type":"https://in-toto.io/Statement/v0.1"}"#.to_vec(),
+    );
+    let attestation = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.in-toto+json","digest":"{}","size":{},"annotations":{{"in-toto.io/predicate-type":"https://spdx.dev/Document"}}}}]}}"#,
+        sha256_digest(&att_config),
+        att_config.len(),
+        sha256_digest(&statement),
+        statement.len()
+    )
+    .into_bytes();
+    // The other platform's attestation, which a pull for ours never fetches.
+    let theirs = attestation.iter().copied().chain(*b" ").collect::<Vec<u8>>();
     let index = format!(
-        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"platform":{{"architecture":"{arch}","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:{}","size":1234,"platform":{{"architecture":"{other}","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"annotations":{{"vnd.docker.reference.digest":"{}","vnd.docker.reference.type":"attestation-manifest"}},"platform":{{"architecture":"unknown","os":"unknown"}}}}]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"platform":{{"architecture":"{arch}","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:{}","size":1234,"platform":{{"architecture":"{other}","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"annotations":{{"vnd.docker.reference.digest":"{}","vnd.docker.reference.type":"attestation-manifest"}},"platform":{{"architecture":"unknown","os":"unknown"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"annotations":{{"vnd.docker.reference.digest":"sha256:{}","vnd.docker.reference.type":"attestation-manifest"}},"platform":{{"architecture":"unknown","os":"unknown"}}}}]}}"#,
         sha256_digest(&manifest),
         manifest.len(),
         "1".repeat(64),
         sha256_digest(&attestation),
         attestation.len(),
         sha256_digest(&manifest),
+        sha256_digest(&theirs),
+        theirs.len(),
+        "1".repeat(64),
     )
     .into_bytes();
     blobs.push(manifest);
-    blobs.push(attestation);
+    blobs.extend([attestation, att_config, statement, theirs]);
     (index, blobs)
 }
 
