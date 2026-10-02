@@ -126,7 +126,13 @@ pub fn pull(
     let rootfs = store.rootfs(&layers, limits)?;
     let mut contents = vec![manifest_digest.clone(), manifest.config.digest()?];
     contents.extend(layers.iter().map(|l| l.blob.clone()));
-    store.tag(&reference.to_string(), &manifest_desc, &resolved, &contents)?;
+    store.tag_from(
+        &reference.to_string(),
+        &manifest_desc,
+        &resolved,
+        &contents,
+        Some(&reference.name()),
+    )?;
     Ok(Pulled {
         resolved,
         manifest: manifest_digest,

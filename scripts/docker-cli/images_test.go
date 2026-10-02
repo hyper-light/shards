@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -242,7 +243,19 @@ func TestShardsImages(t *testing.T) {
 	} {
 		sizes = append(sizes, map[string]any{"n": n, "text": units.HumanSizeWithPrecision(float64(n), 3)})
 	}
-	data, err := json.MarshalIndent(map[string]any{"trees": trees, "tables": tables, "sizes": sizes}, "", "  ")
+	// encoding/json's Indent, as IndentedInspector lays out `inspect`'s documents.
+	var indents []map[string]string
+	for _, in := range []string{
+		`[]`, `[{}]`, `{"a":[],"b":{}}`, `[{"Id":"x","L":[1,2],"S":"a,b:{c}[\"d\"]","E":"\u003c\u0026"},{"N":null,"T":true}]`,
+		`{"a":{"b":{"c":[[],[{}],[1]]}}}`, `"x"`, `[1,-2.5e+10,"é😀"]`,
+	} {
+		var out bytes.Buffer
+		if err := json.Indent(&out, []byte(in), "", "    "); err != nil {
+			t.Fatal(fmt.Errorf("%s: %w", in, err))
+		}
+		indents = append(indents, map[string]string{"in": in, "out": out.String()})
+	}
+	data, err := json.MarshalIndent(map[string]any{"trees": trees, "tables": tables, "sizes": sizes, "indents": indents}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}

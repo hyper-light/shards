@@ -1041,6 +1041,17 @@ mod tests {
         shards_image::store::Image {
             id: shards_image::reference::Digest::parse(&format!("sha256:{hex}")).unwrap(),
             references: references.iter().map(|r| (*r).to_string()).collect(),
+            target: shards_image::oci::Descriptor {
+                media_type: String::new(),
+                digest: format!("sha256:{hex}"),
+                size: 0,
+                platform: None,
+                annotations: Default::default(),
+            },
+            manifest: shards_image::reference::Digest::parse(&format!("sha256:{hex}")).unwrap(),
+            config: None,
+            tagged_at: None,
+            sources: Vec::new(),
             created: None,
             manifests: Vec::new(),
             content: 0,

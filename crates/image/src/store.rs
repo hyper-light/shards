@@ -185,6 +185,10 @@ struct Tag {
     manifest: Descriptor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolved: Option<String>,
+    /// The repository it was pulled from, if pulled: what dockerd shows as the image's
+    /// pull identity, kept when another name is given it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
 }
 
 /// An image the store's references name: what they resolved to (its ID, as dockerd's
@@ -195,6 +199,14 @@ struct Tag {
 pub struct Image {
     pub id: Digest,
     pub references: Vec<String>,
+    /// What its references resolved to, described: an index, or its manifest.
+    pub target: Descriptor,
+    /// The manifest our platform's runs use, and its config's bytes, if here.
+    pub manifest: Digest,
+    pub config: Option<Vec<u8>>,
+    /// When a record of it was last written, and the repositories it was pulled from.
+    pub tagged_at: Option<std::time::SystemTime>,
+    pub sources: Vec<String>,
     pub created: Option<String>,
     pub manifests: Vec<ImageManifest>,
     pub content: u64,
@@ -729,6 +741,18 @@ impl Store {
         resolved: &Digest,
         contents: &[Digest],
     ) -> Result<(), Error> {
+        self.tag_from(reference, manifest, resolved, contents, None)
+    }
+
+    /// [`tag`](Self::tag), for what was pulled from repository `source`.
+    pub fn tag_from(
+        &self,
+        reference: &str,
+        manifest: &Descriptor,
+        resolved: &Digest,
+        contents: &[Digest],
+        source: Option<&str>,
+    ) -> Result<(), Error> {
         let mut dirs: Vec<PathBuf> = contents
             .iter()
             .map(|d| self.root.join("blobs").join(d.algorithm().name()))
@@ -743,6 +767,7 @@ impl Store {
             reference: reference.to_string(),
             manifest: manifest.clone(),
             resolved: Some(resolved.to_string()),
+            source: source.map(String::from),
         })
         .map_err(|e| Error(e.to_string()))?;
         let mut partial = Partial::create(&self.root.join("ingest"))?;
@@ -815,7 +840,8 @@ impl Store {
     pub fn images(&self) -> Result<Vec<Image>, Error> {
         let mut images: Vec<Image> = Vec::new();
         for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
-            let Ok(bytes) = fs::read(entry?.path()) else {
+            let path = entry?.path();
+            let Ok(bytes) = fs::read(&path) else {
                 continue;
             };
             let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) else {
@@ -824,14 +850,28 @@ impl Store {
             let Ok(id) = Digest::parse(tag.resolved.as_deref().unwrap_or(&tag.manifest.digest)) else {
                 continue;
             };
-            if let Some(image) = images.iter_mut().find(|i| i.id == id) {
-                image.references.push(tag.reference);
-                continue;
+            let tagged_at = fs::metadata(&path).and_then(|m| m.modified()).ok();
+            let image = match images.iter_mut().position(|i| i.id == id) {
+                Some(at) => {
+                    let image = images.get_mut(at).ok_or_else(|| Error("an image gone".into()))?;
+                    image.references.push(tag.reference);
+                    image
+                }
+                None => {
+                    images.push(self.image(id, tag.reference, &tag.manifest)?);
+                    images.last_mut().ok_or_else(|| Error("an image gone".into()))?
+                }
+            };
+            image.tagged_at = image.tagged_at.max(tagged_at);
+            if let Some(source) = tag.source
+                && !image.sources.contains(&source)
+            {
+                image.sources.push(source);
             }
-            images.push(self.image(id, tag.reference, &tag.manifest)?);
         }
         for image in &mut images {
             image.references.sort();
+            image.sources.sort();
         }
         images.sort_by_key(|i| i.id.to_string());
         Ok(images)
@@ -849,6 +889,12 @@ impl Store {
         // The index's manifests, checked against its digest, or the one manifest it is.
         let mut index_size = 0;
         let mut descriptors = vec![ours.clone()];
+        let mut target = Descriptor {
+            platform: None,
+            annotations: Default::default(),
+            ..ours.clone()
+        };
+        let mut image_config = None;
         if id.to_string() != ours.digest
             && let Ok(meta) = fs::metadata(self.blob_path(&id))
         {
@@ -863,6 +909,10 @@ impl Store {
                 && let Ok(index) = serde_json::from_slice::<oci::Index>(&bytes)
             {
                 index_size = size_of(&id);
+                target = Descriptor {
+                    media_type: index.media_type.unwrap_or_else(|| oci::media::OCI_INDEX.into()),
+                    ..desc
+                };
                 descriptors = index.manifests;
             }
         }
@@ -894,9 +944,12 @@ impl Store {
                         }
                     }
                     listed.available = whole;
-                    if let Held::Whole(config) = self.held(&manifest.config, oci::MAX_CONFIG)?
-                        && let Ok(config) = oci::parse_config(&config)
+                    if let Held::Whole(bytes) = self.held(&manifest.config, oci::MAX_CONFIG)?
+                        && let Ok(config) = oci::parse_config(&bytes)
                     {
+                        if desc.digest == ours.digest {
+                            image_config = Some(bytes.clone());
+                        }
                         if listed.platform.is_none() && !attestation {
                             listed.platform = Some(platform_string(&oci::Platform {
                                 architecture: config.architecture.clone(),
@@ -924,6 +977,11 @@ impl Store {
         Ok(Image {
             id,
             references: vec![reference],
+            target,
+            manifest: ours.digest().map_err(|e| Error(e.to_string()))?,
+            config: image_config,
+            tagged_at: None,
+            sources: Vec::new(),
             created,
             content: index_size + manifests.iter().map(|m| m.content).sum::<u64>(),
             unpacked: manifests.iter().map(|m| m.unpacked).sum(),

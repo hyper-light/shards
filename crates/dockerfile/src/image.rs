@@ -505,6 +505,13 @@ impl Image {
     }
 }
 
+/// `s` as `json.Marshal` writes a string: HTML-escaped, invalid UTF-8 as U+FFFD.
+pub fn json_string(s: &[u8]) -> String {
+    let mut out = String::new();
+    json::write_string(&mut out, s);
+    out
+}
+
 /// `ocispec.RootFS`: `diff_ids` is `null` when there are none.
 pub fn rootfs_json(kind: &[u8], diff_ids: Option<&[Vec<u8>]>) -> String {
     let mut rootfs = Obj::new();
@@ -543,7 +550,8 @@ pub fn history_json(history: &[History]) -> Result<String, Vec<u8>> {
 }
 
 impl Config {
-    fn to_json(&self) -> String {
+    /// `DockerOCIImageConfig` as `json.Marshal` writes it.
+    pub fn to_json(&self) -> String {
         let mut o = Obj::new();
         o.string_nonempty("User", &self.user);
         o.set_nonempty("ExposedPorts", &self.exposed_ports);

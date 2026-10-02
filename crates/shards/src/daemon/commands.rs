@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-use shards_cmdline::commands::{self, IMAGES, KILL, LOGS, PORT, PS, RM, RMI, STOP, TAG, WAIT};
+use shards_cmdline::commands::{self, IMAGE_INSPECT, IMAGES, KILL, LOGS, PORT, PS, RM, RMI, STOP, TAG, WAIT};
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
 use shards_ipc::kind;
@@ -308,6 +308,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.tag(&parsed.args, reply)
         } else if std::ptr::eq(command, &RMI) {
             self.rmi(&parsed, reply)
+        } else if std::ptr::eq(command, &IMAGE_INSPECT) {
+            self.image_inspect(&parsed.args, reply)
         } else {
             reply.err(&format!("shards: {path} is not a container command"));
             1

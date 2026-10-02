@@ -357,6 +357,20 @@ platform - l - -",
     error_prefix: "",
 };
 
+/// `shards image inspect`.
+pub static IMAGE_INSPECT: Command = Command {
+    usage: "[OPTIONS] IMAGE [IMAGE...]",
+    about: "Display detailed information on one or more images",
+    aliases: "",
+    args: Args::AtLeast(1),
+    flags: &[HELP],
+    unserved: "\
+format f s - -\n\
+platform - s - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards tag`.
 pub static TAG: Command = Command {
     usage: "SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]",
@@ -654,6 +668,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["rmi", ..] => (&RMI, "shards rmi", 1),
         ["image", "rm" | "remove", ..] => (&RMI, "shards image rm", 2),
         ["image", "tag", ..] => (&TAG, "shards image tag", 2),
+        ["image", "inspect", ..] => (&IMAGE_INSPECT, "shards image inspect", 2),
         ["image", "ls" | "list", ..] => (&IMAGES, "shards image ls", 2),
         ["container", "port", ..] => (&PORT, "shards container port", 2),
         _ => return None,

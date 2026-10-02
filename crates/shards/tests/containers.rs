@@ -1863,3 +1863,96 @@ fn rmi_removes_images_as_docker_rmi_does() {
         std::fs::read_dir(&blobs).map(|d| d.count()).unwrap_or(0) == 0
     });
 }
+
+/// `shards image inspect` as dockerd's containerd store answers `docker image inspect`
+/// (byte for byte against real images: scripts/images/compare-inspect): each image's
+/// document in the API's order, its config as Go encodes it, its descriptor what its
+/// reference resolved to, its pull's repository; one array for all, and what was not found
+/// said after.
+#[test]
+fn image_inspect_describes_images_as_docker_does() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (index, blobs) = test_index();
+    // What dockerd counts: the index, and our manifest, config and layer (the blobs'
+    // first three); not the attestation, never fetched, nor the root filesystem.
+    let size = index.len() + blobs[..3].iter().map(Vec::len).sum::<usize>();
+    let (port, _) = registry(index.clone(), blobs);
+    let image = format!("127.0.0.1:{port}/test/image:v1");
+    let home = TempDir::new("containers-inspect");
+    let shards = |args: &[&str]| shards_in(&home, args);
+    assert_eq!(shards(&["pull", "-q", &image]).status, Some(0));
+    assert_eq!(shards(&["tag", &image, "other:1"]).status, Some(0));
+    let id = sha256_digest(&index);
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "amd64"
+    };
+    let repo = format!("127.0.0.1:{port}/test/image");
+    let shown = shards(&["image", "inspect", &image, "nosuch:1"]);
+    assert_eq!(shown.status, Some(1), "{shown}");
+    assert_eq!(
+        shown.stderr,
+        "Error response from daemon: No such image: nosuch:1\n"
+    );
+    let doc: serde_json::Value = serde_json::from_str(&shown.stdout).unwrap();
+    let doc = &doc[0];
+    assert_eq!(doc["Id"], id.as_str());
+    assert_eq!(doc["RepoTags"], serde_json::json!([image, "other:1"]));
+    assert_eq!(
+        doc["RepoDigests"],
+        serde_json::json!([format!("{repo}@{id}"), format!("other@{id}")])
+    );
+    assert_eq!(
+        doc["Config"],
+        serde_json::json!({
+            "User": "app",
+            "Env": ["FROM_IMAGE=yes", "PATH=/bin"],
+            "Entrypoint": ["/bin/testguest"],
+            "Cmd": ["report"],
+            "WorkingDir": "/work"
+        })
+    );
+    assert_eq!(
+        (doc["Architecture"].as_str(), doc["Os"].as_str()),
+        (Some(arch), Some("linux"))
+    );
+    assert_eq!(doc["Size"], size);
+    assert_eq!(doc["RootFS"]["Type"], "layers");
+    assert_eq!(doc["RootFS"]["Layers"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        doc["Descriptor"],
+        serde_json::json!({"mediaType": "application/vnd.oci.image.index.v1+json", "digest": id, "size": index.len()})
+    );
+    assert_eq!(
+        doc["Identity"],
+        serde_json::json!({"Pull": [{"Repository": repo}]})
+    );
+    // The API's order, and Go's layout: four spaces, `: `.
+    let keys: Vec<&str> = shown
+        .stdout
+        .lines()
+        .filter(|l| l.starts_with("        \"") && l.contains("\": "))
+        .map(|l| l.trim().split('"').nth(1).unwrap())
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "Id",
+            "RepoTags",
+            "RepoDigests",
+            "Config",
+            "Architecture",
+            "Os",
+            "Size",
+            "RootFS",
+            "Metadata",
+            "Descriptor",
+            "Identity"
+        ]
+    );
+    let none = shards(&["image", "inspect", "nosuch:1"]);
+    assert_eq!((none.status, none.stdout.as_str()), (Some(1), "[]\n"));
+}

@@ -1,0 +1,24 @@
+#!/bin/sh
+# Compares `shards image inspect` with `docker image inspect` for real images: each
+# pulled by both into a home of its own, the documents diffed with LastTagTime left out
+# (when each was tagged). Needs docker, and shards built: cargo build --release.
+#
+#   scripts/images/compare-inspect alpine:3.22 busybox:1.37 ...
+set -eu
+here=$(cd "$(dirname "$0")/../.." && pwd)
+shards="$here/target/release/shards"
+home=$(mktemp -d)
+trap 'SHARDS_HOME="$home" "$shards" daemon stop >/dev/null 2>&1 || true; rm -rf "$home"' EXIT
+status=0
+for image in "$@"; do
+	docker pull -q "$image" >/dev/null
+	SHARDS_HOME="$home" "$shards" pull -q "$image" >/dev/null
+	docker image inspect "$image" | grep -v '"LastTagTime"' >"$home/docker.json"
+	SHARDS_HOME="$home" "$shards" image inspect "$image" | grep -v '"LastTagTime"' >"$home/shards.json"
+	if diff -u "$home/docker.json" "$home/shards.json"; then
+		echo "$image: the same"
+	else
+		status=1
+	fi
+done
+exit $status

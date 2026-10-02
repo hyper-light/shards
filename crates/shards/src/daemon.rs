@@ -35,6 +35,7 @@ mod commands;
 mod demand;
 mod health;
 mod images;
+mod inspect;
 mod logs;
 mod network;
 mod publish;

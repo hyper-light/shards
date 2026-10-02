@@ -300,6 +300,48 @@
   },
   {
     "argv": [
+      "image",
+      "inspect"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards image inspect' requires at least 1 argument\n\nUsage:  shards image inspect [OPTIONS] IMAGE [IMAGE...]\n\nSee 'shards image inspect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "image",
+      "inspect",
+      "--help"
+    ],
+    "stdout": "Usage:  shards image inspect [OPTIONS] IMAGE [IMAGE...]\n\nDisplay detailed information on one or more images\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "inspect",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "inspect",
+      "-f",
+      "{{.Id}}",
+      "a"
+    ],
+    "stdout": "RUN --format={{.Id}} \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "rmi",
       "--platform",
       "linux/amd64",
