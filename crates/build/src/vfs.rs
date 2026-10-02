@@ -131,6 +131,10 @@ pub struct Upper {
     pub recreated: BTreeSet<Vec<u8>>,
 }
 
+/// Where a literal path leads: its directory, its name, and its entry and node if it is
+/// there.
+type Literal = (NodeId, Vec<u8>, Option<(EntryId, NodeId)>);
+
 /// A file's type, from its kind, as the `S_IFMT` bits of `st_mode`.
 pub fn type_bits(kind: &Kind) -> u32 {
     match kind {
@@ -889,6 +893,153 @@ impl Fs {
         self.mark(entry);
         if let Some(n) = self.node_mut(id) {
             n.meta.xattrs.insert(key.to_vec(), value.to_vec());
+        }
+        Ok(())
+    }
+
+    /// What a relative `path` names, each element taken literally, as an overlay's upper
+    /// layer holds paths: every element before the last must be a directory, never a
+    /// symlink. Its directory, its name, and its entry and node if it is there.
+    fn literal(&self, op: &'static str, path: &[u8]) -> Result<Literal, PathError> {
+        let mut dir = self.root;
+        let mut names = path.split(|&b| b == b'/').peekable();
+        while let Some(name) = names.next() {
+            if name.is_empty() || name == b"." || name == b".." || name.len() > NAME_MAX {
+                return fail(op, path, Errno::Inval);
+            }
+            let found = self.tree.lookup(dir, name);
+            if names.peek().is_none() {
+                return Ok((dir, name.to_vec(), found));
+            }
+            match found {
+                Some((_, id)) if self.is_dir(id) => dir = id,
+                Some(_) => return fail(op, path, Errno::NotDir),
+                None => return fail(op, path, Errno::NoEnt),
+            }
+        }
+        fail(op, path, Errno::Inval)
+    }
+
+    /// Takes out whatever `name` in `dir` holds, recording its removal, and records the
+    /// directory made in its place as overlayfs makes it: opaque over what was there.
+    fn replace_with_dir(
+        &mut self,
+        dir: NodeId,
+        name: &[u8],
+        entry: EntryId,
+        node: Node,
+    ) -> Result<NodeId, Errno> {
+        self.take(dir, name, entry);
+        self.upper.recreated.insert(self.path_in(dir, name));
+        self.add_in(dir, name, node).map(|(id, _)| id)
+    }
+
+    /// Puts what a step's process left at `path` that is not a directory: a new node in
+    /// place of what was there, as overlayfs copies a file up, so a hard link's other names
+    /// keep the file below. The guest's kernel made the change; this records it. The
+    /// directory's time is the caller's to set (`set_meta`), once what it holds is in.
+    pub fn put(&mut self, path: &[u8], node: Node) -> Result<NodeId, PathError> {
+        let (dir, name, found) = self.literal("put", path)?;
+        let err = |errno| PathError {
+            op: "put",
+            path: path.to_vec(),
+            errno,
+        };
+        match found {
+            Some((entry, id)) if self.is_dir(id) => {
+                self.take(dir, &name, entry);
+                self.add_in(dir, &name, node).map(|(id, _)| id).map_err(err)
+            }
+            Some((entry, _)) => {
+                let id = self
+                    .tree
+                    .insert(dir, &name, node)
+                    .map_err(|_| err(Errno::Inval))?;
+                self.mark(Some(entry));
+                Ok(id)
+            }
+            None => self.add_in(dir, &name, node).map(|(id, _)| id).map_err(err),
+        }
+    }
+
+    /// Puts a directory a step's process left at `path`, with `meta`: an `opaque` one, or
+    /// one where something else was, replaces all that was there; otherwise the directory
+    /// there takes `meta`, and keeps what it holds.
+    pub fn put_dir(&mut self, path: &[u8], meta: Meta, opaque: bool) -> Result<NodeId, PathError> {
+        let (dir, name, found) = self.literal("put", path)?;
+        let err = |errno| PathError {
+            op: "put",
+            path: path.to_vec(),
+            errno,
+        };
+        let node = Node {
+            kind: Kind::Dir(Dir::default()),
+            meta,
+        };
+        match found {
+            Some((entry, id)) if self.is_dir(id) && !opaque => {
+                self.mark(Some(entry));
+                if let Some(n) = self.node_mut(id) {
+                    n.meta = node.meta;
+                }
+                Ok(id)
+            }
+            Some((entry, _)) => self.replace_with_dir(dir, &name, entry, node).map_err(err),
+            None => self.add_in(dir, &name, node).map(|(id, _)| id).map_err(err),
+        }
+    }
+
+    /// Makes `path` another name of what `target` names, in place of what was at `path`, as
+    /// a step's process left it with `link(2)`.
+    pub fn put_link(&mut self, path: &[u8], target: &[u8]) -> Result<(), PathError> {
+        let both = linked(target, path);
+        let err = |errno| PathError {
+            op: "link",
+            path: both.clone(),
+            errno,
+        };
+        let (_, _, tfound) = self.literal("link", target)?;
+        let Some((_, target_id)) = tfound else {
+            return Err(err(Errno::NoEnt));
+        };
+        if self.is_dir(target_id) {
+            return Err(err(Errno::Perm));
+        }
+        let (dir, name, found) = self.literal("link", path)?;
+        match found {
+            Some((entry, id)) if self.is_dir(id) => self.take(dir, &name, entry),
+            Some(_) => {
+                self.tree.remove(dir, &name);
+            }
+            None => {}
+        }
+        self.tree
+            .link(dir, &name, target_id)
+            .map_err(|_| err(Errno::Inval))?;
+        let entry = self.tree.lookup(dir, &name).map(|(e, _)| e);
+        self.mark(entry);
+        Ok(())
+    }
+
+    /// Removes what `path` names, as a whiteout in a step's upper layer says: nothing there
+    /// is no error, since a step can leave one over what an earlier one already took.
+    pub fn whiteout(&mut self, path: &[u8]) -> Result<(), PathError> {
+        let (dir, name, found) = self.literal("whiteout", path)?;
+        if let Some((entry, _)) = found {
+            self.take(dir, &name, entry);
+        }
+        Ok(())
+    }
+
+    /// Sets the metadata of what `path` names, literally, recording the change.
+    pub fn set_meta(&mut self, path: &[u8], meta: Meta) -> Result<(), PathError> {
+        let (_, _, found) = self.literal("set_meta", path)?;
+        let Some((entry, id)) = found else {
+            return fail("set_meta", path, Errno::NoEnt);
+        };
+        self.mark(Some(entry));
+        if let Some(n) = self.node_mut(id) {
+            n.meta = meta;
         }
         Ok(())
     }

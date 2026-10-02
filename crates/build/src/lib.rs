@@ -12,6 +12,7 @@ pub mod host;
 pub mod mode;
 pub mod ops;
 pub mod stack;
+pub mod upper;
 pub mod vfs;
 
 /// Why a file operation failed, worded as BuildKit words it.
