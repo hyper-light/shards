@@ -115,6 +115,8 @@ pub struct RunConfig {
     pub cmd: Option<Vec<String>>,
     #[serde(default)]
     pub working_dir: Option<String>,
+    #[serde(default)]
+    pub stop_signal: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

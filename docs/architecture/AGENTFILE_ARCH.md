@@ -823,7 +823,7 @@ of 2026-10-02:
 | `EXPOSE` | done (config) | **missing**: `run -P`, `-p` need D31 |
 | `VOLUME` | done (config) | **missing**: anonymous volumes at run |
 | `HEALTHCHECK` (`--interval`, `--timeout`, `--start-period`, `--start-interval`, `--retries`, `NONE`) | done (config) | **missing**: checks, `ps` status, `inspect` health |
-| `STOPSIGNAL` | done (config) | **missing**: `stop` sends SIGTERM regardless |
+| `STOPSIGNAL` | done (config) | done: `stop` sends the image's, or `run --stop-signal`'s, and waits `--stop-timeout` (E2E) |
 | `ONBUILD` | triggers planned (oracle); run when their steps are | n/a |
 | Build cache by step and whole image; `--cache-from/--cache-to`, `--no-cache` | **missing** | n/a |
 | buildx flags not served (`--secret`, `--ssh`, `--build-context`, `--output`, `--push`, `--platform` lists, attestations) | **missing** | n/a |

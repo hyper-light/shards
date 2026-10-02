@@ -165,6 +165,10 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         tty: parsed.bool("tty").then(stdout_size),
         network: network::mode(&attachments).to_string(),
         endpoints,
+        stop_signal: parsed
+            .changed("stop-signal")
+            .then(|| parsed.string("stop-signal").to_string()),
+        stop_timeout: parsed.changed("stop-timeout").then(|| parsed.int("stop-timeout")),
         ..Run::default()
     })
 }

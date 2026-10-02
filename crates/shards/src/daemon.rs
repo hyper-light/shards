@@ -1206,6 +1206,13 @@ impl<D: Disk> Daemon<D> {
     /// record is written ([`record_arrival`](Self::record_arrival)), so that it outlives a
     /// crash of the daemon (audit A15).
     fn create(&self, run: &Run, prepared: &Prepared, id: &str) -> Result<(), String> {
+        // Its settings, checked before its name is taken (moby daemon/create.go,
+        // verifyContainerSettings).
+        let stop_signal = prepared
+            .stop_signal
+            .as_deref()
+            .map(commands::parse_signal)
+            .transpose()?;
         let mut registry = lock(&self.containers);
         let name = match &run.name {
             Some(given) => {
@@ -1243,6 +1250,8 @@ impl<D: Disk> Daemon<D> {
             exit_code: None,
             auto_remove: run.remove,
             log_lost: 0,
+            stop_signal,
+            stop_timeout: run.stop_timeout,
         });
         // Its run is owned from the moment the container is visible.
         lock(&self.runs).insert(id.to_string(), RunState::Pending { cancelled: false });
@@ -2883,6 +2892,7 @@ mod tests {
                 },
                 interactive: false,
                 lease: None,
+                stop_signal: None,
             };
             self.t.daemon.create(&run, &prepared, &id).unwrap();
             self.t.daemon.record_arrival(self.threads, &id);

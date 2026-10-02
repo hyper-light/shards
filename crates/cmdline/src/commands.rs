@@ -74,6 +74,13 @@ pub static RUN: Command = Command {
             None,
             "Automatically remove the container and its associated anonymous volumes when it exits",
         ),
+        Flag::string("stop-signal", None, "", "Signal to stop the container"),
+        Flag::int(
+            "stop-timeout",
+            None,
+            "0",
+            "Timeout (in seconds) to stop a container",
+        ),
         Flag::bool("tty", Some(b't'), "Allocate a pseudo-TTY"),
         Flag::string(
             "user",
@@ -166,8 +173,6 @@ runtime - s - -\n\
 security-opt - m - -\n\
 shm-size - s 0 -\n\
 sig-proxy - b true -\n\
-stop-signal - s - -\n\
-stop-timeout - i 0 -\n\
 storage-opt - m - -\n\
 sysctl - m - -\n\
 tmpfs - m - -\n\

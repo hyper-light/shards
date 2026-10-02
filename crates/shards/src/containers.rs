@@ -38,6 +38,14 @@ pub struct Container {
     /// Bytes of its output its log could not keep (audit A12).
     #[serde(default)]
     pub log_lost: u64,
+    /// What `stop` sends it unless told: `--stop-signal`'s, or its image's `StopSignal`,
+    /// read once as it is created (moby container.StopSignal; SIGTERM if neither).
+    #[serde(default)]
+    pub stop_signal: Option<i64>,
+    /// How long `stop` waits before SIGKILL unless told: `--stop-timeout`, in seconds,
+    /// negative for ever (moby container.StopTimeout; 10 if not given).
+    #[serde(default)]
+    pub stop_timeout: Option<i64>,
 }
 
 pub use crate::spec::now;
@@ -551,6 +559,8 @@ mod tests {
             exit_code: None,
             auto_remove: false,
             log_lost: 0,
+            stop_signal: None,
+            stop_timeout: None,
         }
     }
 

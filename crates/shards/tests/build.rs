@@ -820,3 +820,36 @@ fn add_stops_at_the_image_limits_and_leaves_nothing() {
         assert!(left.is_empty(), "left in ingest/: {left:?}\n{shown}");
     }
 }
+
+/// An image's `STOPSIGNAL` is what `stop` sends its containers unless told otherwise
+/// (moby container.StopSignal): SIGUSR1 here, which ends the command 128 + 10.
+#[test]
+fn an_images_stop_signal_is_what_stop_sends() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-stopsignal-home");
+    let ctx = context(
+        "build-stopsignal-ctx",
+        &format!("FROM {image}\nSTOPSIGNAL SIGUSR1\nCMD [\"sleep\"]\n"),
+    );
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let built = run_shards_env(
+        &["build"],
+        &["-t", "usr1:1", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = run_shards_env(&["run"], &["-d", "--name", "usr1", "usr1:1"], &env, TIMEOUT);
+    assert_eq!(ran.status, Some(0), "{}", ran.stderr);
+    let stopped = run_shards_env(&["stop"], &["usr1"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+    let waited = run_shards_env(&["wait"], &["usr1"], &env, TIMEOUT);
+    assert_eq!(waited.stdout, "138\n", "{}", waited.stderr);
+}

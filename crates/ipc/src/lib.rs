@@ -222,6 +222,10 @@ pub struct Run {
     /// NetworkMode and NetworkingConfig's EndpointsConfig, docker/cli parseNetworkOpts).
     pub network: String,
     pub endpoints: Vec<Endpoint>,
+    /// `--stop-signal`, as given.
+    pub stop_signal: Option<String>,
+    /// `--stop-timeout`, in seconds, if given.
+    pub stop_timeout: Option<i64>,
     /// The daemon binary this client would start.
     pub daemon: Identity,
 }
@@ -329,6 +333,14 @@ impl Run {
         for e in &self.endpoints {
             e.encode(&mut w);
         }
+        put_opt(&mut w, self.stop_signal.as_deref());
+        match self.stop_timeout {
+            Some(t) => {
+                w.push(1);
+                w.extend_from_slice(&t.to_be_bytes());
+            }
+            None => w.push(0),
+        }
         put_identity(&mut w, &self.daemon);
         w
     }
@@ -371,6 +383,12 @@ impl Run {
                     return None;
                 }
                 (0..n).map(|_| Endpoint::decode(&mut r)).collect::<Option<_>>()?
+            },
+            stop_signal: r.opt()?,
+            stop_timeout: if r.flag()? {
+                Some(i64::from_be_bytes(r.take(8)?.try_into().ok()?))
+            } else {
+                None
             },
             daemon: r.identity()?,
         };
@@ -590,6 +608,8 @@ mod tests {
                 },
                 Endpoint::default(),
             ],
+            stop_signal: Some("SIGUSR1".into()),
+            stop_timeout: Some(-1),
             daemon: Identity {
                 dev: 1,
                 ino: 2,

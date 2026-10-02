@@ -1127,3 +1127,60 @@ fn a_run_on_a_network_it_cannot_have_says_why_as_dockerd_does() {
     let all = shards_in(&home, &["ps", "-aq"]);
     assert_eq!(all.stdout.lines().count(), 1, "{all}");
 }
+
+/// `stop` sends a container its own stop signal, `--stop-signal`'s, unless told one
+/// (moby container.StopSignal): here SIGUSR1, which ends the command 128 + 10. One no
+/// signal's name is refused as dockerd refuses it, before a container is made.
+#[test]
+fn stop_sends_a_containers_own_stop_signal() {
+    let Some((home, image)) = home("containers-stopsignal") else {
+        return;
+    };
+    let mut run = start(
+        &home,
+        &image,
+        &["--name", "usr1", "--stop-signal", "SIGUSR1"],
+        &["sleep"],
+    );
+    let stopped = shards_in(&home, &["stop", "usr1"]);
+    assert_eq!(
+        (stopped.status, stopped.stdout.as_str()),
+        (Some(0), "usr1\n"),
+        "{stopped}"
+    );
+    assert_eq!(exit(&mut run), Some(138));
+    assert_eq!(shards_in(&home, &["wait", "usr1"]).stdout, "138\n");
+    // A signal the command ignores, and its own timeout: SIGKILL after a second, not ten.
+    let mut run = start(
+        &home,
+        &image,
+        &[
+            "--name",
+            "chld",
+            "--stop-signal",
+            "SIGCHLD",
+            "--stop-timeout",
+            "1",
+        ],
+        &["sleep"],
+    );
+    let began = Instant::now();
+    let stopped = shards_in(&home, &["stop", "chld"]);
+    let took = began.elapsed();
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    assert_eq!(exit(&mut run), Some(137));
+    assert!(
+        took >= Duration::from_secs(1) && took < Duration::from_secs(5),
+        "{took:?}"
+    );
+    let refused = run_in(&home, &image, &["--stop-signal", "BOGUS"], &["exit", "0"]);
+    assert_eq!(
+        (refused.status, refused.stderr.as_str()),
+        (
+            Some(125),
+            "shards: Error response from daemon: invalid signal: BOGUS\n\nRun 'shards run --help' for more information\n"
+        ),
+        "{refused}"
+    );
+    assert_eq!(shards_in(&home, &["ps", "-aq"]).stdout.lines().count(), 2);
+}

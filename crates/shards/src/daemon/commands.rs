@@ -122,7 +122,7 @@ const RTMAX: i64 = 64;
 
 /// A signal as dockerd reads it (moby/sys/signal ParseSignal): a number other than 0, or a
 /// name in any case, with or without `SIG`; `RTMIN+n` and `RTMAX-n` for n up to 15 and 14.
-fn parse_signal(given: &str) -> Result<i64, String> {
+pub(super) fn parse_signal(given: &str) -> Result<i64, String> {
     let invalid = || format!("invalid signal: {given}");
     if let Some(n) = atoi(given) {
         return if n == 0 { Err(invalid()) } else { Ok(n) };
@@ -448,16 +448,15 @@ impl<D: crate::containers::Disk> Daemon<D> {
             reply.err("conflicting options: cannot specify both --timeout and --time");
             return 1;
         }
-        let grace = if parsed.changed("timeout") || parsed.changed("time") {
-            // Go multiplies the seconds into nanoseconds, wrapping (daemon/stop.go).
-            let seconds = parsed.int("timeout");
+        // Go multiplies the seconds into nanoseconds, wrapping (daemon/stop.go); a negative
+        // number waits for ever.
+        let grace_of = |seconds: i64| {
             (seconds >= 0).then(|| {
                 let ns = seconds.wrapping_mul(1_000_000_000);
                 Duration::from_nanos(u64::try_from(ns).unwrap_or(0))
             })
-        } else {
-            Some(STOP_GRACE)
         };
+        let told = (parsed.changed("timeout") || parsed.changed("time")).then(|| parsed.int("timeout"));
         let signal = parsed.string("signal");
         self.each(
             &parsed.args,
@@ -470,8 +469,19 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 let cannot = |why: &str| {
                     format!("Error response from daemon: cannot stop container: {reference}: {why}")
                 };
+                // Unless told, the container's own: its stop signal (SIGTERM if it has
+                // none or one no longer valid) and its stop timeout, else 10 seconds
+                // (moby daemon/stop.go, container.StopSignal and StopTimeout).
+                let (own_signal, own_timeout) = lock(&self.containers)
+                    .get(&id)
+                    .map(|c| (c.stop_signal, c.stop_timeout))
+                    .unwrap_or_default();
+                let grace = match told.or(own_timeout) {
+                    Some(seconds) => grace_of(seconds),
+                    None => Some(STOP_GRACE),
+                };
                 let linux = if signal.is_empty() {
-                    15
+                    own_signal.unwrap_or(15)
                 } else {
                     // A number Linux has no signal for cannot be sent.
                     parse_signal(signal).map_err(|e| cannot(&e))?

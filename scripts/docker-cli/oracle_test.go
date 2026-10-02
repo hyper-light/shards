@@ -28,7 +28,7 @@ var served = map[string][]string{
 	"run": {
 		"detach", "detach-keys", "disable-content-trust", "entrypoint", "env", "help",
 		"hostname", "init", "interactive", "kernel-memory", "name", "net", "network", "pull",
-		"rm", "tty", "user", "workdir",
+		"rm", "stop-signal", "stop-timeout", "tty", "user", "workdir",
 	},
 	"ps":   {"all", "help", "last", "latest", "no-trunc", "quiet"},
 	"ls":   {"all", "help", "last", "latest", "no-trunc", "quiet"},
@@ -52,6 +52,9 @@ var cases = [][]string{
 	{"run", "-e", "A=1", "-e", "B", "-e", "UNSET", "alpine", "env"},
 	{"run", "-e", "=x", "alpine"},
 	{"run", "--network", "none", "alpine"},
+	{"run", "--stop-signal", "SIGUSR1", "--stop-timeout", "3", "alpine"},
+	{"run", "--stop-timeout", "x", "alpine"},
+	{"run", "--stop-timeout=-1", "alpine"},
 	{"run", "--net=none", "--network", "bridge", "alpine"},
 	{"run", "--network=name=bridge,alias=x", "alpine"},
 	{"run", "--network", "a=b", "alpine"},

@@ -45,6 +45,8 @@ pub struct Prepared {
     /// The image store's lease, held until the run's VM has its root filesystem: no
     /// collection removes it meanwhile, whatever its reference names by then.
     pub lease: Option<Lease>,
+    /// The signal `stop` sends unless told: the run's, else its image's.
+    pub stop_signal: Option<String>,
 }
 
 /// The daemon's half: finds the request's image in `home`, pulling it as `docker run`
@@ -117,6 +119,12 @@ pub fn prepare(
         }
     };
     let options = compose(image.config.config.as_ref(), request)?;
+    let stop_signal = request
+        .stop_signal
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| image.config.config.as_ref().and_then(|c| c.stop_signal.clone()))
+        .filter(|s| !s.is_empty());
     // The client gave `-e NAME` its value already: this process's environment is not
     // the user's.
     let spec = crate::spec::spec(&options, |_| None)?;
@@ -126,6 +134,7 @@ pub fn prepare(
         spec,
         interactive: options.interactive,
         lease: Some(lease),
+        stop_signal,
     })
 }
 
@@ -274,6 +283,7 @@ mod tests {
             entrypoint: Some(strings(&["/entry.sh"])),
             cmd: Some(strings(&["serve", "--port", "80"])),
             working_dir: Some("/srv".into()),
+            stop_signal: None,
         }
     }
 
