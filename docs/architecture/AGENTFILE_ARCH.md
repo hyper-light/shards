@@ -715,3 +715,38 @@ refused by name.
   Compose file's services as agents of one microVM; and whether an image's `RUN` history
   should be offered as a rebuildable Agentfile, which needs its build context, rather
   than `FROM` by digest.
+
+## 11. Conformance: every directive, at build and at run
+
+The Dockerfile reference (docs.docker.com/reference/dockerfile, read 2026-10-02) and
+BuildKit's dockerfile/1.27.1, which `crates/dockerfile` is held to, list what an Agentfile
+must do; the extensions (§4) are added to that list. Each item counts as done only when an
+E2E test builds and runs it, against BuildKit and Docker where they define it. Status as
+of 2026-10-02:
+
+| Item | Build | Run |
+|---|---|---|
+| Parser directives `syntax`, `escape`, `check` | done (oracle) | n/a |
+| `FROM` (image, scratch, stage, `--platform`, `AS`) | done for the host's platform; another platform's `RUN` needs an emulator in the guest | n/a |
+| `ARG` (scopes, predefined proxy args, platform args, `BUILDKIT_*`, `SOURCE_DATE_EPOCH`) | planned (oracle); `BUILDKIT_*` and `SOURCE_DATE_EPOCH` effects to check | n/a |
+| `ENV`, `LABEL`, `MAINTAINER`, `WORKDIR`, `USER`, `SHELL` | done (oracle, config) | `ENV`, `WORKDIR`, `USER` done; labels not shown by `inspect`/`images --filter` |
+| `CMD`, `ENTRYPOINT` (both forms) | done | done |
+| `COPY` (`--from`, `--chmod`, `--chown`, `--link`, `--parents`, `--exclude`, heredocs) | done (BuildKit's actions, byte for byte) | n/a |
+| `ADD` of local files and archives (`--chmod`, `--chown`, `--link`, `--exclude`, `--unpack`) | done | n/a |
+| `ADD` of URLs (`--checksum`, `--unpack`) and git (`--keep-git-dir`, `--checksum`) | **missing** | n/a |
+| `RUN` (shell, exec, heredocs) | **missing** | n/a |
+| `RUN --mount` `bind`, `cache`, `tmpfs`, `secret`, `ssh` | **missing** | n/a |
+| `RUN --network` `default`, `none`, `host`; `--security`; `--device` | **missing**; `default` needs guest networking (D31) | n/a |
+| `EXPOSE` | done (config) | **missing**: `run -P`, `-p` need D31 |
+| `VOLUME` | done (config) | **missing**: anonymous volumes at run |
+| `HEALTHCHECK` (`--interval`, `--timeout`, `--start-period`, `--start-interval`, `--retries`, `NONE`) | done (config) | **missing**: checks, `ps` status, `inspect` health |
+| `STOPSIGNAL` | done (config) | **missing**: `stop` sends SIGTERM regardless |
+| `ONBUILD` | triggers planned (oracle); run when their steps are | n/a |
+| Build cache by step and whole image; `--cache-from/--cache-to`, `--no-cache` | **missing** | n/a |
+| buildx flags not served (`--secret`, `--ssh`, `--build-context`, `--output`, `--push`, `--platform` lists, attestations) | **missing** | n/a |
+| Extensions `EXPOSE … AS/FOR`, `AGENT`, `SKILL`, `MCP`, `VOLUME … FOR`, `NETWORK`, `CONNECT`, `HARNESS`, `ATTACH`, each expanding `ARG` and `ENV` as the instructions Docker expands them in do | **missing** | **missing** |
+
+The order follows what depends on what: `RUN` first, since nearly every real file needs
+it (808 of 822 official Dockerfiles), then guest networking (D31), which `RUN`'s default
+network, `EXPOSE`'s publishing and `NETWORK`/`CONNECT` all need; then sources, the cache,
+the run-time directives and the extensions.
