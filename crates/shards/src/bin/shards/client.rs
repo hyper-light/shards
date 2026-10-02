@@ -172,7 +172,11 @@ fn serve(home: &Path, daemon: &Path, request: &Attached, detach_keys: &[u8]) -> 
 /// Runs a container command (`ps`, `wait`, `rm`, ...) in the daemon of `home`, whose
 /// binary is `daemon`, printing what the daemon answers as it comes, and exits with the
 /// command's status.
-pub fn container(home: &Path, daemon: &Path, command: &Command) -> ExitCode {
+pub fn container(home: &Path, daemon: &Path, command: &Command, fds: &[std::os::fd::BorrowedFd<'_>]) -> u8 {
+    let failed = |message: &str| {
+        let _ = writeln!(io::stderr(), "shards: {message}");
+        NOT_RUN
+    };
     let mut started = match enter(home, daemon) {
         Ok(started) => started,
         Err(e) => return failed(&e),
@@ -183,7 +187,7 @@ pub fn container(home: &Path, daemon: &Path, command: &Command) -> ExitCode {
             Ok(conn) => conn,
             Err(e) => return failed(&e),
         };
-        if let Err(e) = shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), &[]) {
+        if let Err(e) = shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), fds) {
             return failed(&format!("asking the daemon: {e}"));
         }
         loop {
@@ -195,7 +199,7 @@ pub fn container(home: &Path, daemon: &Path, command: &Command) -> ExitCode {
                     let _ = io::stderr().write_all(&m.payload);
                 }
                 Ok(Some(m)) if m.kind == kind::END => {
-                    return ExitCode::from(m.payload.first().copied().unwrap_or(1));
+                    return m.payload.first().copied().unwrap_or(1);
                 }
                 Ok(Some(m)) if m.kind == kind::RESTART => break,
                 Ok(Some(_)) => {}

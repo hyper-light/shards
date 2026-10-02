@@ -250,6 +250,74 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 }
 
+impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// `shards save IMAGE...` (moby ImageExport): every image found first, as dockerd
+    /// finds them all before it streams; then the archive, written to what the client
+    /// sent (its stdout, or its `-o` file), under a lease, so that no collection takes a
+    /// blob meanwhile.
+    pub(super) fn save(
+        &self,
+        args: &[String],
+        asker: &super::commands::Asker,
+        reply: &super::commands::Reply<'_>,
+    ) -> u8 {
+        use shards_image::reference::AnyReference;
+        let refuse = |said: &str| {
+            reply.err(said);
+            1
+        };
+        let Some(out) = asker.files.first() else {
+            return refuse("shards: save: the client sent nowhere to write");
+        };
+        let store = match self.store() {
+            Ok(Some(store)) => store,
+            Ok(None) => {
+                let given = args.first().map(String::as_str).unwrap_or_default();
+                return refuse(&format!(
+                    "Error response from daemon: {}",
+                    super::images::not_found(given)
+                ));
+            }
+            Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+        };
+        let lease = store.lease();
+        let images = match lease
+            .as_ref()
+            .map_err(ToString::to_string)
+            .and_then(|_| store.images().map_err(|e| e.to_string()))
+        {
+            Ok(images) => images,
+            Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+        };
+        let mut asked = Vec::with_capacity(args.len());
+        for given in args {
+            let image = match super::images::resolve(&images, given) {
+                Ok(image) => image,
+                Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+            };
+            // Asked by name, the name it was found by; by ID or digest, none.
+            let name = match AnyReference::parse(given) {
+                Ok(AnyReference::Named(mut r)) if r.digest.is_none() => {
+                    if r.tag.is_none() {
+                        r.tag = Some("latest".into());
+                    }
+                    Some(r.to_string()).filter(|n| image.references.contains(n))
+                }
+                _ => None,
+            };
+            asked.push(shards_image::save::Asked { image, name });
+        }
+        let written = out.try_clone().map_err(|e| e.to_string()).and_then(|fd| {
+            let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::from(fd));
+            shards_image::save::save(&store, &asked, &mut w).map_err(|e| e.to_string())
+        });
+        match written {
+            Ok(()) => 0,
+            Err(e) => refuse(&format!("Error response from daemon: {e}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

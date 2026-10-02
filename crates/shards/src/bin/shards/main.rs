@@ -17,6 +17,8 @@ use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 mod client;
 mod request;
 #[cfg(unix)]
+mod save;
+#[cfg(unix)]
 mod terminal;
 
 /// `docker run`'s status when it could not run the command at all.
@@ -71,6 +73,19 @@ fn container(
     let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
     #[cfg(unix)]
     {
+        // `save` writes where the client says, opened here, before the client moves to
+        // the daemon's home.
+        let output = if std::ptr::eq(command, &shards_cmdline::commands::SAVE) {
+            match save::output(parsed.string("output")) {
+                Ok(output) => Some(output),
+                Err(e) => {
+                    let _ = writeln!(std::io::stderr(), "{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        } else {
+            None
+        };
         // The daemon reads the command line again, by the same words.
         let mut argv = argv;
         argv.splice(0..0, words.iter().take(named).map(|w| (*w).to_string()));
@@ -80,24 +95,36 @@ fn container(
             Ok((daemon, identity, shards_ipc::home()?))
         });
         match resolved {
-            Ok((daemon, identity, home)) => client::container(
-                &home,
-                &daemon,
-                &shards_ipc::Command {
-                    argv,
-                    east_asian: shards_cmdline::width::east_asian(|name| {
-                        std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
-                    }),
-                    now: now_ns(),
-                    utc_offset: utc_offset(),
-                    // SAFETY: isatty(3) on this process's stdout.
-                    terminal: unsafe { libc::isatty(1) } == 1,
-                    width: terminal::size(1).1,
-                    // docker/cli's tui.NewOutput: any NO_COLOR but an empty one.
-                    color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
-                    daemon: identity,
-                },
-            ),
+            Ok((daemon, identity, home)) => {
+                let fds: Vec<std::os::fd::BorrowedFd<'_>> = output.iter().map(save::Output::fd).collect();
+                let status = client::container(
+                    &home,
+                    &daemon,
+                    &shards_ipc::Command {
+                        argv,
+                        east_asian: shards_cmdline::width::east_asian(|name| {
+                            std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
+                        }),
+                        now: now_ns(),
+                        utc_offset: utc_offset(),
+                        // SAFETY: isatty(3) on this process's stdout.
+                        terminal: unsafe { libc::isatty(1) } == 1,
+                        width: terminal::size(1).1,
+                        // docker/cli's tui.NewOutput: any NO_COLOR but an empty one.
+                        color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
+                        daemon: identity,
+                    },
+                    &fds,
+                );
+                drop(fds);
+                match output.map(|o| o.finish(status)) {
+                    Some(Err(e)) => {
+                        let _ = writeln!(std::io::stderr(), "{e}");
+                        ExitCode::FAILURE
+                    }
+                    _ => ExitCode::from(status),
+                }
+            }
             Err(e) => failed(&e),
         }
     }

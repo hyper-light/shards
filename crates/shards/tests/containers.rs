@@ -1966,3 +1966,161 @@ fn image_inspect_describes_images_as_docker_does() {
     let none = shards(&["image", "inspect", "nosuch:1"]);
     assert_eq!((none.status, none.stdout.as_str()), (Some(1), "[]\n"));
 }
+
+/// The records of a USTAR archive: each name, mode and content, in order.
+fn ustar(bytes: &[u8]) -> Vec<(String, u32, Vec<u8>)> {
+    let mut records = Vec::new();
+    let mut at = 0;
+    while at + 512 <= bytes.len() && bytes[at] != 0 {
+        let h = &bytes[at..at + 512];
+        let text = |r: std::ops::Range<usize>| {
+            String::from_utf8(h[r].iter().copied().take_while(|&b| b != 0).collect()).unwrap()
+        };
+        let size = usize::from_str_radix(text(124..135).trim(), 8).unwrap();
+        let mode = u32::from_str_radix(text(100..107).trim(), 8).unwrap();
+        records.push((text(0..100), mode, bytes[at + 512..at + 512 + size].to_vec()));
+        at += 512 + size.div_ceil(512) * 512;
+    }
+    assert_eq!(&bytes[at..], &[0u8; 1024][..], "two zero blocks end it");
+    records
+}
+
+/// `shards save` as `docker save` writes images (byte for byte against dockerd 29.3.1:
+/// scripts/images/compare-save): an OCI layout with what is here of each image, its
+/// attestation included, Docker's manifest.json beside it; `-o` written whole, mode 0600,
+/// or not at all; an image not found refused before anything is written.
+#[test]
+fn save_writes_images_as_docker_save_does() {
+    use std::os::unix::fs::PermissionsExt as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let (index, blobs) = test_index();
+    let (port, _) = registry(index.clone(), blobs.clone());
+    let image = format!("127.0.0.1:{port}/test/image:v1");
+    let home = TempDir::new("containers-save");
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let out = TempDir::new("containers-save-out");
+    let tar = out.join("image.tar");
+    let saved = shards(&["save", "-o", tar.to_str().unwrap(), &image]);
+    assert_eq!(
+        (saved.status, saved.stdout.as_str(), saved.stderr.as_str()),
+        (Some(0), "", ""),
+        "{saved}"
+    );
+    assert_eq!(
+        std::fs::metadata(&tar).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let records = ustar(&std::fs::read(&tar).unwrap());
+    let id = sha256_digest(&index);
+    // The index, our manifest, config and layer, and our attestation's three: not the
+    // other platform's attestation, never pulled.
+    let mut want: Vec<String> = std::iter::once(&index)
+        .chain(&blobs[..6])
+        .map(|b| format!("blobs/sha256/{}", sha256_digest(b).trim_start_matches("sha256:")))
+        .collect();
+    want.sort();
+    let names: Vec<&str> = records.iter().map(|(n, _, _)| n.as_str()).collect();
+    let mut expected: Vec<&str> = vec!["blobs/", "blobs/sha256/"];
+    expected.extend(want.iter().map(String::as_str));
+    expected.extend(["index.json", "manifest.json", "oci-layout"]);
+    assert_eq!(names, expected);
+    for (name, mode, content) in &records {
+        if let Some(hex) = name.strip_prefix("blobs/sha256/").filter(|h| !h.is_empty()) {
+            assert_eq!(sha256_digest(content), format!("sha256:{hex}"), "{name}");
+            assert_eq!(*mode, 0o444, "{name}");
+        }
+    }
+    let file = |n: &str| records.iter().find(|(name, _, _)| name == n).unwrap().2.clone();
+    let repo = format!("127.0.0.1:{port}/test/image");
+    assert_eq!(
+        String::from_utf8(file("index.json")).unwrap(),
+        format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"{id}","size":{},"annotations":{{"containerd.io/distribution.source.127.0.0.1:{port}":"test/image","io.containerd.image.name":"{image}","org.opencontainers.image.ref.name":"v1"}}}}]}}"#,
+            index.len()
+        )
+    );
+    let blob = |b: &Vec<u8>| format!("blobs/sha256/{}", sha256_digest(b).trim_start_matches("sha256:"));
+    assert_eq!(
+        String::from_utf8(file("manifest.json")).unwrap(),
+        format!(
+            r#"[{{"Config":"{}","RepoTags":["{repo}:v1"],"Layers":["{}"]}}]"#,
+            blob(&blobs[0]),
+            blob(&blobs[1])
+        )
+    );
+    assert_eq!(file("oci-layout"), br#"{"imageLayoutVersion":"1.0.0"}"#);
+    // Not found: refused, and no file made, nor any left beside it.
+    let missing = out.join("missing.tar");
+    let refused = shards(&["save", "-o", missing.to_str().unwrap(), &image, "nosuch:1"]);
+    assert_eq!(
+        (refused.status, refused.stderr.as_str()),
+        (Some(1), "Error response from daemon: No such image: nosuch:1\n"),
+        "{refused}"
+    );
+    assert!(!missing.exists());
+    assert_eq!(std::fs::read_dir(&*out).unwrap().count(), 1, "only image.tar");
+    let bad = shards(&["save", "-o", "/nonexistent-dir/x.tar", &image]);
+    assert_eq!(
+        (bad.status, bad.stderr.as_str()),
+        (
+            Some(1),
+            "failed to save image: invalid output path: stat /nonexistent-dir: no such file or directory\n"
+        )
+    );
+    let dir = shards(&["save", "-o", out.to_str().unwrap(), &image]);
+    assert_eq!(dir.stderr, "failed to save image: cannot write to a directory\n");
+    // A blob that cannot be read past the archive's start: the save fails, and its file
+    // is neither made nor left half written beside.
+    let layer = home
+        .join("images/blobs/sha256")
+        .join(sha256_digest(&blobs[1]).trim_start_matches("sha256:"));
+    std::fs::set_permissions(&layer, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let broken = out.join("broken.tar");
+    let failed = shards(&["save", "-o", broken.to_str().unwrap(), &image]);
+    std::fs::set_permissions(&layer, std::fs::Permissions::from_mode(0o444)).unwrap();
+    assert_eq!(failed.status, Some(1), "{failed}");
+    assert!(
+        failed.stderr.starts_with("Error response from daemon: "),
+        "{failed}"
+    );
+    assert!(!broken.exists());
+    assert_eq!(std::fs::read_dir(&*out).unwrap().count(), 1, "only image.tar");
+    // By ID: no name, so neither name annotation nor tag.
+    let by_id = out.join("by-id.tar");
+    let short = id.strip_prefix("sha256:").and_then(|h| h.get(..12)).unwrap();
+    assert_eq!(
+        shards(&["save", "-o", by_id.to_str().unwrap(), short]).status,
+        Some(0)
+    );
+    let records = ustar(&std::fs::read(&by_id).unwrap());
+    let file = |n: &str| {
+        String::from_utf8(records.iter().find(|(name, _, _)| name == n).unwrap().2.clone()).unwrap()
+    };
+    assert!(
+        file("index.json").ends_with(&format!(
+            r#""annotations":{{"containerd.io/distribution.source.127.0.0.1:{port}":"test/image"}}}}]}}"#
+        )),
+        "{}",
+        file("index.json")
+    );
+    assert!(
+        file("manifest.json").contains(r#""RepoTags":null"#),
+        "{}",
+        file("manifest.json")
+    );
+    std::fs::remove_file(&by_id).unwrap();
+    // To stdout, the same archive.
+    let piped = Command::new(common::shards())
+        .args(["save", &image])
+        .env("SHARDS_HOME", &*home)
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(piped.stdout, std::fs::read(&tar).unwrap());
+}

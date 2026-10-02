@@ -1061,6 +1061,7 @@ impl<D: Disk> Daemon<D> {
                     terminal: command.terminal,
                     width: command.width,
                     color: command.color,
+                    files: message.fds,
                 };
                 let status = self.command(&command.argv, &asker, &commands::Reply(conn));
                 let _ = shards_ipc::send(conn, kind::END, &[status], &[]);
@@ -3284,6 +3285,7 @@ mod tests {
             terminal: false,
             width: 0,
             color: false,
+            files: Vec::new(),
         };
         let status = daemon.command(&argv, &asker, &commands::Reply(&ours));
         drop(ours);
@@ -3926,6 +3928,7 @@ mod tests {
                         terminal: false,
                         width: 0,
                         color: false,
+                        files: Vec::new(),
                     };
                     daemon.command(&argv, &asker, &commands::Reply(&ours))
                 });
@@ -3976,6 +3979,7 @@ mod tests {
             terminal: false,
             width: 0,
             color: false,
+            files: Vec::new(),
         };
         let status = daemon.command(&argv, &asker, &commands::Reply(&ours));
         drop(ours);
@@ -4099,6 +4103,7 @@ mod tests {
                     terminal: false,
                     width: 0,
                     color: false,
+                    files: Vec::new(),
                 };
                 daemon.command(&argv, &asker, &commands::Reply(&ours))
             });

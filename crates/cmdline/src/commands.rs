@@ -371,6 +371,22 @@ platform - s - -",
     error_prefix: "",
 };
 
+/// `shards save`.
+pub static SAVE: Command = Command {
+    usage: "[OPTIONS] IMAGE [IMAGE...]",
+    about: "Save one or more images to a tar archive (streamed to STDOUT by default)",
+    aliases: "shards image save, shards save",
+    args: Args::AtLeast(1),
+    flags: &[
+        HELP,
+        Flag::string("output", Some(b'o'), "", "Write to a file, instead of STDOUT"),
+    ],
+    unserved: "\
+platform - l - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards tag`.
 pub static TAG: Command = Command {
     usage: "SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]",
@@ -665,6 +681,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["port", ..] => (&PORT, "shards port", 1),
         ["images", ..] => (&IMAGES, "shards images", 1),
         ["tag", ..] => (&TAG, "shards tag", 1),
+        ["save", ..] => (&SAVE, "shards save", 1),
+        ["image", "save", ..] => (&SAVE, "shards image save", 2),
         ["rmi", ..] => (&RMI, "shards rmi", 1),
         ["image", "rm" | "remove", ..] => (&RMI, "shards image rm", 2),
         ["image", "tag", ..] => (&TAG, "shards image tag", 2),

@@ -5,13 +5,15 @@
 //! would, in the order and with the words the Docker CLI and dockerd use.
 
 use std::io::{self, Write as _};
-use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
+use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-use shards_cmdline::commands::{self, IMAGE_INSPECT, IMAGES, KILL, LOGS, PORT, PS, RM, RMI, STOP, TAG, WAIT};
+use shards_cmdline::commands::{
+    self, IMAGE_INSPECT, IMAGES, KILL, LOGS, PORT, PS, RM, RMI, SAVE, STOP, TAG, WAIT,
+};
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
 use shards_ipc::kind;
@@ -310,6 +312,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.rmi(&parsed, reply)
         } else if std::ptr::eq(command, &IMAGE_INSPECT) {
             self.image_inspect(&parsed.args, reply)
+        } else if std::ptr::eq(command, &SAVE) {
+            self.save(&parsed.args, asker, reply)
         } else {
             reply.err(&format!("shards: {path} is not a container command"));
             1
@@ -1426,6 +1430,8 @@ pub(super) struct Asker {
     pub terminal: bool,
     pub width: u16,
     pub color: bool,
+    /// What they sent to be written: `save`'s archive's destination.
+    pub files: Vec<OwnedFd>,
 }
 
 /// The times `logs` shows lines between, as dockerd's log forwarder keeps them (moby

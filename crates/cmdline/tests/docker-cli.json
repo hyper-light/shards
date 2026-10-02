@@ -300,6 +300,57 @@
   },
   {
     "argv": [
+      "save"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards save' requires at least 1 argument\n\nUsage:  shards save [OPTIONS] IMAGE [IMAGE...]\n\nSee 'shards save --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "save",
+      "--help"
+    ],
+    "stdout": "Usage:  shards save [OPTIONS] IMAGE [IMAGE...]\n\nSave one or more images to a tar archive (streamed to STDOUT by default)\n\nAliases:\n  shards image save, shards save\n\nOptions:\n  -o, --output string   Write to a file, instead of STDOUT\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "save",
+      "-o",
+      "x.tar",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --output=x.tar \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "save",
+      "--output=y",
+      "a"
+    ],
+    "stdout": "RUN --output=y \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "save",
+      "--platform",
+      "linux/arm64",
+      "a"
+    ],
+    "stdout": "RUN --platform=[linux/arm64] \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "image",
       "inspect"
     ],
