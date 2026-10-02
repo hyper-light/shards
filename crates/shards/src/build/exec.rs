@@ -69,6 +69,17 @@ fn scratch() -> Fs {
     )
 }
 
+/// Scratch as a snapshot: empty, and the tree its no layers stack to.
+fn scratch_ref() -> Ref {
+    let fs = scratch();
+    let stack = Stack::layers(Tally::default(), fs.tree());
+    Ref {
+        fs: Rc::new(fs),
+        layers: Vec::new(),
+        stack,
+    }
+}
+
 /// What the build reads files from, and keeps until it is done.
 #[derive(Debug)]
 pub struct Exec<'a> {
@@ -410,7 +421,14 @@ impl<'a> Exec<'a> {
         loading.pop();
         // The mount to change: a fresh one over a committed input, or the input action's.
         let (base, mut fs) = match usize::try_from(a.input) {
-            Err(_) => (None, scratch()),
+            // Scratch, as any input is: its snapshot is what the mount copies and what the
+            // commit takes the step's changes against, one tree.
+            Err(_) => {
+                let base = scratch_ref();
+                let mut fs = (*base.fs).clone();
+                fs.begin();
+                (Some(base), fs)
+            }
             Ok(i) => match slots.get_mut(i).map(|s| std::mem::replace(s, Slot::Taken)) {
                 Some(Slot::Ref(r)) => {
                     if let Some(s) = slots.get_mut(i) {

@@ -1647,6 +1647,19 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
        > /a && ln /a /b` then `RUN chmod 600 /a`, and a layer of `a` alone (2026-10-01).
        No file operation reaches this today (COPY and ADD replace their targets), but RUN
        will, and its guest mounts its overlay with `index=off` too.
+     - Real Dockerfiles (2026-10-02, arm64 macOS): every official image's Dockerfile
+       that needs no RUN (`scripts/build/realworld/corpus.txt`: five alpine releases,
+       hello-world, nats on scratch) builds with layers, config and history equal to
+       Docker Desktop's BuildKit entry by entry (path, type, mode, owner, size, link,
+       xattrs, SHA-256, mtime), exports from the snapshot, and runs alike
+       (`scripts/build/realworld/compare.py`). In each alpine VM every file of the 512 to
+       518 has the hash, mode, owner and mtime it has in Docker's container; what differs
+       is Moby's init layer (`/.dockerenv`, `/etc/{hosts,hostname,resolv.conf}`,
+       `/etc/mtab` to `/proc/mounts`, daemon/initlayer/setup_unix.go) and directories'
+       sizes, which are their filesystem's (ext4's 4096, EROFS's own). nats-server serves
+       as under Docker with `--network none`, its log line for line: guest networking
+       (D31) is not built yet. The first of these builds found every step from scratch
+       given up to the layers, now fixed and held by the staged-build test.
      - Open: untagged images. A build without `-t`, and the image a moved tag named,
        stay in the store, as Docker keeps dangling images until they are pruned; shards
        has no `images`, `rmi` or `image prune` yet to show and remove them.

@@ -1,0 +1,10 @@
+# The official images' Dockerfiles shards builds today (no RUN), pinned by commit as
+# docker-library/official-images named them on 2026-10-01: repo, commit, Dockerfile
+# directory (by architecture), and the command each run checks.
+alpinelinux/docker-alpine 00d3407329e4c65f237cc1e325a4ab0cb4974df4 {aarch64,x86_64}
+alpinelinux/docker-alpine 1c744e2d49059e51b063a11a6e3e18c9ccf04ab8 {aarch64,x86_64}
+alpinelinux/docker-alpine 32cb3f1f45f4fee15882936c06a264eb9e5130fe {aarch64,x86_64}
+alpinelinux/docker-alpine 410e6fcf56b6bfd6e6b3acf0ab59a5ad1381ca54 {aarch64,x86_64}
+alpinelinux/docker-alpine 45ca5a796a9e1c0b9de1e279514331000b7ff921 {aarch64,x86_64}
+docker-library/hello-world 3981a44a531e7c844d844e12cbbda232d10d5dfb {arm64v8,amd64} /hello
+nats-io/nats-docker 0e72748d3cb553ccdb8c2da7c75ec3b767be51a5 2.14.x/scratch --version, and SERVE=3

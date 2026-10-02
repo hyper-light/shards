@@ -313,10 +313,22 @@ fn a_staged_build_copies_from_its_stages_and_images() {
         !target.stderr.contains("COPY --from=base"),
         "--target base builds no later stage\n{shown_target}"
     );
+    // A stage from scratch, as hello-world's and the alpine images' official Dockerfiles
+    // build: its steps start from scratch's own snapshot, and its image from that snapshot.
+    let files = run_shards_env(
+        &["build"],
+        &["--target", "files", "-t", "stages:files", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    let shown_files = format!("--- stdout\n{}\n--- stderr\n{}", files.stdout, files.stderr);
+    assert_eq!(files.status, Some(0), "{shown_files}");
     assert_eq!(exported_from(&built.stderr), "snapshot", "{shown}");
     assert_eq!(exported_from(&target.stderr), "snapshot", "{shown_target}");
+    assert_eq!(exported_from(&files.stderr), "snapshot", "{shown_files}");
     assert_rootfs_is_its_layers(&home, "stages:1");
     assert_rootfs_is_its_layers(&home, "stages:base");
+    assert_rootfs_is_its_layers(&home, "stages:files");
 
     if cannot_run_vms() {
         eprintln!("SKIP: this host cannot run VMs");
