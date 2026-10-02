@@ -328,6 +328,11 @@ impl Unpacked {
     pub fn open(&self) -> Result<File, Error> {
         Ok(File::open(self.0.path())?)
     }
+
+    /// The archive's bytes, as [`Store::rootfs`] counts them against its limit.
+    pub fn size(&self) -> Result<u64, Error> {
+        Ok(fs::metadata(self.0.path())?.len())
+    }
 }
 
 /// A layer's archive, checked against its DiffID: a blob that is its own archive, read
@@ -1033,6 +1038,90 @@ impl Store {
     /// than `limits` allow (audit A10), and one build at a time goes on in a store,
     /// whichever process asks: a second of the same image finds the first's.
     pub fn rootfs(&self, layers: &[Layer], limits: &Limits) -> Result<PathBuf, Error> {
+        self.rootfs_by(layers, limits, |room, ingest| {
+            let (mut bytes, mut entries, mut metadata) = (0u64, 0u64, 0u64);
+            let mut tree = layer::root();
+            let mut tars = Vec::with_capacity(layers.len());
+            for (i, l) in layers.iter().enumerate() {
+                let tar = self.unpack(l, &mut bytes, limits, room)?;
+                let source = u32::try_from(i).map_err(|_| Error("too many layers".into()))?;
+                let file = File::open(tar.path())?;
+                let mut count = |e: &crate::tar::Entry| {
+                    entries += 1;
+                    let held = e.path.len() + e.link.len();
+                    let held = e.xattrs.iter().fold(held, |n, (k, v)| n + k.len() + v.len());
+                    metadata = metadata.saturating_add(held as u64);
+                    if entries > limits.entries {
+                        return bad(format!(
+                            "the image has more than {} entries (SHARDS_MAX_IMAGE_ENTRIES)",
+                            limits.entries
+                        ));
+                    }
+                    if metadata > limits.metadata {
+                        return bad(format!(
+                            "the image's names, links and xattrs pass {} bytes (SHARDS_MAX_IMAGE_METADATA)",
+                            limits.metadata
+                        ));
+                    }
+                    Ok(())
+                };
+                layer::apply(
+                    &mut tree,
+                    source,
+                    BufReader::with_capacity(CHUNK, file),
+                    &mut count,
+                )?;
+                // What this layer replaced or whited out goes before the next is read, so
+                // the tree holds the image, not its history (audit D11).
+                tree.compact();
+                tars.push(tar);
+            }
+            let files = tars
+                .iter()
+                .map(|t| File::open(t.path()))
+                .collect::<io::Result<Vec<_>>>()?;
+            let mut partial = Partial::create(ingest)?;
+            erofs::write(
+                &tree,
+                &mut Archives(files),
+                &mut Checked {
+                    out: &mut partial,
+                    room,
+                },
+            )?;
+            Ok(partial)
+        })
+    }
+
+    /// The root filesystem of `layers`, kept as [`Store::rootfs`] keeps it, written by
+    /// `write` when it is not built yet: an image of the tree the layers stack to, which
+    /// the caller holds, such as a build's last snapshot (shards_build::stack). `write`
+    /// writes within the room the store's limits leave, as `rootfs` does.
+    pub fn rootfs_written(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        write: impl FnOnce(&mut dyn Write) -> Result<(), Error>,
+    ) -> Result<PathBuf, Error> {
+        self.rootfs_by(layers, limits, |room, ingest| {
+            let mut partial = Partial::create(ingest)?;
+            write(&mut Checked {
+                out: &mut partial,
+                room,
+            })?;
+            Ok(partial)
+        })
+    }
+
+    /// The root filesystem of `layers` where it is kept, made by `make` unless it is
+    /// there, while this process holds the store's lock on building them: `make` writes
+    /// it into a file under `ingest`, within `room`.
+    fn rootfs_by(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        make: impl FnOnce(&mut Room, &Path) -> Result<Partial, Error>,
+    ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let path = self.rootfs_path(&diff_ids)?;
         if path.is_file() {
@@ -1049,53 +1138,7 @@ impl Store {
         }
         let ingest = self.root.join("ingest");
         let mut room = Room::new(&ingest, limits)?;
-        let (mut bytes, mut entries, mut metadata) = (0u64, 0u64, 0u64);
-        let mut tree = layer::root();
-        let mut tars = Vec::with_capacity(layers.len());
-        for (i, l) in layers.iter().enumerate() {
-            let tar = self.unpack(l, &mut bytes, limits, &mut room)?;
-            let source = u32::try_from(i).map_err(|_| Error("too many layers".into()))?;
-            let file = File::open(tar.path())?;
-            let mut count = |e: &crate::tar::Entry| {
-                entries += 1;
-                let held = e.path.len() + e.link.len();
-                let held = e.xattrs.iter().fold(held, |n, (k, v)| n + k.len() + v.len());
-                metadata = metadata.saturating_add(held as u64);
-                if entries > limits.entries {
-                    return bad(format!(
-                        "the image has more than {} entries (SHARDS_MAX_IMAGE_ENTRIES)",
-                        limits.entries
-                    ));
-                }
-                if metadata > limits.metadata {
-                    return bad(format!(
-                        "the image's names, links and xattrs pass {} bytes (SHARDS_MAX_IMAGE_METADATA)",
-                        limits.metadata
-                    ));
-                }
-                Ok(())
-            };
-            layer::apply(
-                &mut tree,
-                source,
-                BufReader::with_capacity(CHUNK, file),
-                &mut count,
-            )?;
-            // What this layer replaced or whited out goes before the next is read, so
-            // the tree holds the image, not its history (audit D11).
-            tree.compact();
-            tars.push(tar);
-        }
-        let files = tars
-            .iter()
-            .map(|t| File::open(t.path()))
-            .collect::<io::Result<Vec<_>>>()?;
-        let mut partial = Partial::create(&ingest)?;
-        let mut out = Checked {
-            out: &mut partial,
-            room: &mut room,
-        };
-        erofs::write(&tree, &mut Archives(files), &mut out)?;
+        let partial = make(&mut room, &ingest)?;
         partial.commit(&path)?;
         drop(building);
         Ok(path)

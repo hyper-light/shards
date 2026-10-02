@@ -21,6 +21,38 @@ fn context(name: &str, dockerfile: &str) -> TempDir {
     dir
 }
 
+/// The root filesystem a build wrote of `reference`'s image from its last snapshot is the
+/// one the store stacks of its layers (shards_build::stack), byte for byte.
+fn assert_rootfs_is_its_layers(home: &std::path::Path, reference: &str) {
+    use shards_image::reference::{Digest, Reference};
+    use shards_image::store::{Layer, Limits, Store};
+    let store = Store::open(&home.join("images")).unwrap();
+    let name = Reference::parse(reference).unwrap().to_string();
+    let desc = store.tagged(&name).unwrap().unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&store.content(&desc, 1 << 20).unwrap().unwrap()).unwrap();
+    let config_desc: shards_image::oci::Descriptor =
+        serde_json::from_value(manifest["config"].clone()).unwrap();
+    let config: serde_json::Value =
+        serde_json::from_slice(&store.content(&config_desc, 1 << 20).unwrap().unwrap()).unwrap();
+    let layers: Vec<Layer> = manifest["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(config["rootfs"]["diff_ids"].as_array().unwrap())
+        .map(|(l, d)| Layer {
+            blob: Digest::parse(l["digest"].as_str().unwrap()).unwrap(),
+            media_type: l["mediaType"].as_str().unwrap().to_string(),
+            diff_id: Digest::parse(d.as_str().unwrap()).unwrap(),
+        })
+        .collect();
+    let path = store.rootfs(&layers, &Limits::none()).unwrap();
+    let built = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let stacked = std::fs::read(store.rootfs(&layers, &Limits::none()).unwrap()).unwrap();
+    assert!(built == stacked, "{reference}: the build's root filesystem is not its layers'");
+}
+
 #[test]
 fn an_image_built_of_settings_runs_as_built() {
     let (image, _) = served();
@@ -168,6 +200,7 @@ fn files_a_build_copies_are_in_the_vm_as_built() {
     ] {
         assert!(built.stderr.contains(step), "{step}\n{shown}");
     }
+    assert_rootfs_is_its_layers(&home, "files:1");
 
     if cannot_run_vms() {
         eprintln!("SKIP: this host cannot run VMs");
@@ -252,6 +285,8 @@ fn a_staged_build_copies_from_its_stages_and_images() {
         !target.stderr.contains("COPY --from=base"),
         "--target base builds no later stage\n{shown_target}"
     );
+    assert_rootfs_is_its_layers(&home, "stages:1");
+    assert_rootfs_is_its_layers(&home, "stages:base");
 
     if cannot_run_vms() {
         eprintln!("SKIP: this host cannot run VMs");
@@ -360,6 +395,7 @@ fn add_unpacks_archives_of_every_compression_in_the_vm() {
     let built = run_shards_env(&["build"], &["-t", "add:1", ctx.to_str().unwrap()], &env, TIMEOUT);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
+    assert_rootfs_is_its_layers(&home, "add:1");
 
     if cannot_run_vms() {
         eprintln!("SKIP: this host cannot run VMs");

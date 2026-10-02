@@ -571,6 +571,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                             exec::now(),
                         )),
                         layers: base,
+                        stack: shards_build::stack::Stack::unknown("a base image not unpacked"),
                     }
                 };
                 progress.borrow().done(&v);
@@ -632,12 +633,13 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     // The image: the target's layers, and its stage's base image for the exporter.
     let mut layers: Vec<Layer> = Vec::new();
     let mut base_image: Option<Image> = None;
+    let mut target: Option<exec::Ref> = None;
     if let Some(root) = def.root {
-        layers = results
+        target = results
             .get(root.op)
             .and_then(|outs| outs.get(usize::try_from(root.index).ok()?))
-            .map(|r| r.layers.clone())
-            .unwrap_or_default();
+            .cloned();
+        layers = target.as_ref().map(|r| r.layers.clone()).unwrap_or_default();
         // Down the first inputs to the stage's FROM.
         let mut at = root.op;
         while let Some(op) = def.ops.get(at) {
@@ -661,10 +663,20 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             }
         }
     }
-    // Every layer is in the store now: the snapshots, their sources and stages go before
-    // the export builds the root filesystem, so the two never hold memory at once.
+    // Every layer is in the store now. The root filesystem is written from the target's
+    // snapshot, put in its layers' form, its files read where the build has them; the
+    // other snapshots go first. Where that cannot be done exactly, the snapshots, their
+    // sources and stages all go before the export stacks the layers again, so the two
+    // never hold memory at once.
     drop(results);
-    drop(exec);
+    let flat = target.map(|r| exec.flat(r));
+    let mut exec = match flat {
+        Some(Ok(_)) => Some(exec),
+        _ => {
+            drop(exec);
+            None
+        }
+    };
     crate::phase("drop");
 
     let v = progress.borrow_mut().start("exporting to image");
@@ -693,10 +705,18 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             })
         })
         .collect::<Result<_, String>>()?;
-    if !store_layers.is_empty() {
-        store.rootfs(&store_layers, &limits).map_err(|e| e.to_string())?;
+    match (flat, exec.as_mut()) {
+        _ if store_layers.is_empty() => {}
+        (Some(Ok(flat)), Some(exec)) => {
+            exec.rootfs(flat, &store_layers)?;
+            crate::phase("rootfs-from-snapshot");
+        }
+        _ => {
+            store.rootfs(&store_layers, &limits).map_err(|e| e.to_string())?;
+            crate::phase("rootfs-from-layers");
+        }
     }
-    crate::phase("rootfs");
+    drop(exec);
     let desc = Descriptor {
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
         digest: manifest_digest.to_string(),

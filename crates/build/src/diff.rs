@@ -5,6 +5,9 @@
 //! directories it left as they were; deletions as whiteouts; every parent of what is
 //! written written before it; hard links kept; `security.capability` the one extended
 //! attribute; times truncated to the second.
+//!
+//! Each layer comes with its [`Record`]: what [`crate::stack`] needs to know of it to
+//! follow the tree the image's layers stack to, without reading the layer back.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
@@ -31,8 +34,82 @@ enum Change {
     Unmodified,
 }
 
-/// Writes the layer of the step that made `upper` from `lower` to `out`.
-pub fn write_layer(lower: &Fs, upper: &Fs, data: &mut dyn Source, out: &mut dyn Write) -> Result<(), Error> {
+/// Linux's PATH_MAX, which counts a symlink target's terminating NUL: layer::apply
+/// refuses a target this long.
+const PATH_MAX: usize = 4096;
+
+/// What a layer holds, by the upper tree's nodes, and what in it layer::apply would not
+/// make as the snapshot has it.
+#[derive(Debug, Default)]
+pub struct Record {
+    /// Each node the layer has an entry for.
+    pub written: Bits,
+    /// Of the nodes with several names that the layer has an entry for, how many of the
+    /// names it has.
+    pub names: HashMap<NodeId, u32>,
+    /// How many names each node of the upper tree has ([`Fs::links`]).
+    pub links: Vec<u32>,
+    /// Paths judged unchanged whose node in the upper tree is not the lower's, as
+    /// (lower, upper): the layer leaves the lower's node there.
+    pub same: Vec<(NodeId, NodeId)>,
+    /// Why layer::apply would not stack this layer to the upper tree's shape: a name it
+    /// takes for a whiteout, a symlink target it refuses, a socket left out over a path the
+    /// lower tree has.
+    pub unsure: Option<String>,
+    /// Whether the upper tree has a socket the layer leaves out.
+    pub sockets: bool,
+    /// The layer's entries, and an upper bound on the bytes of their names, link targets
+    /// and xattrs, as Store::rootfs counts them against its limits.
+    pub entries: u64,
+    pub metadata: u64,
+}
+
+/// A set of node ids.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Bits(Vec<u64>);
+
+impl Bits {
+    pub fn get(&self, id: NodeId) -> bool {
+        self.0.get(id / 64).is_some_and(|w| w >> (id % 64) & 1 == 1)
+    }
+
+    pub fn set(&mut self, id: NodeId) {
+        let at = id / 64;
+        if at >= self.0.len() {
+            self.0.resize(at + 1, 0);
+        }
+        if let Some(w) = self.0.get_mut(at) {
+            *w |= 1 << (id % 64);
+        }
+    }
+
+    /// Adds every id of `other`.
+    pub fn union(&mut self, other: &Bits) {
+        if other.0.len() > self.0.len() {
+            self.0.resize(other.0.len(), 0);
+        }
+        for (w, o) in self.0.iter_mut().zip(&other.0) {
+            *w |= o;
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(|&w| w == 0)
+    }
+
+    /// The ids in the set, in order.
+    pub fn iter(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.0.iter().enumerate().flat_map(|(i, &w)| {
+            (0..64)
+                .filter(move |b| w >> b & 1 == 1)
+                .map(move |b| i * 64 + b)
+        })
+    }
+}
+
+/// Writes the layer of the step that made `upper` from `lower` to `out`, and says what it
+/// holds.
+pub fn write_layer(lower: &Fs, upper: &Fs, data: &mut dyn Source, out: &mut dyn Write) -> Result<Record, Error> {
     let mut cw = ChangeWriter {
         tw: Writer::new(out),
         upper,
@@ -42,11 +119,14 @@ pub fn write_layer(lower: &Fs, upper: &Fs, data: &mut dyn Source, out: &mut dyn 
         added_dirs: BTreeSet::new(),
         last_parent: Vec::new(),
         data,
+        rec: Record::default(),
     };
     let walk = Walk { lower, upper };
     walk.dir(b"/", Tree::ROOT, &mut cw)?;
     cw.tw.finish().map_err(|e| Error(e.to_string()))?;
-    Ok(())
+    let mut rec = cw.rec;
+    rec.links = cw.links;
+    Ok(rec)
 }
 
 /// overlay.Changes over what the step changed: the entries the upper tree stamped with
@@ -84,6 +164,8 @@ impl Walk<'_> {
                 Some(l) => {
                     if !same(self.lower, l, self.upper, u, cw.data)? {
                         cw.handle(Change::Modify, &p, Some(u))?;
+                    } else if l != u {
+                        cw.rec.same.push((l, u));
                     }
                     Change::Modify
                 }
@@ -134,6 +216,9 @@ fn double_walk(
             (Some(&ln), Some(&un)) => {
                 let same = same(lower, ln, upper, un, cw.data)?;
                 if same {
+                    if ln != un {
+                        cw.rec.same.push((ln, un));
+                    }
                     if !upper.is_dir(un) && cw.links.get(un).copied().unwrap_or(0) > 1 {
                         cw.handle(Change::Unmodified, &p, Some(un))?;
                     }
@@ -219,7 +304,7 @@ fn same(lower: &Fs, l: NodeId, upper: &Fs, u: NodeId, data: &mut dyn Source) -> 
     Ok(f1.meta.mtime_nsec == f2.meta.mtime_nsec)
 }
 
-fn same_content(a: DataRef, b: DataRef, size: u64, data: &mut dyn Source) -> Result<bool, Error> {
+pub(crate) fn same_content(a: DataRef, b: DataRef, size: u64, data: &mut dyn Source) -> Result<bool, Error> {
     if a == b {
         return Ok(true);
     }
@@ -253,6 +338,7 @@ struct ChangeWriter<'a> {
     /// entry's, nearly always, needs no lookup.
     last_parent: Vec<u8>,
     data: &'a mut dyn Source,
+    rec: Record,
 }
 
 impl ChangeWriter<'_> {
@@ -260,6 +346,40 @@ impl ChangeWriter<'_> {
         self.tw
             .header(hdr)
             .map_err(|e| Error(format!("failed to write file header: {e}")))
+    }
+
+    /// Records the entry `hdr` written for node `id`.
+    fn note(&mut self, id: NodeId, hdr: &Header) {
+        let rec = &mut self.rec;
+        rec.written.set(id);
+        rec.entries += 1;
+        let xattrs = hdr.pax.iter().fold(0, |n, (k, v)| {
+            n + k.strip_prefix(PAX_XATTR).map_or(0, |k| k.len() + v.len())
+        });
+        rec.metadata = rec
+            .metadata
+            .saturating_add((hdr.name.len() + hdr.linkname.len() + xattrs) as u64);
+        // Only what is no directory has several names.
+        if self.links.get(id).copied().unwrap_or(0) > 1 {
+            *rec.names.entry(id).or_insert(0) += 1;
+        }
+        let mut name = hdr.name.as_slice();
+        while let Some(n) = name.strip_suffix(b"/") {
+            name = n;
+        }
+        let last = name.rsplit(|&c| c == b'/').next().unwrap_or_default();
+        if last.starts_with(WHITEOUT_PREFIX) {
+            rec.unsure.get_or_insert_with(|| {
+                format!(
+                    "{:?} reads as a whiteout",
+                    String::from_utf8_lossy(&hdr.name)
+                )
+            });
+        }
+        if hdr.typeflag == writer::SYMLINK && (hdr.linkname.is_empty() || hdr.linkname.len() >= PATH_MAX) {
+            rec.unsure
+                .get_or_insert_with(|| "a symlink target layers cannot hold".into());
+        }
     }
 
     fn handle(&mut self, kind: Change, p: &[u8], id: Option<NodeId>) -> Result<(), Error> {
@@ -271,10 +391,12 @@ impl ChangeWriter<'_> {
                 ..Header::default()
             };
             self.include_parents(&hdr)?;
-            return self
-                .tw
+            self.tw
                 .header(&hdr)
-                .map_err(|e| Error(format!("failed to write whiteout header: {e}")));
+                .map_err(|e| Error(format!("failed to write whiteout header: {e}")))?;
+            self.rec.entries += 1;
+            self.rec.metadata = self.rec.metadata.saturating_add(hdr.name.len() as u64);
+            return Ok(());
         }
         let Some(id) = id else { return Ok(()) };
         let Some(node) = self.upper.node(id) else {
@@ -289,7 +411,17 @@ impl ChangeWriter<'_> {
             ..Header::default()
         };
         match &node.kind {
-            Kind::Socket => return Ok(()),
+            Kind::Socket => {
+                // Left out: over a path the lower tree has, layer::apply keeps what is
+                // there.
+                if kind == Change::Modify {
+                    self.rec
+                        .unsure
+                        .get_or_insert_with(|| "a socket over a lower file".into());
+                }
+                self.rec.sockets = true;
+                return Ok(());
+            }
             Kind::File { size, .. } => {
                 hdr.typeflag = writer::REG;
                 hdr.size = i64::try_from(*size).map_err(|_| Error("file too large".into()))?;
@@ -340,6 +472,7 @@ impl ChangeWriter<'_> {
         }
         self.include_parents(&hdr)?;
         self.header(&hdr)?;
+        self.note(id, &hdr);
         if hdr.typeflag == writer::REG
             && hdr.size > 0
             && let Kind::File { size, data } = &node.kind
@@ -355,6 +488,7 @@ impl ChangeWriter<'_> {
                 hdr.size = 0;
                 self.include_parents(&hdr)?;
                 self.header(&hdr)?;
+                self.note(id, &hdr);
             }
         }
         Ok(())

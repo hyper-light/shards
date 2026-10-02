@@ -3,22 +3,26 @@
 //! FileOpSolver runs them (dockerfile/1.27.1 solver/llbsolver/ops/file.go), and merges.
 //! Each committed result is a snapshot and the chain of layers that makes it; a layer
 //! is written to the store as BuildKit's differ writes it (`shards_build::diff`),
-//! uncompressed.
+//! uncompressed. Each result follows the tree its layers stack to too
+//! (`shards_build::stack`), so the image's root filesystem is written from the last
+//! snapshot, not stacked again from the layers.
 
 use std::collections::BTreeMap;
 use std::io::BufReader;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::SystemTime;
 
 use shards_build::copy::Chown;
 use shards_build::data::Sources;
 use shards_build::ops::{self, CopyAction};
+use shards_build::stack::{Stack, Tally};
 use shards_build::vfs::Fs;
 use shards_build::{Error as BuildError, diff};
 use shards_dockerfile::export::Layer;
 use shards_dockerfile::go::Time;
 use shards_dockerfile::llb::{OpAction, OpActionKind, OpChown, OpUser};
-use shards_image::erofs::{Meta, Tree};
+use shards_image::erofs::{self, Meta, Tree};
 use shards_image::layer;
 use shards_image::reference::Digest;
 use shards_image::store::{self, Limits, Store, Unpacked};
@@ -27,11 +31,20 @@ use shards_image::store::{self, Limits, Store, Unpacked};
 /// `shards run` to unpack at no cost.
 pub const LAYER_TAR: &str = "application/vnd.oci.image.layer.v1.tar";
 
-/// A committed result: its snapshot and the layers that make it.
+/// A committed result: its snapshot, the layers that make it, and how the tree they
+/// stack to differs from the snapshot.
 #[derive(Debug, Clone)]
 pub struct Ref {
     pub fs: Rc<Fs>,
     pub layers: Vec<Layer>,
+    pub stack: Stack,
+}
+
+/// A target's snapshot and its stack, to write its image's root filesystem from.
+#[derive(Debug)]
+pub struct Flat {
+    fs: Fs,
+    stack: Stack,
 }
 
 /// The time now, as the kernel would stamp a change.
@@ -96,8 +109,9 @@ impl<'a> Exec<'a> {
         }
     }
 
-    /// `layers` applied in order on `fs`, as the store stacks an image's layers.
-    fn apply(&mut self, tree: &mut Tree, layers: &[Layer]) -> Result<(), String> {
+    /// `layers` applied in order on `fs`, as the store stacks an image's layers; what
+    /// they hold against the store's limits.
+    fn apply(&mut self, tree: &mut Tree, layers: &[Layer]) -> Result<Tally, String> {
         let store_layers = layers
             .iter()
             .map(|l| {
@@ -112,9 +126,10 @@ impl<'a> Exec<'a> {
             .store
             .unpack_layers(&store_layers, self.limits)
             .map_err(err)?;
-        let (mut entries, mut metadata) = (0u64, 0u64);
+        let (mut entries, mut metadata, mut bytes) = (0u64, 0u64, 0u64);
         let limits = *self.limits;
         for t in &tars {
+            bytes = bytes.saturating_add(t.size().map_err(err)?);
             let id = self.sources.archive(t.open().map_err(err)?).map_err(err)?;
             let mut count = |e: &shards_image::tar::Entry| {
                 entries += 1;
@@ -134,7 +149,11 @@ impl<'a> Exec<'a> {
             tree.compact();
         }
         self.unpacked.extend(tars);
-        Ok(())
+        Ok(Tally {
+            entries,
+            metadata,
+            bytes,
+        })
     }
 
     /// The stage ADD decompresses archives into, made at the first.
@@ -151,10 +170,11 @@ impl<'a> Exec<'a> {
     /// A base image's snapshot, from its layers.
     pub fn image(&mut self, layers: Vec<Layer>) -> Result<Ref, String> {
         let mut tree = layer::root();
-        self.apply(&mut tree, &layers)?;
+        let tally = self.apply(&mut tree, &layers)?;
         Ok(Ref {
             fs: Rc::new(Fs::new(tree, now())),
             layers,
+            stack: Stack::layers(tally),
         })
     }
 
@@ -171,6 +191,7 @@ impl<'a> Exec<'a> {
         Ok(Ref {
             fs: Rc::new(fs),
             layers: Vec::new(),
+            stack: Stack::unknown("a build context, which no layers make"),
         })
     }
 
@@ -181,18 +202,21 @@ impl<'a> Exec<'a> {
             return Ok(Ref {
                 fs: Rc::new(scratch()),
                 layers: Vec::new(),
+                stack: Stack::layers(Tally::default()),
             });
         };
         let mut fs = (*first.fs).clone();
         let mut layers = first.layers.clone();
+        let mut applied = Tally::default();
         for r in rest {
-            self.apply(&mut fs.tree, &r.layers)?;
+            applied = applied.plus(self.apply(&mut fs.tree, &r.layers)?);
             layers.extend(r.layers.iter().cloned());
         }
         fs.begin();
         Ok(Ref {
             fs: Rc::new(fs),
             layers,
+            stack: first.stack.merge(applied),
         })
     }
 
@@ -201,8 +225,13 @@ impl<'a> Exec<'a> {
         let empty = scratch();
         let lower = base.as_ref().map_or(&empty, |b| &*b.fs);
         let mut w = self.store.writer().map_err(err)?;
-        diff::write_layer(lower, &fs, &mut self.sources, &mut w).map_err(|e| e.0)?;
+        let record = diff::write_layer(lower, &fs, &mut self.sources, &mut w).map_err(|e| e.0)?;
         let (digest, size) = w.commit().map_err(err)?;
+        let stack = base
+            .as_ref()
+            .map_or_else(|| Stack::layers(Tally::default()), |b| b.stack.clone())
+            .commit(lower, &fs, record, size, &mut self.sources)
+            .map_err(|e| e.0)?;
         let t = now();
         let mut created = Time::from_unix(t.0);
         created.nanosecond = t.1;
@@ -220,7 +249,42 @@ impl<'a> Exec<'a> {
         Ok(Ref {
             fs: Rc::new(fs),
             layers,
+            stack,
         })
+    }
+
+    /// `r`'s snapshot, to write its image's root filesystem from, or why the export must
+    /// stack its layers again instead: a stack not followed, or one past the store's
+    /// limits, which `Store::rootfs` words.
+    pub fn flat(&self, r: Ref) -> Result<Flat, String> {
+        let tally = match &r.stack {
+            Stack::Unknown(why) => return Err(why.to_string()),
+            Stack::Known(_) => r.stack.tally().unwrap_or_default(),
+        };
+        let l = self.limits;
+        if tally.entries > l.entries || tally.metadata > l.metadata || tally.bytes > l.bytes {
+            return Err("an image at its limits".into());
+        }
+        Ok(Flat {
+            fs: Rc::unwrap_or_clone(r.fs),
+            stack: r.stack,
+        })
+    }
+
+    /// The root filesystem of `layers`, the image of `flat`, as `Store::rootfs` builds
+    /// it: the snapshot put in its layers' form, its files read where the build has them.
+    pub fn rootfs(&mut self, flat: Flat, layers: &[store::Layer]) -> Result<PathBuf, String> {
+        let Flat { mut fs, stack } = flat;
+        let sources = &mut self.sources;
+        self.store
+            .rootfs_written(layers, self.limits, |out| {
+                stack
+                    .finish(&mut fs)
+                    .map_err(|why| shards_image::Error::from(std::io::Error::other(why.to_string())))?;
+                erofs::write(&fs.tree, sources, out)?;
+                Ok(())
+            })
+            .map_err(err)
     }
 
     /// A file operation's outputs, its actions run as FileOpSolver runs them: each on a

@@ -32,7 +32,7 @@ const MAX_LINKS: u32 = 255;
 /// Linux's PATH_MAX, which counts a symlink target's terminating NUL.
 const PATH_MAX: usize = 4096;
 /// Go's latest time, 2^63 - 1 ns after 1970: containerd's boundTime zeroes later ones.
-const MAX_TIME: (i64, u32) = (9_223_372_036, 854_775_807);
+pub const MAX_TIME: (i64, u32) = (9_223_372_036, 854_775_807);
 
 /// An image's empty root: a directory, 0755 and owned by root.
 pub fn root() -> Tree {
