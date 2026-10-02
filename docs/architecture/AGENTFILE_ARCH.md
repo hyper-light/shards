@@ -745,8 +745,24 @@ of 2026-10-02:
 | Build cache by step and whole image; `--cache-from/--cache-to`, `--no-cache` | **missing** | n/a |
 | buildx flags not served (`--secret`, `--ssh`, `--build-context`, `--output`, `--push`, `--platform` lists, attestations) | **missing** | n/a |
 | Extensions `EXPOSE … AS/FOR`, `AGENT`, `SKILL`, `MCP`, `VOLUME … FOR`, `NETWORK`, `CONNECT`, `HARNESS`, `ATTACH`, each expanding `ARG` and `ENV` as the instructions Docker expands them in do | **missing** | **missing** |
+| Names (§4.10): `--target-kind`, one namespace of stages, agents and harnesses (Q19.2), the ambiguity error with both rewrites | **missing** | n/a |
+| `COPY --from=<agent or harness>`, writes into a domain refused, `AGENT`/`HARNESS` layers as `COPY --link`, directives per stage (Q19) | **missing** | n/a |
+| Agent and harness artifacts: OSI `artifactType`, config, content layers, index, pull and push (§8 Q1) | **missing** | **missing** |
+| The normalized Agentfile as a layer of its own, its label and manifest annotations (§8) | **missing** | read by the runtime: **missing** |
+| A BuildKit frontend, so `docker buildx build` builds an Agentfile (`# syntax=`, §8 Q16) | **missing** | n/a |
+| OCI objects (§1): `push`, `tag`, `inspect`, `images`, `rmi`, `save`, `load`, OCI layouts and `docker save` tars taken in (§10) | `pull` done | **missing** |
+| An Agentfile made from any image (§10) | **missing** | n/a |
+| The in-VM runtime: many agents and harnesses per microVM, each a domain (§6, §9.3) | n/a | **missing** |
+| The in-VM server: agents' encrypted, deny-by-default communication, the code-mode MCP server they discover (§5) | n/a | **missing** |
+| Build-time isolation checks (§9.2) and transitive reach, relays, declassifiers (§9.5, §9.8) | **missing** | n/a |
+| Run-time confinement (§9.3, §9.7–9.9): namespaces, IDs, cgroups and `pids.max`, Landlock, seccomp, `io_uring` off, vsock closed to workloads, process events | n/a | **missing** |
+| Labels on data through the in-VM server and MCP results; per-caller MCP instances (§9.5, §9.6) | n/a | **missing** |
+| The escape tests of §9.10, each mutation-checked | **missing** | **missing** |
 
 The order follows what depends on what: `RUN` first, since nearly every real file needs
 it (808 of 822 official Dockerfiles), then guest networking (D31), which `RUN`'s default
 network, `EXPOSE`'s publishing and `NETWORK`/`CONNECT` all need; then sources, the cache,
-the run-time directives and the extensions.
+the run-time directives, the OCI objects, and then the agents' layer: artifacts, the
+extensions, the in-VM runtime and server, and isolation with its tests. Where §7 still
+holds an open question, the item is built on the recommended answer recorded there, or on
+a decision recorded beside it with its reason, for the review to confirm.
