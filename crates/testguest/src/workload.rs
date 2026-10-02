@@ -288,7 +288,11 @@ fn tcp(addr: &str) -> i32 {
     let mut got = Vec::new();
     match std::net::TcpStream::connect(addr).and_then(|mut s| s.read_to_end(&mut got)) {
         Ok(n) => {
-            let _ = writeln!(io::stdout(), "tcp {n} {}", String::from_utf8_lossy(&got).trim_end());
+            let _ = writeln!(
+                io::stdout(),
+                "tcp {n} {}",
+                String::from_utf8_lossy(&got).trim_end()
+            );
             0
         }
         Err(e) => {

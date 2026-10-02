@@ -310,9 +310,22 @@ fn run_steps_reach_the_network_unless_it_is_none() {
     };
     let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
     let port = server.local_addr().unwrap().port();
+    // Serves one connection if one comes before the build is done; a build that never
+    // connects leaves it to give up, so that the test fails rather than hangs.
+    server.set_nonblocking(true).unwrap();
+    let (built_tx, built_rx) = std::sync::mpsc::channel::<()>();
     let serving = std::thread::spawn(move || {
-        let (mut c, _) = server.accept().unwrap();
-        c.write_all(b"hello from the host\n").unwrap();
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while std::time::Instant::now() < deadline && built_rx.try_recv().is_err() {
+            match server.accept() {
+                Ok((mut c, _)) => {
+                    c.set_nonblocking(false).unwrap();
+                    c.write_all(b"hello from the host\n").unwrap();
+                    return;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        }
     });
     let (image, _) = served();
     let home = TempDir::new("build-net-home");
@@ -329,7 +342,13 @@ fn run_steps_reach_the_network_unless_it_is_none() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
     ];
-    let built = run_shards_env(&["build"], &["--progress=plain", ctx.to_str().unwrap()], &env, TIMEOUT);
+    let built = run_shards_env(
+        &["build"],
+        &["--progress=plain", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    let _ = built_tx.send(());
     serving.join().unwrap();
     assert!(
         built.stderr.contains(" tcp 20 hello from the host\n"),

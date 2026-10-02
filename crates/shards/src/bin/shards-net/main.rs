@@ -2,7 +2,7 @@
 //! spawner hands it the VM's frame ring and doorbells; it serves the guest's flows until
 //! the VM goes, which its doorbell's hang-up says.
 //!
-//!     shards-net --ring REGION,WAKE_ME,WAKE_PEER [--policy allow|deny]
+//!     shards-net --ring REGION,WAKE_ME,WAKE_PEER --policy allow|deny
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -21,7 +21,8 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     use std::os::fd::{FromRawFd, OwnedFd};
     let mut ring = None;
-    let mut policy = shards_net::Policy::AllowAll;
+    // No default: a spawner that forgot to say gets an error, not open access.
+    let mut policy = None;
     let mut args = std::env::args_os().skip(1);
     while let Some(a) = args.next() {
         let value = |args: &mut dyn Iterator<Item = std::ffi::OsString>, name: &str| {
@@ -32,16 +33,17 @@ fn run() -> Result<(), String> {
         match a.to_str() {
             Some("--ring") => ring = Some(value(&mut args, "--ring")?),
             Some("--policy") => {
-                policy = match value(&mut args, "--policy")?.as_str() {
+                policy = Some(match value(&mut args, "--policy")?.as_str() {
                     "allow" => shards_net::Policy::AllowAll,
                     "deny" => shards_net::Policy::DenyAll,
                     other => return Err(format!("--policy {other:?}: allow or deny")),
-                }
+                })
             }
             _ => return Err(format!("unknown argument {a:?}")),
         }
     }
     let ring = ring.ok_or("--ring is required")?;
+    let policy = policy.ok_or("--policy is required")?;
     let fds: Vec<i32> = ring
         .split(',')
         .map(|v| {

@@ -215,7 +215,16 @@ impl Builder {
         let (net_sleeps, vm_rings) = shards_netring::doorbell().map_err(ring)?;
         let net = shards_ipc::spawn(
             &exe.with_file_name(format!("shards-net{}", std::env::consts::EXE_SUFFIX)),
-            &["--ring".as_ref(), "3,4,5".as_ref()],
+            &[
+                "--ring".as_ref(),
+                "3,4,5".as_ref(),
+                "--policy".as_ref(),
+                match net_cfg.policy {
+                    shards_net::Policy::AllowAll => "allow",
+                    shards_net::Policy::DenyAll => "deny",
+                }
+                .as_ref(),
+            ],
             &[
                 (io::stderr().as_fd(), 2),
                 (region.as_fd(), 3),
