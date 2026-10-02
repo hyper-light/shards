@@ -5,6 +5,7 @@
 
 extern crate alloc;
 
+pub mod changes;
 pub mod run;
 
 include!(concat!(env!("OUT_DIR"), "/identity.rs"));
