@@ -61,6 +61,7 @@ pub fn main() -> ! {
         "loopback" => loopback(),
         "fs" => fs(args.get(1..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
+        "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -280,7 +281,6 @@ fn report() -> i32 {
     0
 }
 
-/// Copies stdin to stdout.
 /// Connects to `addr` (IP:PORT), reads until the far end closes, and prints what came:
 /// `tcp N BYTES` then the bytes.
 fn tcp(addr: &str) -> i32 {
@@ -300,6 +300,33 @@ fn tcp(addr: &str) -> i32 {
             1
         }
     }
+}
+
+/// Listens on TCP `port` at every address, says `ready`, then serves `connections`
+/// connections in turn: to each, `from IP\n` (its peer's address), then all it sends
+/// back, until it closes its side.
+fn serve(port: &str, connections: usize) -> i32 {
+    let listener = match std::net::TcpListener::bind(format!("0.0.0.0:{port}")) {
+        Ok(l) => l,
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "serve error {e}");
+            return 1;
+        }
+    };
+    let _ = writeln!(io::stdout(), "ready");
+    for _ in 0..connections {
+        let served = listener.accept().and_then(|(mut c, peer)| {
+            writeln!(c, "from {}", peer.ip())?;
+            let mut read = c.try_clone()?;
+            io::copy(&mut read, &mut c)?;
+            c.shutdown(std::net::Shutdown::Write)
+        });
+        if let Err(e) = served {
+            let _ = writeln!(io::stdout(), "serve error {e}");
+            return 1;
+        }
+    }
+    0
 }
 
 /// File operations, in order: `mkdir:P`, `write:P=DATA`, `link:OLD:NEW`, `symlink:T:P`,

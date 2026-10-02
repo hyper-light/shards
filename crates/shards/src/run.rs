@@ -53,6 +53,8 @@ pub struct Prepared {
     pub health: Option<shards_ipc::Health>,
     /// The shell a `CMD-SHELL` health check runs in: the image's `SHELL`, or `/bin/sh -c`.
     pub shell: Vec<String>,
+    /// The image's `EXPOSE`d ports, `80/tcp` and the like.
+    pub exposed: Vec<String>,
 }
 
 /// The health check a run's container has, as dockerd merges the run's with its image's
@@ -190,6 +192,7 @@ pub fn prepare(
             .and_then(|c| c.shell.clone())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| vec!["/bin/sh".into(), "-c".into()]),
+        exposed: image.config.config.map(|c| c.exposed_ports).unwrap_or_default(),
     })
 }
 
@@ -341,6 +344,7 @@ mod tests {
             stop_signal: None,
             healthcheck: None,
             shell: None,
+            exposed_ports: Vec::new(),
         }
     }
 

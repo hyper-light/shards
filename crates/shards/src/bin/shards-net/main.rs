@@ -2,7 +2,7 @@
 //! spawner hands it the VM's frame ring and doorbells; it serves the guest's flows until
 //! the VM goes, which its doorbell's hang-up says.
 //!
-//!     shards-net --ring REGION,WAKE_ME,WAKE_PEER --policy allow|deny --mac MAC
+//!     shards-net --ring REGION,WAKE_ME,WAKE_PEER --policy allow|deny --mac MAC [--control FD]
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -20,6 +20,8 @@ fn main() -> ExitCode {
 #[cfg(unix)]
 fn run() -> Result<(), String> {
     use std::os::fd::{FromRawFd, OwnedFd};
+    // The daemon's socket, on which published ports come, and the VM's, on which they go.
+    let mut controls: Vec<String> = Vec::new();
     let mut ring = None;
     let mut mac = None;
     // No default: a spawner that forgot to say gets an error, not open access.
@@ -33,6 +35,7 @@ fn run() -> Result<(), String> {
         };
         match a.to_str() {
             Some("--ring") => ring = Some(value(&mut args, "--ring")?),
+            Some("--control") => controls.push(value(&mut args, "--control")?),
             Some("--mac") => {
                 let v = value(&mut args, "--mac")?;
                 let octets: Vec<u8> = v
@@ -79,8 +82,23 @@ fn run() -> Result<(), String> {
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     };
     let (region, me, peer) = (adopt(*region)?, adopt(*me)?, adopt(*peer)?);
-    shards_net::serve(region, me, peer, shards_net::Config::docker_default(policy, mac))
-        .map_err(|e| e.to_string())
+    let controls = controls
+        .iter()
+        .map(|fd| {
+            let fd = fd
+                .parse()
+                .map_err(|_| format!("--control: {fd:?} is not a descriptor"))?;
+            Ok(std::os::unix::net::UnixStream::from(adopt(fd)?))
+        })
+        .collect::<Result<_, String>>()?;
+    shards_net::serve(
+        region,
+        me,
+        peer,
+        shards_net::Config::docker_default(policy, mac),
+        controls,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(not(unix))]

@@ -191,6 +191,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
     };
     let (image, cmd) = parsed.args.split_first().ok_or("an image is required")?;
     let health = health(parsed)?;
+    let (_, bindings) = shards_cmdline::ports::publish(parsed.many("publish"))?;
     let attachments = parsed
         .many("network")
         .iter()
@@ -236,6 +237,16 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
             .then(|| parsed.string("stop-signal").to_string()),
         stop_timeout: parsed.changed("stop-timeout").then(|| parsed.int("stop-timeout")),
         health,
+        publish: bindings
+            .into_iter()
+            .map(|b| shards_ipc::Publish {
+                port: b.port.number,
+                proto: b.port.proto,
+                host_ip: b.host_ip,
+                host_port: b.host_port,
+            })
+            .collect(),
+        publish_all: parsed.bool("publish-all"),
         ..Run::default()
     })
 }
@@ -370,11 +381,20 @@ mod tests {
         );
         let tty = self::asked(&["-t", "alpine"]).unwrap();
         assert!(tty.tty.is_some(), "a terminal, as big as stdout");
-        assert!(
-            self::asked(&["-p", "80:80", "alpine"])
-                .unwrap_err()
-                .contains("\"--publish\" is not supported by shards yet"),
-            "no ports yet"
+        let published = self::asked(&["-p", "127.0.0.1:8080:80/udp", "-P", "alpine"]).unwrap();
+        assert_eq!(
+            published.publish,
+            [shards_ipc::Publish {
+                port: 80,
+                proto: "udp".into(),
+                host_ip: "127.0.0.1".into(),
+                host_port: "8080".into(),
+            }]
+        );
+        assert!(published.publish_all);
+        assert_eq!(
+            self::asked(&["-p", "x", "alpine"]).unwrap_err(),
+            "invalid containerPort: x"
         );
     }
 }

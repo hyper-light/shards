@@ -134,6 +134,14 @@ pub mod kind {
     /// it the client's connection, which the daemon held until now: XNU collects a socket
     /// in flight that no process holds (M24).
     pub const EXEC_TAKEN: u8 = 25;
+    /// Daemon → a VM's network process: listening sockets of published ports (`-p`), each
+    /// for the guest port its payload's next big-endian u16 names, for TCP. Connections
+    /// they take become the guest's. Said back, empty, once they are taken.
+    pub const PUBLISH: u8 = 26;
+    /// A VM → its network process, as its run ends: close every published port's
+    /// listening socket; and back, once they are closed, so that the run's end is told
+    /// only when its ports are free.
+    pub const UNPUBLISH: u8 = 27;
 }
 
 /// An `EXEC_RUN` flag: the command reads the client's stdin (`-i`).
@@ -312,6 +320,11 @@ pub struct Run {
     pub stop_timeout: Option<i64>,
     /// The `--health-*` settings, or `--no-healthcheck`'s `NONE`, if any was given.
     pub health: Option<Health>,
+    /// `-p`'s bindings, in the order given: each a container port and protocol, a host
+    /// address (empty for every one) and a host port, range or none (empty).
+    pub publish: Vec<Publish>,
+    /// `-P`: every exposed port without a binding gets one to a port the host picks.
+    pub publish_all: bool,
     /// The daemon binary this client would start.
     pub daemon: Identity,
 }
@@ -327,6 +340,15 @@ pub struct Health {
     pub start_period: i64,
     pub start_interval: i64,
     pub retries: i64,
+}
+
+/// One `-p` binding, as the CLI read it (shards_cmdline::ports).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Publish {
+    pub port: u16,
+    pub proto: String,
+    pub host_ip: String,
+    pub host_port: String,
 }
 
 /// What a run asks of its endpoint on one network, as the CLI read it: addresses as
@@ -450,6 +472,18 @@ impl Run {
             }
             None => w.push(0),
         }
+        w.extend_from_slice(
+            &u32::try_from(self.publish.len())
+                .unwrap_or(u32::MAX)
+                .to_be_bytes(),
+        );
+        for p in &self.publish {
+            w.extend_from_slice(&p.port.to_be_bytes());
+            put_str(&mut w, &p.proto);
+            put_str(&mut w, &p.host_ip);
+            put_str(&mut w, &p.host_port);
+        }
+        w.push(u8::from(self.publish_all));
         put_identity(&mut w, &self.daemon);
         w
     }
@@ -513,6 +547,24 @@ impl Run {
             } else {
                 None
             },
+            publish: {
+                let n = r.u32()? as usize;
+                // Each takes at least 14 bytes: its port and three 4-byte lengths.
+                if n > r.0.len() / 14 {
+                    return None;
+                }
+                (0..n)
+                    .map(|_| {
+                        Some(Publish {
+                            port: u16::from_be_bytes(r.take(2)?.try_into().ok()?),
+                            proto: r.str()?,
+                            host_ip: r.str()?,
+                            host_port: r.str()?,
+                        })
+                    })
+                    .collect::<Option<_>>()?
+            },
+            publish_all: r.flag()?,
             daemon: r.identity()?,
         };
         r.0.is_empty().then_some(run)
@@ -614,6 +666,9 @@ pub const RUN_LOG: u8 = 4;
 /// A `kind::RUN` flag: no client: the command's output goes only to the container's log
 /// (`-d`).
 pub const RUN_DETACHED: u8 = 8;
+/// A `kind::RUN` flag: the run publishes ports, which close before its end is told
+/// (`kind::UNPUBLISH`).
+pub const RUN_PUBLISHED: u8 = 16;
 
 /// The largest payload a message may carry.
 pub const MAX_PAYLOAD: usize = 1 << 20;
@@ -760,6 +815,16 @@ mod tests {
             ],
             stop_signal: Some("SIGUSR1".into()),
             stop_timeout: Some(-1),
+            publish: vec![
+                Publish {
+                    port: 80,
+                    proto: "tcp".into(),
+                    host_ip: "127.0.0.1".into(),
+                    host_port: "8000-8010".into(),
+                },
+                Publish::default(),
+            ],
+            publish_all: true,
             health: Some(Health {
                 test: vec!["CMD-SHELL".into(), "true".into()],
                 interval: 1,

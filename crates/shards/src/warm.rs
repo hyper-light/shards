@@ -41,6 +41,37 @@ impl Link {
     }
 }
 
+/// The VM's socket to its network process, on which its run's published ports close as
+/// the run ends (`--net-release`).
+static RELEASE: std::sync::OnceLock<UnixStream> = std::sync::OnceLock::new();
+/// The run publishes ports (`RUN_PUBLISHED`): only then is there anything to close.
+static PUBLISHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Takes the socket at `fd` as [`RELEASE`].
+pub fn adopt_release(fd: RawFd) -> Result<(), String> {
+    let socket = inherited_socket("--net-release", fd)?;
+    RELEASE
+        .set(socket)
+        .map_err(|_| "--net-release given twice".to_string())
+}
+
+/// Has the network process close the run's published ports, and waits until it has, so
+/// that they are free once the run's end is told, as dockerd frees a container's before
+/// its exit is (`docker run --rm -p 80 …; docker run -p 80 …` finds it free). A network
+/// process that does not answer within a second is ended with the VM, as
+/// `netproc::reap` ends one, and frees them then.
+fn release_ports() {
+    if !PUBLISHED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let Some(release) = RELEASE.get() else { return };
+    if shards_ipc::send(release, kind::UNPUBLISH, &[], &[]).is_err() {
+        return;
+    }
+    let _ = release.set_read_timeout(Some(std::time::Duration::from_secs(1)));
+    let _ = shards_ipc::recv(release);
+}
+
 fn daemon_socket(fd: RawFd) -> Result<UnixStream, String> {
     inherited_socket("--warm", fd)
 }
@@ -113,6 +144,10 @@ pub fn receive(link: &Link, to: &'static ToGuest) -> Result<Request, String> {
     let (detached, logged) = (
         flags & shards_ipc::RUN_DETACHED != 0,
         flags & shards_ipc::RUN_LOG != 0,
+    );
+    PUBLISHED.store(
+        flags & shards_ipc::RUN_PUBLISHED != 0,
+        std::sync::atomic::Ordering::Relaxed,
     );
     let count = request.fds.len();
     let mut fds = request.fds.into_iter();
@@ -367,6 +402,7 @@ pub fn finish(
             }
         }
     }
+    release_ports();
     let _ = shards_ipc::send(&link.daemon, kind::DONE, &done, &[]);
     if let Some(client) = client {
         let mut payload = vec![said_status];

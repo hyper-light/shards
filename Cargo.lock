@@ -933,6 +933,7 @@ name = "shards-net"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "shards-ipc",
  "shards-netring",
 ]
 

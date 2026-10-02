@@ -1208,5 +1208,595 @@
       "mode": "",
       "endpoints": null
     }
+  ],
+  "ports": [
+    {
+      "publish": [
+        "80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp  "
+      ]
+    },
+    {
+      "publish": [
+        "80/udp"
+      ],
+      "exposed": [
+        "80/udp"
+      ],
+      "bindings": [
+        "80/udp  "
+      ]
+    },
+    {
+      "publish": [
+        "80/SCTP"
+      ],
+      "exposed": [
+        "80/sctp"
+      ],
+      "bindings": [
+        "80/sctp  "
+      ]
+    },
+    {
+      "publish": [
+        "8080:80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp  8080"
+      ]
+    },
+    {
+      "publish": [
+        "127.0.0.1:8080:80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp 127.0.0.1 8080"
+      ]
+    },
+    {
+      "publish": [
+        "127.0.0.1::80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp 127.0.0.1 "
+      ]
+    },
+    {
+      "publish": [
+        "[::1]:8080:80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp ::1 8080"
+      ]
+    },
+    {
+      "publish": [
+        "[::1]::80/udp"
+      ],
+      "exposed": [
+        "80/udp"
+      ],
+      "bindings": [
+        "80/udp ::1 "
+      ]
+    },
+    {
+      "publish": [
+        "8000-8002:80-82"
+      ],
+      "exposed": [
+        "80/tcp",
+        "81/tcp",
+        "82/tcp"
+      ],
+      "bindings": [
+        "80/tcp  8000",
+        "81/tcp  8001",
+        "82/tcp  8002"
+      ]
+    },
+    {
+      "publish": [
+        "8000-8010:80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp  8000-8010"
+      ]
+    },
+    {
+      "publish": [
+        "80-82"
+      ],
+      "exposed": [
+        "80/tcp",
+        "81/tcp",
+        "82/tcp"
+      ],
+      "bindings": [
+        "80/tcp  ",
+        "81/tcp  ",
+        "82/tcp  "
+      ]
+    },
+    {
+      "publish": [
+        "0.0.0.0:80:80",
+        "[::]:80:80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp 0.0.0.0 80",
+        "80/tcp :: 80"
+      ]
+    },
+    {
+      "publish": [
+        "80",
+        "80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp  ",
+        "80/tcp  "
+      ]
+    },
+    {
+      "publish": [
+        "8080:80",
+        "8081:80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp  8080",
+        "80/tcp  8081"
+      ]
+    },
+    {
+      "publish": [
+        "published=8080,target=80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp  8080"
+      ]
+    },
+    {
+      "publish": [
+        "published=8080,target=80,protocol=udp"
+      ],
+      "exposed": [
+        "80/udp"
+      ],
+      "bindings": [
+        "80/udp  8080"
+      ]
+    },
+    {
+      "publish": [
+        "target=80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp  "
+      ]
+    },
+    {
+      "publish": [
+        "x"
+      ],
+      "err": "invalid containerPort: x",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "80/xyz"
+      ],
+      "err": "invalid proto: xyz",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "99999"
+      ],
+      "err": "invalid containerPort: 99999",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "1-x"
+      ],
+      "err": "invalid containerPort: 1-x",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "x:80"
+      ],
+      "err": "invalid hostPort: x",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "8000-8002:80-81"
+      ],
+      "err": "invalid ranges specified for container and host Ports: 80-81 and 8000-8002",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "a:b:c:d"
+      ],
+      "err": "invalid IP address: a:b",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "[::1:8080:80"
+      ],
+      "err": "invalid IP address [::1: address [::1:: missing ']' in address",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "[::1]x:8080:80"
+      ],
+      "err": "invalid IP address [::1]x: address [::1]x:: missing port in address",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "1.2.3:80:80"
+      ],
+      "err": "invalid IP address: 1.2.3",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "fe80::1%eth0:80:80"
+      ],
+      "err": "invalid IP address: fe80::1%eth0",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        ""
+      ],
+      "err": "no port specified: \u003cempty\u003e",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        ":80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp  "
+      ]
+    },
+    {
+      "publish": [
+        "8080:"
+      ],
+      "err": "no port specified: 8080:\u003cempty\u003e",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "/udp"
+      ],
+      "err": "no port specified: /udp\u003cempty\u003e",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "82-80"
+      ],
+      "err": "invalid containerPort: 82-80",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "8080-8000:80"
+      ],
+      "err": "invalid hostPort: 8080-8000",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "-1"
+      ],
+      "err": "invalid containerPort: -1",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "080"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp  "
+      ]
+    },
+    {
+      "publish": [
+        "+80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp  "
+      ]
+    },
+    {
+      "publish": [
+        "80:80:80:80"
+      ],
+      "err": "invalid IP address: 80:80",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "published=8080"
+      ],
+      "err": "no port specified: 8080:/tcp\u003cempty\u003e",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "published"
+      ],
+      "err": "invalid containerPort: published",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "=8080,target=80"
+      ],
+      "err": "invalid publish opts format (should be name=value but got '=8080')",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "0"
+      ],
+      "exposed": [
+        "0/tcp"
+      ],
+      "bindings": [
+        "0/tcp  "
+      ]
+    },
+    {
+      "publish": [
+        "0:0"
+      ],
+      "exposed": [
+        "0/tcp"
+      ],
+      "bindings": [
+        "0/tcp  0"
+      ]
+    },
+    {
+      "publish": [
+        "1.2.3.4:80-81:90-91"
+      ],
+      "exposed": [
+        "90/tcp",
+        "91/tcp"
+      ],
+      "bindings": [
+        "90/tcp 1.2.3.4 80",
+        "91/tcp 1.2.3.4 81"
+      ]
+    },
+    {
+      "publish": [
+        "[1.2.3.4]:80:80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp 1.2.3.4 80"
+      ]
+    },
+    {
+      "publish": [
+        "::1:8080:80"
+      ],
+      "exposed": [
+        "80/tcp"
+      ],
+      "bindings": [
+        "80/tcp ::1 8080"
+      ]
+    },
+    {
+      "publish": [
+        "65535"
+      ],
+      "exposed": [
+        "65535/tcp"
+      ],
+      "bindings": [
+        "65535/tcp  "
+      ]
+    },
+    {
+      "publish": [
+        "65536"
+      ],
+      "err": "invalid containerPort: 65536",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "X:80"
+      ],
+      "err": "invalid hostPort: X",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "80/XYZ"
+      ],
+      "err": "invalid proto: xyz",
+      "exposed": null,
+      "bindings": null
+    }
+  ],
+  "port_args": [
+    {
+      "arg": "80",
+      "port": "80/tcp"
+    },
+    {
+      "arg": "80/tcp",
+      "port": "80/tcp"
+    },
+    {
+      "arg": "80/UDP",
+      "port": "80/udp"
+    },
+    {
+      "arg": "80/xyz",
+      "port": "80/xyz"
+    },
+    {
+      "arg": "x",
+      "err": "invalid port 'x': invalid syntax"
+    },
+    {
+      "arg": "",
+      "err": "invalid port: value is empty"
+    },
+    {
+      "arg": "/udp",
+      "err": "invalid port '': value is empty"
+    },
+    {
+      "arg": "65535",
+      "port": "65535/tcp"
+    },
+    {
+      "arg": "65536",
+      "err": "invalid port '65536': value out of range"
+    },
+    {
+      "arg": "-1",
+      "err": "invalid port '-1': invalid syntax"
+    },
+    {
+      "arg": "+80",
+      "err": "invalid port '+80': invalid syntax"
+    },
+    {
+      "arg": "080",
+      "port": "80/tcp"
+    },
+    {
+      "arg": "80/",
+      "port": "80/tcp"
+    },
+    {
+      "arg": "80-81",
+      "err": "invalid port '80-81': invalid syntax"
+    },
+    {
+      "arg": "0",
+      "port": "0/tcp"
+    },
+    {
+      "arg": "80/tcp/x",
+      "port": "80/tcp/x"
+    },
+    {
+      "arg": " 80",
+      "err": "invalid port ' 80': invalid syntax"
+    }
+  ],
+  "natural": [
+    "",
+    "0",
+    "00",
+    "9/tcp -\u003e 0.0.0.0:9",
+    "9/tcp -\u003e [::]:9",
+    "10.0.0.1:80",
+    "10.0.0.9:80",
+    "10.0.0.10:80",
+    "80/tcp -\u003e 0.0.0.0:18080",
+    "80/tcp -\u003e [::]:18080",
+    "080/tcp -\u003e x",
+    "81/udp -\u003e 127.0.0.1:81",
+    "443/tcp -\u003e 0.0.0.0:443",
+    "Z",
+    "[::1]:5",
+    "[::]:5",
+    "a",
+    "a9",
+    "a9b",
+    "a09",
+    "a009b",
+    "a10"
   ]
 }

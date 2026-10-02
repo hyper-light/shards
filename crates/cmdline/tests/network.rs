@@ -135,3 +135,56 @@ fn runs_ask_for_the_networks_run_asks_for() {
         }
     }
 }
+
+#[test]
+fn published_ports_read_as_run_reads_them() {
+    let golden = golden();
+    let cases = golden["ports"].as_array().unwrap();
+    assert!(cases.len() > 40);
+    for case in cases {
+        let publish = list(&case["publish"]);
+        match shards_cmdline::ports::publish(&publish) {
+            Err(e) => assert_eq!(e, text(&case["err"]), "{publish:?}"),
+            Ok((exposed, bindings)) => {
+                assert_eq!(text(&case["err"]), "", "{publish:?}");
+                let shown = |a: &str| match shards_cmdline::network::parse_addr(a) {
+                    Ok(addr) => addr.to_string(),
+                    Err(_) => String::new(),
+                };
+                let mut got: Vec<String> = bindings
+                    .iter()
+                    .map(|b| format!("{} {} {}", b.port, shown(&b.host_ip), b.host_port))
+                    .collect();
+                got.sort();
+                let exposed: Vec<String> = exposed.iter().map(ToString::to_string).collect();
+                assert_eq!(
+                    (exposed, got),
+                    (list(&case["exposed"]), list(&case["bindings"])),
+                    "{publish:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn port_arguments_read_as_docker_port_reads_them() {
+    let golden = golden();
+    for case in golden["port_args"].as_array().unwrap() {
+        let got = shards_cmdline::ports::parse_port(text(&case["arg"]));
+        match got {
+            Ok(port) => assert_eq!(port.to_string(), text(&case["port"]), "{case}"),
+            Err(e) => assert_eq!(e, text(&case["err"]), "{case}"),
+        }
+    }
+}
+
+#[test]
+fn port_lines_sort_as_docker_port_sorts_them() {
+    let golden = golden();
+    let sorted = list(&golden["natural"]);
+    let mut lines = sorted.clone();
+    lines.reverse();
+    lines.sort_by(|a, b| shards_cmdline::ports::natural_compare(a, b));
+    assert_eq!(lines, sorted);
+}

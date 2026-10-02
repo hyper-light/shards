@@ -16,7 +16,16 @@ pub struct VmSide {
     /// What the VM sleeps on, which the network process rings, and the reverse.
     pub sleeps: OwnedFd,
     pub rings: OwnedFd,
+    /// The spawner's socket to the network process, on which published ports go
+    /// (`shards_ipc::kind::PUBLISH`); dropped by a spawner that publishes none.
+    pub control: std::os::unix::net::UnixStream,
+    /// The VM's, at [`VM_RELEASE_FD`], on which they close as its run ends
+    /// (`shards_ipc::kind::UNPUBLISH`).
+    pub release: std::os::unix::net::UnixStream,
 }
+
+/// Where a VM process is given its side's [`VmSide::release`], named by `--net-release`.
+pub const VM_RELEASE_FD: i32 = 8;
 
 impl VmSide {
     /// `--net`'s value for a VM given this side at [`VM_FDS`] with `mac`.
@@ -46,6 +55,9 @@ pub fn start(
         shards_net::Policy::AllowAll => "allow",
         shards_net::Policy::DenyAll => "deny",
     };
+    let pair = || std::os::unix::net::UnixStream::pair().map_err(|e| format!("a VM's network control: {e}"));
+    let (control, theirs) = pair()?;
+    let (release, released) = pair()?;
     let err = std::io::stderr();
     let mac: Vec<String> = mac.iter().map(|b| format!("{b:02x}")).collect();
     let mac = mac.join(":");
@@ -58,12 +70,18 @@ pub fn start(
             policy.as_ref(),
             "--mac".as_ref(),
             mac.as_ref(),
+            "--control".as_ref(),
+            "6".as_ref(),
+            "--control".as_ref(),
+            "7".as_ref(),
         ],
         &[
             (err.as_fd(), 2),
             (region.as_fd(), 3),
             (net_sleeps.as_fd(), 4),
             (net_rings.as_fd(), 5),
+            (theirs.as_fd(), 6),
+            (released.as_fd(), 7),
         ],
         false,
     )
@@ -74,6 +92,8 @@ pub fn start(
             region,
             sleeps: vm_sleeps,
             rings: vm_rings,
+            control,
+            release,
         },
     ))
 }

@@ -20,6 +20,10 @@ use shards_netring::{Consumer, Producer, Region};
 use tcp::{Conn, Key, ToGuest};
 use wire::Frames;
 
+/// The ports a published connection comes from, at the gateway: IANA's dynamic range
+/// (RFC 6335 §6), 49152 to 65535.
+const EPHEMERAL: std::ops::RangeInclusive<u16> = 49152..=u16::MAX;
+
 /// How long a UDP flow lives without a datagram either way: Linux conntrack's timeout for
 /// a UDP flow that has seen replies (nf_conntrack_udp_timeout_stream, 120 s).
 const UDP_IDLE: Duration = Duration::from_secs(120);
@@ -138,6 +142,10 @@ struct Stack<'r> {
     udp: HashMap<(u16, Ipv4Addr, u16), UdpFlow>,
     buf: Vec<u8>,
     isn: u32,
+    /// Published ports' listening sockets, each with the guest port it reaches.
+    published: Vec<(std::net::TcpListener, u16)>,
+    /// The gateway port the next published connection tries first.
+    next_port: u16,
 }
 
 /// Sends frames to the guest through the ring, into the backlog while it is full.
@@ -222,7 +230,16 @@ impl ToGuest for Out<'_, '_> {
 
 /// Serves the guest on `region`'s rings until the VM goes, ringing `wake_peer` and sleeping
 /// on `wake_me`.
-pub fn serve(region: OwnedFd, wake_me: OwnedFd, wake_peer: OwnedFd, cfg: Config) -> io::Result<()> {
+/// Published ports come on a socket of `controls`, from the daemon
+/// ([`shards_ipc::kind::PUBLISH`]), and go on one, from the VM as its run ends
+/// ([`shards_ipc::kind::UNPUBLISH`]).
+pub fn serve(
+    region: OwnedFd,
+    wake_me: OwnedFd,
+    wake_peer: OwnedFd,
+    cfg: Config,
+    mut controls: Vec<std::os::unix::net::UnixStream>,
+) -> io::Result<()> {
     let region = Region::map(region)?;
     // The device's frames come on 0, this side's go on 1.
     let mut from_guest: Consumer<'_> = region.consumer(0, wake_peer.try_clone()?, wake_me.try_clone()?);
@@ -239,6 +256,8 @@ pub fn serve(region: OwnedFd, wake_me: OwnedFd, wake_peer: OwnedFd, cfg: Config)
         udp: HashMap::new(),
         buf: vec![0u8; shards_netring::MAX_FRAME],
         isn: seed()?,
+        published: Vec::new(),
+        next_port: *EPHEMERAL.start(),
     };
     let mut frame = vec![0u8; shards_netring::MAX_FRAME];
     let mut fds: Vec<libc::pollfd> = Vec::new();
@@ -281,6 +300,22 @@ pub fn serve(region: OwnedFd, wake_me: OwnedFd, wake_peer: OwnedFd, cfg: Config)
                 });
                 keys.push(Some(*k));
             }
+        }
+        let control_at = fds.len();
+        for c in &controls {
+            fds.push(libc::pollfd {
+                fd: c.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
+        let (listeners_at, listening) = (fds.len(), stack.published.len());
+        for (l, _) in &stack.published {
+            fds.push(libc::pollfd {
+                fd: l.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
         }
         let udp_base = fds.len();
         let udp_keys: Vec<(u16, Ipv4Addr, u16)> = stack.udp.keys().copied().collect();
@@ -336,6 +371,35 @@ pub fn serve(region: OwnedFd, wake_me: OwnedFd, wake_peer: OwnedFd, cfg: Config)
             }
             stack.on_socket(k, p.revents);
         }
+        // Those that hung up are gone; what is published stays, as the VM runs on.
+        let mut i = 0;
+        controls.retain(|c| {
+            let ready = fds.get(control_at + i).is_some_and(|p| p.revents != 0);
+            i += 1;
+            if !ready {
+                return true;
+            }
+            match shards_ipc::recv(c) {
+                // Said back once taken: the sender's copies may close.
+                Ok(Some(m)) if m.kind == shards_ipc::kind::PUBLISH => {
+                    stack.publish(&m.payload, m.fds);
+                    shards_ipc::send(c, shards_ipc::kind::PUBLISH, &[], &[]).is_ok()
+                }
+                Ok(Some(m)) if m.kind == shards_ipc::kind::UNPUBLISH => {
+                    stack.published.clear();
+                    shards_ipc::send(c, shards_ipc::kind::UNPUBLISH, &[], &[]).is_ok()
+                }
+                Ok(Some(_)) => true,
+                _ => false,
+            }
+        });
+        // Those polled: a PUBLISH just read adds more, an UNPUBLISH leaves none.
+        let accepting: Vec<usize> = (0..listening.min(stack.published.len()))
+            .filter(|i| fds.get(listeners_at + i).is_some_and(|p| p.revents != 0))
+            .collect();
+        for i in accepting {
+            stack.accept(i);
+        }
         for (i, k) in udp_keys.iter().enumerate() {
             if fds.get(udp_base + i).is_some_and(|p| p.revents != 0) {
                 stack.on_udp(k);
@@ -359,6 +423,67 @@ fn seed() -> io::Result<u32> {
 }
 
 impl<'r> Stack<'r> {
+    /// Takes published ports' listening sockets, each for the guest port its payload's
+    /// next big-endian u16 names; what does not pair up is closed.
+    fn publish(&mut self, ports: &[u8], fds: Vec<OwnedFd>) {
+        for (fd, port) in fds.into_iter().zip(ports.as_chunks::<2>().0) {
+            let listener = std::net::TcpListener::from(fd);
+            if listener.set_nonblocking(true).is_ok() {
+                self.published.push((listener, u16::from_be_bytes(*port)));
+            }
+        }
+    }
+
+    /// Accepts what published port `i` holds: each connection opened to the guest's port,
+    /// from the gateway, as a userland proxy's connection comes from it.
+    fn accept(&mut self, i: usize) {
+        loop {
+            let Some((listener, guest_port)) = self.published.get(i) else {
+                return;
+            };
+            let guest_port = *guest_port;
+            let Ok((sock, _)) = listener.accept() else { return };
+            if sock.set_nonblocking(true).is_err() {
+                continue;
+            }
+            let Some(port) = self.free_port(guest_port) else {
+                // Every port of the range in use: refused, as a full table refuses.
+                continue;
+            };
+            let key = Key {
+                guest_port,
+                remote: (self.cfg.gateway_ip, port),
+            };
+            self.isn = self.isn.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let isn = self.isn;
+            let c = {
+                let mut o = self.out();
+                Conn::accept(key, sock, isn, &mut o)
+            };
+            self.tcp.insert(key, c);
+        }
+    }
+
+    /// A gateway port no connection to `guest_port` uses, from the ephemeral range, in
+    /// turn: the guest tells connections apart by both ends.
+    fn free_port(&mut self, guest_port: u16) -> Option<u16> {
+        for _ in EPHEMERAL {
+            let port = self.next_port;
+            self.next_port = port
+                .checked_add(1)
+                .filter(|p| EPHEMERAL.contains(p))
+                .unwrap_or(*EPHEMERAL.start());
+            let key = Key {
+                guest_port,
+                remote: (self.cfg.gateway_ip, port),
+            };
+            if !self.tcp.contains_key(&key) {
+                return Some(port);
+            }
+        }
+        None
+    }
+
     fn out(&mut self) -> Out<'_, 'r> {
         Out {
             frames: &self.frames,

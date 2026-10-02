@@ -36,6 +36,7 @@ mod demand;
 mod health;
 mod logs;
 mod network;
+mod publish;
 use crate::run::{Boot, Prepared};
 use crate::segments::log_segment;
 use crate::spec::{LogRetention, NOT_RUN};
@@ -53,6 +54,10 @@ const USAGE: &str = "usage: shards daemon [--detached | stop]
 /// How long a VM may take to be ready: a restore takes milliseconds, a boot that saves a
 /// template tens of them.
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a VM's network process may take to say it has a run's published ports: a
+/// round trip on a socket pair to a process polling it, the second `netproc::reap` gives
+/// one to end.
+const PUBLISH_PATIENCE: Duration = Duration::from_secs(1);
 /// A template whose warm VMs fail this many times in a row is removed and saved again.
 const MAX_FAILURES: u32 = 3;
 const DEFAULT_POOL: usize = 2;
@@ -133,6 +138,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 struct Ready {
     vm: Arc<shards_ipc::Child>,
     socket: UnixStream,
+    /// Its network process's control socket, if it has one: where its run's published
+    /// ports go.
+    net: Option<UnixStream>,
     /// The template whose pool it came from.
     pool: Option<PathBuf>,
     /// The template the working set it records goes with: its pool's, or the one it saves.
@@ -207,6 +215,9 @@ struct Keep<'a> {
     options: crate::spec::Options,
     /// Its health check, and the shell a `CMD-SHELL` one runs in.
     health: Option<(shards_ipc::Health, Vec<String>)>,
+    /// Its published ports' listening sockets, each with the guest port it reaches: sent
+    /// to its VM's network process, and held until that process has gone (M24).
+    published: Vec<(OwnedFd, u16)>,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -426,6 +437,10 @@ struct Daemon<D: Disk = Real> {
     next_exec: AtomicU64,
     /// Each running container's health, if it has a check: in memory, as dockerd keeps it.
     health: Mutex<HashMap<String, health::State>>,
+    /// The host addresses runs publish, from their binding until the network process
+    /// that took them has gone, and told as each goes.
+    ports_held: Mutex<Vec<publish::Held>>,
+    ports_freed: Condvar,
     /// The containers `shards rm` is removing.
     removing: Mutex<HashSet<String>>,
     /// A container's ID, directory and log, made ahead of the run that takes them.
@@ -764,6 +779,8 @@ impl<D: Disk> Daemon<D> {
             next_waiter: AtomicU64::new(0),
             next_exec: AtomicU64::new(0),
             health: Mutex::new(HashMap::new()),
+            ports_held: Mutex::default(),
+            ports_freed: Condvar::new(),
             removing: Mutex::default(),
             spare: Mutex::default(),
             saved: AtomicU64::new(0),
@@ -1079,7 +1096,7 @@ impl<D: Disk> Daemon<D> {
         }
         // Its networks as dockerd checks them before it makes the container; what fails
         // as it starts fails once the container is made.
-        let start = match network::check(&run, |name| self.resolve(name).is_ok()) {
+        let mut start = match network::check(&run, |name| self.resolve(name).is_ok()) {
             Ok(start) => start,
             Err(e) => {
                 refuse(&e);
@@ -1121,13 +1138,45 @@ impl<D: Disk> Daemon<D> {
                 return None;
             }
         };
+        // Its published ports, bound now so that its record lists them; a binding that
+        // fails, fails the start once the container is made, as dockerd's does. On none,
+        // dockerd publishes nothing, and says nothing of it.
+        let (bindings, alone) = publish::wanted(&run, &prepared.exposed);
+        let bound = match start {
+            network::Start::Attach(network::Net::Bridge) => {
+                if let Some(e) = publish::unsupported(&bindings) {
+                    refuse(&e);
+                    self.discard(&id);
+                    self.make_spare();
+                    return None;
+                }
+                publish::bind(&bindings, &alone, |at| self.in_use(at))
+            }
+            _ => Ok(publish::Bound::default()),
+        };
+        let (ports, published, unbound) = match bound {
+            Ok(b) => {
+                self.hold_ports(&id, &b.listeners);
+                (b.ports, b.listeners, None)
+            }
+            Err(e) => (Vec::new(), Vec::new(), Some(e)),
+        };
         // The run's container, before anything starts: its name must be free. Its record
         // is written while a VM is found for it.
-        if let Err(e) = self.create(&run, &prepared, &id) {
-            refuse(&e);
-            self.discard(&id);
-            self.make_spare();
-            return None;
+        let name = match self.create(&run, &prepared, &id, ports) {
+            Ok(name) => name,
+            Err(e) => {
+                self.free_ports(Some(&id), None);
+                refuse(&e);
+                self.discard(&id);
+                self.make_spare();
+                return None;
+            }
+        };
+        if let Some(e) = unbound {
+            start = network::Start::Fails(format!(
+                "failed to set up container networking: driver failed programming external connectivity on endpoint {name} ({id}): {e}"
+            ));
         }
         self.record_arrival(threads, &id);
         // `docker run -d` prints the ID once the container exists, before it starts.
@@ -1141,6 +1190,9 @@ impl<D: Disk> Daemon<D> {
         }
         if run.timing {
             flags |= shards_ipc::RUN_TIMING;
+        }
+        if !published.is_empty() {
+            flags |= shards_ipc::RUN_PUBLISHED;
         }
         // A detached run's output goes only to its log; it reads nothing.
         let mut fds = if run.detach {
@@ -1172,6 +1224,7 @@ impl<D: Disk> Daemon<D> {
                 detached,
                 options: prepared.options.clone(),
                 health: prepared.health.clone().map(|h| (h, prepared.shell.clone())),
+                published,
             },
             || self.warm_for(threads, &prepared, &start, &say),
         );
@@ -1180,6 +1233,7 @@ impl<D: Disk> Daemon<D> {
         match started {
             Ok(inbox) => Some((id, inbox)),
             Err(said) => {
+                self.free_ports(Some(&id), None);
                 refuse(&said);
                 None
             }
@@ -1201,8 +1255,24 @@ impl<D: Disk> Daemon<D> {
         keep: Keep<'_>,
         mut acquire: impl FnMut() -> Result<Ready, String>,
     ) -> Result<Arc<Mutex<Inbox>>, String> {
+        let mut keep = keep;
         for _ in 0..HANDOFF_TRIES {
             let ready = acquire().map_err(|e| self.not_started(id, &e))?;
+            // Its published ports go to its VM's network process before the VM has the
+            // run, so that none of their connections wait on its start; taken, they are
+            // that process's alone, which closes them as the run ends.
+            let mut taken = false;
+            if let Some(net) = &ready.net
+                && !keep.published.is_empty()
+            {
+                let guest_ports: Vec<u8> = keep.published.iter().flat_map(|(_, p)| p.to_be_bytes()).collect();
+                let fds: Vec<BorrowedFd<'_>> = keep.published.iter().map(|(fd, _)| fd.as_fd()).collect();
+                let _ = net.set_read_timeout(Some(PUBLISH_PATIENCE));
+                taken = shards_ipc::send(net, kind::PUBLISH, &guest_ports, &fds)
+                    .and_then(|()| shards_ipc::recv(net))
+                    .map_err(|e| log(format!("warm VM {}'s published ports: {e}", ready.vm.id())))
+                    .is_ok_and(|m| m.is_some_and(|m| m.kind == kind::PUBLISH));
+            }
             // Every way on leaves `Handing` while `ready` holds the socket it names.
             if let Err(said) = self.commit(id, ready.socket.as_raw_fd()) {
                 self.give_back(threads, ready);
@@ -1216,13 +1286,12 @@ impl<D: Disk> Daemon<D> {
                 // The warm VM serves the client from here, and ours close. A detached
                 // client waits for the daemon to say whether its command started.
                 Ok(()) => {
-                    return Ok(self.register(
-                        ready,
-                        id,
-                        keep.detached,
-                        keep.options.clone(),
-                        keep.health.clone(),
-                    ));
+                    // Taken, the daemon's copies go; else they are held until the network
+                    // process has gone (M24).
+                    if taken {
+                        keep.published.clear();
+                    }
+                    return Ok(self.register(ready, id, keep));
                 }
                 Err(Untaken::Surely(e)) => {
                     log(format!("warm VM {} did not take a run: {e}", ready.vm.id()));
@@ -1236,13 +1305,7 @@ impl<D: Disk> Daemon<D> {
                         ready.vm.id()
                     ));
                     let _ = ready.vm.kill(libc::SIGKILL);
-                    return Ok(self.register(
-                        ready,
-                        id,
-                        keep.detached,
-                        keep.options.clone(),
-                        keep.health.clone(),
-                    ));
+                    return Ok(self.register(ready, id, keep));
                 }
             }
         }
@@ -1265,6 +1328,69 @@ impl<D: Disk> Daemon<D> {
         Ok((id, log))
     }
 
+    /// Holds what container `id` publishes at `listeners`' addresses.
+    fn hold_ports(&self, id: &str, listeners: &[(OwnedFd, u16)]) {
+        let at = listeners
+            .iter()
+            .filter_map(|(fd, _)| publish::local_addr(fd.as_fd()))
+            .collect();
+        lock(&self.ports_held).push(publish::Held {
+            container: id.to_string(),
+            vm: None,
+            at,
+            listeners: Vec::new(),
+        });
+    }
+
+    /// Lets go of what container `id`'s run, or VM `vm`'s network process, held: the
+    /// daemon's copies of its listening sockets close, and their ports are free.
+    fn free_ports(&self, id: Option<&str>, vm: Option<u32>) {
+        let mut held = lock(&self.ports_held);
+        let before = held.len();
+        held.retain(|h| Some(h.container.as_str()) != id && (vm.is_none() || h.vm != vm));
+        if held.len() != before {
+            self.ports_freed.notify_all();
+        }
+    }
+
+    /// Whose host address `at`, found in use, is: the host's; a running container's of
+    /// this daemon, as dockerd's allocator knows its own; or a run's that ended, waited
+    /// for until its network process has gone (`netproc::reap`'s second, and as long
+    /// again).
+    fn in_use(&self, at: std::net::SocketAddr) -> publish::InUse {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut held = lock(&self.ports_held);
+        let mut waited = false;
+        loop {
+            let Some(holder) = held
+                .iter()
+                .find(|h| h.at.contains(&at))
+                .map(|h| h.container.clone())
+            else {
+                return if waited {
+                    publish::InUse::Freed
+                } else {
+                    publish::InUse::Host
+                };
+            };
+            let running = lock(&self.containers)
+                .get(&holder)
+                .is_some_and(|c| c.state == Life::Running);
+            if running {
+                return publish::InUse::Allocated;
+            }
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return publish::InUse::Host;
+            };
+            held = self
+                .ports_freed
+                .wait_timeout(held, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+            waited = true;
+        }
+    }
+
     /// Removes what was made for container `id`, which will not be created.
     fn discard(&self, id: &str) {
         let dir = lock(&self.containers).dir(id);
@@ -1277,7 +1403,13 @@ impl<D: Disk> Daemon<D> {
     /// names containers (moby daemon/names.go). Reserved, its name held, and seen once its
     /// record is written ([`record_arrival`](Self::record_arrival)), so that it outlives a
     /// crash of the daemon (audit A15).
-    fn create(&self, run: &Run, prepared: &Prepared, id: &str) -> Result<(), String> {
+    fn create(
+        &self,
+        run: &Run,
+        prepared: &Prepared,
+        id: &str,
+        ports: Vec<containers::PortRecord>,
+    ) -> Result<String, String> {
         // Its settings, checked before its name is taken (moby daemon/create.go,
         // verifyContainerSettings).
         let stop_signal = prepared
@@ -1328,7 +1460,7 @@ impl<D: Disk> Daemon<D> {
         };
         registry.reserve(Container {
             id: id.to_string(),
-            name,
+            name: name.clone(),
             image: run.image.clone(),
             command: prepared
                 .spec
@@ -1345,10 +1477,11 @@ impl<D: Disk> Daemon<D> {
             log_lost: 0,
             stop_signal,
             stop_timeout: run.stop_timeout,
+            ports,
         });
         // Its run is owned from the moment the container is visible.
         lock(&self.runs).insert(id.to_string(), RunState::Pending { cancelled: false });
-        Ok(())
+        Ok(name)
     }
 
     /// Has the record of reserved container `id` written, on the recorder's thread, started
@@ -1645,14 +1778,19 @@ impl<D: Disk> Daemon<D> {
     /// runs, as commands see it. A run handed over while the daemon stops is stopped too:
     /// `stop_runs` signals the runs it finds, under the same lock, and this one if it came
     /// too late to be found. Returns the run's inbox, for [`follow`](Self::follow).
-    fn register(
-        &self,
-        ready: Ready,
-        id: &str,
-        detached: Option<&UnixStream>,
-        options: crate::spec::Options,
-        health: Option<(shards_ipc::Health, Vec<String>)>,
-    ) -> Arc<Mutex<Inbox>> {
+    fn register(&self, ready: Ready, id: &str, keep: Keep<'_>) -> Arc<Mutex<Inbox>> {
+        let Keep {
+            detached,
+            options,
+            health,
+            published,
+        } = keep;
+        // Its ports are held until its VM's network process has gone, which frees them:
+        // with the daemon's copies, if that process did not say it had them.
+        if let Some(h) = lock(&self.ports_held).iter_mut().find(|h| h.container == id) {
+            h.vm = Some(ready.vm.id());
+            h.listeners = published.into_iter().map(|(fd, _)| fd).collect();
+        }
         // Runs last as long as their commands.
         let _ = ready.socket.set_read_timeout(None);
         let socket = Arc::new(ready.socket);
@@ -2453,13 +2591,11 @@ impl<D: Disk> Daemon<D> {
         net: Option<[u8; 6]>,
         dest: For,
     ) -> Result<Arc<shards_ipc::Child>, String> {
-        // Docker's default bridge reaches what the host does, but the host itself (D31).
+        // A run's microVM is on Docker's default bridge, and reaches nothing through it
+        // until a grant opens it (AGENTFILE_ARCH.md §3, default deny); its published
+        // ports' connections come in all the same.
         let network = match &net {
-            Some(mac) => Some(crate::netproc::start(
-                &self.vm,
-                shards_net::Policy::AllowAll,
-                mac,
-            )?),
+            Some(mac) => Some(crate::netproc::start(&self.vm, shards_net::Policy::DenyAll, mac)?),
             None => None,
         };
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a VM's socket: {e}"))?;
@@ -2486,14 +2622,21 @@ impl<D: Disk> Daemon<D> {
                 (side.region.as_fd(), r),
                 (side.sleeps.as_fd(), s),
                 (side.rings.as_fd(), w),
+                (side.release.as_fd(), crate::netproc::VM_RELEASE_FD),
             ]
         }))
         .collect();
+        let release_fd = crate::netproc::VM_RELEASE_FD.to_string();
         let net_arg = net.map(|mac| OsString::from(crate::netproc::VmSide::arg(&mac)));
         let given = grants
             .iter()
             .flat_map(|_| [OsStr::new("--grants"), OsStr::new("4")])
-            .chain(net_arg.iter().flat_map(|a| [OsStr::new("--net"), a.as_os_str()]));
+            .chain(net_arg.iter().flat_map(|a| [OsStr::new("--net"), a.as_os_str()]))
+            .chain(
+                net_arg
+                    .iter()
+                    .flat_map(|_| [OsStr::new("--net-release"), OsStr::new(&release_fd)]),
+            );
         let args: Vec<&OsStr> = args
             .iter()
             .take(1)
@@ -2513,19 +2656,21 @@ impl<D: Disk> Daemon<D> {
         };
         drop(fds);
         // The VM holds its side of its network now; its network process goes with it.
-        let net_process = network.map(|(net, side)| {
-            drop(side);
-            net
-        });
+        // The control socket stays the daemon's.
+        let (net_process, net_control) = match network {
+            Some((net, side)) => (Some(net), Some(side.control)),
+            None => (None, None),
+        };
         let grants = grants.map(|(grants, _)| grants);
         let vm = Arc::new(child);
         let watched = vm.clone();
         let watching = std::thread::Builder::new()
             .name("warm vm".into())
             .spawn_scoped(threads, move || {
-                self.watch(threads, &watched, ours, grants, dest);
+                self.watch(threads, &watched, ours, grants, net_control, dest);
                 if let Some(net) = net_process {
                     crate::netproc::reap(&net);
+                    self.free_ports(None, Some(watched.id()));
                 }
             });
         if let Err(e) = watching {
@@ -2543,6 +2688,7 @@ impl<D: Disk> Daemon<D> {
         child: &Arc<shards_ipc::Child>,
         socket: UnixStream,
         grants: Option<UnixStream>,
+        net: Option<UnixStream>,
         dest: For,
     ) {
         let pid = child.id();
@@ -2568,6 +2714,7 @@ impl<D: Disk> Daemon<D> {
                         pool.ready.push_back(Ready {
                             vm: child.clone(),
                             socket,
+                            net,
                             pool: Some(dir.clone()),
                             records: Some(dir.clone()),
                         });
@@ -2586,6 +2733,7 @@ impl<D: Disk> Daemon<D> {
                     let _ = tx.send(Ok(Ready {
                         vm: child.clone(),
                         socket,
+                        net,
                         pool: None,
                         records: None,
                     }));
@@ -2916,6 +3064,7 @@ mod tests {
             let ready = Ready {
                 vm,
                 socket: ours,
+                net: None,
                 pool: pool.map(PathBuf::from),
                 records: None,
             };
@@ -3003,8 +3152,9 @@ mod tests {
                 options: crate::spec::Options::default(),
                 health: None,
                 shell: Vec::new(),
+                exposed: Vec::new(),
             };
-            self.t.daemon.create(&run, &prepared, &id).unwrap();
+            self.t.daemon.create(&run, &prepared, &id, Vec::new()).unwrap();
             self.t.daemon.record_arrival(self.threads, &id);
             id
         }
@@ -3034,6 +3184,7 @@ mod tests {
                         detached: None,
                         options: crate::spec::Options::default(),
                         health: None,
+                        published: Vec::new(),
                     },
                     acquire,
                 )?;

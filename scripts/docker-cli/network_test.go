@@ -11,10 +11,13 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"sort"
 	"testing"
 
 	"github.com/docker/cli/opts"
+	"github.com/fvbommel/sortorder"
+	"github.com/moby/moby/api/types/network"
 )
 
 type shardsAddr struct {
@@ -41,6 +44,22 @@ type shardsAttachment struct {
 	GwPriority int               `json:"gw_priority"`
 }
 
+// What `port CONTAINER PORT` makes of its PORT (network.ParsePort): the port it names, or
+// the error.
+type shardsPortArg struct {
+	Arg  string `json:"arg"`
+	Port string `json:"port,omitempty"`
+	Err  string `json:"err,omitempty"`
+}
+
+// What `run -p` makes of its values: the ports exposed, and each one's bindings, sorted.
+type shardsPorts struct {
+	Publish  []string `json:"publish"`
+	Err      string   `json:"err,omitempty"`
+	Exposed  []string `json:"exposed"`
+	Bindings []string `json:"bindings"`
+}
+
 type shardsRun struct {
 	Networks  []string `json:"networks"`
 	Err       string   `json:"err,omitempty"`
@@ -65,6 +84,9 @@ func TestShardsNetwork(t *testing.T) {
 		Macs        []shardsMac        `json:"macs"`
 		Attachments []shardsAttachment `json:"attachments"`
 		Runs        []shardsRun        `json:"runs"`
+		Ports       []shardsPorts      `json:"ports"`
+		PortArgs    []shardsPortArg    `json:"port_args"`
+		Natural     []string           `json:"natural"`
 	}
 	for _, s := range []string{
 		"172.17.0.9", "::ffff:172.17.0.9", "fe80::1%eth0", "::", "::1", "1:2:3:4:5:6:1.2.3.4",
@@ -153,6 +175,64 @@ func TestShardsNetwork(t *testing.T) {
 		}
 		answers.Runs = append(answers.Runs, r)
 	}
+	for _, publish := range [][]string{
+		{"80"}, {"80/udp"}, {"80/SCTP"}, {"8080:80"}, {"127.0.0.1:8080:80"}, {"127.0.0.1::80"},
+		{"[::1]:8080:80"}, {"[::1]::80/udp"}, {"8000-8002:80-82"}, {"8000-8010:80"}, {"80-82"},
+		{"0.0.0.0:80:80", "[::]:80:80"}, {"80", "80"}, {"8080:80", "8081:80"},
+		{"published=8080,target=80"}, {"published=8080,target=80,protocol=udp"}, {"target=80"},
+		{"x"}, {"80/xyz"}, {"99999"}, {"1-x"}, {"x:80"}, {"8000-8002:80-81"}, {"a:b:c:d"},
+		{"[::1:8080:80"}, {"[::1]x:8080:80"}, {"1.2.3:80:80"}, {"fe80::1%eth0:80:80"}, {""},
+		{":80"}, {"8080:"}, {"/udp"}, {"82-80"}, {"8080-8000:80"}, {"-1"}, {"080"}, {"+80"},
+		{"80:80:80:80"}, {"published=8080"}, {"published"}, {"=8080,target=80"}, {"0"}, {"0:0"},
+		{"1.2.3.4:80-81:90-91"}, {"[1.2.3.4]:80:80"}, {"::1:8080:80"}, {"65535"}, {"65536"}, {"X:80"}, {"80/XYZ"},
+	} {
+		args := []string{}
+		for _, p := range publish {
+			args = append(args, "-p", p)
+		}
+		args = append(args, "img")
+		r := shardsPorts{Publish: publish}
+		cfg, host, _, err := parseRun(args)
+		if err != nil {
+			r.Err = err.Error()
+		} else {
+			r.Exposed, r.Bindings = []string{}, []string{}
+			for p := range cfg.ExposedPorts {
+				r.Exposed = append(r.Exposed, p.String())
+			}
+			for p, bs := range host.PortBindings {
+				for _, b := range bs {
+					ip := ""
+					if b.HostIP.IsValid() {
+						ip = b.HostIP.String()
+					}
+					r.Bindings = append(r.Bindings, p.String()+" "+ip+" "+b.HostPort)
+				}
+			}
+			sort.Strings(r.Exposed)
+			sort.Strings(r.Bindings)
+		}
+		answers.Ports = append(answers.Ports, r)
+	}
+	for _, arg := range []string{
+		"80", "80/tcp", "80/UDP", "80/xyz", "x", "", "/udp", "65535", "65536", "-1", "+80",
+		"080", "80/", "80-81", "0", "80/tcp/x", " 80",
+	} {
+		r := shardsPortArg{Arg: arg}
+		if p, err := network.ParsePort(arg); err != nil {
+			r.Err = err.Error()
+		} else {
+			r.Port = p.String()
+		}
+		answers.PortArgs = append(answers.PortArgs, r)
+	}
+	// `docker port`'s lines, in the order it prints them.
+	answers.Natural = []string{
+		"80/tcp -> 0.0.0.0:18080", "9/tcp -> [::]:9", "9/tcp -> 0.0.0.0:9", "81/udp -> 127.0.0.1:81",
+		"080/tcp -> x", "80/tcp -> [::]:18080", "443/tcp -> 0.0.0.0:443", "a10", "a9", "a09", "a009b",
+		"a9b", "", "0", "00", "10.0.0.1:80", "10.0.0.10:80", "10.0.0.9:80", "[::1]:5", "[::]:5", "Z", "a",
+	}
+	slices.SortFunc(answers.Natural, sortorder.NaturalCompare)
 	data, err := json.MarshalIndent(answers, "", "  ")
 	if err != nil {
 		t.Fatal(err)

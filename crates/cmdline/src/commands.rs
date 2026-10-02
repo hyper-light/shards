@@ -95,6 +95,17 @@ pub static RUN: Command = Command {
             None,
             "Disable any container-specified HEALTHCHECK",
         ),
+        Flag::many(
+            "publish",
+            Some(b'p'),
+            "list",
+            "Publish a container's port(s) to the host",
+        ),
+        Flag::bool(
+            "publish-all",
+            Some(b'P'),
+            "Publish all exposed ports to random ports",
+        ),
         Flag::string(
             "pull",
             None,
@@ -189,8 +200,6 @@ pid - s - -\n\
 pids-limit - i 0 -\n\
 platform - s - -\n\
 privileged - b false -\n\
-publish p m - -\n\
-publish-all P b false -\n\
 quiet q b false -\n\
 read-only - b false -\n\
 restart - s no -\n\
@@ -308,6 +317,18 @@ pub static WAIT: Command = Command {
     about: "Block until one or more containers stop, then print their exit codes",
     aliases: "shards container wait, shards wait",
     args: Args::AtLeast(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards port`.
+pub static PORT: Command = Command {
+    usage: "CONTAINER [PRIVATE_PORT[/PROTO]]",
+    about: "List port mappings or a specific mapping for the container",
+    aliases: "shards container port, shards port",
+    args: Args::Range(1, 2),
     flags: &[HELP],
     unserved: "",
     interspersed: true,
@@ -569,6 +590,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["exec", ..] => (&EXEC, "shards exec", 1),
         ["container", "exec", ..] => (&EXEC, "shards container exec", 2),
         ["container", "kill", ..] => (&KILL, "shards container kill", 2),
+        ["port", ..] => (&PORT, "shards port", 1),
+        ["container", "port", ..] => (&PORT, "shards container port", 2),
         _ => return None,
     })
 }

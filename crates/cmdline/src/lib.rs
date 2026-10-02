@@ -6,6 +6,7 @@
 //! - `go`: the Go formats those texts print values in (`strconv`);
 //! - `gotime`: Go's time formats, as `logs --since` and `--until` take them;
 //! - `network`: `--network`'s attachments, and the checks the CLI makes of them;
+//! - `ports`: `-p`'s published ports;
 //! - `term`: detach keys, and finding them in a terminal's input;
 //! - `width`: how wide the CLI takes text to be on a terminal.
 //!
@@ -19,6 +20,7 @@ pub mod flags;
 pub mod go;
 pub mod gotime;
 pub mod network;
+pub mod ports;
 mod tables;
 pub mod term;
 pub mod width;

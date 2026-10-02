@@ -13,3 +13,4 @@ workspace = true
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 shards-netring = { path = "../netring" }
+shards-ipc = { path = "../ipc" }

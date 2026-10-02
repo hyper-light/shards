@@ -502,9 +502,9 @@ fn usage_mistakes_are_answered_without_a_daemon() {
             "unknown flag: --nope\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
         ),
         (
-            &["run", "-p", "80:80", "alpine"],
-            1,
-            "\"--publish\" is not supported by shards yet\n",
+            &["run", "-p", "x", "alpine"],
+            125,
+            "shards: invalid containerPort: x\n\nRun 'shards run --help' for more information\n",
         ),
         (
             &["run", "--pull", "sometimes", "alpine"],
@@ -971,13 +971,12 @@ fn logs_carry_lines_longer_than_a_message() {
     assert_eq!(without_vms(&home, &["daemon", "stop"]).status, Some(0));
 }
 
-/// A run is on Docker's default bridge, as `docker run` puts a container (D31): it reaches
-/// a server on this host through its VM's network process, at the host's own address (its
-/// loopback and the gateway are no guest's), its own name is its address in /etc/hosts,
-/// and its resolvers are the host's, none of them loopback ones.
+/// A run is on Docker's default bridge, as `docker run` puts a container (D31), and
+/// default deny holds on it (AGENTFILE_ARCH.md §3): a server on this host, at the host's
+/// own address, refuses it, as nothing has granted it egress. Its own name is its address
+/// in /etc/hosts, and its resolvers are the host's, none of them loopback ones.
 #[test]
 fn a_run_is_on_a_network_as_docker_runs_it() {
-    use std::io::Write as _;
     let Some((home, image)) = home("containers-net") else {
         return;
     };
@@ -989,20 +988,13 @@ fn a_run_is_on_a_network_as_docker_runs_it() {
         return;
     };
     let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    server.set_nonblocking(true).unwrap();
     let port = server.local_addr().unwrap().port();
-    let serving = std::thread::spawn(move || {
-        if let Ok((mut c, _)) = server.accept() {
-            let _ = c.write_all(b"hello from the host\n");
-        }
-    });
     let to = format!("{}:{port}", host.ip());
     let ran = run_in(&home, &image, &["--rm", "-u", "root"], &["tcp", &to]);
-    assert_eq!(
-        (ran.status, ran.stdout.as_str()),
-        (Some(0), "tcp 20 hello from the host\n"),
-        "{ran}"
-    );
-    serving.join().unwrap();
+    assert_eq!(ran.status, Some(1), "{ran}");
+    assert!(ran.stdout.starts_with("tcp error Connection refused"), "{ran}");
+    assert!(server.accept().is_err(), "the server was reached");
     let files = run_in(
         &home,
         &image,
@@ -1324,4 +1316,171 @@ fn exec_runs_commands_in_a_running_container_as_docker_exec_does() {
         1,
         &format!("Error response from daemon: container {id} is not running\n"),
     );
+}
+
+/// `-p`: a container's ports published on the host as dockerd publishes them. Each
+/// connection reaches the guest from the bridge's gateway, as through dockerd's userland
+/// proxy, and carries what either side sends whole; `ps` and `port` list the bindings as
+/// docker's do; a host port taken is refused in dockerd's words, a container's as its
+/// allocator's, another program's as its bind's; and a run's ports are free again as soon
+/// as it has ended.
+#[test]
+fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
+    use std::io::{Read as _, Write as _};
+    use std::net::{SocketAddr, TcpStream};
+    let Some((home, image)) = home("containers-publish") else {
+        return;
+    };
+    let mut run = start(
+        &home,
+        &image,
+        &["--name", "web", "-p", "127.0.0.1::7001", "-p", "7000"],
+        &["serve", "7000", "3"],
+    );
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let listed = shards(&["port", "web"]);
+    assert_eq!(listed.status, Some(0), "{listed}");
+    let host_port = |line: Option<&str>| -> u16 {
+        line.and_then(|l| l.rsplit(':').next())
+            .and_then(|p| p.parse().ok())
+            .unwrap()
+    };
+    let lines: Vec<&str> = listed.stdout.lines().collect();
+    let (n, m) = (
+        host_port(lines.first().copied()),
+        host_port(lines.get(2).copied()),
+    );
+    assert_eq!(
+        listed.stdout,
+        format!("7000/tcp -> 0.0.0.0:{n}\n7000/tcp -> [::]:{n}\n7001/tcp -> 127.0.0.1:{m}\n"),
+    );
+    let one = shards(&["port", "web", "7000"]);
+    assert_eq!(one.stdout, format!("0.0.0.0:{n}\n[::]:{n}\n"), "{one}");
+    let none = shards(&["port", "web", "7002/tcp"]);
+    assert_eq!(
+        (none.status, none.stderr.as_str()),
+        (Some(1), "no public port '7002/tcp' published for web\n"),
+        "{none}"
+    );
+    let ps = shards(&["ps"]);
+    assert!(
+        ps.stdout.contains(&format!(
+            "0.0.0.0:{n}->7000/tcp, [::]:{n}->7000/tcp, 127.0.0.1:{m}->7001/tcp"
+        )),
+        "{ps}"
+    );
+    // What the guest says first, and what it sent back of `payload`.
+    let exchange = |at: SocketAddr, payload: Vec<u8>| -> (String, Vec<u8>) {
+        let mut c = TcpStream::connect_timeout(&at, TIMEOUT).unwrap();
+        c.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let mut writer = c.try_clone().unwrap();
+        let writing = std::thread::spawn(move || {
+            writer.write_all(&payload).unwrap();
+            writer.shutdown(std::net::Shutdown::Write).unwrap();
+        });
+        let mut got = Vec::new();
+        c.read_to_end(&mut got).unwrap();
+        writing.join().unwrap();
+        let at = got.iter().position(|&b| b == b'\n').unwrap();
+        let rest = got.split_off(at + 1);
+        (String::from_utf8(got).unwrap(), rest)
+    };
+    // Eight MiB each way at once: more than either side's windows hold.
+    let big: Vec<u8> = (0u32..8 << 20).map(|i| (i.wrapping_mul(7) % 251) as u8).collect();
+    let (from, echoed) = exchange(SocketAddr::from(([127, 0, 0, 1], n)), big.clone());
+    assert_eq!(from, "from 172.17.0.1\n");
+    assert!(echoed == big, "{} bytes came back of {}", echoed.len(), big.len());
+    let (from, echoed) = exchange(format!("[::1]:{n}").parse().unwrap(), b"over IPv6".to_vec());
+    assert_eq!(
+        (from.as_str(), echoed.as_slice()),
+        ("from 172.17.0.1\n", &b"over IPv6"[..])
+    );
+    // Taken by a running container: dockerd's allocator's words, the container left
+    // created.
+    let help = "\n\nRun 'shards run --help' for more information\n";
+    let late = run_in(
+        &home,
+        &image,
+        &["--name", "late", "-p", &format!("{n}:7000")],
+        &["exit", "0"],
+    );
+    let said = late.stderr.strip_suffix(help).unwrap_or_default();
+    let (before, after) = said.split_once(" (").unwrap_or_default();
+    assert_eq!(
+        (late.status, before),
+        (
+            Some(125),
+            "shards: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint late"
+        ),
+        "{late}"
+    );
+    assert!(
+        after.ends_with(&format!(
+            "): Bind for 0.0.0.0:{n} failed: port is already allocated"
+        )),
+        "{late}"
+    );
+    let all = shards(&["ps", "-a"]);
+    assert!(
+        all.stdout
+            .lines()
+            .any(|row| row.contains(" Created ") && row.ends_with(" late")),
+        "{all}"
+    );
+    // Taken by another program: its bind's words.
+    let held = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let h = held.local_addr().unwrap().port();
+    let refused = run_in(
+        &home,
+        &image,
+        &["--rm", "-p", &format!("{h}:7000")],
+        &["exit", "0"],
+    );
+    assert_eq!(refused.status, Some(125), "{refused}");
+    assert!(
+        refused.stderr.contains(&format!(
+            "): failed to bind host port 0.0.0.0:{h}/tcp: address already in use{help}"
+        )),
+        "{refused}"
+    );
+    drop(held);
+    let (from, echoed) = exchange(SocketAddr::from(([127, 0, 0, 1], n)), b"last".to_vec());
+    assert_eq!(
+        (from.as_str(), echoed.as_slice()),
+        ("from 172.17.0.1\n", &b"last"[..])
+    );
+    assert_eq!(exit(&mut run), Some(0));
+    // Ended, it lists none, and its port is free at once.
+    let gone = shards(&["port", "web"]);
+    assert_eq!((gone.status, gone.stdout.as_str()), (Some(0), ""), "{gone}");
+    // Each run's port is free as soon as `run` returns, as `docker run`'s is: the next
+    // program to bind it has it, every time.
+    for _ in 0..20 {
+        let again = run_in(
+            &home,
+            &image,
+            &["--rm", "-p", &format!("{n}:7000")],
+            &["exit", "0"],
+        );
+        assert_eq!(again.status, Some(0), "{again}");
+        drop(std::net::TcpListener::bind(("0.0.0.0", n)).unwrap());
+    }
+    // And the daemon holds it no longer: taken by another program, it is refused at once,
+    // not after the wait for a run's ports to come free.
+    let held = std::net::TcpListener::bind(("0.0.0.0", n)).unwrap();
+    let began = Instant::now();
+    let refused = run_in(
+        &home,
+        &image,
+        &["--rm", "-p", &format!("{n}:7000")],
+        &["exit", "0"],
+    );
+    assert!(
+        refused.stderr.contains(&format!(
+            "): failed to bind host port 0.0.0.0:{n}/tcp: address already in use"
+        )),
+        "{refused}"
+    );
+    assert!(began.elapsed() < Duration::from_secs(2), "{:?}", began.elapsed());
+    drop(held);
 }

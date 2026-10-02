@@ -40,6 +40,9 @@ fn before(a: u32, b: u32) -> bool {
 enum State {
     /// The host's connect is under way; the guest's SYN waits for its answer.
     Connecting,
+    /// A host's connection to a published port: this side's SYN sent to the guest,
+    /// awaiting its SYN-ACK.
+    SynSent,
     /// SYN-ACK sent, or the connection open.
     Open,
 }
@@ -130,6 +133,81 @@ impl Conn {
         })
     }
 
+    /// A connection a host client made to a published port, `sock` accepted: this side
+    /// opens it to the guest, as the client's own SYN would (RFC 9293 §3.5), offering
+    /// window scaling, which holds if the guest's SYN-ACK takes it.
+    pub fn accept(key: Key, sock: TcpStream, isn: u32, out: &mut dyn ToGuest) -> Conn {
+        let c = Conn {
+            key,
+            sock,
+            state: State::SynSent,
+            rcv_nxt: 0,
+            guest_wnd: 0,
+            guest_wscale: 0,
+            guest_mss: 536,
+            scaled: false,
+            snd_una: isn,
+            snd_nxt: isn.wrapping_add(1),
+            to_guest: VecDeque::new(),
+            to_host: VecDeque::new(),
+            guest_fin: false,
+            host_shut: false,
+            host_eof: false,
+            fin_sent: false,
+            syn_acked: false,
+            sent_at: Some(Instant::now()),
+            retries: 0,
+            closed: false,
+        };
+        c.send_syn(out);
+        c
+    }
+
+    fn send_syn(&self, out: &mut dyn ToGuest) {
+        out.segment(
+            &self.key,
+            self.snd_una,
+            0,
+            SYN,
+            u16::try_from(TO_HOST.min(usize::from(u16::MAX))).unwrap_or(u16::MAX),
+            Some((MSS, Some(OUR_WSCALE))),
+            &[],
+        );
+    }
+
+    /// The guest's answer to this side's SYN: its SYN-ACK opens the connection, its RST
+    /// refuses it, as a closed port refuses (the client's socket is then closed).
+    fn on_syn_sent(&mut self, seg: &wire::Tcp<'_>, out: &mut dyn ToGuest) {
+        if seg.flags & ACK != 0 && seg.ack != self.snd_nxt {
+            if seg.flags & RST == 0 {
+                out.segment(&self.key, seg.ack, 0, RST, 0, None, &[]);
+            }
+            return;
+        }
+        if seg.flags & RST != 0 {
+            self.closed = true;
+            return;
+        }
+        if seg.flags & (SYN | ACK) != SYN | ACK {
+            return;
+        }
+        self.rcv_nxt = seg.seq.wrapping_add(1);
+        self.scaled = seg.wscale.is_some();
+        self.guest_wscale = if self.scaled {
+            seg.wscale.unwrap_or(0).min(14)
+        } else {
+            0
+        };
+        self.guest_wnd = u32::from(seg.window);
+        self.guest_mss = seg.mss.unwrap_or(536);
+        self.snd_una = seg.ack;
+        self.syn_acked = true;
+        self.sent_at = None;
+        self.retries = 0;
+        self.state = State::Open;
+        self.ack(out);
+    }
+
     /// The window this side advertises, scaled if the guest scales.
     fn window(&self) -> u16 {
         let free = TO_HOST.saturating_sub(self.to_host.len());
@@ -158,7 +236,7 @@ impl Conn {
     /// Whether this connection waits for its socket to become writable: to finish
     /// connecting, or to take what the guest sent.
     pub fn wants_write(&self) -> bool {
-        self.state == State::Connecting || !self.to_host.is_empty()
+        self.state == State::Connecting || self.state == State::Open && !self.to_host.is_empty()
     }
 
     /// Whether it can take host bytes for the guest now.
@@ -313,6 +391,10 @@ impl Conn {
 
     /// A segment from the guest for this connection.
     pub fn on_segment(&mut self, seg: &wire::Tcp<'_>, out: &mut dyn ToGuest) {
+        if self.state == State::SynSent {
+            self.on_syn_sent(seg, out);
+            return;
+        }
         if seg.flags & RST != 0 {
             self.closed = true;
             return;
@@ -407,6 +489,11 @@ impl Conn {
             return;
         }
         self.retries += 1;
+        if self.state == State::SynSent {
+            self.sent_at = Some(now);
+            self.send_syn(out);
+            return;
+        }
         // Everything from snd_una is sent again.
         let fin = self.fin_sent;
         self.snd_nxt = self.snd_una;

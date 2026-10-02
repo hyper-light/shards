@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-use shards_cmdline::commands::{self, KILL, LOGS, PS, RM, STOP, WAIT};
+use shards_cmdline::commands::{self, KILL, LOGS, PORT, PS, RM, STOP, WAIT};
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
 use shards_ipc::kind;
@@ -300,10 +300,66 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.stop(&parsed, reply)
         } else if std::ptr::eq(command, &KILL) {
             self.kill(&parsed, reply)
+        } else if std::ptr::eq(command, &PORT) {
+            self.port(&parsed.args, reply)
         } else {
             reply.err(&format!("shards: {path} is not a container command"));
             1
         }
+    }
+
+    /// `shards port CONTAINER [PORT]` (docker/cli cli/command/container/port.go): each
+    /// published port of a running container as `PORT/PROTO -> HOST:PORT`, or with PORT
+    /// the host addresses of that one, in natural order.
+    fn port(&self, args: &[String], reply: &Reply<'_>) -> u8 {
+        let (Some(reference), wanted) = (args.first(), args.get(1).filter(|p| !p.is_empty())) else {
+            return 1;
+        };
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(e) => {
+                reply.err(&e);
+                return 1;
+            }
+        };
+        let wanted = match wanted.map(|p| shards_cmdline::ports::parse_port(p)).transpose() {
+            Ok(wanted) => wanted,
+            Err(e) => {
+                reply.err(&e);
+                return 1;
+            }
+        };
+        // dockerd's NetworkSettings.Ports: a running container's bindings.
+        let ports = match lock(&self.containers).get(&id) {
+            Some(c) if c.state == Life::Running => c.ports.clone(),
+            _ => Vec::new(),
+        };
+        let mut lines: Vec<String> = ports
+            .iter()
+            .filter_map(|p| {
+                let at = std::net::SocketAddr::new(p.ip?, p.public);
+                let port = shards_cmdline::ports::Port {
+                    number: p.private,
+                    proto: p.proto.clone(),
+                };
+                match &wanted {
+                    Some(w) => (*w == port).then(|| at.to_string()),
+                    None => Some(format!("{port} -> {at}")),
+                }
+            })
+            .collect();
+        if lines.is_empty() {
+            if let Some(w) = args.get(1).filter(|_| wanted.is_some()) {
+                reply.err(&format!("no public port '{w}' published for {reference}"));
+                return 1;
+            }
+            return 0;
+        }
+        lines.sort_by(|a, b| shards_cmdline::ports::natural_compare(a, b));
+        for line in lines {
+            reply.out(&line);
+        }
+        0
     }
 
     /// The ID of the container `reference` names: all of its ID, its name, or the start of
@@ -665,6 +721,22 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 command: command_line(&c.command),
                 created: c.created,
                 status: status(c, at, health.get(&c.id).map(|h| h.status)),
+                // dockerd lists ports while a container runs.
+                ports: if c.state == Life::Running {
+                    displayable_ports(
+                        c.ports
+                            .iter()
+                            .map(|p| PortSummary {
+                                ip: p.ip,
+                                private: p.private,
+                                public: p.public,
+                                proto: p.proto.clone(),
+                            })
+                            .collect(),
+                    )
+                } else {
+                    String::new()
+                },
                 name: c.name.clone(),
             })
             .collect();
@@ -911,6 +983,34 @@ mod tests {
 
     /// Every table the Docker CLI printed of the same containers (scripts/docker-cli/
     /// ps_test.go), shards prints byte for byte; and go-units' durations likewise.
+    /// The PORTS column as docker/cli's DisplayablePorts writes it, for each set of ports in
+    /// docker-ps.json.
+    #[test]
+    fn ports_show_as_docker_ps_shows_them() {
+        let golden: serde_json::Value = serde_json::from_str(include_str!("docker-ps.json")).unwrap();
+        for set in golden["ports"].as_array().unwrap() {
+            assert_eq!(
+                displayable_ports(port_summaries(&set["ports"])),
+                set["shown"].as_str().unwrap()
+            );
+        }
+    }
+
+    fn port_summaries(ports: &serde_json::Value) -> Vec<PortSummary> {
+        ports
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .map(|p| PortSummary {
+                ip: p["ip"].as_str().unwrap().parse().ok(),
+                private: u16::try_from(p["private"].as_u64().unwrap()).unwrap(),
+                public: u16::try_from(p["public"].as_u64().unwrap()).unwrap(),
+                proto: p["type"].as_str().unwrap().to_string(),
+            })
+            .collect()
+    }
+
     #[test]
     fn ps_prints_what_the_docker_cli_prints() {
         let golden: serde_json::Value = serde_json::from_str(include_str!("docker-ps.json")).unwrap();
@@ -939,6 +1039,7 @@ mod tests {
                     command: text(&c["command"]),
                     created: at - u128::from(c["ago"].as_u64().unwrap()) * s,
                     status: text(&c["status"]),
+                    ports: displayable_ports(port_summaries(&c["ports"])),
                     name: text(&c["name"]),
                 })
                 .collect();
@@ -1066,7 +1167,69 @@ struct Listed {
     command: String,
     created: u128,
     status: String,
+    ports: String,
     name: String,
+}
+
+/// A port as dockerd lists a running container's: published at a host address and port,
+/// or exposed alone (no address, public port 0).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PortSummary {
+    pub ip: Option<std::net::IpAddr>,
+    pub private: u16,
+    pub public: u16,
+    pub proto: String,
+}
+
+/// The PORTS column of `docker ps` (docker/cli cli/command/formatter/container.go,
+/// DisplayablePorts): ports sorted by private port, address, public port and protocol;
+/// those published on their own number grouped into ranges per address and protocol,
+/// as are those exposed alone; the rest as `address:public->private/protocol` after them.
+pub(super) fn displayable_ports(mut ports: Vec<PortSummary>) -> String {
+    ports.sort_by(|a, b| (a.private, a.ip, a.public, &a.proto).cmp(&(b.private, b.ip, b.public, &b.proto)));
+    // A host and port as Go's net.JoinHostPort writes them: IPv6 in brackets.
+    let join = |ip: &std::net::IpAddr, port: &str| match ip {
+        std::net::IpAddr::V6(v6) => format!("[{v6}]:{port}"),
+        std::net::IpAddr::V4(v4) => format!("{v4}:{port}"),
+    };
+    let form = |key: &(Option<std::net::IpAddr>, String), first: u16, last: u16| {
+        let group = if first == last {
+            first.to_string()
+        } else {
+            format!("{first}-{last}")
+        };
+        match &key.0 {
+            Some(ip) => format!("{}->{group}/{}", join(ip, &group), key.1),
+            None => format!("{group}/{}", key.1),
+        }
+    };
+    let mut groups: Vec<((Option<std::net::IpAddr>, String), u16, u16)> = Vec::new();
+    let (mut result, mut mappings) = (Vec::new(), Vec::new());
+    for p in &ports {
+        if let Some(ip) = &p.ip
+            && p.public != p.private
+        {
+            mappings.push(format!(
+                "{}->{}/{}",
+                join(ip, &p.public.to_string()),
+                p.private,
+                p.proto
+            ));
+            continue;
+        }
+        let key = (p.ip, p.proto.clone());
+        match groups.iter_mut().find(|(k, _, _)| *k == key) {
+            None => groups.push((key, p.private, p.private)),
+            Some((_, _, last)) if p.private == last.wrapping_add(1) => *last = p.private,
+            Some(group) => {
+                result.push(form(&group.0, group.1, group.2));
+                (group.1, group.2) = (p.private, p.private);
+            }
+        }
+    }
+    result.extend(groups.iter().map(|(k, first, last)| form(k, *first, *last)));
+    result.extend(mappings);
+    result.join(", ")
 }
 
 /// How `ps` was asked to list: `--no-trunc` or not, `-q`, and the client's locale.
@@ -1116,7 +1279,7 @@ fn ps_lines(list: &[Listed], at: u128, shown: Listing) -> Vec<String> {
             go::quote(&command),
             format!("{} ago", human_duration(at.saturating_sub(created))),
             c.status.clone(),
-            String::new(),
+            c.ports.clone(),
             c.name.clone(),
         ]);
     }

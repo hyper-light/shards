@@ -1501,6 +1501,22 @@ stack inside the VMM, is superseded by it.
   the guest is 172.17.0.2/16 behind 172.17.0.1, with a random, locally administered MAC
   as Docker gives a container, which a template keeps and its restores reuse; the daemon
   starts each VM's network process beside it and hands the VM its side of the ring.
+  - *Default deny (AGENTFILE_ARCH.md §3).* A run's network process denies every flow the
+    guest opens: the guest is on the bridge, and reaches nothing through it until a
+    grant opens it. Builds' `RUN` steps keep BuildKit's access, as their parity needs.
+  - *Published ports (`-p`, `-P`).* The daemon binds each host port as the run starts, as
+    dockerd's port allocator does (moby docker-v29.3.1 portallocator/osallocator_linux.go:
+    `SO_REUSEADDR`, `IPV6_V6ONLY`, one port at every address, 10 tries for a picked one),
+    and hands the listening sockets to the VM's network process over a control socket,
+    before the VM has the run. That process accepts each connection and opens it to the
+    guest from the gateway, as dockerd's userland proxy's comes, apart from the policy,
+    which governs only what the guest opens. A taken port fails the start in dockerd's
+    words, its allocator's for a container's port, bindTCPOrUDP's for another program's.
+  - *A run's ports are free when its end is told.* The network process says it has the
+    sockets, and the daemon's copies close (M24 holds them until then); as the run ends,
+    the VM has the network process close them, and waits for it to say so, before it tells
+    the daemon and the client (`kind::UNPUBLISH`), so that `run --rm -p N …` followed by
+    any bind of N succeeds, as Docker's does. Only runs that publish pay that round trip.
 - **Open, measured before it is built** (networking.md §4):
   - *The data path between the two processes* (E2), **decided (PM M83):** a ring of frame
     slots in memory the two processes share, not the datagram socket Apple's model uses

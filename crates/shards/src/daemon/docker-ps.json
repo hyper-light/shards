@@ -89,6 +89,181 @@
       "text": "2 years"
     }
   ],
+  "ports": [
+    {
+      "ports": [
+        {
+          "ip": "0.0.0.0",
+          "private": 80,
+          "public": 18080,
+          "type": "tcp"
+        },
+        {
+          "ip": "::",
+          "private": 80,
+          "public": 18080,
+          "type": "tcp"
+        },
+        {
+          "ip": "127.0.0.1",
+          "private": 81,
+          "public": 18081,
+          "type": "udp"
+        },
+        {
+          "ip": "0.0.0.0",
+          "private": 18082,
+          "public": 63056,
+          "type": "tcp"
+        },
+        {
+          "ip": "::",
+          "private": 18082,
+          "public": 63056,
+          "type": "tcp"
+        }
+      ],
+      "shown": "0.0.0.0:18080-\u003e80/tcp, [::]:18080-\u003e80/tcp, 127.0.0.1:18081-\u003e81/udp, 0.0.0.0:63056-\u003e18082/tcp, [::]:63056-\u003e18082/tcp"
+    },
+    {
+      "ports": [
+        {
+          "ip": "",
+          "private": 80,
+          "public": 0,
+          "type": "tcp"
+        },
+        {
+          "ip": "",
+          "private": 81,
+          "public": 0,
+          "type": "tcp"
+        },
+        {
+          "ip": "",
+          "private": 82,
+          "public": 0,
+          "type": "tcp"
+        },
+        {
+          "ip": "",
+          "private": 90,
+          "public": 0,
+          "type": "udp"
+        },
+        {
+          "ip": "",
+          "private": 84,
+          "public": 0,
+          "type": "tcp"
+        }
+      ],
+      "shown": "80-82/tcp, 84/tcp, 90/udp"
+    },
+    {
+      "ports": [
+        {
+          "ip": "0.0.0.0",
+          "private": 80,
+          "public": 80,
+          "type": "tcp"
+        },
+        {
+          "ip": "0.0.0.0",
+          "private": 81,
+          "public": 81,
+          "type": "tcp"
+        },
+        {
+          "ip": "::",
+          "private": 80,
+          "public": 80,
+          "type": "tcp"
+        },
+        {
+          "ip": "0.0.0.0",
+          "private": 83,
+          "public": 83,
+          "type": "tcp"
+        },
+        {
+          "ip": "::",
+          "private": 81,
+          "public": 81,
+          "type": "tcp"
+        }
+      ],
+      "shown": "0.0.0.0:80-81-\u003e80-81/tcp, 0.0.0.0:83-\u003e83/tcp, [::]:80-81-\u003e80-81/tcp"
+    },
+    {
+      "ports": [
+        {
+          "ip": "::",
+          "private": 9000,
+          "public": 9001,
+          "type": "udp"
+        },
+        {
+          "ip": "",
+          "private": 22,
+          "public": 0,
+          "type": "tcp"
+        },
+        {
+          "ip": "10.0.0.1",
+          "private": 9000,
+          "public": 9000,
+          "type": "tcp"
+        },
+        {
+          "ip": "0.0.0.0",
+          "private": 9000,
+          "public": 9000,
+          "type": "tcp"
+        },
+        {
+          "ip": "",
+          "private": 23,
+          "public": 0,
+          "type": "tcp"
+        },
+        {
+          "ip": "0.0.0.0",
+          "private": 7,
+          "public": 7,
+          "type": "sctp"
+        }
+      ],
+      "shown": "0.0.0.0:7-\u003e7/sctp, 22-23/tcp, 0.0.0.0:9000-\u003e9000/tcp, 10.0.0.1:9000-\u003e9000/tcp, [::]:9001-\u003e9000/udp"
+    },
+    {
+      "ports": [],
+      "shown": ""
+    },
+    {
+      "ports": [
+        {
+          "ip": "0.0.0.0",
+          "private": 5000,
+          "public": 5000,
+          "type": "tcp"
+        },
+        {
+          "ip": "0.0.0.0",
+          "private": 5001,
+          "public": 6001,
+          "type": "tcp"
+        },
+        {
+          "ip": "0.0.0.0",
+          "private": 5002,
+          "public": 5002,
+          "type": "tcp"
+        }
+      ],
+      "shown": "0.0.0.0:5000-\u003e5000/tcp, 0.0.0.0:5002-\u003e5002/tcp, 0.0.0.0:6001-\u003e5001/tcp"
+    }
+  ],
   "tables": [
     {
       "containers": [
@@ -98,7 +273,27 @@
           "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
           "ago": 1,
           "status": "Up Less than a second",
-          "name": "test"
+          "name": "test",
+          "ports": [
+            {
+              "ip": "0.0.0.0",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "::",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "",
+              "private": 443,
+              "public": 0,
+              "type": "tcp"
+            }
+          ]
         },
         {
           "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
@@ -106,7 +301,8 @@
           "command": "sh",
           "ago": 4,
           "status": "Exited (0) 3 seconds ago",
-          "name": "ecstatic_beaver"
+          "name": "ecstatic_beaver",
+          "ports": null
         },
         {
           "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
@@ -114,7 +310,8 @@
           "command": "echo 12345678901234567890",
           "ago": 7200,
           "status": "Created",
-          "name": "x"
+          "name": "x",
+          "ports": null
         },
         {
           "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
@@ -122,7 +319,8 @@
           "command": "printf 'a\tb\nc'",
           "ago": 120,
           "status": "Exited (137) About a minute ago",
-          "name": "tabs"
+          "name": "tabs",
+          "ports": null
         },
         {
           "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
@@ -130,7 +328,8 @@
           "command": "echo 日本語の文字列です",
           "ago": 3600,
           "status": "Up About an hour",
-          "name": "cjk"
+          "name": "cjk",
+          "ports": null
         },
         {
           "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
@@ -138,7 +337,8 @@
           "command": "echo é   ‮ x",
           "ago": 90000,
           "status": "Up 25 hours",
-          "name": "marks"
+          "name": "marks",
+          "ports": null
         },
         {
           "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
@@ -146,7 +346,8 @@
           "command": "echo …… ambiguous width",
           "ago": 172800,
           "status": "Exited (1) 2 days ago",
-          "name": "ambiguous"
+          "name": "ambiguous",
+          "ports": null
         },
         {
           "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
@@ -154,7 +355,8 @@
           "command": "sh -c 'echo \"quoted\" \\ back'",
           "ago": 1209600,
           "status": "Exited (2) 2 weeks ago",
-          "name": "quotes"
+          "name": "quotes",
+          "ports": null
         },
         {
           "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
@@ -162,13 +364,14 @@
           "command": "echo 😀 done\u0001",
           "ago": 5184000,
           "status": "Exited (0) 8 weeks ago",
-          "name": "a-rather-long-container-name_1"
+          "name": "a-rather-long-container-name_1",
+          "ports": null
         }
       ],
       "trunc": true,
       "quiet": false,
       "east_asian": false,
-      "output": "CONTAINER ID   IMAGE                          COMMAND                    CREATED             STATUS                            PORTS     NAMES\n4bed76d3ad42   nginx:alpine                   \"/docker-entrypoint.…\"     1 second ago        Up Less than a second                       test\nb0318bca5aef   busybox:latest                 \"sh\"                       4 seconds ago       Exited (0) 3 seconds ago                    ecstatic_beaver\nc0318bca5aef   alpine                         \"echo 12345678901234…\"     2 hours ago         Created                                     x\nd0318bca5aef   localhost:5000/team/app:v1.2   \"printf 'a\\tb\\nc'\"         2 minutes ago       Exited (137) About a minute ago             tabs\ne0318bca5aef   ghcr.io/org/image              \"echo 日本語の文字列…\"     About an hour ago   Up About an hour                            cjk\nf0318bca5aef   team/tool:1                    \"echo é \\u00a0 \\u202e x\"   25 hours ago        Up 25 hours                                 marks\na1318bca5aef   busybox                        \"echo …… ambiguous w…\"     2 days ago          Exited (1) 2 days ago                       ambiguous\na2318bca5aef   busybox:1.36                   \"sh -c 'echo \\\"quoted…\"    2 weeks ago         Exited (2) 2 weeks ago                      quotes\na3318bca5aef   busybox                        \"echo 😀 done\\x01\\x7f\"     2 months ago        Exited (0) 8 weeks ago                      a-rather-long-container-name_1\n"
+      "output": "CONTAINER ID   IMAGE                          COMMAND                    CREATED             STATUS                            PORTS                                                NAMES\n4bed76d3ad42   nginx:alpine                   \"/docker-entrypoint.…\"     1 second ago        Up Less than a second             443/tcp, 0.0.0.0:18080-\u003e80/tcp, [::]:18080-\u003e80/tcp   test\nb0318bca5aef   busybox:latest                 \"sh\"                       4 seconds ago       Exited (0) 3 seconds ago                                                               ecstatic_beaver\nc0318bca5aef   alpine                         \"echo 12345678901234…\"     2 hours ago         Created                                                                                x\nd0318bca5aef   localhost:5000/team/app:v1.2   \"printf 'a\\tb\\nc'\"         2 minutes ago       Exited (137) About a minute ago                                                        tabs\ne0318bca5aef   ghcr.io/org/image              \"echo 日本語の文字列…\"     About an hour ago   Up About an hour                                                                       cjk\nf0318bca5aef   team/tool:1                    \"echo é \\u00a0 \\u202e x\"   25 hours ago        Up 25 hours                                                                            marks\na1318bca5aef   busybox                        \"echo …… ambiguous w…\"     2 days ago          Exited (1) 2 days ago                                                                  ambiguous\na2318bca5aef   busybox:1.36                   \"sh -c 'echo \\\"quoted…\"    2 weeks ago         Exited (2) 2 weeks ago                                                                 quotes\na3318bca5aef   busybox                        \"echo 😀 done\\x01\\x7f\"     2 months ago        Exited (0) 8 weeks ago                                                                 a-rather-long-container-name_1\n"
     },
     {
       "containers": null,
@@ -185,7 +388,27 @@
           "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
           "ago": 1,
           "status": "Up Less than a second",
-          "name": "test"
+          "name": "test",
+          "ports": [
+            {
+              "ip": "0.0.0.0",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "::",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "",
+              "private": 443,
+              "public": 0,
+              "type": "tcp"
+            }
+          ]
         },
         {
           "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
@@ -193,7 +416,8 @@
           "command": "sh",
           "ago": 4,
           "status": "Exited (0) 3 seconds ago",
-          "name": "ecstatic_beaver"
+          "name": "ecstatic_beaver",
+          "ports": null
         },
         {
           "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
@@ -201,7 +425,8 @@
           "command": "echo 12345678901234567890",
           "ago": 7200,
           "status": "Created",
-          "name": "x"
+          "name": "x",
+          "ports": null
         },
         {
           "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
@@ -209,7 +434,8 @@
           "command": "printf 'a\tb\nc'",
           "ago": 120,
           "status": "Exited (137) About a minute ago",
-          "name": "tabs"
+          "name": "tabs",
+          "ports": null
         },
         {
           "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
@@ -217,7 +443,8 @@
           "command": "echo 日本語の文字列です",
           "ago": 3600,
           "status": "Up About an hour",
-          "name": "cjk"
+          "name": "cjk",
+          "ports": null
         },
         {
           "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
@@ -225,7 +452,8 @@
           "command": "echo é   ‮ x",
           "ago": 90000,
           "status": "Up 25 hours",
-          "name": "marks"
+          "name": "marks",
+          "ports": null
         },
         {
           "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
@@ -233,7 +461,8 @@
           "command": "echo …… ambiguous width",
           "ago": 172800,
           "status": "Exited (1) 2 days ago",
-          "name": "ambiguous"
+          "name": "ambiguous",
+          "ports": null
         },
         {
           "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
@@ -241,7 +470,8 @@
           "command": "sh -c 'echo \"quoted\" \\ back'",
           "ago": 1209600,
           "status": "Exited (2) 2 weeks ago",
-          "name": "quotes"
+          "name": "quotes",
+          "ports": null
         },
         {
           "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
@@ -249,7 +479,8 @@
           "command": "echo 😀 done\u0001",
           "ago": 5184000,
           "status": "Exited (0) 8 weeks ago",
-          "name": "a-rather-long-container-name_1"
+          "name": "a-rather-long-container-name_1",
+          "ports": null
         }
       ],
       "trunc": true,
@@ -272,7 +503,27 @@
           "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
           "ago": 1,
           "status": "Up Less than a second",
-          "name": "test"
+          "name": "test",
+          "ports": [
+            {
+              "ip": "0.0.0.0",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "::",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "",
+              "private": 443,
+              "public": 0,
+              "type": "tcp"
+            }
+          ]
         },
         {
           "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
@@ -280,7 +531,8 @@
           "command": "sh",
           "ago": 4,
           "status": "Exited (0) 3 seconds ago",
-          "name": "ecstatic_beaver"
+          "name": "ecstatic_beaver",
+          "ports": null
         },
         {
           "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
@@ -288,7 +540,8 @@
           "command": "echo 12345678901234567890",
           "ago": 7200,
           "status": "Created",
-          "name": "x"
+          "name": "x",
+          "ports": null
         },
         {
           "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
@@ -296,7 +549,8 @@
           "command": "printf 'a\tb\nc'",
           "ago": 120,
           "status": "Exited (137) About a minute ago",
-          "name": "tabs"
+          "name": "tabs",
+          "ports": null
         },
         {
           "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
@@ -304,7 +558,8 @@
           "command": "echo 日本語の文字列です",
           "ago": 3600,
           "status": "Up About an hour",
-          "name": "cjk"
+          "name": "cjk",
+          "ports": null
         },
         {
           "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
@@ -312,7 +567,8 @@
           "command": "echo é   ‮ x",
           "ago": 90000,
           "status": "Up 25 hours",
-          "name": "marks"
+          "name": "marks",
+          "ports": null
         },
         {
           "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
@@ -320,7 +576,8 @@
           "command": "echo …… ambiguous width",
           "ago": 172800,
           "status": "Exited (1) 2 days ago",
-          "name": "ambiguous"
+          "name": "ambiguous",
+          "ports": null
         },
         {
           "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
@@ -328,7 +585,8 @@
           "command": "sh -c 'echo \"quoted\" \\ back'",
           "ago": 1209600,
           "status": "Exited (2) 2 weeks ago",
-          "name": "quotes"
+          "name": "quotes",
+          "ports": null
         },
         {
           "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
@@ -336,13 +594,14 @@
           "command": "echo 😀 done\u0001",
           "ago": 5184000,
           "status": "Exited (0) 8 weeks ago",
-          "name": "a-rather-long-container-name_1"
+          "name": "a-rather-long-container-name_1",
+          "ports": null
         }
       ],
       "trunc": false,
       "quiet": false,
       "east_asian": false,
-      "output": "CONTAINER ID                                                       IMAGE                                                                                                  COMMAND                                          CREATED             STATUS                            PORTS     NAMES\n4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19   nginx:alpine                                                                                           \"/docker-entrypoint.sh nginx -g 'daemon off;'\"   1 second ago        Up Less than a second                       test\nb0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001   docker.io/library/busybox:latest                                                                       \"sh\"                                             4 seconds ago       Exited (0) 3 seconds ago                    ecstatic_beaver\nc0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002   alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1                         \"echo 12345678901234567890\"                      2 hours ago         Created                                     x\nd0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003   localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1   \"printf 'a\\tb\\nc'\"                               2 minutes ago       Exited (137) About a minute ago             tabs\ne0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004   ghcr.io/org/image                                                                                      \"echo 日本語の文字列です\"                        About an hour ago   Up About an hour                            cjk\nf0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005   docker.io/team/tool:1                                                                                  \"echo é \\u00a0 \\u202e x\"                         25 hours ago        Up 25 hours                                 marks\na1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006   busybox                                                                                                \"echo …… ambiguous width\"                        2 days ago          Exited (1) 2 days ago                       ambiguous\na2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007   busybox:1.36                                                                                           \"sh -c 'echo \\\"quoted\\\" \\\\ back'\"                2 weeks ago         Exited (2) 2 weeks ago                      quotes\na3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008   busybox                                                                                                \"echo 😀 done\\x01\\x7f\"                           2 months ago        Exited (0) 8 weeks ago                      a-rather-long-container-name_1\n"
+      "output": "CONTAINER ID                                                       IMAGE                                                                                                  COMMAND                                          CREATED             STATUS                            PORTS                                                NAMES\n4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19   nginx:alpine                                                                                           \"/docker-entrypoint.sh nginx -g 'daemon off;'\"   1 second ago        Up Less than a second             443/tcp, 0.0.0.0:18080-\u003e80/tcp, [::]:18080-\u003e80/tcp   test\nb0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001   docker.io/library/busybox:latest                                                                       \"sh\"                                             4 seconds ago       Exited (0) 3 seconds ago                                                               ecstatic_beaver\nc0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002   alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1                         \"echo 12345678901234567890\"                      2 hours ago         Created                                                                                x\nd0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003   localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1   \"printf 'a\\tb\\nc'\"                               2 minutes ago       Exited (137) About a minute ago                                                        tabs\ne0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004   ghcr.io/org/image                                                                                      \"echo 日本語の文字列です\"                        About an hour ago   Up About an hour                                                                       cjk\nf0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005   docker.io/team/tool:1                                                                                  \"echo é \\u00a0 \\u202e x\"                         25 hours ago        Up 25 hours                                                                            marks\na1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006   busybox                                                                                                \"echo …… ambiguous width\"                        2 days ago          Exited (1) 2 days ago                                                                  ambiguous\na2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007   busybox:1.36                                                                                           \"sh -c 'echo \\\"quoted\\\" \\\\ back'\"                2 weeks ago         Exited (2) 2 weeks ago                                                                 quotes\na3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008   busybox                                                                                                \"echo 😀 done\\x01\\x7f\"                           2 months ago        Exited (0) 8 weeks ago                                                                 a-rather-long-container-name_1\n"
     },
     {
       "containers": null,
@@ -359,7 +618,27 @@
           "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
           "ago": 1,
           "status": "Up Less than a second",
-          "name": "test"
+          "name": "test",
+          "ports": [
+            {
+              "ip": "0.0.0.0",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "::",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "",
+              "private": 443,
+              "public": 0,
+              "type": "tcp"
+            }
+          ]
         },
         {
           "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
@@ -367,7 +646,8 @@
           "command": "sh",
           "ago": 4,
           "status": "Exited (0) 3 seconds ago",
-          "name": "ecstatic_beaver"
+          "name": "ecstatic_beaver",
+          "ports": null
         },
         {
           "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
@@ -375,7 +655,8 @@
           "command": "echo 12345678901234567890",
           "ago": 7200,
           "status": "Created",
-          "name": "x"
+          "name": "x",
+          "ports": null
         },
         {
           "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
@@ -383,7 +664,8 @@
           "command": "printf 'a\tb\nc'",
           "ago": 120,
           "status": "Exited (137) About a minute ago",
-          "name": "tabs"
+          "name": "tabs",
+          "ports": null
         },
         {
           "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
@@ -391,7 +673,8 @@
           "command": "echo 日本語の文字列です",
           "ago": 3600,
           "status": "Up About an hour",
-          "name": "cjk"
+          "name": "cjk",
+          "ports": null
         },
         {
           "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
@@ -399,7 +682,8 @@
           "command": "echo é   ‮ x",
           "ago": 90000,
           "status": "Up 25 hours",
-          "name": "marks"
+          "name": "marks",
+          "ports": null
         },
         {
           "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
@@ -407,7 +691,8 @@
           "command": "echo …… ambiguous width",
           "ago": 172800,
           "status": "Exited (1) 2 days ago",
-          "name": "ambiguous"
+          "name": "ambiguous",
+          "ports": null
         },
         {
           "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
@@ -415,7 +700,8 @@
           "command": "sh -c 'echo \"quoted\" \\ back'",
           "ago": 1209600,
           "status": "Exited (2) 2 weeks ago",
-          "name": "quotes"
+          "name": "quotes",
+          "ports": null
         },
         {
           "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
@@ -423,7 +709,8 @@
           "command": "echo 😀 done\u0001",
           "ago": 5184000,
           "status": "Exited (0) 8 weeks ago",
-          "name": "a-rather-long-container-name_1"
+          "name": "a-rather-long-container-name_1",
+          "ports": null
         }
       ],
       "trunc": false,
@@ -446,7 +733,27 @@
           "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
           "ago": 1,
           "status": "Up Less than a second",
-          "name": "test"
+          "name": "test",
+          "ports": [
+            {
+              "ip": "0.0.0.0",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "::",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "",
+              "private": 443,
+              "public": 0,
+              "type": "tcp"
+            }
+          ]
         },
         {
           "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
@@ -454,7 +761,8 @@
           "command": "sh",
           "ago": 4,
           "status": "Exited (0) 3 seconds ago",
-          "name": "ecstatic_beaver"
+          "name": "ecstatic_beaver",
+          "ports": null
         },
         {
           "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
@@ -462,7 +770,8 @@
           "command": "echo 12345678901234567890",
           "ago": 7200,
           "status": "Created",
-          "name": "x"
+          "name": "x",
+          "ports": null
         },
         {
           "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
@@ -470,7 +779,8 @@
           "command": "printf 'a\tb\nc'",
           "ago": 120,
           "status": "Exited (137) About a minute ago",
-          "name": "tabs"
+          "name": "tabs",
+          "ports": null
         },
         {
           "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
@@ -478,7 +788,8 @@
           "command": "echo 日本語の文字列です",
           "ago": 3600,
           "status": "Up About an hour",
-          "name": "cjk"
+          "name": "cjk",
+          "ports": null
         },
         {
           "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
@@ -486,7 +797,8 @@
           "command": "echo é   ‮ x",
           "ago": 90000,
           "status": "Up 25 hours",
-          "name": "marks"
+          "name": "marks",
+          "ports": null
         },
         {
           "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
@@ -494,7 +806,8 @@
           "command": "echo …… ambiguous width",
           "ago": 172800,
           "status": "Exited (1) 2 days ago",
-          "name": "ambiguous"
+          "name": "ambiguous",
+          "ports": null
         },
         {
           "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
@@ -502,7 +815,8 @@
           "command": "sh -c 'echo \"quoted\" \\ back'",
           "ago": 1209600,
           "status": "Exited (2) 2 weeks ago",
-          "name": "quotes"
+          "name": "quotes",
+          "ports": null
         },
         {
           "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
@@ -510,13 +824,14 @@
           "command": "echo 😀 done\u0001",
           "ago": 5184000,
           "status": "Exited (0) 8 weeks ago",
-          "name": "a-rather-long-container-name_1"
+          "name": "a-rather-long-container-name_1",
+          "ports": null
         }
       ],
       "trunc": true,
       "quiet": false,
       "east_asian": true,
-      "output": "CONTAINER ID   IMAGE                          COMMAND                     CREATED             STATUS                            PORTS     NAMES\n4bed76d3ad42   nginx:alpine                   \"/docker-entrypoint.…\"     1 second ago        Up Less than a second                       test\nb0318bca5aef   busybox:latest                 \"sh\"                        4 seconds ago       Exited (0) 3 seconds ago                    ecstatic_beaver\nc0318bca5aef   alpine                         \"echo 12345678901234…\"     2 hours ago         Created                                     x\nd0318bca5aef   localhost:5000/team/app:v1.2   \"printf 'a\\tb\\nc'\"          2 minutes ago       Exited (137) About a minute ago             tabs\ne0318bca5aef   ghcr.io/org/image              \"echo 日本語の文字列…\"     About an hour ago   Up About an hour                            cjk\nf0318bca5aef   team/tool:1                    \"echo é \\u00a0 \\u202e x\"    25 hours ago        Up 25 hours                                 marks\na1318bca5aef   busybox                        \"echo …… ambiguous w…\"   2 days ago          Exited (1) 2 days ago                       ambiguous\na2318bca5aef   busybox:1.36                   \"sh -c 'echo \\\"quoted…\"    2 weeks ago         Exited (2) 2 weeks ago                      quotes\na3318bca5aef   busybox                        \"echo 😀 done\\x01\\x7f\"      2 months ago        Exited (0) 8 weeks ago                      a-rather-long-container-name_1\n"
+      "output": "CONTAINER ID   IMAGE                          COMMAND                     CREATED             STATUS                            PORTS                                                NAMES\n4bed76d3ad42   nginx:alpine                   \"/docker-entrypoint.…\"     1 second ago        Up Less than a second             443/tcp, 0.0.0.0:18080-\u003e80/tcp, [::]:18080-\u003e80/tcp   test\nb0318bca5aef   busybox:latest                 \"sh\"                        4 seconds ago       Exited (0) 3 seconds ago                                                               ecstatic_beaver\nc0318bca5aef   alpine                         \"echo 12345678901234…\"     2 hours ago         Created                                                                                x\nd0318bca5aef   localhost:5000/team/app:v1.2   \"printf 'a\\tb\\nc'\"          2 minutes ago       Exited (137) About a minute ago                                                        tabs\ne0318bca5aef   ghcr.io/org/image              \"echo 日本語の文字列…\"     About an hour ago   Up About an hour                                                                       cjk\nf0318bca5aef   team/tool:1                    \"echo é \\u00a0 \\u202e x\"    25 hours ago        Up 25 hours                                                                            marks\na1318bca5aef   busybox                        \"echo …… ambiguous w…\"   2 days ago          Exited (1) 2 days ago                                                                  ambiguous\na2318bca5aef   busybox:1.36                   \"sh -c 'echo \\\"quoted…\"    2 weeks ago         Exited (2) 2 weeks ago                                                                 quotes\na3318bca5aef   busybox                        \"echo 😀 done\\x01\\x7f\"      2 months ago        Exited (0) 8 weeks ago                                                                 a-rather-long-container-name_1\n"
     },
     {
       "containers": null,
@@ -533,7 +848,27 @@
           "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
           "ago": 1,
           "status": "Up Less than a second",
-          "name": "test"
+          "name": "test",
+          "ports": [
+            {
+              "ip": "0.0.0.0",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "::",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "",
+              "private": 443,
+              "public": 0,
+              "type": "tcp"
+            }
+          ]
         },
         {
           "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
@@ -541,7 +876,8 @@
           "command": "sh",
           "ago": 4,
           "status": "Exited (0) 3 seconds ago",
-          "name": "ecstatic_beaver"
+          "name": "ecstatic_beaver",
+          "ports": null
         },
         {
           "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
@@ -549,7 +885,8 @@
           "command": "echo 12345678901234567890",
           "ago": 7200,
           "status": "Created",
-          "name": "x"
+          "name": "x",
+          "ports": null
         },
         {
           "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
@@ -557,7 +894,8 @@
           "command": "printf 'a\tb\nc'",
           "ago": 120,
           "status": "Exited (137) About a minute ago",
-          "name": "tabs"
+          "name": "tabs",
+          "ports": null
         },
         {
           "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
@@ -565,7 +903,8 @@
           "command": "echo 日本語の文字列です",
           "ago": 3600,
           "status": "Up About an hour",
-          "name": "cjk"
+          "name": "cjk",
+          "ports": null
         },
         {
           "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
@@ -573,7 +912,8 @@
           "command": "echo é   ‮ x",
           "ago": 90000,
           "status": "Up 25 hours",
-          "name": "marks"
+          "name": "marks",
+          "ports": null
         },
         {
           "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
@@ -581,7 +921,8 @@
           "command": "echo …… ambiguous width",
           "ago": 172800,
           "status": "Exited (1) 2 days ago",
-          "name": "ambiguous"
+          "name": "ambiguous",
+          "ports": null
         },
         {
           "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
@@ -589,7 +930,8 @@
           "command": "sh -c 'echo \"quoted\" \\ back'",
           "ago": 1209600,
           "status": "Exited (2) 2 weeks ago",
-          "name": "quotes"
+          "name": "quotes",
+          "ports": null
         },
         {
           "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
@@ -597,7 +939,8 @@
           "command": "echo 😀 done\u0001",
           "ago": 5184000,
           "status": "Exited (0) 8 weeks ago",
-          "name": "a-rather-long-container-name_1"
+          "name": "a-rather-long-container-name_1",
+          "ports": null
         }
       ],
       "trunc": true,
@@ -620,7 +963,27 @@
           "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
           "ago": 1,
           "status": "Up Less than a second",
-          "name": "test"
+          "name": "test",
+          "ports": [
+            {
+              "ip": "0.0.0.0",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "::",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "",
+              "private": 443,
+              "public": 0,
+              "type": "tcp"
+            }
+          ]
         },
         {
           "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
@@ -628,7 +991,8 @@
           "command": "sh",
           "ago": 4,
           "status": "Exited (0) 3 seconds ago",
-          "name": "ecstatic_beaver"
+          "name": "ecstatic_beaver",
+          "ports": null
         },
         {
           "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
@@ -636,7 +1000,8 @@
           "command": "echo 12345678901234567890",
           "ago": 7200,
           "status": "Created",
-          "name": "x"
+          "name": "x",
+          "ports": null
         },
         {
           "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
@@ -644,7 +1009,8 @@
           "command": "printf 'a\tb\nc'",
           "ago": 120,
           "status": "Exited (137) About a minute ago",
-          "name": "tabs"
+          "name": "tabs",
+          "ports": null
         },
         {
           "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
@@ -652,7 +1018,8 @@
           "command": "echo 日本語の文字列です",
           "ago": 3600,
           "status": "Up About an hour",
-          "name": "cjk"
+          "name": "cjk",
+          "ports": null
         },
         {
           "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
@@ -660,7 +1027,8 @@
           "command": "echo é   ‮ x",
           "ago": 90000,
           "status": "Up 25 hours",
-          "name": "marks"
+          "name": "marks",
+          "ports": null
         },
         {
           "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
@@ -668,7 +1036,8 @@
           "command": "echo …… ambiguous width",
           "ago": 172800,
           "status": "Exited (1) 2 days ago",
-          "name": "ambiguous"
+          "name": "ambiguous",
+          "ports": null
         },
         {
           "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
@@ -676,7 +1045,8 @@
           "command": "sh -c 'echo \"quoted\" \\ back'",
           "ago": 1209600,
           "status": "Exited (2) 2 weeks ago",
-          "name": "quotes"
+          "name": "quotes",
+          "ports": null
         },
         {
           "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
@@ -684,13 +1054,14 @@
           "command": "echo 😀 done\u0001",
           "ago": 5184000,
           "status": "Exited (0) 8 weeks ago",
-          "name": "a-rather-long-container-name_1"
+          "name": "a-rather-long-container-name_1",
+          "ports": null
         }
       ],
       "trunc": false,
       "quiet": false,
       "east_asian": true,
-      "output": "CONTAINER ID                                                       IMAGE                                                                                                  COMMAND                                          CREATED             STATUS                            PORTS     NAMES\n4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19   nginx:alpine                                                                                           \"/docker-entrypoint.sh nginx -g 'daemon off;'\"   1 second ago        Up Less than a second                       test\nb0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001   docker.io/library/busybox:latest                                                                       \"sh\"                                             4 seconds ago       Exited (0) 3 seconds ago                    ecstatic_beaver\nc0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002   alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1                         \"echo 12345678901234567890\"                      2 hours ago         Created                                     x\nd0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003   localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1   \"printf 'a\\tb\\nc'\"                               2 minutes ago       Exited (137) About a minute ago             tabs\ne0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004   ghcr.io/org/image                                                                                      \"echo 日本語の文字列です\"                        About an hour ago   Up About an hour                            cjk\nf0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005   docker.io/team/tool:1                                                                                  \"echo é \\u00a0 \\u202e x\"                         25 hours ago        Up 25 hours                                 marks\na1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006   busybox                                                                                                \"echo …… ambiguous width\"                      2 days ago          Exited (1) 2 days ago                       ambiguous\na2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007   busybox:1.36                                                                                           \"sh -c 'echo \\\"quoted\\\" \\\\ back'\"                2 weeks ago         Exited (2) 2 weeks ago                      quotes\na3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008   busybox                                                                                                \"echo 😀 done\\x01\\x7f\"                           2 months ago        Exited (0) 8 weeks ago                      a-rather-long-container-name_1\n"
+      "output": "CONTAINER ID                                                       IMAGE                                                                                                  COMMAND                                          CREATED             STATUS                            PORTS                                                NAMES\n4bed76d3ad428b889c56c1ecc2bf2ed95cb08256db22dc5ef5863e1d03252a19   nginx:alpine                                                                                           \"/docker-entrypoint.sh nginx -g 'daemon off;'\"   1 second ago        Up Less than a second             443/tcp, 0.0.0.0:18080-\u003e80/tcp, [::]:18080-\u003e80/tcp   test\nb0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001   docker.io/library/busybox:latest                                                                       \"sh\"                                             4 seconds ago       Exited (0) 3 seconds ago                                                               ecstatic_beaver\nc0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002   alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1                         \"echo 12345678901234567890\"                      2 hours ago         Created                                                                                x\nd0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003   localhost:5000/team/app:v1.2@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1   \"printf 'a\\tb\\nc'\"                               2 minutes ago       Exited (137) About a minute ago                                                        tabs\ne0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004   ghcr.io/org/image                                                                                      \"echo 日本語の文字列です\"                        About an hour ago   Up About an hour                                                                       cjk\nf0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005   docker.io/team/tool:1                                                                                  \"echo é \\u00a0 \\u202e x\"                         25 hours ago        Up 25 hours                                                                            marks\na1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006   busybox                                                                                                \"echo …… ambiguous width\"                      2 days ago          Exited (1) 2 days ago                                                                  ambiguous\na2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007   busybox:1.36                                                                                           \"sh -c 'echo \\\"quoted\\\" \\\\ back'\"                2 weeks ago         Exited (2) 2 weeks ago                                                                 quotes\na3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008   busybox                                                                                                \"echo 😀 done\\x01\\x7f\"                           2 months ago        Exited (0) 8 weeks ago                                                                 a-rather-long-container-name_1\n"
     },
     {
       "containers": null,
@@ -707,7 +1078,27 @@
           "command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
           "ago": 1,
           "status": "Up Less than a second",
-          "name": "test"
+          "name": "test",
+          "ports": [
+            {
+              "ip": "0.0.0.0",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "::",
+              "private": 80,
+              "public": 18080,
+              "type": "tcp"
+            },
+            {
+              "ip": "",
+              "private": 443,
+              "public": 0,
+              "type": "tcp"
+            }
+          ]
         },
         {
           "id": "b0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000001",
@@ -715,7 +1106,8 @@
           "command": "sh",
           "ago": 4,
           "status": "Exited (0) 3 seconds ago",
-          "name": "ecstatic_beaver"
+          "name": "ecstatic_beaver",
+          "ports": null
         },
         {
           "id": "c0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000002",
@@ -723,7 +1115,8 @@
           "command": "echo 12345678901234567890",
           "ago": 7200,
           "status": "Created",
-          "name": "x"
+          "name": "x",
+          "ports": null
         },
         {
           "id": "d0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000003",
@@ -731,7 +1124,8 @@
           "command": "printf 'a\tb\nc'",
           "ago": 120,
           "status": "Exited (137) About a minute ago",
-          "name": "tabs"
+          "name": "tabs",
+          "ports": null
         },
         {
           "id": "e0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000004",
@@ -739,7 +1133,8 @@
           "command": "echo 日本語の文字列です",
           "ago": 3600,
           "status": "Up About an hour",
-          "name": "cjk"
+          "name": "cjk",
+          "ports": null
         },
         {
           "id": "f0318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000005",
@@ -747,7 +1142,8 @@
           "command": "echo é   ‮ x",
           "ago": 90000,
           "status": "Up 25 hours",
-          "name": "marks"
+          "name": "marks",
+          "ports": null
         },
         {
           "id": "a1318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000006",
@@ -755,7 +1151,8 @@
           "command": "echo …… ambiguous width",
           "ago": 172800,
           "status": "Exited (1) 2 days ago",
-          "name": "ambiguous"
+          "name": "ambiguous",
+          "ports": null
         },
         {
           "id": "a2318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000007",
@@ -763,7 +1160,8 @@
           "command": "sh -c 'echo \"quoted\" \\ back'",
           "ago": 1209600,
           "status": "Exited (2) 2 weeks ago",
-          "name": "quotes"
+          "name": "quotes",
+          "ports": null
         },
         {
           "id": "a3318bca5aef1e4c6b4a0a3c9c6d8e2f00000000000000000000000000000008",
@@ -771,7 +1169,8 @@
           "command": "echo 😀 done\u0001",
           "ago": 5184000,
           "status": "Exited (0) 8 weeks ago",
-          "name": "a-rather-long-container-name_1"
+          "name": "a-rather-long-container-name_1",
+          "ports": null
         }
       ],
       "trunc": false,

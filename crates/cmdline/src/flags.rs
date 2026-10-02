@@ -171,6 +171,8 @@ pub enum Args {
     None,
     AtLeast(usize),
     Exactly(usize),
+    /// At least the first, at most the second (docker/cli RequiresRangeArgs).
+    Range(usize, usize),
 }
 
 /// A command: what `--help` and the mistakes it answers say of it, and what it takes.
@@ -450,6 +452,10 @@ pub fn parse(
         Args::None if n > 0 => Some(("accepts no arguments".to_string(), "Run")),
         Args::AtLeast(k) if n < k => Some((format!("requires at least {k} {}", plural(k)), "See")),
         Args::Exactly(k) if n != k => Some((format!("requires {k} {}", plural(k)), "Run")),
+        Args::Range(min, max) if n < min || n > max => Some((
+            format!("requires at least {min} and at most {max} {}", plural(max)),
+            "Run",
+        )),
         _ => None,
     };
     if let Some((what, verb)) = wrong {

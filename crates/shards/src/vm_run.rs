@@ -127,6 +127,14 @@ impl Common {
                 }
                 self.net = Some(net_host(&text(value("--net")?)?)?);
             }
+            #[cfg(unix)]
+            "--net-release" => {
+                let fd = text(value("--net-release")?)?;
+                let fd: i32 = fd
+                    .parse()
+                    .map_err(|_| format!("--net-release: {fd:?} is not a descriptor"))?;
+                crate::warm::adopt_release(fd)?;
+            }
             "--cwd" => {
                 let dir = PathBuf::from(value("--cwd")?);
                 if !dir.is_absolute() {

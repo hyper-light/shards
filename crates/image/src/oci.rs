@@ -122,6 +122,16 @@ pub struct RunConfig {
     /// The shell `CMD-SHELL` health checks run in (the image's `SHELL`).
     #[serde(default)]
     pub shell: Option<Vec<String>>,
+    /// Its `EXPOSE`d ports, `80/tcp` and the like: the keys of the config's object.
+    #[serde(default, deserialize_with = "keys")]
+    pub exposed_ports: Vec<String>,
+}
+
+/// An object's keys, or none for `null`.
+fn keys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let map: Option<std::collections::BTreeMap<String, serde::de::IgnoredAny>> =
+        serde::Deserialize::deserialize(d)?;
+    Ok(map.map(|m| m.into_keys().collect()).unwrap_or_default())
 }
 
 /// A `HEALTHCHECK` as an image config holds it: its test, then durations in nanoseconds,

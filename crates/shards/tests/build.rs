@@ -949,3 +949,61 @@ fn an_images_healthcheck_runs_as_dockerd_runs_it() {
         let _ = run_shards_env(&["rm"], &["-f", name], &env, TIMEOUT);
     }
 }
+
+/// `-P`: every port an image `EXPOSE`s published on a port the host picks, as dockerd
+/// publishes them; without it, `ps` lists them unpublished.
+#[test]
+fn an_images_exposed_ports_publish_with_publish_all() {
+    use std::io::Read as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-expose-home");
+    let ctx = context(
+        "build-expose-ctx",
+        &format!("FROM {image}\nEXPOSE 7000 7002/tcp\nCMD [\"serve\", \"7000\", \"1\"]\n"),
+    );
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let built = shards(&["build", "-t", "exposes:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "-d", "--name", "plain", "exposes:1", "sleep"]);
+    assert_eq!(ran.status, Some(0), "{}", ran.stderr);
+    let ps = shards(&["ps"]);
+    assert!(ps.stdout.contains(" 7000/tcp, 7002/tcp "), "{}", ps.stdout);
+    let ran = shards(&["run", "-d", "--name", "all", "-P", "exposes:1"]);
+    assert_eq!(ran.status, Some(0), "{}", ran.stderr);
+    let listed = shards(&["port", "all"]);
+    let lines: Vec<&str> = listed.stdout.lines().collect();
+    assert_eq!(lines.len(), 4, "{}", listed.stdout);
+    let port = |i: usize| -> u16 { lines[i].rsplit(':').next().unwrap().parse().unwrap() };
+    let (n, m) = (port(0), port(2));
+    assert_eq!(
+        listed.stdout,
+        format!(
+            "7000/tcp -> 0.0.0.0:{n}\n7000/tcp -> [::]:{n}\n7002/tcp -> 0.0.0.0:{m}\n7002/tcp -> [::]:{m}\n"
+        )
+    );
+    // The guest listens once it runs: connected to, it says whom it serves.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let greeting = loop {
+        let mut got = String::new();
+        let read = std::net::TcpStream::connect(("127.0.0.1", n)).and_then(|mut c| {
+            c.shutdown(std::net::Shutdown::Write)?;
+            c.read_to_string(&mut got)
+        });
+        if read.is_ok() && !got.is_empty() {
+            break got;
+        }
+        assert!(std::time::Instant::now() < deadline, "{read:?}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(greeting, "from 172.17.0.1\n");
+    let waited = shards(&["wait", "all"]);
+    assert_eq!(waited.stdout, "0\n", "{}", waited.stderr);
+}

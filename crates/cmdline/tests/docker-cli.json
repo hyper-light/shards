@@ -12,7 +12,7 @@
       "run",
       "--help"
     ],
-    "stdout": "Usage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate and run a new container from an image\n\nAliases:\n  shards container run, shards run\n\nOptions:\n  -d, --detach                           Run container in background and\n                                         print container ID\n      --detach-keys string               Override the key sequence for\n                                         detaching a container\n      --entrypoint string                Overwrite the default ENTRYPOINT\n                                         of the image\n  -e, --env list                         Set environment variables\n      --health-cmd string                Command to run to check health\n      --health-interval duration         Time between running the check\n                                         (ms|s|m|h) (default 0s)\n      --health-retries int               Consecutive failures needed to\n                                         report unhealthy\n      --health-start-interval duration   Time between running the check\n                                         during the start period\n                                         (ms|s|m|h) (default 0s)\n      --health-start-period duration     Start period for the container\n                                         to initialize before starting\n                                         health-retries countdown\n                                         (ms|s|m|h) (default 0s)\n      --health-timeout duration          Maximum time to allow one check\n                                         to run (ms|s|m|h) (default 0s)\n      --help                             Print usage\n  -h, --hostname string                  Container host name\n      --init                             Run an init inside the container\n                                         that forwards signals and reaps\n                                         processes\n  -i, --interactive                      Keep STDIN open even if not attached\n      --name string                      Assign a name to the container\n      --network network                  Connect a container to a network\n      --no-healthcheck                   Disable any container-specified\n                                         HEALTHCHECK\n      --pull string                      Pull image before running\n                                         (\"always\", \"missing\", \"never\")\n                                         (default \"missing\")\n      --rm                               Automatically remove the\n                                         container and its associated\n                                         anonymous volumes when it exits\n      --stop-signal string               Signal to stop the container\n      --stop-timeout int                 Timeout (in seconds) to stop a\n                                         container\n  -t, --tty                              Allocate a pseudo-TTY\n  -u, --user string                      Username or UID (format:\n                                         \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n  -w, --workdir string                   Working directory inside the\n                                         container\n",
+    "stdout": "Usage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate and run a new container from an image\n\nAliases:\n  shards container run, shards run\n\nOptions:\n  -d, --detach                           Run container in background and\n                                         print container ID\n      --detach-keys string               Override the key sequence for\n                                         detaching a container\n      --entrypoint string                Overwrite the default ENTRYPOINT\n                                         of the image\n  -e, --env list                         Set environment variables\n      --health-cmd string                Command to run to check health\n      --health-interval duration         Time between running the check\n                                         (ms|s|m|h) (default 0s)\n      --health-retries int               Consecutive failures needed to\n                                         report unhealthy\n      --health-start-interval duration   Time between running the check\n                                         during the start period\n                                         (ms|s|m|h) (default 0s)\n      --health-start-period duration     Start period for the container\n                                         to initialize before starting\n                                         health-retries countdown\n                                         (ms|s|m|h) (default 0s)\n      --health-timeout duration          Maximum time to allow one check\n                                         to run (ms|s|m|h) (default 0s)\n      --help                             Print usage\n  -h, --hostname string                  Container host name\n      --init                             Run an init inside the container\n                                         that forwards signals and reaps\n                                         processes\n  -i, --interactive                      Keep STDIN open even if not attached\n      --name string                      Assign a name to the container\n      --network network                  Connect a container to a network\n      --no-healthcheck                   Disable any container-specified\n                                         HEALTHCHECK\n  -p, --publish list                     Publish a container's port(s) to\n                                         the host\n  -P, --publish-all                      Publish all exposed ports to\n                                         random ports\n      --pull string                      Pull image before running\n                                         (\"always\", \"missing\", \"never\")\n                                         (default \"missing\")\n      --rm                               Automatically remove the\n                                         container and its associated\n                                         anonymous volumes when it exits\n      --stop-signal string               Signal to stop the container\n      --stop-timeout int                 Timeout (in seconds) to stop a\n                                         container\n  -t, --tty                              Allocate a pseudo-TTY\n  -u, --user string                      Username or UID (format:\n                                         \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n  -w, --workdir string                   Working directory inside the\n                                         container\n",
     "stderr": "",
     "status": 0
   },
@@ -193,6 +193,98 @@
     "stdout": "RUN --no-healthcheck=true \"alpine\"\n",
     "stderr": "",
     "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-p",
+      "8080:80",
+      "-p",
+      "127.0.0.1::81/udp",
+      "-P",
+      "alpine"
+    ],
+    "stdout": "RUN --publish=[8080:80 127.0.0.1::81/udp] --publish-all=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--publish=80",
+      "--publish-all=false",
+      "alpine"
+    ],
+    "stdout": "RUN --publish=[80] --publish-all=false \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-p"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: 'p' in -p\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "port"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards port' requires at least 1 and at most 2 arguments\n\nUsage:  shards port CONTAINER [PRIVATE_PORT[/PROTO]]\n\nRun 'shards port --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "port",
+      "--help"
+    ],
+    "stdout": "Usage:  shards port CONTAINER [PRIVATE_PORT[/PROTO]]\n\nList port mappings or a specific mapping for the container\n\nAliases:\n  shards container port, shards port\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "port",
+      "a",
+      "b",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards port' requires at least 1 and at most 2 arguments\n\nUsage:  shards port CONTAINER [PRIVATE_PORT[/PROTO]]\n\nRun 'shards port --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "port",
+      "a",
+      "80/udp"
+    ],
+    "stdout": "RUN \"a\" \"80/udp\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "port",
+      "a"
+    ],
+    "stdout": "RUN \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "port",
+      "--bogus",
+      "a"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --bogus\n\nUsage:  shards port CONTAINER [PRIVATE_PORT[/PROTO]]\n\nRun 'shards port --help' for more information\n",
+    "status": 125
   },
   {
     "argv": [

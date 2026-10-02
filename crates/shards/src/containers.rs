@@ -46,6 +46,18 @@ pub struct Container {
     /// negative for ever (moby container.StopTimeout; 10 if not given).
     #[serde(default)]
     pub stop_timeout: Option<i64>,
+    /// Its ports while it runs: each published at a host address and port, or exposed
+    /// alone (no address, public port 0), as dockerd lists them.
+    #[serde(default)]
+    pub ports: Vec<PortRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortRecord {
+    pub ip: Option<std::net::IpAddr>,
+    pub private: u16,
+    pub public: u16,
+    pub proto: String,
 }
 
 pub use crate::spec::now;
@@ -230,7 +242,7 @@ impl Registry {
                         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                         Err(e) => note(format!("{}: {e}", dir.join(NEW_RECORD).display())),
                     }
-                    c
+                    *c
                 }
                 Loaded::Missing => {
                     removed |= Registry::gone(disk, &dir, note);
@@ -245,7 +257,7 @@ impl Registry {
                         if let Err(e) = disk.rename(&dir.join(NEW_RECORD), &dir.join(RECORD)) {
                             note(format!("{}: {e}", dir.join(NEW_RECORD).display()));
                         }
-                        c
+                        *c
                     }
                     Loaded::Missing | Loaded::Unreadable(_) => {
                         note(format!("{}: {why}; left as it is", dir.display()));
@@ -447,7 +459,8 @@ impl Registry {
 
 /// What a container's directory holds of its record.
 enum Loaded {
-    Record(Container),
+    /// Boxed: a record is many times the size of the other answers.
+    Record(Box<Container>),
     Missing,
     /// Why it cannot be read.
     Unreadable(String),
@@ -457,7 +470,7 @@ enum Loaded {
 fn load(disk: &dyn Disk, dir: &Path, name: &str, file: &str) -> Loaded {
     match disk.read(&dir.join(file), MAX_RECORD) {
         Ok(bytes) => match serde_json::from_slice::<Container>(&bytes) {
-            Ok(c) if c.id == name => Loaded::Record(c),
+            Ok(c) if c.id == name => Loaded::Record(Box::new(c)),
             Ok(c) => Loaded::Unreadable(format!("its record is container {}'s", c.id)),
             Err(e) => Loaded::Unreadable(format!("its record cannot be read ({e})")),
         },
@@ -561,6 +574,7 @@ mod tests {
             log_lost: 0,
             stop_signal: None,
             stop_timeout: None,
+            ports: Vec::new(),
         }
     }
 
