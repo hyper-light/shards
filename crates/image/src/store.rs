@@ -756,6 +756,23 @@ impl Store {
         Ok(self.tag_record(reference)?.map(|t| t.manifest))
     }
 
+    /// Has `reference` name what `existing` names, as `docker tag` does, replacing what it
+    /// named. What it names is durable already, as `existing`'s record is.
+    pub fn alias(&self, reference: &str, existing: &str) -> Result<(), Error> {
+        let Some(tag) = self.tag_record(existing)? else {
+            return bad(format!("{existing}: no such reference"));
+        };
+        let record = serde_json::to_vec(&Tag {
+            reference: reference.to_string(),
+            ..tag
+        })
+        .map_err(|e| Error(e.to_string()))?;
+        let mut partial = Partial::create(&self.root.join("ingest"))?;
+        partial.write_all(&record)?;
+        partial.replace(&self.tag_path(reference))?;
+        sync_dir(&self.root.join(format!("refs/v{REFS_VERSION}")))
+    }
+
     /// What `reference` resolved to when it was tagged: an index, or its manifest.
     pub fn resolved(&self, reference: &str) -> Result<Option<Digest>, Error> {
         let Some(tag) = self.tag_record(reference)? else {

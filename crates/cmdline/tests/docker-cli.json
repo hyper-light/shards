@@ -230,6 +230,65 @@
   },
   {
     "argv": [
+      "tag"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards tag' requires 2 arguments\n\nUsage:  shards tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]\n\nRun 'shards tag --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "tag",
+      "--help"
+    ],
+    "stdout": "Usage:  shards tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]\n\nCreate a tag TARGET_IMAGE that refers to SOURCE_IMAGE\n\nAliases:\n  shards image tag, shards tag\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "tag",
+      "a"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards tag' requires 2 arguments\n\nUsage:  shards tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]\n\nRun 'shards tag --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "tag",
+      "a",
+      "b",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards tag' requires 2 arguments\n\nUsage:  shards tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]\n\nRun 'shards tag --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "image",
+      "tag",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "tag",
+      "a",
+      "--",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards tag' requires 2 arguments\n\nUsage:  shards tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]\n\nRun 'shards tag --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
       "images",
       "--help"
     ],

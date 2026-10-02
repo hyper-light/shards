@@ -174,11 +174,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// alone, named by those references alone.
     fn listed(&self, pattern: Option<&str>) -> Result<Vec<Summary>, String> {
         use shards_image::reference::Reference;
-        let root = self.home.join("images");
-        if !root.is_dir() {
+        let Some(store) = self.store()? else {
             return Ok(Vec::new());
-        }
-        let store = shards_image::store::Store::open(&root).map_err(|e| e.to_string())?;
+        };
         let stored = store.images().map_err(|e| e.to_string())?;
         // Each container's image, counted by ID.
         let mut users: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
@@ -251,6 +249,144 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         // Newest first, as dockerd lists them (byCreated, reversed).
         images.sort_by_key(|i| std::cmp::Reverse(i.created));
         Ok(images)
+    }
+}
+
+impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// The image store, if this home has one.
+    pub(super) fn store(&self) -> Result<Option<shards_image::store::Store>, String> {
+        let root = self.home.join("images");
+        if !root.is_dir() {
+            return Ok(None);
+        }
+        shards_image::store::Store::open(&root)
+            .map(Some)
+            .map_err(|e| e.to_string())
+    }
+
+    /// `shards tag SOURCE TARGET` (moby client ImageTag, then the daemon's postImagesTag):
+    /// TARGET, with `latest` if it names no tag, names what SOURCE does.
+    pub(super) fn tag(&self, args: &[String], reply: &super::commands::Reply<'_>) -> u8 {
+        use shards_image::reference::{AnyReference, Reference};
+        let (Some(source), Some(target)) = (args.first(), args.get(1)) else {
+            return 1;
+        };
+        let refuse = |said: &str| {
+            reply.err(said);
+            1
+        };
+        let invalid = |given: &str, e: &dyn std::fmt::Display| {
+            format!(
+                "error parsing reference: {} is not a valid repository/tag: {e}",
+                shards_cmdline::go::quote(given)
+            )
+        };
+        if let Err(e) = AnyReference::parse(source) {
+            return refuse(&invalid(source, &e));
+        }
+        let mut tagged = match Reference::parse_normalized(target) {
+            Ok(r) => r,
+            Err(e) => return refuse(&invalid(target, &e)),
+        };
+        if tagged.digest.is_some() {
+            return refuse("refusing to create a tag with a digest reference");
+        }
+        if tagged.tag.is_none() {
+            tagged.tag = Some("latest".into());
+        }
+        let mut bare = tagged.clone();
+        bare.tag = None;
+        if bare.familiar() == "sha256" {
+            return refuse(
+                "Error response from daemon: refusing to create an ambiguous tag using digest algorithm as name",
+            );
+        }
+        let found = self.store().and_then(|store| {
+            let store = store.ok_or_else(|| not_found(source))?;
+            let images = store.images().map_err(|e| e.to_string())?;
+            let image = resolve(&images, source)?;
+            let existing = image.references.first().ok_or_else(|| not_found(source))?;
+            store
+                .alias(&tagged.to_string(), existing)
+                .map_err(|e| e.to_string())
+        });
+        match found {
+            Ok(()) => 0,
+            Err(e) => refuse(&format!("Error response from daemon: {e}")),
+        }
+    }
+}
+
+/// dockerd's words for an image it cannot find (moby daemon/images/image.go,
+/// ErrImageDoesNotExist): the reference as given, with `latest` if it names no tag; a
+/// digest as it is.
+fn not_found(given: &str) -> String {
+    use shards_image::reference::AnyReference;
+    match AnyReference::parse(given) {
+        Ok(AnyReference::Digest(d)) => format!("No such image: {d}"),
+        Ok(AnyReference::Named(mut r)) => {
+            if r.tag.is_none() && r.digest.is_none() {
+                r.tag = Some("latest".into());
+            }
+            format!("No such image: {}", r.familiar())
+        }
+        Err(_) => format!("No such image: {given}"),
+    }
+}
+
+/// The image `given` names, as dockerd's containerd store finds one (moby
+/// daemon/containerd/image.go, resolveImage): by digest, its ID, and a name with a digest
+/// only in that repository; else by name, with `latest` if it names no tag; else by a
+/// prefix of its ID of 4 to 64 hex digits, refused if more than one image has it.
+pub(super) fn resolve<'a>(
+    images: &'a [shards_image::store::Image],
+    given: &str,
+) -> Result<&'a shards_image::store::Image, String> {
+    use shards_image::reference::{AnyReference, Reference};
+    let parsed = AnyReference::parse(given).map_err(|e| e.to_string())?;
+    let named = |i: &shards_image::store::Image, name: &str| {
+        i.references
+            .iter()
+            .any(|r| Reference::parse_normalized(r).is_ok_and(|r| r.name() == name))
+    };
+    let tagged = match parsed {
+        AnyReference::Digest(d) => {
+            return images.iter().find(|i| i.id == d).ok_or_else(|| not_found(given));
+        }
+        AnyReference::Named(mut r) => match r.digest.clone() {
+            Some(d) => {
+                return images
+                    .iter()
+                    .find(|i| i.id == d && named(i, &r.name()))
+                    .ok_or_else(|| not_found(given));
+            }
+            None => {
+                if r.tag.is_none() {
+                    r.tag = Some("latest".into());
+                }
+                r.to_string()
+            }
+        },
+    };
+    if let Some(i) = images.iter().find(|i| i.references.contains(&tagged)) {
+        return Ok(i);
+    }
+    // checkTruncatedID: what follows `sha256:`, if any, 4 to 64 lowercase hex digits.
+    let id = given.strip_prefix("sha256:").unwrap_or(given);
+    if !(4..=64).contains(&id.len())
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(not_found(given));
+    }
+    let mut matching = images
+        .iter()
+        .filter(|i| i.id.algorithm().name() == "sha256" && i.id.hex().starts_with(id));
+    match (matching.next(), matching.next()) {
+        (None, _) => Err(not_found(given)),
+        (Some(i), None) => Ok(i),
+        (Some(_), Some(_)) => Err("ambiguous reference".into()),
     }
 }
 
@@ -820,6 +956,64 @@ mod tests {
                     .collect(),
             })
             .collect()
+    }
+
+    fn stored(hex: &str, references: &[&str]) -> shards_image::store::Image {
+        shards_image::store::Image {
+            id: shards_image::reference::Digest::parse(&format!("sha256:{hex}")).unwrap(),
+            references: references.iter().map(|r| (*r).to_string()).collect(),
+            created: None,
+            manifests: Vec::new(),
+            content: 0,
+            unpacked: 0,
+        }
+    }
+
+    /// Images are found as dockerd's containerd store finds them: by digest or ID, by a
+    /// name with a digest only in its repository, by name with `latest` as its tag, and
+    /// by an ID's prefix of 4 or more hex digits, refused where it is not one image's.
+    #[test]
+    fn images_resolve_as_dockerd_resolves_them() {
+        let (a, b, c) = (
+            "aaaa1".repeat(12) + "aaaa",
+            "aaaa2".repeat(12) + "aaaa",
+            "c".repeat(64),
+        );
+        let images = [
+            stored(
+                &a,
+                &["docker.io/library/alpine:3.22", "docker.io/library/alpine:latest"],
+            ),
+            stored(&b, &["docker.io/library/busybox:1"]),
+            stored(&c, &["localhost:5000/team/app:v1"]),
+        ];
+        let found = |given: &str| resolve(&images, given).map(|i| i.id.hex().to_string());
+        assert_eq!(found("alpine"), Ok(a.clone()));
+        assert_eq!(found("alpine:3.22"), Ok(a.clone()));
+        assert_eq!(found("docker.io/library/busybox:1"), Ok(b.clone()));
+        assert_eq!(found("localhost:5000/team/app:v1"), Ok(c.clone()));
+        assert_eq!(found(&c), Ok(c.clone()), "an ID");
+        assert_eq!(found(&format!("sha256:{c}")), Ok(c.clone()), "a digest");
+        assert_eq!(
+            found(&format!("localhost:5000/team/app@sha256:{c}")),
+            Ok(c.clone())
+        );
+        assert_eq!(
+            found(&format!("busybox@sha256:{c}")),
+            Err(format!("No such image: busybox@sha256:{c}")),
+            "a digest of another repository"
+        );
+        assert_eq!(found("cccc"), Ok(c.clone()), "a prefix");
+        assert_eq!(found("sha256:cccccc"), Ok(c.clone()));
+        assert_eq!(found("ccc"), Err("No such image: ccc:latest".into()), "too short");
+        assert_eq!(found("aaaa1"), Ok(a.clone()));
+        assert_eq!(found("aaaa"), Err("ambiguous reference".into()));
+        assert_eq!(found("nothing:1"), Err("No such image: nothing:1".into()));
+        assert_eq!(found("busybox"), Err("No such image: busybox:latest".into()));
+        assert_eq!(
+            found(&"0".repeat(64)),
+            Err(format!("No such image: sha256:{}", "0".repeat(64)))
+        );
     }
 
     #[test]

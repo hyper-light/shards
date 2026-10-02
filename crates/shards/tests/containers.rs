@@ -1700,3 +1700,65 @@ fn images_lists_what_was_pulled_as_docker_images_does() {
     assert_eq!(ids.len(), 2, "{ids:?}");
     assert_eq!(ids[1], short, "{ids:?}");
 }
+
+/// `shards tag SOURCE TARGET` as `docker tag` names an image again: by name or by a prefix
+/// of its ID, TARGET with `latest` if it names no tag; refused in the Docker client's and
+/// dockerd's words where it cannot.
+#[test]
+fn tag_names_an_image_again_as_docker_tag_does() {
+    let Some((home, image)) = home("containers-tag") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let id = shards(&["images", "-q"]).stdout.trim().to_string();
+    for (args, named) in [
+        (&[image.as_str(), "other:1"][..], "other:1"),
+        (&[id.as_str(), "byid"], "byid:latest"),
+        (
+            &["other:1", "localhost:5000/team/app:v2"],
+            "localhost:5000/team/app:v2",
+        ),
+    ] {
+        let tagged = shards(&[&["tag"][..], args].concat());
+        assert_eq!(
+            (tagged.status, tagged.stdout.as_str(), tagged.stderr.as_str()),
+            (Some(0), "", ""),
+            "{args:?}"
+        );
+        let listed = shards(&["images", named]);
+        let row = listed.stdout.lines().nth(1).unwrap_or_default();
+        assert!(row.starts_with(named) && row.contains(&id), "{listed}");
+    }
+    let ran = run_in(&home, "other:1", &["--rm"], &["exit", "3"]);
+    assert_eq!(ran.status, Some(3), "{ran}");
+    let digest = format!("x@sha256:{}", "0".repeat(64));
+    for (args, said) in [
+        (
+            &["nosuch:1", "y"][..],
+            "Error response from daemon: No such image: nosuch:1",
+        ),
+        (
+            &["dead", "y"],
+            "Error response from daemon: No such image: dead:latest",
+        ),
+        (
+            &[image.as_str(), "Bad:1"],
+            "error parsing reference: \"Bad:1\" is not a valid repository/tag: invalid reference format: repository name (library/Bad) must be lowercase",
+        ),
+        (
+            &[image.as_str(), &digest],
+            "refusing to create a tag with a digest reference",
+        ),
+        (
+            &[image.as_str(), "sha256"],
+            "Error response from daemon: refusing to create an ambiguous tag using digest algorithm as name",
+        ),
+    ] {
+        let refused = shards(&[&["tag"][..], args].concat());
+        assert_eq!(
+            (refused.status, refused.stderr.as_str()),
+            (Some(1), format!("{said}\n").as_str()),
+            "{args:?}"
+        );
+    }
+}

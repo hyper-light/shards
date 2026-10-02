@@ -340,6 +340,18 @@ format - s - -",
     error_prefix: "",
 };
 
+/// `shards tag`.
+pub static TAG: Command = Command {
+    usage: "SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]",
+    about: "Create a tag TARGET_IMAGE that refers to SOURCE_IMAGE",
+    aliases: "shards image tag, shards tag",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: false,
+    error_prefix: "",
+};
+
 /// `shards wait`.
 pub static WAIT: Command = Command {
     usage: "CONTAINER [CONTAINER...]",
@@ -621,6 +633,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["container", "kill", ..] => (&KILL, "shards container kill", 2),
         ["port", ..] => (&PORT, "shards port", 1),
         ["images", ..] => (&IMAGES, "shards images", 1),
+        ["tag", ..] => (&TAG, "shards tag", 1),
+        ["image", "tag", ..] => (&TAG, "shards image tag", 2),
         ["image", "ls" | "list", ..] => (&IMAGES, "shards image ls", 2),
         ["container", "port", ..] => (&PORT, "shards container port", 2),
         _ => return None,

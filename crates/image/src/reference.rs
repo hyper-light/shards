@@ -154,6 +154,26 @@ impl fmt::Display for Digest {
     }
 }
 
+/// What `ParseAnyReference` reads (distribution/reference normalize.go): a digest alone,
+/// as 64 hex digits or `algorithm:hex`, or a reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnyReference {
+    Digest(Digest),
+    Named(Reference),
+}
+
+impl AnyReference {
+    pub fn parse(s: &str) -> Result<AnyReference, Error> {
+        if regex(&IDENTIFIER)?.is_match(s) {
+            return Digest::parse(&format!("sha256:{s}")).map(AnyReference::Digest);
+        }
+        if let Ok(digest) = Digest::parse(s) {
+            return Ok(AnyReference::Digest(digest));
+        }
+        Reference::parse_normalized(s).map(AnyReference::Named)
+    }
+}
+
 /// A normalized reference: a domain and path, a tag (`latest` when neither a tag nor a
 /// digest was given), and maybe a digest, which wins over the tag.
 #[derive(Debug, Clone, PartialEq, Eq)]
