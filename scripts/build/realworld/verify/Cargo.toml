@@ -1,0 +1,15 @@
+# compare.py's VERIFY: `verify HOME REFERENCE` moves aside the root filesystem `shards
+# build` wrote for REFERENCE, has Store::rootfs build it again from the stored layers, and
+# compares the bytes. Not a workspace member:
+#   cargo build --release --manifest-path scripts/build/realworld/verify/Cargo.toml
+[package]
+name = "verify"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+shards-image = { path = "../../../../crates/image" }
+serde_json = "1"

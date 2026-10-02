@@ -371,6 +371,131 @@ fn a_dockerfile_error_shows_its_lines() {
     assert!(r.stderr.ends_with(want), "{}", r.stderr);
 }
 
+/// A step's read-only binds of one layer, a file of the context and a directory of an
+/// image, show what BuildKit's would (overlayfs takes no single lower directory without an
+/// upper one, which the builder's empty directory makes up); a source the context lacks
+/// fails the build before its step runs, as BuildKit's content checksum does.
+#[test]
+fn steps_bind_one_layer_trees_as_buildkit_binds_them() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-bind-home");
+    let ctx = context(
+        "build-bind-ctx",
+        &format!(
+            "FROM {image} AS img\n\
+             FROM {image}\n\
+             USER root\n\
+             RUN --mount=type=bind,source=f,target=/ctx [\"/bin/testguest\", \"stat\", \"/ctx\"]\n\
+             RUN --mount=type=bind,from=img,source=/bin,target=/imgbin [\"/bin/testguest\", \"stat\", \"/imgbin/testguest\"]\n\
+             RUN --mount=type=bind,source=missing,target=/m [\"/bin/testguest\", \"exit\", \"0\"]\n"
+        ),
+    );
+    std::fs::write(ctx.join("f"), "from the context\n").unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+    ];
+    let built = run_shards_env(
+        &["build"],
+        &["--progress=plain", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(1), "{}", built.stderr);
+    assert!(
+        built.stderr.contains(" /ctx file 644 0:0 17\n"),
+        "{}",
+        built.stderr
+    );
+    assert!(
+        built.stderr.contains(" = from the context\\n\n"),
+        "{}",
+        built.stderr
+    );
+    assert!(
+        built.stderr.contains(" /imgbin/testguest file 755 0:0 "),
+        "{}",
+        built.stderr
+    );
+    // A source the context lacks fails as BuildKit's checksum of it does, before the
+    // step runs.
+    assert!(
+        built.stderr.ends_with(
+            "ERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref context: \"/missing\": not found\n"
+        ),
+        "{}",
+        built.stderr
+    );
+}
+
+/// What a step's setup makes and mounts, it resolves in the step's root, as BuildKit
+/// and runc do (fs.RootPath, securejoin): through symlinks an earlier step planted, never
+/// past the root. A tmpfs over an absolute symlink covers its target in the image, and a
+/// working directory replaced by an absolute symlink is made at its target in the image;
+/// resolved from outside the root, both would reach the builder's own files. A working
+/// directory under a file fails its step as BuildKit's does, the builder going on.
+#[test]
+fn steps_resolve_their_paths_in_their_root() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-inroot-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+    ];
+    let tg = |ops: &str| format!("RUN [\"/bin/testguest\", \"fs\", {ops}]\n");
+    let ctx = context(
+        "build-inroot-ctx",
+        &format!(
+            "FROM {image}\nUSER root\n{}RUN --mount=type=tmpfs,target=/target [\"/bin/testguest\", \"fs\", \"write:/inside/x=1\"]\nWORKDIR /wd/sub\n{}RUN [\"/bin/testguest\", \"exit\", \"0\"]\nCMD [\"stat\", \"/inside/x\", \"/target\", \"/inside2/sub\"]\n",
+            tg("\"mkdir:/inside\", \"symlink:/inside:/target\""),
+            tg("\"rmdir:/wd\", \"symlink:/inside2:/wd\""),
+        ),
+    );
+    let built = run_shards_env(
+        &["build"],
+        &["--progress=plain", "-t", "inroot:1", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = run_shards_env(&["run"], &["--rm", "inroot:1"], &env, TIMEOUT);
+    assert_eq!(
+        ran.stdout,
+        "/inside/x missing No such file or directory (os error 2)\n\
+         /target symlink 777 0:0 7\n-> /inside\n\
+         /inside2/sub dir 755 0:0 27\n",
+        "{}",
+        ran.stderr
+    );
+
+    let ctx = context(
+        "build-inroot-fail-ctx",
+        &format!(
+            "FROM {image}\nUSER root\nWORKDIR /w/sub\n{}RUN [\"/bin/testguest\", \"exit\", \"0\"]\n",
+            tg("\"rmdir:/w\", \"write:/w=x\"")
+        ),
+    );
+    let failed = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env, TIMEOUT);
+    assert_eq!(failed.status, Some(1), "{}", failed.stderr);
+    assert!(
+        failed.stderr.ends_with(
+            "ERROR: failed to build: failed to solve: process \"/bin/testguest exit 0\" did not complete successfully: working dir /w/sub points to invalid target: lstat /w/sub: not a directory\n"
+        ),
+        "{}",
+        failed.stderr
+    );
+}
+
 #[test]
 fn files_a_build_copies_are_in_the_vm_as_built() {
     use std::os::unix::fs::PermissionsExt;

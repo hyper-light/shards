@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use shards_abi::build::{self, Mount, Network, Step, Tree, kind};
 use shards_abi::run;
 
+use crate::inroot::{self, Root};
 use crate::linux::power_off;
 use crate::run::{dial, loopback_up, send};
 use crate::tree::{LayerWriter, send_upper};
@@ -65,6 +66,36 @@ const READONLY: [&str; 5] = [
 fn err(what: impl std::fmt::Display) -> io::Error {
     io::Error::other(what.to_string())
 }
+
+/// What fails before a step's process starts as BuildKit's executor fails, not its
+/// runtime: a mount's source its tree lacks. Said as the step's failure, where what fails
+/// as runc's container init fails is said in the step's output, which ends with 1
+/// (measured against BuildKit, 2026-10-02).
+#[derive(Debug)]
+struct Executor(String);
+
+impl std::fmt::Display for Executor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Executor {}
+
+impl Executor {
+    fn wrap(why: String) -> io::Error {
+        io::Error::other(Executor(why))
+    }
+
+    fn is(e: &io::Error) -> bool {
+        e.get_ref().is_some_and(|r| r.is::<Executor>())
+    }
+}
+
+/// How the step's process reports a failure before its command runs: the class, then
+/// the text.
+const EXECUTOR_FAILED: u8 = b'E';
+const INIT_FAILED: u8 = b'I';
 
 fn os_err(what: &str) -> io::Error {
     let e = io::Error::last_os_error();
@@ -262,10 +293,15 @@ impl Builder {
     fn mount_tree(&mut self, tree: &Tree, at: &Path, upper: Option<&Path>) -> io::Result<()> {
         // Relative to /b/l, so that each layer costs its short name.
         let mut lower: Vec<String> = tree.layers.iter().rev().map(|&l| layer_name(l)).collect();
-        match tree.base {
-            Some(n) => lower.push(self.base(n)?.to_string_lossy().into_owned()),
-            None if lower.is_empty() => lower.push(EMPTY.into()),
-            None => {}
+        if let Some(n) = tree.base {
+            lower.push(self.base(n)?.to_string_lossy().into_owned());
+        }
+        // Without an upper directory overlayfs takes two lower ones at least
+        // (fs/overlayfs/super.c, ovl_get_lowerstack): an empty one goes under a tree of
+        // one, which keeps what overlayfs hides of it (whiteouts) hidden, as a bind
+        // mount of its one directory would not.
+        if lower.is_empty() || upper.is_none() && lower.len() == 1 {
+            lower.push(EMPTY.into());
         }
         let mut data = format!("lowerdir={}", lower.join(":"));
         if let Some(u) = upper {
@@ -296,33 +332,15 @@ impl Builder {
         self.serial += 1;
         let work = PathBuf::from(format!("/s{}", self.serial));
         let upper = work.join("upper");
-        std::fs::create_dir_all(&work)?;
         let root = Path::new(ROOT);
-        self.mount_tree(&step.root, root, Some(&upper))?;
-        // Trees the step mounts, each over its own mount point.
+        // What fails as the step is set up fails the step, as what fails as its command
+        // starts does: the builder says why and goes on to the next.
         let mut sources: Vec<Option<PathBuf>> = Vec::with_capacity(step.mounts.len());
-        for (i, (_, m)) in step.mounts.iter().enumerate() {
-            sources.push(match m {
-                Mount::Tree { tree, writable, .. } => {
-                    let at = work.join(format!("m{i}"));
-                    let up = writable.then(|| work.join(format!("m{i}.upper")));
-                    self.mount_tree(tree, &at, up.as_deref())?;
-                    Some(at)
-                }
-                Mount::Cache {
-                    id, mode, uid, gid, ..
-                } => Some(cache(id, *mode, *uid, *gid)?),
-                _ => None,
-            });
-        }
-        // What BuildKit removes after the step if the step left it empty (§5).
-        let stubs = stubs(root, step);
-        mkdir_all_owned(root, &step.cwd, step.uid, step.gid)?;
-        let files = work.join("etc");
-        std::fs::create_dir_all(&files)?;
-        std::fs::write(files.join("hosts"), &step.hosts)?;
-        std::fs::write(files.join("resolv.conf"), &step.resolv)?;
-        let status = self.run(step, root, &files, &sources, &work);
+        let mut stubs = Vec::new();
+        let status = match self.prepare(step, root, &work, &upper, &mut sources, &mut stubs) {
+            Ok(files) => self.run(step, root, &files, &sources, &work),
+            Err(e) => Err(e),
+        };
         clean_stubs(root, &stubs);
         let _ = umount(root);
         for (i, s) in sources.iter().enumerate() {
@@ -346,6 +364,62 @@ impl Builder {
         }
         let _ = std::fs::remove_dir_all(&work);
         Ok(())
+    }
+
+    /// Sets step `step` up in `work`: its root at `root` with its upper directory `upper`,
+    /// the trees and caches it mounts (each put in `sources` as it is mounted, so that
+    /// what was mounted is unmounted whatever fails), what BuildKit removes after it if it
+    /// is left empty (`stubs`), its working directory, and its hosts and resolv.conf.
+    /// Returns the directory of those two files.
+    fn prepare(
+        &mut self,
+        step: &Step,
+        root: &Path,
+        work: &Path,
+        upper: &Path,
+        sources: &mut Vec<Option<PathBuf>>,
+        stubs: &mut Vec<Vec<u8>>,
+    ) -> io::Result<PathBuf> {
+        std::fs::create_dir_all(work)?;
+        self.mount_tree(&step.root, root, Some(upper))?;
+        for (i, (_, m)) in step.mounts.iter().enumerate() {
+            let source = match m {
+                Mount::Tree { tree, writable, .. } => {
+                    let at = work.join(format!("m{i}"));
+                    let up = writable.then(|| work.join(format!("m{i}.upper")));
+                    self.mount_tree(tree, &at, up.as_deref())?;
+                    Some(at)
+                }
+                Mount::Cache {
+                    id, mode, uid, gid, ..
+                } => Some(cache(id, *mode, *uid, *gid)?),
+                _ => None,
+            };
+            sources.push(source);
+        }
+        let r = Root::open(root)?;
+        *stubs = self::stubs(&r, step);
+        // A working directory not there yet, made as BuildKit's executor makes it, in the
+        // step's root: each new directory 0755, owned by the step's user (§1).
+        if !step.cwd.is_empty() && r.open_at(&step.cwd, libc::O_PATH).is_err() {
+            let at = r.resolve(&step.cwd, true).map_err(|e| {
+                Executor::wrap(format!(
+                    "working dir {} points to invalid target: {e}",
+                    String::from_utf8_lossy(&step.cwd)
+                ))
+            })?;
+            r.mkdir_all(&at, 0o755, Some((step.uid, step.gid))).map_err(|e| {
+                Executor::wrap(format!(
+                    "failed to create working directory {}: {e}",
+                    String::from_utf8_lossy(&step.cwd)
+                ))
+            })?;
+        }
+        let files = work.join("etc");
+        std::fs::create_dir_all(&files)?;
+        std::fs::write(files.join("hosts"), &step.hosts)?;
+        std::fs::write(files.join("resolv.conf"), &step.resolv)?;
+        Ok(files)
     }
 
     /// Runs the step's command, relaying its output; its status as `docker run` reports
@@ -393,7 +467,12 @@ impl Builder {
             drop((out_r, err_r, fail_r));
             let e = child(step, root, files, sources, work, &out_w, &err_w);
             // Reached only if the command did not start.
-            let msg = format!("{e}");
+            let class = if Executor::is(&e) {
+                EXECUTOR_FAILED
+            } else {
+                INIT_FAILED
+            };
+            let msg = [&[class][..], e.to_string().as_bytes()].concat();
             // SAFETY: a descriptor this process owns.
             unsafe {
                 libc::write(fail_w.as_raw_fd(), msg.as_ptr().cast(), msg.len());
@@ -409,8 +488,21 @@ impl Builder {
         }
         let mut msg = Vec::new();
         File::from(fail_r).read_to_end(&mut msg)?;
-        if !msg.is_empty() {
-            return Err(err(String::from_utf8_lossy(&msg)));
+        match msg.split_first() {
+            Some((&EXECUTOR_FAILED, why)) => return Err(err(String::from_utf8_lossy(why))),
+            Some((_, why)) => {
+                // As BuildKit shows what runc's container init could not do: in the
+                // step's output, then exit code 1.
+                let line = [
+                    &b"unable to start container process: error during container init: "[..],
+                    why,
+                    b"\n",
+                ]
+                .concat();
+                send(&self.conn, run::kind::STDERR, &line)?;
+                return Ok(1);
+            }
+            None => {}
         }
         Ok(if libc::WIFSIGNALED(status) {
             128 + libc::WTERMSIG(status) as u32
@@ -494,94 +586,105 @@ fn cache(id: &[u8], mode: u32, uid: u32, gid: u32) -> io::Result<PathBuf> {
     Ok(at)
 }
 
-/// The step's paths that do not exist yet, with each missing parent, leaf first: what
-/// BuildKit removes after the step if the step left it empty (executor/stubs.go).
-fn stubs(root: &Path, step: &Step) -> Vec<PathBuf> {
+/// The step's paths that do not exist yet, with each missing parent, leaf first, as paths
+/// of its root: what BuildKit removes after the step if the step left it empty
+/// (executor/stubs.go).
+fn stubs(r: &Root, step: &Step) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let targets = [&b"/etc/resolv.conf"[..], b"/etc/hosts"]
         .into_iter()
         .chain(step.mounts.iter().map(|(t, _)| t.as_slice()));
     for t in targets {
-        let mut p = PathBuf::from(OsStr::from_bytes(t.strip_prefix(b"/").unwrap_or(t)));
-        loop {
-            if p.as_os_str().is_empty() || std::fs::symlink_metadata(root.join(&p)).is_ok() {
-                break;
-            }
-            out.push(root.join(&p));
-            if !p.pop() {
-                break;
+        // The stubs of the path the target resolves to, as BuildKit's cleaner finds them.
+        let Ok(t) = r.resolve(t, false) else {
+            continue;
+        };
+        let mut p: Vec<u8> = t.iter().copied().skip_while(|&b| b == b'/').collect();
+        while p.last() == Some(&b'/') {
+            p.pop();
+        }
+        // Each parent, until one is there, itself not followed (lstat).
+        while !p.is_empty() && r.open_at(&p, libc::O_PATH | libc::O_NOFOLLOW).is_err() {
+            out.push(p.clone());
+            match p.iter().rposition(|&b| b == b'/') {
+                Some(i) => p.truncate(i),
+                None => break,
             }
         }
     }
     out
 }
 
-/// Removes each stub the step left empty, restoring its parent's times.
-fn clean_stubs(root: &Path, stubs: &[PathBuf]) {
+/// Removes each stub the step left empty, restoring its parent's times. Each is reached
+/// in the step's root, whatever symlinks the step made of the paths above it.
+fn clean_stubs(root: &Path, stubs: &[Vec<u8>]) {
+    let Ok(r) = Root::open(root) else {
+        return;
+    };
     for p in stubs {
-        let Ok(m) = std::fs::symlink_metadata(p) else {
+        let Ok((dir, name)) = r.parent(p) else {
             continue;
         };
-        let empty = if m.is_dir() {
-            std::fs::read_dir(p)
+        // SAFETY: a zeroed stat is valid for fstatat to fill.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: fstatat(2) of a name in a directory of ours, not followed.
+        if unsafe { libc::fstatat(dir.as_raw_fd(), name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } != 0 {
+            continue;
+        }
+        let is_dir = st.st_mode & libc::S_IFMT == libc::S_IFDIR;
+        let empty = if is_dir {
+            // SAFETY: openat(2) of that directory, never followed.
+            let fd = unsafe {
+                libc::openat(
+                    dir.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                continue;
+            }
+            // SAFETY: a descriptor just opened, ours alone.
+            let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+            std::fs::read_dir(inroot::path(&fd))
                 .map(|mut d| d.next().is_none())
                 .unwrap_or(false)
         } else {
-            m.len() == 0
-        };
-        let Some(parent) = p.parent().filter(|q| q.starts_with(root)) else {
-            continue;
+            st.st_size == 0
         };
         if !empty {
             continue;
         }
-        let times = std::fs::metadata(parent).ok();
-        let removed = if m.is_dir() {
-            std::fs::remove_dir(p)
-        } else {
-            std::fs::remove_file(p)
+        // The parent's times, kept across the removal.
+        let above = match p.iter().rposition(|&b| b == b'/') {
+            Some(i) => p.get(..i).unwrap_or_default(),
+            None => &[][..],
         };
-        if removed.is_ok()
-            && let Some(t) = times
-            && let Ok(c) = cstr(parent)
-        {
+        let parent = r.open_at(above, libc::O_RDONLY | libc::O_DIRECTORY).ok();
+        let times = parent.as_ref().and_then(|f| {
+            // SAFETY: a zeroed stat is valid for fstat to fill.
+            let mut pst: libc::stat = unsafe { std::mem::zeroed() };
+            // SAFETY: fstat(2) of a descriptor of ours.
+            (unsafe { libc::fstat(f.as_raw_fd(), &mut pst) } == 0).then_some(pst)
+        });
+        let flag = if is_dir { libc::AT_REMOVEDIR } else { 0 };
+        // SAFETY: unlinkat(2) of a name in a directory of ours.
+        let removed = unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flag) } == 0;
+        if removed && let (Some(f), Some(t)) = (&parent, times) {
             let ts = [
                 libc::timespec {
-                    tv_sec: t.atime(),
-                    tv_nsec: t.atime_nsec() as libc::c_long,
+                    tv_sec: t.st_atime,
+                    tv_nsec: t.st_atime_nsec as libc::c_long,
                 },
                 libc::timespec {
-                    tv_sec: t.mtime(),
-                    tv_nsec: t.mtime_nsec() as libc::c_long,
+                    tv_sec: t.st_mtime,
+                    tv_nsec: t.st_mtime_nsec as libc::c_long,
                 },
             ];
-            // SAFETY: a NUL-terminated path and two timespecs.
-            unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), ts.as_ptr(), 0) };
+            // SAFETY: futimens(2) of a descriptor of ours with two timespecs.
+            unsafe { libc::futimens(f.as_raw_fd(), ts.as_ptr()) };
         }
     }
-}
-
-/// The working directory, made as BuildKit's executor makes a missing one: each new
-/// directory mode 0755, whatever the umask, owned by the step's user (§1).
-fn mkdir_all_owned(root: &Path, dir: &[u8], uid: u32, gid: u32) -> io::Result<()> {
-    let mut at = root.to_path_buf();
-    for name in dir.split(|&b| b == b'/').filter(|n| !n.is_empty() && *n != b".") {
-        at.push(OsStr::from_bytes(name));
-        match std::fs::symlink_metadata(&at) {
-            Ok(_) => continue,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
-        std::fs::create_dir(&at)?;
-        let c = cstr(&at)?;
-        // SAFETY: a NUL-terminated path.
-        unsafe {
-            if libc::chmod(c.as_ptr(), 0o755) != 0 || libc::lchown(c.as_ptr(), uid, gid) != 0 {
-                return Err(os_err("making the working directory"));
-            }
-        }
-    }
-    Ok(())
 }
 
 /// The step's process, PID 1 of its namespaces: sets up its root and becomes the
@@ -609,18 +712,22 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
     mount("", Path::new("/"), "", libc::MS_REC | libc::MS_PRIVATE, "")?;
     // SAFETY: umask(2) always succeeds.
     unsafe { libc::umask(0) };
-    let at = |p: &str| root.join(p.trim_start_matches('/'));
-    for d in ["proc", "dev", "sys"] {
-        std::fs::create_dir_all(root.join(d))?;
-    }
-    mount("proc", &at("/proc"), "proc", nosuid | noexec | nodev, "")?;
+    // Every path of the step's root is resolved in it (inroot.rs): the tree is the step's
+    // own and an earlier step's, which may hold any symlink.
+    let r = Root::open(root)?;
+    let dir = |p: &str| r.mkdir_all(p.as_bytes(), 0o755, None);
+    let proc = dir("/proc")?;
+    mount("proc", &inroot::path(&proc), "proc", nosuid | noexec | nodev, "")?;
+    let dev = dir("/dev")?;
     mount(
         "tmpfs",
-        &at("/dev"),
+        &inroot::path(&dev),
         "tmpfs",
         nosuid | libc::MS_STRICTATIME,
         "mode=755,size=65536k",
     )?;
+    // The new tmpfs, as /dev now resolves.
+    let dev = r.open_at(b"/dev", libc::O_PATH | libc::O_DIRECTORY)?;
     let devs: &[(&str, u32, u32)] = &[
         ("null", 1, 3),
         ("zero", 1, 5),
@@ -630,7 +737,7 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
         ("tty", 5, 0),
     ];
     for (name, major, minor) in devs {
-        mknod(&at("/dev").join(name), libc::S_IFCHR | 0o666, *major, *minor)?;
+        inroot::mknodat(&dev, name, libc::S_IFCHR | 0o666, *major, *minor)?;
     }
     if step.insecure {
         // What BuildKit adds outside a user namespace with security.insecure (§4).
@@ -642,10 +749,11 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
             ("loop-control", 10, 237),
         ];
         for (name, major, minor) in more {
-            mknod(&at("/dev").join(name), libc::S_IFCHR | 0o660, *major, *minor)?;
+            inroot::mknodat(&dev, name, libc::S_IFCHR | 0o660, *major, *minor)?;
         }
-        std::fs::create_dir_all(at("/dev/net"))?;
-        mknod(&at("/dev/net/tun"), libc::S_IFCHR | 0o660, 10, 200)?;
+        inroot::mkdirat(&dev, "net", 0o755)?;
+        let net = r.open_at(b"/dev/net", libc::O_PATH | libc::O_DIRECTORY)?;
+        inroot::mknodat(&net, "tun", libc::S_IFCHR | 0o660, 10, 200)?;
     }
     for (target, link) in [
         ("/proc/self/fd", "fd"),
@@ -654,78 +762,92 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
         ("/proc/self/fd/2", "stderr"),
         ("pts/ptmx", "ptmx"),
     ] {
-        std::os::unix::fs::symlink(target, at("/dev").join(link))?;
+        inroot::symlinkat(target, &dev, link)?;
     }
     if Path::new("/proc/kcore").exists() {
-        std::os::unix::fs::symlink("/proc/kcore", at("/dev/core"))?;
+        inroot::symlinkat("/proc/kcore", &dev, "core")?;
     }
     for d in ["pts", "shm", "mqueue"] {
-        std::fs::create_dir(at("/dev").join(d))?;
+        inroot::mkdirat(&dev, d, 0o755)?;
     }
+    let under = |p: &[u8]| r.open_at(p, libc::O_PATH | libc::O_DIRECTORY);
     mount(
         "devpts",
-        &at("/dev/pts"),
+        &inroot::path(&under(b"/dev/pts")?),
         "devpts",
         nosuid | noexec,
         "newinstance,ptmxmode=0666,mode=0620,gid=5",
     )?;
     mount(
         "shm",
-        &at("/dev/shm"),
+        &inroot::path(&under(b"/dev/shm")?),
         "tmpfs",
         nosuid | noexec | nodev,
         "mode=1777,size=65536k",
     )?;
     mount(
         "mqueue",
-        &at("/dev/mqueue"),
+        &inroot::path(&under(b"/dev/mqueue")?),
         "mqueue",
         nosuid | noexec | nodev,
         "",
     )?;
     let ro = if step.insecure { 0 } else { libc::MS_RDONLY };
-    mount("sysfs", &at("/sys"), "sysfs", nosuid | noexec | nodev | ro, "")?;
-    std::fs::create_dir_all(at("/sys/fs/cgroup")).ok();
+    let sys = dir("/sys")?;
     mount(
-        "cgroup2",
-        &at("/sys/fs/cgroup"),
-        "cgroup2",
+        "sysfs",
+        &inroot::path(&sys),
+        "sysfs",
         nosuid | noexec | nodev | ro,
         "",
     )?;
+    if let Ok(cgroup) = under(b"/sys/fs/cgroup") {
+        mount(
+            "cgroup2",
+            &inroot::path(&cgroup),
+            "cgroup2",
+            nosuid | noexec | nodev | ro,
+            "",
+        )?;
+    }
     // /etc/hosts and /etc/resolv.conf over the tree's, read-only, in no layer (§2).
     let bind_ro = nosuid | noexec | nodev;
     for name in ["hosts", "resolv.conf"] {
-        let target = at("/etc").join(name);
-        file_target(&target)?;
-        bind(&files.join(name), &target, bind_ro, true)?;
+        let target = r.resolve(format!("/etc/{name}").as_bytes(), false)?;
+        let at = r.file(&target, 0o666)?;
+        bind(&files.join(name), &at, &r, &target, bind_ro, true)?;
     }
     // The step's own mounts, in order.
     for (i, (target, m)) in step.mounts.iter().enumerate() {
-        let target = root.join(OsStr::from_bytes(target.strip_prefix(b"/").unwrap_or(target)));
         match m {
             Mount::Tree { subpath, .. } => {
-                let Some(Some(src)) = sources.get(i) else {
+                let Some(Some(tree)) = sources.get(i) else {
                     return Err(err("a tree mount without its tree"));
                 };
-                let src = src.join(OsStr::from_bytes(subpath.strip_prefix(b"/").unwrap_or(subpath)));
-                if std::fs::metadata(&src)?.is_dir() {
-                    std::fs::create_dir_all(&target)?;
+                // Its source in its own tree, as BuildKit resolves it there; one missing is
+                // BuildKit's executor's failure, before any process starts.
+                let src = Root::open(tree)?
+                    .open_at(subpath, libc::O_PATH)
+                    .map_err(|e| Executor::wrap(inroot::path_error("open", subpath, &e).to_string()))?;
+                let target = &r.resolve(target, false)?;
+                let at = if inroot::is_dir(&src)? {
+                    r.mkdir_all(target, 0o755, None)?
                 } else {
-                    file_target(&target)?;
-                }
+                    r.file(target, 0o666)?
+                };
                 // Readonly unless writable; a writable tree's writes go to its own upper.
-                bind(&src, &target, 0, false)?;
+                bind(&inroot::path(&src), &at, &r, target, 0, false)?;
             }
             Mount::Cache { readonly, .. } => {
                 let Some(Some(src)) = sources.get(i) else {
                     return Err(err("a cache mount without its cache"));
                 };
-                std::fs::create_dir_all(&target)?;
-                bind(src, &target, 0, *readonly)?;
+                let target = &r.resolve(target, false)?;
+                let at = r.mkdir_all(target, 0o755, None)?;
+                bind(src, &at, &r, target, 0, *readonly)?;
             }
             Mount::Tmpfs { size, readonly } => {
-                std::fs::create_dir_all(&target)?;
+                let at = r.mkdir_all(&r.resolve(target, false)?, 0o755, None)?;
                 let data = if *size > 0 {
                     format!("size={size}")
                 } else {
@@ -733,7 +855,7 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
                 };
                 mount(
                     "tmpfs",
-                    &target,
+                    &inroot::path(&at),
                     "tmpfs",
                     nosuid | if *readonly { libc::MS_RDONLY } else { 0 },
                     &data,
@@ -755,25 +877,33 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
                         return Err(os_err("a secret's file"));
                     }
                 }
-                file_target(&target)?;
+                let target = &r.resolve(target, false)?;
+                let at = r.file(target, 0o666)?;
                 let exec_bit = if mode & 0o111 == 0 { noexec } else { 0 };
-                bind(&file, &target, nosuid | nodev | exec_bit, true)?;
+                bind(&file, &at, &r, target, nosuid | nodev | exec_bit, true)?;
             }
         }
     }
     if !step.insecure {
         for p in MASKED {
-            let target = at(p);
-            match std::fs::symlink_metadata(&target) {
-                Ok(m) if m.is_dir() => mount("tmpfs", &target, "tmpfs", libc::MS_RDONLY, "")?,
-                Ok(_) => bind(Path::new("/dev/null"), &target, 0, false)?,
+            match r.open_at(p.as_bytes(), libc::O_PATH) {
+                Ok(at) if inroot::is_dir(&at)? => {
+                    mount("tmpfs", &inroot::path(&at), "tmpfs", libc::MS_RDONLY, "")?
+                }
+                Ok(at) => bind(Path::new("/dev/null"), &at, &r, p.as_bytes(), 0, false)?,
                 Err(_) => {}
             }
         }
         for p in READONLY {
-            let target = at(p);
-            if target.exists() {
-                bind(&target, &target, nosuid | noexec | nodev, true)?;
+            if let Ok(at) = r.open_at(p.as_bytes(), libc::O_PATH) {
+                bind(
+                    &inroot::path(&at),
+                    &at,
+                    &r,
+                    p.as_bytes(),
+                    nosuid | noexec | nodev,
+                    true,
+                )?;
             }
         }
     }
@@ -804,57 +934,58 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
             return Err(os_err("setting a ulimit"));
         }
     }
+    // The working directory, as runc's init makes it, in the step's root, now `/`.
+    let cwd: &[u8] = if step.cwd.is_empty() { b"/" } else { &step.cwd };
+    Root::open(Path::new("/"))?.mkdir_all(cwd, 0o755, None)?;
     identity(step)?;
     // SAFETY: umask(2) always succeeds. runc's default (rootfs_linux.go).
     unsafe { libc::umask(0o022) };
-    let cwd = cstr(OsStr::from_bytes(if step.cwd.is_empty() {
-        b"/"
-    } else {
-        &step.cwd
-    }))?;
+    let c = cstr(OsStr::from_bytes(cwd))?;
     // SAFETY: a NUL-terminated path.
-    if unsafe { libc::chdir(cwd.as_ptr()) } != 0 {
-        return Err(os_err("entering the working directory"));
+    if unsafe { libc::chdir(c.as_ptr()) } != 0 {
+        let e = io::Error::last_os_error();
+        let why = e
+            .raw_os_error()
+            .map_or_else(|| e.to_string(), shards_cmdline::go::linux_error);
+        return Err(io::Error::new(
+            e.kind(),
+            format!(
+                "chdir to cwd ({}) failed: {why}",
+                shards_cmdline::go::quote(&String::from_utf8_lossy(cwd))
+            ),
+        ));
     }
     Ok(())
 }
 
-fn mknod(path: &Path, mode: u32, major: u32, minor: u32) -> io::Result<()> {
-    let c = cstr(path)?;
-    // SAFETY: a NUL-terminated path.
-    if unsafe { libc::mknod(c.as_ptr(), mode, libc::makedev(major, minor)) } != 0 {
-        return Err(os_err(&format!("making {}", path.display())));
-    }
-    Ok(())
-}
-
-/// An empty file to mount over, with its parents, unless something is there.
-fn file_target(target: &Path) -> io::Result<()> {
-    if std::fs::symlink_metadata(target).is_ok() {
-        return Ok(());
-    }
-    if let Some(p) = target.parent() {
-        std::fs::create_dir_all(p)?;
-    }
-    File::options()
-        .write(true)
-        .create_new(true)
-        .open(target)
-        .map(drop)
-}
-
-/// Binds `src` over `target`, then applies `flags`, read-only if `readonly`.
-fn bind(src: &Path, target: &Path, flags: libc::c_ulong, readonly: bool) -> io::Result<()> {
+/// Binds `src` over `at`, the resolved target `path` of root `r`, then applies `flags`,
+/// read-only if `readonly`: remounted at `path` resolved again, which now reaches the
+/// bind mount, where `at` still names what it covers.
+fn bind(
+    src: &Path,
+    at: &OwnedFd,
+    r: &Root,
+    path: &[u8],
+    flags: libc::c_ulong,
+    readonly: bool,
+) -> io::Result<()> {
     mount(
         &src.to_string_lossy(),
-        target,
+        &inroot::path(at),
         "",
         libc::MS_BIND | libc::MS_REC,
         "",
     )?;
     let ro = if readonly { libc::MS_RDONLY } else { 0 };
     if flags != 0 || readonly {
-        mount("", target, "", libc::MS_BIND | libc::MS_REMOUNT | flags | ro, "")?;
+        let mounted = r.open_at(path, libc::O_PATH)?;
+        mount(
+            "",
+            &inroot::path(&mounted),
+            "",
+            libc::MS_BIND | libc::MS_REMOUNT | flags | ro,
+            "",
+        )?;
     }
     Ok(())
 }
@@ -961,17 +1092,33 @@ fn exec(step: &Step, out: &OwnedFd, err_fd: &OwnedFd) -> io::Result<Never> {
     ev.push(std::ptr::null());
     // SAFETY: NUL-terminated strings in null-terminated arrays.
     unsafe { libc::execve(path.as_ptr(), av.as_ptr(), ev.as_ptr()) };
-    Err(os_err(&format!(
-        "exec {}",
-        String::from_utf8_lossy(first.as_bytes())
-    )))
+    // runc's system.Exec: a Go *PathError of the path it found.
+    let e = io::Error::last_os_error();
+    let why = e
+        .raw_os_error()
+        .map_or_else(|| e.to_string(), shards_cmdline::go::linux_error);
+    Err(io::Error::new(
+        e.kind(),
+        format!("exec {}: {why}", path.to_string_lossy()),
+    ))
 }
 
-/// Where a command is: itself if it holds a slash, else the first executable regular file
-/// of that name in `PATH`, as Go's exec.LookPath finds it for runc.
+/// Where a command is, as Go's exec.LookPath finds it for runc (os/exec/lp_unix.go, Go
+/// 1.26.1): itself if its name holds a slash, else the first file in `PATH` that
+/// findExecutable accepts, refused if that is found through a relative entry (ErrDot);
+/// its errors as LookPath's: `exec: "name": why`.
 fn lookup(name: &[u8], env: &[Vec<u8>]) -> io::Result<CString> {
+    let fail = |why: &str| {
+        err(format!(
+            "exec: {}: {why}",
+            shards_cmdline::go::quote(&String::from_utf8_lossy(name))
+        ))
+    };
     if name.contains(&b'/') {
-        return CString::new(name).map_err(|_| err("a path holds NUL"));
+        return match find_executable(name) {
+            Ok(()) => CString::new(name).map_err(|_| err("a path holds NUL")),
+            Err(why) => Err(fail(&why)),
+        };
     }
     let path = env
         .iter()
@@ -979,19 +1126,52 @@ fn lookup(name: &[u8], env: &[Vec<u8>]) -> io::Result<CString> {
         .find_map(|e| e.strip_prefix(b"PATH="))
         .unwrap_or_default();
     for dir in path.split(|&b| b == b':') {
+        // Unix shell semantics: an empty element means ".".
         let dir: &[u8] = if dir.is_empty() { b"." } else { dir };
         let mut p = dir.to_vec();
         p.push(b'/');
         p.extend_from_slice(name);
-        if let Ok(m) = std::fs::metadata(OsStr::from_bytes(&p))
-            && m.is_file()
-            && m.mode() & 0o111 != 0
-        {
+        if find_executable(&p).is_ok() {
+            if !p.starts_with(b"/") {
+                return Err(fail("cannot run executable found relative to current directory"));
+            }
             return CString::new(p).map_err(|_| err("a path holds NUL"));
         }
     }
-    Err(err(format!(
-        "exec: \"{}\": executable file not found in $PATH",
-        String::from_utf8_lossy(name)
-    )))
+    Err(fail("executable file not found in $PATH"))
+}
+
+/// findExecutable: `file` is no directory, and the effective user may execute it
+/// (faccessat2(2) AT_EACCESS, its mode bits where that is refused), or why not, in Go's
+/// words.
+fn find_executable(file: &[u8]) -> Result<(), String> {
+    let go = |e: &io::Error| {
+        e.raw_os_error()
+            .map_or_else(|| e.to_string(), shards_cmdline::go::linux_error)
+    };
+    let shown = String::from_utf8_lossy(file);
+    let meta = std::fs::metadata(OsStr::from_bytes(file)).map_err(|e| format!("stat {shown}: {}", go(&e)))?;
+    if meta.is_dir() {
+        return Err(shards_cmdline::go::linux_error(libc::EISDIR));
+    }
+    let c = CString::new(file).map_err(|_| "a path holds NUL".to_string())?;
+    // SAFETY: faccessat2(2) of a NUL-terminated path, for the effective IDs.
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_faccessat2,
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            libc::X_OK,
+            libc::AT_EACCESS,
+        )
+    };
+    if rc == 0 {
+        return Ok(());
+    }
+    let e = io::Error::last_os_error();
+    match e.raw_os_error() {
+        Some(libc::ENOSYS | libc::EPERM) if meta.mode() & 0o111 != 0 => Ok(()),
+        Some(libc::ENOSYS | libc::EPERM) => Err(shards_cmdline::go::linux_error(libc::EACCES)),
+        _ => Err(go(&e)),
+    }
 }

@@ -58,7 +58,8 @@ pub enum Mount {
         gid: u32,
     },
     /// A directory the guest keeps by `id` across the steps of one build, made with
-    /// `mode` and `uid:gid` the first time.
+    /// `mode` and `uid:gid` the first time. `id` is the host's short name for the cache,
+    /// one per cache id the build's steps give, however long theirs is.
     Cache {
         id: Vec<u8>,
         mode: u32,

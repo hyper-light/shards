@@ -303,7 +303,8 @@ fn tcp(addr: &str) -> i32 {
 }
 
 /// File operations, in order: `mkdir:P`, `write:P=DATA`, `link:OLD:NEW`, `symlink:T:P`,
-/// `rm:P`, `chmod:OCTAL:P`. Stops at the first that fails, saying which.
+/// `rm:P`, `rmdir:P` (and what it holds), `chmod:OCTAL:P`. Stops at the first that
+/// fails, saying which.
 fn fs(ops: &[String]) -> i32 {
     use std::os::unix::fs::PermissionsExt as _;
     for op in ops {
@@ -323,6 +324,7 @@ fn fs(ops: &[String]) -> i32 {
                 std::os::unix::fs::symlink(t, p)
             }
             "rm" => std::fs::remove_file(rest),
+            "rmdir" => std::fs::remove_dir_all(rest),
             "chmod" => {
                 let (m, p) = rest.split_once(':').unwrap_or((rest, ""));
                 u32::from_str_radix(m, 8)

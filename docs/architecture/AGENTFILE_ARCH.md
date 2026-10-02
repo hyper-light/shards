@@ -734,8 +734,9 @@ of 2026-10-02:
 | `COPY` (`--from`, `--chmod`, `--chown`, `--link`, `--parents`, `--exclude`, heredocs) | done (BuildKit's actions, byte for byte) | n/a |
 | `ADD` of local files and archives (`--chmod`, `--chown`, `--link`, `--exclude`, `--unpack`) | done | n/a |
 | `ADD` of URLs (`--checksum`, `--unpack`) and git (`--keep-git-dir`, `--checksum`) | **missing** | n/a |
-| `RUN` (shell, exec, heredocs) | done, in one builder microVM per build (D34); heredocs planned as BuildKit plans them (oracle), **not yet run** by an E2E test | n/a |
-| `RUN --mount` `bind`, `cache`, `tmpfs`, `secret`, `ssh` | `bind`, `tmpfs`, and `cache` within one build carried out, **untested** E2E; `secret` has no source until `--secret` is served; `ssh` **missing** | n/a |
+| `RUN` (shell, exec, heredocs) | done, in one builder microVM per build (D34): every form the reference documents builds layer for layer as BuildKit builds it (`scripts/build/realworld/cases/run-forms`); a command that cannot start is said as BuildKit says runc's failure (its output, then exit code 1) | n/a |
+| `RUN --mount` `bind`, `cache`, `tmpfs`, `secret`, `ssh` | `bind` (context, stage, image, `rw`), `tmpfs`, and `cache` within one build done (`run-forms`, E2E); the context's sources checksummed first as BuildKit's are; `secret` has no source until `--secret` is served; `ssh` **missing** | n/a |
+| A step's paths resolved in its root (working directory, mount targets and sources, stubs), as runc and BuildKit resolve them, never through a planted symlink into the builder (`cases/in-root`, E2E, mutation-checked) | done | n/a |
 | Defect, fixed (2026-10-02): `shards wait` gave 0, `ps` showed an ended run `Up` and `--rm` left its container, when a run ended before its container's record was written (the record is written on a thread of its own, which parallel E2E runs slow): the end was dropped (`end_container` saw no container in sight). A run's end now waits for its record, as a run that never starts did; `a_run_that_ends_before_its_record_is_written_keeps_its_end` holds the write to reproduce it | n/a | done |
 | `RUN` on Windows hosts: a builder over WHP and a Windows transport | **missing** | n/a |
 | `RUN`'s sandbox: moby's default seccomp profile, which BuildKit applies to every step (`Seccomp: 2`) | **missing** | n/a |

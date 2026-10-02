@@ -102,6 +102,12 @@ pub struct Exec<'a> {
     /// Where `RUN` steps' changes are kept, the source they are read as, and how much it
     /// holds.
     run_staging: Option<(std::fs::File, u32, u64)>,
+    /// The build context's snapshots: what BuildKit takes content checksums of before an
+    /// operation reads them.
+    contexts: Vec<Rc<Fs>>,
+    /// The cache ids the build's steps mount, each named in the builder by its index: an
+    /// id is any string, and as a name of its own it could pass a file name's limit.
+    caches: Vec<Vec<u8>>,
 }
 
 /// One slot of a file operation: an input, an action's mount, or its committed result.
@@ -126,6 +132,48 @@ impl<'a> Exec<'a> {
             unpack: None,
             budget: shards_build::archive::Budget::new(*limits),
             run_staging: None,
+            contexts: Vec::new(),
+            caches: Vec::new(),
+        }
+    }
+
+    /// The builder's name for cache `id`: the same for every mount of it in this build.
+    fn cache_name(&mut self, id: &[u8]) -> Vec<u8> {
+        let index = match self.caches.iter().position(|c| c == id) {
+            Some(i) => i,
+            None => {
+                self.caches.push(id.to_vec());
+                self.caches.len() - 1
+            }
+        };
+        index.to_string().into_bytes()
+    }
+
+    /// What BuildKit's solver finds before an operation reads `path` of `fs`, if `fs` is
+    /// the build context: a content checksum, which fails for a path that names nothing,
+    /// its symlinks followed; a wildcard may match nothing (solver/llbsolver
+    /// NewContentHashFunc, cache/contenthash). Other inputs are not checksummed first, and
+    /// fail as the operation reads them (measured against BuildKit, 2026-10-02). It names
+    /// the context where BuildKit names its internal reference, and where several paths
+    /// are missing, the first, where BuildKit's parallel checksums name any of them.
+    fn checksummed(&self, fs: &Rc<Fs>, path: &[u8], wildcard: bool) -> Result<(), String> {
+        if !self.contexts.iter().any(|c| Rc::ptr_eq(c, fs)) {
+            return Ok(());
+        }
+        if wildcard && path.iter().any(|b| matches!(b, b'*' | b'?' | b'[')) {
+            return Ok(());
+        }
+        let shown = if path.starts_with(b"/") {
+            String::from_utf8_lossy(path).into_owned()
+        } else {
+            format!("/{}", String::from_utf8_lossy(path))
+        };
+        match fs.stat(path) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(format!(
+                "failed to compute cache key: failed to calculate checksum of ref context: {}: not found",
+                shards_cmdline::go::quote(&shown)
+            )),
         }
     }
 
@@ -220,6 +268,7 @@ impl<'a> Exec<'a> {
             .map_err(|e| e.0)?;
         self.stages.push(stage);
         let fs = Rc::new(fs);
+        self.contexts.push(fs.clone());
         Ok(Ref {
             fs: fs.clone(),
             layers: Vec::new(),
@@ -565,6 +614,7 @@ impl<'a> Exec<'a> {
                         _ => return Err(format!("input {i} is used twice uncommitted")),
                     },
                 };
+                self.checksummed(&from, src, *allow_wildcard)?;
                 let action = CopyAction {
                     src: src.clone(),
                     dest: dest.clone(),
@@ -761,6 +811,7 @@ impl Exec<'_> {
             let mount = match &m.kind {
                 OpMountKind::Bind => {
                     let r = input(m.input)?;
+                    self.checksummed(&r.fs, &m.selector, false)?;
                     Mount::Tree {
                         tree: builder.tree(&r.origin, &mut self.sources)?,
                         subpath: m.selector.clone(),
@@ -788,7 +839,7 @@ impl Exec<'_> {
                         Err(_) => (0o755, 0, 0),
                     };
                     Mount::Cache {
-                        id: id.clone(),
+                        id: self.cache_name(id),
                         mode,
                         uid,
                         gid,

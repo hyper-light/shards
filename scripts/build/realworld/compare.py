@@ -9,8 +9,8 @@ each side stamped its own build's wall clock (a directory a step made, say).
 
 BIN is the directory of a release build's `shards`, `shardsd` and `shards-vm`, which are
 copied side by side and, on macOS, ad-hoc signed as scripts/hvf-run signs them, so that
-`shards-vm` may start VMs; VERIFY is docs/research/measurements/build-memory's
-`verify`, built against the revision under test. Prints one JSON line of the result.
+`shards-vm` may start VMs; VERIFY is scripts/build/realworld/verify's binary, built
+against the revision under test. Prints one JSON line of the result.
 """
 import hashlib, io, json, os, shutil, subprocess, sys, tarfile, tempfile, time
 
