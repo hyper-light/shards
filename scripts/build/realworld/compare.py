@@ -78,7 +78,7 @@ def oci_layout_image(root, index_digest=None):
 
 # BuildKit.
 t0 = time.time()
-run(["docker", "build", "-q", "-f", os.path.join(ctx, dockerfile), "-t", tag, ctx])
+dbuilt = run(["docker", "build", "--no-cache", "--progress=plain", "-f", os.path.join(ctx, dockerfile), "-t", tag, ctx])
 t1 = time.time()
 save = os.path.join(work, "docker")
 os.makedirs(save)
@@ -89,7 +89,7 @@ dconfig, dlayers = oci_layout_image(save)
 # shards.
 env = dict(os.environ, SHARDS_HOME=home, SHARDS_TIMING="1")
 s0 = time.time()
-built = run([shards, "build", "-f", os.path.join(ctx, dockerfile), "-t", tag, ctx], env=env)
+built = run([shards, "build", "--progress=plain", "-f", os.path.join(ctx, dockerfile), "-t", tag, ctx], env=env)
 s1 = time.time()
 export = next((l.split(" ", 1)[1] for l in built.stderr.splitlines() if l.startswith("shards-export ")), None)
 store = os.path.join(home, "images")
@@ -128,6 +128,26 @@ for i, (d, s) in enumerate(zip(dlayers, slayers)):
             if k == "mtime" and within(a[k], t0, t1) and within(b[k], s0, s1):
                 continue
             diffs.append(f"layer {i} {p}: {k} docker {a[k]!r} shards {b[k]!r}")
+
+# What each RUN printed, as the plain progress shows it: by step, less the timestamps.
+import re
+def step_output(text):
+    steps, names, out = {}, {}, {}
+    for l in text.splitlines():
+        m = re.match(r"#(\d+) \[[^\]]*\] (RUN .*)", l)
+        if m:
+            names[m.group(1)] = m.group(2)
+            continue
+        m = re.match(r"#(\d+) \d+\.\d+ (.*)", l)
+        if m and m.group(1) in names:
+            out.setdefault(names[m.group(1)], []).append(m.group(2))
+    return out
+dout, sout = step_output(dbuilt.stdout + dbuilt.stderr), step_output(built.stdout + built.stderr)
+for k in sorted(set(dout) | set(sout)):
+    if dout.get(k) != sout.get(k):
+        import difflib
+        d = list(difflib.unified_diff(dout.get(k, []), sout.get(k, []), "docker", "shards", n=0, lineterm=""))
+        diffs.append(f"output of {k[:60]}: " + "\n".join(d))
 
 # Config.
 for k in ("Env", "Entrypoint", "Cmd", "WorkingDir", "User", "ExposedPorts", "Labels", "Volumes", "StopSignal", "Shell", "Healthcheck"):

@@ -2855,3 +2855,32 @@ revision before comparing a changed API/implementation.
   of µs that restores differ by from template to template (M29), which this comparison of
   two templates cannot separate; the wall clock shows no cost. Both arms' medians, 5.8 ms
   at this load, are above the 5 ms target, as were M79's 5.2 ms at load 21 to 31.
+
+### M82. What a builder VM's memory costs it
+
+- **Question.** `RUN` steps run in one builder microVM per build (D34). Docker Desktop's
+  VM, which runs Docker's builds on macOS, has half the host's memory (64 GiB of this
+  host's 128, `docker info`, 2026-10-02), all 18 CPUs, 1 GiB of swap. What does a builder
+  pay for its memory size?
+- **Method.** The same three-`RUN` Dockerfile (alpine:3.22, files, `adduser`, a non-root
+  step, `WORKDIR`), built warm through the signed binaries, n = 5 per size, sizes
+  interleaved; the VM process's peak RSS from its timing line. 2026-10-02, Apple M5 Max,
+  macOS 26.4.1, load average 20.
+- **Result.**
+
+  | Guest memory | Build wall p50 | max | VM RSS p50 |
+  |---|---|---|---|
+  | 512 MiB | 169 ms | 933 ms | 94 MiB |
+  | 1 GiB | 195 ms | 244 ms | 104 MiB |
+  | 2 GiB | 174 ms | 214 ms | 127 MiB |
+  | 4 GiB | 192 ms | 199 ms | 223 MiB |
+  | 8 GiB | 209 ms | 212 ms | 308 MiB |
+  | 16 GiB | 246 ms | 270 ms | 470 MiB |
+  | 32 GiB | 329 ms | 341 ms | 792 MiB |
+  | 64 GiB | 434 ms | 445 ms | 1423 MiB |
+
+- **Consequence.** About 21 MiB of RSS and 4 ms of boot per GiB of guest memory: the
+  kernel's page structures, which it writes as it boots. A builder takes half the host's
+  memory, Docker's capacity, and pays this; memory plugged as a build needs it would pay
+  only for what the build uses. For scale, BuildKit in Docker Desktop's VM took 0.83 s
+  uncached for the same build, against shards' 0.42 to 0.45 s warm.

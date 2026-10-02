@@ -736,6 +736,9 @@ of 2026-10-02:
 | `ADD` of URLs (`--checksum`, `--unpack`) and git (`--keep-git-dir`, `--checksum`) | **missing** | n/a |
 | `RUN` (shell, exec, heredocs) | **missing** | n/a |
 | `RUN --mount` `bind`, `cache`, `tmpfs`, `secret`, `ssh` | **missing** | n/a |
+| `RUN` on Windows hosts: a builder over WHP and a Windows transport | **missing** | n/a |
+| `RUN`'s sandbox: moby's default seccomp profile, which BuildKit applies to every step (`Seccomp: 2`) | **missing** | n/a |
+| A builder's memory plugged as a build needs it (virtio-mem), not paid at boot (PM M82) | **missing** | n/a |
 | `RUN --network` `default`, `none`, `host`; `--security`; `--device` | **missing**; `default` needs guest networking (D31) | n/a |
 | `EXPOSE` | done (config) | **missing**: `run -P`, `-p` need D31 |
 | `VOLUME` | done (config) | **missing**: anonymous volumes at run |

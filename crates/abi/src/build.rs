@@ -100,6 +100,9 @@ pub struct Step {
     pub insecure: bool,
     /// Absolute targets, and what is mounted there, in order.
     pub mounts: Vec<(Vec<u8>, Mount)>,
+    /// `--ulimit`s: Linux's resource number (the same on every architecture shards runs),
+    /// the soft and the hard limit; the rest are inherited.
+    pub rlimits: Vec<(u32, u64, u64)>,
 }
 
 fn put_u32(out: &mut Vec<u8>, n: u32) {
@@ -197,6 +200,12 @@ impl Step {
                 }
             }
         }
+        put_len(&mut out, self.rlimits.len());
+        for &(resource, soft, hard) in &self.rlimits {
+            put_u32(&mut out, resource);
+            out.extend_from_slice(&soft.to_be_bytes());
+            out.extend_from_slice(&hard.to_be_bytes());
+        }
         out
     }
 
@@ -254,6 +263,14 @@ impl Step {
             };
             mounts.push((target, m));
         }
+        let n = r.count(20)?;
+        let mut rlimits = Vec::with_capacity(n);
+        for _ in 0..n {
+            let resource = r.u32()?;
+            let soft = u64::from_be_bytes(r.take(8)?.try_into().ok()?);
+            let hard = u64::from_be_bytes(r.take(8)?.try_into().ok()?);
+            rlimits.push((resource, soft, hard));
+        }
         r.0.is_empty().then_some(Step {
             root,
             upper,
@@ -269,6 +286,7 @@ impl Step {
             network,
             insecure,
             mounts,
+            rlimits,
         })
     }
 }
@@ -396,6 +414,7 @@ mod tests {
                     },
                 ),
             ],
+            rlimits: vec![(7, 1024, 4096)],
         };
         let bytes = step.encode();
         assert_eq!(Step::decode(&bytes), Some(step));

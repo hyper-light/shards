@@ -25,11 +25,15 @@ use crate::linux::power_off;
 use crate::run::{dial, loopback_up, send};
 use crate::tree::{LayerWriter, send_upper};
 
+/// The builder's own root, a tmpfs it moves onto at start: a step's pivot_root needs the
+/// root it leaves to be a mount of its own, which the initramfs is not
+/// (pivot_root(2), EINVAL), and only pivot_root takes the builder's files out of a step's
+/// reach; a chroot leaves them there for a step with CAP_SYS_CHROOT.
 const B: &str = "/b";
-const LAYERS: &str = "/b/l";
-const ROOT: &str = "/b/root";
-const CACHES: &str = "/b/c";
-const EMPTY: &str = "/b/empty";
+const LAYERS: &str = "/l";
+const ROOT: &str = "/root";
+const CACHES: &str = "/c";
+const EMPTY: &str = "/empty";
 
 /// BuildKit's capabilities in its sandbox (containerd's defaults, docs/research/buildkit-
 /// run.md §4), by number (linux/capability.h).
@@ -137,14 +141,23 @@ pub fn main() -> ! {
 }
 
 fn serve() -> io::Result<()> {
-    std::fs::create_dir_all("/proc")?;
-    mount("proc", Path::new("/proc"), "proc", 0, "")?;
     std::fs::create_dir_all(B)?;
     // Layers live in memory, or on swap once memory runs short.
-    mount("tmpfs", Path::new(B), "tmpfs", 0, "mode=0700,size=100%")?;
-    for d in [LAYERS, CACHES, EMPTY, ROOT] {
-        std::fs::create_dir_all(d)?;
+    mount("tmpfs", Path::new(B), "tmpfs", 0, "mode=0755,size=100%")?;
+    for d in [LAYERS, CACHES, EMPTY, ROOT, "/dev", "/proc"] {
+        std::fs::create_dir_all(Path::new(B).join(d.trim_start_matches('/')))?;
     }
+    mount("devtmpfs", &Path::new(B).join("dev"), "devtmpfs", 0, "")?;
+    mount("proc", &Path::new(B).join("proc"), "proc", 0, "")?;
+    // Onto it, as switch_root moves off an initramfs.
+    std::env::set_current_dir(B)?;
+    mount(".", Path::new("/"), "", libc::MS_MOVE, "")?;
+    let dot = cstr(".")?;
+    // SAFETY: a NUL-terminated path.
+    if unsafe { libc::chroot(dot.as_ptr()) } != 0 {
+        return Err(os_err("chroot"));
+    }
+    std::env::set_current_dir("/")?;
     swap_on()?;
     let conn = dial(build::PORT, true)?;
     let mut b = Builder {
@@ -226,7 +239,7 @@ impl Builder {
         if let Some(p) = self.bases.get(&n) {
             return Ok(p.clone());
         }
-        let at = PathBuf::from(format!("/b/base{n}"));
+        let at = PathBuf::from(format!("/base{n}"));
         std::fs::create_dir_all(&at)?;
         mount(
             &format!("/dev/pmem{n}"),
@@ -275,7 +288,7 @@ impl Builder {
 
     fn step(&mut self, step: &Step) -> io::Result<()> {
         self.serial += 1;
-        let work = PathBuf::from(format!("/b/s{}", self.serial));
+        let work = PathBuf::from(format!("/s{}", self.serial));
         let upper = work.join("upper");
         std::fs::create_dir_all(&work)?;
         let root = Path::new(ROOT);
@@ -769,6 +782,16 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
     match step.network {
         Network::None => loopback_up()?,
     }
+    for &(resource, soft, hard) in &step.rlimits {
+        let limit = libc::rlimit {
+            rlim_cur: soft,
+            rlim_max: hard,
+        };
+        // SAFETY: setrlimit(2) with a resource number the host gave and a limit struct.
+        if unsafe { libc::setrlimit(resource as _, &limit) } != 0 {
+            return Err(os_err("setting a ulimit"));
+        }
+    }
     identity(step)?;
     // SAFETY: umask(2) always succeeds. runc's default (rootfs_linux.go).
     unsafe { libc::umask(0o022) };
@@ -872,6 +895,10 @@ fn identity(step: &Step) -> io::Result<()> {
         }
         libc::prctl(libc::PR_SET_KEEPCAPS, 0, 0, 0, 0);
     }
+    // For any user but root, execve then leaves none but the bounding set, there being no
+    // file or ambient capabilities (capabilities(7)): as BuildKit's steps have it (CapPrm
+    // and CapEff 0 for USER 1000:1000 and for nobody, Docker Desktop's BuildKit,
+    // 2026-10-02).
     let mut data = [CapData::default(); 2];
     for c in (0..=last).filter(|&c| keep(c)) {
         if let Some(d) = data.get_mut((c / 32) as usize) {

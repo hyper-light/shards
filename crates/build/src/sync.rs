@@ -18,9 +18,10 @@ const CHUNK: usize = 1 << 20;
 /// What to write: the step's changes alone, or everything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// What the step that made the snapshot changed: every path it stamped, removals as
-    /// whiteouts, a directory it made again opaque.
-    Step,
+    /// What step `n` changed: every path it stamped, removals as whiteouts, a directory
+    /// it made again opaque. The snapshot must be the step's own result: a later step's
+    /// changes would hide it.
+    Step(u32),
     Whole,
 }
 
@@ -43,8 +44,8 @@ pub fn write(
     let mut todo: Vec<(NodeId, Vec<u8>)> = vec![(Tree::ROOT, Vec::new())];
     while let Some((dir, prefix)) = todo.pop() {
         let entries: Vec<(Vec<u8>, Option<NodeId>)> = match scope {
-            Scope::Step => {
-                tree.changed_into(dir, &mut changed);
+            Scope::Step(n) => {
+                tree.changed_at(dir, n, &mut changed);
                 changed.iter().map(|(n, c)| (n.to_vec(), *c)).collect()
             }
             Scope::Whole => {
@@ -225,7 +226,7 @@ mod tests {
         upper.symlink(b"d/new", b"/s").unwrap();
 
         let mut stream = Vec::new();
-        write(&upper, Scope::Step, &mut sources, &mut |b| {
+        write(&upper, Scope::Step(upper.tree().step()), &mut sources, &mut |b| {
             stream.extend_from_slice(b);
             Ok(())
         })

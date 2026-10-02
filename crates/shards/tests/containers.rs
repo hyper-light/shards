@@ -457,7 +457,12 @@ fn a_command_that_cannot_start_says_why_as_docker_run_does() {
     assert_eq!(untimed(&detached.stderr), said, "{detached}");
     // Both stay created, keeping the code dockerd gives a command not found, and no log.
     for name in ["here", "there"] {
-        assert_eq!(shards_in(&home, &["wait", name]).stdout, "127\n", "{name}");
+        assert_eq!(
+            shards_in(&home, &["wait", name]).stdout,
+            "127\n",
+            "{name}\n--- daemon.log\n{}",
+            std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
+        );
         let logs = shards_in(&home, &["logs", name]);
         assert_eq!((logs.stdout.as_str(), logs.stderr.as_str()), ("", ""), "{name}");
     }

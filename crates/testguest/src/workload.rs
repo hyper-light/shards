@@ -59,6 +59,7 @@ pub fn main() -> ! {
         "tty" => tty(arg(1)),
         "vsock" => vsock(args.get(1..).unwrap_or_default()),
         "loopback" => loopback(),
+        "fs" => fs(args.get(1..).unwrap_or_default()),
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -213,6 +214,21 @@ fn report() -> i32 {
     // SAFETY: uname(2) NUL-terminates nodename.
     let host = unsafe { std::ffi::CStr::from_ptr(uts.nodename.as_ptr()) }.to_string_lossy();
     out.push_str(&format!("hostname {host}\n"));
+    out.push_str(&format!("pid {}\n", std::process::id()));
+    // The kernel's own account of the process: umask, capabilities, seccomp.
+    for line in std::fs::read_to_string("/proc/self/status")
+        .unwrap_or_default()
+        .lines()
+    {
+        if let Some((k, v)) = line.split_once(':')
+            && matches!(
+                k,
+                "Umask" | "CapInh" | "CapPrm" | "CapEff" | "CapBnd" | "CapAmb" | "NoNewPrivs" | "Seccomp"
+            )
+        {
+            out.push_str(&format!("{} {}\n", k.to_lowercase(), v.trim()));
+        }
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -264,6 +280,43 @@ fn report() -> i32 {
 }
 
 /// Copies stdin to stdout.
+/// File operations, in order: `mkdir:P`, `write:P=DATA`, `link:OLD:NEW`, `symlink:T:P`,
+/// `rm:P`, `chmod:OCTAL:P`. Stops at the first that fails, saying which.
+fn fs(ops: &[String]) -> i32 {
+    use std::os::unix::fs::PermissionsExt as _;
+    for op in ops {
+        let (kind, rest) = op.split_once(':').unwrap_or((op.as_str(), ""));
+        let done = match kind {
+            "mkdir" => std::fs::create_dir(rest),
+            "write" => {
+                let (p, data) = rest.split_once('=').unwrap_or((rest, ""));
+                std::fs::write(p, data)
+            }
+            "link" => {
+                let (a, b) = rest.split_once(':').unwrap_or((rest, ""));
+                std::fs::hard_link(a, b)
+            }
+            "symlink" => {
+                let (t, p) = rest.split_once(':').unwrap_or((rest, ""));
+                std::os::unix::fs::symlink(t, p)
+            }
+            "rm" => std::fs::remove_file(rest),
+            "chmod" => {
+                let (m, p) = rest.split_once(':').unwrap_or((rest, ""));
+                u32::from_str_radix(m, 8)
+                    .map_err(io::Error::other)
+                    .and_then(|m| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)))
+            }
+            _ => Err(io::Error::other("an unknown operation")),
+        };
+        if let Err(e) = done {
+            let _ = writeln!(io::stderr(), "{op}: {e}");
+            return 1;
+        }
+    }
+    0
+}
+
 /// Sends a byte to itself over TCP on 127.0.0.1, on ::1, and from any address to its own
 /// host name as the C library resolves it, and prints how each went.
 fn loopback() -> i32 {

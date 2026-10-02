@@ -582,6 +582,27 @@ impl Child {
         }
     }
 
+    /// Whether the child has ended, without waiting: its status as [`Child::wait`] gives
+    /// it once it has, `None` while it runs.
+    pub fn try_wait(&self) -> Option<i32> {
+        // SAFETY: an all-zero siginfo_t is valid; waitid(2) fills it for our child.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: as above; WNOHANG returns at once, with si_pid 0 if nothing ended.
+        let r = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                self.id(),
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+            )
+        };
+        // SAFETY: si_pid is set by waitid when it reports a child.
+        if r != 0 || unsafe { info.si_pid() } == 0 {
+            return None;
+        }
+        self.wait().ok()
+    }
+
     /// Sends `signal` to the child, unless it has been reaped.
     pub fn kill(&self, signal: libc::c_int) -> io::Result<()> {
         let reaped = self.reaped.lock().unwrap_or_else(PoisonError::into_inner);

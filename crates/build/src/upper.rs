@@ -77,6 +77,11 @@ impl<'a> Applier<'a> {
         }
     }
 
+    /// Whether the stream has ended.
+    pub fn ended(&self) -> bool {
+        self.decoder.ended()
+    }
+
     /// Ends the stream: it must have ended whole. Every directory then takes the time its
     /// step left it. How many bytes the staging file holds.
     pub fn finish(self) -> Result<u64, Error> {

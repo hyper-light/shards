@@ -659,18 +659,29 @@ impl Tree {
         }
     }
 
+    /// The step under way: what [`Tree::mark`] stamps now.
+    pub fn step(&self) -> u32 {
+        self.step
+    }
+
     /// What this step changed in `dir`, into `out`: each name stamped with it, once, and
     /// what it names now, or `None` where it was removed; sorted by name.
     pub fn changed_into<'t>(&'t self, dir: NodeId, out: &mut Vec<(&'t [u8], Option<NodeId>)>) {
+        self.changed_at(dir, self.step, out);
+    }
+
+    /// What step `step` changed in `dir` and no later step changed again, as
+    /// [`Tree::changed_into`] lists it.
+    pub fn changed_at<'t>(&'t self, dir: NodeId, step: u32, out: &mut Vec<(&'t [u8], Option<NodeId>)>) {
         out.clear();
         // Before the first step nothing was marked, and 0 is every unmarked entry's stamp.
-        if self.step == 0 {
+        if step == 0 {
             return;
         }
         let Some(d) = self.dir(dir) else { return };
         let mut at = d.first;
         while let Some(l) = self.links.get(at as usize) {
-            if l.stamp == self.step {
+            if l.stamp == step {
                 out.push((self.name_of(l), (l.child != NONE).then_some(l.child as NodeId)));
             }
             at = l.next;

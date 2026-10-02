@@ -27,6 +27,8 @@ use shards_image::layer;
 use shards_image::reference::Digest;
 use shards_image::store::{self, Limits, Store, Unpacked};
 
+use super::builder::{Origin, origin_id};
+
 /// The media type of the layers shards writes: uncompressed, as the store keeps them for
 /// `shards run` to unpack at no cost.
 pub const LAYER_TAR: &str = "application/vnd.oci.image.layer.v1.tar";
@@ -38,6 +40,8 @@ pub struct Ref {
     pub fs: Rc<Fs>,
     pub layers: Vec<Layer>,
     pub stack: Stack,
+    /// Where its tree comes from, as a builder guest would hold it.
+    pub origin: Rc<Origin>,
 }
 
 /// A target's snapshot and its stack, to write its image's root filesystem from.
@@ -77,6 +81,7 @@ fn scratch_ref() -> Ref {
         fs: Rc::new(fs),
         layers: Vec::new(),
         stack,
+        origin: Rc::new(Origin::Scratch),
     }
 }
 
@@ -94,6 +99,9 @@ pub struct Exec<'a> {
     unpack: Option<store::Stage>,
     /// What the build's ADDs may unpack, together.
     budget: shards_build::archive::Budget,
+    /// Where `RUN` steps' changes are kept, the source they are read as, and how much it
+    /// holds.
+    run_staging: Option<(std::fs::File, u32, u64)>,
 }
 
 /// One slot of a file operation: an input, an action's mount, or its committed result.
@@ -117,6 +125,7 @@ impl<'a> Exec<'a> {
             stages: Vec::new(),
             unpack: None,
             budget: shards_build::archive::Budget::new(*limits),
+            run_staging: None,
         }
     }
 
@@ -178,16 +187,25 @@ impl<'a> Exec<'a> {
             .ok_or_else(|| "no stage".to_string())
     }
 
-    /// A base image's snapshot, from its layers.
-    pub fn image(&mut self, layers: Vec<Layer>) -> Result<Ref, String> {
+    /// A base image's snapshot, from its layers: in a builder guest, its root filesystem
+    /// on pmem device `base`, or else the whole tree, sent.
+    pub fn image(&mut self, layers: Vec<Layer>, base: Option<u32>) -> Result<Ref, String> {
         let mut tree = layer::root();
         let tally = self.apply(&mut tree, &layers)?;
-        let fs = Fs::new(tree, now());
+        let fs = Rc::new(Fs::new(tree, now()));
         let stack = Stack::layers(tally, fs.tree());
+        let origin = match base {
+            Some(n) => Origin::Image(n),
+            None => Origin::Whole {
+                id: origin_id(),
+                fs: fs.clone(),
+            },
+        };
         Ok(Ref {
-            fs: Rc::new(fs),
+            fs,
             layers,
             stack,
+            origin: Rc::new(origin),
         })
     }
 
@@ -201,10 +219,12 @@ impl<'a> Exec<'a> {
         let fs = shards_build::context::load(dir, filters, &mut self.sources, now(), stage.path())
             .map_err(|e| e.0)?;
         self.stages.push(stage);
+        let fs = Rc::new(fs);
         Ok(Ref {
-            fs: Rc::new(fs),
+            fs: fs.clone(),
             layers: Vec::new(),
             stack: Stack::unknown("a build context, which no layers make"),
+            origin: Rc::new(Origin::Whole { id: origin_id(), fs }),
         })
     }
 
@@ -218,6 +238,7 @@ impl<'a> Exec<'a> {
                 fs: Rc::new(fs),
                 layers: Vec::new(),
                 stack,
+                origin: Rc::new(Origin::Scratch),
             });
         };
         let mut fs = (*first.fs).clone();
@@ -233,11 +254,19 @@ impl<'a> Exec<'a> {
             fs: Rc::new(fs),
             layers,
             stack,
+            origin: Rc::new(Origin::Merge(inputs.iter().map(|r| r.origin.clone()).collect())),
         })
     }
 
-    /// Commits a mount: its layer, the diff from its base, written to the store.
-    fn commit(&mut self, base: Option<Ref>, mut fs: Fs, description: &str) -> Result<Ref, String> {
+    /// Commits a mount: its layer, the diff from its base, written to the store. Its
+    /// origin is `origin`, or the step that made it from its base's.
+    pub fn commit(
+        &mut self,
+        base: Option<Ref>,
+        mut fs: Fs,
+        description: &str,
+        origin: Option<Origin>,
+    ) -> Result<Ref, String> {
         let empty = scratch();
         let lower = base.as_ref().map_or(&empty, |b| &*b.fs);
         let mut w = self.store.writer().map_err(err)?;
@@ -274,6 +303,7 @@ impl<'a> Exec<'a> {
         let t = now();
         let mut created = Time::from_unix(t.0);
         created.nanosecond = t.1;
+        let base_origin = base.as_ref().map(|b| b.origin.clone());
         let mut layers = base.map(|b| b.layers).unwrap_or_default();
         layers.push(Layer {
             media_type: LAYER_TAR.as_bytes().to_vec(),
@@ -284,11 +314,20 @@ impl<'a> Exec<'a> {
             created: Some(created),
             description: description.as_bytes().to_vec(),
         });
+        let step = fs.tree().step();
         fs.begin();
+        let fs = Rc::new(fs);
+        let origin = origin.unwrap_or_else(|| Origin::Step {
+            id: origin_id(),
+            parent: base_origin.unwrap_or_else(|| Rc::new(Origin::Scratch)),
+            fs: fs.clone(),
+            step,
+        });
         Ok(Ref {
-            fs: Rc::new(fs),
+            fs,
             layers,
             stack,
+            origin: Rc::new(origin),
         })
     }
 
@@ -305,7 +344,8 @@ impl<'a> Exec<'a> {
             return Err("an image at its limits".into());
         }
         // The snapshot itself, not a copy: a copy is another tree, whose node ids the
-        // stack does not follow.
+        // stack does not follow. Its origin goes first, since it may hold it too.
+        drop(r.origin);
         let fs = Rc::try_unwrap(r.fs).map_err(|_| "a snapshot still shared".to_string())?;
         if !r.stack.follows(fs.tree()) {
             return Err("a snapshot other than the one followed".into());
@@ -554,7 +594,7 @@ impl<'a> Exec<'a> {
             *d = true;
         }
         let slot = if commit.get(idx).copied().unwrap_or(false) {
-            Slot::Ref(self.commit(base, fs, description)?)
+            Slot::Ref(self.commit(base, fs, description, None)?)
         } else {
             Slot::Mount {
                 base,
@@ -565,5 +605,268 @@ impl<'a> Exec<'a> {
             *s = slot;
         }
         Ok(())
+    }
+}
+
+/// A `RUN`'s operation, as the definition has it, and what the build allows it.
+#[derive(Debug)]
+pub struct RunOp<'o> {
+    pub process: &'o shards_dockerfile::llb::Process,
+    pub mounts: &'o [shards_dockerfile::llb::OpMount],
+    pub network: shards_dockerfile::llb::NetMode,
+    pub security: shards_dockerfile::llb::Security,
+    /// Secrets as variables: name, secret id, whether it may be missing.
+    pub secret_env: &'o [(Vec<u8>, Vec<u8>, bool)],
+    /// `--allow security.insecure` and `--allow network.host`.
+    pub insecure: bool,
+    pub network_host: bool,
+}
+
+/// Linux's resource numbers, the same on every architecture shards runs, by the names
+/// `--ulimit` takes (client/llb/exec.go).
+const RLIMITS: [(&str, u32); 15] = [
+    ("cpu", 0),
+    ("fsize", 1),
+    ("data", 2),
+    ("stack", 3),
+    ("core", 4),
+    ("rss", 5),
+    ("nproc", 6),
+    ("nofile", 7),
+    ("memlock", 8),
+    ("as", 9),
+    ("locks", 10),
+    ("sigpending", 11),
+    ("msgqueue", 12),
+    ("nice", 13),
+    ("rtprio", 14),
+];
+
+impl Exec<'_> {
+    /// A user file of `fs` as BuildKit opens one (executor/oci/user.go): resolved within
+    /// the snapshot, a regular file, at most 10 MiB; `None` if it cannot be opened.
+    fn user_file(&mut self, fs: &Fs, path: &[u8]) -> Result<Option<Vec<u8>>, String> {
+        let Ok(id) = fs.stat(path) else { return Ok(None) };
+        let Some(Node {
+            kind: Kind::File { size, data },
+            ..
+        }) = fs.node(id)
+        else {
+            return Ok(None);
+        };
+        if *size > shards_user::BUILDKIT_USER_FILE as u64 {
+            return Err(format!(
+                "{:?} exceeds {} bytes",
+                String::from_utf8_lossy(path),
+                shards_user::BUILDKIT_USER_FILE
+            ));
+        }
+        let mut buf = vec![0u8; *size as usize];
+        if *size > 0 {
+            erofs::Source::read_at(&mut self.sources, *data, 0, &mut buf).map_err(err)?;
+        }
+        Ok(Some(buf))
+    }
+
+    /// Where a step's changes are kept: one file of the build's, read as a source.
+    fn staging(&mut self) -> Result<(std::fs::File, u32, u64), String> {
+        if let Some((f, source, at)) = &self.run_staging {
+            return Ok((f.try_clone().map_err(err)?, *source, *at));
+        }
+        let stage = self.store.stage().map_err(err)?;
+        let path = stage.path().join("run-changes");
+        let f = std::fs::File::options()
+            .create_new(true)
+            .read(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        self.stages.push(stage);
+        let source = self.sources.archive(f.try_clone().map_err(err)?).map_err(err)?;
+        self.run_staging = Some((f.try_clone().map_err(err)?, source, 0));
+        Ok((f, source, 0))
+    }
+
+    /// Runs a `RUN` in `builder` as BuildKit runs it (docs/research/buildkit-run.md), its
+    /// output to `out` as it comes; its result is its root mount's.
+    pub fn run(
+        &mut self,
+        builder: &mut super::builder::Builder,
+        inputs: &[Ref],
+        op: &RunOp<'_>,
+        description: &str,
+        out: &mut dyn FnMut(u8, &[u8]),
+    ) -> Result<Vec<Ref>, String> {
+        use shards_abi::build::{Mount, Network, Step};
+        use shards_dockerfile::llb::{NetMode, OpMountKind, Security};
+
+        let p = op.process;
+        let input = |i: i64| -> Result<Ref, String> {
+            match usize::try_from(i) {
+                Ok(i) => inputs
+                    .get(i)
+                    .cloned()
+                    .ok_or_else(|| format!("invalid input index {i}")),
+                Err(_) => Ok(scratch_ref()),
+            }
+        };
+        let root_mount = op
+            .mounts
+            .iter()
+            .find(|m| m.dest == b"/")
+            .ok_or("a command with no root mount")?;
+        if op.mounts.iter().any(|m| m.dest != b"/" && m.output >= 0) {
+            return Err("a command's output other than its root".into());
+        }
+        let root = input(root_mount.input)?;
+        let fail = |why: &str| super::step::failure(&p.args, why);
+        if op.security == Security::Insecure && !op.insecure {
+            return Err("security.insecure is not allowed".into());
+        }
+        let network = match op.network {
+            NetMode::Host if !op.network_host => return Err("network.host is not allowed".into()),
+            // A step's network is its own loopback until the guest has a network of its own
+            // (D31).
+            NetMode::None | NetMode::Sandbox | NetMode::Host => Network::None,
+        };
+        let passwd = self.user_file(&root.fs, b"/etc/passwd");
+        let group = self.user_file(&root.fs, b"/etc/group");
+        let user = match (&passwd, &group) {
+            (Ok(pw), Ok(gr)) => shards_user::buildkit(&p.user, pw.as_deref(), gr.as_deref()),
+            (Err(e), _) | (_, Err(e)) if !p.user.is_empty() => Err(e.clone()),
+            _ => shards_user::buildkit(b"", None, None),
+        }
+        .map_err(|e| fail(&e))?;
+        // Secrets as variables: none are given to a build yet, so a missing one is empty or,
+        // when required, an error (solver/llbsolver/ops/exec.go, loadSecretEnv).
+        let mut secrets = Vec::new();
+        for (name, id, optional) in op.secret_env {
+            if !optional {
+                return Err(format!("secret {}: not found", String::from_utf8_lossy(id)));
+            }
+            secrets.push((name.clone(), Vec::new()));
+        }
+        let env = super::step::env(&p.env, p.proxy.as_ref(), &secrets);
+        let env = shards_user::prepare_env(&env, user.uid, passwd.ok().flatten().as_deref())
+            .map_err(|e| fail(&e))?;
+        let hostname = if p.hostname.is_empty() {
+            super::step::HOSTNAME.to_vec()
+        } else {
+            p.hostname.clone()
+        };
+        let resolv = super::step::resolv(&std::fs::read("/etc/resolv.conf").unwrap_or_default());
+        let mut mounts = Vec::new();
+        for m in op.mounts.iter().filter(|m| m.dest != b"/") {
+            let mount = match &m.kind {
+                OpMountKind::Bind => {
+                    let r = input(m.input)?;
+                    Mount::Tree {
+                        tree: builder.tree(&r.origin, &mut self.sources)?,
+                        subpath: m.selector.clone(),
+                        writable: !m.readonly,
+                    }
+                }
+                OpMountKind::Cache { id, .. } => {
+                    // A cache's first content and owner: its source's directory, if any.
+                    let (mode, uid, gid) = match usize::try_from(m.input) {
+                        Ok(_) => {
+                            let r = input(m.input)?;
+                            let sel = if m.selector.is_empty() {
+                                b"/".to_vec()
+                            } else {
+                                m.selector.clone()
+                            };
+                            let meta =
+                                r.fs.stat(&sel)
+                                    .ok()
+                                    .and_then(|id| r.fs.node(id))
+                                    .map(|n| n.meta.clone())
+                                    .unwrap_or_default();
+                            (u32::from(meta.mode), meta.uid, meta.gid)
+                        }
+                        Err(_) => (0o755, 0, 0),
+                    };
+                    Mount::Cache {
+                        id: id.clone(),
+                        mode,
+                        uid,
+                        gid,
+                        readonly: m.readonly,
+                    }
+                }
+                OpMountKind::Tmpfs { size } => Mount::Tmpfs {
+                    size: u64::try_from(*size).unwrap_or(0),
+                    readonly: m.readonly,
+                },
+                OpMountKind::Secret { id, optional, .. } => {
+                    if *optional {
+                        continue;
+                    }
+                    return Err(format!("secret {}: not found", String::from_utf8_lossy(id)));
+                }
+                OpMountKind::Ssh { id, optional, .. } => {
+                    if *optional {
+                        continue;
+                    }
+                    return Err(format!(
+                        "no SSH key {:?} forwarded from the client",
+                        String::from_utf8_lossy(id)
+                    ));
+                }
+            };
+            mounts.push((m.dest.clone(), mount));
+        }
+        let mut rlimits = Vec::new();
+        for u in &p.ulimits {
+            let name = String::from_utf8_lossy(&u.name).to_lowercase();
+            let resource = RLIMITS
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, r)| *r)
+                .ok_or_else(|| format!("invalid ulimit name {name}"))?;
+            let limit = |v: i64| u64::try_from(v).unwrap_or(u64::MAX);
+            rlimits.push((resource, limit(u.soft), limit(u.hard)));
+        }
+        let step = Step {
+            root: builder.tree(&root.origin, &mut self.sources)?,
+            upper: 0,
+            argv: p.args.clone(),
+            env,
+            cwd: if p.cwd.is_empty() {
+                b"/".to_vec()
+            } else {
+                p.cwd.clone()
+            },
+            uid: user.uid,
+            gid: user.gid,
+            groups: user.groups,
+            hosts: super::step::hosts(&hostname, &p.extra_hosts),
+            hostname,
+            resolv,
+            network,
+            insecure: op.security == Security::Insecure,
+            mounts,
+            rlimits,
+        };
+        let mut fs = (*root.fs).clone();
+        fs.begin();
+        fs.now = now();
+        let (mut staging, source, at) = self.staging()?;
+        let mut applier = shards_build::upper::Applier::new(&mut fs, &mut staging, source, at);
+        let (ended, layer) = builder.run(step, out, &mut applier)?;
+        match ended {
+            super::builder::Ended::Status(0) => {}
+            super::builder::Ended::Status(n) => return Err(fail(&format!("exit code: {n}"))),
+            super::builder::Ended::NotRun(why) => return Err(fail(&why)),
+        }
+        let at = applier.finish().map_err(|e| e.0)?;
+        if let Some((_, _, end)) = &mut self.run_staging {
+            *end = at;
+        }
+        let origin = Origin::Run {
+            parent: root.origin.clone(),
+            layer,
+        };
+        Ok(vec![self.commit(Some(root), fs, description, Some(origin))?])
     }
 }

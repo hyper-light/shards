@@ -143,21 +143,151 @@ fn an_image_built_of_settings_runs_as_built() {
     }
 }
 
+/// What each `RUN` step printed, by step, as the plain progress shows it: `key value`
+/// lines, less the seconds.
+fn step_reports(stderr: &str) -> Vec<std::collections::BTreeMap<String, String>> {
+    let mut steps: Vec<(String, std::collections::BTreeMap<String, String>)> = Vec::new();
+    for line in stderr.lines() {
+        let Some(rest) = line.strip_prefix('#') else {
+            continue;
+        };
+        let Some((n, text)) = rest.split_once(' ') else {
+            continue;
+        };
+        if text.contains("] RUN ") {
+            steps.push((n.to_string(), Default::default()));
+            continue;
+        }
+        let Some((last_n, map)) = steps.last_mut() else {
+            continue;
+        };
+        if last_n != n {
+            continue;
+        }
+        // "#6 0.123 key value": the seconds, then what the step printed.
+        let Some((secs, out)) = text.split_once(' ') else {
+            continue;
+        };
+        if secs.parse::<f64>().is_err() {
+            continue;
+        }
+        let (k, v) = out.split_once(' ').unwrap_or((out, ""));
+        map.insert(k.to_string(), v.to_string());
+    }
+    steps.into_iter().map(|(_, m)| m).collect()
+}
+
+/// `RUN` steps run in a builder microVM as BuildKit runs them (docs/research/
+/// buildkit-run.md, with the values Docker Desktop's BuildKit showed, 2026-10-02): PID 1
+/// of their own namespaces, `buildkitsandbox`, HOME from passwd, BuildKit's capabilities
+/// for root and none but the bounding set for any other user, umask 0022, a working
+/// directory made for the step's user; and what a step changes is its layer, a removal a
+/// whiteout, as the image then boots.
 #[test]
-fn a_step_shards_cannot_run_yet_fails_the_build_saying_so() {
+fn run_steps_run_in_a_builder_as_buildkit_runs_them() {
     let (image, _) = served();
-    let home = TempDir::new("build-refused-home");
-    let ctx = context("build-refused-ctx", &format!("FROM {image}\nRUN echo hi\n"));
-    let env = [("SHARDS_HOME", home.as_os_str())];
-    let r = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env, TIMEOUT);
-    assert_eq!(r.status, Some(1), "{}", r.stderr);
-    assert!(
-        r.stderr
-            .contains("#5 [2/2] RUN echo hi\n#5 ERROR: RUN echo hi: this step is not supported"),
-        "{}",
-        r.stderr
+    let home = TempDir::new("build-run-home");
+    let ctx = context(
+        "build-run-ctx",
+        &format!(
+            "FROM {image}\n\
+             USER root\n\
+             RUN [\"/bin/testguest\", \"report\"]\n\
+             RUN [\"/bin/testguest\", \"fs\", \"mkdir:/opt\", \"write:/opt/f=data\", \"link:/opt/f:/opt/g\", \"symlink:f:/opt/s\", \"chmod:640:/opt/f\", \"rm:/etc/group\"]\n\
+             USER 1000:1000\n\
+             WORKDIR /made/by/run\n\
+             RUN [\"/bin/testguest\", \"report\"]\n\
+             USER root\n\
+             CMD [\"stat\", \"/opt/f\", \"/opt/g\", \"/opt/s\", \"/etc/group\", \"/made/by/run\", \"/written\"]\n"
+        ),
     );
-    assert!(r.stderr.ends_with("ERROR: failed to build: failed to solve: RUN echo hi: this step is not supported by shards build yet\n"), "{}", r.stderr);
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        // A small builder: the steps need little.
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+    ];
+    let built = run_shards_env(
+        &["build"],
+        &["--progress=plain", "-t", "ran:1", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
+    assert_eq!(built.status, Some(0), "{shown}");
+    let reports = step_reports(&built.stderr);
+    assert_eq!(reports.len(), 3, "{shown}");
+    let get = |r: &std::collections::BTreeMap<String, String>, k: &str| r.get(k).cloned().unwrap_or_default();
+    let root = &reports[0];
+    for (k, v) in [
+        ("uid", "0"),
+        ("gid", "0"),
+        ("groups", "0"),
+        ("pid", "1"),
+        ("hostname", "buildkitsandbox"),
+        ("cwd", "/work"),
+        ("env", "PATH=/bin"),
+        ("umask", "0022"),
+        ("capprm", "00000000a80425fb"),
+        ("capeff", "00000000a80425fb"),
+        ("capbnd", "00000000a80425fb"),
+        ("capamb", "0000000000000000"),
+        ("nonewprivs", "0"),
+        ("writable", "true"),
+    ] {
+        if k == "env" {
+            continue;
+        }
+        assert_eq!(get(root, k), v, "{k}\n{shown}");
+    }
+    assert!(built.stderr.contains(" env HOME=/root\n"), "{shown}");
+    let user = &reports[2];
+    for (k, v) in [
+        ("uid", "1000"),
+        ("gid", "1000"),
+        ("groups", "1000"),
+        ("pid", "1"),
+        ("cwd", "/made/by/run"),
+        ("capprm", "0000000000000000"),
+        ("capeff", "0000000000000000"),
+        ("capbnd", "00000000a80425fb"),
+    ] {
+        assert_eq!(get(user, k), v, "{k}\n{shown}");
+    }
+    assert!(built.stderr.contains(" env HOME=/home/app\n"), "{shown}");
+    assert_eq!(exported_from(&built.stderr), "snapshot", "{shown}");
+    assert_rootfs_is_its_layers(&home, "ran:1");
+
+    let ran = run_shards_env(&["run"], &["--rm", "ran:1"], &env, TIMEOUT);
+    // stat's status says a path was missing: /etc/group, removed.
+    assert_eq!(ran.status, Some(1), "{}", ran.stderr);
+    assert_eq!(
+        ran.stdout,
+        "/opt/f file 640 0:0 4\n= data\n\
+         /opt/g file 640 0:0 4\n= data\n\
+         /opt/s symlink 777 0:0 1\n-> f\n\
+         /etc/group missing No such file or directory (os error 2)\n\
+         /made/by/run dir 755 1000:1000 27\n\
+         /written file 644 0:0 1\n= x\n",
+        "{}",
+        ran.stderr
+    );
+
+    // A step that fails fails the build, worded as BuildKit words it.
+    let ctx = context(
+        "build-run-fail-ctx",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"exit\", \"3\"]\n"),
+    );
+    let failed = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env, TIMEOUT);
+    assert_eq!(failed.status, Some(1), "{}", failed.stderr);
+    assert!(
+        failed.stderr.ends_with(
+            "ERROR: failed to build: failed to solve: process \"/bin/testguest exit 3\" did not complete successfully: exit code: 3\n"
+        ),
+        "{}",
+        failed.stderr
+    );
 }
 
 #[test]

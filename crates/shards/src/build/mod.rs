@@ -30,7 +30,9 @@ use shards_image::reference::{Algorithm, Digest, Reference};
 use shards_image::store::{self, Store};
 use shards_registry::pull::{self as registry_pull, Event};
 
+mod builder;
 mod exec;
+mod step;
 
 const PATH: &str = "shards buildx build";
 
@@ -115,6 +117,65 @@ impl Progress {
     fn error(&self, v: &Vertex, message: &str) {
         self.say(&format!("#{} ERROR: {message}\n", v.index));
     }
+
+    /// A step's output, as progressui's plain mode prints it: each line with the seconds
+    /// since its step began; a line not yet ended waits in `held` for the rest.
+    fn log(&self, v: &Vertex, held: &mut Vec<u8>, bytes: &[u8]) {
+        held.extend_from_slice(bytes);
+        while let Some(end) = held.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = held.drain(..=end).collect();
+            let text = String::from_utf8_lossy(line.strip_suffix(b"\n").unwrap_or(&line)).into_owned();
+            let secs = v.started.elapsed().as_secs_f64();
+            self.say(&format!("#{} {secs:.3} {text}\n", v.index));
+        }
+    }
+
+    /// What a step left without a newline, once it ends.
+    fn flush(&self, v: &Vertex, held: &mut Vec<u8>) {
+        if !held.is_empty() {
+            held.push(b'\n');
+            self.log(v, held, &[]);
+        }
+    }
+}
+
+/// How many vCPUs a builder has: the host's, as BuildKit's steps may use them all.
+fn builder_cpus() -> u32 {
+    std::thread::available_parallelism().map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
+}
+
+/// A builder's memory, in MiB: `SHARDS_BUILD_MEMORY` if set, else half the host's, as
+/// Docker Desktop's VM has on macOS (64 GiB of this host's 128, measured 2026-10-02), so
+/// that a build has what it would have under Docker. Its steps and its layers share it.
+/// What it costs at boot grows with it (PM M82), until memory is plugged as a build
+/// needs it.
+fn builder_memory_mib() -> u64 {
+    if let Some(m) = std::env::var("SHARDS_BUILD_MEMORY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        return m;
+    }
+    host_memory().map_or(512, |bytes| (bytes / 2 / (1 << 20)).max(512))
+}
+
+/// The host's physical memory, in bytes.
+#[cfg(unix)]
+fn host_memory() -> Option<u64> {
+    // SAFETY: sysconf(3) with constant arguments.
+    let (pages, size) = unsafe {
+        (
+            libc::sysconf(libc::_SC_PHYS_PAGES),
+            libc::sysconf(libc::_SC_PAGESIZE),
+        )
+    };
+    u64::try_from(pages).ok()?.checked_mul(u64::try_from(size).ok()?)
+}
+
+/// Where shards starts no builder yet (`builder::Builder`), nothing asks.
+#[cfg(not(unix))]
+fn host_memory() -> Option<u64> {
+    None
 }
 
 /// A base image as the build resolved it.
@@ -520,6 +581,57 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     let limits = crate::pull::limits()?;
     crate::phase("plan");
     let mut exec = exec::Exec::new(&store, &limits);
+    // The base images a RUN stands on: each a builder's pmem device, its root filesystem
+    // as the store keeps it, so that nothing of it is copied into the builder.
+    let mut run_images: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+    let mut run_bases: Vec<PathBuf> = Vec::new();
+    {
+        let mut todo: Vec<usize> = def
+            .ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| matches!(op.kind, OpKind::Exec { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        while let Some(i) = todo.pop() {
+            if !seen.insert(i) {
+                continue;
+            }
+            let Some(op) = def.ops.get(i) else { continue };
+            if let OpKind::Source { identifier, .. } = &op.kind {
+                if let Some(reference) = identifier.strip_prefix(b"docker-image://") {
+                    let reference = show(reference);
+                    let layers = bases
+                        .resolved
+                        .borrow()
+                        .values()
+                        .find(|b| reference.starts_with(&b.reference.to_string()))
+                        .map(|b| b.layers.clone())
+                        .ok_or_else(|| format!("{reference}: not resolved"))?;
+                    if !layers.is_empty() {
+                        let store_layers = layers
+                            .iter()
+                            .map(|l| {
+                                Ok(store::Layer {
+                                    blob: Digest::parse(&show(&l.digest)).map_err(|e| e.to_string())?,
+                                    media_type: show(&l.media_type),
+                                    diff_id: Digest::parse(&show(&l.diff_id)).map_err(|e| e.to_string())?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, String>>()?;
+                        let rootfs = store.rootfs(&store_layers, &limits).map_err(|e| e.to_string())?;
+                        let n = u32::try_from(run_bases.len()).map_err(|_| "too many base images")?;
+                        run_bases.push(rootfs);
+                        run_images.insert(i, n);
+                    }
+                }
+                continue;
+            }
+            todo.extend(op.inputs.iter().map(|inp| inp.op));
+        }
+    }
+    let mut builder: Option<builder::Builder> = None;
     let mut results: Vec<Vec<exec::Ref>> = Vec::with_capacity(def.ops.len());
     // What other operations read, so a base image is unpacked only when one does.
     let read: std::collections::HashSet<usize> = def
@@ -563,7 +675,8 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                     .map(|b| b.layers.clone())
                     .ok_or_else(|| format!("{reference}: not resolved"))?;
                 let r = if read.contains(&i) {
-                    exec.image(base).map_err(|e| fail(&v, &e))?
+                    exec.image(base, run_images.get(&i).copied())
+                        .map_err(|e| fail(&v, &e))?
                 } else {
                     exec::Ref {
                         fs: std::rc::Rc::new(shards_build::vfs::Fs::new(
@@ -572,6 +685,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                         )),
                         layers: base,
                         stack: shards_build::stack::Stack::unknown("a base image not unpacked"),
+                        origin: std::rc::Rc::new(builder::Origin::Scratch),
                     }
                 };
                 progress.borrow().done(&v);
@@ -618,13 +732,77 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 }
                 vec![r]
             }
-            _ => {
+            OpKind::Source { .. } => {
                 let what = name.split_once("] ").map_or(name.as_str(), |(_, s)| s);
                 let v = progress.borrow_mut().start(&name);
                 return Err(fail(
                     &v,
-                    &format!("{what}: this step is not supported by shards build yet"),
+                    &format!("{what}: this source is not supported by shards build yet"),
                 ));
+            }
+            OpKind::Exec {
+                process,
+                mounts,
+                network,
+                security,
+                secret_env,
+                devices,
+            } => {
+                let v = progress.borrow_mut().start(&name);
+                // No CDI devices reach a builder: an optional one is left out, a required
+                // one fails as BuildKit fails it without CDI (solver/llbsolver/vertex.go).
+                if let Some(d) = devices.iter().find(|d| !d.optional) {
+                    let why = format!(
+                        "CDI device {:?} is required by step {:?}, but CDI device support is disabled",
+                        show(&d.name),
+                        name
+                    );
+                    return Err(fail(&v, &why));
+                }
+                if builder.is_none() {
+                    let guest = match (std::env::var_os("SHARDS_KERNEL"), std::env::var_os("SHARDS_INIT")) {
+                        (Some(k), Some(i)) => (PathBuf::from(k), PathBuf::from(i)),
+                        _ => {
+                            let g = match crate::guest::current(&home).map_err(|e| fail(&v, &e))? {
+                                Some(g) => g,
+                                None => {
+                                    crate::guest::default(&home, &|_| {}, None).map_err(|e| fail(&v, &e))?
+                                }
+                            };
+                            (g.kernel, g.init)
+                        }
+                    };
+                    let boot = builder::Boot {
+                        kernel: &guest.0,
+                        init: &guest.1,
+                        cpus: builder_cpus(),
+                        memory_mib: builder_memory_mib(),
+                        bases: &run_bases,
+                    };
+                    builder = Some(builder::Builder::start(&boot).map_err(|e| fail(&v, &e))?);
+                }
+                let Some(b) = builder.as_mut() else {
+                    return Err(fail(&v, "the builder is gone"));
+                };
+                let op = exec::RunOp {
+                    process,
+                    mounts,
+                    network: *network,
+                    security: *security,
+                    secret_env,
+                    // `--allow` is not served yet: no entitlement is granted, as BuildKit
+                    // grants none without it.
+                    insecure: false,
+                    network_host: false,
+                };
+                let mut held = Vec::new();
+                let r = exec.run(b, &inputs, &op, &name, &mut |_, bytes| {
+                    progress.borrow().log(&v, &mut held, bytes)
+                });
+                progress.borrow().flush(&v, &mut held);
+                let r = r.map_err(|e| fail(&v, &e))?;
+                progress.borrow().done(&v);
+                r
             }
         };
         results.push(outs);

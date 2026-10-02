@@ -1710,6 +1710,45 @@ shards (host CLI, docker-compatible) ──unix socket──▶ shardsd (daemon)
     Docker (Engine API, Compose) but runs no containers underneath. **pending**: its
     design, informed by the engine-internals and rootless research.
 
+### RUN steps: one builder microVM per build (D34)
+
+A Dockerfile's `RUN` runs as BuildKit runs it (docs/research/buildkit-run.md), in a
+microVM rather than a container on the build host's kernel.
+
+- **One builder per build, not a container per step.** The first `RUN` boots a builder:
+  shards-init with `shards_build=1`, every base image a `RUN` stands on as a virtio-pmem
+  device (the store's own EROFS root filesystem, nothing copied), and the build port
+  reaching the build process through the vsock muxer. Its steps then cost no boot and no
+  root filesystem written: BuildKit prepares a snapshot and starts a runc container for
+  every step, about 176 ms each on this host (Docker Desktop, 20 `RUN`s 3.85 s, one 0.48
+  s, 2026-10-02); a whole cold shards VM is 39 ms (`vm run` of alpine `true`, n = 22).
+- **Layers by id, never twice.** The guest holds layers, directories overlayfs stacks,
+  written once from the host's change streams (`shards_abi::changes`): a host step's own
+  changes when a `RUN` first stands on them (`shards_build::sync`), and each `RUN`'s upper
+  layer, which stays where the step left it. Each step names its trees as layers over a
+  base, so the guest keeps no tree of its own and stages share their layers. The stream
+  is not tar: it never leaves shards, and keeps nanoseconds, every xattr and overlayfs's
+  markers, so the guest's trees are the host's snapshots exactly; the published layer is
+  written apart, as BuildKit writes it (`crates/build` diff).
+- **A step is BuildKit's step.** Mount, PID, UTS, IPC, network and cgroup namespaces of
+  its own (its command PID 1), runc's `/dev`, proc, read-only sysfs and cgroups, masked
+  paths, `/etc/hosts` and `resolv.conf` bound read-only and in no layer, its mounts,
+  `pivot_root` (the builder first moves off its initramfs so that a step with
+  `CAP_SYS_CHROOT` cannot reach the builder's files), hostname `buildkitsandbox`,
+  loopback up, BuildKit's user resolution from the snapshot's own files (`shards-user`),
+  runc's environment and umask, BuildKit's capabilities, stubs removed. Its upper
+  directory comes back and is put into the snapshot (`shards_build::upper`), whose layer
+  the differ writes as BuildKit's (the `RUN` E2E test, and every `RUN` of a real
+  Dockerfile compared entry by entry, `scripts/build/realworld`).
+- **Better than the reference where it can be.** Every step is a VM's, not the build
+  host's: `--security=insecure` grants privilege inside the VM alone. A guest's change
+  stream is exact, so nothing diffs the lower tree.
+- **Not yet as BuildKit:** a step's network is its own loopback until the guest has a
+  network (D31); BuildKit's seccomp profile; caches kept past one build; secrets and ssh
+  from the client; memory plugged as a build needs it (PM M82: a builder pays about 21
+  MiB and 4 ms per GiB of guest memory, and takes half the host's, as Docker Desktop's VM
+  has). Each is an item of AGENTFILE_ARCH.md §11.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |
