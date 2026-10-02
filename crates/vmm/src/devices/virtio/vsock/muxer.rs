@@ -98,8 +98,10 @@ pub struct Muxer {
     guest_cid: u64,
     /// The device's socket, where host clients dial, if it has one.
     listener: Option<(PathBuf, UnixListener)>,
-    /// Host ports served in this process.
+    /// Host ports served in this process, each for its first connection.
     served: HashMap<u32, Sender<UnixStream>>,
+    /// Host ports served in this process for every connection.
+    every: HashMap<u32, Sender<UnixStream>>,
     handshakes: Vec<Handshake>,
     conns: HashMap<Key, Conn>,
     /// Connections with packets for the guest, served in turn.
@@ -137,6 +139,7 @@ impl Muxer {
             guest_cid,
             listener,
             served: host.ports.into_iter().collect(),
+            every: host.every.into_iter().collect(),
             handshakes: Vec::new(),
             conns: HashMap::new(),
             rxq: VecDeque::new(),
@@ -255,8 +258,9 @@ impl Muxer {
         // A served port takes one connection: its owner dials it before anything else in
         // the guest runs, and a later dial, by a workload, is refused (AGENTFILE_ARCH.md
         // §9.7).
-        let connected = match self.served.remove(&key.local_port) {
-            Some(port) => serve(&port),
+        let served = self.served.remove(&key.local_port);
+        let connected = match served.as_ref().or_else(|| self.every.get(&key.local_port)) {
+            Some(port) => serve(port),
             None => match &self.listener {
                 Some((path, _)) => {
                     let mut target = OsString::from(path.as_os_str());
@@ -688,6 +692,7 @@ mod tests {
         let host = VsockHost {
             path: None,
             ports: vec![(52, sender), (53, gone)],
+            every: Vec::new(),
         };
         let mut m = Muxer::new(host, 3).unwrap();
         let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
@@ -722,6 +727,36 @@ mod tests {
             !interests.iter().any(|i| matches!(i.token, Some(Token::Listener))),
             "no path, nothing to listen on"
         );
+    }
+
+    /// A port served for every connection gets each, apart, as its own socket.
+    #[test]
+    fn ports_served_for_every_connection_get_each() {
+        let (sender, arrived) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            path: None,
+            ports: Vec::new(),
+            every: vec![(54, sender)],
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        for from in [49_152, 49_153, 49_154] {
+            m.on_guest_packet(&request(54, from), &[], &mem);
+        }
+        let mut sent = Vec::new();
+        while let Some(h) = m.next_rx(&[]) {
+            sent.push((h.op, h.dst_port));
+        }
+        sent.sort_unstable();
+        assert_eq!(
+            sent,
+            [
+                (op::RESPONSE, 49_152),
+                (op::RESPONSE, 49_153),
+                (op::RESPONSE, 49_154)
+            ]
+        );
+        assert_eq!(arrived.try_iter().count(), 3);
     }
 
     #[test]

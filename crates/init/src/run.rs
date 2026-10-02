@@ -44,12 +44,16 @@ ff02::2\tip6-allrouters\n";
 struct Failure {
     status: u32,
     message: String,
+    /// The daemon's refusal, not the runtime's failure: an exec's unknown user, which
+    /// `docker exec` reports as "Error response from daemon".
+    daemon: bool,
 }
 
 fn setup_failed(message: impl Into<String>) -> Failure {
     Failure {
         status: NOT_RUN,
         message: message.into(),
+        daemon: false,
     }
 }
 
@@ -629,17 +633,13 @@ impl Standby {
         })
     }
 
-    /// Resolves the spec as Docker and runc do, then has the standby exec the workload. A
+    /// Sets the container up as the spec says, then has the standby exec the workload. A
     /// standby that has ended is replaced first.
     fn start(self, spec: &Spec) -> Result<Workload, Failure> {
         let mut status = 0;
         // SAFETY: waitpid(2) for our own child, without blocking.
         let ended = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) } == self.pid;
         let standby = if ended { Standby::fork()? } else { self };
-        let argv0 = spec
-            .argv
-            .first()
-            .ok_or_else(|| setup_failed("no command given"))?;
         if !spec.hostname.is_empty() {
             // SAFETY: a buffer of the given length.
             if unsafe { libc::sethostname(spec.hostname.as_ptr().cast(), spec.hostname.len()) } != 0 {
@@ -653,10 +653,31 @@ impl Standby {
         if let Some(r) = &spec.resolv {
             write_file("/etc/resolv.conf", r)?;
         }
+        standby.launch(spec, false)
+    }
+
+    /// Resolves the spec as Docker and runc do, then has the standby exec it. The
+    /// workload's working directory is made if missing, as `docker run` makes it; an
+    /// exec's (`exec`) must be there, as runc's exec finds it, and its unknown user is the
+    /// daemon's refusal.
+    fn launch(self, spec: &Spec, exec: bool) -> Result<Workload, Failure> {
+        let standby = self;
+        let argv0 = spec
+            .argv
+            .first()
+            .ok_or_else(|| setup_failed("no command given"))?;
         let (passwd, group) = (standby.passwd.as_deref(), standby.group.as_deref());
-        let ExecUser { uid, gid, groups } = user::resolve(&spec.user, passwd, group).map_err(setup_failed)?;
+        let ExecUser { uid, gid, groups } =
+            user::resolve(&spec.user, passwd, group).map_err(|m| Failure {
+                daemon: exec,
+                ..setup_failed(m)
+            })?;
         let env = user::prepare_env(&spec.env, uid, passwd).map_err(setup_failed)?;
-        let cwd = workdir(&spec.cwd)?;
+        let cwd = if exec {
+            exec_cwd(&spec.cwd)?
+        } else {
+            workdir(&spec.cwd)?
+        };
         let path_env = env
             .iter()
             .rev()
@@ -825,9 +846,150 @@ fn standby(ends: Ends) -> ! {
     }
 }
 
+/// A command run beside the workload (`docker exec`): its process, init's ends of its
+/// stdio, and its own connection to the host, on which it reports as the workload
+/// reports on the run connection.
+struct Exec {
+    id: u32,
+    conn: Option<File>,
+    /// Its nonblocking connect has completed.
+    connected: bool,
+    /// Its process, or 0 if it never started.
+    pid: libc::pid_t,
+    stdin: Option<OwnedFd>,
+    stdout: Option<OwnedFd>,
+    stderr: Option<OwnedFd>,
+    tty: bool,
+    from_conn: Vec<u8>,
+    to_stdin: Outbox,
+    stdin_eof: bool,
+    to_conn: Outbox,
+    status: Option<u32>,
+    /// Its EXIT is queued.
+    ended: bool,
+}
+
+impl Exec {
+    /// Starts the command a host's [`kind::EXEC`] frame asks for, unless the workload
+    /// has ended (`running`), and dials its connection. `None` if the frame is malformed
+    /// or the host cannot be dialed: then nothing could tell it, and it gives up waiting.
+    fn start(payload: &[u8], running: bool) -> Option<Exec> {
+        let (token, rest) = payload.split_at_checked(run::TOKEN)?;
+        let (id, spec) = rest.split_at_checked(4)?;
+        let id = u32::from_be_bytes(id.try_into().ok()?);
+        let spec = Spec::decode(spec)?;
+        let conn = dial(run::EXEC_PORT, false).ok()?;
+        let mut exec = Exec {
+            id,
+            conn: Some(conn),
+            connected: false,
+            pid: 0,
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            tty: false,
+            from_conn: Vec::new(),
+            to_stdin: Outbox::default(),
+            stdin_eof: false,
+            to_conn: Outbox::default(),
+            status: None,
+            ended: false,
+        };
+        exec.to_conn
+            .extend(&[&run::header(kind::HELLO, run::TOKEN as u32), token]);
+        let started = if running {
+            Standby::fork().and_then(|standby| standby.launch(&spec, true))
+        } else {
+            Err(setup_failed("the container's main process has exited"))
+        };
+        match started {
+            Ok(w) => {
+                exec.pid = w.pid;
+                exec.tty = w.tty;
+                for fd in [&w.stdin, &w.stdout, &w.stderr].into_iter().flatten() {
+                    set_nonblocking(fd.as_raw_fd(), true);
+                }
+                (exec.stdin, exec.stdout, exec.stderr) = (w.stdin, w.stdout, w.stderr);
+                exec.to_conn.extend(&[&run::header(kind::STARTED, 0)]);
+            }
+            Err(f) => {
+                let class = if f.daemon {
+                    run::exec_failed::DAEMON
+                } else {
+                    run::exec_failed::RUNTIME
+                };
+                let len = u32::try_from(f.message.len() + 1).unwrap_or(u32::MAX);
+                exec.to_conn.extend(&[
+                    &run::header(kind::SYSTEM_ERR, len),
+                    &[class],
+                    f.message.as_bytes(),
+                ]);
+                exec.status = Some(f.status);
+            }
+        }
+        Some(exec)
+    }
+
+    /// Whether everything of it is said: its status known, its output drained, its EXIT
+    /// sent, or its connection gone.
+    fn finished(&self) -> bool {
+        self.status.is_some()
+            && self.stdout.is_none()
+            && self.stderr.is_none()
+            && (self.conn.is_none() || self.ended && self.to_conn.is_empty())
+    }
+}
+
+/// Whose a polled descriptor is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Owner {
+    Sigchld,
+    Host,
+    Stdin,
+    Signals,
+    Stdout,
+    Stderr,
+    /// An exec's, by its index.
+    Exec(usize, Part),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Conn,
+    Stdin,
+    Stdout,
+    Stderr,
+}
+
+/// Reads what a pipe or pty holds into `to` as `which` frames; drops `slot` at its end.
+fn drain_into(slot: &mut Option<OwnedFd>, which: u8, buf: &mut [u8], to: &mut Outbox) {
+    let Some(fd) = slot.as_ref().map(AsRawFd::as_raw_fd) else {
+        return;
+    };
+    match read(fd, buf) {
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+        Ok(0) | Err(_) => *slot = None,
+        Ok(n) => to.extend(&[&run::header(which, n as u32), buf.get(..n).unwrap_or_default()]),
+    }
+}
+
+/// Writes what `to` holds into `slot`; drops the slot, and what it held, if it is closed.
+fn feed(slot: &mut Option<OwnedFd>, to: &mut Outbox) {
+    if let Some(fd) = slot.as_ref().map(AsRawFd::as_raw_fd) {
+        match write(fd, to.pending()) {
+            Ok(n) => to.written(n),
+            Err(_) => {
+                *slot = None;
+                to.clear();
+            }
+        }
+    }
+}
+
 impl Workload {
-    /// Relays stdio until the workload has exited and its output is drained, and returns
-    /// its status.
+    /// Relays stdio until the workload has exited and its output is drained, and every
+    /// exec has said all it has, and returns the workload's status. Execs start, are
+    /// signalled and resized through the signal connection, each relayed on its own.
     fn relay(mut self, conn: &File, mut signals: Option<File>) -> u32 {
         let mut host = Some(conn.as_raw_fd());
         for fd in [host, self.stdin.as_ref().map(AsRawFd::as_raw_fd)]
@@ -843,151 +1005,280 @@ impl Workload {
         let mut stdin_eof = false;
         let mut to_host = Outbox::default();
         let mut status: Option<u32> = None;
+        let mut execs: Vec<Exec> = Vec::new();
         let mut buf = vec![0u8; CHUNK];
+        // Reused each turn: six for the workload, four for each exec.
+        let (mut set, mut owners) = (Vec::<libc::pollfd>::new(), Vec::<Owner>::new());
         loop {
             let exited = status.is_some();
+            execs.retain(|e| !e.finished());
             if exited
                 && self.stdout.is_none()
                 && self.stderr.is_none()
                 && (to_host.is_empty() || host.is_none())
+                && execs.is_empty()
             {
                 break;
             }
-            // SIGCHLD, the host, stdin, signals, stdout and stderr: six at most (audit D07).
-            let mut set = [libc::pollfd {
-                fd: -1,
-                events: 0,
-                revents: 0,
-            }; 6];
-            let mut used = 0;
-            let mut poll = |fd: Option<RawFd>, events: libc::c_short| {
-                if let (Some(fd), true, Some(slot)) = (fd, events != 0, set.get_mut(used)) {
-                    *slot = libc::pollfd {
+            set.clear();
+            owners.clear();
+            let mut poll = |fd: Option<RawFd>, events: libc::c_short, owner: Owner| {
+                if let (Some(fd), true) = (fd, events != 0) {
+                    set.push(libc::pollfd {
                         fd,
                         events,
                         revents: 0,
-                    };
-                    used += 1;
+                    });
+                    owners.push(owner);
                 }
             };
-            poll(Some(self.sigchld.as_raw_fd()), libc::POLLIN);
+            poll(Some(self.sigchld.as_raw_fd()), libc::POLLIN, Owner::Sigchld);
             let host_events = if !exited && !stdin_eof && to_stdin.len() < BUFFERED {
                 libc::POLLIN
             } else {
                 0
             } | if to_host.is_empty() { 0 } else { libc::POLLOUT };
-            poll(host, host_events);
+            poll(host, host_events, Owner::Host);
             let stdin_events = if to_stdin.is_empty() { 0 } else { libc::POLLOUT };
-            poll(self.stdin.as_ref().map(AsRawFd::as_raw_fd), stdin_events);
+            poll(
+                self.stdin.as_ref().map(AsRawFd::as_raw_fd),
+                stdin_events,
+                Owner::Stdin,
+            );
             let signal_events = if signals_connected {
                 libc::POLLIN
             } else {
                 libc::POLLOUT
             };
-            poll(signals.as_ref().map(AsRawFd::as_raw_fd), signal_events);
+            poll(
+                signals.as_ref().map(AsRawFd::as_raw_fd),
+                signal_events,
+                Owner::Signals,
+            );
             let out_events = if to_host.len() < BUFFERED { libc::POLLIN } else { 0 };
-            poll(self.stdout.as_ref().map(AsRawFd::as_raw_fd), out_events);
-            poll(self.stderr.as_ref().map(AsRawFd::as_raw_fd), out_events);
-            let fds = set.get_mut(..used).unwrap_or_default();
-            // SAFETY: valid pollfds.
-            if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) } < 0 {
+            poll(
+                self.stdout.as_ref().map(AsRawFd::as_raw_fd),
+                out_events,
+                Owner::Stdout,
+            );
+            poll(
+                self.stderr.as_ref().map(AsRawFd::as_raw_fd),
+                out_events,
+                Owner::Stderr,
+            );
+            for (i, e) in execs.iter().enumerate() {
+                let conn_events = if !e.connected {
+                    libc::POLLOUT
+                } else {
+                    (if e.to_conn.is_empty() { 0 } else { libc::POLLOUT })
+                        | if !e.stdin_eof && e.to_stdin.len() < BUFFERED {
+                            libc::POLLIN
+                        } else {
+                            0
+                        }
+                };
+                poll(
+                    e.conn.as_ref().map(AsRawFd::as_raw_fd),
+                    conn_events,
+                    Owner::Exec(i, Part::Conn),
+                );
+                let stdin_events = if e.to_stdin.is_empty() { 0 } else { libc::POLLOUT };
+                poll(
+                    e.stdin.as_ref().map(AsRawFd::as_raw_fd),
+                    stdin_events,
+                    Owner::Exec(i, Part::Stdin),
+                );
+                let out_events = if e.to_conn.len() < BUFFERED {
+                    libc::POLLIN
+                } else {
+                    0
+                };
+                poll(
+                    e.stdout.as_ref().map(AsRawFd::as_raw_fd),
+                    out_events,
+                    Owner::Exec(i, Part::Stdout),
+                );
+                poll(
+                    e.stderr.as_ref().map(AsRawFd::as_raw_fd),
+                    out_events,
+                    Owner::Exec(i, Part::Stderr),
+                );
+            }
+            // SAFETY: valid pollfds, as many as given.
+            if unsafe { libc::poll(set.as_mut_ptr(), set.len() as libc::nfds_t, -1) } < 0 {
                 if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
                 break;
             }
-            for p in fds.iter().filter(|p| p.revents != 0) {
+            for (p, &owner) in set.iter().zip(&owners).filter(|(p, _)| p.revents != 0) {
                 let fd = p.fd;
-                if fd == self.sigchld.as_raw_fd() {
-                    self.reap(&mut status);
-                    if status.is_some() {
-                        // The workload's stdin goes with it.
-                        self.stdin = None;
-                        to_stdin.clear();
-                    }
-                } else if Some(fd) == host {
-                    if p.revents & libc::POLLOUT != 0 {
-                        match write(fd, to_host.pending()) {
-                            Ok(n) => to_host.written(n),
-                            Err(_) => host = None,
-                        }
-                    }
-                    if p.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 && host.is_some() {
-                        match read(fd, &mut buf) {
-                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                            // The host is gone: nothing more for stdin.
-                            Ok(0) | Err(_) => stdin_eof = true,
-                            Ok(n) => {
-                                from_host.extend_from_slice(buf.get(..n).unwrap_or_default());
-                                let mut closed = false;
-                                let whole = each_frame(&mut from_host, |which, payload| {
-                                    if which == kind::STDIN {
-                                        closed |= payload.is_empty();
-                                        to_stdin.extend(&[payload]);
-                                    }
-                                });
-                                stdin_eof |= closed || !whole;
+                match owner {
+                    Owner::Sigchld => {
+                        let main = self.pid;
+                        reap(&self.sigchld, |pid, code| {
+                            if pid == main {
+                                let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_EXITED);
+                                status = Some(code);
+                                // SAFETY: kill(2) of every process but init: a container
+                                // ends with its main process.
+                                unsafe { libc::kill(-1, libc::SIGKILL) };
+                            } else if let Some(e) = execs.iter_mut().find(|e| e.pid == pid) {
+                                e.status = Some(code);
+                                // Its stdin goes with it.
+                                e.stdin = None;
+                                e.to_stdin.clear();
                             }
-                        }
-                    }
-                } else if Some(fd) == signals.as_ref().map(AsRawFd::as_raw_fd) {
-                    if !signals_connected {
-                        match connect_result(fd) {
-                            Ok(()) => signals_connected = true,
-                            Err(_) => signals = None,
-                        }
-                        continue;
-                    }
-                    match read(fd, &mut buf) {
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                        Ok(0) | Err(_) => signals = None,
-                        Ok(n) => {
-                            from_signals.extend_from_slice(buf.get(..n).unwrap_or_default());
-                            let pid = self.pid;
-                            let running = status.is_none();
-                            let pty = self.stdout.as_ref().filter(|_| self.tty).map(AsRawFd::as_raw_fd);
-                            let whole = each_frame(&mut from_signals, |which, payload| {
-                                if which == kind::RESIZE {
-                                    if let (Some(fd), Some(size)) = (pty, Size::decode(payload)) {
-                                        resize(fd, size);
-                                    }
-                                    return;
-                                }
-                                if let (kind::SIGNAL, Ok(sig)) =
-                                    (which, <[u8; 4]>::try_from(payload).map(u32::from_be_bytes))
-                                    && running
-                                    && (1..=64).contains(&sig)
-                                {
-                                    // SAFETY: kill(2) of our own child, not yet reaped.
-                                    unsafe { libc::kill(pid, sig as libc::c_int) };
-                                }
-                            });
-                            if !whole {
-                                signals = None;
-                            }
-                        }
-                    }
-                } else if Some(fd) == self.stdin.as_ref().map(AsRawFd::as_raw_fd) {
-                    match write(fd, to_stdin.pending()) {
-                        Ok(n) => to_stdin.written(n),
-                        // The workload closed its stdin.
-                        Err(_) => {
+                        });
+                        if status.is_some() {
+                            // The workload's stdin goes with it.
                             self.stdin = None;
                             to_stdin.clear();
                         }
                     }
-                } else {
-                    let (slot, which) = if Some(fd) == self.stdout.as_ref().map(AsRawFd::as_raw_fd) {
-                        (&mut self.stdout, kind::STDOUT)
-                    } else {
-                        (&mut self.stderr, kind::STDERR)
-                    };
-                    match read(fd, &mut buf) {
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                        Ok(0) | Err(_) => *slot = None,
-                        Ok(n) => {
-                            to_host
-                                .extend(&[&run::header(which, n as u32), buf.get(..n).unwrap_or_default()]);
+                    Owner::Host => {
+                        if p.revents & libc::POLLOUT != 0 {
+                            match write(fd, to_host.pending()) {
+                                Ok(n) => to_host.written(n),
+                                Err(_) => host = None,
+                            }
+                        }
+                        if p.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 && host.is_some() {
+                            match read(fd, &mut buf) {
+                                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                                // The host is gone: nothing more for stdin.
+                                Ok(0) | Err(_) => stdin_eof = true,
+                                Ok(n) => {
+                                    from_host.extend_from_slice(buf.get(..n).unwrap_or_default());
+                                    let mut closed = false;
+                                    let whole = each_frame(&mut from_host, |which, payload| {
+                                        if which == kind::STDIN {
+                                            closed |= payload.is_empty();
+                                            to_stdin.extend(&[payload]);
+                                        }
+                                    });
+                                    stdin_eof |= closed || !whole;
+                                }
+                            }
+                        }
+                    }
+                    Owner::Signals => {
+                        if !signals_connected {
+                            match connect_result(fd) {
+                                Ok(()) => signals_connected = true,
+                                Err(_) => signals = None,
+                            }
+                            continue;
+                        }
+                        match read(fd, &mut buf) {
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                            Ok(0) | Err(_) => signals = None,
+                            Ok(n) => {
+                                from_signals.extend_from_slice(buf.get(..n).unwrap_or_default());
+                                let pid = self.pid;
+                                let running = status.is_none();
+                                let pty = self.stdout.as_ref().filter(|_| self.tty).map(AsRawFd::as_raw_fd);
+                                let whole = each_frame(&mut from_signals, |which, payload| {
+                                    let id_and = |p: &[u8]| {
+                                        let (id, rest) = p.split_at_checked(4)?;
+                                        Some((u32::from_be_bytes(id.try_into().ok()?), rest.to_vec()))
+                                    };
+                                    let sig = |p: &[u8]| <[u8; 4]>::try_from(p).map(u32::from_be_bytes).ok();
+                                    match which {
+                                        kind::RESIZE => {
+                                            if let (Some(fd), Some(size)) = (pty, Size::decode(payload)) {
+                                                resize(fd, size);
+                                            }
+                                        }
+                                        kind::SIGNAL => {
+                                            if let Some(sig) = sig(payload)
+                                                && running
+                                                && (1..=64).contains(&sig)
+                                            {
+                                                // SAFETY: kill(2) of our own child, not yet reaped.
+                                                unsafe { libc::kill(pid, sig as libc::c_int) };
+                                            }
+                                        }
+                                        kind::EXEC => {
+                                            if let Some(e) = Exec::start(payload, running) {
+                                                execs.push(e);
+                                            }
+                                        }
+                                        kind::EXEC_SIGNAL => {
+                                            if let Some((id, rest)) = id_and(payload)
+                                                && let Some(sig) = sig(&rest)
+                                                && (1..=64).contains(&sig)
+                                                && let Some(e) = execs
+                                                    .iter()
+                                                    .find(|e| e.id == id && e.pid > 0 && e.status.is_none())
+                                            {
+                                                // SAFETY: kill(2) of our own child, not yet reaped.
+                                                unsafe { libc::kill(e.pid, sig as libc::c_int) };
+                                            }
+                                        }
+                                        kind::EXEC_RESIZE => {
+                                            if let Some((id, rest)) = id_and(payload)
+                                                && let Some(size) = Size::decode(&rest)
+                                                && let Some(e) = execs.iter().find(|e| e.id == id && e.tty)
+                                                && let Some(fd) = e.stdout.as_ref()
+                                            {
+                                                resize(fd.as_raw_fd(), size);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                });
+                                if !whole {
+                                    signals = None;
+                                }
+                            }
+                        }
+                    }
+                    Owner::Stdin => feed(&mut self.stdin, &mut to_stdin),
+                    Owner::Stdout => drain_into(&mut self.stdout, kind::STDOUT, &mut buf, &mut to_host),
+                    Owner::Stderr => drain_into(&mut self.stderr, kind::STDERR, &mut buf, &mut to_host),
+                    Owner::Exec(i, part) => {
+                        let Some(e) = execs.get_mut(i) else {
+                            continue;
+                        };
+                        match part {
+                            Part::Conn => {
+                                if !e.connected {
+                                    match connect_result(fd) {
+                                        Ok(()) => e.connected = true,
+                                        Err(_) => e.conn = None,
+                                    }
+                                    continue;
+                                }
+                                if p.revents & libc::POLLOUT != 0 {
+                                    match write(fd, e.to_conn.pending()) {
+                                        Ok(n) => e.to_conn.written(n),
+                                        Err(_) => e.conn = None,
+                                    }
+                                }
+                                if p.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
+                                    && e.conn.is_some()
+                                {
+                                    match read(fd, &mut buf) {
+                                        Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
+                                        Ok(0) | Err(_) => e.stdin_eof = true,
+                                        Ok(n) => {
+                                            e.from_conn.extend_from_slice(buf.get(..n).unwrap_or_default());
+                                            let (mut closed, to) = (false, &mut e.to_stdin);
+                                            let whole = each_frame(&mut e.from_conn, |which, payload| {
+                                                if which == kind::STDIN {
+                                                    closed |= payload.is_empty();
+                                                    to.extend(&[payload]);
+                                                }
+                                            });
+                                            e.stdin_eof |= closed || !whole;
+                                        }
+                                    }
+                                }
+                            }
+                            Part::Stdin => feed(&mut e.stdin, &mut e.to_stdin),
+                            Part::Stdout => drain_into(&mut e.stdout, kind::STDOUT, &mut buf, &mut e.to_conn),
+                            Part::Stderr => drain_into(&mut e.stderr, kind::STDERR, &mut buf, &mut e.to_conn),
                         }
                     }
                 }
@@ -995,36 +1286,49 @@ impl Workload {
             if stdin_eof && to_stdin.is_empty() {
                 self.stdin = None;
             }
+            for e in &mut execs {
+                if e.stdin_eof && e.to_stdin.is_empty() {
+                    e.stdin = None;
+                }
+                // Its output drained, its status follows it.
+                if let Some(code) = e.status
+                    && !e.ended
+                    && e.stdout.is_none()
+                    && e.stderr.is_none()
+                {
+                    e.to_conn
+                        .extend(&[&run::header(kind::EXIT, 4), &code.to_be_bytes()]);
+                    e.ended = true;
+                }
+            }
         }
         if let Some(fd) = host {
             set_nonblocking(fd, false);
         }
         status.unwrap_or(NOT_RUN)
     }
+}
 
-    /// Reaps every exited child. When the workload is among them, its status is recorded
-    /// and every process left is killed: a container ends with its main process.
-    fn reap(&mut self, status: &mut Option<u32>) {
-        let mut info = [0u8; std::mem::size_of::<libc::signalfd_siginfo>()];
-        while read(self.sigchld.as_raw_fd(), &mut info).is_ok_and(|n| n > 0) {}
-        loop {
-            let mut st = 0;
-            // SAFETY: waitpid(2) with a valid status pointer.
-            let pid = unsafe { libc::waitpid(-1, &mut st, libc::WNOHANG) };
-            if pid <= 0 {
-                return;
-            }
-            if pid == self.pid {
-                let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_EXITED);
-                *status = Some(if libc::WIFSIGNALED(st) {
-                    128 + libc::WTERMSIG(st) as u32
-                } else {
-                    libc::WEXITSTATUS(st) as u32
-                });
-                // SAFETY: kill(2) of every process but init.
-                unsafe { libc::kill(-1, libc::SIGKILL) };
-            }
+/// Reaps every exited child, telling `exited` each one's pid and status: its code, or
+/// 128 and the signal that ended it.
+fn reap(sigchld: &OwnedFd, mut exited: impl FnMut(libc::pid_t, u32)) {
+    let mut info = [0u8; std::mem::size_of::<libc::signalfd_siginfo>()];
+    while read(sigchld.as_raw_fd(), &mut info).is_ok_and(|n| n > 0) {}
+    loop {
+        let mut st = 0;
+        // SAFETY: waitpid(2) with a valid status pointer.
+        let pid = unsafe { libc::waitpid(-1, &mut st, libc::WNOHANG) };
+        if pid <= 0 {
+            return;
         }
+        exited(
+            pid,
+            if libc::WIFSIGNALED(st) {
+                128 + libc::WTERMSIG(st) as u32
+            } else {
+                libc::WEXITSTATUS(st) as u32
+            },
+        );
     }
 }
 
@@ -1069,6 +1373,20 @@ fn workdir(cwd: &[u8]) -> Result<Vec<u8>, Failure> {
     }
 }
 
+/// An exec's working directory as runc's exec takes it: `/` if none, refused unless
+/// absolute, never made.
+fn exec_cwd(cwd: &[u8]) -> Result<Vec<u8>, Failure> {
+    match cwd.first() {
+        None => Ok(b"/".to_vec()),
+        Some(b'/') => Ok(cwd.to_vec()),
+        Some(_) => Err(Failure {
+            status: 128,
+            message: "Cwd must be an absolute path".into(),
+            daemon: false,
+        }),
+    }
+}
+
 /// Why the command did not start, in the words of runc's Go (exec.LookPath, and
 /// os.PathError for the rest), which dockerd passes on: `tried` is the file it was
 /// executing. The status is `docker run`'s for those words (shards_cmdline).
@@ -1080,7 +1398,10 @@ fn exec_failure(which: u8, errno: i32, argv0: &[u8], tried: &[u8], cwd: &[u8], u
         step::NOT_IN_PATH => format!("exec: {}: executable file not found in $PATH", quote(&cmd)),
         step::STAT => format!("exec: {}: stat {cmd}: {err}", quote(&cmd)),
         step::ACCESS => format!("exec: {}: {err}", quote(&cmd)),
-        step::CHDIR => format!("chdir to cwd ({}): {err}", quote(&String::from_utf8_lossy(cwd))),
+        step::CHDIR => format!(
+            "chdir to cwd ({}) failed: {err}",
+            quote(&String::from_utf8_lossy(cwd))
+        ),
         step::USER => format!("setting user {}: {err}", quote(&String::from_utf8_lossy(user))),
         step::TTY => format!("open {}: {err}", String::from_utf8_lossy(tried)),
         _ => format!("exec {}: {err}", String::from_utf8_lossy(tried)),
@@ -1088,6 +1409,7 @@ fn exec_failure(which: u8, errno: i32, argv0: &[u8], tried: &[u8], cwd: &[u8], u
     Failure {
         status: u32::from(shards_cmdline::commands::run_status(&message)),
         message,
+        daemon: false,
     }
 }
 

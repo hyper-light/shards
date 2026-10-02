@@ -120,6 +120,90 @@ pub mod kind {
     pub const LOG_SEGMENT: u8 = 21;
     /// Daemon → warm VM: the answer to its `LOG_SEGMENT`.
     pub const SEGMENT: u8 = 22;
+    /// Client → daemon: run a command in a running container ([`Exec`](super::Exec)),
+    /// with the client's stdin, stdout and stderr; the connection itself is its client's.
+    pub const EXEC: u8 = 23;
+    /// Daemon → the container's VM: run a command beside its workload. Its number (a
+    /// big-endian u64, which `EXEC_TAKEN` answers), a flags byte
+    /// ([`EXEC_INTERACTIVE`](super::EXEC_INTERACTIVE), [`EXEC_DETACHED`](super::EXEC_DETACHED)),
+    /// then its `abi::run::Spec`, with the client's connection, stdin, stdout and stderr.
+    /// The VM answers the client as a run does: what kept it from starting on its stderr,
+    /// then `EXIT` with the status.
+    pub const EXEC_RUN: u8 = 24;
+    /// Warm VM → daemon: it has the `EXEC_RUN` numbered so (a big-endian u64), and with
+    /// it the client's connection, which the daemon held until now: XNU collects a socket
+    /// in flight that no process holds (M24).
+    pub const EXEC_TAKEN: u8 = 25;
+}
+
+/// An `EXEC_RUN` flag: the command reads the client's stdin (`-i`).
+pub const EXEC_INTERACTIVE: u8 = 1;
+/// An `EXEC_RUN` flag: the client is answered once the command starts (`-d`), and its
+/// output goes nowhere.
+pub const EXEC_DETACHED: u8 = 2;
+
+/// `shards exec` as the client asks for it: the container, the command, and what the
+/// command line set; the client's terminal size for `-t`; and the daemon binary the client
+/// would start, as in [`Run`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Exec {
+    pub container: String,
+    pub cmd: Vec<String>,
+    /// `-e`, each `NAME=VALUE`, or `NAME` alone to unset NAME.
+    pub env: Vec<String>,
+    /// `-u`, or empty for the container's user.
+    pub user: String,
+    /// `-w`, or empty for the container's working directory.
+    pub workdir: String,
+    pub interactive: bool,
+    pub detach: bool,
+    pub tty: Option<(u16, u16)>,
+    pub daemon: Identity,
+}
+
+impl Exec {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Vec::new();
+        put_str(&mut w, &self.container);
+        put_list(&mut w, &self.cmd);
+        put_list(&mut w, &self.env);
+        put_str(&mut w, &self.user);
+        put_str(&mut w, &self.workdir);
+        w.push(u8::from(self.interactive));
+        w.push(u8::from(self.detach));
+        match self.tty {
+            Some((rows, cols)) => {
+                w.push(1);
+                w.extend_from_slice(&rows.to_be_bytes());
+                w.extend_from_slice(&cols.to_be_bytes());
+            }
+            None => w.push(0),
+        }
+        put_identity(&mut w, &self.daemon);
+        w
+    }
+
+    /// `None` for anything but a whole, well-formed request.
+    pub fn decode(bytes: &[u8]) -> Option<Exec> {
+        let mut r = Reader(bytes);
+        let exec = Exec {
+            container: r.str()?,
+            cmd: r.list()?,
+            env: r.list()?,
+            user: r.str()?,
+            workdir: r.str()?,
+            interactive: r.flag()?,
+            detach: r.flag()?,
+            tty: if r.flag()? {
+                let [a, b, c, d] = <[u8; 4]>::try_from(r.take(4)?).ok()?;
+                Some((u16::from_be_bytes([a, b]), u16::from_be_bytes([c, d])))
+            } else {
+                None
+            },
+            daemon: r.identity()?,
+        };
+        r.0.is_empty().then_some(exec)
+    }
 }
 
 /// A container command as the client asks for it (`kind::CONTAINER`): its name and the
@@ -573,6 +657,33 @@ mod tests {
         }
         assert!(working_set_parts(&"g".repeat(256), b"x").is_empty());
         assert!(working_set_part(&[0, 9, b'a']).is_none(), "a name past its end");
+    }
+
+    #[test]
+    fn execs_round_trip_and_nothing_else_decodes() {
+        let exec = Exec {
+            container: "web".into(),
+            cmd: vec!["sh".into(), "-c".into(), "env".into()],
+            env: vec!["A=1".into(), "B".into()],
+            user: "1000".into(),
+            workdir: "/w".into(),
+            interactive: true,
+            detach: false,
+            tty: Some((24, 80)),
+            daemon: Identity {
+                dev: 1,
+                ino: 2,
+                size: 3,
+                mtime_s: 4,
+                mtime_ns: 5,
+            },
+        };
+        let bytes = exec.encode();
+        assert_eq!(Exec::decode(&bytes), Some(exec));
+        for n in 0..bytes.len() {
+            assert_eq!(Exec::decode(&bytes[..n]), None, "an exec cut at {n} decoded");
+        }
+        assert_eq!(Exec::decode(&Exec::default().encode()), Some(Exec::default()));
     }
 
     #[test]

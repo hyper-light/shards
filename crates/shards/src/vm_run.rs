@@ -595,6 +595,8 @@ fn serve_workload(
         let (signal_port, signals) = std::sync::mpsc::channel();
         vsock.ports.push((shards_abi::run::PORT, run_port));
         vsock.ports.push((shards_abi::run::SIGNAL_PORT, signal_port));
+        let (exec_port, execs) = std::sync::mpsc::channel();
+        vsock.every.push((shards_abi::run::EXEC_PORT, exec_port));
         // A warm VM's signals come from its client. The command line's are this process's:
         // blocked before the VM's threads start, so that they inherit the mask.
         // One workload a process (M34): what its threads share lives as long as they do.
@@ -608,6 +610,13 @@ fn serve_workload(
             if let Err(e) = workload::forward_signals(to_guest, reads_terminal) {
                 return failed(e);
             }
+        }
+        // After the signals are blocked, which it inherits.
+        if let Err(e) = std::thread::Builder::new()
+            .name("execs".into())
+            .spawn(move || workload::accept_execs(execs))
+        {
+            return failed(format!("the exec port's thread: {e}"));
         }
         let (handle, running) = match start(vsock) {
             Ok(started) => started,

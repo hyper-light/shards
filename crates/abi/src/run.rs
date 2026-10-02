@@ -14,6 +14,12 @@ pub const PORT: u32 = 1024;
 /// They travel apart from the run connection, so that stdin a workload leaves unread
 /// cannot hold them up, as Docker sends them apart from its attach stream.
 pub const SIGNAL_PORT: u32 = 1025;
+/// The host port the guest dials once for each command run beside the workload (`docker
+/// exec`), after the host asks for one with [`kind::EXEC`]. The host takes every
+/// connection to it, and keeps those whose [`kind::HELLO`] names a token it sent.
+pub const EXEC_PORT: u32 = 1027;
+/// The bytes of an exec's token.
+pub const TOKEN: usize = 16;
 pub const HEADER: usize = 8;
 /// The largest payload either side accepts.
 pub const MAX_PAYLOAD: u32 = 1 << 20;
@@ -43,6 +49,28 @@ pub mod kind {
     /// a terminal workload's pty, as a [`Size`](super::Size) encodes it. The kernel sends
     /// the terminal's foreground process group SIGWINCH if it changed.
     pub const RESIZE: u8 = 20;
+    /// Host to guest, on the signal connection: run a command beside the workload. Its
+    /// token ([`TOKEN`](super::TOKEN) bytes), its id (a big-endian u32), then its
+    /// [`Spec`](super::Spec). The guest dials [`EXEC_PORT`](super::EXEC_PORT) for it,
+    /// sends [`HELLO`] with the token, then [`STARTED`] and its output, or
+    /// [`SYSTEM_ERR`], then [`EXIT`]; the host sends its [`STDIN`] there.
+    pub const EXEC: u8 = 21;
+    /// Host to guest, on the signal connection: an exec's id, then a signal for it, as
+    /// [`SIGNAL`] carries one.
+    pub const EXEC_SIGNAL: u8 = 22;
+    /// Host to guest, on the signal connection: an exec's id, then its terminal's size,
+    /// as [`RESIZE`] carries one.
+    pub const EXEC_RESIZE: u8 = 23;
+    /// Guest to host, first on an exec's connection: its token.
+    pub const HELLO: u8 = 24;
+}
+
+/// Why an exec did not start, as its [`kind::SYSTEM_ERR`] says first: the runtime could
+/// not start it (`docker exec`'s "OCI runtime exec failed"), or the daemon refuses it
+/// (an unknown user: "Error response from daemon").
+pub mod exec_failed {
+    pub const RUNTIME: u8 = 0;
+    pub const DAEMON: u8 = 1;
 }
 
 pub fn header(kind: u8, len: u32) -> [u8; HEADER] {

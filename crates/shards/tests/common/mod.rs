@@ -465,12 +465,24 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawning shards");
+    // Read on threads of their own and handed over by channel, so that a pipe another
+    // process still holds (a VM given the client's stdio) costs the test its deadline,
+    // never a hang.
     let collect = |mut r: Box<dyn Read + Send>| {
+        let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut s = String::new();
             let _ = r.read_to_string(&mut s);
-            s
-        })
+            let _ = tx.send(s);
+        });
+        rx
+    };
+    let took = |rx: &std::sync::mpsc::Receiver<String>| {
+        let left = timeout
+            .saturating_sub(start.elapsed())
+            .max(Duration::from_secs(1));
+        rx.recv_timeout(left)
+            .unwrap_or_else(|_| "(still held open by another process)".into())
     };
     let out = collect(Box::new(child.stdout.take().unwrap()));
     let err = collect(Box::new(child.stderr.take().unwrap()));
@@ -483,16 +495,16 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
             let _ = child.wait();
             panic!(
                 "shards did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}",
-                out.join().unwrap(),
-                err.join().unwrap()
+                took(&out),
+                took(&err)
             );
         }
         std::thread::sleep(Duration::from_millis(2));
     };
     Run {
         status: status.code(),
-        stdout: out.join().unwrap(),
-        stderr: err.join().unwrap(),
+        stdout: took(&out),
+        stderr: took(&err),
         elapsed: start.elapsed(),
     }
 }

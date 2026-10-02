@@ -1184,3 +1184,144 @@ fn stop_sends_a_containers_own_stop_signal() {
     );
     assert_eq!(shards_in(&home, &["ps", "-aq"]).stdout.lines().count(), 2);
 }
+
+/// `exec` runs a command in a running container as `docker exec` does: from the run's
+/// environment, user and working directory, which `-e`, `-u` and `-w` change; on its own
+/// stdio, `-i` its stdin, `-t` a terminal of its own; with its own status; refused in
+/// dockerd's words for what the daemon refuses, and in runc's for what cannot start.
+#[test]
+fn exec_runs_commands_in_a_running_container_as_docker_exec_does() {
+    use std::io::Write as _;
+    let Some((home, image)) = home("containers-exec") else {
+        return;
+    };
+    let mut run = start(
+        &home,
+        &image,
+        &[
+            "--name",
+            "ex",
+            "--hostname",
+            "box",
+            "-e",
+            "FROMRUN=1",
+            "-w",
+            "/tmp",
+            "-u",
+            "1000",
+        ],
+        &["sleep"],
+    );
+    let exec = |args: &[&str]| shards_in(&home, &[&["exec"][..], args].concat());
+    let report = exec(&["ex", "/bin/testguest", "report"]);
+    assert_eq!(report.status, Some(0), "{report}");
+    for line in [
+        "uid 1000\n",
+        "cwd /tmp\n",
+        "hostname box\n",
+        "env FROMRUN=1\n",
+        "env HOSTNAME=box\n",
+    ] {
+        assert!(report.stdout.contains(line), "{line:?}\n{report}");
+    }
+    let changed = exec(&[
+        "-e",
+        "X=2",
+        "-u",
+        "0",
+        "-w",
+        "/",
+        "ex",
+        "/bin/testguest",
+        "report",
+    ]);
+    for line in ["uid 0\n", "cwd /\n", "env X=2\n", "env FROMRUN=1\n"] {
+        assert!(changed.stdout.contains(line), "{line:?}\n{changed}");
+    }
+    assert_eq!(exec(&["ex", "/bin/testguest", "exit", "7"]).status, Some(7));
+    let split = exec(&["ex", "/bin/testguest", "stderr", "to stderr"]);
+    assert_eq!(
+        (split.stdout.as_str(), split.stderr.as_str()),
+        ("", "to stderr"),
+        "{split}"
+    );
+    // -i: its stdin is this client's.
+    let mut cat = Command::new(shards())
+        .args(["exec", "-i", "ex", "/bin/testguest", "cat"])
+        .env("SHARDS_HOME", &*home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    cat.stdin.take().unwrap().write_all(b"through exec\n").unwrap();
+    let out = cat.wait_with_output().unwrap();
+    assert_eq!(
+        (out.status.code(), out.stdout.as_slice()),
+        (Some(0), &b"through exec\n"[..])
+    );
+    // -t: a terminal of its own, and TERM for it.
+    let tty = exec(&["-t", "ex", "/bin/testguest", "tty"]);
+    for line in [
+        "stdin tty true",
+        "stdout tty true",
+        "controlling true",
+        "term xterm",
+    ] {
+        assert!(tty.stdout.contains(line), "{line:?}\n{tty}");
+    }
+    // -d: answered once it starts.
+    assert_eq!(exec(&["-d", "ex", "/bin/testguest", "sleep"]).status, Some(0));
+    let refused = |args: &[&str], status: i32, said: &str| {
+        let r = exec(args);
+        assert_eq!(
+            (r.status, r.stderr.as_str()),
+            (Some(status), said),
+            "{args:?}\n{r}"
+        );
+    };
+    let oci = "OCI runtime exec failed: exec failed:";
+    refused(
+        &["ex", "nonexistent"],
+        127,
+        &format!(
+            "{oci} unable to start container process: exec: \"nonexistent\": executable file not found in $PATH\n"
+        ),
+    );
+    refused(
+        &["-w", "/nonexistent", "ex", "/bin/testguest", "report"],
+        127,
+        &format!(
+            "{oci} unable to start container process: chdir to cwd (\"/nonexistent\") failed: no such file or directory\n"
+        ),
+    );
+    refused(
+        &["-w", "rel", "ex", "/bin/testguest", "report"],
+        128,
+        &format!("{oci} Cwd must be an absolute path\n"),
+    );
+    refused(
+        &["nope", "/bin/testguest", "report"],
+        1,
+        "Error response from daemon: No such container: nope\n",
+    );
+    let unknown = exec(&["-u", "nobodyhere", "ex", "/bin/testguest", "report"]);
+    assert_eq!(unknown.status, Some(1), "{unknown}");
+    assert!(
+        unknown
+            .stderr
+            .starts_with("Error response from daemon: unable to find user nobodyhere"),
+        "{unknown}"
+    );
+    let stopped = shards_in(&home, &["stop", "ex"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    let _ = exit(&mut run);
+    let id = shards_in(&home, &["ps", "-aq", "--no-trunc"])
+        .stdout
+        .trim()
+        .to_string();
+    refused(
+        &["ex", "/bin/testguest", "report"],
+        1,
+        &format!("Error response from daemon: container {id} is not running\n"),
+    );
+}

@@ -47,6 +47,8 @@ pub struct Prepared {
     pub lease: Option<Lease>,
     /// The signal `stop` sends unless told: the run's, else its image's.
     pub stop_signal: Option<String>,
+    /// What the run was composed of: the base of each `exec` in its container.
+    pub options: crate::spec::Options,
 }
 
 /// The daemon's half: finds the request's image in `home`, pulling it as `docker run`
@@ -135,6 +137,7 @@ pub fn prepare(
         interactive: options.interactive,
         lease: Some(lease),
         stop_signal,
+        options,
     })
 }
 

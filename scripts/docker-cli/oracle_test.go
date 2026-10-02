@@ -37,6 +37,7 @@ var served = map[string][]string{
 	"rm":   {"force", "help", "volumes"},
 	"stop": {"help", "signal", "time", "timeout"},
 	"kill": {"help", "signal"},
+	"exec": {"detach", "detach-keys", "env", "help", "interactive", "tty", "user", "workdir"},
 }
 
 // The command lines asked, each the words after `shards`.
@@ -52,6 +53,15 @@ var cases = [][]string{
 	{"run", "-e", "A=1", "-e", "B", "-e", "UNSET", "alpine", "env"},
 	{"run", "-e", "=x", "alpine"},
 	{"run", "--network", "none", "alpine"},
+	{"exec"},
+	{"exec", "web"},
+	{"exec", "--help"},
+	{"exec", "-it", "-e", "A=1", "-e", "B", "-u", "1000:1000", "-w", "/w", "web", "sh", "-c", "env"},
+	{"exec", "-d", "web", "true", "-i"},
+	{"exec", "--privileged", "web", "true"},
+	{"exec", "--env-file", "f", "web", "true"},
+	{"container", "exec", "-t", "web", "top"},
+	{"exec", "--nope", "web", "true"},
 	{"run", "--stop-signal", "SIGUSR1", "--stop-timeout", "3", "alpine"},
 	{"run", "--stop-timeout", "x", "alpine"},
 	{"run", "--stop-timeout=-1", "alpine"},

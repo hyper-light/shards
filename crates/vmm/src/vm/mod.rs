@@ -154,6 +154,13 @@ pub struct VsockHost {
     /// only.
     #[cfg(unix)]
     pub ports: Vec<(u32, std::sync::mpsc::Sender<std::os::unix::net::UnixStream>)>,
+    /// Host ports this process serves for every guest connection, as [`ports`]' each
+    /// first: their owner tells its own connections from any other by what each says
+    /// first (shards' exec sessions, which name a token the guest's init alone was sent).
+    ///
+    /// [`ports`]: VsockHost::ports
+    #[cfg(unix)]
+    pub every: Vec<(u32, std::sync::mpsc::Sender<std::os::unix::net::UnixStream>)>,
 }
 
 impl VsockHost {
@@ -163,6 +170,8 @@ impl VsockHost {
             path: Some(path),
             #[cfg(unix)]
             ports: Vec::new(),
+            #[cfg(unix)]
+            every: Vec::new(),
         }
     }
 }

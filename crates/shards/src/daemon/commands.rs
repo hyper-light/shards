@@ -4,7 +4,7 @@
 //! (shards_cmdline); the daemon reads it again by the same rules, and does what dockerd
 //! would, in the order and with the words the Docker CLI and dockerd use.
 
-use std::io;
+use std::io::{self, Write as _};
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -170,6 +170,98 @@ fn linux_signal(n: i64) -> Option<u32> {
 }
 
 impl<D: crate::containers::Disk> Daemon<D> {
+    /// `shards exec`: runs a command in a running container, as `docker exec` does. Its
+    /// spec starts from the container's run, as dockerd composes an exec's (moby
+    /// daemon/exec.go, ContainerExecCreate): the run's environment then `-e`'s, its user
+    /// and working directory unless `-u` and `-w` say otherwise, its host name, and TERM
+    /// for a terminal of its own. It goes to the container's VM with the client's
+    /// connection and stdio, and the VM answers the client. What the daemon refuses, it
+    /// says on the client's stderr, then `EXIT` 1.
+    pub(super) fn exec(&self, message: &shards_ipc::Message, conn: &UnixStream) {
+        let stderr = message
+            .fds
+            .get(2)
+            .and_then(|fd| fd.try_clone().ok())
+            .map(std::fs::File::from);
+        let refuse = |why: &str| {
+            if let Some(mut err) = stderr.as_ref() {
+                let _ = writeln!(err, "{why}");
+            }
+            let _ = shards_ipc::send(conn, kind::EXIT, &[1], &[]);
+        };
+        let Some(exec) = shards_ipc::Exec::decode(&message.payload) else {
+            return refuse("shards: a malformed exec");
+        };
+        let [stdin, stdout, stderr] = match <&[std::os::fd::OwnedFd; 3]>::try_from(message.fds.as_slice()) {
+            Ok(fds) => fds,
+            Err(_) => return refuse("shards: an exec without the client's stdio"),
+        };
+        let id = match self.resolve(&exec.container) {
+            Ok(id) => id,
+            Err(e) => return refuse(&e),
+        };
+        // One being started is seen through, as `docker exec` finds it started or not.
+        self.await_start(&id);
+        let runs = lock(&self.runs);
+        let Some(RunState::Tracked(run)) = runs.get(&id) else {
+            return refuse(&format!(
+                "Error response from daemon: container {id} is not running"
+            ));
+        };
+        let base = &run.options;
+        let options = crate::spec::Options {
+            argv: exec.cmd,
+            env: base.env.iter().chain(&exec.env).cloned().collect(),
+            workdir: if exec.workdir.is_empty() {
+                base.workdir.clone()
+            } else {
+                exec.workdir
+            },
+            user: if exec.user.is_empty() {
+                base.user.clone()
+            } else {
+                exec.user
+            },
+            hostname: base.hostname.clone(),
+            interactive: exec.interactive,
+            tty: exec.tty.map(|(rows, cols)| shards_abi::run::Size { rows, cols }),
+        };
+        let spec = match crate::spec::spec(&options, |_| None) {
+            Ok(spec) => spec,
+            Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+        };
+        let mut flags = 0;
+        if exec.interactive {
+            flags |= shards_ipc::EXEC_INTERACTIVE;
+        }
+        if exec.detach {
+            flags |= shards_ipc::EXEC_DETACHED;
+        }
+        let number = self.next_exec.fetch_add(1, Ordering::Relaxed);
+        let mut payload = Vec::with_capacity(9 + spec.encoded_len().unwrap_or(0));
+        payload.extend_from_slice(&number.to_be_bytes());
+        payload.push(flags);
+        spec.encode_into(&mut payload);
+        // Held until the VM says it has it (`EXEC_TAKEN`), or its run ends.
+        let held = match conn.try_clone() {
+            Ok(held) => held,
+            Err(e) => {
+                return refuse(&format!(
+                    "Error response from daemon: holding the connection: {e}"
+                ));
+            }
+        };
+        lock(&run.inbox).execs_in_flight.push((number, held));
+        let fds = [conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
+        if let Err(e) = shards_ipc::send(&run.socket, kind::EXEC_RUN, &payload, &fds) {
+            lock(&run.inbox).execs_in_flight.retain(|(n, _)| *n != number);
+            drop(runs);
+            refuse(&format!(
+                "Error response from daemon: the container's microVM: {e}"
+            ));
+        }
+    }
+
     /// Runs container command `argv` for a client, answering on `reply`, and returns its
     /// exit status, the client being `asker`.
     pub(super) fn command(&self, argv: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {

@@ -123,6 +123,111 @@
   },
   {
     "argv": [
+      "exec"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards exec' requires at least 2 arguments\n\nUsage:  shards exec [OPTIONS] CONTAINER COMMAND [ARG...]\n\nSee 'shards exec --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "exec",
+      "web"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards exec' requires at least 2 arguments\n\nUsage:  shards exec [OPTIONS] CONTAINER COMMAND [ARG...]\n\nSee 'shards exec --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "exec",
+      "--help"
+    ],
+    "stdout": "Usage:  shards exec [OPTIONS] CONTAINER COMMAND [ARG...]\n\nExecute a command in a running container\n\nAliases:\n  shards container exec, shards exec\n\nOptions:\n  -d, --detach               Detached mode: run command in the background\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n  -e, --env list             Set environment variables\n  -i, --interactive          Keep STDIN open even if not attached\n  -t, --tty                  Allocate a pseudo-TTY\n  -u, --user string          Username or UID (format:\n                             \"\u003cname|uid\u003e[:\u003cgroup|gid\u003e]\")\n  -w, --workdir string       Working directory inside the container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "exec",
+      "-it",
+      "-e",
+      "A=1",
+      "-e",
+      "B",
+      "-u",
+      "1000:1000",
+      "-w",
+      "/w",
+      "web",
+      "sh",
+      "-c",
+      "env"
+    ],
+    "stdout": "RUN --env=[A=1 B=from-env] --interactive=true --tty=true --user=1000:1000 --workdir=/w \"web\" \"sh\" \"-c\" \"env\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "exec",
+      "-d",
+      "web",
+      "true",
+      "-i"
+    ],
+    "stdout": "RUN --detach=true \"web\" \"true\" \"-i\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "exec",
+      "--privileged",
+      "web",
+      "true"
+    ],
+    "stdout": "RUN --privileged=true \"web\" \"true\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "exec",
+      "--env-file",
+      "f",
+      "web",
+      "true"
+    ],
+    "stdout": "RUN --env-file=[f] \"web\" \"true\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "exec",
+      "-t",
+      "web",
+      "top"
+    ],
+    "stdout": "RUN --tty=true \"web\" \"top\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "exec",
+      "--nope",
+      "web",
+      "true"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards exec [OPTIONS] CONTAINER COMMAND [ARG...]\n\nRun 'shards exec --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
       "run",
       "--stop-signal",
       "SIGUSR1",

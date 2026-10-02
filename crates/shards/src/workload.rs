@@ -304,6 +304,8 @@ pub fn serve(
         let mut state = lock(to);
         *state = Signals::default();
     }
+    // Execs still waiting for the guest will never start.
+    pending().clear();
     // The guest powers off once the host closes the run connection: shutting it down
     // closes every copy.
     let _ = conn.shutdown(std::net::Shutdown::Both);
@@ -403,6 +405,211 @@ fn send(conn: &mut UnixStream, which: u8, payload: &[u8]) -> io::Result<()> {
     let len = u32::try_from(payload.len()).map_err(|_| io::Error::other("frame too long"))?;
     conn.write_all(&run::header(which, len))?;
     conn.write_all(payload)
+}
+
+/// Execs waiting for the guest's connection: each one's token and where its connection
+/// goes. Emptied when the workload ends, which tells each still waiting that it never
+/// started.
+#[cfg(unix)]
+type Pending = Mutex<Vec<([u8; run::TOKEN], std::sync::mpsc::Sender<UnixStream>)>>;
+#[cfg(unix)]
+static PENDING: Pending = Mutex::new(Vec::new());
+#[cfg(unix)]
+static NEXT_EXEC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+#[cfg(unix)]
+fn pending() -> std::sync::MutexGuard<'static, Vec<([u8; run::TOKEN], std::sync::mpsc::Sender<UnixStream>)>> {
+    PENDING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Takes every guest connection to the exec port ([`run::EXEC_PORT`]): one whose
+/// [`kind::HELLO`] names a pending exec's token becomes that exec's; any other is closed.
+/// Each is read on a thread of its own, so that one that says nothing holds up no other;
+/// the muxer bounds how many there are.
+#[cfg(unix)]
+pub fn accept_execs(port: Port) {
+    for mut conn in port {
+        let _ = std::thread::Builder::new()
+            .name("exec-hello".into())
+            .spawn(move || {
+                let mut h = [0u8; run::HEADER];
+                let mut token = [0u8; run::TOKEN];
+                let hello = conn.read_exact(&mut h).ok().and_then(|()| run::parse_header(h));
+                if hello != Some((kind::HELLO, run::TOKEN as u32)) || conn.read_exact(&mut token).is_err() {
+                    return;
+                }
+                // Compared whole, in constant time: a workload that dials the port learns
+                // nothing of a token from how fast it is refused.
+                let same =
+                    |t: &[u8; run::TOKEN]| t.iter().zip(&token).fold(0u8, |d, (a, b)| d | (a ^ b)) == 0;
+                let to = {
+                    let mut waiting = pending();
+                    waiting
+                        .iter()
+                        .position(|(t, _)| same(t))
+                        .map(|i| waiting.swap_remove(i).1)
+                };
+                if let Some(to) = to {
+                    let _ = to.send(conn);
+                }
+            });
+    }
+}
+
+/// A command to run beside the workload (`docker exec`), and its client's: the
+/// connection it is answered on, and its stdio.
+#[cfg(unix)]
+pub struct ExecRequest {
+    pub spec: Spec,
+    pub interactive: bool,
+    pub detached: bool,
+    pub client: UnixStream,
+    pub stdin: fs::File,
+    pub stdout: fs::File,
+    pub stderr: fs::File,
+}
+
+/// Runs `req` beside the workload, on a thread of its own, answering its client as
+/// `docker exec` answers: the command's output, or why it did not start, then `EXIT`
+/// with its status (`-d`: 0 once it starts).
+#[cfg(unix)]
+pub fn exec(to: &'static ToGuest, req: ExecRequest) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name("exec".into())
+        .spawn(move || {
+            let mut req = req;
+            let status = match exec_session(to, &mut req) {
+                Ok(Some(status)) => Some(status),
+                Ok(None) => None,
+                Err(e) => {
+                    let _ = writeln!(req.stderr, "Error response from daemon: {e}");
+                    Some(1)
+                }
+            };
+            if let Some(status) = status {
+                let _ = shards_ipc::send(&req.client, shards_ipc::kind::EXIT, &[status], &[]);
+            }
+        })
+        .map(drop)
+        .map_err(|e| format!("an exec's thread: {e}"))
+}
+
+/// One exec, from asking the guest for it to its status. `None` once a detached exec's
+/// client has been told it started; what never started is said on `req.stderr`.
+#[cfg(unix)]
+fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<Option<u8>, String> {
+    let mut token = [0u8; run::TOKEN];
+    shards_vmm::platform::fill_random(&mut token).map_err(|e| format!("an exec's token: {e}"))?;
+    let id = NEXT_EXEC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (tx, rx) = std::sync::mpsc::channel();
+    pending().push((token, tx));
+    let mut payload = Vec::with_capacity(run::TOKEN + 4 + req.spec.encoded_len().unwrap_or(0));
+    payload.extend_from_slice(&token);
+    payload.extend_from_slice(&id.to_be_bytes());
+    req.spec.encode_into(&mut payload);
+    if !to_guest(to, kind::EXEC, &payload) {
+        pending().retain(|(t, _)| *t != token);
+        return Err("the container is not running".into());
+    }
+    let mut conn = rx
+        .recv()
+        .map_err(|_| "the container's process ended before the command started".to_string())?;
+    if req.interactive {
+        let mut input = conn.try_clone().map_err(|e| e.to_string())?;
+        let mut stdin = req.stdin.try_clone().map_err(|e| e.to_string())?;
+        std::thread::Builder::new()
+            .name("exec-stdin".into())
+            .spawn(move || {
+                let mut buf = vec![0u8; 64 * 1024];
+                while let Ok(n @ 1..) = stdin.read(&mut buf) {
+                    if send(&mut input, kind::STDIN, buf.get(..n).unwrap_or_default()).is_err() {
+                        return;
+                    }
+                }
+                let _ = send(&mut input, kind::STDIN, &[]);
+            })
+            .map_err(|e| format!("an exec's stdin: {e}"))?;
+    } else {
+        // An exec that could not start may have said so and closed already: what it
+        // said is still there to read.
+        let _ = send(&mut conn, kind::STDIN, &[]);
+    }
+    if !req.detached {
+        // The client's terminal sizes, for the exec's own terminal.
+        let client = req.client.try_clone().map_err(|e| e.to_string())?;
+        std::thread::Builder::new()
+            .name("exec-client".into())
+            .spawn(move || {
+                while let Ok(Some(m)) = shards_ipc::recv(&client) {
+                    if m.kind == shards_ipc::kind::RESIZE && Size::decode(&m.payload).is_some() {
+                        let resize = [&id.to_be_bytes()[..], &m.payload].concat();
+                        to_guest(to, kind::EXEC_RESIZE, &resize);
+                    }
+                }
+            })
+            .map_err(|e| format!("an exec's client: {e}"))?;
+    }
+    let mut frame = Vec::new();
+    let mut not_started: Option<(u8, String)> = None;
+    loop {
+        let mut h = [0u8; run::HEADER];
+        conn.read_exact(&mut h)
+            .map_err(|e| format!("the guest stopped before the command ended: {e}"))?;
+        let (which, len) = run::parse_header(h).ok_or("the guest sent a malformed frame")?;
+        let len = len as usize;
+        if frame.len() < len {
+            frame.resize(len, 0);
+        }
+        let payload = frame.get_mut(..len).ok_or("a frame past its buffer")?;
+        conn.read_exact(payload)
+            .map_err(|e| format!("the guest stopped mid-frame: {e}"))?;
+        let payload = &*payload;
+        match which {
+            kind::STARTED if req.detached => {
+                let _ = shards_ipc::send(&req.client, shards_ipc::kind::EXIT, &[0], &[]);
+                return Ok(None);
+            }
+            kind::STARTED => {}
+            // A detached exec's output goes nowhere, as `docker exec -d`'s does.
+            kind::STDOUT if !req.detached => {
+                let _ = req.stdout.write_all(payload);
+            }
+            kind::STDERR if !req.detached => {
+                let _ = req.stderr.write_all(payload);
+            }
+            kind::STDOUT | kind::STDERR => {}
+            kind::SYSTEM_ERR => {
+                let (class, why) = payload.split_first().ok_or("an empty failure")?;
+                not_started = Some((*class, String::from_utf8_lossy(why).into_owned()));
+            }
+            kind::EXIT => {
+                let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;
+                let status = u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX);
+                return Ok(Some(match not_started {
+                    None => status,
+                    Some((run::exec_failed::DAEMON, why)) => {
+                        let _ = writeln!(req.stderr, "Error response from daemon: {why}");
+                        1
+                    }
+                    Some((_, why)) => {
+                        // dockerd's code for what the runtime could not start (moby
+                        // daemon/errors.go), in runc's words.
+                        let (_, code) = shards_cmdline::commands::start_failed(&why);
+                        let said = if why == "Cwd must be an absolute path" {
+                            format!("OCI runtime exec failed: exec failed: {why}")
+                        } else {
+                            format!(
+                                "OCI runtime exec failed: exec failed: unable to start container process: {why}"
+                            )
+                        };
+                        let _ = writeln!(req.stderr, "{said}");
+                        code
+                    }
+                }));
+            }
+            _ => return Err(format!("the guest sent an unknown frame kind {which}")),
+        }
+    }
 }
 
 /// Copies shards' stdin to the workload's, then closes it.
@@ -554,6 +761,48 @@ mod tests {
             .append(true)
             .open(path)
             .unwrap()
+    }
+
+    /// The exec port hands a connection only to the exec whose token its HELLO names:
+    /// one naming another, or saying anything else first, is closed, and the exec still
+    /// gets its own.
+    #[test]
+    fn exec_connections_go_only_to_the_exec_they_name() {
+        let (port, conns) = std::sync::mpsc::channel();
+        std::thread::spawn(move || accept_execs(conns));
+        let token = [7u8; run::TOKEN];
+        let (to, arrived) = std::sync::mpsc::channel();
+        pending().push((token, to));
+        let hello = |token: &[u8]| {
+            let (mut guest, host) = UnixStream::pair().unwrap();
+            guest
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            guest
+                .write_all(&run::header(kind::HELLO, token.len() as u32))
+                .unwrap();
+            guest.write_all(token).unwrap();
+            port.send(host).unwrap();
+            guest
+        };
+        let mut wrong = [7u8; run::TOKEN];
+        wrong[run::TOKEN - 1] = 8;
+        let refused = hello(&wrong);
+        let short = hello(&token[..run::TOKEN - 1]);
+        for mut closed in [refused, short] {
+            assert_eq!(
+                closed.read(&mut [0u8; 1]).unwrap(),
+                0,
+                "a connection naming no exec stays open"
+            );
+        }
+        assert!(
+            arrived.try_recv().is_err(),
+            "an exec took a connection not its own"
+        );
+        let _ours = hello(&token);
+        assert!(arrived.recv_timeout(std::time::Duration::from_secs(5)).is_ok());
+        assert!(pending().is_empty());
     }
 
     /// A logger keeps each record whole and indexes it, with its stream and whether it

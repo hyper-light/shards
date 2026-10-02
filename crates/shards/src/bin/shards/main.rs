@@ -28,6 +28,10 @@ fn main() -> ExitCode {
     match words.as_slice() {
         ["run", ..] => request::run("shards run", args.get(1..).unwrap_or_default()),
         ["container", "run", ..] => request::run("shards container run", args.get(2..).unwrap_or_default()),
+        ["exec", ..] => request::exec("shards exec", args.get(1..).unwrap_or_default()),
+        ["container", "exec", ..] => {
+            request::exec("shards container exec", args.get(2..).unwrap_or_default())
+        }
         #[cfg(unix)]
         ["daemon", "stop"] if args.len() == 2 => match shards_ipc::home() {
             Ok(home) => client::stop(&home),

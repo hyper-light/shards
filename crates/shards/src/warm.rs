@@ -242,7 +242,7 @@ enum From {
 /// or the daemon's (`shards stop`, `kill`), and the client's terminal sizes. When the
 /// client hangs up, the VM lets go of its stdio. A workload outlives its client, as a
 /// container outlives `docker run`'s.
-fn relay_signals(conn: &UnixStream, to: &ToGuest, from: From) {
+fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From) {
     let client = matches!(from, From::Client);
     while let Ok(Some(message)) = shards_ipc::recv(conn) {
         match message.kind {
@@ -258,6 +258,16 @@ fn relay_signals(conn: &UnixStream, to: &ToGuest, from: From) {
                     workload::signal_guest(to, u32::from_be_bytes(signal));
                 }
             }
+            kind::EXEC_RUN if !client => {
+                // The client's connection is this process's now: the daemon may let its
+                // copy go.
+                if let Some(number) = message.payload.first_chunk::<8>() {
+                    let _ = shards_ipc::send(conn, kind::EXEC_TAKEN, number, &[]);
+                }
+                if let Err(e) = exec_request(message, to) {
+                    let _ = writeln!(io::stderr(), "shards: an exec: {e}");
+                }
+            }
             kind::RESIZE if client => {
                 if let Some(size) = shards_abi::run::Size::decode(&message.payload) {
                     workload::resize_guest(to, size);
@@ -269,6 +279,35 @@ fn relay_signals(conn: &UnixStream, to: &ToGuest, from: From) {
     if client && let Ok(null) = File::open("/dev/null") {
         let_go(&null);
     }
+}
+
+/// Starts the exec the daemon's `EXEC_RUN` asks for (workload::exec): its flags and spec,
+/// with its client's connection, stdin, stdout and stderr.
+fn exec_request(message: shards_ipc::Message, to: &'static ToGuest) -> Result<(), String> {
+    let (_, rest) = message
+        .payload
+        .split_first_chunk::<8>()
+        .ok_or("an exec without its number")?;
+    let (flags, spec) = rest.split_first().ok_or("an empty exec")?;
+    let spec = Spec::decode(spec).ok_or("a malformed exec")?;
+    let mut fds = message.fds.into_iter();
+    let (Some(client), Some(stdin), Some(stdout), Some(stderr), None) =
+        (fds.next(), fds.next(), fds.next(), fds.next(), fds.next())
+    else {
+        return Err("an exec without its client's four descriptors".into());
+    };
+    workload::exec(
+        to,
+        workload::ExecRequest {
+            spec,
+            interactive: flags & shards_ipc::EXEC_INTERACTIVE != 0,
+            detached: flags & shards_ipc::EXEC_DETACHED != 0,
+            client: UnixStream::from(client),
+            stdin: File::from(stdin),
+            stdout: File::from(stdout),
+            stderr: File::from(stderr),
+        },
+    )
 }
 
 /// Tells the daemon the command runs, before the client has anything the command wrote.

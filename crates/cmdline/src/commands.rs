@@ -381,6 +381,48 @@ pub static STOP: Command = Command {
     error_prefix: "",
 };
 
+/// `shards exec`, and `shards container exec`.
+pub static EXEC: Command = Command {
+    usage: "[OPTIONS] CONTAINER COMMAND [ARG...]",
+    about: "Execute a command in a running container",
+    aliases: "shards container exec, shards exec",
+    args: Args::AtLeast(2),
+    flags: &[
+        Flag::bool(
+            "detach",
+            Some(b'd'),
+            "Detached mode: run command in the background",
+        ),
+        Flag::string(
+            "detach-keys",
+            None,
+            "",
+            "Override the key sequence for detaching a container",
+        ),
+        Flag::many("env", Some(b'e'), "list", "Set environment variables"),
+        HELP,
+        Flag::bool("interactive", Some(b'i'), "Keep STDIN open even if not attached"),
+        Flag::bool("tty", Some(b't'), "Allocate a pseudo-TTY"),
+        Flag::string(
+            "user",
+            Some(b'u'),
+            "",
+            "Username or UID (format: \"<name|uid>[:<group|gid>]\")",
+        ),
+        Flag::string(
+            "workdir",
+            Some(b'w'),
+            "",
+            "Working directory inside the container",
+        ),
+    ],
+    unserved: "\
+env-file - m - -\n\
+privileged - b false -",
+    interspersed: false,
+    error_prefix: "",
+};
+
 /// `shards kill`.
 pub static KILL: Command = Command {
     usage: "[OPTIONS] CONTAINER [CONTAINER...]",
@@ -499,6 +541,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["stop", ..] => (&STOP, "shards stop", 1),
         ["container", "stop", ..] => (&STOP, "shards container stop", 2),
         ["kill", ..] => (&KILL, "shards kill", 1),
+        ["exec", ..] => (&EXEC, "shards exec", 1),
+        ["container", "exec", ..] => (&EXEC, "shards container exec", 2),
         ["container", "kill", ..] => (&KILL, "shards container kill", 2),
         _ => return None,
     })

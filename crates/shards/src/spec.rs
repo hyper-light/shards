@@ -24,7 +24,7 @@ pub fn not_run(said: &str) -> (String, u8) {
 
 /// What `--`, `--env`, `--workdir`, `--user`, `--hostname`, `--interactive` and `--tty`
 /// asked for.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Options {
     pub argv: Vec<String>,
     pub env: Vec<String>,

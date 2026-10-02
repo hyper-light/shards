@@ -75,6 +75,71 @@ pub fn run(path: &str, args: &[OsString]) -> ExitCode {
     }
 }
 
+/// Runs the command line `args`, the words after `path` (`shards exec`), as `docker exec`
+/// runs it: in a running container, attached unless `-d` (docker/cli
+/// cli/command/container/exec.go).
+pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::failed(&e),
+    };
+    let parsed = match crate::read(&shards_cmdline::commands::EXEC, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    let Some((container, cmd)) = parsed.args.split_first() else {
+        return crate::failed("a container is required");
+    };
+    let request = shards_ipc::Exec {
+        container: container.clone(),
+        cmd: cmd.to_vec(),
+        env: parsed.many("env").to_vec(),
+        user: parsed.string("user").to_string(),
+        workdir: parsed.string("workdir").to_string(),
+        interactive: parsed.bool("interactive"),
+        detach: parsed.bool("detach"),
+        tty: parsed.bool("tty").then(stdout_size),
+        ..shards_ipc::Exec::default()
+    };
+    // Checked before the daemon is asked, as the CLI checks (streams/in.go, CheckTty).
+    if request.tty.is_some() && request.interactive && !std::io::stdin().is_terminal() {
+        return refuse("the input device is not a TTY");
+    }
+    let keys = parsed.string("detach-keys");
+    let detach_keys = if keys.is_empty() {
+        term::DETACH_KEYS.to_vec()
+    } else {
+        match term::to_bytes(keys) {
+            Ok(bytes) => bytes,
+            Err(e) => return refuse(&format!("invalid detach keys ({keys}): {e}")),
+        }
+    };
+    #[cfg(unix)]
+    {
+        let daemon = match crate::shardsd() {
+            Ok(daemon) => daemon,
+            Err(e) => return crate::failed(&e),
+        };
+        let mut request = request;
+        request.daemon = match Identity::of_build(&daemon) {
+            Ok(identity) => identity,
+            Err(e) => return crate::failed(&format!("{}: {e}", daemon.display())),
+        };
+        match shards_ipc::home() {
+            Ok(home) => crate::client::exec(&home, &daemon, &request, &detach_keys),
+            Err(e) => crate::failed(&e),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (request, detach_keys);
+        crate::failed(
+            "running a command needs the daemon, which needs Unix sockets, which shards does not support on this platform yet",
+        )
+    }
+}
+
 /// Says `why` as the CLI says a plain error, and exits 1 (docker/cli cmd/docker/docker.go).
 fn refuse(why: &str) -> ExitCode {
     let _ = writeln!(std::io::stderr(), "{why}");

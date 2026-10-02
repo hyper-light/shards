@@ -192,6 +192,13 @@ enum RunState {
     Tracked(Tracked),
 }
 
+/// What a run's registration keeps of its request: a detached client, until it is told
+/// whether its command started, and what each `exec` in its container starts from.
+struct Keep<'a> {
+    detached: Option<&'a UnixStream>,
+    options: crate::spec::Options,
+}
+
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
 ///
 /// Shared (`Arc`) because a run's lifetime is its own: its thread follows it while any
@@ -200,6 +207,8 @@ enum RunState {
 /// serialize their record writes, and asking each run's thread would add a round trip per
 /// run to every command (docs/audit/2026-09-30_arc.md).
 struct Tracked {
+    /// What its run was composed of, which each `exec` starts from.
+    options: crate::spec::Options,
     socket: Arc<UnixStream>,
     vm: Arc<shards_ipc::Child>,
     inbox: Arc<Mutex<Inbox>>,
@@ -226,6 +235,9 @@ struct Inbox {
     /// the daemon made.
     container: PathBuf,
     segment: u64,
+    /// Exec clients' connections handed to the VM and not yet taken, by number: held
+    /// meanwhile, as XNU collects a socket in flight that no process holds (M24).
+    execs_in_flight: Vec<(u64, UnixStream)>,
 }
 
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
@@ -399,6 +411,8 @@ struct Daemon<D: Disk = Real> {
     /// Each waiter has a number, by which it goes if it stops waiting first.
     waiters: Mutex<HashMap<String, Vec<Waiter>>>,
     next_waiter: AtomicU64,
+    /// Numbers each exec handed to a VM (`kind::EXEC_RUN`).
+    next_exec: AtomicU64,
     /// The containers `shards rm` is removing.
     removing: Mutex<HashSet<String>>,
     /// A container's ID, directory and log, made ahead of the run that takes them.
@@ -735,6 +749,7 @@ impl<D: Disk> Daemon<D> {
             recorder: Mutex::default(),
             waiters: Mutex::default(),
             next_waiter: AtomicU64::new(0),
+            next_exec: AtomicU64::new(0),
             removing: Mutex::default(),
             spare: Mutex::default(),
             saved: AtomicU64::new(0),
@@ -974,6 +989,18 @@ impl<D: Disk> Daemon<D> {
                 self.step_aside(threads);
                 return None;
             }
+            kind::EXEC => {
+                self.release_client(number);
+                if let Some(exec) = shards_ipc::Exec::decode(&message.payload)
+                    && exec.daemon != self.identity
+                {
+                    self.step_aside(threads);
+                    let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
+                    return None;
+                }
+                self.exec(&message, conn);
+                return None;
+            }
             kind::CONTAINER => {
                 let Some(command) = shards_ipc::Command::decode(&message.payload) else {
                     log("a malformed container command");
@@ -1114,9 +1141,17 @@ impl<D: Disk> Daemon<D> {
         payload.extend(self.logs.files.to_be_bytes());
         prepared.spec.encode_into(&mut payload);
         let detached = run.detach.then_some(conn);
-        let started = self.start_run(threads, &id, &payload, &fds, detached, || {
-            self.warm_for(threads, &prepared, &start, &say)
-        });
+        let started = self.start_run(
+            threads,
+            &id,
+            &payload,
+            &fds,
+            Keep {
+                detached,
+                options: prepared.options.clone(),
+            },
+            || self.warm_for(threads, &prepared, &start, &say),
+        );
         // Its VM has its root filesystem, or never will.
         drop(prepared.lease.take());
         match started {
@@ -1140,7 +1175,7 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         payload: &[u8],
         fds: &[BorrowedFd<'_>],
-        detached: Option<&UnixStream>,
+        keep: Keep<'_>,
         mut acquire: impl FnMut() -> Result<Ready, String>,
     ) -> Result<Arc<Mutex<Inbox>>, String> {
         for _ in 0..HANDOFF_TRIES {
@@ -1157,7 +1192,7 @@ impl<D: Disk> Daemon<D> {
             match handed {
                 // The warm VM serves the client from here, and ours close. A detached
                 // client waits for the daemon to say whether its command started.
-                Ok(()) => return Ok(self.register(ready, id, detached)),
+                Ok(()) => return Ok(self.register(ready, id, keep.detached, keep.options.clone())),
                 Err(Untaken::Surely(e)) => {
                     log(format!("warm VM {} did not take a run: {e}", ready.vm.id()));
                     let _ = ready.vm.kill(libc::SIGKILL);
@@ -1170,7 +1205,7 @@ impl<D: Disk> Daemon<D> {
                         ready.vm.id()
                     ));
                     let _ = ready.vm.kill(libc::SIGKILL);
-                    return Ok(self.register(ready, id, detached));
+                    return Ok(self.register(ready, id, keep.detached, keep.options.clone()));
                 }
             }
         }
@@ -1552,7 +1587,13 @@ impl<D: Disk> Daemon<D> {
     /// runs, as commands see it. A run handed over while the daemon stops is stopped too:
     /// `stop_runs` signals the runs it finds, under the same lock, and this one if it came
     /// too late to be found. Returns the run's inbox, for [`follow`](Self::follow).
-    fn register(&self, ready: Ready, id: &str, detached: Option<&UnixStream>) -> Arc<Mutex<Inbox>> {
+    fn register(
+        &self,
+        ready: Ready,
+        id: &str,
+        detached: Option<&UnixStream>,
+        options: crate::spec::Options,
+    ) -> Arc<Mutex<Inbox>> {
         // Runs last as long as their commands.
         let _ = ready.socket.set_read_timeout(None);
         let socket = Arc::new(ready.socket);
@@ -1572,8 +1613,10 @@ impl<D: Disk> Daemon<D> {
             working_set_limit: None,
             container: lock(&self.containers).dir(id),
             segment: 0,
+            execs_in_flight: Vec::new(),
         }));
         let tracked = Tracked {
+            options,
             socket,
             vm: ready.vm,
             inbox: inbox.clone(),
@@ -1620,6 +1663,11 @@ impl<D: Disk> Daemon<D> {
                 Ok(Some(m)) if m.kind == kind::LOST => self.log_lost(id, &m.payload),
                 Ok(Some(m)) if m.kind == kind::WORKING_SET => working_set_part(id, &mut inbox, &m.payload),
                 Ok(Some(m)) if m.kind == kind::LOG_SEGMENT => self.make_segment(id, &mut inbox, &m.payload),
+                Ok(Some(m)) if m.kind == kind::EXEC_TAKEN => {
+                    if let Ok(n) = <[u8; 8]>::try_from(m.payload.as_slice()).map(u64::from_be_bytes) {
+                        inbox.execs_in_flight.retain(|(held, _)| *held != n);
+                    }
+                }
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => self.run_ended(id, &mut inbox, None),
             }
@@ -2893,6 +2941,7 @@ mod tests {
                 interactive: false,
                 lease: None,
                 stop_signal: None,
+                options: crate::spec::Options::default(),
             };
             self.t.daemon.create(&run, &prepared, &id).unwrap();
             self.t.daemon.record_arrival(self.threads, &id);
@@ -2915,7 +2964,17 @@ mod tests {
                         .recv_timeout(PATIENCE)
                         .map_err(|_| "no warm VM".to_string())
                 };
-                let inbox = daemon.start_run(threads, &id, b"run", &[null.as_fd()], None, acquire)?;
+                let inbox = daemon.start_run(
+                    threads,
+                    &id,
+                    b"run",
+                    &[null.as_fd()],
+                    Keep {
+                        detached: None,
+                        options: crate::spec::Options::default(),
+                    },
+                    acquire,
+                )?;
                 daemon.follow(&id, &inbox);
                 Ok(())
             });
