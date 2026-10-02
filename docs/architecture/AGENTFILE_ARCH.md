@@ -68,17 +68,17 @@ This extension is intentional, and part of the default deny.
 ### 4.2 `AGENT`
 
 ```
-AGENT <name> FROM <registry>[:<tag>] [TO <path>]
+AGENT <name> FROM <source> [TO <path>]
 ```
 
-- `AS` is optional.
+- There is no `AS` (§12.4): the name comes first. `<source>` is read as §12.2 reads it.
 - `<name>` is required. It names the agent, as a build stage's alias names an image.
   `AGENT main FROM some.registry.com/claude-opus-5-5` declares an agent called `main`.
 - `<registry>` must name, in a valid OCI-compliant registry, a tarball that contains the
   agent. How that tarball is laid out is still to be specified.
 - When a build meets an `AGENT` directive, it downloads the tarball and decompresses it to:
   - `TO <path>`, if given;
-  - otherwise `/agents/<name>[_<tag>]`.
+  - otherwise `/agents/<name>` (§12.1).
 - Declaring an agent also means the build prepares the agent's workload/workspace in the
   VM: the containerd-like environment shards runs its agents in (see §6).
 - A workspace is entirely isolated by default. This restrictive set is intentional:
@@ -111,8 +111,12 @@ SKILL [OPTIONS...] <path_or_link> [<dest_path>] [FOR <agent_name>]
 ### 4.4 `MCP`
 
 ```
-MCP <name>[:<tag>] FROM <path | uri | url | git | oci_artifact>[:<port>] [FOR <agent_name>]
+MCP <name> FROM <source> [FOR <agent_name>]
 ```
+
+Revised 2026-10-02 (§12.3): `FROM` is `AGENT`'s and `HARNESS`'s, and `MCP` only puts the
+server on disk. What follows about remote servers and ports is superseded; connecting
+to a server is a step still to be designed.
 
 `MCP` declares an MCP server, local or remote, that the agents connect to.
 
@@ -719,7 +723,8 @@ refused by name.
 ## 12. Recommended answers to §7, for the review
 
 Written 2026-10-02, as §11's last paragraph asks: each item is built on the answer here
-until the review changes it. The first four fix the grammar the parser reads.
+until the review changes it. The first four fix the grammar the parser reads; the review decided them on 2026-10-02
+(1, 2 and 4 as recommended, 3 as written there).
 
 1. **Directories carry names, never tags (Q3, Q4, Q18).** An agent unpacks to
    `/agents/<name>`, a harness to `/harness/<name>`, an unscoped MCP server to
@@ -735,11 +740,11 @@ until the review changes it. The first four fix the grammar the parser reads.
    BuildKit's git contexts do (`url#ref:subdir`); an http(s) URL and a path take no
    version, and a `:<tag>` after them is an error. That ends the confusion of a tag
    with a URL's port, `C:\`, or a colon in a path.
-3. **A remote MCP server's port is its URL's (Q6).** A URL without a port means its
-   scheme's default, 443 for `https` and 80 for `http` (RFC 3986 §3.2.3, RFC 9110
-   §4.2), as every client reads it; the spec's 8000 would send `https://host/` to a
-   port the server never meant. `[:<port>]` after a path, git URL or OCI artifact means
-   nothing and is refused.
+3. **`MCP … FROM` is `AGENT`'s and `HARNESS`'s `FROM` (Q6; decided 2026-10-02).** The
+   same sources, fetched the same way: an OCI reference pulled, a git URL cloned, an
+   http(s) URL downloaded, a path copied. `MCP` only puts the server on disk; there is
+   no `[:<port>]` and no remote-server form. How an agent connects to a server, on
+   disk or elsewhere, is a step of its own, **still to be designed**.
 4. **`AGENT` has no `AS` (Q2).** `AGENT <name> FROM <source> [TO <path>]`: the name is
    first and required, as `ARG <name>` and `ENV <name>` name theirs. `AS` would give
    one directive two ways to name the same thing; `AGENT AS main FROM …` is refused,
