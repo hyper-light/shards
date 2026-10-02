@@ -6,6 +6,8 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+#[cfg(all(feature = "alloc-count", unix))]
+mod alloc_count;
 mod build;
 #[cfg(unix)]
 mod containers;
@@ -69,6 +71,14 @@ fn main() -> ExitCode {
         }
         Some(other) => usage_error(&format!("unknown command {other:?}")),
     }
+}
+
+/// Ends a phase of the work measured with the feature `alloc-count`, which prints what
+/// the phase allocated; without it, nothing.
+#[inline]
+pub(crate) fn phase(_name: &str) {
+    #[cfg(all(feature = "alloc-count", unix))]
+    alloc_count::phase(_name);
 }
 
 fn usage_error(message: &str) -> ExitCode {

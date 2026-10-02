@@ -392,6 +392,7 @@ fn excerpt(file: &str, text: &[u8], ranges: &[(usize, usize)]) -> String {
 }
 
 fn run(parsed: &Parsed) -> Result<(), String> {
+    crate::phase("start");
     let context_arg = parsed.args.first().cloned().unwrap_or_default();
     if context_arg == "-" || context_arg.contains("://") || context_arg.starts_with("git@") {
         return Err(format!(
@@ -517,6 +518,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     // file operations and merges run here; RUN is for the steps to come.
     let def = plan.definition();
     let limits = crate::pull::limits()?;
+    crate::phase("plan");
     let mut exec = exec::Exec::new(&store, &limits);
     let mut results: Vec<Vec<exec::Ref>> = Vec::with_capacity(def.ops.len());
     // What other operations read, so a base image is unpacked only when one does.
@@ -625,6 +627,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             }
         };
         results.push(outs);
+        crate::phase("op");
     }
     // The image: the target's layers, and its stage's base image for the exporter.
     let mut layers: Vec<Layer> = Vec::new();
@@ -662,6 +665,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     // the export builds the root filesystem, so the two never hold memory at once.
     drop(results);
     drop(exec);
+    crate::phase("drop");
 
     let v = progress.borrow_mut().start("exporting to image");
     let epoch = plan.epoch.map(Time::from_unix);
@@ -692,6 +696,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     if !store_layers.is_empty() {
         store.rootfs(&store_layers, &limits).map_err(|e| e.to_string())?;
     }
+    crate::phase("rootfs");
     let desc = Descriptor {
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
         digest: manifest_digest.to_string(),
@@ -718,6 +723,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     if parsed.bool("quiet") {
         let _ = writeln!(std::io::stdout(), "{id}");
     }
+    crate::phase("end");
     Ok(())
 }
 

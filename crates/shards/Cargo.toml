@@ -29,6 +29,11 @@ path = "src/bin/shards-vm/main.rs"
 [lints]
 workspace = true
 
+[features]
+# Counts the heap and page faults of each phase of a build, printed to stderr as it ends
+# (src/alloc_count.rs; docs/research/measurements/build-memory). For measurements only.
+alloc-count = []
+
 [dependencies]
 shards-abi = { path = "../abi" }
 shards-build = { path = "../build" }
