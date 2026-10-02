@@ -1,26 +1,40 @@
 //! `run -p` and `-P` as dockerd publishes a container's ports (moby docker-v29.3.1,
 //! daemon/libnetwork/portallocator/osallocator_linux.go; measured against Docker Desktop's
 //! dockerd 29.3.1, 2026-10-02): each binding bound on the host as the run starts, here by
-//! the daemon, which hands the listening sockets to the VM's network process (D31); that
-//! process opens each connection they take to the guest. A binding that cannot be bound
-//! fails the start, the container left created.
+//! the daemon, which hands the sockets to the VM's network process (D31); that process
+//! opens each connection they take to the guest, and gives each peer of a UDP port a flow
+//! of its own. A binding that cannot be bound fails the start, the container left created.
+//! SCTP, which the network process does not carry, is refused before the container is.
 //!
 //! Unlike dockerd: a host port range is tried port by port to its end, where dockerd
 //! gives up after 10 tries; and `-P` binds IPv6 too, as `-p` with no address does, where
 //! Docker Desktop's bound IPv4 alone.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::os::fd::{FromRawFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
 
 use shards_ipc::{Publish, Run};
 
 use crate::containers::PortRecord;
 
-/// What a run publishes, bound: the listening sockets with the guest port each reaches,
-/// and the ports its container lists.
+/// A published port's host socket: where it is bound, and the guest port and IP protocol
+/// it is for.
+#[derive(Debug)]
+pub(super) struct Listener {
+    pub fd: OwnedFd,
+    pub at: SocketAddr,
+    pub guest_port: u16,
+    pub proto: u8,
+}
+
+/// IP protocol numbers (IANA), as `kind::PUBLISH` names them.
+pub(super) const TCP: u8 = 6;
+pub(super) const UDP: u8 = 17;
+
+/// What a run publishes, bound: the host sockets, and the ports its container lists.
 #[derive(Debug, Default)]
 pub(super) struct Bound {
-    pub listeners: Vec<(OwnedFd, u16)>,
+    pub listeners: Vec<Listener>,
     pub ports: Vec<PortRecord>,
 }
 
@@ -31,7 +45,7 @@ pub(super) struct Bound {
 pub(super) struct Held {
     pub container: String,
     pub vm: Option<u32>,
-    pub at: Vec<SocketAddr>,
+    pub at: Vec<(SocketAddr, u8)>,
     pub listeners: Vec<OwnedFd>,
 }
 
@@ -44,12 +58,6 @@ pub(super) enum InUse {
     Allocated,
     /// A run's that has ended, and is free now.
     Freed,
-}
-
-/// Where listening socket `fd` is bound.
-pub(super) fn local_addr(fd: std::os::fd::BorrowedFd<'_>) -> Option<SocketAddr> {
-    let fd = fd.try_clone_to_owned().ok()?;
-    std::net::TcpListener::from(fd).local_addr().ok()
 }
 
 /// A port as an image config's `ExposedPorts` key names it: `80/tcp`, or `80` for TCP.
@@ -100,8 +108,17 @@ pub(super) fn wanted(run: &Run, image_exposed: &[String]) -> (Vec<Publish>, Vec<
 pub(super) fn unsupported(bindings: &[Publish]) -> Option<String> {
     bindings
         .iter()
-        .find(|b| b.proto != "tcp")
+        .find(|b| proto(&b.proto).is_none())
         .map(|b| format!("\"-p {}/{}\" is not supported by shards yet", b.port, b.proto))
+}
+
+/// The IP protocol number of a protocol the network process carries.
+fn proto(name: &str) -> Option<u8> {
+    match name {
+        "tcp" => Some(TCP),
+        "udp" => Some(UDP),
+        _ => None,
+    }
 }
 
 /// Binds `bindings`, and lists them with the ports exposed `alone`. Whose an address in
@@ -109,10 +126,11 @@ pub(super) fn unsupported(bindings: &[Publish]) -> Option<String> {
 pub(super) fn bind(
     bindings: &[Publish],
     alone: &[(u16, String)],
-    in_use: impl Fn(SocketAddr) -> InUse,
+    in_use: impl Fn(SocketAddr, u8) -> InUse,
 ) -> Result<Bound, String> {
     let mut bound = Bound::default();
     for b in bindings {
+        let p = proto(&b.proto).ok_or_else(|| format!("protocol {} not supported", b.proto))?;
         // No address is every one: IPv4's and IPv6's, on one port.
         let ips: Vec<IpAddr> = if b.host_ip.is_empty() {
             vec![
@@ -126,9 +144,14 @@ pub(super) fn bind(
                     .map_err(|_| format!("invalid host address {}", b.host_ip))?,
             ]
         };
-        let (listeners, port) = bind_one(&ips, &b.host_port, &in_use)?;
+        let (listeners, port) = bind_one(&ips, &b.host_port, p, &|at| in_use(at, p))?;
         for (ip, fd) in ips.iter().zip(listeners) {
-            bound.listeners.push((fd, b.port));
+            bound.listeners.push(Listener {
+                fd,
+                at: SocketAddr::new(*ip, port),
+                guest_port: b.port,
+                proto: p,
+            });
             bound.ports.push(PortRecord {
                 ip: Some(*ip),
                 private: b.port,
@@ -148,11 +171,12 @@ pub(super) fn bind(
     Ok(bound)
 }
 
-/// Listening sockets at each of `ips` on one host port: `host_port`'s, the first free
-/// one of its range, or one the kernel picks for the first address.
+/// Sockets of protocol `proto` at each of `ips` on one host port: `host_port`'s, the
+/// first free one of its range, or one the kernel picks for the first address.
 fn bind_one(
     ips: &[IpAddr],
     host_port: &str,
+    proto: u8,
     in_use: &dyn Fn(SocketAddr) -> InUse,
 ) -> Result<(Vec<OwnedFd>, u16), String> {
     let range = match host_port.split_once('-') {
@@ -165,7 +189,7 @@ fn bind_one(
     };
     let mut last_err = String::new();
     for port in range.0..=range.1 {
-        match bind_all(ips, port, in_use, &listen) {
+        match bind_all(ips, port, proto, in_use, &|at| listen(at, proto)) {
             Ok(bound) => return Ok(bound),
             Err(e) => last_err = e,
         }
@@ -184,10 +208,12 @@ fn parse_port(s: &str, whole: &str) -> Result<u16, String> {
 fn bind_all(
     ips: &[IpAddr],
     port: u16,
+    proto: u8,
     in_use: &dyn Fn(SocketAddr) -> InUse,
     listen: &dyn Fn(SocketAddr) -> std::io::Result<(OwnedFd, u16)>,
 ) -> Result<(Vec<OwnedFd>, u16), String> {
     const TRIES: u32 = 10;
+    let name = if proto == UDP { "udp" } else { "tcp" };
     let mut tries = 1;
     let mut freed = false;
     loop {
@@ -224,7 +250,7 @@ fn bind_all(
                     InUse::Freed => freed = true,
                     InUse::Host => {
                         return Err(format!(
-                            "failed to bind host port {}/tcp: {}",
+                            "failed to bind host port {}/{name}: {}",
                             SocketAddr::new(*ip, chosen),
                             go_error(&e)
                         ));
@@ -233,7 +259,7 @@ fn bind_all(
             }
             Some((ip, e)) => {
                 return Err(format!(
-                    "failed to bind host port {}/tcp: {}",
+                    "failed to bind host port {}/{name}: {}",
                     SocketAddr::new(*ip, chosen),
                     go_error(&e)
                 ));
@@ -261,17 +287,23 @@ fn go_error(e: &std::io::Error) -> String {
         .map_or_else(String::new, |c| c.to_lowercase().chain(chars).collect())
 }
 
-/// A TCP socket listening at `at`, and the port it has: close-on-exec, nonblocking for
-/// the network process, address reuse as Go's net.Listen sets it, and IPv6 alone on an
-/// IPv6 address, so that IPv4's own socket at the same port is not refused.
-fn listen(at: SocketAddr) -> std::io::Result<(OwnedFd, u16)> {
+/// A socket of `proto` at `at`, and the port it has, as bindTCPOrUDP makes one:
+/// close-on-exec, nonblocking for the network process, IPv6 alone on an IPv6 address, so
+/// that IPv4's own socket at the same port is not refused; for TCP, address reuse and
+/// listening; for UDP, each datagram's destination said (`IP_PKTINFO`).
+fn listen(at: SocketAddr, proto: u8) -> std::io::Result<(OwnedFd, u16)> {
     let family = if at.is_ipv6() {
         libc::AF_INET6
     } else {
         libc::AF_INET
     };
+    let kind = if proto == UDP {
+        libc::SOCK_DGRAM
+    } else {
+        libc::SOCK_STREAM
+    };
     // SAFETY: socket(2) with constant arguments.
-    let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
+    let fd = unsafe { libc::socket(family, kind, 0) };
     if fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -285,13 +317,15 @@ fn listen(at: SocketAddr) -> std::io::Result<(OwnedFd, u16)> {
         libc::fcntl(raw, libc::F_SETFD, libc::FD_CLOEXEC);
         let flags = libc::fcntl(raw, libc::F_GETFL);
         libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK);
-        libc::setsockopt(
-            raw,
-            libc::SOL_SOCKET,
-            libc::SO_REUSEADDR,
-            (&raw const on).cast(),
-            len,
-        );
+        if proto == TCP {
+            libc::setsockopt(
+                raw,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEADDR,
+                (&raw const on).cast(),
+                len,
+            );
+        }
         if at.is_ipv6() {
             libc::setsockopt(
                 raw,
@@ -302,10 +336,18 @@ fn listen(at: SocketAddr) -> std::io::Result<(OwnedFd, u16)> {
             );
         }
     }
-    let (storage, slen) = sockaddr(at);
+    if proto == UDP {
+        shards_net::pktinfo::enable(fd.as_fd(), at.is_ipv6())?;
+    }
+    let (storage, slen) = shards_net::pktinfo::sockaddr_of(at);
     // SAFETY: a sockaddr of its own length.
     if unsafe { libc::bind(raw, (&raw const storage).cast(), slen) } != 0 {
         return Err(std::io::Error::last_os_error());
+    }
+    if proto == UDP {
+        let sock = std::net::UdpSocket::from(fd);
+        let port = sock.local_addr()?.port();
+        return Ok((OwnedFd::from(sock), port));
     }
     // SAFETY: listen(2) on our bound socket.
     if unsafe { libc::listen(raw, libc::SOMAXCONN) } != 0 {
@@ -314,43 +356,6 @@ fn listen(at: SocketAddr) -> std::io::Result<(OwnedFd, u16)> {
     let listener = std::net::TcpListener::from(fd);
     let port = listener.local_addr()?.port();
     Ok((OwnedFd::from(listener), port))
-}
-
-/// `at` as a sockaddr_storage and its length.
-fn sockaddr(at: SocketAddr) -> (libc::sockaddr_storage, libc::socklen_t) {
-    // SAFETY: an all-zero sockaddr_storage is valid.
-    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
-    let len = match at {
-        SocketAddr::V4(v4) => {
-            // SAFETY: sockaddr_storage holds a sockaddr_in.
-            let sin = unsafe { &mut *(&raw mut storage).cast::<libc::sockaddr_in>() };
-            #[cfg(target_vendor = "apple")]
-            {
-                sin.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
-            }
-            sin.sin_family = libc::AF_INET as libc::sa_family_t;
-            sin.sin_port = v4.port().to_be();
-            sin.sin_addr = libc::in_addr {
-                s_addr: u32::from_ne_bytes(v4.ip().octets()),
-            };
-            std::mem::size_of::<libc::sockaddr_in>()
-        }
-        SocketAddr::V6(v6) => {
-            // SAFETY: sockaddr_storage holds a sockaddr_in6.
-            let sin6 = unsafe { &mut *(&raw mut storage).cast::<libc::sockaddr_in6>() };
-            #[cfg(target_vendor = "apple")]
-            {
-                sin6.sin6_len = std::mem::size_of::<libc::sockaddr_in6>() as u8;
-            }
-            sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
-            sin6.sin6_port = v6.port().to_be();
-            sin6.sin6_addr = libc::in6_addr {
-                s6_addr: v6.ip().octets(),
-            };
-            std::mem::size_of::<libc::sockaddr_in6>()
-        }
-    };
-    (storage, len as libc::socklen_t)
 }
 
 #[cfg(test)]
@@ -401,11 +406,11 @@ mod tests {
         let loopback = [IpAddr::V4(Ipv4Addr::LOCALHOST)];
         let host = |_| InUse::Host;
         assert_eq!(
-            bind_one(&loopback, &port.to_string(), &host).unwrap_err(),
+            bind_one(&loopback, &port.to_string(), TCP, &host).unwrap_err(),
             format!("failed to bind host port 127.0.0.1:{port}/tcp: address already in use")
         );
         assert_eq!(
-            bind_one(&loopback, &port.to_string(), &|_| InUse::Allocated).unwrap_err(),
+            bind_one(&loopback, &port.to_string(), TCP, &|_| InUse::Allocated).unwrap_err(),
             format!("Bind for 127.0.0.1:{port} failed: port is already allocated")
         );
         // An address let go of meanwhile is bound.
@@ -415,19 +420,28 @@ mod tests {
             holder.borrow_mut().take();
             InUse::Freed
         };
-        assert_eq!(bind_one(&loopback, &port.to_string(), &release).unwrap().1, port);
+        assert_eq!(
+            bind_one(&loopback, &port.to_string(), TCP, &release).unwrap().1,
+            port
+        );
         let both = [IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V6(Ipv6Addr::LOCALHOST)];
-        let (fds, picked) = bind_one(&both, "", &host).unwrap();
+        let (fds, picked) = bind_one(&both, "", TCP, &host).unwrap();
         assert_eq!(fds.len(), 2);
         assert_ne!(picked, 0);
         let v6 = std::net::TcpListener::bind("[::1]:0").unwrap();
         let v6_port = v6.local_addr().unwrap().port();
         assert_eq!(
-            bind_one(&both, &v6_port.to_string(), &host).unwrap_err(),
+            bind_one(&both, &v6_port.to_string(), TCP, &host).unwrap_err(),
             format!("failed to bind host port [::1]:{v6_port}/tcp: address already in use")
         );
         let blocker = std::net::TcpListener::bind((loopback[0], port)).unwrap();
-        let (_, next) = bind_one(&loopback, &format!("{port}-{}", port.saturating_add(50)), &host).unwrap();
+        let (_, next) = bind_one(
+            &loopback,
+            &format!("{port}-{}", port.saturating_add(50)),
+            TCP,
+            &host,
+        )
+        .unwrap();
         assert!(next > port && next <= port.saturating_add(50), "{next}");
         drop(blocker);
     }
@@ -444,38 +458,76 @@ mod tests {
                     refusals.set(refusals.get() + 1);
                     return Err(std::io::ErrorKind::AddrInUse.into());
                 }
-                listen(at)
+                listen(at, TCP)
             }
         };
-        let (fds, port) = bind_all(&both, 0, &|_| InUse::Host, &refusing(9)).unwrap();
+        let (fds, port) = bind_all(&both, 0, TCP, &|_| InUse::Host, &refusing(9)).unwrap();
         assert_eq!((fds.len(), refusals.get()), (2, 9));
         assert_ne!(port, 0);
         refusals.set(0);
-        assert!(bind_all(&both, 0, &|_| InUse::Host, &refusing(10)).is_err());
+        assert!(bind_all(&both, 0, TCP, &|_| InUse::Host, &refusing(10)).is_err());
         refusals.set(0);
-        let asked = listen(SocketAddr::new(both[0], 0)).unwrap().1;
-        assert!(bind_all(&both, asked, &|_| InUse::Host, &refusing(1)).is_err());
+        let asked = listen(SocketAddr::new(both[0], 0), TCP).unwrap().1;
+        assert!(bind_all(&both, asked, TCP, &|_| InUse::Host, &refusing(1)).is_err());
         assert_eq!(refusals.get(), 1);
     }
 
     /// An IPv6 listener takes IPv6 alone: IPv4's connections are not its.
     #[test]
     fn ipv6_listeners_take_no_ipv4() {
-        let (_v6, port) = listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)).unwrap();
+        let (_v6, port) = listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0), TCP).unwrap();
         assert!(std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err());
         assert!(std::net::TcpStream::connect((Ipv6Addr::LOCALHOST, port)).is_ok());
     }
 
     #[test]
-    fn non_tcp_ports_are_refused_until_shards_carries_them() {
-        let udp = Publish {
+    fn sctp_ports_are_refused_until_shards_carries_them() {
+        let port = |proto: &str| Publish {
             port: 53,
-            proto: "udp".into(),
+            proto: proto.into(),
             ..Publish::default()
         };
+        assert_eq!(unsupported(&[port("tcp"), port("udp")]), None);
         assert_eq!(
-            unsupported(&[udp]).unwrap(),
-            "\"-p 53/udp\" is not supported by shards yet"
+            unsupported(&[port("udp"), port("sctp")]).unwrap(),
+            "\"-p 53/sctp\" is not supported by shards yet"
         );
+    }
+
+    /// A TCP port a server closed connections on first, its side in TIME_WAIT, binds
+    /// again at once, as Go's net.Listen's does with its address reuse: a run after a
+    /// run publishes the same port.
+    #[test]
+    fn tcp_ports_bind_again_after_their_connections_close() {
+        use std::io::Read as _;
+        let at = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let (fd, port) = listen(at, TCP).unwrap();
+        let listener = std::net::TcpListener::from(fd);
+        listener.set_nonblocking(false).unwrap();
+        let mut client = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        let (served, _) = listener.accept().unwrap();
+        // The server's close comes first, so its side is the one left in TIME_WAIT.
+        drop(served);
+        let mut rest = Vec::new();
+        client.read_to_end(&mut rest).unwrap();
+        drop(client);
+        drop(listener);
+        assert!(listen(SocketAddr::new(at.ip(), port), TCP).is_ok());
+    }
+
+    /// A UDP port is bound as dockerd binds one: a datagram socket, in use at the same
+    /// port refused in bindTCPOrUDP's words, and apart from TCP's at that port.
+    #[test]
+    fn udp_ports_bind_as_dockerd_binds_them() {
+        let loopback = [IpAddr::V4(Ipv4Addr::LOCALHOST)];
+        let (fds, port) = bind_one(&loopback, "", UDP, &|_| InUse::Host).unwrap();
+        let sock = std::net::UdpSocket::from(fds.into_iter().next().unwrap());
+        assert_eq!(sock.local_addr().unwrap(), SocketAddr::new(loopback[0], port));
+        assert_eq!(
+            bind_one(&loopback, &port.to_string(), UDP, &|_| InUse::Host).unwrap_err(),
+            format!("failed to bind host port 127.0.0.1:{port}/udp: address already in use")
+        );
+        // TCP's port of the same number is another.
+        assert!(bind_one(&loopback, &port.to_string(), TCP, &|_| InUse::Host).is_ok());
     }
 }

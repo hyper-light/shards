@@ -215,9 +215,9 @@ struct Keep<'a> {
     options: crate::spec::Options,
     /// Its health check, and the shell a `CMD-SHELL` one runs in.
     health: Option<(shards_ipc::Health, Vec<String>)>,
-    /// Its published ports' listening sockets, each with the guest port it reaches: sent
-    /// to its VM's network process, and held until that process has gone (M24).
-    published: Vec<(OwnedFd, u16)>,
+    /// Its published ports' host sockets: sent to its VM's network process, and held
+    /// until that process has them (M24).
+    published: Vec<publish::Listener>,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -1150,7 +1150,7 @@ impl<D: Disk> Daemon<D> {
                     self.make_spare();
                     return None;
                 }
-                publish::bind(&bindings, &alone, |at| self.in_use(at))
+                publish::bind(&bindings, &alone, |at, proto| self.in_use(at, proto))
             }
             _ => Ok(publish::Bound::default()),
         };
@@ -1265,8 +1265,15 @@ impl<D: Disk> Daemon<D> {
             if let Some(net) = &ready.net
                 && !keep.published.is_empty()
             {
-                let guest_ports: Vec<u8> = keep.published.iter().flat_map(|(_, p)| p.to_be_bytes()).collect();
-                let fds: Vec<BorrowedFd<'_>> = keep.published.iter().map(|(fd, _)| fd.as_fd()).collect();
+                let guest_ports: Vec<u8> = keep
+                    .published
+                    .iter()
+                    .flat_map(|l| {
+                        let [hi, lo] = l.guest_port.to_be_bytes();
+                        [hi, lo, l.proto]
+                    })
+                    .collect();
+                let fds: Vec<BorrowedFd<'_>> = keep.published.iter().map(|l| l.fd.as_fd()).collect();
                 let _ = net.set_read_timeout(Some(PUBLISH_PATIENCE));
                 taken = shards_ipc::send(net, kind::PUBLISH, &guest_ports, &fds)
                     .and_then(|()| shards_ipc::recv(net))
@@ -1329,11 +1336,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Holds what container `id` publishes at `listeners`' addresses.
-    fn hold_ports(&self, id: &str, listeners: &[(OwnedFd, u16)]) {
-        let at = listeners
-            .iter()
-            .filter_map(|(fd, _)| publish::local_addr(fd.as_fd()))
-            .collect();
+    fn hold_ports(&self, id: &str, listeners: &[publish::Listener]) {
+        let at = listeners.iter().map(|l| (l.at, l.proto)).collect();
         lock(&self.ports_held).push(publish::Held {
             container: id.to_string(),
             vm: None,
@@ -1357,14 +1361,14 @@ impl<D: Disk> Daemon<D> {
     /// this daemon, as dockerd's allocator knows its own; or a run's that ended, waited
     /// for until its network process has gone (`netproc::reap`'s second, and as long
     /// again).
-    fn in_use(&self, at: std::net::SocketAddr) -> publish::InUse {
+    fn in_use(&self, at: std::net::SocketAddr, proto: u8) -> publish::InUse {
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut held = lock(&self.ports_held);
         let mut waited = false;
         loop {
             let Some(holder) = held
                 .iter()
-                .find(|h| h.at.contains(&at))
+                .find(|h| h.at.contains(&(at, proto)))
                 .map(|h| h.container.clone())
             else {
                 return if waited {
@@ -1789,7 +1793,7 @@ impl<D: Disk> Daemon<D> {
         // with the daemon's copies, if that process did not say it had them.
         if let Some(h) = lock(&self.ports_held).iter_mut().find(|h| h.container == id) {
             h.vm = Some(ready.vm.id());
-            h.listeners = published.into_iter().map(|(fd, _)| fd).collect();
+            h.listeners = published.into_iter().map(|l| l.fd).collect();
         }
         // Runs last as long as their commands.
         let _ = ready.socket.set_read_timeout(None);

@@ -62,6 +62,7 @@ pub fn main() -> ! {
         "fs" => fs(args.get(1..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
+        "udp-echo" => udp_echo(arg(1), arg(2).parse().unwrap_or(1)),
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -323,6 +324,32 @@ fn serve(port: &str, connections: usize) -> i32 {
         });
         if let Err(e) = served {
             let _ = writeln!(io::stdout(), "serve error {e}");
+            return 1;
+        }
+    }
+    0
+}
+
+/// Binds UDP `port` at every address, says `ready`, then answers `datagrams` datagrams
+/// in turn, each with `from IP:PORT ` (its sender) and what it held.
+fn udp_echo(port: &str, datagrams: usize) -> i32 {
+    let sock = match std::net::UdpSocket::bind(format!("0.0.0.0:{port}")) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "udp error {e}");
+            return 1;
+        }
+    };
+    let _ = writeln!(io::stdout(), "ready");
+    let mut buf = [0u8; 2048];
+    for _ in 0..datagrams {
+        let answered = sock.recv_from(&mut buf).and_then(|(n, peer)| {
+            let mut answer = format!("from {peer} ").into_bytes();
+            answer.extend_from_slice(buf.get(..n).unwrap_or_default());
+            sock.send_to(&answer, peer)
+        });
+        if let Err(e) = answered {
+            let _ = writeln!(io::stdout(), "udp error {e}");
             return 1;
         }
     }

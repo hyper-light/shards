@@ -7,6 +7,7 @@
 
 #![cfg(unix)]
 
+pub mod pktinfo;
 pub mod tcp;
 pub mod wire;
 
@@ -125,6 +126,33 @@ impl Config {
     }
 }
 
+/// A published port's host socket: listening for TCP, or bound for UDP's datagrams.
+enum Listener {
+    Tcp(std::net::TcpListener),
+    Udp(UdpSocket),
+}
+
+impl Listener {
+    fn as_raw_fd(&self) -> i32 {
+        match self {
+            Listener::Tcp(l) => l.as_raw_fd(),
+            Listener::Udp(u) => u.as_raw_fd(),
+        }
+    }
+}
+
+/// A host peer's datagrams to a published UDP port: the guest has them from a gateway
+/// port of the peer's own, and its answers to that port go back to the peer, from the
+/// host address it asked.
+struct Inbound {
+    /// Its port, in `published`.
+    published: usize,
+    peer: std::net::SocketAddr,
+    asked: Option<std::net::IpAddr>,
+    guest_port: u16,
+    last: Instant,
+}
+
 /// A UDP flow's host socket and when it was last used.
 struct UdpFlow {
     sock: UdpSocket,
@@ -142,8 +170,12 @@ struct Stack<'r> {
     udp: HashMap<(u16, Ipv4Addr, u16), UdpFlow>,
     buf: Vec<u8>,
     isn: u32,
-    /// Published ports' listening sockets, each with the guest port it reaches.
-    published: Vec<(std::net::TcpListener, u16)>,
+    /// Published ports' host sockets, each with the guest port it reaches.
+    published: Vec<(Listener, u16)>,
+    /// Published UDP ports' flows, by their gateway ports, and those ports by their
+    /// published port and peer.
+    inbound: HashMap<u16, Inbound>,
+    inbound_ports: HashMap<(usize, std::net::SocketAddr), u16>,
     /// The gateway port the next published connection tries first.
     next_port: u16,
 }
@@ -257,6 +289,8 @@ pub fn serve(
         buf: vec![0u8; shards_netring::MAX_FRAME],
         isn: seed()?,
         published: Vec::new(),
+        inbound: HashMap::new(),
+        inbound_ports: HashMap::new(),
         next_port: *EPHEMERAL.start(),
     };
     let mut frame = vec![0u8; shards_netring::MAX_FRAME];
@@ -334,6 +368,7 @@ pub fn serve(
             .values()
             .filter_map(Conn::deadline)
             .chain(stack.udp.values().map(|f| f.last + UDP_IDLE))
+            .chain(stack.inbound.values().map(|f| f.last + UDP_IDLE))
             .min();
         let busy =
             from_guest.ready().map_err(|e| io::Error::other(e.to_string()))? || !stack.backlog.is_empty();
@@ -386,6 +421,7 @@ pub fn serve(
                     shards_ipc::send(c, shards_ipc::kind::PUBLISH, &[], &[]).is_ok()
                 }
                 Ok(Some(m)) if m.kind == shards_ipc::kind::UNPUBLISH => {
+                    // Flows left answer nobody: their sockets are gone.
                     stack.published.clear();
                     shards_ipc::send(c, shards_ipc::kind::UNPUBLISH, &[], &[]).is_ok()
                 }
@@ -398,7 +434,11 @@ pub fn serve(
             .filter(|i| fds.get(listeners_at + i).is_some_and(|p| p.revents != 0))
             .collect();
         for i in accepting {
-            stack.accept(i);
+            match stack.published.get(i) {
+                Some((Listener::Tcp(_), _)) => stack.accept(i),
+                Some((Listener::Udp(_), _)) => stack.receive(i),
+                None => {}
+            }
         }
         for (i, k) in udp_keys.iter().enumerate() {
             if fds.get(udp_base + i).is_some_and(|p| p.revents != 0) {
@@ -415,6 +455,22 @@ fn drain(fd: i32) {
     while unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
 }
 
+/// A gateway port no published UDP flow uses, from the ephemeral range, in turn from
+/// `next`.
+fn free_udp_port(next: &mut u16, inbound: &HashMap<u16, Inbound>) -> Option<u16> {
+    for _ in EPHEMERAL {
+        let port = *next;
+        *next = port
+            .checked_add(1)
+            .filter(|p| EPHEMERAL.contains(p))
+            .unwrap_or(*EPHEMERAL.start());
+        if !inbound.contains_key(&port) {
+            return Some(port);
+        }
+    }
+    None
+}
+
 /// A starting point for initial sequence numbers no guest can predict from the last.
 fn seed() -> io::Result<u32> {
     let mut b = [0u8; 4];
@@ -423,14 +479,72 @@ fn seed() -> io::Result<u32> {
 }
 
 impl<'r> Stack<'r> {
-    /// Takes published ports' listening sockets, each for the guest port its payload's
-    /// next big-endian u16 names; what does not pair up is closed.
+    /// Takes published ports' host sockets, each for the guest port and protocol its
+    /// payload's next three bytes name (a big-endian u16, then the IP protocol number);
+    /// what does not pair up, or names another protocol, is closed.
     fn publish(&mut self, ports: &[u8], fds: Vec<OwnedFd>) {
-        for (fd, port) in fds.into_iter().zip(ports.as_chunks::<2>().0) {
-            let listener = std::net::TcpListener::from(fd);
-            if listener.set_nonblocking(true).is_ok() {
-                self.published.push((listener, u16::from_be_bytes(*port)));
+        for (fd, &[hi, lo, proto]) in fds.into_iter().zip(ports.as_chunks::<3>().0) {
+            let listener = match proto {
+                wire::PROTO_TCP => Listener::Tcp(std::net::TcpListener::from(fd)),
+                wire::PROTO_UDP => Listener::Udp(UdpSocket::from(fd)),
+                _ => continue,
+            };
+            let nonblocking = match &listener {
+                Listener::Tcp(l) => l.set_nonblocking(true),
+                Listener::Udp(u) => u.set_nonblocking(true),
+            };
+            if nonblocking.is_ok() {
+                self.published.push((listener, u16::from_be_bytes([hi, lo])));
             }
+        }
+    }
+
+    /// Takes what published UDP port `i` holds: each datagram to the guest's port, from
+    /// its peer's gateway port.
+    fn receive(&mut self, i: usize) {
+        let Some((Listener::Udp(sock), guest_port)) = self.published.get(i) else {
+            return;
+        };
+        let guest_port = *guest_port;
+        let mut out = Vec::new();
+        while let Ok((n, peer, asked)) = pktinfo::recv(sock, &mut self.buf) {
+            let port = match self.inbound_ports.get(&(i, peer)) {
+                Some(&port) => port,
+                None => {
+                    // Every port in use: dropped, as a full table drops.
+                    let Some(port) = free_udp_port(&mut self.next_port, &self.inbound) else {
+                        continue;
+                    };
+                    self.inbound_ports.insert((i, peer), port);
+                    port
+                }
+            };
+            self.inbound.insert(
+                port,
+                Inbound {
+                    published: i,
+                    peer,
+                    asked,
+                    guest_port,
+                    last: Instant::now(),
+                },
+            );
+            self.frames.udp(
+                &mut out,
+                (self.cfg.gateway_ip, port),
+                (self.cfg.guest_ip, guest_port),
+                self.buf.get(..n).unwrap_or_default(),
+            );
+            let (frames, guest_ip) = (&self.frames, self.cfg.guest_ip);
+            let mut o = Out {
+                frames,
+                to_guest: &mut self.to_guest,
+                backlog: &mut self.backlog,
+                guest_ip,
+                scratch: Vec::new(),
+                tcp_blocked: false,
+            };
+            o.send(&out);
         }
     }
 
@@ -438,7 +552,7 @@ impl<'r> Stack<'r> {
     /// from the gateway, as a userland proxy's connection comes from it.
     fn accept(&mut self, i: usize) {
         loop {
-            let Some((listener, guest_port)) = self.published.get(i) else {
+            let Some((Listener::Tcp(listener), guest_port)) = self.published.get(i) else {
                 return;
             };
             let guest_port = *guest_port;
@@ -556,6 +670,17 @@ impl<'r> Stack<'r> {
 
     fn on_guest_udp(&mut self, ip: &wire::Ip<'_>) {
         let Some(u) = wire::udp(ip.payload) else { return };
+        // An answer to a published port's peer, through the gateway port it was given.
+        if ip.dst == self.cfg.gateway_ip {
+            if let Some(f) = self.inbound.get_mut(&u.dst_port)
+                && f.guest_port == u.src_port
+                && let Some((Listener::Udp(sock), _)) = self.published.get(f.published)
+            {
+                let _ = pktinfo::send(sock, u.payload, f.peer, f.asked);
+                f.last = Instant::now();
+            }
+            return;
+        }
         if !self.cfg.allows(ip.dst) {
             return;
         }
@@ -711,12 +836,41 @@ impl<'r> Stack<'r> {
         }
         self.udp
             .retain(|_, f| now.saturating_duration_since(f.last) < UDP_IDLE);
+        let before = self.inbound.len();
+        self.inbound
+            .retain(|_, f| now.saturating_duration_since(f.last) < UDP_IDLE);
+        if self.inbound.len() != before {
+            let inbound = &self.inbound;
+            self.inbound_ports.retain(|_, port| inbound.contains_key(port));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A UDP flow's gateway port is one no other flow has, in turn, and none once all are.
+    #[test]
+    fn udp_flows_take_free_gateway_ports_in_turn() {
+        let flow = || Inbound {
+            published: 0,
+            peer: "127.0.0.1:1".parse().unwrap(),
+            asked: None,
+            guest_port: 53,
+            last: Instant::now(),
+        };
+        let start = *EPHEMERAL.start();
+        let mut inbound = HashMap::from([(start, flow())]);
+        let mut next = start;
+        assert_eq!(free_udp_port(&mut next, &inbound), Some(start + 1));
+        assert_eq!(free_udp_port(&mut next, &inbound), Some(start + 2));
+        let mut last = u16::MAX;
+        assert_eq!(free_udp_port(&mut last, &inbound), Some(u16::MAX));
+        assert_eq!(last, start, "past the range's end, its start");
+        inbound.extend(EPHEMERAL.map(|p| (p, flow())));
+        assert_eq!(free_udp_port(&mut next, &inbound), None);
+    }
 
     /// Each guest's MAC is its own, and one a host's stack takes as a unicast address of
     /// a local, not a vendor's, assignment.

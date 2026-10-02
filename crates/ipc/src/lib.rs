@@ -134,9 +134,10 @@ pub mod kind {
     /// it the client's connection, which the daemon held until now: XNU collects a socket
     /// in flight that no process holds (M24).
     pub const EXEC_TAKEN: u8 = 25;
-    /// Daemon → a VM's network process: listening sockets of published ports (`-p`), each
-    /// for the guest port its payload's next big-endian u16 names, for TCP. Connections
-    /// they take become the guest's. Said back, empty, once they are taken.
+    /// Daemon → a VM's network process: host sockets of published ports (`-p`), each for
+    /// the guest port and protocol its payload's next three bytes name: a big-endian u16,
+    /// then the IP protocol number (6 TCP, 17 UDP). Connections and datagrams they take
+    /// become the guest's. Said back, empty, once they are taken.
     pub const PUBLISH: u8 = 26;
     /// A VM → its network process, as its run ends: close every published port's
     /// listening socket; and back, once they are closed, so that the run's end is told

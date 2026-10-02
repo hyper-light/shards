@@ -1484,3 +1484,90 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
     assert!(began.elapsed() < Duration::from_secs(2), "{:?}", began.elapsed());
     drop(held);
 }
+
+/// `-p PORT/udp`: datagrams reach the guest as dockerd's proxy carries them: each host
+/// peer from a gateway port of its own, its answers back to that peer from the address
+/// it asked; `port` and `ps` list the port as UDP.
+#[test]
+fn published_udp_ports_carry_datagrams_both_ways() {
+    use std::net::UdpSocket;
+    let Some((home, image)) = home("containers-publish-udp") else {
+        return;
+    };
+    let mut run = start(
+        &home,
+        &image,
+        &["--name", "dns", "-p", "5353/udp"],
+        &["udp-echo", "5353", "5"],
+    );
+    let listed = shards_in(&home, &["port", "dns", "5353/udp"]);
+    let n: u16 = listed
+        .stdout
+        .lines()
+        .next()
+        .and_then(|l| l.rsplit(':').next())
+        .and_then(|p| p.parse().ok())
+        .unwrap();
+    assert_eq!(listed.stdout, format!("0.0.0.0:{n}\n[::]:{n}\n"), "{listed}");
+    let ps = shards_in(&home, &["ps"]);
+    assert!(
+        ps.stdout
+            .contains(&format!("0.0.0.0:{n}->5353/udp, [::]:{n}->5353/udp")),
+        "{ps}"
+    );
+    // What the guest answers `client`'s `payload` with, and where the answer came from.
+    let ask = |client: &UdpSocket, to: std::net::SocketAddr, payload: &[u8]| {
+        client.set_read_timeout(Some(TIMEOUT)).unwrap();
+        client.send_to(payload, to).unwrap();
+        let mut buf = [0u8; 2048];
+        let (len, from) = client.recv_from(&mut buf).unwrap();
+        (String::from_utf8_lossy(&buf[..len]).into_owned(), from)
+    };
+    let v4 = std::net::SocketAddr::from(([127, 0, 0, 1], n));
+    let (a, b) = (
+        UdpSocket::bind("127.0.0.1:0").unwrap(),
+        UdpSocket::bind("127.0.0.1:0").unwrap(),
+    );
+    let (first, from) = ask(&a, v4, b"one");
+    assert_eq!(from, v4);
+    let (again, _) = ask(&a, v4, b"one");
+    let (second, _) = ask(&b, v4, b"two");
+    // Each peer comes from the gateway, on a port of its own.
+    let gateway_port = |answer: &str, payload: &str| -> u16 {
+        let rest = answer
+            .strip_prefix("from 172.17.0.1:")
+            .unwrap_or_else(|| panic!("{answer}"));
+        let (port, said) = rest.split_once(' ').unwrap();
+        assert_eq!(said, payload);
+        port.parse().unwrap()
+    };
+    // Each peer comes from the gateway, on a port of its own, the same for each of its
+    // datagrams.
+    assert_eq!(gateway_port(&first, "one"), gateway_port(&again, "one"));
+    assert_ne!(gateway_port(&first, "one"), gateway_port(&second, "two"));
+    // Asked at the host's own address from its loopback, the answer comes from the
+    // address asked, not the one the route back would pick.
+    let host = UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+        .and_then(|s| s.local_addr());
+    match host {
+        Ok(host) => {
+            let at = std::net::SocketAddr::new(host.ip(), n);
+            let (answer, from) = ask(&a, at, b"one");
+            assert_eq!(from, at);
+            gateway_port(&answer, "one");
+        }
+        Err(_) => {
+            eprintln!("SKIP: this host has no address but its loopback");
+            ask(&a, v4, b"one");
+        }
+    }
+    let v6: std::net::SocketAddr = format!("[::1]:{n}").parse().unwrap();
+    let c = UdpSocket::bind("[::1]:0").unwrap();
+    let (third, from) = ask(&c, v6, b"three");
+    assert_eq!(from, v6);
+    gateway_port(&third, "three");
+    assert_eq!(exit(&mut run), Some(0));
+    // Ended, its port is free at once.
+    drop(UdpSocket::bind(("0.0.0.0", n)).unwrap());
+}

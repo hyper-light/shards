@@ -1510,8 +1510,13 @@ stack inside the VMM, is superseded by it.
     and hands the listening sockets to the VM's network process over a control socket,
     before the VM has the run. That process accepts each connection and opens it to the
     guest from the gateway, as dockerd's userland proxy's comes, apart from the policy,
-    which governs only what the guest opens. A taken port fails the start in dockerd's
-    words, its allocator's for a container's port, bindTCPOrUDP's for another program's.
+    which governs only what the guest opens. A UDP port gives each host peer a flow of
+    its own, from a gateway port of its own, and answers it from the host address it
+    asked (`IP_PKTINFO`, as dockerd's proxy keeps it; ipi_spec_dst on send, Linux
+    ip_cmsg_send and XNU udp_check_pktinfo); its flows end after the stack's UDP idle
+    time. SCTP is refused: the stack does not carry it. A taken port fails the start in
+    dockerd's words, its allocator's for a container's port, bindTCPOrUDP's for another
+    program's.
   - *A run's ports are free when its end is told.* The network process says it has the
     sockets, and the daemon's copies close (M24 holds them until then); as the run ends,
     the VM has the network process close them, and waits for it to say so, before it tells
