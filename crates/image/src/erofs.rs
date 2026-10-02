@@ -67,7 +67,8 @@ type Entry<'a> = (&'a [u8], NodeId);
 /// Zeros to pad with: no pad is longer than a block.
 static ZEROS: [u8; BLOCK as usize] = [0; BLOCK as usize];
 
-/// Ownership, permissions, times and extended attributes of a node.
+/// Ownership, permissions, times and extended attributes of a node: 32 bytes, as a
+/// tree holds one for each of its files (platform-measurements.md M78).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Meta {
     /// Permission and set-id bits (0o7777); the file type comes from the node's kind.
@@ -76,12 +77,73 @@ pub struct Meta {
     pub gid: u32,
     pub mtime: i64,
     pub mtime_nsec: u32,
-    /// Full names, such as `user.foo` or `security.capability`.
-    pub xattrs: BTreeMap<Vec<u8>, Vec<u8>>,
+    pub xattrs: Xattrs,
 }
 
-/// Where a regular file's bytes are, for the [`Source`] that reads them.
+/// Extended attributes by full name, such as `user.foo` or `security.capability`, in
+/// name order. None take a pointer's room: nearly every file has none, and an empty map
+/// took 24 bytes of each node.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+// Boxed so that none take 8 bytes, not a map's 24; the few nodes with some pay for it.
+#[allow(clippy::box_collection)]
+pub struct Xattrs(Option<Box<BTreeMap<Vec<u8>, Vec<u8>>>>);
+
+impl Xattrs {
+    pub fn get(&self, name: &[u8]) -> Option<&Vec<u8>> {
+        self.0.as_ref()?.get(name)
+    }
+
+    pub fn insert(&mut self, name: Vec<u8>, value: Vec<u8>) -> Option<Vec<u8>> {
+        self.0.get_or_insert_default().insert(name, value)
+    }
+
+    pub fn remove(&mut self, name: &[u8]) -> Option<Vec<u8>> {
+        let map = self.0.as_mut()?;
+        let gone = map.remove(name);
+        if map.is_empty() {
+            self.0 = None;
+        }
+        gone
+    }
+
+    /// Keeps the attributes `keep` says to.
+    pub fn retain(&mut self, keep: impl FnMut(&Vec<u8>, &mut Vec<u8>) -> bool) {
+        if let Some(map) = self.0.as_mut() {
+            map.retain(keep);
+            if map.is_empty() {
+                self.0 = None;
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |m| m.len())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Vec<u8>, &Vec<u8>)> {
+        self.0.iter().flat_map(|m| m.iter())
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &Vec<u8>> {
+        self.iter().map(|(k, _)| k)
+    }
+}
+
+impl FromIterator<(Vec<u8>, Vec<u8>)> for Xattrs {
+    fn from_iter<I: IntoIterator<Item = (Vec<u8>, Vec<u8>)>>(iter: I) -> Xattrs {
+        let map: BTreeMap<Vec<u8>, Vec<u8>> = iter.into_iter().collect();
+        Xattrs((!map.is_empty()).then(|| Box::new(map)))
+    }
+}
+
+/// Where a regular file's bytes are, for the [`Source`] that reads them. Packed to 12
+/// bytes, so a file's [`Kind`] and its size take 24 with the variant's tag, not 32.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C, packed(4))]
 pub struct DataRef {
     pub source: u32,
     pub offset: u64,
@@ -120,7 +182,8 @@ pub type EntryId = u32;
 pub enum Kind {
     Dir(Dir),
     File { size: u64, data: DataRef },
-    Symlink(Vec<u8>),
+    /// Its target: boxed, 16 bytes, not a vector's 24.
+    Symlink(Box<[u8]>),
     CharDevice { major: u32, minor: u32 },
     BlockDevice { major: u32, minor: u32 },
     Fifo,
@@ -221,21 +284,17 @@ struct Link {
 /// from archives no one vouches for, so the hash is SipHash with keys drawn for each
 /// process (std's `RandomState`): a chosen set of names cannot pile onto one slot.
 /// Removed entries keep their slots, so the probes past them still run, until the
-/// table is rebuilt. A slot holds the entry's id and the top half of its hash, so a probe
-/// reads an entry and its name only when their hashes agree that far.
+/// table is rebuilt. A slot holds the entry's id alone, 4 bytes: a probe reads the entry
+/// it names, and its name when the directory agrees.
 #[derive(Debug, Clone, Default)]
 struct Index {
-    slots: Vec<u64>,
+    slots: Vec<u32>,
     used: usize,
     keys: std::hash::RandomState,
 }
 
 /// An empty slot: no entry has id [`NONE`].
-const EMPTY: u64 = u64::MAX;
-
-fn slot(hash: u64, id: u32) -> u64 {
-    (hash & !0xffff_ffff) | u64::from(id)
-}
+const EMPTY: u32 = NONE;
 
 impl Index {
     fn hash(&self, dir: u32, name: &[u8]) -> u64 {
@@ -359,16 +418,13 @@ impl Tree {
     fn find(&self, dir: u32, name: &[u8]) -> Option<u32> {
         let mask = self.index.slots.len().checked_sub(1)?;
         let hash = self.index.hash(dir, name);
-        let tag = hash & !0xffff_ffff;
         let mut i = (hash as usize) & mask;
         loop {
-            let s = *self.index.slots.get(i)?;
-            if s == EMPTY {
+            let id = *self.index.slots.get(i)?;
+            if id == EMPTY {
                 return None;
             }
-            let id = s as u32;
-            if s & !0xffff_ffff == tag
-                && let Some(l) = self.links.get(id as usize)
+            if let Some(l) = self.links.get(id as usize)
                 && l.dir == dir
                 && l.child != NONE
                 && self.name_of(l) == name
@@ -399,7 +455,7 @@ impl Tree {
         loop {
             match self.index.slots.get_mut(i) {
                 Some(s) if *s == EMPTY => {
-                    *s = slot(hash, id);
+                    *s = id;
                     self.index.used += 1;
                     return Ok(());
                 }
@@ -619,6 +675,14 @@ impl Tree {
     /// names, a hard link, stays one node (audit D11). Removed entries and the names of
     /// replaced ones go too. Nothing is done if no entry was replaced or removed since the
     /// last compaction.
+    /// Lets the index of names go, for a tree that is only listed from now on, as
+    /// [`write`] lists it: after its nodes, entries and names, the index is the tree's
+    /// largest part. Looking a name up finds nothing afterwards.
+    pub fn drop_index(&mut self) {
+        self.index.slots = Vec::new();
+        self.index.used = 0;
+    }
+
     pub fn compact(&mut self) {
         if self.dropped == 0 {
             return;
@@ -772,13 +836,13 @@ fn xattr_index(name: &[u8]) -> Option<(u8, &[u8])> {
 
 /// The inline xattr body into `body`: header, then entries in (index, name) order, each
 /// padded to 4. Its length is [`xattr_len`]'s.
-fn xattr_body(xattrs: &BTreeMap<Vec<u8>, Vec<u8>>, body: &mut Vec<u8>) -> Result<(), Error> {
+fn xattr_body(xattrs: &Xattrs, body: &mut Vec<u8>) -> Result<(), Error> {
     body.clear();
     if xattrs.is_empty() {
         return Ok(());
     }
     let mut entries = Vec::with_capacity(xattrs.len());
-    for (name, value) in xattrs {
+    for (name, value) in xattrs.iter() {
         let Some((index, suffix)) = xattr_index(name) else {
             return err(format!(
                 "xattr {:?} has a namespace EROFS cannot store",
@@ -803,7 +867,7 @@ fn xattr_body(xattrs: &BTreeMap<Vec<u8>, Vec<u8>>, body: &mut Vec<u8>) -> Result
 }
 
 /// The length of [`xattr_body`]'s body, which the layout needs before any is written.
-fn xattr_len(xattrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> u64 {
+fn xattr_len(xattrs: &Xattrs) -> u64 {
     if xattrs.is_empty() {
         return 0;
     }
@@ -815,24 +879,27 @@ fn xattr_len(xattrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> u64 {
 
 /// One inode as laid out: everything the writer decides before writing. Kept small, as
 /// an image holds one for each of its files: a directory's entries are made again from
-/// the tree when its blocks are written, not held (platform-measurements.md M78).
+/// the tree when its blocks are written, not held (platform-measurements.md M78), and
+/// its xattr body's length from the node when it is needed: 32 bytes.
 #[derive(Debug)]
 struct Inode {
     node: u32,
     /// For directories: the parent's node.
     parent: u32,
     nlink: u32,
-    /// The length of its xattr body, which is built as its record is written.
-    xattrs: u32,
+    nid: u32,
+    /// First data block, or [`NO_BLOCK`].
+    start: u32,
     /// Bytes of data kept in the inode record (FLAT_INLINE), or 0: less than a block.
     tail: u16,
     extended: bool,
     inline: bool,
     size: u64,
-    nid: u64,
-    /// First data block, if the inode has any.
-    start: Option<u32>,
 }
+
+/// An inode's `start` when it has no data blocks: no block of an image has this number,
+/// as the image's block count fits a `u32`.
+const NO_BLOCK: u32 = u32::MAX;
 
 impl Inode {
     fn isize(&self) -> u64 {
@@ -942,14 +1009,12 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
             node: u32::try_from(id).map_err(|_| too_many())?,
             parent: u32::try_from(parent).map_err(|_| too_many())?,
             nlink: 1,
-            xattrs: u32::try_from(xattr_len(&node.meta.xattrs))
-                .map_err(|_| Error("xattrs too large".into()))?,
+            nid: 0,
+            start: NO_BLOCK,
             tail: 0,
             extended: false,
             inline: false,
             size: 0,
-            nid: 0,
-            start: None,
         });
         if matches!(node.kind, Kind::Dir(_)) {
             tree.entries_into(id, &mut listed);
@@ -1006,7 +1071,8 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
             || inode.nlink > u32::from(u16::MAX)
             || since_epoch.is_none()
             || m.mtime_nsec != 0;
-        let head = inode.isize() + u64::from(inode.xattrs);
+        let xattrs = u32::try_from(xattr_len(&m.xattrs)).map_err(|_| Error("xattrs too large".into()))?;
+        let head = inode.isize() + u64::from(xattrs);
         let tail = inode.size % BLOCK;
         let regular = matches!(node.kind, Kind::File { .. });
         inode.inline = !regular && tail > 0 && head + tail <= BLOCK;
@@ -1018,7 +1084,7 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
         if offset % BLOCK + record > BLOCK {
             offset = offset.next_multiple_of(BLOCK);
         }
-        inode.nid = offset / SLOT;
+        inode.nid = u32::try_from(offset / SLOT).map_err(|_| too_many())?;
         offset += record;
     }
     let root_nid = order.first().map_or(0, |i| i.nid);
@@ -1029,7 +1095,7 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
     for inode in &mut order {
         let blocks = inode.data_blocks();
         if blocks > 0 {
-            inode.start = Some(u32::try_from(next_block).map_err(|_| too_large())?);
+            inode.start = u32::try_from(next_block).map_err(|_| too_large())?;
             next_block = next_block.checked_add(blocks).ok_or_else(too_large)?;
         }
     }
@@ -1039,7 +1105,7 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
         index
             .get(id)
             .and_then(|&i| order.get(i as usize))
-            .map_or(0, |i| i.nid)
+            .map_or(0, |i| u64::from(i.nid))
     };
 
     // The metadata area: superblock, then inode records, each where it was placed.
@@ -1087,7 +1153,8 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
         let i_u = match &node.kind {
             Kind::CharDevice { .. } | Kind::BlockDevice { .. } => rdev,
             Kind::Fifo | Kind::Socket => 0,
-            _ => inode.start.unwrap_or(NULL_ADDR),
+            _ if inode.start == NO_BLOCK => NULL_ADDR,
+            _ => inode.start,
         };
         xattr_body(&m.xattrs, &mut xattrs)?;
         let icount = if xattrs.is_empty() {
@@ -1124,7 +1191,7 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
                 w.write_all(&(m.gid as u16).to_le_bytes())?;
             }
         }
-        seq.pad_to(inode.nid * SLOT)?;
+        seq.pad_to(u64::from(inode.nid) * SLOT)?;
         seq.put(rec.get(..inode.isize() as usize).unwrap_or_default())?;
         seq.put(&xattrs)?;
         if inode.inline {
@@ -1154,7 +1221,9 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
 
     // Data blocks, in inode order.
     for inode in &order {
-        let Some(_) = inode.start else { continue };
+        if inode.start == NO_BLOCK {
+            continue;
+        }
         let node = tree
             .node(inode.node as NodeId)
             .ok_or_else(|| Error("missing node".into()))?;
@@ -1441,7 +1510,7 @@ mod tests {
             gid: 0,
             mtime: 1_700_000_000,
             mtime_nsec: 0,
-            xattrs: BTreeMap::new(),
+            xattrs: Xattrs::default(),
         }
     }
 
@@ -1524,7 +1593,7 @@ mod tests {
             Tree::ROOT,
             b"short",
             Node {
-                kind: Kind::Symlink(b"etc/f1".to_vec()),
+                kind: Kind::Symlink(b"etc/f1".to_vec().into()),
                 meta: meta(0o777),
             },
         )
@@ -1533,7 +1602,7 @@ mod tests {
             Tree::ROOT,
             b"long",
             Node {
-                kind: Kind::Symlink(vec![b'x'; 5000]),
+                kind: Kind::Symlink(vec![b'x'; 5000].into()),
                 meta: meta(0o777),
             },
         )
@@ -1632,7 +1701,7 @@ mod tests {
             tree.node(tree.child(Tree::ROOT, b"suid").unwrap())
                 .unwrap()
                 .meta
-                .xattrs
+                .xattrs.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<BTreeMap<_, _>>()
         );
         // `.` and `..` point where they should.
         let etc = r.lookup("etc");
@@ -1775,7 +1844,7 @@ mod tests {
         // Replaced four times over, and a file removed.
         for generation in 0..4u8 {
             let node = Node {
-                kind: Kind::Symlink(vec![b'a' + generation; 100]),
+                kind: Kind::Symlink(vec![b'a' + generation; 100].into()),
                 meta: meta(0o777),
             };
             tree.insert(Tree::ROOT, b"again", node).unwrap();

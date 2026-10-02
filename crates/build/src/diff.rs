@@ -429,7 +429,7 @@ impl ChangeWriter<'_> {
             Kind::Dir(_) => hdr.typeflag = writer::DIR,
             Kind::Symlink(t) => {
                 hdr.typeflag = writer::SYMLINK;
-                hdr.linkname = t.clone();
+                hdr.linkname = t.to_vec();
             }
             Kind::CharDevice { major, minor } => {
                 hdr.typeflag = writer::CHAR;

@@ -5,7 +5,6 @@
 
 mod common;
 
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -42,7 +41,7 @@ fn meta(mode: u16, uid: u32, gid: u32) -> Meta {
         gid,
         mtime: 1_700_000_000,
         mtime_nsec: 0,
-        xattrs: BTreeMap::new(),
+        xattrs: Default::default(),
     }
 }
 
@@ -147,14 +146,14 @@ fn build(dir: &Path) -> (PathBuf, usize) {
     b.special(
         bin,
         "/bin/sh",
-        Kind::Symlink(b"busybox".to_vec()),
+        Kind::Symlink(b"busybox".to_vec().into()),
         "l /bin/sh busybox".into(),
     );
     let long = "a".repeat(3000);
     b.special(
         bin,
         "/bin/long",
-        Kind::Symlink(long.clone().into_bytes()),
+        Kind::Symlink(long.clone().into_bytes().into()),
         format!("l /bin/long {long}"),
     );
     let usr = b.dir(root, "/usr", 0o755);

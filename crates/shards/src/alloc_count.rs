@@ -130,6 +130,25 @@ pub fn phase(name: &str) {
             now.usage.4 as f64 / 1e6,
         );
     }
+    // vmmap's summary of the process as the phases SHARDS_VMMAP names end (macOS).
+    if std::env::var("SHARDS_VMMAP").is_ok_and(|v| v.split(',').any(|p| p == name)) {
+        let pid = std::process::id().to_string();
+        if let Ok(out) = std::process::Command::new("vmmap").args(["--summary", &pid]).output() {
+            let _ = writeln!(std::io::stderr(), "vmmap-at {name}");
+            let _ = std::io::stderr().write_all(&out.stdout);
+        }
+    }
     PEAK.store(live, Ordering::Relaxed);
-    *last = Some(now);
+    *last = Some(now.at_now());
+}
+
+impl Last {
+    /// This, its clock and CPU read again: what [`phase`] itself spent goes to no phase.
+    fn at_now(self) -> Last {
+        Last {
+            at: Instant::now(),
+            usage: usage(),
+            ..self
+        }
+    }
 }

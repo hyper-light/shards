@@ -225,8 +225,11 @@ impl<'a> Exec<'a> {
         let empty = scratch();
         let lower = base.as_ref().map_or(&empty, |b| &*b.fs);
         let mut w = self.store.writer().map_err(err)?;
+        crate::phase("step");
         let record = diff::write_layer(lower, &fs, &mut self.sources, &mut w).map_err(|e| e.0)?;
+        crate::phase("layer");
         let (digest, size) = w.commit().map_err(err)?;
+        crate::phase("blob");
         let stack = base
             .as_ref()
             .map_or_else(|| Stack::layers(Tally::default()), |b| b.stack.clone())
@@ -281,6 +284,7 @@ impl<'a> Exec<'a> {
                 stack
                     .finish(&mut fs)
                     .map_err(|why| shards_image::Error::from(std::io::Error::other(why.to_string())))?;
+                fs.tree.drop_index();
                 erofs::write(&fs.tree, sources, out)?;
                 Ok(())
             })

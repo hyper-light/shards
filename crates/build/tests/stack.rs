@@ -58,7 +58,7 @@ fn member(out: &mut Vec<u8>, path: &[u8], flag: u8, link: &[u8], n: &erofs::Node
         format!("{}.{:09}", m.mtime, m.mtime_nsec)
     };
     record(b"mtime", mtime.as_bytes());
-    for (k, v) in &m.xattrs {
+    for (k, v) in m.xattrs.iter() {
         record(&[b"SCHILY.xattr.", k.as_slice()].concat(), v);
     }
     block(out, b"PaxHeader", b'x', b"", 0o644, records.len() as u64, (0, 0));

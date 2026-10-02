@@ -181,7 +181,7 @@ fn walk_link(fs: &Fs, path: &[u8], walked: &mut u32) -> Result<(Vec<u8>, bool), 
     match fs.node(id).map(|n| &n.kind) {
         Some(Kind::Symlink(target)) => {
             *walked += 1;
-            Ok((target.clone(), true))
+            Ok((target.to_vec(), true))
         }
         _ => Ok((path, false)),
     }
@@ -913,7 +913,7 @@ fn ensure_empty_file_target(to: &mut Fs, dst: &[u8]) -> Result<(), Error> {
 /// the attributes up to the first that will not set.
 fn copy_xattrs(from: &Fs, fi: NodeId, to: &mut Fs, dst: &[u8]) {
     let Some(node) = from.node(fi) else { return };
-    for (k, v) in &node.meta.xattrs {
+    for (k, v) in node.meta.xattrs.iter() {
         if to.setxattr(dst, k, v, false).is_err() {
             return;
         }

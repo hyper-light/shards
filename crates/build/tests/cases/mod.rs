@@ -110,7 +110,7 @@ pub fn tree(entries: &Value, mem: &mut Sources) -> Tree {
                     data: mem.bytes(data).unwrap(),
                 }
             }
-            "symlink" => Kind::Symlink(e["target"].as_str().unwrap().as_bytes().to_vec()),
+            "symlink" => Kind::Symlink(e["target"].as_str().unwrap().as_bytes().into()),
             "char" => {
                 let (major, minor) = dev();
                 Kind::CharDevice { major, minor }

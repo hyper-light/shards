@@ -19,7 +19,7 @@
 //!   directories alone, overlayfs's own `trusted.overlay.*` nowhere, and only the
 //!   `user`, `trusted`, `security` and `system.posix_acl_*` namespaces.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 
 use shards_dockerfile::go;
@@ -419,7 +419,7 @@ impl Fs {
                 gid,
                 mtime: self.now.0,
                 mtime_nsec: self.now.1,
-                xattrs: BTreeMap::new(),
+                xattrs: Default::default(),
             },
         }
     }
@@ -483,7 +483,7 @@ impl Fs {
             path: linked(target, path),
             ..e
         })?;
-        let node = self.fresh(Kind::Symlink(target.to_vec()), 0o777, at.0);
+        let node = self.fresh(Kind::Symlink(target.into()), 0o777, at.0);
         self.add("symlink", path, at, node)
     }
 
@@ -494,7 +494,7 @@ impl Fs {
         dir: NodeId,
         name: &[u8],
     ) -> Result<(NodeId, Option<EntryId>), Errno> {
-        let node = self.fresh(Kind::Symlink(target.to_vec()), 0o777, dir);
+        let node = self.fresh(Kind::Symlink(target.into()), 0o777, dir);
         self.add_in(dir, name, node)
     }
 
@@ -835,7 +835,7 @@ impl Fs {
     pub fn readlink(&self, path: &[u8]) -> Result<Vec<u8>, PathError> {
         let id = self.lstat(path).map_err(|e| PathError { op: "readlink", ..e })?;
         match self.node(id).map(|n| &n.kind) {
-            Some(Kind::Symlink(t)) => Ok(t.clone()),
+            Some(Kind::Symlink(t)) => Ok(t.to_vec()),
             _ => fail("readlink", path, Errno::Inval),
         }
     }

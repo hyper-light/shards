@@ -286,7 +286,7 @@ impl Layer<'_> {
                 if entry.link.is_empty() || entry.link.len() >= PATH_MAX {
                     return bad(format!("{:?}: invalid symlink target", show(&entry.path)));
                 }
-                Kind::Symlink(entry.link.clone())
+                Kind::Symlink(entry.link.clone().into())
             }
             Type::CharDevice => Kind::CharDevice {
                 major: entry.devmajor,
