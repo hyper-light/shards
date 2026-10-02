@@ -2747,6 +2747,7 @@ revision before comparing a changed API/implementation.
   load average was 54 from other work; what it waited on is not yet measured. The export
   is now most of what is left: `layer::apply` reads back, twice, the layer the build
   wrote moments before.
+- **Sixth round** (M80) writes the image from the build's last snapshot instead.
 
 ### M79. The signal port dialled before the workload starts
 
@@ -2773,3 +2774,55 @@ revision before comparing a changed API/implementation.
 - **Consequence.** No cost is measurable, and the dial is kept where no workload can take
   the port first. The p99 and max of both arms, up to 25 times their medians, are not
   explained by this comparison and are not yet root-caused.
+
+### M80. A build's root filesystem from its last snapshot, and smaller nodes
+
+- **Question.** The export of M78's build stacked the layers again (`Store::rootfs`):
+  1.4 s, most of it reading back and applying the layer just written, and a second tree
+  beside the writer. Writing the image from the build's last snapshot, put in the form
+  its layers give it (`crates/build/src/stack.rs`), skips both; what does it save, and
+  where does the memory go then?
+- **Method.** `docs/research/measurements/build-memory/ab.sh BEFORE AFTER DIR 7`:
+  interleaved builds of M78's context, `FROM alpine:3.22` and `ADD many.tar.gz /x/`, a
+  fresh home each, with `/usr/bin/time -l` and `--progress=plain`, then the same with
+  the feature `alloc-count`, whose global allocator and getrusage report each phase
+  (`crates/shards/src/alloc_count.rs`); `phases.py DIR` summarizes. BEFORE is 8a26a7b
+  with the phase marks alone; AFTER is d0835eb with the export's phase marks. vmmap
+  `--summary` as the phases end (SHARDS_VMMAP). 2026-10-01, Apple M5 Max, 128 GB, 18
+  cores, macOS 26.4.1, load average 43 to 51 from other work.
+- **Result.** Whole build, n 7, p50 [p90, max]:
+
+  | Build | wall | user + sys | max RSS | footprint | page reclaims |
+  |---|---|---|---|---|---|
+  | 8a26a7b | 3.52 s [8.28, 9.79] | 3.21 s [3.21, 3.22] | 219.7 MB [222.0, 222.0] | 212.9 MB | 21,123 |
+  | d0835eb | 1.61 s [3.80, 3.99] | 1.92 s [1.95, 1.96] | 164.2 MB [166.9, 167.8] | 157.3 MB | 10,652 |
+
+  BuildKit's step times, p50: the ADD step 1.50 s and 1.40 s; the export 1.60 s and
+  0.10 s. Page faults (major) 7 in every run. Per phase, p50 of the counting builds:
+
+  | Phase | Build | user ms | allocations | reallocations | requested | peak heap |
+  |---|---|---|---|---|---|---|
+  | ADD's file operations | 8a26a7b | 965 | 8,362,489 | 1,050,501 | 1,021 MB | 134.6 MB |
+  | | d0835eb | 1,024 | 8,362,489 | 1,050,501 | 955 MB | 101.4 MB |
+  | its layer written | 8a26a7b | 646 | 8,101,708 | 60,027 | 299 MB | 142.8 MB |
+  | | d0835eb | 643 | 8,101,710 | 60,036 | 300 MB | 110.2 MB |
+  | waiting on the blob | both | 0.5 | 36 | 5 | 0 | |
+  | export | 8a26a7b | 1,261 | 10,116,689 | 820 | 644 MB | 183.5 MB |
+  | | d0835eb | 74 | 20,471 | 168 | 44.8 MB | 129.7 MB |
+
+  The blob writer kept up: the commit waited 9 ms p50 (42, 85 ms p90, max) for it. At
+  the export's end vmmap shows the allocator keeping what was freed: 108 MB of empty
+  large regions and 31 MB of empty small ones (163 and 33 MB before), against a peak
+  heap of 130 MB; the 34 MB between the peak heap and the maximum resident set is the
+  binary's own resident pages, about 14 MB before the build begins, and the allocator's
+  regions. Nodes went from 80 to 56 bytes (xattrs boxed when there are any, a 12-byte
+  packed `DataRef`, symlink targets boxed), index slots from 8 to 4 bytes (entry ids
+  alone; applying the million entries took 0.96 s of user time to 0.94 s with the
+  tagged slots, n 7 interleaved), and the writer's inodes from 48 to 32 bytes: the tree
+  of a million entries 126 to 94 bytes an entry, the writer's 55 to 36. The images of
+  M78's three layers are byte for byte those of 8a26a7b's writer.
+- **Consequence.** The export writes from the snapshot wherever `stack.rs` can follow
+  it, and stacks the layers as before where it cannot. What is left is the build step's:
+  16.5 million allocations for a million entries, 8 for each in the file operations and
+  8 in the differ, and the snapshot itself, 94 bytes an entry, which the export now
+  holds while the writer adds its 36.

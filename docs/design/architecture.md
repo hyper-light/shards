@@ -1604,6 +1604,24 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
          digest. A push compresses.
        - Refs record what a reference resolved to, so a stored image reports the index
          digest Docker reports, as a fresh pull does.
+       - The root filesystem is written from the target's last snapshot, not stacked
+         again from its layers (`crates/build/src/stack.rs`, PM M80). The layers lose
+         what the snapshot holds: an entry the differ writes keeps whole seconds of its
+         mtime (containerd's ChangeWriter truncates; layer::meta zeroes times before
+         1970 or past Go's range) and `security.capability` alone of its xattrs; what no
+         layer writes keeps its last entry's attributes, or the base image's, such as a
+         directory whose mtime a step changes but the differ leaves (continuity's
+         sameDirent ignores it), a file judged the same by size and mtime; the root is
+         layer::root()'s; sockets are left out. Each commit records which nodes its
+         layer wrote and what the layers still hold of the nodes it left; the export
+         puts the snapshot in that form in place, and writes it reading files where the
+         build has them, under `Store::rootfs`'s lock, limits and path. Where it cannot
+         follow the layers exactly (a hard link only some of whose names a layer
+         writes, content a layer leaves as the lower's, a name layer::apply takes for a
+         whiteout, a merge onto a snapshot not in its layers' form) it stacks the layers
+         as before. `tests/stack.rs` holds both to `Store::rootfs` byte for byte, over
+         every oracle case and multi-step cases, and the E2E builds compare each image
+         with the store's own stacking.
      - Done: ADD's local archives, as BuildKit unpacks them (moby/go-archive's
        DecompressStream and chrootarchive.Untar): every entry resolved inside the
        destination as a chroot resolves it, so `../` names and absolute symlinks stay in
@@ -1613,8 +1631,8 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
        and `unpigz` and fails without them, shards decodes gzip, bzip2, xz and zstd
        in-process, in pure Rust (PM M77).
      - Stress-tested 2026-10-01: an archive 2,000 directories deep unpacks (1.5 s,
-       46 MB), one of a million entries at 915 MB of memory, since brought to 222 MB
-       (PM M78). A 20 GB gzip bomb exposed two faults, now fixed: it was
+       46 MB), one of a million entries at 915 MB of memory, since brought to 164 MB
+       (PM M78, M80). A 20 GB gzip bomb exposed two faults, now fixed: it was
        not unpacked at all, as an archive whose first file is past the bytes read to
        detect it was taken for no archive (the tar reader read on into that file's data;
        it now skips data when the next entry is asked for, as Go's does); and nothing
