@@ -12,6 +12,7 @@ pub mod host;
 pub mod mode;
 pub mod ops;
 pub mod stack;
+pub mod sync;
 pub mod upper;
 pub mod vfs;
 
