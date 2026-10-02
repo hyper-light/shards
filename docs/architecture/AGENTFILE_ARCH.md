@@ -111,21 +111,20 @@ SKILL [OPTIONS...] <path_or_link> [<dest_path>] [FOR <agent_name>]
 ### 4.4 `MCP`
 
 ```
-MCP <name> FROM <source> [FOR <agent_name>]
+MCP <name>[:<tag>] FROM <path | uri | url | git | oci_artifact>[:<version>] [FOR <agent_name>]
 ```
-
-Revised 2026-10-02 (§12.3): `FROM` is `AGENT`'s and `HARNESS`'s, and `MCP` only puts the
-server on disk. What follows about remote servers and ports is superseded; connecting
-to a server is a step still to be designed.
 
 `MCP` declares an MCP server, local or remote, that the agents connect to.
 
 **A URL or URI** is a remote server:
-- Without a port, the port is 8000. HTTPS is respected.
+- Without a port, the port is the URL scheme's own: 443 for `https`, 80 for `http`
+  (decided 2026-10-02). HTTPS is respected.
 - The agents' workloads/workspaces are opened to receive traffic on that port, and so is
   the microVM: exposed for ingress and egress.
 
-**A path, git URL or OCI artifact** is a server spoken to over stdio. Agents are opened to
+**A path, git URL or OCI artifact** is a server spoken to over stdio. Its `[:<version>]`
+names the version fetched: a tag (or digest) for an OCI artifact, a commit SHA for a git
+URL. Agents are opened to
 send and receive its messages over stdio. The server is fetched as its source says:
 - a git URL is cloned;
 - an OCI artifact is downloaded and decompressed;
@@ -740,11 +739,11 @@ until the review changes it. The first four fix the grammar the parser reads; th
    BuildKit's git contexts do (`url#ref:subdir`); an http(s) URL and a path take no
    version, and a `:<tag>` after them is an error. That ends the confusion of a tag
    with a URL's port, `C:\`, or a colon in a path.
-3. **`MCP … FROM` is `AGENT`'s and `HARNESS`'s `FROM` (Q6; decided 2026-10-02).** The
-   same sources, fetched the same way: an OCI reference pulled, a git URL cloned, an
-   http(s) URL downloaded, a path copied. `MCP` only puts the server on disk; there is
-   no `[:<port>]` and no remote-server form. How an agent connects to a server, on
-   disk or elsewhere, is a step of its own, **still to be designed**.
+3. **`MCP`'s sources (Q6; decided 2026-10-02).** A URL in `FROM` is always a remote
+   server, and its port, when the URL names none, is its scheme's: 443 for `https`,
+   80 for `http` (RFC 3986 §3.2.3, RFC 9110 §4.2). After a path, git URL or OCI
+   artifact, `[:<version>]` names the version fetched: a tag (or digest) for OCI, a
+   commit SHA for git (§4.4).
 4. **`AGENT` has no `AS` (Q2).** `AGENT <name> FROM <source> [TO <path>]`: the name is
    first and required, as `ARG <name>` and `ENV <name>` name theirs. `AS` would give
    one directive two ways to name the same thing; `AGENT AS main FROM …` is refused,
