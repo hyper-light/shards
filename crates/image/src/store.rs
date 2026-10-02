@@ -7,7 +7,7 @@
 //! descriptor, and a layer only counts once its decompressed bytes match its DiffID
 //! (docs/research/registry-pull.md §5, rows 4 and 6).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -189,6 +189,10 @@ struct Tag {
     /// pull identity, kept when another name is given it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source: Option<String>,
+    /// What it resolved to, described as it was when the record was made: by the
+    /// registry, for a pull; by an archive's index, annotations and all, for a load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<Descriptor>,
 }
 
 /// An image the store's references name: what they resolved to (its ID, as dockerd's
@@ -207,6 +211,8 @@ pub struct Image {
     /// When a record of it was last written, and the repositories it was pulled from.
     pub tagged_at: Option<std::time::SystemTime>,
     pub sources: Vec<String>,
+    /// What each reference resolved to as its record describes it, where it does.
+    pub targets: BTreeMap<String, Descriptor>,
     pub created: Option<String>,
     pub manifests: Vec<ImageManifest>,
     pub content: u64,
@@ -741,15 +747,29 @@ impl Store {
         resolved: &Digest,
         contents: &[Digest],
     ) -> Result<(), Error> {
-        self.tag_from(reference, manifest, resolved, contents, None)
+        self.record(reference, manifest, resolved, None, contents, None)
     }
 
-    /// [`tag`](Self::tag), for what was pulled from repository `source`.
+    /// [`tag`](Self::tag), with what `reference` resolved to described as `target` says
+    /// (`resolved` its digest), and, for what was pulled, repository `source`.
     pub fn tag_from(
         &self,
         reference: &str,
         manifest: &Descriptor,
+        target: &Descriptor,
+        contents: &[Digest],
+        source: Option<&str>,
+    ) -> Result<(), Error> {
+        let resolved = target.digest()?;
+        self.record(reference, manifest, &resolved, Some(target), contents, source)
+    }
+
+    fn record(
+        &self,
+        reference: &str,
+        manifest: &Descriptor,
         resolved: &Digest,
+        target: Option<&Descriptor>,
         contents: &[Digest],
         source: Option<&str>,
     ) -> Result<(), Error> {
@@ -768,6 +788,7 @@ impl Store {
             manifest: manifest.clone(),
             resolved: Some(resolved.to_string()),
             source: source.map(String::from),
+            target: target.cloned(),
         })
         .map_err(|e| Error(e.to_string()))?;
         let mut partial = Partial::create(&self.root.join("ingest"))?;
@@ -866,6 +887,11 @@ impl Store {
                 }
             };
             image.tagged_at = image.tagged_at.max(tagged_at);
+            if let Some(target) = tag.target {
+                image
+                    .targets
+                    .insert(image.references.last().cloned().unwrap_or_default(), target);
+            }
             if let Some(source) = tag.source
                 && !image.sources.contains(&source)
             {
@@ -985,6 +1011,7 @@ impl Store {
             config: image_config,
             tagged_at: None,
             sources: Vec::new(),
+            targets: BTreeMap::new(),
             created,
             content: index_size + manifests.iter().map(|m| m.content).sum::<u64>(),
             unpacked: manifests.iter().map(|m| m.unpacked).sum(),
@@ -1622,6 +1649,12 @@ fn zstd(src: &mut BufReader<File>, out: &mut Sink<'_>) -> Result<(), Error> {
 /// Decodes every zstd frame of `src` to `out`, skipping skippable frames, with each
 /// frame's checksum checked and windows no larger than klauspost/compress decodes, as
 /// containerd and moby decode zstd.
+/// What gzip `src` holds, read as it is decoded, every member of it as Go's gzip reader
+/// reads them.
+pub fn gunzip<R: BufRead>(src: R) -> impl Read {
+    flate2::bufread::MultiGzDecoder::new(src)
+}
+
 pub fn decode_zstd(src: &mut dyn BufRead, out: &mut dyn Write) -> Result<(), Error> {
     use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
     use ruzstd::decoding::{FrameDecoder, StreamingDecoder};

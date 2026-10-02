@@ -1052,6 +1052,7 @@ mod tests {
             config: None,
             tagged_at: None,
             sources: Vec::new(),
+            targets: std::collections::BTreeMap::new(),
             created: None,
             manifests: Vec::new(),
             content: 0,

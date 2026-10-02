@@ -300,6 +300,46 @@
   },
   {
     "argv": [
+      "load",
+      "--help"
+    ],
+    "stdout": "Usage:  shards load [OPTIONS]\n\nLoad an image from a tar archive or STDIN\n\nAliases:\n  shards image load, shards load\n\nOptions:\n  -i, --input string   Read from tar archive file, instead of STDIN\n  -q, --quiet          Suppress the load output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "load",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards load' accepts no arguments\n\nUsage:  shards load [OPTIONS]\n\nRun 'shards load --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "image",
+      "load",
+      "-q",
+      "-i",
+      "a.tar"
+    ],
+    "stdout": "RUN --input=a.tar --quiet=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "load",
+      "--platform",
+      "linux/arm64"
+    ],
+    "stdout": "RUN --platform=[linux/arm64]\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "save"
     ],
     "stdout": "",

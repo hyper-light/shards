@@ -171,3 +171,18 @@ impl Output {
         done.map_err(|e| go(&e))
     }
 }
+
+/// Where `shards load` reads, as docker/cli's runLoad opens it: `-i`'s file, or stdin,
+/// unless it is a terminal. What the CLI says instead, in Go's words.
+pub fn input(path: &str) -> Result<Option<File>, String> {
+    if path.is_empty() {
+        // SAFETY: isatty(3) on this process's stdin.
+        if unsafe { libc::isatty(0) } == 1 {
+            return Err("requested load from stdin, but stdin is empty".into());
+        }
+        return Ok(None);
+    }
+    File::open(path)
+        .map(Some)
+        .map_err(|e| format!("open {path}: {}", go(&e)))
+}

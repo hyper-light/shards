@@ -70,6 +70,12 @@ pub fn pull(
     let _lease = store.lease()?;
     let top = registry.resolve(store, reference)?;
     let resolved = top.digest()?;
+    // What the name resolved to, as the registry described it.
+    let target = Descriptor {
+        platform: None,
+        annotations: Default::default(),
+        ..top.clone()
+    };
     // The attestations of the manifest chosen, as dockerd keeps them: provenance and SBOMs.
     let mut attestations: Vec<Descriptor> = Vec::new();
     let (manifest_desc, manifest) = match document(registry, store, &top)? {
@@ -143,7 +149,7 @@ pub fn pull(
     store.tag_from(
         &reference.to_string(),
         &manifest_desc,
-        &resolved,
+        &target,
         &contents,
         Some(&reference.name()),
     )?;
@@ -197,25 +203,47 @@ pub fn local(
     let Some(manifest_desc) = store.tagged(&reference.to_string())? else {
         return Ok(None);
     };
-    let name = reference.familiar();
+    let resolved = store
+        .resolved(&reference.to_string())?
+        .unwrap_or(manifest_desc.digest()?);
+    unpack(
+        store,
+        &reference.familiar(),
+        &manifest_desc,
+        resolved,
+        targets,
+        limits,
+    )
+    .map(Some)
+}
+
+/// The image whose manifest for one of `targets` `manifest_desc` describes, here in the
+/// store, checked as a pull checks it, and its root filesystem, built if it is not:
+/// what `local` finds, and what `load` makes of an archive. `name` is for messages;
+/// `resolved` is what its name resolved to. The caller holds the store's lease.
+pub fn unpack(
+    store: &Store,
+    name: &str,
+    manifest_desc: &Descriptor,
+    resolved: Digest,
+    targets: &[Target],
+    limits: &Limits,
+) -> Result<Pulled, Error> {
     let manifest_digest = manifest_desc.digest()?;
-    let bytes = stored(store, &name, &manifest_desc, oci::MAX_MANIFEST)?;
+    let bytes = stored(store, name, manifest_desc, oci::MAX_MANIFEST)?;
     let Document::Manifest(manifest) = oci::parse_document(&bytes, &manifest_desc.media_type)? else {
         return Err(Error::new(format!("{name}: its record names an index")));
     };
-    contents(&name, &manifest)?;
-    let config = stored(store, &name, &manifest.config, oci::MAX_CONFIG)?;
-    let (config, layers) = checked(&name, &manifest_desc, &manifest, &config, targets)?;
+    contents(name, &manifest)?;
+    let config = stored(store, name, &manifest.config, oci::MAX_CONFIG)?;
+    let (config, layers) = checked(name, manifest_desc, &manifest, &config, targets)?;
     let rootfs = store.rootfs(&layers, limits)?;
-    let resolved = store
-        .resolved(&reference.to_string())?
-        .unwrap_or_else(|| manifest_digest.clone());
-    Ok(Some(Pulled {
+    Ok(Pulled {
         resolved,
         manifest: manifest_digest,
         config,
         rootfs,
-    }))
+    })
 }
 
 /// What a manifest names, checked before any of it is read: the config of a runnable

@@ -2124,3 +2124,218 @@ fn save_writes_images_as_docker_save_does() {
         .unwrap();
     assert_eq!(piped.stdout, std::fs::read(&tar).unwrap());
 }
+
+/// `shards load` as `docker load` reads an archive (dockerd 29.3.1's words and records:
+/// Docker's own archives load to images that inspect byte for byte as dockerd's do, by
+/// hand): what `save` wrote, into another home, where it runs; gzip-compressed, from
+/// stdin; Docker's older layout, manifest.json and `<id>/layer.tar`; an image with no
+/// name by its ID; and a broken archive refused in Go's words.
+#[test]
+fn load_reads_archives_as_docker_load_does() {
+    use std::io::Write as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let (index, blobs) = test_index();
+    let (port, _) = registry(index.clone(), blobs.clone());
+    let image = format!("127.0.0.1:{port}/test/image:v1");
+    let first = TempDir::new("containers-load-from");
+    let saved_tar = first.join("image.tar");
+    assert_eq!(shards_in(&first, &["pull", "-q", &image]).status, Some(0));
+    assert_eq!(
+        shards_in(&first, &["save", "-o", saved_tar.to_str().unwrap(), &image]).status,
+        Some(0)
+    );
+    let home = TempDir::new("containers-load");
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let loaded = shards(&["load", "-i", saved_tar.to_str().unwrap()]);
+    assert_eq!(
+        (loaded.status, loaded.stdout.as_str(), loaded.stderr.as_str()),
+        (Some(0), format!("Loaded image: {image}\n").as_str(), ""),
+        "{loaded}"
+    );
+    // Unpacked as it was loaded, as dockerd unpacks: its root filesystem is here.
+    let rootfs = |home: &Path| -> usize {
+        std::fs::read_dir(home.join("images/rootfs"))
+            .into_iter()
+            .flatten()
+            .flat_map(|v| std::fs::read_dir(v.unwrap().path()).into_iter().flatten())
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "erofs")
+            })
+            .count()
+    };
+    assert_eq!(rootfs(&home), 1);
+    // Its record describes it as the archive's index did, name and source with it.
+    let shown = shards(&["image", "inspect", &image]);
+    let doc: serde_json::Value = serde_json::from_str(&shown.stdout).unwrap();
+    assert_eq!(doc[0]["Id"], sha256_digest(&index).as_str());
+    assert_eq!(
+        doc[0]["Descriptor"]["annotations"]["io.containerd.image.name"],
+        image.as_str()
+    );
+    assert_eq!(
+        doc[0]["Identity"]["Pull"][0]["Repository"],
+        format!("127.0.0.1:{port}/test/image")
+    );
+    // Unpacked: it runs at once.
+    let ran = run_in(&home, &image, &["--rm"], &["exit", "5"]);
+    assert_eq!(ran.status, Some(5), "{ran}");
+    // Gzip-compressed, on stdin, under another name.
+    let mut gz = Command::new("gzip")
+        .arg("-c")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let archive = std::fs::read(&saved_tar).unwrap();
+    let mut feed = gz.stdin.take().unwrap();
+    let feeding = std::thread::spawn(move || feed.write_all(&archive).unwrap());
+    let gzipped = gz.wait_with_output().unwrap().stdout;
+    feeding.join().unwrap();
+    let again = TempDir::new("containers-load-gz");
+    let mut load = Command::new(common::shards())
+        .args(["load"])
+        .env("SHARDS_HOME", &*again)
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    load.stdin.take().unwrap().write_all(&gzipped).unwrap();
+    let out = load.wait_with_output().unwrap();
+    assert_eq!(
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        ),
+        (Some(0), format!("Loaded image: {image}\n"))
+    );
+    // Docker's older layout: a config and a layer.tar, named by manifest.json; an image
+    // of its own, so its layer is unpacked here.
+    let (_, own) = common::test_image_with(Some(b"legacy"));
+    let (config, layer) = (&own[0], &own[1]);
+    let legacy = common::tar(&[
+        ("cfg.json", 0o644, 0, Some(config.as_slice())),
+        ("abc", 0o755, 0, None),
+        ("abc/layer.tar", 0o644, 0, Some(layer.as_slice())),
+        (
+            "manifest.json",
+            0o644,
+            0,
+            Some(br#"[{"Config":"cfg.json","RepoTags":["legacy:1"],"Layers":["abc/layer.tar"]}]"#),
+        ),
+    ]);
+    let legacy_tar = home.join("legacy.tar");
+    std::fs::write(&legacy_tar, legacy).unwrap();
+    let old = shards(&["load", "-i", legacy_tar.to_str().unwrap()]);
+    assert_eq!(
+        (old.status, old.stdout.as_str()),
+        (Some(0), "Loaded image: legacy:1\n"),
+        "{old}"
+    );
+    let ran = run_in(&home, "legacy:1", &["--rm"], &["exit", "6"]);
+    assert_eq!(ran.status, Some(6), "{ran}");
+    // Its manifest as containerd writes one for it, byte for byte: its ID is that.
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{{"mediaType":"application/vnd.docker.container.image.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.docker.image.rootfs.diff.tar","digest":"{}","size":{}}}]}}"#,
+        sha256_digest(config),
+        config.len(),
+        sha256_digest(layer),
+        layer.len()
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&shards(&["image", "inspect", "legacy:1"]).stdout).unwrap();
+    assert_eq!(doc[0]["Id"], sha256_digest(manifest.as_bytes()).as_str());
+    assert_eq!(
+        doc[0]["Descriptor"]["mediaType"],
+        "application/vnd.docker.distribution.manifest.v2+json"
+    );
+    assert!(doc[0].get("Identity").is_none(), "no pull, no identity");
+    // A layer already here compressed, pulled as gzip: the legacy archive's copy of it,
+    // uncompressed, is that gzip blob, as containerd finds it by its uncompressed digest.
+    let (_, gz_blobs) = common::test_image_with(Some(b"gzipped"));
+    let (gz_config, raw_layer) = (&gz_blobs[0], &gz_blobs[1]);
+    let mut gzip = Command::new("gzip")
+        .arg("-c")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut feed = gzip.stdin.take().unwrap();
+    let raw = raw_layer.clone();
+    let feeding = std::thread::spawn(move || feed.write_all(&raw).unwrap());
+    let gz_layer = gzip.wait_with_output().unwrap().stdout;
+    feeding.join().unwrap();
+    let gz_manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"{}","size":{}}}]}}"#,
+        sha256_digest(gz_config),
+        gz_config.len(),
+        sha256_digest(&gz_layer),
+        gz_layer.len()
+    )
+    .into_bytes();
+    let (gz_port, _) = registry(gz_manifest, vec![gz_config.clone(), gz_layer.clone()]);
+    let pulled = shards(&["pull", "-q", &format!("127.0.0.1:{gz_port}/test/image:v1")]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let reuse = common::tar(&[
+        ("cfg.json", 0o644, 0, Some(gz_config.as_slice())),
+        ("def", 0o755, 0, None),
+        ("def/layer.tar", 0o644, 0, Some(raw_layer.as_slice())),
+        (
+            "manifest.json",
+            0o644,
+            0,
+            Some(br#"[{"Config":"cfg.json","RepoTags":["reused:1"],"Layers":["def/layer.tar"]}]"#),
+        ),
+    ]);
+    let reuse_tar = home.join("reuse.tar");
+    std::fs::write(&reuse_tar, reuse).unwrap();
+    assert_eq!(
+        shards(&["load", "-i", reuse_tar.to_str().unwrap()]).stdout,
+        "Loaded image: reused:1\n"
+    );
+    let reused = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{{"mediaType":"application/vnd.docker.container.image.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.docker.image.rootfs.diff.tar.gzip","digest":"{}","size":{}}}]}}"#,
+        sha256_digest(gz_config),
+        gz_config.len(),
+        sha256_digest(&gz_layer),
+        gz_layer.len()
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&shards(&["image", "inspect", "reused:1"]).stdout).unwrap();
+    assert_eq!(doc[0]["Id"], sha256_digest(reused.as_bytes()).as_str());
+    // Saved by ID: no name, so loaded by its ID.
+    let by_id = home.join("by-id.tar");
+    let short = sha256_digest(&index);
+    let short = short.strip_prefix("sha256:").and_then(|h| h.get(..12)).unwrap();
+    assert_eq!(
+        shards_in(&first, &["save", "-o", by_id.to_str().unwrap(), short]).status,
+        Some(0)
+    );
+    let unnamed = shards(&["load", "-i", by_id.to_str().unwrap()]);
+    assert_eq!(
+        unnamed.stdout,
+        format!("Loaded image ID: {}\n", sha256_digest(&index)),
+        "{unnamed}"
+    );
+    // Broken: refused in Go's tar reader's words.
+    let broken = home.join("broken.tar");
+    std::fs::write(&broken, b"garbage\n").unwrap();
+    let refused = shards(&["load", "-i", broken.to_str().unwrap()]);
+    assert_eq!(
+        (refused.status, refused.stderr.as_str()),
+        (Some(1), "unexpected EOF\n"),
+        "{refused}"
+    );
+    let missing = shards(&["load", "-i", "/nonexistent.tar"]);
+    assert_eq!(
+        missing.stderr,
+        "open /nonexistent.tar: no such file or directory\n"
+    );
+}

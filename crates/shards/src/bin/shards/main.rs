@@ -86,6 +86,19 @@ fn container(
         } else {
             None
         };
+        // `load` reads what the client opens, or its stdin.
+        let input = if std::ptr::eq(command, &shards_cmdline::commands::LOAD) {
+            match save::input(parsed.string("input")) {
+                Ok(input) => Some(input),
+                Err(e) => {
+                    let _ = writeln!(std::io::stderr(), "{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        } else {
+            None
+        };
+        let stdin = std::io::stdin();
         // The daemon reads the command line again, by the same words.
         let mut argv = argv;
         argv.splice(0..0, words.iter().take(named).map(|w| (*w).to_string()));
@@ -96,7 +109,13 @@ fn container(
         });
         match resolved {
             Ok((daemon, identity, home)) => {
-                let fds: Vec<std::os::fd::BorrowedFd<'_>> = output.iter().map(save::Output::fd).collect();
+                use std::os::fd::AsFd as _;
+                let mut fds: Vec<std::os::fd::BorrowedFd<'_>> = output.iter().map(save::Output::fd).collect();
+                match &input {
+                    Some(Some(file)) => fds.push(file.as_fd()),
+                    Some(None) => fds.push(stdin.as_fd()),
+                    None => {}
+                }
                 let status = client::container(
                     &home,
                     &daemon,

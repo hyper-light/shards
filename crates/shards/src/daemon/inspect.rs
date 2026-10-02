@@ -55,7 +55,7 @@ fn time_json(t: SystemTime) -> String {
 
 /// `image`'s InspectResponse, compact: fields in the struct's order, those Go leaves out
 /// when empty left out.
-pub(super) fn document(image: &Image) -> String {
+pub(super) fn document(image: &Image, record: Option<&str>) -> String {
     let (tags, digests) = tags_and_digests(image);
     let config = image.config.as_deref().and_then(|b| Config::from_json(b).ok());
     let mut o = vec![
@@ -134,24 +134,55 @@ pub(super) fn document(image: &Image) -> String {
         "\"Metadata\":{{\"LastTagTime\":{}}}",
         time_json(image.tagged_at.unwrap_or(SystemTime::UNIX_EPOCH))
     ));
-    let t = &image.target;
-    o.push(format!(
-        "\"Descriptor\":{{\"mediaType\":{},\"digest\":{},\"size\":{}}}",
-        json_string(t.media_type.as_bytes()),
-        json_string(t.digest.as_bytes()),
-        t.size
-    ));
+    // The record's own description of what it resolved to, if it keeps one.
+    let t = record.and_then(|r| image.targets.get(r)).unwrap_or(&image.target);
+    o.push(format!("\"Descriptor\":{}", descriptor(t)));
     let pulls: Vec<String> = image
         .sources
         .iter()
         .map(|s| format!("{{\"Repository\":{}}}", json_string(s.as_bytes())))
         .collect();
-    o.push(if pulls.is_empty() {
-        "\"Identity\":{}".to_string()
-    } else {
-        format!("\"Identity\":{{\"Pull\":[{}]}}", pulls.join(","))
-    });
+    // dockerd leaves out an identity it knows nothing of.
+    if !pulls.is_empty() {
+        o.push(format!("\"Identity\":{{\"Pull\":[{}]}}", pulls.join(",")));
+    }
     format!("{{{}}}", o.join(","))
+}
+
+/// An ocispec.Descriptor as Go encodes it: mediaType, digest, size, then the annotations,
+/// keys sorted, and the platform, each only if it has any.
+fn descriptor(t: &shards_image::oci::Descriptor) -> String {
+    let s = |v: &str| json_string(v.as_bytes());
+    let mut d = format!(
+        "{{\"mediaType\":{},\"digest\":{},\"size\":{}",
+        s(&t.media_type),
+        s(&t.digest),
+        t.size
+    );
+    if !t.annotations.is_empty() {
+        let pairs: Vec<String> = t
+            .annotations
+            .iter()
+            .map(|(k, v)| format!("{}:{}", s(k), s(v)))
+            .collect();
+        d.push_str(&format!(",\"annotations\":{{{}}}", pairs.join(",")));
+    }
+    if let Some(p) = &t.platform {
+        let mut fields = vec![
+            format!("\"architecture\":{}", s(&p.architecture)),
+            format!("\"os\":{}", s(&p.os)),
+        ];
+        if !p.os_features.is_empty() {
+            let f: Vec<String> = p.os_features.iter().map(|x| s(x)).collect();
+            fields.push(format!("\"os.features\":[{}]", f.join(",")));
+        }
+        if let Some(v) = p.variant.as_deref().filter(|v| !v.is_empty()) {
+            fields.push(format!("\"variant\":{}", s(v)));
+        }
+        d.push_str(&format!(",\"platform\":{{{}}}", fields.join(",")));
+    }
+    d.push('}');
+    d
 }
 
 /// encoding/json's Indent with no prefix and `indent`, of compact JSON: each member and
@@ -211,6 +242,20 @@ pub(super) fn indent(compact: &str, indent: &str) -> String {
     out
 }
 
+/// The record a name given names: the name, with `latest` if it names no tag; none for
+/// an ID or a digest.
+fn record_name(given: &str) -> Option<String> {
+    match shards_image::reference::AnyReference::parse(given) {
+        Ok(shards_image::reference::AnyReference::Named(mut r)) if r.digest.is_none() => {
+            if r.tag.is_none() {
+                r.tag = Some("latest".into());
+            }
+            Some(r.to_string())
+        }
+        _ => None,
+    }
+}
+
 impl<D: crate::containers::Disk> super::Daemon<D> {
     /// `shards image inspect IMAGE...` (docker/cli inspect.Inspect): the documents of the
     /// images found, as one array, then what could not be found.
@@ -232,7 +277,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         let (mut documents, mut errors) = (Vec::new(), Vec::new());
         for given in args {
             match super::images::resolve(&images, given) {
-                Ok(image) => documents.push(document(image)),
+                Ok(image) => documents.push(document(image, record_name(given).as_deref())),
                 Err(e) => errors.push(format!("Error response from daemon: {e}")),
             }
         }

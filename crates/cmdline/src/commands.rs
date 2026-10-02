@@ -387,6 +387,28 @@ platform - l - -",
     error_prefix: "",
 };
 
+/// `shards load`.
+pub static LOAD: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Load an image from a tar archive or STDIN",
+    aliases: "shards image load, shards load",
+    args: Args::None,
+    flags: &[
+        HELP,
+        Flag::string(
+            "input",
+            Some(b'i'),
+            "",
+            "Read from tar archive file, instead of STDIN",
+        ),
+        Flag::bool("quiet", Some(b'q'), "Suppress the load output"),
+    ],
+    unserved: "\
+platform - l - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards tag`.
 pub static TAG: Command = Command {
     usage: "SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]",
@@ -682,6 +704,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["images", ..] => (&IMAGES, "shards images", 1),
         ["tag", ..] => (&TAG, "shards tag", 1),
         ["save", ..] => (&SAVE, "shards save", 1),
+        ["load", ..] => (&LOAD, "shards load", 1),
+        ["image", "load", ..] => (&LOAD, "shards image load", 2),
         ["image", "save", ..] => (&SAVE, "shards image save", 2),
         ["rmi", ..] => (&RMI, "shards rmi", 1),
         ["image", "rm" | "remove", ..] => (&RMI, "shards image rm", 2),

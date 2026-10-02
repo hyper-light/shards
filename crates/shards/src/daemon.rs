@@ -36,6 +36,7 @@ mod demand;
 mod health;
 mod images;
 mod inspect;
+mod load;
 mod logs;
 mod network;
 mod publish;

@@ -1,0 +1,35 @@
+#!/bin/sh
+# Compares `shards load` with `docker load`: each archive loaded by both, then what each
+# loaded inspected by both and diffed, LastTagTime left out. Images an archive's layers
+# may already be in (as compressed layers containerd reuses) are pulled into the shards
+# home first: `-p IMAGE`. Needs docker, and shards built: cargo build --release.
+#
+#   scripts/images/compare-load -p busybox:1.37 legacy.tar
+set -eu
+here=$(cd "$(dirname "$0")/../.." && pwd)
+shards="$here/target/release/shards"
+home=$(mktemp -d)
+trap 'SHARDS_HOME="$home" "$shards" daemon stop >/dev/null 2>&1 || true; rm -rf "$home"' EXIT
+status=0
+while [ $# -gt 0 ]; do
+	if [ "$1" = -p ]; then
+		SHARDS_HOME="$home" "$shards" pull -q "$2" >/dev/null
+		shift 2
+		continue
+	fi
+	archive=$1
+	shift
+	docker load -i "$archive" >"$home/docker.out"
+	SHARDS_HOME="$home" "$shards" load -i "$archive" >"$home/shards.out"
+	diff -u "$home/docker.out" "$home/shards.out" || status=1
+	sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' "$home/docker.out" | while read -r image; do
+		docker image inspect "$image" | grep -v '"LastTagTime"' >"$home/docker.json"
+		SHARDS_HOME="$home" "$shards" image inspect "$image" | grep -v '"LastTagTime"' >"$home/shards.json"
+		if diff -u "$home/docker.json" "$home/shards.json"; then
+			echo "$archive: $image the same"
+		else
+			echo "$archive: $image differs"
+		fi
+	done
+done
+exit $status
