@@ -1,5 +1,7 @@
 //! shards-init: PID 1 of every shards guest.
 
+#[cfg(target_os = "linux")]
+mod build;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod frames;
 #[cfg(target_os = "linux")]
@@ -8,6 +10,8 @@ mod linux;
 mod orders;
 #[cfg(target_os = "linux")]
 mod run;
+#[cfg(target_os = "linux")]
+mod tree;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod user;
 

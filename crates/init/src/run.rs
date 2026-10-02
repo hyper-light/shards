@@ -244,7 +244,7 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         mount(source, target, fstype, flags, data)?;
     }
     container_files()?;
-    loopback_up()
+    loopback_up().map_err(|e| setup_failed(e.to_string()))
 }
 
 /// What Docker gives every container beside its image (moby daemon/initlayer/setup_unix.go),
@@ -327,8 +327,11 @@ fn set_hostname(name: &[u8]) -> Result<(), Failure> {
 /// Brings the loopback interface up, as every container's network namespace has it,
 /// `--network none` included: the kernel then gives it 127.0.0.1/8 and ::1
 /// (netdevice(7), SIOCSIFFLAGS).
-fn loopback_up() -> Result<(), Failure> {
-    let failed = |what: &str| setup_failed(format!("bringing up lo: {what}: {}", io::Error::last_os_error()));
+pub(crate) fn loopback_up() -> io::Result<()> {
+    let failed = |what: &str| {
+        let e = io::Error::last_os_error();
+        io::Error::new(e.kind(), format!("bringing up lo: {what}: {e}"))
+    };
     // SAFETY: socket(2) with constant arguments.
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
     if fd < 0 {
@@ -358,7 +361,7 @@ fn loopback_up() -> Result<(), Failure> {
 
 /// Connects to a host port. Without blocking, the connection may still be in progress:
 /// the socket turns writable when it completes.
-fn dial(port: u32, blocking: bool) -> io::Result<File> {
+pub(crate) fn dial(port: u32, blocking: bool) -> io::Result<File> {
     let flags = libc::SOCK_STREAM | libc::SOCK_CLOEXEC | if blocking { 0 } else { libc::SOCK_NONBLOCK };
     // SAFETY: socket(2) with constant arguments.
     let fd = unsafe { libc::socket(libc::AF_VSOCK, flags, 0) };
@@ -405,7 +408,7 @@ fn connect_result(fd: RawFd) -> io::Result<()> {
 }
 
 /// Writes one frame, blocking.
-fn send(conn: &File, kind: u8, payload: &[u8]) -> io::Result<()> {
+pub(crate) fn send(conn: &File, kind: u8, payload: &[u8]) -> io::Result<()> {
     let len = u32::try_from(payload.len()).map_err(|_| io::Error::other("frame too long"))?;
     let mut w = conn;
     w.write_all(&run::header(kind, len))?;

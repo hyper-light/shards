@@ -24,6 +24,10 @@ pub fn main() {
     }
     // `shards_root=<device>` on the kernel command line: boot into the image on that
     // device and run the host's workload in it; with `shards_template=1`, snapshot first.
+    // `shards_build=1`: a builder for `shards build`'s steps (build.rs).
+    if std::env::var_os("shards_build").is_some() {
+        crate::build::main()
+    }
     if let Some(device) = std::env::var_os("shards_root") {
         let template = std::env::var_os("shards_template").is_some();
         crate::run::main(&device.to_string_lossy(), template)

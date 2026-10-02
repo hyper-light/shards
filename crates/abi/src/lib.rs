@@ -5,6 +5,7 @@
 
 extern crate alloc;
 
+pub mod build;
 pub mod changes;
 pub mod run;
 
