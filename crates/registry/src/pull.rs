@@ -913,6 +913,7 @@ mod tests {
             digest: sha256(manifest),
             size: i64::try_from(manifest.len()).unwrap(),
             platform: None,
+            annotations: Default::default(),
         };
         let digest = Digest::parse(&desc.digest).unwrap();
         store.tag(&reference.to_string(), &desc, &digest, &[]).unwrap();

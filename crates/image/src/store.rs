@@ -187,6 +187,42 @@ struct Tag {
     resolved: Option<String>,
 }
 
+/// An image the store's references name: what they resolved to (its ID, as dockerd's
+/// containerd store gives it), those references, when it was made (its config's
+/// `created`), its manifests, and the bytes of it here: its content, and its root
+/// filesystems.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Image {
+    pub id: Digest,
+    pub references: Vec<String>,
+    pub created: Option<String>,
+    pub manifests: Vec<ImageManifest>,
+    pub content: u64,
+    pub unpacked: u64,
+}
+
+/// A manifest of an image: its platform (`os/arch[/variant]`), whether it is an
+/// attestation, whether all of it is here, and the bytes of it that are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageManifest {
+    pub digest: Digest,
+    pub platform: Option<String>,
+    pub attestation: bool,
+    pub available: bool,
+    pub content: u64,
+    pub unpacked: u64,
+}
+
+/// A platform as containerd's platforms.Format writes it.
+fn platform_string(p: &oci::Platform) -> String {
+    let mut s = format!("{}/{}", p.os, p.architecture);
+    if let Some(v) = p.variant.as_deref().filter(|v| !v.is_empty()) {
+        s.push('/');
+        s.push_str(v);
+    }
+    s
+}
+
 /// Makes the entries of `dir` durable: the renames into it outlast a power loss.
 fn sync_dir(dir: &Path) -> Result<(), Error> {
     #[cfg(unix)]
@@ -731,6 +767,128 @@ impl Store {
             .map_err(|e| Error(format!("{reference}: {e}")))
     }
 
+    /// The images the references name, by what each resolved to, in its digest's order:
+    /// each one's references, manifests and what of it is here. A record that cannot be
+    /// read is left out.
+    pub fn images(&self) -> Result<Vec<Image>, Error> {
+        let mut images: Vec<Image> = Vec::new();
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            let Ok(bytes) = fs::read(entry?.path()) else {
+                continue;
+            };
+            let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) else {
+                continue;
+            };
+            let Ok(id) = Digest::parse(tag.resolved.as_deref().unwrap_or(&tag.manifest.digest)) else {
+                continue;
+            };
+            if let Some(image) = images.iter_mut().find(|i| i.id == id) {
+                image.references.push(tag.reference);
+                continue;
+            }
+            images.push(self.image(id, tag.reference, &tag.manifest)?);
+        }
+        for image in &mut images {
+            image.references.sort();
+        }
+        images.sort_by_key(|i| i.id.to_string());
+        Ok(images)
+    }
+
+    /// Image `id`, named by `reference`, whose manifest for our platform `ours` describes.
+    fn image(&self, id: Digest, reference: String, ours: &Descriptor) -> Result<Image, Error> {
+        let mut present: HashSet<Digest> = HashSet::new();
+        let mut size_of = |d: &Digest| -> u64 {
+            if !present.insert(d.clone()) {
+                return 0;
+            }
+            fs::metadata(self.blob_path(d)).map_or(0, |m| m.len())
+        };
+        // The index's manifests, checked against its digest, or the one manifest it is.
+        let mut index_size = 0;
+        let mut descriptors = vec![ours.clone()];
+        if id.to_string() != ours.digest
+            && let Ok(meta) = fs::metadata(self.blob_path(&id))
+        {
+            let desc = Descriptor {
+                media_type: String::new(),
+                digest: id.to_string(),
+                size: i64::try_from(meta.len()).unwrap_or(i64::MAX),
+                platform: None,
+                annotations: Default::default(),
+            };
+            if let Held::Whole(bytes) = self.held(&desc, oci::MAX_MANIFEST)?
+                && let Ok(index) = serde_json::from_slice::<oci::Index>(&bytes)
+            {
+                index_size = size_of(&id);
+                descriptors = index.manifests;
+            }
+        }
+        let mut manifests = Vec::with_capacity(descriptors.len());
+        let mut created = None;
+        for desc in descriptors {
+            let Ok(digest) = desc.digest() else { continue };
+            let attestation = desc
+                .annotations
+                .get("vnd.docker.reference.type")
+                .map(String::as_str)
+                == Some("attestation-manifest");
+            let mut listed = ImageManifest {
+                digest: digest.clone(),
+                platform: desc.platform.as_ref().map(platform_string),
+                attestation,
+                available: false,
+                content: 0,
+                unpacked: 0,
+            };
+            if let Held::Whole(bytes) = self.held(&desc, oci::MAX_MANIFEST)? {
+                listed.content = size_of(&digest);
+                if let Ok(oci::Document::Manifest(manifest)) = oci::parse_document(&bytes, &desc.media_type) {
+                    let mut whole = true;
+                    for part in std::iter::once(&manifest.config).chain(&manifest.layers) {
+                        match part.digest() {
+                            Ok(d) if self.has(&d) => listed.content += size_of(&d),
+                            _ => whole = false,
+                        }
+                    }
+                    listed.available = whole;
+                    if let Held::Whole(config) = self.held(&manifest.config, oci::MAX_CONFIG)?
+                        && let Ok(config) = oci::parse_config(&config)
+                    {
+                        if listed.platform.is_none() && !attestation {
+                            listed.platform = Some(platform_string(&oci::Platform {
+                                architecture: config.architecture.clone(),
+                                os: config.os.clone(),
+                                variant: config.variant.clone(),
+                                os_features: Vec::new(),
+                            }));
+                        }
+                        let diff_ids: Result<Vec<Digest>, _> =
+                            config.rootfs.diff_ids.iter().map(|d| Digest::parse(d)).collect();
+                        if let Ok(path) = diff_ids
+                            .map_err(|e| Error(e.to_string()))
+                            .and_then(|d| self.rootfs_path(&d))
+                        {
+                            listed.unpacked = fs::metadata(path).map_or(0, |m| m.len());
+                        }
+                        if desc.digest == ours.digest || created.is_none() {
+                            created = config.created.clone().or(created);
+                        }
+                    }
+                }
+            }
+            manifests.push(listed);
+        }
+        Ok(Image {
+            id,
+            references: vec![reference],
+            created,
+            content: index_size + manifests.iter().map(|m| m.content).sum::<u64>(),
+            unpacked: manifests.iter().map(|m| m.unpacked).sum(),
+            manifests,
+        })
+    }
+
     fn tag_record(&self, reference: &str) -> Result<Option<Tag>, Error> {
         let bytes = match fs::read(self.tag_path(reference)) {
             Ok(bytes) => bytes,
@@ -867,6 +1025,11 @@ impl Store {
             let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) else {
                 continue;
             };
+            // What it resolved to, an index, is kept as containerd keeps it: the list of
+            // the image's platforms (`images --tree`).
+            if let Some(resolved) = tag.resolved.as_deref().and_then(|d| Digest::parse(d).ok()) {
+                blobs.insert(self.blob_path(&resolved));
+            }
             let Ok(digest) = tag.manifest.digest() else {
                 continue;
             };
@@ -1416,12 +1579,126 @@ mod tests {
     }
 
     /// A descriptor of `size` bytes named `digest`.
+    /// Images are listed by what their references resolved to, newest first: each one's
+    /// references, its index's manifests (the attestation told apart, the one not here
+    /// not whole), and the bytes of it here, the index's among them.
+    #[test]
+    fn images_are_listed_by_what_their_references_resolved_to() {
+        let root = temp("images");
+        let store = Store::open(&root).unwrap();
+        let put = |blob: &[u8]| {
+            let d = sha256(blob);
+            store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
+            d
+        };
+        let layer = b"layer bytes".to_vec();
+        let config = |created: &str| {
+            format!(
+                r#"{{"architecture":"arm64","os":"linux","created":"{created}","rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+                sha256(&layer)
+            )
+            .into_bytes()
+        };
+        let manifest = |config: &[u8]| {
+            format!(
+                r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+                sha256(config),
+                config.len(),
+                sha256(&layer),
+                layer.len()
+            )
+            .into_bytes()
+        };
+        put(&layer);
+        let (old_config, new_config) = (config("2024-01-02T03:04:05Z"), config("2025-01-02T03:04:05Z"));
+        put(&old_config);
+        put(&new_config);
+        let (old, new) = (manifest(&old_config), manifest(&new_config));
+        let (old_digest, new_digest) = (put(&old), put(&new));
+        let absent = format!("sha256:{}", "1".repeat(64));
+        let attestation = format!("sha256:{}", "2".repeat(64));
+        let index = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{old_digest}","size":{},"platform":{{"architecture":"arm64","os":"linux","variant":"v8"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{absent}","size":9,"platform":{{"architecture":"amd64","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{attestation}","size":9,"annotations":{{"vnd.docker.reference.type":"attestation-manifest"}},"platform":{{"architecture":"unknown","os":"unknown"}}}}]}}"#,
+            old.len()
+        )
+        .into_bytes();
+        let index_digest = put(&index);
+        let desc = |d: &Digest, len: usize| Descriptor {
+            platform: None,
+            ..described(d, len)
+        };
+        store
+            .tag(
+                "docker.io/library/a:2",
+                &desc(&old_digest, old.len()),
+                &index_digest,
+                &[],
+            )
+            .unwrap();
+        store
+            .tag(
+                "docker.io/library/a:1",
+                &desc(&old_digest, old.len()),
+                &index_digest,
+                &[],
+            )
+            .unwrap();
+        store
+            .tag(
+                "docker.io/library/b:1",
+                &desc(&new_digest, new.len()),
+                &new_digest,
+                &[],
+            )
+            .unwrap();
+        let images = store.images().unwrap();
+        let by_id = |d: &Digest| images.iter().find(|i| i.id == *d).unwrap();
+        assert_eq!(images.len(), 2);
+        let a = by_id(&index_digest);
+        assert_eq!(a.references, ["docker.io/library/a:1", "docker.io/library/a:2"]);
+        assert_eq!(a.created.as_deref(), Some("2024-01-02T03:04:05Z"));
+        let here = (index.len() + old.len() + old_config.len() + layer.len()) as u64;
+        assert_eq!((a.content, a.unpacked), (here, 0));
+        let shown: Vec<(Option<&str>, bool, bool, u64)> = a
+            .manifests
+            .iter()
+            .map(|m| (m.platform.as_deref(), m.attestation, m.available, m.content))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (Some("linux/arm64/v8"), false, true, here - index.len() as u64),
+                (Some("linux/amd64"), false, false, 0),
+                (Some("unknown/unknown"), true, false, 0),
+            ]
+        );
+        let b = by_id(&new_digest);
+        assert_eq!(
+            (b.references.as_slice(), b.content),
+            (
+                &["docker.io/library/b:1".to_string()][..],
+                (new.len() + new_config.len() + layer.len()) as u64
+            )
+        );
+        assert_eq!(b.manifests.len(), 1);
+        assert_eq!(
+            b.manifests[0].platform.as_deref(),
+            Some("linux/arm64"),
+            "from its config"
+        );
+        // A layer the manifest names that has gone: the manifest is not whole.
+        fs::remove_file(store.blob_path(&sha256(&layer))).unwrap();
+        let images = store.images().unwrap();
+        assert!(!images.iter().find(|i| i.id == new_digest).unwrap().manifests[0].available);
+    }
+
     fn described(digest: &Digest, size: usize) -> Descriptor {
         Descriptor {
             media_type: oci::media::OCI_MANIFEST.into(),
             digest: digest.to_string(),
             size: i64::try_from(size).unwrap(),
             platform: None,
+            annotations: Default::default(),
         }
     }
 

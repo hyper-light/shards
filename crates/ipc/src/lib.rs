@@ -228,6 +228,11 @@ pub struct Command {
     /// of UTC then, in seconds: the Docker client reads `logs --since` by them.
     pub now: i64,
     pub utc_offset: i32,
+    /// Its stdout is a terminal of `width` columns (0 when it says none), and colours are
+    /// welcome there (no `NO_COLOR`): `images` lays its tree out by them.
+    pub terminal: bool,
+    pub width: u16,
+    pub color: bool,
     pub daemon: Identity,
 }
 
@@ -238,6 +243,9 @@ impl Command {
         w.push(u8::from(self.east_asian));
         w.extend_from_slice(&self.now.to_be_bytes());
         w.extend_from_slice(&self.utc_offset.to_be_bytes());
+        w.push(u8::from(self.terminal));
+        w.extend_from_slice(&self.width.to_be_bytes());
+        w.push(u8::from(self.color));
         put_identity(&mut w, &self.daemon);
         w
     }
@@ -250,6 +258,9 @@ impl Command {
             east_asian: r.flag()?,
             now: r.u64()? as i64,
             utc_offset: r.u32()? as i32,
+            terminal: r.flag()?,
+            width: u16::from_be_bytes(r.take(2)?.try_into().ok()?),
+            color: r.flag()?,
             daemon: r.identity()?,
         };
         r.0.is_empty().then_some(command)
@@ -857,6 +868,9 @@ mod tests {
             east_asian: true,
             now: -5,
             utc_offset: -18_000,
+            terminal: true,
+            width: 132,
+            color: true,
             daemon: identity,
         };
         let bytes = command.encode();

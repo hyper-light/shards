@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-use shards_cmdline::commands::{self, KILL, LOGS, PORT, PS, RM, STOP, WAIT};
+use shards_cmdline::commands::{self, IMAGES, KILL, LOGS, PORT, PS, RM, STOP, WAIT};
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
 use shards_ipc::kind;
@@ -35,11 +35,11 @@ const AT_ONCE: usize = 50;
 pub(super) struct Reply<'a>(pub &'a UnixStream);
 
 impl Reply<'_> {
-    fn out(&self, line: &str) {
+    pub(super) fn out(&self, line: &str) {
         let _ = self.bytes(LOG_STDOUT, format!("{line}\n").as_bytes());
     }
 
-    fn err(&self, line: &str) {
+    pub(super) fn err(&self, line: &str) {
         let _ = self.bytes(LOG_STDERR, format!("{line}\n").as_bytes());
     }
 
@@ -47,7 +47,7 @@ impl Reply<'_> {
     /// at most what one may carry: a line of any length arrives whole, and the client
     /// writes the pieces as they come (audit A08). An error means the client did not get
     /// them all.
-    fn bytes(&self, stream: u8, bytes: &[u8]) -> io::Result<()> {
+    pub(super) fn bytes(&self, stream: u8, bytes: &[u8]) -> io::Result<()> {
         let which = if stream == LOG_STDERR {
             kind::ERR
         } else {
@@ -302,6 +302,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.kill(&parsed, reply)
         } else if std::ptr::eq(command, &PORT) {
             self.port(&parsed.args, reply)
+        } else if std::ptr::eq(command, &IMAGES) {
+            self.images(&parsed, asker, reply)
         } else {
             reply.err(&format!("shards: {path} is not a container command"));
             1
@@ -1326,7 +1328,7 @@ fn image(stored: &str, trunc: bool) -> String {
 }
 
 /// A duration in nanoseconds, in words, as go-units v0.5.0 `HumanDuration` puts it.
-fn human_duration(ns: u128) -> String {
+pub(super) fn human_duration(ns: u128) -> String {
     let seconds = ns / 1_000_000_000;
     let minutes = seconds / 60;
     // Go rounds the hours: int(d.Hours() + 0.5).
@@ -1371,7 +1373,7 @@ fn status(c: &Container, at: u128, health: Option<super::health::Status>) -> Str
 /// `rows` aligned as the Docker CLI's tabwriter aligns them (minimum width 10, padding 3,
 /// spaces; docker/cli cli/command/formatter/tabwriter): each column but the last is as
 /// wide as its widest cell plus 3, and at least 10, in go-runewidth's columns.
-fn tabulate<const N: usize>(rows: &[[String; N]], east_asian: bool) -> Vec<String> {
+pub(super) fn tabulate<const N: usize>(rows: &[[String; N]], east_asian: bool) -> Vec<String> {
     let cell_width = |cell: &str| width::string_width(cell, east_asian);
     let mut widths = [10usize; N];
     for row in rows {
@@ -1406,6 +1408,10 @@ pub(super) struct Asker {
     /// seconds, for `logs --since` and `--until`.
     pub now: i64,
     pub utc_offset: i32,
+    /// Their stdout: a terminal of so many columns, and whether colours are welcome.
+    pub terminal: bool,
+    pub width: u16,
+    pub color: bool,
 }
 
 /// The times `logs` shows lines between, as dockerd's log forwarder keeps them (moby

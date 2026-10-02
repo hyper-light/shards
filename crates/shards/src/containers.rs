@@ -50,6 +50,10 @@ pub struct Container {
     /// alone (no address, public port 0), as dockerd lists them.
     #[serde(default)]
     pub ports: Vec<PortRecord>,
+    /// Its image's ID, what its reference resolved to as it was made (`images` counts
+    /// the containers of each); none in a record from before shards kept it.
+    #[serde(default)]
+    pub image_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -575,6 +579,7 @@ mod tests {
             stop_signal: None,
             stop_timeout: None,
             ports: Vec::new(),
+            image_id: None,
         }
     }
 

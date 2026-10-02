@@ -21,8 +21,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served, shards, shards_net, shards_vm,
-    shardsd,
+    Run, TempDir, cannot_run_vms, guest_init, kernel, registry, run_shards_env, served, sha256_digest,
+    shards, shards_net, shards_vm, shardsd, test_index,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -1570,4 +1570,133 @@ fn published_udp_ports_carry_datagrams_both_ways() {
     assert_eq!(exit(&mut run), Some(0));
     // Ended, its port is free at once.
     drop(UdpSocket::bind(("0.0.0.0", n)).unwrap());
+}
+
+/// Bytes from a size as go-units writes it (`13.4MB`), and whether `bytes` would be
+/// written so: within the rounding of three significant digits.
+fn size_shows(shown: &str, bytes: u64) -> bool {
+    let split = shown.find(|c: char| c.is_ascii_alphabetic()).unwrap();
+    let (n, unit) = shown.split_at(split);
+    let scale = match unit {
+        "B" => 1.0,
+        "kB" => 1e3,
+        "MB" => 1e6,
+        "GB" => 1e9,
+        _ => panic!("{shown}"),
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let bytes = bytes as f64;
+    (n.parse::<f64>().unwrap() * scale - bytes).abs() <= bytes * 0.005
+}
+
+/// `shards images` as `docker images` lists images (Docker 29, its containerd store): an
+/// image by what its reference resolved to, an index here, its sizes those of what is
+/// here of it, its platforms with `--tree`, in use while a container of it is; the table
+/// with `-q`, `--no-trunc` and `--digests`; and only what a pattern matches when given.
+#[test]
+fn images_lists_what_was_pulled_as_docker_images_does() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (index, blobs) = test_index();
+    let (port, _) = registry(index.clone(), blobs);
+    let image = format!("127.0.0.1:{port}/test/image:v1");
+    let home = TempDir::new("containers-images");
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let pulled = shards(&["pull", &image]);
+    let id = sha256_digest(&index);
+    assert!(pulled.stdout.contains(&format!("Digest: {id}")), "{pulled}");
+    let short = id.strip_prefix("sha256:").and_then(|hex| hex.get(..12)).unwrap();
+    // What is here of it: its index, our manifest, config and layer; and its root
+    // filesystem.
+    let dir_bytes = |dir: &Path| -> u64 {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().metadata().unwrap().len())
+            .sum()
+    };
+    let content = dir_bytes(&home.join("images/blobs/sha256"));
+    let rootfs: u64 = std::fs::read_dir(home.join("images/rootfs"))
+        .unwrap()
+        .map(|v| dir_bytes(&v.unwrap().path()))
+        .sum();
+    let listed = shards(&["images"]);
+    assert_eq!(listed.status, Some(0), "{listed}");
+    let lines: Vec<&str> = listed.stdout.lines().collect();
+    let w = image.len();
+    assert_eq!(
+        lines[0],
+        format!(
+            "{:<w$}   ID             DISK USAGE   CONTENT SIZE   EXTRA",
+            "IMAGE"
+        ),
+        "{listed}"
+    );
+    let row: Vec<&str> = lines[1].split_whitespace().collect();
+    assert_eq!(&row[..2], &[image.as_str(), short], "{listed}");
+    assert!(
+        size_shows(row[2], content + rootfs),
+        "{} of {}",
+        row[2],
+        content + rootfs
+    );
+    assert!(size_shows(row[3], content), "{} of {content}", row[3]);
+    assert_eq!(lines.len(), 2, "{listed}");
+    // Its platforms: ours, here; the other, not fetched; the attestation, not listed.
+    let (ours, other) = if cfg!(target_arch = "aarch64") {
+        ("arm64", "amd64")
+    } else {
+        ("amd64", "arm64")
+    };
+    let tree = shards(&["images", "--tree"]);
+    assert!(tree.stdout.contains(&format!("├─ linux/{ours} ")), "{tree}");
+    assert!(tree.stdout.contains(&format!("└─ linux/{other} ")), "{tree}");
+    assert!(!tree.stdout.contains("unknown"), "{tree}");
+    // The table.
+    assert_eq!(shards(&["images", "-q"]).stdout, format!("{short}\n"));
+    let full = shards(&["images", "--no-trunc"]);
+    assert!(full.stdout.starts_with("REPOSITORY "), "{full}");
+    assert!(
+        full.stdout.contains(" v1 ") && full.stdout.contains(&format!(" {id} ")),
+        "{full}"
+    );
+    let digests = shards(&["images", "--digests"]);
+    let repo = format!("127.0.0.1:{port}/test/image");
+    assert!(
+        digests.stdout.lines().nth(1).unwrap().starts_with(&repo),
+        "{digests}"
+    );
+    assert!(digests.stdout.contains(&format!(" {id} ")), "{digests}");
+    // In use while a container of it is.
+    let ran = run_in(&home, &image, &["-d", "--name", "user"], &["sleep"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let used = shards(&["images"]);
+    assert!(used.stdout.lines().nth(1).unwrap().ends_with(" U    "), "{used}");
+    let tree = shards(&["images", "--tree"]);
+    let mine = tree
+        .stdout
+        .lines()
+        .find(|l| l.contains(&format!("linux/{ours}")))
+        .unwrap();
+    assert!(mine.ends_with(" U    "), "{tree}");
+    assert_eq!(shards(&["rm", "-f", "user"]).status, Some(0));
+    // A pattern, matched as Go's path.Match matches the familiar and whole names.
+    let none = shards(&["images", "nothing"]);
+    assert_eq!(none.stdout.lines().count(), 1, "{none}");
+    let some = shards(&["image", "ls", "127.0.0.1:*/test/*"]);
+    assert_eq!(some.stdout, listed.stdout, "{some}");
+    // `*` stops at `/`: no name of it is one segment.
+    assert_eq!(shards(&["image", "list", "*:v1"]).stdout.lines().count(), 1);
+    // Newest first: an image built from it now, before it, which records no time.
+    let ctx = TempDir::new("containers-images-ctx");
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nLABEL built=yes\n")).unwrap();
+    let built = shards(&["build", "-q", "-t", "built:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{built}");
+    let ids: Vec<String> = shards(&["images", "-q"])
+        .stdout
+        .lines()
+        .map(String::from)
+        .collect();
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert_eq!(ids[1], short, "{ids:?}");
 }

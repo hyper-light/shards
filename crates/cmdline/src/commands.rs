@@ -311,6 +311,35 @@ size s b false -",
     error_prefix: "",
 };
 
+/// `shards images`.
+pub static IMAGES: Command = Command {
+    usage: "[OPTIONS] [REPOSITORY[:TAG]]",
+    about: "List images",
+    aliases: "shards image ls, shards image list, shards images",
+    args: Args::AtMost(1),
+    flags: &[
+        Flag::bool(
+            "all",
+            Some(b'a'),
+            "Show all images (default hides intermediate and dangling images)",
+        ),
+        Flag::bool("digests", None, "Show digests"),
+        HELP,
+        Flag::bool("no-trunc", None, "Don't truncate output"),
+        Flag::bool("quiet", Some(b'q'), "Only show image IDs"),
+        Flag::bool(
+            "tree",
+            None,
+            "List multi-platform images as a tree (EXPERIMENTAL)",
+        ),
+    ],
+    unserved: "\
+filter f m - -\n\
+format - s - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards wait`.
 pub static WAIT: Command = Command {
     usage: "CONTAINER [CONTAINER...]",
@@ -591,6 +620,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["container", "exec", ..] => (&EXEC, "shards container exec", 2),
         ["container", "kill", ..] => (&KILL, "shards container kill", 2),
         ["port", ..] => (&PORT, "shards port", 1),
+        ["images", ..] => (&IMAGES, "shards images", 1),
+        ["image", "ls" | "list", ..] => (&IMAGES, "shards image ls", 2),
         ["container", "port", ..] => (&PORT, "shards container port", 2),
         _ => return None,
     })

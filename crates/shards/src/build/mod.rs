@@ -913,6 +913,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         digest: manifest_digest.to_string(),
         size: i64::try_from(manifest.len()).map_err(|e| e.to_string())?,
         platform: None,
+        annotations: Default::default(),
     };
     let mut contents = vec![manifest_digest.clone(), config_digest.clone()];
     contents.extend(store_layers.iter().map(|l| l.blob.clone()));

@@ -114,6 +114,7 @@ mod tests {
                 variant: variant.map(Into::into),
                 os_features: Vec::new(),
             }),
+            annotations: Default::default(),
         }
     }
 

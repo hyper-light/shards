@@ -34,6 +34,7 @@ use crate::containers::{self, Container, Disk, Real, Registry, Removal, State as
 mod commands;
 mod demand;
 mod health;
+mod images;
 mod logs;
 mod network;
 mod publish;
@@ -1055,6 +1056,9 @@ impl<D: Disk> Daemon<D> {
                     east_asian: command.east_asian,
                     now: command.now,
                     utc_offset: command.utc_offset,
+                    terminal: command.terminal,
+                    width: command.width,
+                    color: command.color,
                 };
                 let status = self.command(&command.argv, &asker, &commands::Reply(conn));
                 let _ = shards_ipc::send(conn, kind::END, &[status], &[]);
@@ -1466,6 +1470,7 @@ impl<D: Disk> Daemon<D> {
             id: id.to_string(),
             name: name.clone(),
             image: run.image.clone(),
+            image_id: Some(prepared.image_id.clone()),
             command: prepared
                 .spec
                 .argv
@@ -3157,6 +3162,7 @@ mod tests {
                 health: None,
                 shell: Vec::new(),
                 exposed: Vec::new(),
+                image_id: String::new(),
             };
             self.t.daemon.create(&run, &prepared, &id, Vec::new()).unwrap();
             self.t.daemon.record_arrival(self.threads, &id);
@@ -3273,6 +3279,9 @@ mod tests {
             east_asian: false,
             now: 0,
             utc_offset: 0,
+            terminal: false,
+            width: 0,
+            color: false,
         };
         let status = daemon.command(&argv, &asker, &commands::Reply(&ours));
         drop(ours);
@@ -3559,6 +3568,9 @@ mod tests {
             east_asian: false,
             now: 0,
             utc_offset: 0,
+            terminal: false,
+            width: 0,
+            color: false,
             daemon: Identity::default(),
         };
         shards_ipc::send(&client, kind::CONTAINER, &command.encode(), &[]).unwrap();
@@ -3909,6 +3921,9 @@ mod tests {
                         east_asian: false,
                         now: 0,
                         utc_offset: 0,
+                        terminal: false,
+                        width: 0,
+                        color: false,
                     };
                     daemon.command(&argv, &asker, &commands::Reply(&ours))
                 });
@@ -3956,6 +3971,9 @@ mod tests {
             east_asian: false,
             now: 0,
             utc_offset: 0,
+            terminal: false,
+            width: 0,
+            color: false,
         };
         let status = daemon.command(&argv, &asker, &commands::Reply(&ours));
         drop(ours);
@@ -4076,6 +4094,9 @@ mod tests {
                     east_asian: false,
                     now: 0,
                     utc_offset: 0,
+                    terminal: false,
+                    width: 0,
+                    color: false,
                 };
                 daemon.command(&argv, &asker, &commands::Reply(&ours))
             });

@@ -230,6 +230,60 @@
   },
   {
     "argv": [
+      "images",
+      "--help"
+    ],
+    "stdout": "Usage:  shards images [OPTIONS] [REPOSITORY[:TAG]]\n\nList images\n\nAliases:\n  shards image ls, shards image list, shards images\n\nOptions:\n  -a, --all        Show all images (default hides intermediate and\n                   dangling images)\n      --digests    Show digests\n      --no-trunc   Don't truncate output\n  -q, --quiet      Only show image IDs\n      --tree       List multi-platform images as a tree (EXPERIMENTAL)\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "images",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards images' requires at most 1 argument\n\nUsage:  shards images [OPTIONS] [REPOSITORY[:TAG]]\n\nRun 'shards images --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "images",
+      "-aq",
+      "--digests",
+      "--no-trunc",
+      "--tree",
+      "alpine"
+    ],
+    "stdout": "RUN --all=true --digests=true --no-trunc=true --quiet=true --tree=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "ls",
+      "--format",
+      "x"
+    ],
+    "stdout": "RUN --format=x\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "list",
+      "-f",
+      "dangling=true"
+    ],
+    "stdout": "RUN --filter={\"dangling\":{\"true\":true}}\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "port"
     ],
     "stdout": "",

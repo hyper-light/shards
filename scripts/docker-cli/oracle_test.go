@@ -41,6 +41,7 @@ var served = map[string][]string{
 	"stop": {"help", "signal", "time", "timeout"},
 	"kill": {"help", "signal"},
 	"port": {"help"},
+	"images": {"all", "digests", "help", "no-trunc", "quiet", "tree"},
 	"exec": {"detach", "detach-keys", "env", "help", "interactive", "tty", "user", "workdir"},
 }
 
@@ -66,6 +67,11 @@ var cases = [][]string{
 	{"run", "-p", "8080:80", "-p", "127.0.0.1::81/udp", "-P", "alpine"},
 	{"run", "--publish=80", "--publish-all=false", "alpine"},
 	{"run", "-p"},
+	{"images", "--help"},
+	{"images", "a", "b"},
+	{"images", "-aq", "--digests", "--no-trunc", "--tree", "alpine"},
+	{"image", "ls", "--format", "x"},
+	{"image", "list", "-f", "dangling=true"},
 	{"port"},
 	{"port", "--help"},
 	{"port", "a", "b", "c"},

@@ -55,6 +55,8 @@ pub struct Prepared {
     pub shell: Vec<String>,
     /// The image's `EXPOSE`d ports, `80/tcp` and the like.
     pub exposed: Vec<String>,
+    /// The image's ID: what its reference resolved to.
+    pub image_id: String,
 }
 
 /// The health check a run's container has, as dockerd merges the run's with its image's
@@ -193,6 +195,7 @@ pub fn prepare(
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| vec!["/bin/sh".into(), "-c".into()]),
         exposed: image.config.config.map(|c| c.exposed_ports).unwrap_or_default(),
+        image_id: image.resolved.to_string(),
     })
 }
 

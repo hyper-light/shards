@@ -42,6 +42,10 @@ pub struct Descriptor {
     pub size: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<Platform>,
+    /// Kept as written, and written only if any: an index's tell which of its manifests
+    /// are attestations (`vnd.docker.reference.type`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub annotations: std::collections::BTreeMap<String, String>,
 }
 
 impl Descriptor {
@@ -96,6 +100,9 @@ pub struct ImageConfig {
     pub os: String,
     #[serde(default)]
     pub variant: Option<String>,
+    /// When it was made, as RFC 3339 (image-spec config.md).
+    #[serde(default)]
+    pub created: Option<String>,
     #[serde(default)]
     pub config: Option<RunConfig>,
     pub rootfs: RootFs,

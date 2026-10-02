@@ -90,6 +90,11 @@ fn container(
                     }),
                     now: now_ns(),
                     utc_offset: utc_offset(),
+                    // SAFETY: isatty(3) on this process's stdout.
+                    terminal: unsafe { libc::isatty(1) } == 1,
+                    width: terminal::size(1).1,
+                    // docker/cli's tui.NewOutput: any NO_COLOR but an empty one.
+                    color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
                     daemon: identity,
                 },
             ),

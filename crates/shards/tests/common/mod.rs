@@ -714,10 +714,24 @@ pub fn registry_of(image: Served) -> (u16, Arc<AtomicUsize>, Served) {
                     let (manifest, blobs) = image.lock().unwrap().clone();
                     let mut parts = line.split(' ');
                     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                    // A document's own media type: an index's, or a manifest's.
+                    let kind = |doc: &[u8]| {
+                        if doc.windows(b"image.index".len()).any(|w| w == b"image.index") {
+                            "application/vnd.oci.image.index.v1+json"
+                        } else {
+                            "application/vnd.oci.image.manifest.v1+json"
+                        }
+                    };
                     let body = if path == "/v2/test/image/manifests/v1"
                         || path == format!("/v2/test/image/manifests/{}", sha256_digest(&manifest))
                     {
-                        Some((manifest.clone(), "application/vnd.oci.image.manifest.v1+json"))
+                        Some((manifest.clone(), kind(&manifest)))
+                    } else if let Some(d) = path.strip_prefix("/v2/test/image/manifests/") {
+                        // The manifests an index names, kept among the blobs.
+                        blobs
+                            .iter()
+                            .find(|b| sha256_digest(b) == d)
+                            .map(|b| (b.clone(), kind(b)))
                     } else {
                         path.strip_prefix("/v2/test/image/blobs/")
                             .and_then(|d| blobs.iter().find(|b| sha256_digest(b) == d))
@@ -841,6 +855,32 @@ pub fn test_image_with(variant: Option<&[u8]>) -> (Vec<u8>, Vec<Vec<u8>>) {
     )
     .into_bytes();
     (manifest, vec![config, layer])
+}
+
+/// The test image behind an index, as multi-platform images are served: its manifest
+/// for this host's platform, one for another architecture that is never fetched, and an
+/// attestation for ours, as BuildKit writes one. Returns the index and its blobs, the
+/// manifests among them.
+pub fn test_index() -> (Vec<u8>, Vec<Vec<u8>>) {
+    let (manifest, mut blobs) = test_image();
+    let (arch, other) = match std::env::consts::ARCH {
+        "aarch64" => ("arm64", "amd64"),
+        _ => ("amd64", "arm64"),
+    };
+    let attestation = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","size":2},"layers":[]}"#.to_vec();
+    let index = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"platform":{{"architecture":"{arch}","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:{}","size":1234,"platform":{{"architecture":"{other}","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"annotations":{{"vnd.docker.reference.digest":"{}","vnd.docker.reference.type":"attestation-manifest"}},"platform":{{"architecture":"unknown","os":"unknown"}}}}]}}"#,
+        sha256_digest(&manifest),
+        manifest.len(),
+        "1".repeat(64),
+        sha256_digest(&attestation),
+        attestation.len(),
+        sha256_digest(&manifest),
+    )
+    .into_bytes();
+    blobs.push(manifest);
+    blobs.push(attestation);
+    (index, blobs)
 }
 
 /// Serves the test image with `variant` ([`test_image_with`]) at

@@ -213,6 +213,7 @@ impl Registry {
                 digest: digest.to_string(),
                 size: i64::try_from(size).map_err(|_| Error::new(format!("{name}: a size past i64")))?,
                 platform: None,
+                annotations: Default::default(),
             });
         }
         Err(Error::of(ErrorKind::NotFound, format!("{name}: not found")))

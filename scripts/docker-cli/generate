@@ -52,10 +52,12 @@ curl -fsSL -A shards-dev -o "$cli/shards-time/daemon/timestamp.go" \
 cp "$here/oracle_test.go" "$cli/cmd/docker/zz_shards_oracle_test.go"
 cp "$here/ps_test.go" "$cli/cli/command/formatter/zz_shards_ps_test.go"
 cp "$here/network_test.go" "$cli/cli/command/container/zz_shards_network_test.go"
+cp "$here/images_test.go" "$cli/cli/command/image/zz_shards_images_test.go"
 cleanup() {
 	rm -rf "$cli/shards-tables" "$cli/shards-time" "$cli/cmd/docker/zz_shards_oracle_test.go" \
 		"$cli/cli/command/formatter/zz_shards_ps_test.go" \
-		"$cli/cli/command/container/zz_shards_network_test.go"
+		"$cli/cli/command/container/zz_shards_network_test.go" \
+		"$cli/cli/command/image/zz_shards_images_test.go"
 }
 trap 'cleanup; [ -z "${1:-}" ] && rm -rf "$cli"' EXIT
 cd "$cli"
@@ -67,3 +69,5 @@ SHARDS_PS_OUT="$root/crates/shards/src/daemon/docker-ps.json" \
 	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsPs$' ./cli/command/formatter/
 SHARDS_NETWORK_OUT="$root/crates/cmdline/tests/go-network.json" \
 	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsNetwork$' ./cli/command/container/
+SHARDS_IMAGES_OUT="$root/crates/shards/src/daemon/docker-images.json" \
+	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsImages$' ./cli/command/image/
