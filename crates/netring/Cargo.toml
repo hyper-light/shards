@@ -1,0 +1,14 @@
+[package]
+name = "shards-netring"
+version = "0.1.0"
+description = "Frames between a VM process and its network process, in shared memory"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

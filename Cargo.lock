@@ -927,6 +927,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-netring"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "shards-registry"
 version = "0.1.0"
 dependencies = [
