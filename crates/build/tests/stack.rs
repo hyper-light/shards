@@ -493,9 +493,24 @@ fn steps() -> Vec<(&'static str, Value, Option<&'static str>)> {
             Some("a hard link only some of whose names a layer has"),
         ),
         (
+            // overlayfs copies /hl1 up alone: /hl2 keeps the file as it was.
             "one name of a base hard link changed",
             json!([[{"kind": "chmod", "path": "/hl1", "mode": 0o600}]]),
+            None,
+        ),
+        (
+            // The copy up of /hl1 is what /hl3 shares, and /hl2 keeps the first, as in
+            // BuildKit's next snapshot. But the differ judges /hl1 unchanged and writes
+            // /hl3 alone, so the layers keep /hl1 with /hl2 and /hl3 apart: not the
+            // snapshot's grouping, which the stack does not follow.
+            "a new name for one name of a base hard link",
+            json!([[link("/hl1", "/hl3")]]),
             Some("a hard link only some of whose names a layer has"),
+        ),
+        (
+            "one name of a base hard link renamed",
+            json!([[{"kind": "rename", "old": "/hl1", "new": "/etc/hl1"}]]),
+            None,
         ),
         (
             "one name of a base hard link removed",

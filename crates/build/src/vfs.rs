@@ -157,6 +157,9 @@ pub struct Fs {
     /// Where paths resolve from: the snapshot's root, or a directory [`Fs::chroot`] made
     /// the root.
     root: NodeId,
+    /// The first node this step made: those before it are the snapshot below's, which a
+    /// change copies up first ([`Fs::copy_up`]).
+    first: NodeId,
 }
 
 impl Fs {
@@ -164,11 +167,13 @@ impl Fs {
     /// [`Fs::begin`] starts one.
     pub fn new(mut tree: Tree, now: (i64, u32)) -> Fs {
         tree.next_step();
+        let first = tree.len();
         Fs {
             tree,
             now,
             upper: Upper::default(),
             root: Tree::ROOT,
+            first,
         }
     }
 
@@ -193,6 +198,38 @@ impl Fs {
     pub fn begin(&mut self) {
         self.upper = Upper::default();
         self.tree.next_step();
+        self.first = self.tree.len();
+    }
+
+    /// overlayfs's copy-up, before a step changes what `entry` names: a file of the
+    /// snapshot below is copied, and the step changes the copy, so the file's other names,
+    /// its hard links, keep the file as it was. overlayfs without its index breaks a hard
+    /// link so (Documentation/filesystems/overlayfs.rst; containerd mounts with
+    /// `index=off`), and BuildKit's next step sees the names apart: after `chmod 600 /a`
+    /// of `/a` and `/b` linked below, `/b` keeps its mode, and the layer has `/a` alone
+    /// (Docker Desktop's BuildKit, 2026-10-01). A directory, the root, and what this step
+    /// made or copied already are changed where they are. The node to change.
+    fn copy_up(&mut self, id: NodeId, entry: Option<EntryId>) -> NodeId {
+        if self.is_dir(id) {
+            return id;
+        }
+        let Some((dir, name)) = entry
+            .and_then(|e| self.tree.entry(e))
+            .map(|(d, n)| (d, n.to_vec()))
+        else {
+            return id;
+        };
+        let Some((_, now)) = self.tree.lookup(dir, &name) else {
+            return id;
+        };
+        if now >= self.first {
+            return now;
+        }
+        let Some(node) = self.tree.node(now).cloned() else {
+            return now;
+        };
+        // An entry replaced in place: the name of an existing directory entry is valid.
+        self.tree.insert(dir, &name, node).unwrap_or(now)
     }
 
     /// Records what `entry` names as changed, and the directories above it as copied up.
@@ -527,7 +564,7 @@ impl Fs {
     /// `link(2)`, which does not follow `old` if it is a symlink.
     pub fn link(&mut self, old: &[u8], new: &[u8]) -> Result<(), PathError> {
         let both = linked(old, new);
-        let target = self.lstat(old).map_err(|e| PathError {
+        let (target, entry) = self.lookup("link", old, false).map_err(|e| PathError {
             op: "link",
             path: both.clone(),
             errno: e.errno,
@@ -539,6 +576,9 @@ impl Fs {
             path: both.clone(),
             ..e
         })?;
+        // overlayfs links the copy up of a file below.
+        let target = self.copy_up(target, entry);
+        self.mark(entry);
         self.tree.link(dir, &name, target).map_err(|_| PathError {
             op: "link",
             path: both.clone(),
@@ -558,6 +598,7 @@ impl Fs {
                 if self.is_dir(id) {
                     return fail("open", path, Errno::IsDir);
                 }
+                let id = self.copy_up(id, entry);
                 let now = self.now;
                 if let Some(n) = self.node_mut(id)
                     && let Kind::File { size, .. } = &mut n.kind
@@ -721,6 +762,8 @@ impl Fs {
             Err(e) => return fail("rename", &both, e),
         };
         let ocanon = self.path_in(odir, &oname);
+        // overlayfs renames the copy up of a file below.
+        self.copy_up(id, Some(oentry));
         self.tree
             .rename(odir, &oname, ndir, &nname)
             .map_err(|_| PathError {
@@ -747,6 +790,7 @@ impl Fs {
 
     /// [`Fs::chmod`] of what a path led to, symlinks followed.
     pub fn chmod_node(&mut self, id: NodeId, entry: Option<EntryId>, mode: u32) {
+        let id = self.copy_up(id, entry);
         if let Some(n) = self.node_mut(id) {
             n.meta.mode = (mode & 0o7777) as u16;
         }
@@ -762,6 +806,7 @@ impl Fs {
 
     /// [`Fs::lchown`] of what a path led to.
     pub fn lchown_node(&mut self, id: NodeId, entry: Option<EntryId>, uid: u32, gid: u32) {
+        let id = self.copy_up(id, entry);
         self.mark(entry);
         let dir = self.is_dir(id);
         if let Some(n) = self.node_mut(id) {
@@ -793,6 +838,7 @@ impl Fs {
 
     /// [`Fs::utimes`] of what a path led to.
     pub fn utimes_node(&mut self, id: NodeId, entry: Option<EntryId>, t: (i64, u32)) {
+        let id = self.copy_up(id, entry);
         self.mark(entry);
         if let Some(n) = self.node_mut(id) {
             n.meta.mtime = t.0;
@@ -839,6 +885,7 @@ impl Fs {
         if let Some(errno) = errno {
             return Err(errno);
         }
+        let id = self.copy_up(id, entry);
         self.mark(entry);
         if let Some(n) = self.node_mut(id) {
             n.meta.xattrs.insert(key.to_vec(), value.to_vec());

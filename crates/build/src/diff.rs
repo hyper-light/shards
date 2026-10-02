@@ -655,6 +655,27 @@ mod tests {
         names
     }
 
+    /// A change to one name of a hard-linked file below is made to its copy up, as
+    /// overlayfs without its index makes it: `/b` keeps the mode `/a` loses, they are two
+    /// files after, and the layer has `/a` alone. Docker Desktop's BuildKit gave the same
+    /// for `RUN echo shared > /a && ln /a /b` then `RUN chmod 600 /a` (2026-10-01): `/a`
+    /// mode 600 and one link, `/b` mode 644, and a layer of `a` alone.
+    #[test]
+    fn a_change_to_one_name_of_a_hard_link_below_leaves_the_others() {
+        let mut lower = empty();
+        lower.create(b"/a", 0o644).unwrap();
+        lower.link(b"/a", b"/b").unwrap();
+        lower.begin();
+        let mut upper = lower.clone();
+        upper.begin();
+        upper.chmod(b"/a", 0o600).unwrap();
+        let (a, b) = (upper.lstat(b"/a").unwrap(), upper.lstat(b"/b").unwrap());
+        assert_ne!(a, b, "two files after");
+        assert_eq!(upper.node(a).unwrap().meta.mode, 0o600);
+        assert_eq!(upper.node(b).unwrap().meta.mode, 0o644);
+        assert_eq!(names(&lower, &upper), ["a"]);
+    }
+
     /// A snapshot records what changes from the moment it is made, with no step begun,
     /// as COPY --link's scratch snapshot is used; and beginning a step starts the record
     /// again. A snapshot made without one recorded nothing, and its layer was empty.

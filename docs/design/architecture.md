@@ -1639,6 +1639,14 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
        bounded what ADD may unpack. A build's ADDs now hold to the limits a pull holds to
        (`SHARDS_MAX_IMAGE_BYTES`, `_ENTRIES`, `_METADATA`, `SHARDS_KEEP_FREE`), when set,
        stopping at the step that passes them, with nothing left in the store.
+     - Copy-up as overlayfs makes it: a step's change to a file of the snapshot below
+       (its mode, owner, times, xattrs, content, a rename, a new link to it) is made to
+       a copy, so its other names keep the file as it was. overlayfs without its index
+       breaks a hard link so, and containerd mounts with `index=off`; Docker Desktop's
+       BuildKit gave `/a` mode 600 with one link and `/b` mode 644 after `RUN echo shared
+       > /a && ln /a /b` then `RUN chmod 600 /a`, and a layer of `a` alone (2026-10-01).
+       No file operation reaches this today (COPY and ADD replace their targets), but RUN
+       will, and its guest mounts its overlay with `index=off` too.
      - Open: untagged images. A build without `-t`, and the image a moved tag named,
        stay in the store, as Docker keeps dangling images until they are pruned; shards
        has no `images`, `rmi` or `image prune` yet to show and remove them.
