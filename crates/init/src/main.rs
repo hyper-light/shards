@@ -12,8 +12,6 @@ mod orders;
 mod run;
 #[cfg(target_os = "linux")]
 mod tree;
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-mod user;
 
 fn main() {
     #[cfg(target_os = "linux")]

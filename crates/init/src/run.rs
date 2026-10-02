@@ -16,7 +16,7 @@ use shards_abi::{control, marker};
 use crate::frames::{Outbox, each_frame};
 use crate::linux::power_off;
 use crate::orders::{Orders, cstrings, pointers};
-use crate::user::{self, ExecUser};
+use shards_user::{self as user, ExecUser};
 
 /// `docker run`'s status for a command that never ran, when nothing says more
 /// (docker/cli cli/command/container/run.go, toStatusError).

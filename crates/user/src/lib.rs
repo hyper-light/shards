@@ -49,6 +49,66 @@ pub fn resolve(spec: &[u8], passwd: Option<&[u8]>, group: Option<&[u8]>) -> Resu
     })
 }
 
+/// The largest /etc/passwd or /etc/group BuildKit reads (executor/oci/user.go,
+/// maxUserFileBytes): a larger one is an error.
+pub const BUILDKIT_USER_FILE: usize = 10 << 20;
+
+/// The user a BuildKit step runs as (dockerfile/1.27.1 executor/oci/user.go, GetUser and
+/// WithUIDGID): no user is `0`, whose lookup cannot fail; `uid:gid`, each a decimal
+/// number or `root`, is taken as it is, the files unread, with no supplementary groups;
+/// anything else is moby's GetExecUser with no defaults. The primary group is always
+/// among the groups, first if it was missing.
+pub fn buildkit(spec: &[u8], passwd: Option<&[u8]>, group: Option<&[u8]>) -> Result<ExecUser, String> {
+    let (spec, default) = if spec.is_empty() {
+        (&b"0"[..], true)
+    } else {
+        (spec, false)
+    };
+    let (uid, gid, sgids) = match fast_uid_gid(spec) {
+        Some((uid, gid)) => (uid, gid, Vec::new()),
+        None => {
+            let defaults = Resolved {
+                uid: 0,
+                gid: 0,
+                sgids: Vec::new(),
+                home: Vec::new(),
+            };
+            match get_exec_user(spec, &defaults, passwd, group) {
+                // Go's uint32 conversions.
+                Ok(r) => (
+                    r.uid as u32,
+                    r.gid as u32,
+                    r.sgids.iter().map(|&g| g as u32).collect(),
+                ),
+                Err(_) if default => (0, 0, Vec::new()),
+                Err(e) => return Err(e),
+            }
+        }
+    };
+    let mut groups: Vec<u32> = sgids;
+    if !groups.contains(&gid) {
+        groups.insert(0, gid);
+    }
+    Ok(ExecUser { uid, gid, groups })
+}
+
+/// ParseUIDGID: both parts given, each `root` or what strconv.ParseUint(s, 10, 32) takes.
+fn fast_uid_gid(spec: &[u8]) -> Option<(u32, u32)> {
+    let colon = spec.iter().position(|&b| b == b':')?;
+    let (u, g) = (spec.get(..colon)?, spec.get(colon + 1..)?);
+    let id = |s: &[u8]| -> Option<u32> {
+        if s == b"root" {
+            return Some(0);
+        }
+        if s.is_empty() || !s.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        s.iter()
+            .try_fold(0u32, |n, &d| n.checked_mul(10)?.checked_add(u32::from(d - b'0')))
+    };
+    Some((id(u)?, id(g)?))
+}
+
 /// runc's prepareEnv: the last value of each variable wins, in first-seen order; an empty
 /// HOME is dropped, and a missing one comes from /etc/passwd for `uid`, or is `/`.
 pub fn prepare_env(env: &[Vec<u8>], uid: u32, passwd: Option<&[u8]>) -> Result<Vec<Vec<u8>>, String> {
@@ -354,6 +414,35 @@ fn parse_group(data: &[u8]) -> Result<Vec<Group<'_>>, String> {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// BuildKit's rules, beside Docker's (executor/oci/user.go).
+    #[test]
+    fn buildkit_resolves_a_steps_user_as_buildkit_does() {
+        let passwd = Some(&b"root:x:0:0:root:/root:/bin/sh\napp:x:1000:1001:app:/home/app:/bin/sh\n"[..]);
+        let group = Some(&b"root:x:0:\napp:x:1001:\ndev:x:50:app\nwheel:x:10:other\n"[..]);
+        let user = |spec: &[u8], p, g| buildkit(spec, p, g).map(|u| (u.uid, u.gid, u.groups));
+        // No user: root, even with no files and a lookup that cannot work.
+        assert_eq!(user(b"", None, None), Ok((0, 0, vec![0])));
+        // Both numbers: taken as they are, the files unread, no other groups.
+        assert_eq!(user(b"1000:7", passwd, group), Ok((1000, 7, vec![7])));
+        assert_eq!(user(b"root:root", None, None), Ok((0, 0, vec![0])));
+        assert_eq!(user(b"4294967295:0", None, None), Ok((u32::MAX, 0, vec![0])));
+        // A number alone is looked up: its primary group from passwd, its groups by name.
+        assert_eq!(user(b"1000", passwd, group), Ok((1000, 1001, vec![1001, 50])));
+        assert_eq!(user(b"app", passwd, group), Ok((1000, 1001, vec![1001, 50])));
+        // A number with no entry: gid 0.
+        assert_eq!(user(b"4242", passwd, group), Ok((4242, 0, vec![0])));
+        // An explicit group gives no supplementary groups.
+        assert_eq!(user(b"app:dev", passwd, group), Ok((1000, 50, vec![50])));
+        // A name not found is an error, worded as moby words it.
+        assert!(
+            user(b"nobody", passwd, group)
+                .unwrap_err()
+                .contains("unable to find user nobody")
+        );
+        // A number past u32 is no fast path, and past moby's range an error.
+        assert!(user(b"4294967296:0", passwd, group).is_err());
+    }
 
     const PASSWD: &str = "
 root:x:0:0:root user:/root:/bin/bash

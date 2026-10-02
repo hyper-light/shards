@@ -36,6 +36,7 @@ alloc-count = []
 
 [dependencies]
 shards-abi = { path = "../abi" }
+shards-user = { path = "../user" }
 shards-build = { path = "../build" }
 shards-cmdline = { path = "../cmdline" }
 shards-dockerfile = { path = "../dockerfile" }

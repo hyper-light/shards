@@ -14,3 +14,4 @@ workspace = true
 libc = { workspace = true }
 shards-abi = { path = "../abi" }
 shards-cmdline = { path = "../cmdline" }
+shards-user = { path = "../user" }

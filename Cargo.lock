@@ -858,6 +858,7 @@ dependencies = [
  "shards-ipc",
  "shards-registry",
  "shards-testguest",
+ "shards-user",
  "shards-vmm",
  "windows-sys 0.61.2",
 ]
@@ -875,6 +876,7 @@ dependencies = [
  "libc",
  "lzma-rust2",
  "serde_json",
+ "shards-abi",
  "shards-dockerfile",
  "shards-image",
 ]
@@ -914,6 +916,7 @@ dependencies = [
  "libc",
  "shards-abi",
  "shards-cmdline",
+ "shards-user",
 ]
 
 [[package]]
@@ -950,6 +953,10 @@ dependencies = [
  "libc",
  "shards-abi",
 ]
+
+[[package]]
+name = "shards-user"
+version = "0.1.0"
 
 [[package]]
 name = "shards-vmm"
