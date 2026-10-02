@@ -420,21 +420,24 @@ The store keeps what a pull fetches and what guests boot from. The code is
   ChainID, so images with the same layer stack share one. One build at a time goes on in
   a store, under its lock, whichever process asks, and a second build of an image finds
   the first's (audit A10).
-- **Limits** (audit A10). A build refuses, and leaves nothing, once it would take more
-  than its limits allow; it reads and writes in proportion to them, so they bound its
-  time too. Each is a setting of the daemon:
-  - `SHARDS_MAX_IMAGE_BYTES` (64 GiB): what its layers decompress to, together, which
-    `ingest/` holds while it builds. A compression bomb stops there.
-  - `SHARDS_MAX_IMAGE_ENTRIES` (4 Mi) and `SHARDS_MAX_IMAGE_METADATA` (1 GiB): its
-    entries, about 610 bytes of memory each as it builds, and the bytes of their names,
-    links and xattrs. Real images hold about 34 000 entries (PM M47).
+- **Limits** (audit A10). By default nothing but the machine bounds a build, as nothing
+  bounds containerd's unpacking or a BuildKit build: containerd v2.3.6 applies a layer
+  with no cap on its decompressed bytes or entries (`core/diff/apply`, `pkg/archive`), and
+  BuildKit v0.33.1 only collects its cache after builds, by a policy sized from the disk
+  (`cmd/buildkitd/config/gcpolicy.go`, `control/control.go`). A full disk fails the
+  write, and the build leaves nothing. The defaults had been multiples of three images'
+  sizes (PM M47) and a per-entry memory cost since cut by four (PM M78): a guess, now
+  gone. Each setting of the daemon sets a limit where an operator wants one; a build
+  then refuses, and leaves nothing, once it would pass it:
+  - `SHARDS_MAX_IMAGE_BYTES`: what its layers decompress to, together, which `ingest/`
+    holds while it builds. An image whose layers, as its manifest declares them, are
+    larger is refused before any is downloaded.
+  - `SHARDS_MAX_IMAGE_ENTRIES` and `SHARDS_MAX_IMAGE_METADATA`: its entries, held in
+    memory as it builds, and the bytes of their names, links and xattrs.
   - `SHARDS_KEEP_FREE`: what it leaves free on the store's filesystem, looked at as it
-    starts and every 64 MiB it writes: 5% of the filesystem, as ext4 keeps back by
-    default (mke2fs(8) `-m`), at most 10 GiB, so a large disk nearly full still takes
-    images. Downloads keep it too: one whose declared size would not leave it is refused
-    before it starts, and one stops as it goes once it would.
-  - An image whose layers, as its manifest declares them, are larger than it may
-    decompress to is refused before any is downloaded.
+    starts and every 64 MiB it writes. Downloads keep it too: one whose declared size
+    would not leave it is refused before it starts, and one stops as it goes once it
+    would. Unset, nothing is looked at.
   - The unpacked tars exist only while it is built.
   - Its directory is versioned, and the version is bumped whenever the EROFS writer's
     output changes.
@@ -1616,8 +1619,8 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
        detect it was taken for no archive (the tar reader read on into that file's data;
        it now skips data when the next entry is asked for, as Go's does); and nothing
        bounded what ADD may unpack. A build's ADDs now hold to the limits a pull holds to
-       (`SHARDS_MAX_IMAGE_BYTES`, `_ENTRIES`, `_METADATA`, `SHARDS_KEEP_FREE`), stopping
-       at the step that passes them, with nothing left in the store.
+       (`SHARDS_MAX_IMAGE_BYTES`, `_ENTRIES`, `_METADATA`, `SHARDS_KEEP_FREE`), when set,
+       stopping at the step that passes them, with nothing left in the store.
      - Open: untagged images. A build without `-t`, and the image a moved tag named,
        stay in the store, as Docker keeps dangling images until they are pruned; shards
        has no `images`, `rmi` or `image prune` yet to show and remove them.

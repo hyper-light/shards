@@ -74,7 +74,7 @@ pub fn prepare(
     let found = match asked.pull {
         Pull::Always => None,
         Pull::Missing | Pull::Never => {
-            let limits = crate::pull::limits(home)?;
+            let limits = crate::pull::limits()?;
             match local(&store, &reference, &platform::guest(), &limits) {
                 // A stored copy that has changed is fetched again, as a pull mends it.
                 Err(e) if e.kind() == ErrorKind::Changed && asked.pull == Pull::Missing => {

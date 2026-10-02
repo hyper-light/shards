@@ -163,7 +163,7 @@ impl Bases<'_> {
             )));
         }
         let reference = Reference::parse(name).map_err(|e| fail(e.to_string()))?;
-        let limits = crate::pull::limits(self.home).map_err(fail)?;
+        let limits = crate::pull::limits().map_err(fail)?;
         let local = if self.pull {
             None
         } else {
@@ -516,7 +516,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     // The steps, each after what it reads: base images and the context as snapshots,
     // file operations and merges run here; RUN is for the steps to come.
     let def = plan.definition();
-    let limits = crate::pull::limits(&home)?;
+    let limits = crate::pull::limits()?;
     let mut exec = exec::Exec::new(&store, &limits);
     let mut results: Vec<Vec<exec::Ref>> = Vec::with_capacity(def.ops.len());
     // What other operations read, so a base image is unpacked only when one does.

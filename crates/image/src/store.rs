@@ -643,8 +643,12 @@ impl Store {
             offset = offset.saturating_add(n as u64);
         }
         let ingest = self.root.join("ingest");
-        let free = (limits.available)(&ingest)?;
         let left = size.saturating_sub(offset);
+        // With nothing to leave free, a full disk fails the write, as it fails containerd's.
+        let free = match limits.keep_free {
+            0 => u64::MAX,
+            _ => (limits.available)(&ingest)?,
+        };
         if free < limits.keep_free.saturating_add(left) {
             return Err(io::Error::new(
                 io::ErrorKind::StorageFull,
@@ -1157,6 +1161,10 @@ impl Room {
 
     fn look(&mut self) -> io::Result<()> {
         self.since = 0;
+        // Nothing to leave free: nothing to look at, and a full disk fails the write.
+        if self.keep_free == 0 {
+            return Ok(());
+        }
         let free = (self.available)(&self.dir)?;
         if free < self.keep_free.saturating_add(LOOK_EVERY) {
             return Err(io::Error::new(
@@ -2051,6 +2059,37 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// With nothing to leave free, the default, a build and a download never look at the
+    /// room their filesystem has, however little it says it has: as containerd's
+    /// unpacking and BuildKit's builds, they write until done or until the disk fails the
+    /// write.
+    #[test]
+    fn nothing_kept_free_never_looks_at_the_room() {
+        let root = temp("no-room-kept");
+        let store = Store::open(&root).unwrap();
+        let blob = vec![9u8; 96 << 20];
+        let none = Limits {
+            available: |_| Err(io::Error::other("looked at the room")),
+            ..Limits::none()
+        };
+        let layer = stored_layer(
+            &store,
+            &Writer::default()
+                .member(Member {
+                    name: b"f",
+                    data: &blob,
+                    ..Member::default()
+                })
+                .finish(),
+        );
+        store.rootfs(std::slice::from_ref(&layer), &none).unwrap();
+        let d = sha256(&blob);
+        let mut w = store.download(&d, blob.len() as u64, &none).unwrap().unwrap();
+        w.write(&blob).unwrap();
+        w.commit().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// Builds of one image at once, from two stores on one directory, as two processes
     /// would have: one builds it, and the other finds it built (audit A10).
     #[test]
@@ -2069,9 +2108,10 @@ mod tests {
                 })
                 .finish(),
         );
-        // A build looks at its room as it starts: the number of looks is the number of
-        // builds.
+        // A build that keeps room free looks at it as it starts: the number of looks is the
+        // number of builds.
         let counting = Limits {
+            keep_free: 1,
             available: |_| {
                 LOOKS.fetch_add(1, Ordering::SeqCst);
                 std::thread::sleep(std::time::Duration::from_millis(50));
