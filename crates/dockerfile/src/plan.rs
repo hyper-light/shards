@@ -265,6 +265,8 @@ struct Planner<'a> {
     /// stage has said which of its paths it uses.
     context: Output,
     proxy: Option<llb::ProxyEnv>,
+    /// The .dockerignore's patterns, once dispatch begins, if it has any.
+    ignore: Option<crate::glob::PatternMatcher>,
 }
 
 /// Plans `text` as Dockerfile2LLB does.
@@ -385,6 +387,7 @@ fn plan_with(text: &[u8], opts: &Options, resolver: &dyn Resolver, linter: &Lint
         path_sets: Vec::new(),
         graph,
         context,
+        ignore: None,
     };
     p.build_dispatch_states(ins.stages)?;
     let target = p.resolve_target()?;
@@ -1501,6 +1504,9 @@ impl Planner<'_> {
     }
 
     fn dispatch_stages(&mut self, reachable: &BTreeSet<usize>, target: usize) -> Result<(), Fail> {
+        if !self.opts.excludes.is_empty() {
+            self.ignore = Some(crate::glob::PatternMatcher::new(&self.opts.excludes).map_err(Fail::new)?);
+        }
         for d in 0..self.states.len() {
             if !reachable.contains(&d) || self.states.get(d).is_none_or(|s| s.dispatched) {
                 continue;
@@ -1816,7 +1822,7 @@ impl Planner<'_> {
                     parents: false,
                     unpack: a.unpack,
                 };
-                self.dispatch_copy(d, cfg)?;
+                self.dispatch_copy(d, cfg, &loc, &lint)?;
                 let ds = self.ds(d)?;
                 for src in &a.sources.paths {
                     if !src.starts_with(b"http://") && !src.starts_with(b"https://") {
@@ -1862,7 +1868,7 @@ impl Planner<'_> {
                     parents: c.parents,
                     unpack: None,
                 };
-                self.dispatch_copy(d, cfg)?;
+                self.dispatch_copy(d, cfg, &loc, &lint)?;
                 match step.sources.first() {
                     None => {
                         let ds = self.ds(d)?;
@@ -2322,7 +2328,13 @@ impl Planner<'_> {
         Ok(())
     }
 
-    fn dispatch_copy(&mut self, d: usize, cfg: CopyConfig) -> Result<(), Fail> {
+    fn dispatch_copy(
+        &mut self,
+        d: usize,
+        cfg: CopyConfig,
+        loc: &Location,
+        lint: &LinterView<'_>,
+    ) -> Result<(), Fail> {
         let multi = self.opts.multi_platform;
         let target_platform = self.target_platform.clone();
         let ds = self
@@ -2449,6 +2461,12 @@ impl Planner<'_> {
                     },
                 });
                 continue;
+            }
+            // What ADD reads, and COPY from the context, is held to the .dockerignore.
+            if cfg.from.is_none()
+                && let Some(ignore) = self.ignore.as_mut()
+            {
+                validate_copy_source_path(ignore, src, cfg.is_add, loc, lint);
             }
             let (mut src, mut patterns, mut required) = (src.clone(), Vec::new(), Vec::new());
             if cfg.parents {
@@ -2699,6 +2717,43 @@ struct CopyConfig {
     checksum: Vec<u8>,
     parents: bool,
     unpack: Option<bool>,
+}
+
+/// `validateCopySourcePath`: a warning for a source the .dockerignore excludes. Nothing is
+/// said where its patterns hold an exclusion, which a file under an excluded directory may
+/// be named by, nor of the context's root unless a pattern excludes every entry of it.
+fn validate_copy_source_path(
+    ignore: &mut crate::glob::PatternMatcher,
+    src: &[u8],
+    is_add: bool,
+    loc: &Location,
+    lint: &LinterView<'_>,
+) {
+    if ignore.exclusions() {
+        return;
+    }
+    let src = go::clean(src);
+    let root_ignored = || {
+        ignore
+            .patterns()
+            .iter()
+            .any(|p| !p.exclusion() && matches!(p.text(), b"*" | b"**" | b"**/*"))
+    };
+    if (src == b"." || src == b"/") && !root_ignored() {
+        return;
+    }
+    // Its error is ignored, as dispatchCopy ignores it.
+    if ignore.matches_or_parent_matches(&src).unwrap_or(false) {
+        let cmd: &[u8] = if is_add { b"Add" } else { b"Copy" };
+        let msg = errb(&[
+            b"Attempting to ",
+            cmd,
+            b" file ",
+            go::quote(&src).as_bytes(),
+            b" that is excluded by .dockerignore",
+        ]);
+        lint.run(&lint::COPY_IGNORED_FILE, loc, Some(&msg));
+    }
 }
 
 fn set_dep(deps: &mut Vec<(usize, Location)>, s: usize, loc: &Location) {
@@ -3592,6 +3647,56 @@ mod tests {
             Err(b"no answer".to_vec()),
         );
         assert_eq!(failed.err().map(|e| e.message), Some(b"no answer".to_vec()));
+    }
+
+    /// The CopyIgnoredFile warnings planning `text` with `ignore` as the .dockerignore.
+    fn ignored(text: &str, ignore: &[&str]) -> Vec<String> {
+        let opts = Options {
+            target_platform: Platform::new("linux", "amd64"),
+            excludes: ignore.iter().map(|p| p.as_bytes().to_vec()).collect(),
+            ..Default::default()
+        };
+        let times = Times {
+            asked: Default::default(),
+            answer: Ok(None),
+        };
+        let planned = plan(text.as_bytes(), &opts, &times).unwrap();
+        planned
+            .warnings
+            .iter()
+            .filter(|w| w.rule == "CopyIgnoredFile")
+            .map(|w| format!("{} {:?}", String::from_utf8_lossy(&w.message), w.location))
+            .collect()
+    }
+
+    /// What ADD reads, and COPY from the context, is warned of where the .dockerignore
+    /// excludes it or a directory above it, its name cleaned (validateCopySourcePath);
+    /// nothing is said of a stage's files, of anything once a pattern excludes from the
+    /// exclusions, or of the context's root unless a pattern excludes all of it.
+    #[test]
+    fn copying_what_the_dockerignore_excludes_is_warned_of() {
+        let text = "FROM scratch AS s\nFROM scratch\nCOPY ./docs/../README.md /\nADD secret/key notes.txt /\n\
+                    COPY --from=s README.md /\nCOPY . /\n";
+        assert_eq!(
+            ignored(text, &["*.md", "secret"]),
+            [
+                "Attempting to Copy file \"README.md\" that is excluded by .dockerignore [(3, 3)]",
+                "Attempting to Add file \"secret/key\" that is excluded by .dockerignore [(4, 4)]",
+            ]
+        );
+        assert!(ignored(text, &["*.md", "secret", "!keep.md"]).is_empty());
+        assert_eq!(
+            ignored(text, &["**"]),
+            [
+                "Attempting to Copy file \"README.md\" that is excluded by .dockerignore [(3, 3)]",
+                "Attempting to Add file \"secret/key\" that is excluded by .dockerignore [(4, 4)]",
+                "Attempting to Add file \"notes.txt\" that is excluded by .dockerignore [(4, 4)]",
+                "Attempting to Copy file \".\" that is excluded by .dockerignore [(6, 6)]",
+            ]
+        );
+        assert!(ignored(text, &[]).is_empty());
+        // `.` matches the root, yet excludes nothing of it (measured, dockerfile/1.27.1).
+        assert!(ignored("FROM scratch\nCOPY . /\nCOPY / /\n", &["."]).is_empty());
     }
 
     /// `strings.Index`: an empty needle is at the start.
