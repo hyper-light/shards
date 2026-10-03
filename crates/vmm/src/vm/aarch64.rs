@@ -307,8 +307,10 @@ fn assemble(
         let block = Block::open(path, *read_only, &format!("shards-disk{i}"))?;
         add_virtio(&mut bus, Box::new(block))?;
     }
-    for (region, gpa) in regions {
-        add_virtio(&mut bus, Box::new(pmem::Pmem::new(region, gpa)))?;
+    // The devices share the regions: `regions`, made before the VM, holds them until
+    // after it on every early return, the hypervisor mapping them until its destroy.
+    for (region, gpa) in &regions {
+        add_virtio(&mut bus, Box::new(pmem::Pmem::new(region.clone(), *gpa)))?;
     }
     if config.vsock {
         let host = hosts

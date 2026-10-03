@@ -442,8 +442,10 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
     // of it is shared, and each part goes as soon as its owner is done with it.
     let start_bytes = machine::start_bytes(&start);
     let (starts, rest) = machine::split(start, vcpus as usize)?;
-    let vm = Arc::new(vm);
+    // The bus before the VM, so that an early return drops the VM first: the hypervisor
+    // maps the bus's device memory until the VM is destroyed (Machine's own order).
     let bus = Arc::new(bus);
+    let vm = Arc::new(vm);
     let shared = Arc::new(Shared::new(vcpus));
     let sh = shared.clone();
     power.on_event(Box::new(move |event| {
@@ -456,7 +458,14 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
     let mut threads = Vec::with_capacity(vcpus as usize + 1);
     if let Some(policy) = snapshots {
         let sh = shared.clone();
-        control.on_snapshot(Box::new(move || sh.request_snapshot()));
+        // One snapshot per VM, a template's: a guest's later requests are passed by,
+        // rather than each parking every vCPU and writing all of memory again.
+        let asked = std::sync::atomic::AtomicBool::new(false);
+        control.on_snapshot(Box::new(move || {
+            if !asked.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                sh.request_snapshot();
+            }
+        }));
         let job = Coordinator {
             sh: shared.clone(),
             vm: vm.clone(),
@@ -594,7 +603,7 @@ fn vcpu_thread(
     }
 }
 
-/// Writes a snapshot whenever the guest asks, once every vCPU has parked.
+/// Writes the snapshot the guest asks for, once every vCPU has parked.
 struct Coordinator {
     sh: Arc<Shared>,
     vm: Arc<hv::Vm>,
@@ -607,69 +616,72 @@ struct Coordinator {
 impl Coordinator {
     fn run(self) {
         let stopping = || self.sh.exiting();
-        loop {
-            if !self.sh.snapshot.wait_parked(&stopping) {
-                return;
-            }
-            let t0 = crate::log::uptime_us();
-            *lock(&self.sh.committing) = true;
-            let committed = self.take(t0);
-            *lock(&self.sh.committing) = false;
-            self.sh.committed.notify_all();
-            if !committed {
-                return;
-            }
+        if !self.sh.snapshot.wait_parked(&stopping) {
+            return;
         }
+        let t0 = crate::log::uptime_us();
+        *lock(&self.sh.committing) = true;
+        self.take(t0);
+        *lock(&self.sh.committing) = false;
+        self.sh.committed.notify_all();
     }
 
-    /// Takes one snapshot, its vCPUs parked; whether the VM goes on.
-    fn take(&self, t0: u128) -> bool {
+    /// Takes the snapshot, its vCPUs parked. A VM that resumes after it serves its run
+    /// whatever becomes of the snapshot: one that fails is only a template lost, which
+    /// the daemon finds missing; a VM that only saves one ends with why.
+    fn take(&self, t0: u128) {
         let stopping = || self.sh.exiting();
-        let failed = |e: String| {
-            self.sh.stop(ExitReason::Error(e));
-            false
+        let resume = matches!(self.policy.then, AfterSnapshot::Resume);
+        let go_on = || match self.bus.resume() {
+            Ok(()) => self.sh.snapshot.release(),
+            Err(e) => self.sh.stop(ExitReason::Error(format!("resuming devices: {e}"))),
+        };
+        // `parked`: whether the guest still waits for the snapshot.
+        let failed = |e: String, parked: bool| {
+            if !resume {
+                return self.sh.stop(ExitReason::Error(e));
+            }
+            warn!("{e}; the VM goes on without its snapshot");
+            if parked {
+                go_on();
+            }
         };
         // Every vCPU is out of the guest: the devices go quiet, and only then does each
         // vCPU capture its state.
         self.bus.pause();
         let captured = match self.sh.snapshot.capture(&stopping) {
-            None => return false,
-            Some(Err(e)) => return failed(format!("snapshot: {e}")),
+            None => return,
+            Some(Err(e)) => return failed(format!("snapshot: {e}"), true),
             Some(Ok(captured)) => captured,
         };
         let staged = match self.stage(captured) {
             Ok(staged) => staged,
-            Err(e) => return failed(format!("snapshot: {e}")),
+            Err(e) => return failed(format!("snapshot: {e}"), true),
         };
         info!(
             "snapshot written to {} in {} us",
             self.policy.dir.display(),
             crate::log::uptime_us().saturating_sub(t0)
         );
-        if let AfterSnapshot::Resume = self.policy.then {
+        if resume {
             if self.policy.working_set {
                 self.record(staged.name().to_string());
             }
-            if let Err(e) = self.bus.resume() {
-                return failed(format!("resuming devices: {e}"));
-            }
-            self.sh.snapshot.release();
+            go_on();
         }
         // Durable, and in use, with the guest running again: its files hold all of it
         // already (PM M63). The process ends only once this thread has.
         let t1 = crate::log::uptime_us();
         if let Err(e) = staged.commit() {
-            return failed(format!("snapshot: {e}"));
+            return failed(format!("snapshot: {e}"), false);
         }
         info!(
             "snapshot made durable in {} us",
             crate::log::uptime_us().saturating_sub(t1)
         );
-        if let AfterSnapshot::Stop = self.policy.then {
+        if !resume {
             self.sh.stop(ExitReason::Snapshotted);
-            return false;
         }
-        true
     }
 
     /// Starts recording the working set of `generation`, the snapshot just written, with

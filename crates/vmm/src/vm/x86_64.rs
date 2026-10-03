@@ -262,12 +262,8 @@ fn assemble(
         .memory_mib
         .checked_mul(MIB)
         .ok_or_else(|| format!("{} MiB of guest memory", config.memory_mib))?;
-    let vm = hv::Vm::new(hv::VmConfig { vcpus: config.vcpus }).map_err(|e| e.to_string())?;
-    for (gpa, host, len) in memory.regions() {
-        // SAFETY: `memory` outlives the VM: `Machine` and `Running` drop the VM first.
-        unsafe { vm.map_ram(host, gpa, len) }.map_err(|e| e.to_string())?;
-    }
-    // Device memory (pmem regions) goes above 4 GiB, after any high RAM.
+    // Device memory (pmem regions) goes above 4 GiB, after any high RAM. Opened before
+    // the VM, so that on every early return they outlive it.
     let mut regions = Vec::with_capacity(config.pmem.len());
     let mut next = (layout::MMIO_GAP_END + ram.saturating_sub(layout::MMIO_GAP)).next_multiple_of(GIB);
     for path in &config.pmem {
@@ -276,11 +272,18 @@ fn assemble(
         next = gpa
             .checked_add(region.len() as u64)
             .ok_or("pmem regions overflow the address space")?;
-        // SAFETY: the region outlives the VM: its device sits on the bus, which
-        // `Machine` and `Running` drop after the VM.
-        unsafe { vm.map_device_memory(region.host(), gpa, region.len(), false) }
-            .map_err(|e| e.to_string())?;
         regions.push((region, gpa));
+    }
+    let vm = hv::Vm::new(hv::VmConfig { vcpus: config.vcpus }).map_err(|e| e.to_string())?;
+    for (gpa, host, len) in memory.regions() {
+        // SAFETY: `memory` outlives the VM: `Machine` and `Running` drop the VM first.
+        unsafe { vm.map_ram(host, gpa, len) }.map_err(|e| e.to_string())?;
+    }
+    for (region, gpa) in &regions {
+        // SAFETY: the region outlives the VM: `regions` holds it until after the VM here,
+        // and its device sits on the bus, which `Machine` and `Running` drop after the VM.
+        unsafe { vm.map_device_memory(region.host(), *gpa, region.len(), false) }
+            .map_err(|e| e.to_string())?;
     }
     let irqs = vm.irqs();
     debug!("VM created and RAM mapped");
@@ -323,8 +326,10 @@ fn assemble(
         let block = Block::open(path, *read_only, &format!("shards-disk{i}"))?;
         add_virtio(&mut bus, Box::new(block))?;
     }
-    for (region, gpa) in regions {
-        add_virtio(&mut bus, Box::new(pmem::Pmem::new(region, gpa)))?;
+    // The devices share the regions: `regions`, made before the VM, holds them until
+    // after it on every early return, the hypervisor mapping them until its destroy.
+    for (region, gpa) in &regions {
+        add_virtio(&mut bus, Box::new(pmem::Pmem::new(region.clone(), *gpa)))?;
     }
     if config.vsock {
         let host = hosts

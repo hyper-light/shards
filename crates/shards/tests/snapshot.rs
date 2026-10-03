@@ -153,6 +153,25 @@ fn the_original_guest_can_continue_after_its_snapshot() {
     assert!(clone.stdout.contains("SHARDS-TEST PASS"), "{clone}");
 }
 
+/// A VM that resumes after its snapshot serves its run whatever becomes of the snapshot:
+/// one that cannot be written loses the template, not the run.
+#[cfg(unix)]
+#[test]
+fn a_snapshot_that_cannot_be_written_stops_no_resumed_run() {
+    use std::os::unix::fs::PermissionsExt as _;
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let s = Scratch::new("snapshot-unwritable");
+    std::fs::create_dir_all(s.snapshot()).unwrap();
+    std::fs::set_permissions(s.snapshot(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let r = boot_and_snapshot(&s, "resume");
+    std::fs::set_permissions(s.snapshot(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains("generation=0"), "{r}");
+    assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
+}
+
 #[test]
 fn damaged_or_missing_snapshots_are_refused() {
     if cannot_run_vms() || cannot_snapshot() {

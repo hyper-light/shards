@@ -4,21 +4,26 @@
 //! (docs/research/boot-latency.md). The guest also asks for snapshots here, reads how
 //! many restores precede it, and says which contract its init speaks.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use shards_abi::control;
+use shards_abi::{control, marker};
 
 use super::{MmioDevice, get_le, put_le};
 use crate::snapshot::codec::{Reader, Result, Writer};
-use crate::sync::lock;
 
 pub type SnapshotRequest = Box<dyn Fn() + Send + Sync>;
 
+/// The markers a guest may send: shards_abi::marker's, 1 to POWERING_OFF.
+const MARKERS: usize = marker::POWERING_OFF as usize + 1;
+
 #[derive(Default)]
 pub struct Control {
-    /// `(marker, microseconds since VMM start)`, in arrival order.
-    markers: Mutex<Vec<(u32, u128)>>,
+    /// Each marker's first arrival, in microseconds since the VMM started, plus one; 0 for
+    /// none yet. A table, not a list: a guest writing markers without end costs nothing.
+    first: [AtomicU64; MARKERS],
+    /// Whether a request for a snapshot no policy serves has been said.
+    said_unserved: AtomicBool,
     generation: AtomicU32,
     /// The identity the guest's init announced (`control::ABI`), or 0 before it does.
     abi: AtomicU64,
@@ -34,8 +39,17 @@ impl std::fmt::Debug for Control {
 }
 
 impl Control {
+    /// Each marker that came, `(marker, µs since the VMM started)`, at its first
+    /// arrival, in the order they came.
     pub fn markers(&self) -> Vec<(u32, u128)> {
-        lock(&self.markers).clone()
+        let mut came: Vec<(u32, u128)> = (0..MARKERS)
+            .filter_map(|m| {
+                let at = self.first.get(m)?.load(Ordering::Acquire);
+                Some((u32::try_from(m).ok()?, u128::from(at.checked_sub(1)?)))
+            })
+            .collect();
+        came.sort_by_key(|&(_, at)| at);
+        came
     }
 
     /// Where guest snapshot requests go. Without one, requests are ignored.
@@ -84,12 +98,21 @@ impl MmioDevice for Control {
         match offset {
             control::MARKER => {
                 let at = crate::log::uptime_us();
-                crate::info!("guest marker {value} at {at} us");
-                lock(&self.markers).push((value, at));
+                let stamp = u64::try_from(at).unwrap_or(u64::MAX - 1).saturating_add(1);
+                if let Some(first) = usize::try_from(value).ok().and_then(|m| self.first.get(m))
+                    && first
+                        .compare_exchange(0, stamp, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                {
+                    crate::info!("guest marker {value} at {at} us");
+                }
             }
             control::SNAPSHOT if value == control::SNAPSHOT_NOW => match self.on_snapshot.get() {
                 Some(request) => request(),
-                None => crate::warn!("guest asked for a snapshot, but snapshots are not enabled"),
+                None if !self.said_unserved.swap(true, Ordering::Relaxed) => {
+                    crate::warn!("guest asked for a snapshot, but snapshots are not enabled");
+                }
+                None => {}
             },
             _ => {}
         }
@@ -121,6 +144,26 @@ impl MmioDevice for Control {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A marker counts at its first arrival; one past the guest's markers, and every
+    /// repeat, cost nothing, however many come.
+    #[test]
+    fn markers_count_once_and_hold_nothing_more() {
+        let c = Control::default();
+        c.write(control::MARKER, &marker::CONNECTED.to_le_bytes());
+        c.write(control::MARKER, &marker::INIT_STARTED.to_le_bytes());
+        for _ in 0..100_000 {
+            c.write(control::MARKER, &marker::CONNECTED.to_le_bytes());
+            c.write(control::MARKER, &u32::MAX.to_le_bytes());
+            c.write(control::MARKER, &(marker::POWERING_OFF + 1).to_le_bytes());
+        }
+        // In the order of their times; two in one microsecond, in either.
+        let came = c.markers();
+        assert!(came.windows(2).all(|w| w[0].1 <= w[1].1), "{came:?}");
+        let mut seen: Vec<u32> = came.iter().map(|&(m, _)| m).collect();
+        seen.sort_unstable();
+        assert_eq!(seen, [marker::INIT_STARTED, marker::CONNECTED]);
+    }
 
     #[test]
     fn the_init_announces_its_contract_and_a_snapshot_keeps_it() {

@@ -380,6 +380,9 @@ fn snapshot() -> Result<(), String> {
     let generation = control.read(shards_abi::control::GENERATION);
     let after = monotonic_ns();
     let _ = writeln!(io::stdout(), "SHARDS-TEST INFO generation={generation}");
+    // A second request is passed by: a VM serves one snapshot, so a clone of this one
+    // still begins above, and says generation=1.
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
 
     if after < before {
         return Err(format!("CLOCK_MONOTONIC went backwards: {before} -> {after}"));

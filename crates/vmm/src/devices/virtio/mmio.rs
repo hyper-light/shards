@@ -54,6 +54,10 @@ struct State {
     config_generation: u32,
     /// Each queue's progress while paused, for a snapshot.
     paused: Vec<QueueState>,
+    /// The driver's faults already said, once each: a guest repeating one gets no more
+    /// lines of the host's log for it. Kept across resets.
+    said_status: bool,
+    said_activate: bool,
 }
 
 /// One virtio device behind an MMIO register window.
@@ -103,6 +107,8 @@ impl MmioTransport {
                 queues,
                 config_generation: 0,
                 paused: Vec::new(),
+                said_status: false,
+                said_activate: false,
             }),
             interrupt: Arc::new(DeviceInterrupt::new(line)),
             memory,
@@ -127,10 +133,12 @@ impl MmioTransport {
         }
         // Status bits are only ever added (virtio 1.3 §3.1.1); clearing requires reset.
         if new & s.status != s.status {
-            warn!(
-                "virtio: driver cleared status bits {:#x} -> {new:#x} without reset",
-                s.status
-            );
+            if !std::mem::replace(&mut s.said_status, true) {
+                warn!(
+                    "virtio: driver cleared status bits {:#x} -> {new:#x} without reset",
+                    s.status
+                );
+            }
             return;
         }
         let added = new & !s.status;
@@ -147,7 +155,9 @@ impl MmioTransport {
         if added & status::DRIVER_OK != 0
             && let Err(e) = self.activate(s, &[])
         {
-            warn!("virtio device {}: {e}", s.device.device_id());
+            if !std::mem::replace(&mut s.said_activate, true) {
+                warn!("virtio device {}: {e}", s.device.device_id());
+            }
             s.status |= status::DEVICE_NEEDS_RESET;
             self.interrupt.config_change();
         }
