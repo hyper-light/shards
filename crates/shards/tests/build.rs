@@ -1319,6 +1319,58 @@ fn source_date_epoch_is_taken_from_a_source_stage() {
     }
 }
 
+/// The Dockerfile and ignore files are read to at most 16 MiB, as BuildKit's frontend
+/// reads them (dockerui ReadFile, containerd's DefaultMaxRecvMsgSize): a Dockerfile of
+/// exactly that builds, one byte more is refused in BuildKit's words, and so is an ignore
+/// file past it.
+#[test]
+fn files_the_frontend_reads_are_bounded_as_buildkits_are() {
+    if cannot_run_vms() {
+        return;
+    }
+    const MAX: usize = 16 << 20;
+    let home = TempDir::new("build-bounded-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    // Lines of 64 bytes: the FROM, then comments.
+    let mut exact = format!("FROM scratch{}\n", " ".repeat(51)).into_bytes();
+    let comment = format!("#{}\n", "x".repeat(62));
+    while exact.len() < MAX {
+        exact.extend_from_slice(comment.as_bytes());
+    }
+    assert_eq!(exact.len(), MAX);
+    let ctx = context("build-bounded-ctx", "FROM scratch\n");
+    std::fs::write(ctx.join("Dockerfile"), &exact).unwrap();
+    let built = shards(&["build", "-q", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    exact.push(b'#');
+    std::fs::write(ctx.join("Dockerfile"), &exact).unwrap();
+    let refused = shards(&["build", "-q", ctx.to_str().unwrap()]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused.stderr.contains(
+            "failed to solve: failed to read dockerfile: Dockerfile exceeds maximum allowed size of 16777216 bytes"
+        ),
+        "{}",
+        refused.stderr
+    );
+    std::fs::write(ctx.join("Dockerfile"), "FROM scratch\n").unwrap();
+    std::fs::write(ctx.join(".dockerignore"), vec![b'#'; MAX + 1]).unwrap();
+    let refused = shards(&["build", "-q", ctx.to_str().unwrap()]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused.stderr.contains(
+            "failed to solve: failed to read dockerignore patterns: .dockerignore exceeds maximum allowed size of 16777216 bytes"
+        ),
+        "{}",
+        refused.stderr
+    );
+}
+
 /// ADD's checksum is held to the download by its own algorithm: SHA-384 and SHA-512
 /// ones match what they name, where BuildKit hashes with SHA-256 whatever the checksum
 /// names, so that none of them ever matches.

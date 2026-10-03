@@ -430,11 +430,30 @@ fn build_args(list: &[String], from_env: bool) -> BTreeMap<Vec<u8>, Vec<u8>> {
     out
 }
 
-/// A file's bytes, or none if it is not there. Unlike BuildKit, which has the client send
-/// the Dockerfile and ignore files over a session, shards reads them where they are.
-fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, String> {
-    match std::fs::read(path) {
-        Ok(t) => Ok(Some(t)),
+/// The most of a file the frontend reads into memory: containerd's DefaultMaxRecvMsgSize,
+/// the largest message BuildKit's gRPC takes (dockerfile/1.27.1 frontend/dockerui/readfile.go).
+const MAX_FILE: u64 = 16 << 20;
+
+/// dockerui's ReadFile: what `reader` holds, refused under `name` past MAX_FILE, no more
+/// than one byte past it ever read.
+fn read_capped(reader: impl Read, name: &str) -> Result<Vec<u8>, String> {
+    let mut text = Vec::new();
+    reader
+        .take(MAX_FILE + 1)
+        .read_to_end(&mut text)
+        .map_err(|e| format!("{name}: {e}"))?;
+    if text.len() as u64 > MAX_FILE {
+        return Err(format!("{name} exceeds maximum allowed size of {MAX_FILE} bytes"));
+    }
+    Ok(text)
+}
+
+/// A file's bytes, or none if it is not there, read as [`read_capped`] reads, `name`
+/// being what its errors call it. Unlike BuildKit, which has the client send the
+/// Dockerfile and ignore files over a session, shards reads them where they are.
+fn read_if_present(path: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::File::open(path) {
+        Ok(file) => read_capped(file, name).map(Some),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
@@ -449,11 +468,9 @@ type Dockerfile = (String, Vec<u8>, Option<Vec<u8>>);
 /// context's `.dockerignore`.
 fn dockerfile(parsed: &Parsed, context: &Path) -> Result<Dockerfile, String> {
     let file = parsed.string("file");
+    let read_failed = |e: String| format!("failed to read dockerfile: {e}");
     if file == "-" {
-        let mut text = Vec::new();
-        std::io::stdin()
-            .read_to_end(&mut text)
-            .map_err(|e| format!("reading the Dockerfile from stdin: {e}"))?;
+        let text = read_capped(std::io::stdin(), "Dockerfile").map_err(read_failed)?;
         return Ok(("Dockerfile".into(), text, None));
     }
     let path = if file.is_empty() {
@@ -465,16 +482,18 @@ fn dockerfile(parsed: &Parsed, context: &Path) -> Result<Dockerfile, String> {
         .file_name()
         .map_or_else(|| "Dockerfile".into(), |n| n.to_string_lossy().into_owned());
     let dir = path.parent().unwrap_or(Path::new("."));
-    let mut text = read_if_present(&path)?;
+    // One too large is no reason to look for `dockerfile` instead.
+    let mut text = read_if_present(&path, &name).map_err(read_failed)?;
     if text.is_none() && name == "Dockerfile" {
-        text = read_if_present(&dir.join("dockerfile"))?;
+        text = read_if_present(&dir.join("dockerfile"), "dockerfile").map_err(read_failed)?;
     }
     let Some(text) = text else {
         return Err(format!(
             "failed to read dockerfile: open {name}: no such file or directory"
         ));
     };
-    let beside = read_if_present(&dir.join(format!("{name}.dockerignore")))?;
+    let beside_name = format!("{name}.dockerignore");
+    let beside = read_if_present(&dir.join(&beside_name), &beside_name)?;
     Ok((name, text, beside))
 }
 
@@ -574,7 +593,11 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     // after the metadata, as the frontend reads it once the stages are planned.
     let context_ignore = match &beside {
         Some(_) => None,
-        None => Some(read_if_present(&context.join(".dockerignore"))?),
+        None => Some(
+            read_if_present(&context.join(".dockerignore"), ".dockerignore").map_err(|e| {
+                format!("failed to build: failed to solve: failed to read dockerignore patterns: {e}")
+            })?,
+        ),
     };
     let (ignore_name, ignore_text) = match (&beside, &context_ignore) {
         (Some(t), _) => (format!("{name}.dockerignore"), Some(t.clone())),
