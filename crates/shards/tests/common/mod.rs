@@ -678,6 +678,25 @@ pub fn tar(entries: &[(&str, u32, u32, Option<&[u8]>)]) -> Vec<u8> {
     out
 }
 
+/// A ustar header of a symlink at `path` to `target`, to go into what [`tar`] makes.
+pub fn tar_symlink(path: &str, target: &str) -> Vec<u8> {
+    let mut h = [0u8; 512];
+    h[..path.len()].copy_from_slice(path.as_bytes());
+    h[100..108].copy_from_slice(b"0000777\0");
+    h[108..116].copy_from_slice(b"0000000\0");
+    h[116..124].copy_from_slice(b"0000000\0");
+    h[124..136].copy_from_slice(b"00000000000\0");
+    h[136..148].copy_from_slice(b"14500000000\0");
+    h[148..156].copy_from_slice(b"        ");
+    h[156] = b'2';
+    h[157..157 + target.len()].copy_from_slice(target.as_bytes());
+    h[257..263].copy_from_slice(b"ustar\0");
+    h[263..265].copy_from_slice(b"00");
+    let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+    h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+    h.to_vec()
+}
+
 /// An image a registry serves: its manifest, and its blobs.
 pub type Served = Arc<std::sync::Mutex<(Vec<u8>, Vec<Vec<u8>>)>>;
 

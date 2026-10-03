@@ -94,14 +94,11 @@ fn import(store: &Store, input: &mut dyn Read) -> Result<(oci::Index, Vec<Digest
         let name = String::from_utf8_lossy(&entry.path).into_owned();
         match entry.kind {
             shards_image::tar::Type::Symlink => {
+                // path.Join(path.Dir(name), link), as containerd's importer resolves one:
+                // cleaned, so that a legacy archive's `../<id>/layer.tar` names its blob.
                 let dir = name.rsplit_once('/').map_or("", |(d, _)| d);
-                let link = String::from_utf8_lossy(&entry.link);
-                let joined = if dir.is_empty() {
-                    link.to_string()
-                } else {
-                    format!("{dir}/{link}")
-                };
-                symlinks.push((name, joined));
+                let joined = shards_dockerfile::go::join(&[dir.as_bytes(), &entry.link]);
+                symlinks.push((name, String::from_utf8_lossy(&joined).into_owned()));
                 continue;
             }
             shards_image::tar::Type::File => {}

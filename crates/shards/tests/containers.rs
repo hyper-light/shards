@@ -2352,6 +2352,32 @@ fn load_reads_archives_as_docker_load_does() {
     );
     let ran = run_in(&home, "legacy:1", &["--rm"], &["exit", "6"]);
     assert_eq!(ran.status, Some(6), "{ran}");
+    // A layer the archive holds once, another directory's layer.tar a symlink to it, as
+    // Docker's older save writes a layer it has written already: `../abc/layer.tar`,
+    // joined to its directory and cleaned, as containerd's importer resolves it.
+    let mut linked = common::tar(&[
+        ("cfg.json", 0o644, 0, Some(config.as_slice())),
+        ("abc", 0o755, 0, None),
+        ("abc/layer.tar", 0o644, 0, Some(layer.as_slice())),
+        ("aaa", 0o755, 0, None),
+        (
+            "manifest.json",
+            0o644,
+            0,
+            Some(br#"[{"Config":"cfg.json","RepoTags":["linked:1"],"Layers":["aaa/layer.tar"]}]"#),
+        ),
+    ]);
+    linked.truncate(linked.len() - 1024);
+    linked.extend(common::tar_symlink("aaa/layer.tar", "../abc/layer.tar"));
+    linked.resize(linked.len() + 1024, 0);
+    let linked_tar = home.join("linked.tar");
+    std::fs::write(&linked_tar, linked).unwrap();
+    let loaded = shards(&["load", "-i", linked_tar.to_str().unwrap()]);
+    assert_eq!(
+        (loaded.status, loaded.stdout.as_str()),
+        (Some(0), "Loaded image: linked:1\n"),
+        "{loaded}"
+    );
     // Its manifest as containerd writes one for it, byte for byte: its ID is that.
     let manifest = format!(
         r#"{{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{{"mediaType":"application/vnd.docker.container.image.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.docker.image.rootfs.diff.tar","digest":"{}","size":{}}}]}}"#,
