@@ -405,7 +405,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .and_then(|mut input| import(&store, &mut input));
         // What it ingested before failing goes with the next collection.
         let refuse = |said: &str| {
-            self.collect.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.collect_soon();
             refuse(said)
         };
         let (index, contents) = match imported {
@@ -455,7 +455,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         }
         drop(lease);
         // What the archive held that no image names goes with the next collection.
-        self.collect.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.collect_soon();
         0
     }
 }

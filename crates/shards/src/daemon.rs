@@ -101,8 +101,7 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 const SHUTDOWN_KILL: Duration = Duration::from_secs(5);
 /// How often a listener out of descriptors looks for one again: nothing tells of one
 /// closed anywhere in the process. And how often one whose watches could not be made
-/// looks at its home, and one whose collection waits for the store's lease tries again:
-/// nothing tells of a lock let go (flock(2)).
+/// looks at its home.
 const RETRY: Duration = Duration::from_millis(250);
 /// How long a client may take to send its whole request (audit A07). One sends it as it
 /// connects; one that has not by now is broken, or trickling it out.
@@ -178,6 +177,26 @@ struct Pool {
     /// Its runs' arrivals and its refills' times, which say how many VMs it keeps; its
     /// last claim orders eviction, least recent first.
     demand: demand::Demand,
+}
+
+/// Collections due, for the collector's thread ([`Daemon::collect_all`]).
+#[derive(Default)]
+struct Collecting {
+    due: Mutex<bool>,
+    /// One is due, the listener has descriptors again, or the thread is to return.
+    changed: Condvar,
+    /// The thread is to return: a test's daemon's, as its scope ends.
+    ended: AtomicBool,
+}
+
+impl Collecting {
+    /// Ends the collector's thread: a test's daemon's.
+    #[cfg(test)]
+    fn end(&self) {
+        self.ended.store(true, Ordering::SeqCst);
+        let _guard = lock(&self.due);
+        self.changed.notify_all();
+    }
 }
 
 #[derive(Default)]
@@ -511,8 +530,12 @@ struct Daemon<D: Disk = Real> {
     spare: Mutex<Spare>,
     /// Numbers the templates a run saves before they become the template.
     saved: AtomicU64,
-    /// A collection is due: at start, and once a pull has moved a reference (audit A13).
-    collect: AtomicBool,
+    /// Collections, run by the collector's thread: one due at start, and once a pull has
+    /// moved a reference (audit A13).
+    collecting: Collecting,
+    /// The listener is out of descriptors: no collection starts, whose files would take
+    /// what its clients wait for.
+    starving: AtomicBool,
     /// Every run followed to its end by one thread (follow.rs).
     followers: follow::Followers,
     /// The removals of `--rm` containers that ended, made durable together (follow.rs).
@@ -753,6 +776,7 @@ fn serve() -> Result<(), String> {
     std::thread::scope(|threads| {
         daemon.start_completer(threads);
         daemon.start_recorder(threads);
+        daemon.start_collector(threads);
         daemon.listen(threads, listener);
     });
     Ok(())
@@ -919,7 +943,11 @@ impl<D: Disk> Daemon<D> {
             removing: Mutex::default(),
             spare: Mutex::default(),
             saved: AtomicU64::new(0),
-            collect: AtomicBool::new(true),
+            collecting: Collecting {
+                due: Mutex::new(true),
+                ..Collecting::default()
+            },
+            starving: AtomicBool::new(false),
             followers: follow::Followers::new()?,
             completing: follow::Completing::default(),
             refills: refill::Refills::default(),
@@ -995,6 +1023,7 @@ impl<D: Disk> Daemon<D> {
                     Ok((conn, _)) => {
                         if let Some(since) = starved_since.take() {
                             log(format!("accepting again, after {:?}", since.elapsed()));
+                            self.have_room();
                         }
                         self.take(threads, conn);
                     }
@@ -1011,6 +1040,7 @@ impl<D: Disk> Daemon<D> {
                         if starved_since.is_none() {
                             log(format!("accepting: {e}; clients wait until the daemon has room"));
                             starved_since = Some(Instant::now());
+                            self.starving.store(true, Ordering::SeqCst);
                         }
                         starved = true;
                         break;
@@ -1022,12 +1052,7 @@ impl<D: Disk> Daemon<D> {
                 }
             }
             self.age_pools();
-            // A collection opens files: not while clients wait for descriptors, whose
-            // accept macOS drops if one is taken meanwhile. On this thread, so no accept
-            // runs beside it: a client arriving waits in the backlog.
-            if starved_since.is_none() {
-                self.collect_if_due();
-            }
+            self.mark_collection();
             let quiet = self.busy.load(Ordering::SeqCst) == 0 && lock(&self.runs).is_empty();
             let idle = quiet && lock(&self.last).elapsed() >= self.idle;
             if !self.closed.load(Ordering::SeqCst) && (self.stopping.load(Ordering::SeqCst) || idle) {
@@ -1041,8 +1066,7 @@ impl<D: Disk> Daemon<D> {
             // At the cap, or starved, the listener would be readable at once: it waits for
             // a client to leave instead.
             let accepting = !starved && self.busy.load(Ordering::SeqCst) < MAX_CLIENTS;
-            let looking =
-                starved || watches.iter().any(Option::is_none) || self.collect.load(Ordering::SeqCst);
+            let looking = starved || watches.iter().any(Option::is_none);
             let timeout = if looking {
                 Some(RETRY.min(self.next_duty(quiet).unwrap_or(RETRY)))
             } else {
@@ -2681,24 +2705,61 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Collects if a collection is due: it stays due until one has run, which it cannot
-    /// while any run is being prepared.
-    fn collect_if_due(&self) {
-        // A pull, here or by `shards pull`, says so (pull.rs, `collect_due`).
+    /// The listener has descriptors again: a collection due may start.
+    fn have_room(&self) {
+        self.starving.store(false, Ordering::SeqCst);
+        let _guard = lock(&self.collecting.due);
+        self.collecting.changed.notify_all();
+    }
+
+    /// Marks a collection due if a pull, here or by `shards pull`, has said one is
+    /// (pull.rs, `collect_due`), for the collector's thread.
+    fn mark_collection(&self) {
         let due = crate::pull::collect_due(&self.home);
         if std::fs::remove_file(&due).is_ok() {
-            self.collect.store(true, Ordering::SeqCst);
+            self.collect_soon();
         }
-        // A stopping daemon collects nothing: its home may be gone.
-        if !self.collect.load(Ordering::SeqCst) || self.stopping.load(Ordering::SeqCst) {
-            return;
+    }
+
+    /// Has a collection run on the collector's thread: what a command left without a
+    /// reference goes.
+    pub(super) fn collect_soon(&self) {
+        *lock(&self.collecting.due) = true;
+        self.collecting.changed.notify_all();
+    }
+
+    /// Starts the collector's thread.
+    fn start_collector<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
+        if let Err(e) = std::thread::Builder::new()
+            .name("collector".into())
+            .spawn_scoped(threads, move || self.collect_all())
+        {
+            log(format!("the collector's thread: {e}; nothing is collected"));
         }
-        match self.collect_garbage() {
-            Ok(true) => self.collect.store(false, Ordering::SeqCst),
-            Ok(false) => {}
-            Err(e) => {
+    }
+
+    /// Runs the collections due, one at a time, until [`Collecting::end`], off the
+    /// listener, whose clients waited in its backlog while one ran (review 7.14). None
+    /// starts while the listener is out of descriptors, which its files would take, and
+    /// macOS drops a client whose accept finds none; nor once the daemon is stopping, its
+    /// home perhaps gone. A collection marked due as one runs runs again after it.
+    fn collect_all(&self) {
+        let c = &self.collecting;
+        loop {
+            {
+                let mut due = lock(&c.due);
+                while !c.ended.load(Ordering::SeqCst)
+                    && (!*due || self.starving.load(Ordering::SeqCst) || self.stopping.load(Ordering::SeqCst))
+                {
+                    due = c.changed.wait(due).unwrap_or_else(PoisonError::into_inner);
+                }
+                if c.ended.load(Ordering::SeqCst) {
+                    return;
+                }
+                *due = false;
+            }
+            if let Err(e) = self.collect_garbage() {
                 log(format!("collecting: {e}"));
-                self.collect.store(false, Ordering::SeqCst);
             }
         }
     }
@@ -2706,21 +2767,19 @@ impl<D: Disk> Daemon<D> {
     /// Removes what nothing needs (audit A13): the image store's content no reference
     /// needs (`Store::collect`), then the templates whose root filesystem has gone, that
     /// another guest saved, or that record no origin, ending their pools, and templates a
-    /// daemon before this one left half saved. Whether it ran: not while a run is being
-    /// prepared, which holds the store's lease.
-    fn collect_garbage(&self) -> Result<bool, String> {
+    /// daemon before this one left half saved. It waits for the store's lease, which a
+    /// run being prepared holds.
+    fn collect_garbage(&self) -> Result<(), String> {
         let began = Instant::now();
         // Opened, not made: a home without a store has nothing to collect.
         let root = self.home.join("images");
         if !root.is_dir() {
-            return Ok(true);
+            return Ok(());
         }
         let store =
             shards_image::store::Store::open(&root).map_err(|e| format!("{}: {e}", root.display()))?;
         // Held whole until the templates are done: no run begins meanwhile.
-        let Some((collected, _whole)) = store.collect().map_err(|e| e.to_string())? else {
-            return Ok(false);
-        };
+        let (collected, _whole) = store.collect().map_err(|e| e.to_string())?;
         if collected != shards_image::store::Collected::default() {
             log(format!(
                 "collected {} blobs, {} root filesystems and {} files left in ingest/: {} bytes, in {:?}",
@@ -2735,7 +2794,7 @@ impl<D: Disk> Daemon<D> {
         let templates = self.home.join("templates");
         let entries = match std::fs::read_dir(&templates) {
             Ok(entries) => entries,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(format!("{}: {e}", templates.display())),
         };
         let ours = format!(".new-{}-", std::process::id());
@@ -2764,7 +2823,7 @@ impl<D: Disk> Daemon<D> {
                 Err(e) => log(format!("collecting {}: {e}", dir.display())),
             }
         }
-        Ok(true)
+        Ok(())
     }
 
     /// Ends the ready VMs of pools unclaimed past their keep-alive, and forgets the pools
@@ -3642,6 +3701,7 @@ mod tests {
             daemon.completing.end();
             daemon.checks.end();
             daemon.refills.end();
+            daemon.collecting.end();
             daemon.end_clients();
             for vm in lock(&self.test.vms).iter() {
                 let _ = vm.kill(libc::SIGKILL);
@@ -4136,8 +4196,7 @@ mod tests {
         let t = Test::new("collect-removed");
         t.run(|t| {
             std::fs::remove_dir_all(&t.home).unwrap();
-            t.daemon.collect.store(true, Ordering::SeqCst);
-            t.daemon.collect_if_due();
+            assert_eq!(t.daemon.collect_garbage(), Ok(()));
             assert!(!t.home.exists(), "the home was made again");
         });
     }
@@ -4192,25 +4251,40 @@ mod tests {
             for dir in [&ours, &left, &unknown] {
                 std::fs::create_dir_all(dir).unwrap();
             }
+            // It waits for the lease: a child another test spawns in this process holds
+            // the lease's file too, for as long as its spawn copies descriptors before it
+            // closes the close-on-exec ones, and a flock lasts as long as any holder.
             let lease = crate::pull::store(&t.home).unwrap().lease().unwrap();
-            assert_eq!(t.daemon.collect_garbage(), Ok(false), "collected under a lease");
+            let daemon = &t.t.daemon;
+            let collecting = t.threads.spawn(move || daemon.collect_garbage());
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(!collecting.is_finished(), "collected under a lease");
             assert!(left.exists() && unknown.exists());
             drop(lease);
-            // A child another test spawns in this process holds the lease's file for as long
-            // as its spawn copies descriptors before it closes the close-on-exec ones, and a
-            // flock lasts as long as any holder: a collection may find the lease there a
-            // moment after it was dropped, and pass until the next.
-            let collected = (0..10_000).any(|_| match t.daemon.collect_garbage() {
-                Ok(true) => true,
-                Ok(false) => {
-                    std::thread::yield_now();
-                    false
-                }
-                Err(e) => panic!("{e}"),
-            });
-            assert!(collected, "a collection with no lease held never went ahead");
+            assert_eq!(collecting.join().unwrap(), Ok(()));
             assert!(ours.exists(), "a template being saved was collected");
             assert!(!left.exists() && !unknown.exists());
+        });
+    }
+
+    /// No collection starts while the listener is out of descriptors, which its files
+    /// would take; the one due starts once the listener has room again.
+    #[test]
+    fn no_collection_starts_while_the_listener_is_starved() {
+        let t = Test::new("collect-starved");
+        t.run(|t| {
+            crate::pull::store(&t.home).unwrap();
+            let left = t.home.join("images").join("ingest").join("left");
+            std::fs::write(&left, b"left behind").unwrap();
+            t.daemon.starving.store(true, Ordering::SeqCst);
+            t.t.daemon.start_collector(t.threads);
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(
+                left.exists(),
+                "collected while the listener was out of descriptors"
+            );
+            t.daemon.have_room();
+            t.until("not collected once the listener had room", |_| !left.exists());
         });
     }
 

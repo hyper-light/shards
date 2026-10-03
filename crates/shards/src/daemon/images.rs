@@ -386,7 +386,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                             Removed::Deleted(id) => {
                                 reply.out(&format!("Deleted: {id}"));
                                 // What it held goes with the next collection.
-                                self.collect.store(true, std::sync::atomic::Ordering::SeqCst);
+                                self.collect_soon();
                             }
                         }
                     }

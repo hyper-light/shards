@@ -908,10 +908,20 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
         })
         .count();
     assert!(dropped <= 1, "{dropped} waiting clients were dropped");
+    // A collection due meanwhile waits: its files would take what clients wait for.
+    let left = home.join("images").join("ingest").join("left");
+    std::fs::create_dir_all(left.parent().unwrap()).unwrap();
+    std::fs::write(&left, b"left behind").unwrap();
+    let due = home.join("images").join("collect-due");
+    std::fs::write(&due, b"").unwrap();
+    eventually("the collection due was not seen", || !due.exists());
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(left.exists(), "collected while out of descriptors");
     drop(silent);
     let env = [("SHARDS_HOME", home.as_os_str())];
     let listed = run_shards_env(&["ps"], &[] as &[&str], &env, TIMEOUT);
     assert_eq!(listed.status, Some(0), "{listed}");
+    eventually("not collected once the daemon had room", || !left.exists());
     assert_eq!(
         run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
         Some(0)

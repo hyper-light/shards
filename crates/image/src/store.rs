@@ -1218,17 +1218,14 @@ impl Store {
     /// layers are not, the root filesystems of no reference's layers, records and root
     /// filesystems of older versions, and what `ingest/` holds. The roots are the
     /// references alone; content being written or read for a run is under a
-    /// [`lease`](Self::lease), and while any is held nothing is collected: `None`.
-    /// Files a running VM holds open stay its own until it closes them. The store stays
-    /// held whole until the [`Whole`] returned is dropped, for its caller to collect what
-    /// depends on it.
-    pub fn collect(&self) -> Result<Option<(Collected, Whole)>, Error> {
+    /// [`lease`](Self::lease), and while any is held it waits, woken by the kernel once
+    /// the last is let go (flock(2)); leases asked for meanwhile are given. Files a
+    /// running VM holds open stay its own until it closes them. The store stays held whole
+    /// until the [`Whole`] returned is dropped, for its caller to collect what depends on
+    /// it: a lease asked for meanwhile waits.
+    pub fn collect(&self) -> Result<(Collected, Whole), Error> {
         let whole = self.lease_file()?;
-        match whole.try_lock() {
-            Ok(()) => {}
-            Err(fs::TryLockError::WouldBlock) => return Ok(None),
-            Err(fs::TryLockError::Error(e)) => return Err(e.into()),
-        }
+        whole.lock()?;
         let (blobs, rootfs) = self.roots()?;
         let mut collected = Collected::default();
         let mut remove = |path: &Path, count: &mut u64| {
@@ -1291,7 +1288,7 @@ impl Store {
         for entry in fs::read_dir(self.root.join("ingest"))? {
             remove(&entry?.path(), &mut collected.ingest);
         }
-        Ok(Some((collected, Whole { _file: whole })))
+        Ok((collected, Whole { _file: whole }))
     }
 
     /// The blobs and root filesystems the references need: each one's manifest, config
@@ -2154,7 +2151,7 @@ mod tests {
         let listed = |d: &Digest| images.iter().find(|i| i.id == *d).unwrap();
         assert!(listed(&good_digest).manifests.iter().all(|m| m.available));
         assert!(listed(&bad_digest).manifests.iter().all(|m| !m.available));
-        assert!(store.collect().is_ok());
+        store.collect().unwrap();
         assert!(store.has(&good_digest) && store.has(&sha256(&layer)));
     }
 
@@ -2814,13 +2811,26 @@ mod tests {
         fs::write(root.join("rootfs/v0/old.erofs"), b"x").unwrap();
         fs::create_dir_all(root.join("refs/v0")).unwrap();
 
+        // A collection waits for the lease held to be let go.
         let lease = store.lease().unwrap();
-        assert!(store.collect().unwrap().is_none(), "collected under a lease");
+        let (collecting, collected) = std::sync::mpsc::channel();
+        let collector = {
+            let root = root.to_path_buf();
+            std::thread::spawn(move || {
+                let held = Store::open(&root).unwrap().collect().unwrap();
+                collecting.send(held).unwrap();
+            })
+        };
+        assert!(
+            collected
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "collected under a lease"
+        );
         assert!(store.blob_path(&orphan_digest).is_file());
         drop(lease);
-        let (collected, whole) = store.collect().unwrap().unwrap();
-        // Held whole until let go: a lease waits, and another collection gets nothing.
-        assert!(store.collect().unwrap().is_none());
+        let (collected, whole) = collected.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        collector.join().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let waiting = {
             let root = root.to_path_buf();
@@ -2859,10 +2869,7 @@ mod tests {
         );
         // What is kept is whole: the images are found again as they were.
         assert!(store.tagged("one:v1").unwrap().is_some() && store.tagged("two:v1").unwrap().is_some());
-        assert_eq!(
-            store.collect().unwrap().map(|(c, _)| c),
-            Some(Collected::default())
-        );
+        assert_eq!(store.collect().unwrap().0, Collected::default());
         let _ = fs::remove_dir_all(&root);
     }
 

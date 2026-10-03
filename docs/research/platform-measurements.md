@@ -3173,3 +3173,20 @@ revision before comparing a changed API/implementation.
   record's write held it up to 0.37 s; a burst's slowest runs, which made their
   containers behind the others' writes, did not get slower, and their tail was lower
   in this comparison, which a load this high moves (M91).
+
+### M94. Collections off the thread that accepts clients
+
+- **Question.** A collection ran on the daemon's listener (review 7.14): how long did its
+  clients wait while one ran?
+- **Method.** `docs/research/measurements/collect-listener/run.py OLD NEW 20000 4 DIR`:
+  a828707 against the change (`collect_all`: the collector's thread, waiting for the
+  store's lease), alternating, each round 20,000 files left in the store's `ingest/` and a
+  collection marked due as a pull marks it, then `shards ps` one after another until the
+  files are gone. 2026-10-03, the host of M84, load average 2.6 to 3.3.
+- **Result.** a828707: one `ps` a round, each waiting out the collection: 4 answers, p50
+  2.02 s, max 4.46 s; its collections took 1.24 to 4.46 s. The change: 1,956 answers
+  while its collections ran, p50 2.44 ms, p99 3.11 ms, max 3.85 ms; its collections took
+  1.19 to 2.08 s.
+- **Consequence.** Every client of a daemon waited for as long as a collection took,
+  seconds for a store with that much to remove; on a thread of its own, a collection
+  holds up no client.

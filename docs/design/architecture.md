@@ -914,9 +914,12 @@ for the exit status.
         pool's VMs ended; one this daemon is saving stays.
       - A running VM keeps what it has open or mapped: removing a file removes its
         name, not the file (unlink(2)).
-      - It runs on the thread that accepts clients, which wait in the backlog meanwhile,
-        and not while clients wait for descriptors: a file it opened as an accept found
-        none would drop that client on macOS. Beside the accepts it did, 1 time in 20.
+      - It runs on a thread of its own, the collector's (review 7.14): on the thread that
+        accepts clients, every client waited in the backlog for as long as it took, 4.5 s
+        for 20,000 files left in `ingest/`, against 3.9 ms at most now [PM M94]. It waits
+        for the store's lease, the kernel waking it once the last is let go (flock(2)).
+        None starts while the listener is out of descriptors, which its files would take
+        from clients macOS then drops, nor once the daemon is stopping.
     - Measured with 1, 10 and 100 templates [PM M49]: 100 keep 16 warm VMs, 54.5 MiB of
       their own; a template without one restores on demand, p50 16 ms against 5 ms
       warm; bursts of 8 find two ready and restore the rest, p50 about 16 ms; every
@@ -974,9 +977,8 @@ for the exit status.
     - The listener sleeps until a client arrives or leaves, a run ends, a warm VM comes
       ready, a name comes or goes in the home or in `images` (kqueue's `EVFILT_VNODE`,
       inotify(7)), or its next duty is due: the idle exit once nothing runs, or a pool's
-      keep-alive. It looks every 250 ms only out of descriptors, where a watch cannot be
-      made, or while a collection waits for the store's lease, whose release nothing
-      tells of (flock(2)).
+      keep-alive. It looks every 250 ms only out of descriptors, or where a watch cannot
+      be made.
     - A `wait` sleeps on a socket its run's end writes to and on its client's
       connection together, as a `logs -f` sleeps on that and on its log.
   - It exits after SHARDS_DAEMON_IDLE seconds (900) with no run in progress and none
