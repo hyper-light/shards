@@ -7144,6 +7144,87 @@
   ]
  },
  {
+  "file": "corpus/json-number-limit.Dockerfile",
+  "error": "\"when using JSON array syntax, arrays must be comprised of strings only\"",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ]
+ },
+ {
+  "file": "corpus/json-number-range.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(cmd \\\"[\\\\\\\"a\\\\\\\", 1e400]\\\")\\n(run \\\"[\\\\\\\"b\\\\\\\", [-1e309]]\\\")\\n(shell \\\"[\\\\\\\"d\\\\\\\", 1.7976931348623159e308]\\\")\\n(entrypoint \\\"[\\\\\\\"e\\\\\\\", {\\\\\\\"k\\\\\\\": 1e999}]\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"[\\\\\\\"a\\\\\\\", 1e400]\\\"\"",
+    "original": "\"CMD [\\\"a\\\", 1e400]\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"[\\\\\\\"b\\\\\\\", [-1e309]]\\\"\"",
+    "original": "\"RUN [\\\"b\\\", [-1e309]]\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"shell \\\"[\\\\\\\"d\\\\\\\", 1.7976931348623159e308]\\\"\"",
+    "original": "\"SHELL [\\\"d\\\", 1.7976931348623159e308]\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"entrypoint \\\"[\\\\\\\"e\\\\\\\", {\\\\\\\"k\\\\\\\": 1e999}]\\\"\"",
+    "original": "\"ENTRYPOINT [\\\"e\\\", {\\\"k\\\": 1e999}]\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/json-number-small.Dockerfile",
+  "error": "\"when using JSON array syntax, arrays must be comprised of strings only\"",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ]
+ },
+ {
   "file": "corpus/json-numbers.Dockerfile",
   "error": "\"when using JSON array syntax, arrays must be comprised of strings only\"",
   "location": [

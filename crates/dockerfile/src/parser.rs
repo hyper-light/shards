@@ -275,7 +275,7 @@ pub fn detect_syntax(text: &[u8]) -> Option<(Vec<u8>, Vec<u8>, usize)> {
             return Some((first_word(&value), value, at));
         }
     }
-    let Ok(json::Value::Object(members)) = json::parse(text) else {
+    let Ok(json::Value::Object(ref members)) = json::parse(text) else {
         return None;
     };
     // Go's map keeps a key given twice as last given.

@@ -27,6 +27,52 @@ pub(crate) enum Value {
     Object(Vec<(Vec<u8>, Value)>),
 }
 
+/// Dropped without recursion. A value as deep as Go's scanner allows, its containers
+/// dropped one inside another, took more stack than a thread may have (measured: over
+/// 512 KiB in a release build, over 2 MiB in a debug one), and a stack overflow ends the
+/// process: what each holds is moved onto a heap stack and dropped a level at a time.
+impl Drop for Value {
+    fn drop(&mut self) {
+        let mut held = Vec::new();
+        take_contents(self, &mut held);
+        while let Some(mut v) = held.pop() {
+            take_contents(&mut v, &mut held);
+        }
+    }
+}
+
+fn take_contents(v: &mut Value, into: &mut Vec<Value>) {
+    match v {
+        Value::Array(elements) => into.append(elements),
+        Value::Object(members) => into.extend(members.drain(..).map(|(_, v)| v)),
+        _ => {}
+    }
+}
+
+/// Whether a number in `v` is past a float64's range, which Go's decoder into `any`
+/// refuses: it reads every number as a float64, and one past the largest is infinite. One
+/// too small is 0, which it takes.
+fn overflows(v: &Value) -> bool {
+    let mut stack = vec![v];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::Number(n) => {
+                if std::str::from_utf8(n)
+                    .ok()
+                    .and_then(|n| n.parse::<f64>().ok())
+                    .is_some_and(f64::is_infinite)
+                {
+                    return true;
+                }
+            }
+            Value::Array(elements) => stack.extend(elements),
+            Value::Object(members) => stack.extend(members.iter().map(|(_, v)| v)),
+            _ => {}
+        }
+    }
+    false
+}
+
 /// What a JSON array of strings is, if `text` is one.
 pub(crate) enum Array {
     /// Valid JSON, an array whose elements are all strings.
@@ -37,20 +83,26 @@ pub(crate) enum Array {
     Not,
 }
 
+/// `parseJSON`'s reading of `text`: `json.Unmarshal` into `[]any`, whose failure, a number
+/// past a float64's range included, makes it no JSON array, then each element a string.
 pub(crate) fn array(text: &[u8]) -> Array {
-    match parse(text) {
-        Ok(Value::Array(elements)) => {
-            let mut strings = Vec::with_capacity(elements.len());
-            for e in elements {
-                match e {
-                    Value::String(s, _) => strings.push(s),
-                    _ => return Array::NotStrings,
-                }
-            }
-            Array::Strings(strings)
-        }
-        _ => Array::Not,
+    let Ok(mut v) = parse(text) else {
+        return Array::Not;
+    };
+    if overflows(&v) {
+        return Array::Not;
     }
+    let Value::Array(elements) = &mut v else {
+        return Array::Not;
+    };
+    let mut strings = Vec::with_capacity(elements.len());
+    for e in elements.iter_mut() {
+        match e {
+            Value::String(s, _) => strings.push(std::mem::take(s)),
+            _ => return Array::NotStrings,
+        }
+    }
+    Array::Strings(strings)
 }
 
 /// Go's scanner refuses JSON nested deeper than this (`encoding/json` scanner.go,
@@ -434,6 +486,61 @@ mod tests {
         assert!(matches!(array(b" [\"a\", \"b\"] "), Array::Strings(v) if v.len() == 2));
         assert!(matches!(array(b"[\"a\", {\"k\": [1]}]"), Array::NotStrings));
         assert!(matches!(array(b"[\"a\" \"b\"]"), Array::Not));
+    }
+
+    /// A number past a float64's range, anywhere in it, makes an array no JSON one, as
+    /// `json.Unmarshal` into `[]any` fails on it (measured, go1.27.1); one too small is 0.
+    #[test]
+    fn a_number_past_a_float64_is_no_json() {
+        for text in [
+            &br#"["a", 1e400]"#[..],
+            br#"["a", [1e309]]"#,
+            br#"["a", {"k": -1e400}]"#,
+            br#"["a", 1.7976931348623159e308]"#,
+        ] {
+            assert!(
+                matches!(array(text), Array::Not),
+                "{}",
+                String::from_utf8_lossy(text)
+            );
+        }
+        for text in [
+            &br#"["a", 1e-400]"#[..],
+            br#"["a", 1.7976931348623157e308]"#,
+            br#"["a", 2e-324]"#,
+        ] {
+            assert!(
+                matches!(array(text), Array::NotStrings),
+                "{}",
+                String::from_utf8_lossy(text)
+            );
+        }
+    }
+
+    /// A value as deep as Go allows drops on a thread of little stack: its drop is no
+    /// deeper than its parse.
+    #[test]
+    fn the_deepest_value_drops_on_a_small_stack() {
+        let dropped = std::thread::Builder::new()
+            .stack_size(64 << 10)
+            .spawn(|| {
+                for (open, close) in [(b'[', b']'), (b'{', b'}')] {
+                    let text = if open == b'[' {
+                        [vec![open; MAX_DEPTH], vec![close; MAX_DEPTH]].concat()
+                    } else {
+                        [
+                            br#"{"k":"#.repeat(MAX_DEPTH - 1),
+                            b"{}".to_vec(),
+                            b"}".repeat(MAX_DEPTH - 1),
+                        ]
+                        .concat()
+                    };
+                    drop(parse(&text).unwrap());
+                }
+            })
+            .unwrap()
+            .join();
+        assert!(dropped.is_ok());
     }
 
     /// Values parse whole, members in order with duplicates kept, and nothing malformed.

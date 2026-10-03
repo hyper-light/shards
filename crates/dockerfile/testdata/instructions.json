@@ -9864,6 +9864,27 @@
   "parse_error": true
  },
  {
+  "file": "corpus/json-number-limit.Dockerfile",
+  "parse_error": true
+ },
+ {
+  "error": "\"dockerfile parse error on line 4: SHELL requires the arguments to be in JSON form\"",
+  "file": "corpus/json-number-range.Dockerfile",
+  "location": [
+   [
+    [
+     4,
+     4
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/json-number-small.Dockerfile",
+  "parse_error": true
+ },
+ {
   "file": "corpus/json-numbers.Dockerfile",
   "parse_error": true
  },
