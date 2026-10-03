@@ -1064,5 +1064,37 @@
   "fields": {
    "error": "\"docker.io/library/alpne: docker.io/library/alpne:latest: not found (did you mean docker.io/library/alpine?)\""
   }
+ },
+ {
+  "kind": "sizes",
+  "input": "1e300p",
+  "reason": "go-units reads a size as a float64 and converts it to an int64, which Go leaves to the CPU when the float is past the int64 range: amd64, where BuildKit records these, gives the least int64 and arm64 the greatest; shards gives the greatest on every CPU (src/go.rs ram_in_bytes).",
+  "fields": {
+   "bytes": "9223372036854775807"
+  }
+ },
+ {
+  "kind": "sizes",
+  "input": "9223372036854775807",
+  "reason": "go-units reads a size as a float64 and converts it to an int64, which Go leaves to the CPU when the float is past the int64 range: amd64, where BuildKit records these, gives the least int64 and arm64 the greatest; shards gives the greatest on every CPU (src/go.rs ram_in_bytes).",
+  "fields": {
+   "bytes": "9223372036854775807"
+  }
+ },
+ {
+  "kind": "sizes",
+  "input": "1.7976931348623157e308p",
+  "reason": "go-units reads a size as a float64 and converts it to an int64, which Go leaves to the CPU when the float is past the int64 range: amd64, where BuildKit records these, gives the least int64 and arm64 the greatest; shards gives the greatest on every CPU (src/go.rs ram_in_bytes).",
+  "fields": {
+   "bytes": "9223372036854775807"
+  }
+ },
+ {
+  "kind": "sizes",
+  "input": "12345678901234567890b",
+  "reason": "go-units reads a size as a float64 and converts it to an int64, which Go leaves to the CPU when the float is past the int64 range: amd64, where BuildKit records these, gives the least int64 and arm64 the greatest; shards gives the greatest on every CPU (src/go.rs ram_in_bytes).",
+  "fields": {
+   "bytes": "9223372036854775807"
+  }
  }
 ]

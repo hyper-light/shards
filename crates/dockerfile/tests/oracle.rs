@@ -500,13 +500,20 @@ fn image_configs_read_and_write_as_gos() {
 /// testdata/sizes.json.
 #[test]
 fn sizes_read_as_go_units_reads_them() {
+    let devs = deviations("sizes");
     for a in load("sizes-answers.json").as_array().unwrap() {
         let input = a["input"].as_str().unwrap();
         let got = match shards_dockerfile::go::ram_in_bytes(input.as_bytes()) {
             Ok(n) => serde_json::json!({ "input": input, "bytes": n.to_string() }),
             Err(e) => serde_json::json!({ "input": input, "error": quote(&e) }),
         };
-        assert_eq!(&got, a, "{input}");
+        let mut want = a.clone();
+        if let Some(d) = devs.iter().find(|d| d["input"] == input) {
+            for (k, v) in d["fields"].as_object().unwrap() {
+                want[k] = v.clone();
+            }
+        }
+        assert_eq!(got, want, "{input}");
     }
 }
 

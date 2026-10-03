@@ -1,6 +1,7 @@
 #!/bin/sh
 # Regenerates what crates/dockerfile takes from BuildKit's Dockerfile frontend, from
-# moby/buildkit dockerfile/1.27.1 built by the Go its go.mod names:
+# moby/buildkit dockerfile/1.27.1 built and run by the Go its go.mod names, in that Go's
+# linux/amd64 image (Docker), where BuildKit runs:
 # - crates/dockerfile/testdata/buildkit/, BuildKit's parser test files and lexer tables,
 #   copied unmodified under its Apache-2.0 licence;
 # - crates/dockerfile/testdata/parse.json and lex.json, what BuildKit's parser and lexer
@@ -56,6 +57,13 @@ cp "$here/oracle/main.go" "$bk/shards-oracle/main.go"
 cp "$here/export_test.go" "$bk/exporter/containerimage/zz_shards_export_test.go"
 cleanup() { rm -rf "$bk/shards-oracle" "$bk/exporter/containerimage/zz_shards_export_test.go"; }
 trap 'cleanup; [ -z "${1:-}" ] && rm -rf "$bk"' EXIT
-(cd "$bk" && go run -mod=vendor ./shards-oracle "$data")
-(cd "$bk" && SHARDS_PLANS="$data/plan.json" SHARDS_EXPORT_OUT="$data/exports.json" \
-	go test -mod=vendor -count=1 -run '^TestShardsExport$' ./exporter/containerimage/)
+# Run where BuildKit runs, on linux/amd64, the platform the plans are made for and so the
+# one containerd's platforms package takes for this host's: Go here would be darwin's.
+go=$(sed -n 's/^go //p' "$bk/go.mod")
+docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" \
+	-e HOME=/tmp -e GOCACHE=/tmp/go-cache -e GOFLAGS=-mod=vendor -e GOTOOLCHAIN=local \
+	-v "$bk:/bk" -v "$root/crates/dockerfile:/crate" -w /bk "golang:$go" sh -c '
+		go run ./shards-oracle /crate/testdata &&
+		SHARDS_PLANS=/crate/testdata/plan.json SHARDS_EXPORT_OUT=/crate/testdata/exports.json \
+			go test -count=1 -run "^TestShardsExport$" ./exporter/containerimage/'
+
