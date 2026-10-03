@@ -91,8 +91,12 @@ struct Vertex {
 
 impl Progress {
     fn say(&self, text: &str) {
+        self.say_bytes(text.as_bytes());
+    }
+
+    fn say_bytes(&self, bytes: &[u8]) {
         if !self.quiet {
-            let _ = write!(std::io::stderr(), "{text}");
+            let _ = std::io::stderr().write_all(bytes);
         }
     }
 
@@ -123,24 +127,252 @@ impl Progress {
     fn canceled(&self, v: &Vertex) {
         self.say(&format!("#{} CANCELED\n", v.index));
     }
+}
 
-    /// A step's output, as progressui's plain mode prints it: each line with the seconds
-    /// since its step began; a line not yet ended waits in `held` for the rest.
-    fn log(&self, v: &Vertex, held: &mut Vec<u8>, bytes: &[u8]) {
-        held.extend_from_slice(bytes);
-        while let Some(end) = held.iter().position(|&b| b == b'\n') {
-            let line: Vec<u8> = held.drain(..=end).collect();
-            let text = String::from_utf8_lossy(line.strip_suffix(b"\n").unwrap_or(&line)).into_owned();
-            let secs = v.started.elapsed().as_secs_f64();
-            self.say(&format!("#{} {secs:.3} {text}\n", v.index));
+/// What a RUN step may print, as buildkitd reads BUILDKIT_STEP_LOG_MAX_SIZE and
+/// BUILDKIT_STEP_LOG_MAX_SPEED (util/progress/logs): each stream's bytes, and its bytes
+/// per second since it began, -1 for no limit.
+#[derive(Clone, Copy)]
+struct LogLimits {
+    size: i64,
+    speed: i64,
+}
+
+impl LogLimits {
+    fn from_env() -> LogLimits {
+        // strconv.ParseInt(v, 10, 32): i32's parse reads a sign and digits as it does.
+        let read = |key: &str, default: i64| {
+            std::env::var(key)
+                .ok()
+                .and_then(|v| v.parse::<i32>().ok())
+                .map_or(default, i64::from)
+        };
+        LogLimits {
+            size: read("BUILDKIT_STEP_LOG_MAX_SIZE", 2 << 20),
+            speed: read("BUILDKIT_STEP_LOG_MAX_SPEED", 200 << 10),
+        }
+    }
+}
+
+/// The last bytes of a stream, once it is clipped, for its end: armon/circbuf's Buffer
+/// of 256 KiB, as buildkitd keeps one.
+struct Tail {
+    data: Vec<u8>,
+    at: usize,
+    full: bool,
+}
+
+impl Tail {
+    const SIZE: usize = 256 << 10;
+
+    fn write(&mut self, mut bytes: &[u8]) {
+        if bytes.len() > Self::SIZE {
+            bytes = bytes.get(bytes.len() - Self::SIZE..).unwrap_or_default();
+        }
+        while !bytes.is_empty() {
+            let room = Self::SIZE - self.at;
+            let n = room.min(bytes.len());
+            if let (Some(to), Some(from)) = (self.data.get_mut(self.at..self.at + n), bytes.get(..n)) {
+                to.copy_from_slice(from);
+            }
+            self.at = (self.at + n) % Self::SIZE;
+            self.full |= self.at == 0;
+            bytes = bytes.get(n..).unwrap_or_default();
         }
     }
 
-    /// What a step left without a newline, once it ends.
-    fn flush(&self, v: &Vertex, held: &mut Vec<u8>) {
-        if !held.is_empty() {
-            held.push(b'\n');
-            self.log(v, held, &[]);
+    fn bytes(&self) -> Vec<u8> {
+        if self.full {
+            [go_tail(&self.data, self.at), go_head(&self.data, self.at)].concat()
+        } else {
+            go_head(&self.data, self.at).to_vec()
+        }
+    }
+}
+
+fn go_tail(b: &[u8], at: usize) -> &[u8] {
+    b.get(at..).unwrap_or_default()
+}
+
+fn go_head(b: &[u8], at: usize) -> &[u8] {
+    b.get(..at).unwrap_or_default()
+}
+
+/// One stream of a step as buildkitd passes it on: its streamWriter.
+struct Clip {
+    began: Instant,
+    size: i64,
+    clipping: bool,
+    by_speed: bool,
+    tail: Option<Tail>,
+}
+
+impl Clip {
+    fn new() -> Clip {
+        Clip {
+            began: Instant::now(),
+            size: 0,
+            clipping: false,
+            by_speed: false,
+            tail: None,
+        }
+    }
+
+    /// `checkLimit`: how much of `n` bytes more may pass.
+    fn room(&mut self, n: usize, limits: LogLimits) -> usize {
+        let old = self.size;
+        self.size = self.size.saturating_add(i64::try_from(n).unwrap_or(i64::MAX));
+        let mut max = -1;
+        if limits.speed != -1 {
+            // A second begun counts whole.
+            let secs = self.began.elapsed().as_secs_f64().ceil();
+            max = (secs as i64).saturating_mul(limits.speed);
+            self.by_speed = true;
+        }
+        if max == -1 || max > limits.size {
+            max = limits.size;
+            self.by_speed = false;
+        }
+        if max != -1 {
+            if max < old {
+                return 0;
+            }
+            if self.size > max {
+                return usize::try_from(max - old).unwrap_or(0);
+            }
+        }
+        n
+    }
+
+    /// `Write`: what of `bytes` passes, a notice where clipping begins; all of it kept in
+    /// the tail once a write is clipped.
+    fn write(&mut self, bytes: &[u8], limits: LogLimits) -> Vec<u8> {
+        let room = self.room(bytes.len(), limits);
+        if self.tail.is_none() && room < bytes.len() {
+            self.tail = Some(Tail {
+                data: vec![0; Tail::SIZE],
+                at: 0,
+                full: false,
+            });
+        }
+        if let Some(tail) = &mut self.tail {
+            tail.write(bytes);
+        }
+        let mut out = bytes.get(..room).unwrap_or_default().to_vec();
+        if self.clipping && room == bytes.len() {
+            self.clipping = false;
+        }
+        if !self.clipping && room != bytes.len() {
+            let limit = if self.by_speed {
+                format!("{}/s", units(limits.speed))
+            } else {
+                units(limits.size)
+            };
+            out.extend_from_slice(format!("\n[output clipped, log limit {limit} reached]\n").as_bytes());
+            self.clipping = true;
+        }
+        out
+    }
+}
+
+/// tonistiigi/units' `%#g` of a byte count: whole bytes below a KiB ("1000B"), else its
+/// value in the largest binary unit it reaches, as Go writes a float64 shortest.
+fn units(b: i64) -> String {
+    const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+    let mut i = 0;
+    let mut base: i64 = 1;
+    while i + 1 < UNITS.len() && b.unsigned_abs() >= base.unsigned_abs().saturating_mul(1024) {
+        base = base.saturating_mul(1024);
+        i += 1;
+    }
+    match UNITS.get(i) {
+        Some(&unit) if i > 0 => format!("{}{unit}", b as f64 / base as f64),
+        _ => format!("{b}B"),
+    }
+}
+
+/// A RUN step's output as buildkitd clips it, each stream on its own, and progressui's
+/// plain mode prints it.
+struct StepLog {
+    limits: LogLimits,
+    streams: [Clip; 2],
+    /// Whether the last line printed has not ended, so that what comes next continues it.
+    partial: bool,
+}
+
+impl StepLog {
+    fn new(limits: LogLimits) -> StepLog {
+        StepLog {
+            limits,
+            streams: [Clip::new(), Clip::new()],
+            partial: false,
+        }
+    }
+
+    /// A chunk of stream `which`.
+    fn write(&mut self, p: &Progress, v: &Vertex, which: u8, bytes: &[u8]) {
+        let stream = usize::from(which == shards_abi::run::kind::STDERR);
+        let limits = self.limits;
+        let Some(clip) = self.streams.get_mut(stream) else {
+            return;
+        };
+        let out = clip.write(bytes, limits);
+        p.say_bytes(&self.show(v, &out));
+    }
+
+    /// progressui: each line stamped with the seconds since the step began when its first
+    /// bytes came, to 3 places below 10 s, 2 below 100 and 1 past; a line not yet ended
+    /// printed as far as it goes, and the rest after it as it comes.
+    fn show(&mut self, v: &Vertex, data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let secs = v.started.elapsed().as_secs_f64();
+        let places = if secs < 10.0 {
+            3
+        } else if secs < 100.0 {
+            2
+        } else {
+            1
+        };
+        let stamp = format!("#{} {secs:.places$} ", v.index);
+        let mut rest = data;
+        let mut first = true;
+        // `split`: no line from no bytes, and none ended.
+        let complete = loop {
+            if rest.is_empty() {
+                break !data.is_empty();
+            }
+            let end = rest.iter().position(|&b| b == b'\n');
+            if !(first && self.partial) {
+                out.extend_from_slice(stamp.as_bytes());
+            }
+            out.extend_from_slice(go_head(rest, end.unwrap_or(rest.len())));
+            let Some(end) = end else {
+                break false;
+            };
+            out.push(b'\n');
+            rest = go_tail(rest, end + 1);
+            first = false;
+        };
+        self.partial = !complete;
+        out
+    }
+
+    /// The step's end: each stream's tail, stdout's first, as flushBuffer passes them
+    /// on unclipped, and a line left open ended, as the printer ends it.
+    fn end(&mut self, p: &Progress, v: &Vertex) {
+        for i in 0..2 {
+            let tail = self
+                .streams
+                .get_mut(i)
+                .and_then(|s| s.tail.take())
+                .map(|t| t.bytes());
+            if let Some(tail) = tail {
+                p.say_bytes(&self.show(v, &tail));
+            }
+        }
+        if self.partial {
+            p.say("\n");
+            self.partial = false;
         }
     }
 }
@@ -735,6 +967,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         exec.stage()?
     };
     let mut downloads = http::Downloads::start(sources, &dir, limits)?;
+    let log_limits = LogLimits::from_env();
     let mut builder: Option<builder::Builder> = None;
     let mut results: Vec<Vec<exec::Ref>> = Vec::with_capacity(def.ops.len());
     // What other operations read, so a base image is unpacked only when one does.
@@ -940,11 +1173,11 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                     insecure: false,
                     network_host: false,
                 };
-                let mut held = Vec::new();
-                let r = exec.run(b, &inputs, &op, &name, &mut |_, bytes| {
-                    progress.borrow().log(&v, &mut held, bytes)
+                let mut log = StepLog::new(log_limits);
+                let r = exec.run(b, &inputs, &op, &name, &mut |which, bytes| {
+                    log.write(&progress.borrow(), &v, which, bytes)
                 });
-                progress.borrow().flush(&v, &mut held);
+                log.end(&progress.borrow(), &v);
                 let r = r.map_err(|e| fail(&v, &e))?;
                 progress.borrow().done(&v);
                 r
@@ -1180,4 +1413,107 @@ fn print_warnings(warnings: &[shards_dockerfile::lint::Warning], quiet: bool) {
         out.push_str(&format!(" - {short}\n"));
     }
     let _ = write!(std::io::stderr(), "{out}");
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// Byte counts as tonistiigi/units' `%#g` writes them (measured, go1.26 in BuildKit's
+    /// module).
+    #[test]
+    fn byte_counts_read_as_buildkits() {
+        for (b, want) in [
+            (2 << 20, "2MiB"),
+            (200 << 10, "200KiB"),
+            (1000, "1000B"),
+            (1024, "1KiB"),
+            (1536, "1.5KiB"),
+            (1 << 30, "1GiB"),
+            (0, "0B"),
+            (3 << 19, "1.5MiB"),
+            (-(2 << 20), "-2MiB"),
+        ] {
+            assert_eq!(units(b), want);
+        }
+    }
+
+    /// A stream passes as much as its limit lets, a notice where clipping begins and
+    /// nothing after; the tail keeps what came from the clipped write on; within its first
+    /// second a stream may print its speed's worth.
+    #[test]
+    fn streams_are_clipped_as_buildkitd_clips_them() {
+        let size = LogLimits { size: 10, speed: -1 };
+        let mut c = Clip::new();
+        assert_eq!(c.write(b"abcdef", size), b"abcdef");
+        assert_eq!(
+            c.write(b"ghijkl", size),
+            b"ghij\n[output clipped, log limit 10B reached]\n"
+        );
+        assert_eq!(c.write(b"mno", size), b"");
+        // From the write that was clipped on: buildkitd makes the tail then.
+        assert_eq!(c.tail.as_ref().unwrap().bytes(), b"ghijklmno");
+        let speed = LogLimits {
+            size: 2 << 20,
+            speed: 5,
+        };
+        let mut c = Clip::new();
+        assert_eq!(
+            c.write(b"12345678", speed),
+            b"12345\n[output clipped, log limit 5B/s reached]\n"
+        );
+    }
+
+    /// The tail keeps the last 256 KiB, in order, however written.
+    #[test]
+    fn the_tail_keeps_the_last_bytes_in_order() {
+        let mut t = Tail {
+            data: vec![0; Tail::SIZE],
+            at: 0,
+            full: false,
+        };
+        let all: Vec<u8> = (0..Tail::SIZE * 2 + 123).map(|i| (i % 251) as u8).collect();
+        for chunk in all.chunks(7777) {
+            t.write(chunk);
+        }
+        assert_eq!(t.bytes(), all.get(all.len() - Tail::SIZE..).unwrap());
+        t.write(&all);
+        assert_eq!(t.bytes(), all.get(all.len() - Tail::SIZE..).unwrap());
+    }
+
+    /// Lines are stamped when they begin, to 3 places, 2 past 10 s and 1 past 100; a
+    /// line not ended is printed as far as it goes and continued as the rest comes.
+    #[test]
+    fn lines_print_as_progressui_prints_them() {
+        let mut log = StepLog::new(LogLimits { size: -1, speed: -1 });
+        let v = Vertex {
+            index: 7,
+            started: Instant::now(),
+        };
+        let shown = |log: &mut StepLog, v: &Vertex, b: &[u8]| String::from_utf8(log.show(v, b)).unwrap();
+        let first = shown(&mut log, &v, b"ab");
+        assert!(
+            first.starts_with("#7 0.0") && first.ends_with(" ab") && first.len() == "#7 0.000 ab".len(),
+            "{first}"
+        );
+        assert_eq!(shown(&mut log, &v, b"c\n"), "c\n");
+        let next = shown(&mut log, &v, b"d\ne");
+        assert!(
+            next.starts_with("#7 0.0") && next.contains(" d\n#7 0.0") && next.ends_with(" e"),
+            "{next}"
+        );
+        for (ago, places) in [(12, 2), (150, 1)] {
+            let v = Vertex {
+                index: 1,
+                started: Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(ago))
+                    .unwrap(),
+            };
+            let mut log = StepLog::new(LogLimits { size: -1, speed: -1 });
+            let line = shown(&mut log, &v, b"x\n");
+            let stamp = line.split(' ').nth(1).unwrap();
+            assert_eq!(stamp.split('.').nth(1).unwrap().len(), places, "{line}");
+        }
+    }
 }

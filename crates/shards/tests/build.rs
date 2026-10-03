@@ -1371,6 +1371,65 @@ fn files_the_frontend_reads_are_bounded_as_buildkits_are() {
     );
 }
 
+/// A RUN step's output is clipped as buildkitd clips each stream: past its limit, the
+/// rest dropped after a notice, and what came from the clipped write on printed once the
+/// step ends; BUILDKIT_STEP_LOG_MAX_SIZE and _MAX_SPEED set the limits as buildkitd reads
+/// them, and under them nothing is clipped.
+#[test]
+fn a_steps_output_is_clipped_as_buildkitd_clips_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let lines: String = (1..=500).map(|i| format!("line-{i:04}\\n")).collect();
+    let ctx = context(
+        "build-clip-ctx",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"stderr\", \"{lines}\"]\n"),
+    );
+    let home = TempDir::new("build-clip-home");
+    let build = |limits: &[(&str, &str)]| {
+        let mut env = vec![
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel().as_os_str()),
+            ("SHARDS_INIT", guest_init().as_os_str()),
+        ];
+        env.extend(limits.iter().map(|(k, v)| (*k, std::ffi::OsStr::new(v))));
+        let built = run_shards_env(
+            &[],
+            &["build", "--no-cache", "--progress=plain", ctx.to_str().unwrap()],
+            &env,
+            TIMEOUT,
+        );
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        built.stderr
+    };
+    let printed = build(&[]);
+    assert!(
+        !printed.contains("clipped") && printed.contains(" line-0500\n"),
+        "{printed}"
+    );
+    let printed = build(&[("BUILDKIT_STEP_LOG_MAX_SIZE", "1000")]);
+    let notice = printed
+        .find(" [output clipped, log limit 1000B reached]\n")
+        .expect(&printed);
+    let (before, after) = printed.split_at(notice);
+    // Printed lines, not the step's name, which holds them all with escapes.
+    assert!(
+        before.contains(" line-0100\n") && !before.contains(" line-0101\n"),
+        "{printed}"
+    );
+    assert!(
+        after.contains(" line-0101\n") && after.contains(" line-0500\n"),
+        "{printed}"
+    );
+    assert_eq!(printed.matches("[output clipped").count(), 1, "{printed}");
+    let printed = build(&[("BUILDKIT_STEP_LOG_MAX_SPEED", "500")]);
+    assert!(
+        printed.contains(" [output clipped, log limit 500B/s reached]\n"),
+        "{printed}"
+    );
+}
+
 /// ADD's checksum is held to the download by its own algorithm: SHA-384 and SHA-512
 /// ones match what they name, where BuildKit hashes with SHA-256 whatever the checksum
 /// names, so that none of them ever matches.

@@ -471,9 +471,11 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
     let collect = |mut r: Box<dyn Read + Send>| {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = r.read_to_string(&mut s);
-            let _ = tx.send(s);
+            // Lossily: a step's output is printed as it came, bytes that are no UTF-8
+            // included, which read_to_string would drop the whole of.
+            let mut b = Vec::new();
+            let _ = r.read_to_end(&mut b);
+            let _ = tx.send(String::from_utf8_lossy(&b).into_owned());
         });
         rx
     };
