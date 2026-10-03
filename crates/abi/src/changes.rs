@@ -140,9 +140,19 @@ pub enum Error {
 #[derive(Debug, Default)]
 pub struct Decoder {
     buf: Vec<u8>,
+    /// How far the current header has been measured, so that each byte of it is looked
+    /// at once, however it arrives: a header of x xattrs fed in pieces cost x² before.
+    scan: Scan,
     /// Bytes of the current file still to come.
     data_left: u64,
     ended: bool,
+}
+
+/// A header's measuring so far: its xattrs measured, and its length up to the next.
+#[derive(Debug, Default, Clone, Copy)]
+struct Scan {
+    xattrs: usize,
+    len: usize,
 }
 
 impl Decoder {
@@ -176,7 +186,7 @@ impl Decoder {
         }
         let mut taken = 0;
         loop {
-            let (whole, need) = header_len(&self.buf)?;
+            let (whole, need) = header_len(&self.buf, &mut self.scan)?;
             if whole && self.buf.len() >= need {
                 break;
             }
@@ -190,6 +200,7 @@ impl Decoder {
         }
         let entry = parse(&self.buf)?;
         self.buf.clear();
+        self.scan = Scan::default();
         self.data_left = if entry.kind == kind::FILE { entry.size } else { 0 };
         Ok((Event::Entry(entry), taken))
     }
@@ -219,7 +230,7 @@ fn u64_at(b: &[u8], at: usize) -> u64 {
 /// How long the header in `buf` is: `(true, n)` once its fixed part and its xattrs'
 /// lengths are there, else `(false, n)`, `n` being as much as must be there before more is
 /// known. Every length is bounded before it is added.
-fn header_len(buf: &[u8]) -> Result<(bool, usize), Error> {
+fn header_len(buf: &[u8], scan: &mut Scan) -> Result<(bool, usize), Error> {
     if buf.len() < FIXED {
         return Ok((false, FIXED));
     }
@@ -243,9 +254,12 @@ fn header_len(buf: &[u8]) -> Result<(bool, usize), Error> {
     if xattrs > MAX_XATTRS {
         return Err(Error::TooLong("xattrs"));
     }
-    let mut len = FIXED + path + target;
-    for _ in 0..xattrs {
+    if scan.len == 0 {
+        scan.len = FIXED + path + target;
+    }
+    while scan.xattrs < xattrs {
         // Each xattr's name length, its name, its value's length and its value.
+        let len = scan.len;
         if len > MAX_HEADER {
             return Err(Error::TooLong("header"));
         }
@@ -263,12 +277,13 @@ fn header_len(buf: &[u8]) -> Result<(bool, usize), Error> {
         if value > MAX_XATTR_VALUE {
             return Err(Error::TooLong("xattr value"));
         }
-        len += 4 + name + 4 + value;
+        scan.len = len + 4 + name + 4 + value;
+        scan.xattrs += 1;
     }
-    if len > MAX_HEADER {
+    if scan.len > MAX_HEADER {
         return Err(Error::TooLong("header"));
     }
-    Ok((true, len))
+    Ok((true, scan.len))
 }
 
 fn parse(buf: &[u8]) -> Result<Entry, Error> {
@@ -438,6 +453,34 @@ mod tests {
         stream.push(END);
         for step in [1, 3, 7, 64, stream.len()] {
             assert_eq!(decode(&stream, step).unwrap(), entries, "fed {step} at a time");
+        }
+    }
+
+    /// A header of many xattrs reads back whole fed a byte at a time, each piece taken
+    /// from where the last left off.
+    #[test]
+    fn a_header_of_many_xattrs_reads_back_in_any_pieces() {
+        let entry = Entry {
+            xattrs: (0..2000u32)
+                .map(|i| {
+                    (
+                        alloc::format!("user.{i}").into_bytes(),
+                        vec![u8::try_from(i % 251).unwrap(); usize::try_from(i % 7).unwrap()],
+                    )
+                })
+                .collect(),
+            ..file(b"many", b"x")
+        };
+        let mut stream = Vec::new();
+        entry.encode_into(&mut stream);
+        stream.extend_from_slice(b"x");
+        stream.push(END);
+        for step in [1, 5, stream.len()] {
+            assert_eq!(
+                decode(&stream, step).unwrap(),
+                [(entry.clone(), b"x".to_vec())],
+                "fed {step} at a time"
+            );
         }
     }
 
