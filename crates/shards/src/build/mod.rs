@@ -4,9 +4,10 @@
 //! BuildKit's exporter writes it (`shards_dockerfile::export`), so `shards run` boots it.
 //! Progress is BuildKit's plain display.
 //!
-//! What runs so far: stages of base images and of configuration alone (FROM, ENV, LABEL,
-//! CMD and the rest). A step that changes files (RUN, COPY, ADD, WORKDIR other than `/`)
-//! fails with a message that says so.
+//! Every Dockerfile instruction runs: file operations (COPY, ADD of the context, of
+//! archives and of URLs, WORKDIR) here, on in-memory snapshots as BuildKit's backend makes
+//! them (`shards_build`), and RUN steps in a builder microVM (`builder`). A source shards
+//! does not fetch yet, a Git repository's, fails the step that reads it, saying so.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;

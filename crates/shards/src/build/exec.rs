@@ -573,26 +573,30 @@ impl<'a> Exec<'a> {
             },
         };
         let owner = |c: &Option<OpChown>| c.clone();
-        let user_fs = |slots: &Vec<Slot>,
-                       c: &Option<OpChown>,
-                       which: bool,
-                       own: &Fs|
-         -> Result<Option<Rc<Fs>>, String> {
+        // The tree a user or group name is read from, borrowed: the action's own, as it
+        // is so far, or another input's.
+        fn user_fs<'s>(
+            slots: &'s [Slot],
+            c: &Option<OpChown>,
+            which: bool,
+            own: &'s Fs,
+            own_input: i64,
+        ) -> Result<Option<&'s Fs>, String> {
             let Some(c) = c else { return Ok(None) };
             let u = if which { &c.user } else { &c.group };
             match u {
                 Some(OpUser::Name { input, .. }) => {
-                    if usize::try_from(*input).ok() == usize::try_from(a.input).ok() {
-                        return Ok(Some(Rc::new(own.clone())));
+                    if usize::try_from(*input).ok() == usize::try_from(own_input).ok() {
+                        return Ok(Some(own));
                     }
                     match usize::try_from(*input).ok().and_then(|i| slots.get(i)) {
-                        Some(Slot::Ref(r)) => Ok(Some(r.fs.clone())),
+                        Some(Slot::Ref(r)) => Ok(Some(&*r.fs)),
                         _ => Err(format!("invalid user index: {input}")),
                     }
                 }
                 _ => Ok(None),
             }
-        };
+        }
         let chown = match &a.action {
             OpActionKind::Mkdir { owner: o, .. }
             | OpActionKind::Mkfile { owner: o, .. }
@@ -601,10 +605,9 @@ impl<'a> Exec<'a> {
         let ch = match &chown {
             None => Chown::Keep,
             Some(c) => {
-                let users = user_fs(slots, &chown, true, &fs)?;
-                let groups = user_fs(slots, &chown, false, &fs)?;
-                ops::read_user(Some(c), users.as_deref(), groups.as_deref(), &mut self.sources)
-                    .map_err(|e| e.0)?
+                let users = user_fs(slots, &chown, true, &fs, a.input)?;
+                let groups = user_fs(slots, &chown, false, &fs, a.input)?;
+                ops::read_user(Some(c), users, groups, &mut self.sources).map_err(|e| e.0)?
             }
         };
         let r: Result<(), BuildError> = match &a.action {
