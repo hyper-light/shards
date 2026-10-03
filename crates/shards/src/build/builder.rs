@@ -265,7 +265,14 @@ impl Builder {
             .chain(args.iter().skip(1))
             .map(OsString::as_os_str)
             .collect();
-        let vm = match shards_ipc::spawn(&shards_ipc::vm_binary(&exe), &argv, &fds, false) {
+        let env = crate::netproc::child_env();
+        let vm = match shards_ipc::spawn_in(
+            &shards_ipc::vm_binary(&exe),
+            &argv,
+            &fds,
+            false,
+            &crate::netproc::env_pairs(&env),
+        ) {
             Ok(vm) => vm,
             Err(e) => {
                 let _ = net.kill(libc::SIGKILL);

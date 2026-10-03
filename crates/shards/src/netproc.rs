@@ -5,6 +5,24 @@
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
 
+/// What a VM or network process is given of its spawner's environment: the variables it
+/// reads, and nothing else. A daemon's environment is that of the client that started
+/// it, which may hold secrets (an API key, an agent's socket), and these are the
+/// processes a guest could take over.
+pub fn child_env() -> Vec<(&'static str, std::ffi::OsString)> {
+    ["SHARDS_LOG", "SHARDS_TIMING"]
+        .into_iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| (name, value)))
+        .collect()
+}
+
+/// [`child_env`], as `shards_ipc::spawn_in` takes it.
+pub fn env_pairs<'e>(
+    env: &'e [(&'static str, std::ffi::OsString)],
+) -> Vec<(&'static str, &'e std::ffi::OsStr)> {
+    env.iter().map(|(k, v)| (*k, v.as_os_str())).collect()
+}
+
 /// The descriptor numbers a VM process takes its side of the ring at.
 pub const VM_FDS: [i32; 3] = [5, 6, 7];
 
@@ -61,7 +79,8 @@ pub fn start(
     let err = std::io::stderr();
     let mac: Vec<String> = mac.iter().map(|b| format!("{b:02x}")).collect();
     let mac = mac.join(":");
-    let child = shards_ipc::spawn(
+    let env = child_env();
+    let child = shards_ipc::spawn_in(
         &binary,
         &[
             "--ring".as_ref(),
@@ -84,6 +103,7 @@ pub fn start(
             (released.as_fd(), 7),
         ],
         false,
+        &env_pairs(&env),
     )
     .map_err(|e| format!("starting {}: {e}", binary.display()))?;
     Ok((

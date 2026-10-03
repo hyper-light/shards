@@ -644,6 +644,37 @@ pub fn spawn_with(
     detach: bool,
     set: &[(&str, &OsStr)],
 ) -> io::Result<Child> {
+    let inherited = std::env::vars_os().filter(|(k, _)| !set.iter().any(|(name, _)| k == *name));
+    let given = set
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
+    spawn_env(program, args, fds, detach, inherited.chain(given).collect())
+}
+
+/// [`spawn`], with the variables `env` alone for the child's environment: nothing of this
+/// process's, whose own may hold what its child must not (a client's secrets, for a
+/// process a guest could take over).
+pub fn spawn_in(
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedFd<'_>, RawFd)],
+    detach: bool,
+    env: &[(&str, &OsStr)],
+) -> io::Result<Child> {
+    let env = env
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()))
+        .collect();
+    spawn_env(program, args, fds, detach, env)
+}
+
+fn spawn_env(
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedFd<'_>, RawFd)],
+    detach: bool,
+    env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+) -> io::Result<Child> {
     let cstring = |s: &OsStr| {
         CString::new(s.as_bytes())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in an argument"))
@@ -653,12 +684,8 @@ pub fn spawn_with(
     for a in args {
         argv.push(cstring(a)?);
     }
-    let inherited = std::env::vars_os().filter(|(k, _)| !set.iter().any(|(name, _)| k == *name));
-    let given = set
-        .iter()
-        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
-    let env: Vec<CString> = inherited
-        .chain(given)
+    let env: Vec<CString> = env
+        .into_iter()
         .map(|(k, v)| {
             let mut entry = k.as_bytes().to_vec();
             entry.push(b'=');
@@ -1008,6 +1035,30 @@ mod tests {
             0,
             "the child inherited descriptor {}",
             w.as_raw_fd()
+        );
+    }
+
+    /// A child spawned in an environment has that alone: what it is given, and nothing of
+    /// this process's (its HOME, here).
+    #[test]
+    fn a_child_spawned_in_an_environment_has_it_alone() {
+        assert!(
+            std::env::var_os("HOME").is_some(),
+            "the test needs a HOME to leave behind"
+        );
+        let script = r#"[ "$GIVEN" = yes ] && [ -z "$HOME" ] && exit 0; exit 1"#;
+        let child = spawn_in(
+            Path::new("/bin/sh"),
+            &["-c".as_ref(), script.as_ref()],
+            &[],
+            false,
+            &[("GIVEN", OsStr::new("yes"))],
+        )
+        .unwrap();
+        assert_eq!(
+            child.wait().unwrap(),
+            0,
+            "the child had more, or less, than it was given"
         );
     }
 

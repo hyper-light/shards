@@ -2688,7 +2688,9 @@ impl<D: Disk> Daemon<D> {
             .chain(given)
             .chain(args.iter().skip(1).map(OsString::as_os_str))
             .collect();
-        let child = match shards_ipc::spawn(&self.vm, &args, &fds, false) {
+        let env = crate::netproc::child_env();
+        let child = match shards_ipc::spawn_in(&self.vm, &args, &fds, false, &crate::netproc::env_pairs(&env))
+        {
             Ok(child) => child,
             Err(e) => {
                 if let Some((net, side)) = network {

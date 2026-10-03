@@ -242,6 +242,10 @@ pub fn serve(link: &std::os::unix::net::UnixStream) -> Result<(), String> {
     // collector flushes a socket in flight that no process holds (M24), and a flushed
     // socket reads as ended. The VM asks again only once it has received them.
     let mut held: Vec<std::os::fd::OwnedFd> = Vec::new();
+    // Its vsock path granted, the last it asks for (and what any dial needs first): the VM
+    // has started, its guest running. It asks for no access after that, so a request is
+    // one its guest has taken it over to make, and ends the answers.
+    let mut started = false;
     loop {
         let asked = shards_ipc::recv(link).map_err(|e| format!("a VM's request for access: {e}"))?;
         held.clear();
@@ -267,6 +271,12 @@ pub fn serve(link: &std::os::unix::net::UnixStream) -> Result<(), String> {
             (kind::GRANT, Some(wanted)) => wanted,
             _ => return Err("a VM sent a malformed request for access".into()),
         };
+        if started {
+            let e = "a VM asked for access after it started".to_string();
+            let _ = shards_ipc::send(link, kind::ERR, e.as_bytes(), &[]);
+            return Err(e);
+        }
+        started = wanted.iter().any(|(access, _)| *access == Access::Listen);
         for (access, path) in wanted {
             let sent = match answer(access, &path) {
                 Ok(Answer::File(file)) => {
@@ -453,10 +463,14 @@ mod tests {
             );
             drop(accepted);
             assert!(dial(&vm, 5001).is_err(), "nothing listens on that port");
-            let second = obtain(&vm, &[(Access::Listen, dir.join("w"))]);
-            assert!(second.is_err(), "a second vsock path");
+            // Started, it is granted nothing more: not a file to read, as a VM process
+            // its guest had taken over would ask for.
+            let secret = dir.join("secret");
+            std::fs::write(&secret, b"s").unwrap();
+            let late = obtain(&vm, &[(Access::Read, secret.clone())]).unwrap_err();
+            assert!(late.contains("after it started"), "{late}");
             drop(vm);
-            assert!(serving.join().unwrap().is_err());
+            assert!(serving.join().unwrap().is_err(), "the refusal ended its answers");
         });
         // One in use is not taken over.
         let (vm, spawner) = UnixStream::pair().unwrap();
