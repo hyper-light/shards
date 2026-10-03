@@ -4024,6 +4024,25 @@ mod tests {
         );
     }
 
+    /// A target other than Linux is refused: shards' guests are Linux.
+    #[test]
+    fn a_target_that_is_not_linux_is_refused() {
+        let opts = Options {
+            target_platform: Platform::new("windows", "amd64"),
+            ..Default::default()
+        };
+        let times = Times {
+            asked: Default::default(),
+            answer: Ok(None),
+            logged: Default::default(),
+        };
+        let e = plan(b"FROM scratch\n", &opts, &times).unwrap_err();
+        assert_eq!(
+            String::from_utf8_lossy(&e.message),
+            "shards builds Linux guests: the target platform windows/amd64 is not one"
+        );
+    }
+
     /// `strings.Index`: an empty needle is at the start.
     #[test]
     fn an_empty_needle_is_found_at_the_start() {

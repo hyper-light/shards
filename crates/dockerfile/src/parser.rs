@@ -824,18 +824,53 @@ fn takes_heredocs(node: &Node) -> bool {
 }
 
 /// Lines with their endings, as BuildKit's scanner splits them.
-fn lines(text: &[u8]) -> Vec<&[u8]> {
-    let mut out = Vec::new();
-    let mut start = 0;
-    while start < text.len() {
-        let end = go::tail(text, start)
+/// The longest line BuildKit's parser reads: bufio.Scanner's longest token, less one.
+const MAX_LINE: usize = 65_535;
+
+/// BuildKit's bufio.Scanner over a file's lines, each with its newline (`scanLines`): as
+/// far as one longer than MAX_LINE, whose scan fails (ErrTooLong). The scan after that is
+/// given what the full buffer holds as if at the file's end, and so hands over the line's
+/// first MAX_LINE + 1 bytes; any scan after that, nothing. BuildKit's outer loop scans
+/// again only when a continuation's or a heredoc's scan failed.
+struct Scanner<'a> {
+    text: &'a [u8],
+    at: usize,
+    /// The first bytes of a line too long, until handed over.
+    held: Option<&'a [u8]>,
+    failed: bool,
+}
+
+impl<'a> Scanner<'a> {
+    fn new(text: &'a [u8]) -> Scanner<'a> {
+        Scanner {
+            text,
+            at: 0,
+            held: None,
+            failed: false,
+        }
+    }
+
+    fn scan(&mut self) -> Option<&'a [u8]> {
+        if self.failed {
+            return self.held.take();
+        }
+        let rest = go::tail(self.text, self.at);
+        if rest.is_empty() {
+            return None;
+        }
+        let len = rest
             .iter()
             .position(|&b| b == b'\n')
-            .map_or(text.len(), |e| start + e + 1);
-        out.push(go::span(text, start, end));
-        start = end;
+            .map_or(rest.len(), |e| e + 1);
+        let line = go::head(rest, len);
+        if line.strip_suffix(b"\n").unwrap_or(line).len() > MAX_LINE {
+            self.failed = true;
+            self.held = Some(go::head(rest, MAX_LINE + 1));
+            return None;
+        }
+        self.at += len;
+        Some(line)
     }
-    out
 }
 
 const EMPTY_CONTINUATION: &str = "https://docs.docker.com/go/dockerfile/rule/no-empty-continuation/";
@@ -851,14 +886,13 @@ pub fn parse(text: &[u8]) -> Result<Parsed, Error> {
         escape: b'\\',
         depth: 0,
     };
-    let all = lines(text);
-    let mut it = all.iter().copied();
+    let mut it = Scanner::new(text);
     let mut current = 0usize;
     let mut comments: Vec<Vec<u8>> = Vec::new();
     let mut warnings = Vec::new();
     let mut instructions: Vec<Node> = Vec::new();
 
-    while let Some(raw) = it.next() {
+    while let Some(raw) = it.scan() {
         let mut read = raw;
         if current == 0 {
             read = read.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(read);
@@ -885,7 +919,7 @@ pub fn parse(text: &[u8]) -> Result<Parsed, Error> {
         let mut buf = first.to_vec();
         let mut empty_continuation = false;
         while !end_of_line {
-            let Some(raw) = it.next() else { break };
+            let Some(raw) = it.scan() else { break };
             let (more, _) = process_line(&mut d, raw, false).map_err(|m| located(m, current, 0))?;
             current += 1;
             if is_comment(raw) {
@@ -916,7 +950,7 @@ pub fn parse(text: &[u8]) -> Result<Parsed, Error> {
             for mut doc in docs {
                 let mut terminated = false;
                 let mut content = Vec::new();
-                for raw in it.by_ref() {
+                while let Some(raw) = it.scan() {
                     current += 1;
                     let mut candidate = trim_newline(raw);
                     if doc.chomp {
@@ -942,6 +976,14 @@ pub fn parse(text: &[u8]) -> Result<Parsed, Error> {
     }
     if instructions.is_empty() {
         return Err(located(err("file with no instructions"), current, 0));
+    }
+    // handleScannerError: a scan failed at a line too long.
+    if it.failed {
+        return Err(located(
+            format!("dockerfile line greater than max allowed size of {MAX_LINE}").into_bytes(),
+            current,
+            0,
+        ));
     }
     Ok(Parsed {
         instructions,
@@ -970,7 +1012,8 @@ mod tests {
     #[test]
     fn nesting_is_bounded() {
         let mut text = b"FROM a\n".to_vec();
-        text.extend(std::iter::repeat_n(b"ONBUILD ".as_slice(), 100_000).flatten());
+        // Within a line BuildKit reads, which holds over 8,000.
+        text.extend(std::iter::repeat_n(b"ONBUILD ".as_slice(), 1_000).flatten());
         text.extend_from_slice(b"RUN x\n");
         let e = parse(&text).unwrap_err();
         assert_eq!(
