@@ -1089,9 +1089,10 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     );
 }
 
-/// What no reference needs is collected (audit A13): once `shards pull` moves a tag to
-/// another image, the daemon removes the old image's blobs, root filesystem and template,
-/// ending its warm VMs, and keeps the new one's, which runs from a template of its own.
+/// What no reference needs is collected (audit A13). `shards pull` moving a tag to another
+/// image leaves the old one dangling, as dockerd leaves it; once `rmi` removes it, the
+/// daemon removes its blobs, root filesystem and template, ending its warm VMs, and keeps
+/// the new one's, which runs from a template of its own.
 #[test]
 fn what_a_moved_tag_named_is_collected() {
     if cannot_run_vms() || cannot_snapshot() {
@@ -1102,7 +1103,7 @@ fn what_a_moved_tag_named_is_collected() {
     let home = home_with("daemon-collect");
     let env = [("SHARDS_HOME", home.as_os_str())];
     let run = || {
-        let run = run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT);
+        let run = run_shards_env(&["run"], &["--rm", image.as_str(), "exit", "0"], &env, TIMEOUT);
         assert_eq!(run.status, Some(0), "{}", run.stderr);
     };
     run();
@@ -1131,9 +1132,21 @@ fn what_a_moved_tag_named_is_collected() {
     let template = templates[0].to_string_lossy().into_owned();
     eventually("no warm VM", || !processes_with(&template).is_empty());
 
+    let old = run_shards_env(&["images"], &["-q", "--no-trunc", image.as_str()], &env, TIMEOUT);
+    let old = old.stdout.trim().to_string();
     *serving.lock().unwrap() = test_image_with(Some(b"moved"));
     let pulled = run_shards_env(&["pull"], &[image.as_str()], &env, TIMEOUT);
     assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
+    // Dangling, it is kept, its template too.
+    let listed_now = run_shards_env(&["images"], &["-a", "-q", "--no-trunc"], &env, TIMEOUT);
+    assert!(
+        listed_now.stdout.lines().any(|l| l == old),
+        "{}",
+        listed_now.stdout
+    );
+    assert!(rootfs[0].exists() && templates[0].exists());
+    let removed = run_shards_env(&["rmi"], &[old.as_str()], &env, TIMEOUT);
+    assert_eq!(removed.status, Some(0), "{}", removed.stderr);
     eventually("the old image was not collected", || {
         blobs.iter().all(|b| !b.exists()) && !rootfs[0].exists() && !templates[0].exists()
     });

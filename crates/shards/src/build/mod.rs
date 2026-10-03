@@ -1459,7 +1459,12 @@ mod tests {
             size: 2 << 20,
             speed: 5,
         };
+        // Begun a moment ago: the clock may not have moved since `new`, and no second
+        // begun is no budget, as in buildkitd.
         let mut c = Clip::new();
+        c.began = Instant::now()
+            .checked_sub(std::time::Duration::from_millis(1))
+            .unwrap();
         assert_eq!(
             c.write(b"12345678", speed),
             b"12345\n[output clipped, log limit 5B/s reached]\n"
