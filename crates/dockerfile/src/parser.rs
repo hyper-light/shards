@@ -255,32 +255,77 @@ impl Directives {
 /// `ParseDirective` (a byte-order mark and a shebang line skipped, reading stopped at the
 /// first line that is no directive, or at a directive given twice).
 pub fn directive_value(text: &[u8], key: &[u8]) -> Option<Vec<u8>> {
-    let text = text.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(text);
-    let first_end = text.iter().position(|&b| b == b'\n');
-    let text = match first_end {
-        Some(end) if text.starts_with(b"#!") => go::tail(text, end + 1),
-        None if text.starts_with(b"#!") => &[],
-        _ => text,
-    };
-    let mut seen: Vec<Vec<u8>> = Vec::new();
-    for raw in text.split(|&b| b == b'\n') {
-        let line = raw.strip_suffix(b"\r").unwrap_or(raw);
-        let rest = line.strip_prefix(b"#")?;
-        let (k, value) = directive(go::trim_left_space(rest))?;
-        let k = k.to_ascii_lowercase();
-        if !matches!(k.as_slice(), b"syntax" | b"escape" | b"check") {
-            return None;
+    let (text, line) = directive_text(text);
+    parse_all(text, b"#", line)
+        .into_iter()
+        .find(|(k, _, _)| k == key)
+        .map(|(_, value, _)| first_word(&value))
+}
+
+/// `DetectSyntax`: the frontend a file names, by a `#` directive, else a `//` one, else as
+/// the `syntax` of a file that is one JSON object: the reference (the value's first word),
+/// the whole value, and its line.
+pub fn detect_syntax(text: &[u8]) -> Option<(Vec<u8>, Vec<u8>, usize)> {
+    let (text, line) = directive_text(text);
+    for comment in [b"#".as_slice(), b"//"] {
+        if let Some((_, value, at)) = parse_all(text, comment, line)
+            .into_iter()
+            .find(|(k, _, _)| k == b"syntax")
+        {
+            return Some((first_word(&value), value, at));
         }
-        if seen.contains(&k) {
-            return None;
-        }
-        if k == key {
-            let word = value.split(|&b| b == b' ').next().unwrap_or_default();
-            return Some(word.to_vec());
-        }
-        seen.push(k);
     }
-    None
+    let Ok(json::Value::Object(members)) = json::parse(text) else {
+        return None;
+    };
+    // Go's map keeps a key given twice as last given.
+    match members.iter().rev().find(|(k, _)| k == b"syntax") {
+        Some((_, json::Value::String(v, _))) => Some((v.clone(), v.clone(), line)),
+        _ => None,
+    }
+}
+
+/// A file as its directives are read: its byte-order mark and shebang line dropped, and
+/// the line before the first left (`discardBOM`, `discardShebang`).
+fn directive_text(text: &[u8]) -> (&[u8], usize) {
+    let text = text.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(text);
+    if !text.starts_with(b"#!") {
+        return (text, 0);
+    }
+    match text.iter().position(|&b| b == b'\n') {
+        Some(end) => (go::tail(text, end + 1), 1),
+        None => (&[], 1),
+    }
+}
+
+/// `DirectiveParser.ParseAll` with comment prefix `comment`, lines counted on from `line`:
+/// the leading directives, each lowercase with its value and line, as far as the first
+/// line that is no comment, no directive, none BuildKit knows, or one given again.
+fn parse_all(text: &[u8], comment: &[u8], mut line: usize) -> Vec<(Vec<u8>, Vec<u8>, usize)> {
+    let mut out: Vec<(Vec<u8>, Vec<u8>, usize)> = Vec::new();
+    for raw in text.split(|&b| b == b'\n') {
+        line += 1;
+        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+        let Some(rest) = raw.strip_prefix(comment) else {
+            break;
+        };
+        let Some((k, value)) = directive(go::trim_left_space(rest)) else {
+            break;
+        };
+        let k = k.to_ascii_lowercase();
+        if !matches!(k.as_slice(), b"syntax" | b"escape" | b"check")
+            || out.iter().any(|(seen, _, _)| *seen == k)
+        {
+            break;
+        }
+        out.push((k, value.to_vec(), line));
+    }
+    out
+}
+
+/// `strings.Cut(value, " ")`'s first part.
+pub(crate) fn first_word(value: &[u8]) -> Vec<u8> {
+    value.split(|&b| b == b' ').next().unwrap_or_default().to_vec()
 }
 
 /// One comment line read as a directive, BuildKit's `DirectiveParser` with no comment

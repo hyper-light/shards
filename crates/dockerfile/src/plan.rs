@@ -269,8 +269,53 @@ struct Planner<'a> {
     ignore: Option<crate::glob::PatternMatcher>,
 }
 
+/// The frontends shards' own is: docker/dockerfile at any tag, labs ones included, which at
+/// 1.27.1 are built as mainline is (frontend/dockerfile/release/*/tags, both empty), and
+/// the same frontend's upstream builds.
+const FRONTENDS: [&str; 2] = ["docker/dockerfile", "docker/dockerfile-upstream"];
+
+/// What builder.Build does with the frontend BUILDKIT_SYNTAX or `# syntax=` names, which is
+/// to hand the build to it: the Dockerfile frontend's own is this one, and any other, which
+/// shards cannot run, fails the build where it is named.
+fn check_frontend(text: &[u8], build_args: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<(), Fail> {
+    let ours = |r: &[u8]| {
+        std::str::from_utf8(r)
+            .ok()
+            .and_then(|r| Reference::parse_normalized(r).ok())
+            .is_some_and(|r| r.domain == "docker.io" && FRONTENDS.contains(&r.path.as_str()))
+    };
+    let refused = |r: &[u8]| {
+        errb(&[
+            b"shards cannot run frontend ",
+            r,
+            b": it builds Dockerfiles with its own port of docker/dockerfile 1.27.1",
+        ])
+    };
+    if let Some(cmdline) = build_args.get(b"BUILDKIT_SYNTAX".as_slice()) {
+        let r = parser::first_word(go::trim_space(cmdline));
+        return match ours(&r) {
+            true => Ok(()),
+            false => Err(Fail::new(errb(&[
+                b"failed with build-arg:BUILDKIT_SYNTAX = ",
+                cmdline,
+                b": ",
+                &refused(&r),
+            ]))),
+        };
+    }
+    match parser::detect_syntax(text) {
+        Some((r, _, line)) if !ours(&r) => Err(Fail::new(refused(&r)).at(&vec![(line, line)])),
+        _ => Ok(()),
+    }
+}
+
 /// Plans `text` as Dockerfile2LLB does.
 pub fn plan(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Plan, Error> {
+    check_frontend(text, &opts.build_args).map_err(|Fail(message, location)| Error {
+        message,
+        location,
+        warnings: Vec::new(),
+    })?;
     let check = parser::directive_value(text, b"check").unwrap_or_default();
     let config = lint::parse_options(&check).map_err(|e| Error {
         message: errb(&[b"failed to parse check options: ", &e]),
@@ -3697,6 +3742,65 @@ mod tests {
         assert!(ignored(text, &[]).is_empty());
         // `.` matches the root, yet excludes nothing of it (measured, dockerfile/1.27.1).
         assert!(ignored("FROM scratch\nCOPY . /\nCOPY / /\n", &["."]).is_empty());
+    }
+
+    /// The frontend a build is planned with: any tag of docker/dockerfile, labs ones and
+    /// upstream builds included, is this one, named by `# syntax=`, `//syntax=` or
+    /// BUILDKIT_SYNTAX, which wins; another fails the build where it is named, a `#`
+    /// directive's line counted past a shebang.
+    #[test]
+    fn a_frontend_shards_cannot_run_is_refused_where_it_is_named() {
+        let plans = |text: &str, args: &[(&str, &str)]| {
+            planned(text, args, Ok(None))
+                .0
+                .map(|_| ())
+                .map_err(|e| (String::from_utf8_lossy(&e.message).into_owned(), e.location))
+        };
+        for text in [
+            "# syntax=docker/dockerfile:1\nFROM scratch\n",
+            "# syntax = docker.io/docker/dockerfile:1.4-labs --x\nFROM scratch\n",
+            "#syntax=docker/dockerfile-upstream:master@sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\nFROM scratch\n",
+            "# check=skip=all\n# syntax=docker/dockerfile\nFROM scratch\n",
+        ] {
+            assert_eq!(plans(text, &[]), Ok(()), "{text}");
+        }
+        let refused = |r: &str| {
+            format!(
+                "shards cannot run frontend {r}: it builds Dockerfiles with its own port of docker/dockerfile 1.27.1"
+            )
+        };
+        assert_eq!(
+            plans(
+                "#!/bin/frontend\n# syntax=myorg/frontend:1 --flag\nFROM scratch\n",
+                &[]
+            ),
+            Err((refused("myorg/frontend:1"), vec![vec![(2, 2)]]))
+        );
+        assert_eq!(
+            plans("// syntax=ghcr.io/docker/dockerfile:1\nFROM scratch\n", &[]),
+            Err((refused("ghcr.io/docker/dockerfile:1"), vec![vec![(1, 1)]]))
+        );
+        assert_eq!(
+            plans("{\"syntax\": \"docker/dockerfile:1\", \"syntax\": \"x/y\"}", &[]),
+            Err((refused("x/y"), vec![vec![(0, 0)]]))
+        );
+        assert_eq!(
+            plans(
+                "# syntax=x/y\nFROM scratch\n",
+                &[("BUILDKIT_SYNTAX", " docker/dockerfile:1 ")]
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            plans("FROM scratch\n", &[("BUILDKIT_SYNTAX", "x/y z")]),
+            Err((
+                format!(
+                    "failed with build-arg:BUILDKIT_SYNTAX = x/y z: {}",
+                    refused("x/y")
+                ),
+                vec![]
+            ))
+        );
     }
 
     /// `strings.Index`: an empty needle is at the start.
