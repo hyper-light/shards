@@ -1268,6 +1268,16 @@ fn exec_runs_commands_in_a_running_container_as_docker_exec_does() {
     for line in ["uid 0\n", "cwd /\n", "env X=2\n", "env FROMRUN=1\n"] {
         assert!(changed.stdout.contains(line), "{line:?}\n{changed}");
     }
+    // Laid over the container's environment whole, as dockerd lays it: a variable of its
+    // name replaced, and one given without a value (none here to take it from) unset.
+    let over = exec(&["-e", "FROMRUN=2", "ex", "/bin/testguest", "report"]);
+    assert_eq!(over.status, Some(0), "{over}");
+    assert!(over.stdout.contains("env FROMRUN=2\n"), "{over}");
+    assert!(!over.stdout.contains("env FROMRUN=1\n"), "{over}");
+    assert!(std::env::var_os("FROMRUN").is_none());
+    let unset = exec(&["-e", "FROMRUN", "ex", "/bin/testguest", "report"]);
+    assert_eq!(unset.status, Some(0), "{unset}");
+    assert!(!unset.stdout.contains("env FROMRUN"), "{unset}");
     assert_eq!(exec(&["ex", "/bin/testguest", "exit", "7"]).status, Some(7));
     let split = exec(&["ex", "/bin/testguest", "stderr", "to stderr"]);
     assert_eq!(

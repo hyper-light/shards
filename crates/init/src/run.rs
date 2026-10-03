@@ -751,8 +751,12 @@ impl Standby {
             .find_map(|kv| kv.strip_prefix(b"PATH="))
             .unwrap_or_default();
         let explicit = argv0.contains(&b'/');
+        // An empty PATH has no entries (Go's filepath.SplitList), so nothing is found in
+        // it, as runc finds nothing.
         let candidates: Vec<Vec<u8>> = if explicit {
             vec![argv0.clone()]
+        } else if path_env.is_empty() {
+            Vec::new()
         } else {
             path_env
                 .split(|&b| b == b':')

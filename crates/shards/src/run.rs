@@ -273,8 +273,9 @@ pub fn settle(fresh: &Path, dir: &Path) {
 /// - The user and working directory are the image's unless given.
 /// - The environment is the given variables, then each of the image's whose name was not
 ///   given. dockerd then lays it over its PATH and HOSTNAME (workload.rs).
-/// - The image's command applies only when neither an entrypoint nor a command is given.
-///   Its entrypoint applies unless one is given, even an empty one.
+/// - The image's command applies only when no entrypoint is given, and no command. Its
+///   entrypoint applies unless one is given; an empty one clears it, and then a command
+///   must be given (moby daemon/commit.go merge; daemon/create.go: "no command specified").
 fn compose(image: Option<&RunConfig>, asked: &Run) -> Result<Options, String> {
     let image = image.cloned().unwrap_or_default();
     let mut env = asked.env.clone();
@@ -285,18 +286,15 @@ fn compose(image: Option<&RunConfig>, asked: &Run) -> Result<Options, String> {
         }
     }
     let (entrypoint, cmd) = match &asked.entrypoint {
-        Some(given) if !given.is_empty() => (given.clone(), asked.cmd.clone()),
-        given => {
+        // Given, even empty, it leaves the image's command behind: only the run's follows.
+        Some(given) => (given.clone(), asked.cmd.clone()),
+        None => {
             let cmd = if asked.cmd.is_empty() {
                 image.cmd.unwrap_or_default()
             } else {
                 asked.cmd.clone()
             };
-            let entrypoint = match given {
-                None => image.entrypoint.unwrap_or_default(),
-                Some(empty) => empty.clone(),
-            };
-            (entrypoint, cmd)
+            (image.entrypoint.unwrap_or_default(), cmd)
         }
     };
     let argv: Vec<String> = entrypoint.into_iter().chain(cmd).collect();
@@ -306,6 +304,7 @@ fn compose(image: Option<&RunConfig>, asked: &Run) -> Result<Options, String> {
     Ok(Options {
         argv,
         env,
+        exec_env: Vec::new(),
         workdir: if asked.workdir.is_empty() {
             image.working_dir.unwrap_or_default()
         } else {
@@ -415,12 +414,25 @@ mod tests {
             ..Run::default()
         });
         assert_eq!(entry.argv, strings(&["/bin/sh"]));
-        // An empty entrypoint clears the image's, and keeps its command.
+        // An empty entrypoint clears the image's, and its command: one must be given
+        // (measured: `docker run --entrypoint "" alpine` says "no command specified").
         let cleared = run(Run {
             entrypoint: Some(Vec::new()),
+            cmd: strings(&["echo", "given"]),
             ..Run::default()
         });
-        assert_eq!(cleared.argv, strings(&["serve", "--port", "80"]));
+        assert_eq!(cleared.argv, strings(&["echo", "given"]));
+        assert_eq!(
+            compose(
+                Some(&image()),
+                &Run {
+                    entrypoint: Some(Vec::new()),
+                    ..Run::default()
+                }
+            )
+            .unwrap_err(),
+            "no command specified"
+        );
         // Given variables come first; the image's fill in the names not given.
         let env = run(Run {
             env: strings(&["MODE=given", "EXTRA=1", "LANG"]),

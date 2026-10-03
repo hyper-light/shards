@@ -28,6 +28,9 @@ pub fn not_run(said: &str) -> (String, u8) {
 pub struct Options {
     pub argv: Vec<String>,
     pub env: Vec<String>,
+    /// An exec's own variables, laid over the container's environment whole (moby
+    /// daemon/exec.go): empty for a run.
+    pub exec_env: Vec<String>,
     pub workdir: String,
     pub user: String,
     pub hostname: Option<String>,
@@ -58,37 +61,28 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
     if o.tty.is_some() {
         defaults.push("TERM=xterm".into());
     }
-    let mut env: Vec<Option<Vec<u8>>> = defaults.iter().map(|d| Some(d.clone().into_bytes())).collect();
-    let default_at = |key: &[u8]| {
-        defaults
-            .iter()
-            .position(|d| d.split_once('=').is_some_and(|(k, _)| k.as_bytes() == key))
+    let given = |list: &[String]| -> Result<Vec<Vec<u8>>, String> {
+        list.iter()
+            .map(|entry| match entry.split_once('=') {
+                Some(("", _)) => Err(format!("invalid environment variable: {entry}")),
+                Some(_) => Ok(entry.clone().into_bytes()),
+                None if entry.is_empty() => Err("invalid environment variable: ".into()),
+                None => Ok(match lookup(entry) {
+                    Some(value) => [entry.as_bytes(), b"=", &os_bytes(&value)].concat(),
+                    None => entry.clone().into_bytes(),
+                }),
+            })
+            .collect()
     };
-    for entry in &o.env {
-        let entry: Vec<u8> = match entry.split_once('=') {
-            Some(("", _)) => return Err(format!("invalid environment variable: {entry}")),
-            Some(_) => entry.clone().into_bytes(),
-            None if entry.is_empty() => return Err("invalid environment variable: ".into()),
-            None => match lookup(entry) {
-                Some(value) => [entry.as_bytes(), b"=", &os_bytes(&value)].concat(),
-                None => entry.clone().into_bytes(),
-            },
-        };
-        match entry.iter().position(|&b| b == b'=') {
-            None => {
-                if let Some(slot) = default_at(&entry).and_then(|i| env.get_mut(i)) {
-                    *slot = None;
-                }
-            }
-            Some(eq) => match default_at(entry.get(..eq).unwrap_or_default()).and_then(|i| env.get_mut(i)) {
-                Some(slot) => *slot = Some(entry),
-                None => env.push(Some(entry)),
-            },
-        }
+    let defaults = defaults.into_iter().map(String::into_bytes).collect();
+    // The container's (CreateDaemonEnvironment), then an exec's over it whole.
+    let mut env = replace_or_append(defaults, given(&o.env)?);
+    if !o.exec_env.is_empty() {
+        env = replace_or_append(env, given(&o.exec_env)?);
     }
     let spec = Spec {
         argv: o.argv.iter().map(|a| a.clone().into_bytes()).collect(),
-        env: env.into_iter().flatten().collect(),
+        env,
         cwd: o.workdir.clone().into_bytes(),
         user: o.user.clone().into_bytes(),
         hostname: hostname.into_bytes(),
@@ -100,6 +94,28 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
         return Err("the command and its environment are too large".into());
     }
     Ok(spec)
+}
+
+/// Go's ReplaceOrAppendEnvValues (moby daemon/container/env.go): each of `overrides`
+/// replaces the variable of its name in `defaults`, unsets it when it has no value, or is
+/// appended. Names are looked up among `defaults` alone, the last of a name there being the
+/// one replaced: two overrides of one new name are both kept, as Go keeps them.
+fn replace_or_append(defaults: Vec<Vec<u8>>, overrides: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+    let name = |e: &[u8]| -> Vec<u8> { e.split(|&b| b == b'=').next().unwrap_or_default().to_vec() };
+    let mut at = std::collections::HashMap::new();
+    for (i, e) in defaults.iter().enumerate() {
+        at.insert(name(e), i);
+    }
+    let mut env: Vec<Option<Vec<u8>>> = defaults.into_iter().map(Some).collect();
+    for value in overrides {
+        let has_value = value.contains(&b'=');
+        match at.get(&name(&value)).and_then(|&i| env.get_mut(i)) {
+            Some(slot) => *slot = has_value.then_some(value),
+            None if has_value => env.push(Some(value)),
+            None => {}
+        }
+    }
+    env.into_iter().flatten().collect()
 }
 
 /// Nanoseconds since the Unix epoch, now.
@@ -204,6 +220,38 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// An exec's variables over the container's, as dockerd lays them (daemon/exec.go):
+    /// one replaces the container's of its name, the last of two; one without a value
+    /// unsets it; a new one is appended.
+    #[test]
+    fn an_execs_environment_is_laid_over_its_containers() {
+        let o = Options {
+            argv: vec!["x".into()],
+            env: vec![
+                "MODE=a".into(),
+                "KEEP=1".into(),
+                "TWICE=1".into(),
+                "TWICE=2".into(),
+            ],
+            exec_env: vec![
+                "MODE=b".into(),
+                "KEEP".into(),
+                "TWICE=3".into(),
+                "NEW=1".into(),
+                "PATH".into(),
+            ],
+            hostname: Some("box".into()),
+            ..Options::default()
+        };
+        let env: Vec<String> = spec(&o, |_| None)
+            .unwrap()
+            .env
+            .into_iter()
+            .map(|e| String::from_utf8(e).unwrap())
+            .collect();
+        assert_eq!(env, ["HOSTNAME=box", "MODE=b", "TWICE=1", "TWICE=3", "NEW=1"]);
     }
 
     #[test]

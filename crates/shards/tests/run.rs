@@ -256,6 +256,14 @@ fn exit_statuses_are_the_ones_docker_run_gives() {
         (&[], &["/bin/testguest", "kill"], 128 + 9, ""),
         (&[], &["/bin/testguest", "stderr", "to stderr"], 0, "to stderr"),
         (&[], &["nothere"], 127, "executable file not found in $PATH"),
+        // An empty PATH has nothing in it, not even the working directory (Go's
+        // SplitList): `docker run -e PATH= -w /bin` finds no `testguest` there.
+        (
+            &["-e", "PATH=", "-w", "/bin"],
+            &["testguest", "exit", "0"],
+            127,
+            "executable file not found in $PATH",
+        ),
         (&[], &["/bin/nothere"], 127, "no such file or directory"),
         (&[], &["/bin"], 126, "is a directory"),
         (

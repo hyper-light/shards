@@ -239,6 +239,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             let options = crate::spec::Options {
                 argv: argv.to_vec(),
                 env: base.env.clone(),
+                exec_env: Vec::new(),
                 workdir: base.workdir.clone(),
                 user: base.user.clone(),
                 hostname: base.hostname.clone(),

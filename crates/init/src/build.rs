@@ -1050,7 +1050,8 @@ fn lookup(name: &[u8], env: &[Vec<u8>]) -> io::Result<CString> {
         .rev()
         .find_map(|e| e.strip_prefix(b"PATH="))
         .unwrap_or_default();
-    for dir in path.split(|&b| b == b':') {
+    // An empty PATH has no entries (Go's filepath.SplitList): nothing is found in it.
+    for dir in path.split(|&b| b == b':').filter(|_| !path.is_empty()) {
         // Unix shell semantics: an empty element means ".".
         let dir: &[u8] = if dir.is_empty() { b"." } else { dir };
         let mut p = dir.to_vec();

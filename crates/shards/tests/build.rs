@@ -288,6 +288,22 @@ fn run_steps_run_in_a_builder_as_buildkit_runs_them() {
         "{}",
         failed.stderr
     );
+
+    // An empty PATH has nothing in it, not even the working directory (Go's SplitList),
+    // as BuildKit's runc finds nothing (measured, Docker Desktop's BuildKit v0.28).
+    let ctx = context(
+        "build-run-empty-path-ctx",
+        &format!("FROM {image}\nENV PATH=\nWORKDIR /bin\nRUN [\"testguest\", \"exit\", \"0\"]\n"),
+    );
+    let failed = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env, TIMEOUT);
+    assert_eq!(failed.status, Some(1), "{}", failed.stderr);
+    assert!(
+        failed
+            .stderr
+            .contains("exec: \"testguest\": executable file not found in $PATH"),
+        "{}",
+        failed.stderr
+    );
 }
 
 /// A `RUN` step reaches the network through its builder's network process, as BuildKit's

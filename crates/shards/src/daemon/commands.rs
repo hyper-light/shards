@@ -217,7 +217,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let base = &base.options;
         let options = crate::spec::Options {
             argv: exec.cmd,
-            env: base.env.iter().chain(&exec.env).cloned().collect(),
+            env: base.env.clone(),
+            exec_env: exec.env,
             workdir: if exec.workdir.is_empty() {
                 base.workdir.clone()
             } else {
