@@ -469,17 +469,16 @@ pub(super) fn resolve<'a>(
     }
 }
 
-/// The reference filter (moby daemon/containerd/image_list.go): `pattern`, as Go's
-/// path.Match reads it, matches `r` familiar or whole, with its tag or without.
+/// The reference filter (moby daemon/containerd/image_list.go, distribution's
+/// FamiliarMatch): `pattern`, as Go's path.Match reads it, matches `r` familiar, with its
+/// tag or digest or without them, never by its whole name (measured, Docker 29.3.1:
+/// `docker.io/library/busybox` matches nothing). A pattern Go cannot read matches nothing;
+/// in dockerd it may make the others fail too, as its map orders them, 9 runs in 10.
 fn matches(pattern: &str, r: &shards_image::reference::Reference) -> bool {
     let mut bare = r.clone();
     bare.tag = None;
     bare.digest = None;
-    let mut tagged = r.clone();
-    if tagged.tag.is_none() && tagged.digest.is_none() {
-        tagged.tag = Some("latest".into());
-    }
-    [r.familiar(), bare.familiar(), tagged.to_string(), bare.name()]
+    [r.familiar(), bare.familiar()]
         .iter()
         .any(|t| shards_dockerfile::glob::filepath_match(pattern.as_bytes(), t.as_bytes()) == Ok(true))
 }

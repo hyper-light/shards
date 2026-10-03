@@ -1739,13 +1739,28 @@ fn images_lists_what_was_pulled_as_docker_images_does() {
     assert_eq!(shards(&["rm", "-f", "user"]).status, Some(0));
     // The daemon has had its collection, due since the pull, by now: still all seven.
     assert_eq!(count(), 7);
-    // A pattern, matched as Go's path.Match matches the familiar and whole names.
+    // A pattern, matched as Go's path.Match matches the familiar name, with its tag or
+    // without, and never the whole one (distribution's FamiliarMatch).
     let none = shards(&["images", "nothing"]);
     assert_eq!(none.stdout.lines().count(), 1, "{none}");
     let some = shards(&["image", "ls", "127.0.0.1:*/test/*"]);
     assert_eq!(some.stdout, listed.stdout, "{some}");
     // `*` stops at `/`: no name of it is one segment.
     assert_eq!(shards(&["image", "list", "*:v1"]).stdout.lines().count(), 1);
+    // On Docker Hub the familiar name is the short one (measured, Docker 29.3.1).
+    assert_eq!(shards(&["tag", &image, "hubbish:1"]).status, Some(0));
+    for (pattern, rows) in [
+        ("hubbish", 2),
+        ("hubbish:1", 2),
+        ("hub*", 2),
+        ("docker.io/library/hubbish", 1),
+        ("docker.io/library/hubbish:1", 1),
+        ("library/hubbish", 1),
+    ] {
+        let listed = shards(&["images", pattern]);
+        assert_eq!(listed.stdout.lines().count(), rows, "{pattern}: {listed}");
+    }
+    assert_eq!(shards(&["rmi", "hubbish:1"]).status, Some(0));
     // Newest first: an image built from it now, before it, which records no time.
     let ctx = TempDir::new("containers-images-ctx");
     std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nLABEL built=yes\n")).unwrap();
