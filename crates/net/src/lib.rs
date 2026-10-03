@@ -25,9 +25,44 @@ use wire::Frames;
 /// (RFC 6335 §6), 49152 to 65535.
 const EPHEMERAL: std::ops::RangeInclusive<u16> = 49152..=u16::MAX;
 
-/// How long a UDP flow lives without a datagram either way: Linux conntrack's timeout for
-/// a UDP flow that has seen replies (nf_conntrack_udp_timeout_stream, 120 s).
-const UDP_IDLE: Duration = Duration::from_secs(120);
+/// Packets or connections one socket gives up per pass of the loop, before the others
+/// have their turn: Linux's own budget for a device per poll (net.core.dev_weight, 64;
+/// Documentation/admin-guide/sysctl/net.rst), for the same fairness. A flood on one
+/// published port leaves the rest of the VM's flows served.
+const BUDGET: usize = 64;
+
+/// How long a UDP flow lives, as Linux conntrack keeps one (nf_conntrack_proto_udp.c,
+/// udp_packet; v6.12): 30 s past its last datagram (nf_conntrack_udp_timeout), or 120 s
+/// (nf_conntrack_udp_timeout_stream) once it has had a reply and is still going 2 s after
+/// its first datagram, a stream. A query and its answer hold a port 30 s, not 120.
+const UDP_UNREPLIED: Duration = Duration::from_secs(30);
+const UDP_STREAM: Duration = Duration::from_secs(120);
+const UDP_STREAM_AFTER: Duration = Duration::from_secs(2);
+
+/// When a UDP flow ends, unless another datagram comes.
+#[derive(Debug, Clone, Copy)]
+struct Lifetime {
+    first: Instant,
+    replied: bool,
+    until: Instant,
+}
+
+impl Lifetime {
+    fn new(now: Instant) -> Lifetime {
+        Lifetime {
+            first: now,
+            replied: false,
+            until: now + UDP_UNREPLIED,
+        }
+    }
+
+    /// A datagram at `now`; a `reply` if it went the other way from the first.
+    fn datagram(&mut self, now: Instant, reply: bool) {
+        self.replied |= reply;
+        let stream = self.replied && now > self.first + UDP_STREAM_AFTER;
+        self.until = now + if stream { UDP_STREAM } else { UDP_UNREPLIED };
+    }
+}
 /// Frames waiting for room in the ring, at most: past this the oldest datagram-like frame
 /// is dropped, as a full NIC queue drops; TCP never adds to it unasked.
 const BACKLOG: usize = 1024;
@@ -150,13 +185,13 @@ struct Inbound {
     peer: std::net::SocketAddr,
     asked: Option<std::net::IpAddr>,
     guest_port: u16,
-    last: Instant,
+    life: Lifetime,
 }
 
-/// A UDP flow's host socket and when it was last used.
+/// A UDP flow's host socket and how long it lives.
 struct UdpFlow {
     sock: UdpSocket,
-    last: Instant,
+    life: Lifetime,
 }
 
 /// The stack's state: its frame ring, connections and flows.
@@ -169,6 +204,8 @@ struct Stack<'r> {
     tcp: HashMap<Key, Conn>,
     udp: HashMap<(u16, Ipv4Addr, u16), UdpFlow>,
     buf: Vec<u8>,
+    /// Where segments to the guest are made.
+    scratch: Vec<u8>,
     isn: u32,
     /// Published ports' host sockets, each with the guest port it reaches.
     published: Vec<(Listener, u16)>,
@@ -186,9 +223,8 @@ struct Out<'a, 'r> {
     to_guest: &'a mut Producer<'r>,
     backlog: &'a mut VecDeque<Vec<u8>>,
     guest_ip: Ipv4Addr,
-    scratch: Vec<u8>,
-    /// TCP segments wait for room rather than fill the backlog.
-    tcp_blocked: bool,
+    /// Where segments are made, kept from one to the next.
+    scratch: &'a mut Vec<u8>,
 }
 
 impl Out<'_, '_> {
@@ -223,11 +259,11 @@ impl ToGuest for Out<'_, '_> {
         syn: Option<(u16, Option<u8>)>,
         payload: &[u8],
     ) -> bool {
+        // TCP segments with bytes wait for room rather than fill the backlog.
         if !self.backlog.is_empty() && !payload.is_empty() {
-            self.tcp_blocked = true;
             return false;
         }
-        let mut f = std::mem::take(&mut self.scratch);
+        let mut f = std::mem::take(self.scratch);
         self.frames.tcp(
             &mut f,
             key.remote,
@@ -249,13 +285,10 @@ impl ToGuest for Out<'_, '_> {
                 unsafe { std::ptr::copy_nonoverlapping(f.as_ptr(), dst, f.len()) };
             }) {
                 Ok(Some(_)) => true,
-                _ => {
-                    self.tcp_blocked = true;
-                    false
-                }
+                _ => false,
             }
         };
-        self.scratch = f;
+        *self.scratch = f;
         sent
     }
 }
@@ -274,8 +307,8 @@ pub fn serve(
 ) -> io::Result<()> {
     let region = Region::map(region)?;
     // The device's frames come on 0, this side's go on 1.
-    let mut from_guest: Consumer<'_> = region.consumer(0, wake_peer.try_clone()?, wake_me.try_clone()?);
-    let to_guest = region.producer(1, wake_peer, wake_me);
+    let mut from_guest: Consumer<'_> = region.consumer(0, wake_peer.try_clone()?, wake_me);
+    let to_guest = region.producer(1, wake_peer);
     let mut stack = Stack {
         frames: Frames {
             gateway_mac: cfg.gateway_mac,
@@ -287,6 +320,7 @@ pub fn serve(
         tcp: HashMap::new(),
         udp: HashMap::new(),
         buf: vec![0u8; shards_netring::MAX_FRAME],
+        scratch: Vec::new(),
         isn: seed()?,
         published: Vec::new(),
         inbound: HashMap::new(),
@@ -372,11 +406,12 @@ pub fn serve(
             .tcp
             .values()
             .filter_map(Conn::deadline)
-            .chain(stack.udp.values().map(|f| f.last + UDP_IDLE))
-            .chain(stack.inbound.values().map(|f| f.last + UDP_IDLE))
+            .chain(stack.udp.values().map(|f| f.life.until))
+            .chain(stack.inbound.values().map(|f| f.life.until))
             .min();
-        let busy =
-            from_guest.ready().map_err(|e| io::Error::other(e.to_string()))? || !stack.backlog.is_empty();
+        // Frames for the guest left in the backlog wait for room without a spin: the ring
+        // that had none asked to be rung once the guest's side makes some.
+        let busy = from_guest.ready().map_err(|e| io::Error::other(e.to_string()))?;
         // Asked to be rung for the guest's next frame: one that came before the ask rang
         // nothing, so the poll does not wait for it.
         let timeout = if busy || from_guest.arm().map_err(|e| io::Error::other(e.to_string()))? {
@@ -513,7 +548,10 @@ impl<'r> Stack<'r> {
         };
         let guest_port = *guest_port;
         let mut out = Vec::new();
-        while let Ok((n, peer, asked)) = pktinfo::recv(sock, &mut self.buf) {
+        for _ in 0..BUDGET {
+            let Ok((n, peer, asked)) = pktinfo::recv(sock, &mut self.buf) else {
+                return;
+            };
             let port = match self.inbound_ports.get(&(i, peer)) {
                 Some(&port) => port,
                 None => {
@@ -525,16 +563,23 @@ impl<'r> Stack<'r> {
                     port
                 }
             };
-            self.inbound.insert(
-                port,
-                Inbound {
-                    published: i,
-                    peer,
-                    asked,
-                    guest_port,
-                    last: Instant::now(),
-                },
-            );
+            let now = Instant::now();
+            match self.inbound.entry(port) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    let f = e.get_mut();
+                    f.asked = asked;
+                    f.life.datagram(now, false);
+                }
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(Inbound {
+                        published: i,
+                        peer,
+                        asked,
+                        guest_port,
+                        life: Lifetime::new(now),
+                    });
+                }
+            }
             self.frames.udp(
                 &mut out,
                 (self.cfg.gateway_ip, port),
@@ -547,8 +592,7 @@ impl<'r> Stack<'r> {
                 to_guest: &mut self.to_guest,
                 backlog: &mut self.backlog,
                 guest_ip,
-                scratch: Vec::new(),
-                tcp_blocked: false,
+                scratch: &mut self.scratch,
             };
             o.send(&out);
         }
@@ -557,13 +601,19 @@ impl<'r> Stack<'r> {
     /// Accepts what published port `i` holds: each connection opened to the guest's port,
     /// from the gateway, as a userland proxy's connection comes from it.
     fn accept(&mut self, i: usize) {
-        loop {
+        for _ in 0..BUDGET {
             let Some((Listener::Tcp(listener), guest_port)) = self.published.get(i) else {
                 return;
             };
             let guest_port = *guest_port;
             let Ok((sock, _)) = listener.accept() else { return };
-            if sock.set_nonblocking(true).is_err() {
+            // Nagle's on this leg too would hold what the guest's own TCP already chose
+            // to send, as Go's net, docker-proxy's, never does.
+            if sock
+                .set_nonblocking(true)
+                .and_then(|()| sock.set_nodelay(true))
+                .is_err()
+            {
                 continue;
             }
             let Some(port) = self.free_port(guest_port) else {
@@ -610,8 +660,7 @@ impl<'r> Stack<'r> {
             to_guest: &mut self.to_guest,
             backlog: &mut self.backlog,
             guest_ip: self.cfg.guest_ip,
-            scratch: Vec::new(),
-            tcp_blocked: false,
+            scratch: &mut self.scratch,
         }
     }
 
@@ -683,7 +732,7 @@ impl<'r> Stack<'r> {
                 && let Some((Listener::Udp(sock), _)) = self.published.get(f.published)
             {
                 let _ = pktinfo::send(sock, u.payload, f.peer, f.asked);
-                f.last = Instant::now();
+                f.life.datagram(Instant::now(), true);
             }
             return;
         }
@@ -702,19 +751,22 @@ impl<'r> Stack<'r> {
                 }
                 v.insert(UdpFlow {
                     sock,
-                    last: Instant::now(),
+                    life: Lifetime::new(Instant::now()),
                 })
             }
         };
         let _ = f.sock.send(u.payload);
-        f.last = Instant::now();
+        f.life.datagram(Instant::now(), false);
     }
 
     fn on_udp(&mut self, key: &(u16, Ipv4Addr, u16)) {
         let (guest_ip, frames) = (self.cfg.guest_ip, &self.frames);
         let Some(f) = self.udp.get_mut(key) else { return };
         let mut out = Vec::new();
-        while let Ok(n) = f.sock.recv(&mut self.buf) {
+        for _ in 0..BUDGET {
+            let Ok(n) = f.sock.recv(&mut self.buf) else {
+                return;
+            };
             {
                 {
                     frames.udp(
@@ -723,14 +775,13 @@ impl<'r> Stack<'r> {
                         (guest_ip, key.0),
                         self.buf.get(..n).unwrap_or_default(),
                     );
-                    f.last = Instant::now();
+                    f.life.datagram(Instant::now(), true);
                     let mut o = Out {
                         frames,
                         to_guest: &mut self.to_guest,
                         backlog: &mut self.backlog,
                         guest_ip,
-                        scratch: Vec::new(),
-                        tcp_blocked: false,
+                        scratch: &mut self.scratch,
                     };
                     o.send(&out);
                 }
@@ -750,12 +801,18 @@ impl<'r> Stack<'r> {
                 // Not a connection's start, and no connection: a reset, as a host with no
                 // such connection answers (RFC 9293 §3.10.7.1).
                 if seg.flags & wire::RST == 0 {
-                    let ack = seg
-                        .seq
-                        .wrapping_add(seg.payload.len() as u32)
-                        .wrapping_add(u32::from(seg.flags & (wire::SYN | wire::FIN) != 0));
+                    // An ACK's reset takes its sequence number from it, and acknowledges
+                    // nothing; else it starts at 0 and acknowledges the segment.
                     let mut o = self.out();
-                    o.segment(&key, seg.ack, ack, wire::RST | wire::ACK, 0, None, &[]);
+                    if seg.flags & wire::ACK != 0 {
+                        o.segment(&key, seg.ack, 0, wire::RST, 0, None, &[]);
+                    } else {
+                        let ack = seg
+                            .seq
+                            .wrapping_add(seg.payload.len() as u32)
+                            .wrapping_add(u32::from(seg.flags & (wire::SYN | wire::FIN) != 0));
+                        o.segment(&key, 0, ack, wire::RST | wire::ACK, 0, None, &[]);
+                    }
                 }
                 return;
             }
@@ -832,8 +889,7 @@ impl<'r> Stack<'r> {
                 to_guest: &mut self.to_guest,
                 backlog: &mut self.backlog,
                 guest_ip: self.cfg.guest_ip,
-                scratch: Vec::new(),
-                tcp_blocked: false,
+                scratch: &mut self.scratch,
             };
             if revents & (libc::POLLOUT | libc::POLLERR | libc::POLLHUP) != 0 {
                 c.on_writable(&mut o);
@@ -862,11 +918,9 @@ impl<'r> Stack<'r> {
                 self.tcp.insert(k, c);
             }
         }
-        self.udp
-            .retain(|_, f| now.saturating_duration_since(f.last) < UDP_IDLE);
+        self.udp.retain(|_, f| now < f.life.until);
         let before = self.inbound.len();
-        self.inbound
-            .retain(|_, f| now.saturating_duration_since(f.last) < UDP_IDLE);
+        self.inbound.retain(|_, f| now < f.life.until);
         if self.inbound.len() != before {
             let inbound = &self.inbound;
             self.inbound_ports.retain(|_, port| inbound.contains_key(port));
@@ -878,6 +932,25 @@ impl<'r> Stack<'r> {
 mod tests {
     use super::*;
 
+    /// UDP flows live as conntrack keeps them: 30 s from a datagram, until a reply has
+    /// come and a datagram more than 2 s after the first; 120 s from then.
+    #[test]
+    fn udp_flows_live_as_conntrack_keeps_them() {
+        let t0 = Instant::now();
+        let mut life = Lifetime::new(t0);
+        assert_eq!(life.until, t0 + UDP_UNREPLIED);
+        // A query answered at once: still 30 s.
+        life.datagram(t0 + Duration::from_millis(5), true);
+        assert_eq!(life.until, t0 + Duration::from_millis(5) + UDP_UNREPLIED);
+        // More one way only, past 2 s: not a stream without a reply.
+        let mut one_way = Lifetime::new(t0);
+        one_way.datagram(t0 + Duration::from_secs(3), false);
+        assert_eq!(one_way.until, t0 + Duration::from_secs(3) + UDP_UNREPLIED);
+        // Replied, and going past 2 s: a stream.
+        life.datagram(t0 + Duration::from_secs(3), false);
+        assert_eq!(life.until, t0 + Duration::from_secs(3) + UDP_STREAM);
+    }
+
     /// A UDP flow's gateway port is one no other flow has, in turn, and none once all are.
     #[test]
     fn udp_flows_take_free_gateway_ports_in_turn() {
@@ -886,7 +959,7 @@ mod tests {
             peer: "127.0.0.1:1".parse().unwrap(),
             asked: None,
             guest_port: 53,
-            last: Instant::now(),
+            life: Lifetime::new(Instant::now()),
         };
         let start = *EPHEMERAL.start();
         let mut inbound = HashMap::from([(start, flow())]);

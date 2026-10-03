@@ -135,7 +135,6 @@ impl Net {
         let fds = |e: io::Error| format!("virtio-net: {e}");
         let ends = (
             dup(&self.host.wake_peer).map_err(fds)?,
-            dup(&self.host.wake_me).map_err(fds)?,
             dup(&self.host.wake_peer).map_err(fds)?,
             dup(&self.host.wake_me).map_err(fds)?,
         );
@@ -143,8 +142,8 @@ impl Net {
             .name("virtio-net".into())
             .spawn(move || {
                 // The device's frames go one way, the network process's come the other.
-                let producer = region.producer(0, ends.0, ends.1);
-                let consumer = region.consumer(1, ends.2, ends.3);
+                let producer = region.producer(0, ends.0);
+                let consumer = region.consumer(1, ends.1, ends.2);
                 run(session, producer, consumer, &memory, &interrupt, &waker, &flag)
             })
             .map_err(|e| format!("spawning the virtio-net worker: {e}"))?;

@@ -464,6 +464,12 @@ impl Conn {
             // Old or out of order: say where this side is.
             answer = true;
         }
+        // A segment from before what this side has had is not acceptable, and is answered
+        // with where this side is (RFC 9293 §3.10.7.4): a keepalive or window probe,
+        // which carries nothing and is numbered one before, among them.
+        if before(seg.seq, self.rcv_nxt) {
+            answer = true;
+        }
         if seg.flags & FIN != 0 && seq.wrapping_add(data.len() as u32) == self.rcv_nxt && !self.guest_fin {
             self.guest_fin = true;
             self.rcv_nxt = self.rcv_nxt.wrapping_add(1);
@@ -514,7 +520,6 @@ impl Conn {
             return;
         }
         // Everything from snd_una is sent again.
-        let fin = self.fin_sent;
         self.snd_nxt = self.snd_una;
         self.fin_sent = false;
         self.sent_at = Some(now);
@@ -532,7 +537,6 @@ impl Conn {
             self.snd_nxt = self.snd_una.wrapping_add(1);
             return;
         }
-        self.host_eof |= fin;
         self.send_new(out);
     }
 
@@ -552,6 +556,8 @@ fn connect(to: (Ipv4Addr, u16)) -> io::Result<TcpStream> {
     // SAFETY: a descriptor just made.
     let sock = unsafe { <TcpStream as std::os::fd::FromRawFd>::from_raw_fd(fd) };
     sock.set_nonblocking(true)?;
+    // No Nagle on the host's leg: the guest's own TCP chose what to send together.
+    sock.set_nodelay(true)?;
     // SAFETY: fcntl(2) on our own descriptor.
     unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     let sa = sockaddr(addr);
@@ -587,4 +593,77 @@ fn sockaddr(addr: SocketAddr) -> libc::sockaddr_in {
         };
     }
     sa
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// What a connection sent the guest: each segment's sequence, acknowledgement, flags
+    /// and length.
+    #[derive(Default)]
+    struct Sent(Vec<(u32, u32, u8, usize)>);
+
+    impl ToGuest for Sent {
+        fn segment(
+            &mut self,
+            _: &Key,
+            seq: u32,
+            ack: u32,
+            flags: u8,
+            _: u16,
+            _: Option<(u16, Option<u8>)>,
+            payload: &[u8],
+        ) -> bool {
+            self.0.push((seq, ack, flags, payload.len()));
+            true
+        }
+    }
+
+    fn segment(seq: u32, ack: u32, flags: u8) -> wire::Tcp<'static> {
+        wire::Tcp {
+            src_port: 80,
+            dst_port: 40_000,
+            seq,
+            ack,
+            flags,
+            window: 65_535,
+            mss: None,
+            wscale: None,
+            payload: &[],
+        }
+    }
+
+    /// A connection a host client made, opened to the guest: this side's SYN numbered
+    /// 1000, the guest's 5000. The client's end, held while the connection lives.
+    fn opened(sent: &mut Sent) -> (Conn, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (sock, _) = listener.accept().unwrap();
+        sock.set_nonblocking(true).unwrap();
+        let key = Key {
+            guest_port: 80,
+            remote: (Ipv4Addr::new(172, 17, 0, 1), 40_000),
+        };
+        let mut c = Conn::accept(key, sock, 1000, sent);
+        c.on_segment(&segment(5000, 1001, SYN | ACK), sent);
+        (c, client)
+    }
+
+    /// A keepalive or window probe, which carries nothing and is numbered one before
+    /// what this side has had, is answered with where this side is (RFC 9293
+    /// §3.10.7.4); an in-order acknowledgement is not.
+    #[test]
+    fn probes_are_answered_and_acknowledgements_are_not() {
+        let mut sent = Sent::default();
+        let (mut c, _client) = opened(&mut sent);
+        sent.0.clear();
+        c.on_segment(&segment(5000, 1001, ACK), &mut sent);
+        assert_eq!(sent.0, [(1001, 5001, ACK, 0)]);
+        sent.0.clear();
+        c.on_segment(&segment(5001, 1001, ACK), &mut sent);
+        assert_eq!(sent.0, []);
+    }
 }

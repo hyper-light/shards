@@ -131,18 +131,21 @@ pub(super) fn bind(
     let mut bound = Bound::default();
     for b in bindings {
         let p = proto(&b.proto).ok_or_else(|| format!("protocol {} not supported", b.proto))?;
-        // No address is every one: IPv4's and IPv6's, on one port.
+        // No address is every one: IPv4's, and IPv6's on one port where IPv6 can listen.
         let ips: Vec<IpAddr> = if b.host_ip.is_empty() {
-            vec![
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-            ]
+            let mut every = vec![IpAddr::V4(Ipv4Addr::UNSPECIFIED)];
+            if v6_listenable() {
+                every.push(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+            }
+            every
         } else {
-            vec![
-                b.host_ip
-                    .parse()
-                    .map_err(|_| format!("invalid host address {}", b.host_ip))?,
-            ]
+            // An IPv4 address mapped into IPv6's is IPv4's, as dockerd records and binds
+            // it (Go's IP.To4).
+            let ip: IpAddr = b
+                .host_ip
+                .parse()
+                .map_err(|_| format!("invalid host address {}", b.host_ip))?;
+            vec![ip.to_canonical()]
         };
         let (listeners, port) = bind_one(&ips, &b.host_port, p, &|at| in_use(at, p))?;
         for (ip, fd) in ips.iter().zip(listeners) {
@@ -287,6 +290,15 @@ fn go_error(e: &std::io::Error) -> String {
         .map_or_else(String::new, |c| c.to_lowercase().chain(chars).collect())
 }
 
+/// Whether IPv6 can listen here, as dockerd asks once (moby docker-v29.3.1
+/// daemon/libnetwork/netutils/utils.go IsV6Listenable): a TCP listener at [::1]:0. A
+/// kernel booted with ipv6.disable=1 has none, and a binding with no address is then
+/// IPv4's alone, where binding `::` too would fail every one.
+fn v6_listenable() -> bool {
+    static LISTENABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LISTENABLE.get_or_init(|| std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_ok())
+}
+
 /// A socket of `proto` at `at`, and the port it has, as bindTCPOrUDP makes one:
 /// close-on-exec, nonblocking for the network process, IPv6 alone on an IPv6 address, so
 /// that IPv4's own socket at the same port is not refused; for TCP, address reuse and
@@ -302,6 +314,12 @@ fn listen(at: SocketAddr, proto: u8) -> std::io::Result<(OwnedFd, u16)> {
     } else {
         libc::SOCK_STREAM
     };
+    // Close-on-exec from its making where the kernel can (Linux), as dockerd makes it:
+    // a VM spawned on another thread meanwhile would otherwise have it, ipc's spawn
+    // trusting every descriptor to be. macOS cannot, and spawns with
+    // POSIX_SPAWN_CLOEXEC_DEFAULT.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let kind = kind | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
     // SAFETY: socket(2) with constant arguments.
     let fd = unsafe { libc::socket(family, kind, 0) };
     if fd < 0 {
@@ -314,9 +332,12 @@ fn listen(at: SocketAddr, proto: u8) -> std::io::Result<(OwnedFd, u16)> {
     let len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
     // SAFETY: fcntl(2) and setsockopt(2) on our descriptor, with a c_int of its length.
     unsafe {
-        libc::fcntl(raw, libc::F_SETFD, libc::FD_CLOEXEC);
-        let flags = libc::fcntl(raw, libc::F_GETFL);
-        libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            libc::fcntl(raw, libc::F_SETFD, libc::FD_CLOEXEC);
+            let flags = libc::fcntl(raw, libc::F_GETFL);
+            libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
         if proto == TCP {
             libc::setsockopt(
                 raw,
@@ -478,6 +499,45 @@ mod tests {
         let (_v6, port) = listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0), TCP).unwrap();
         assert!(std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err());
         assert!(std::net::TcpStream::connect((Ipv6Addr::LOCALHOST, port)).is_ok());
+    }
+
+    /// An IPv4 address mapped into IPv6's binds and is recorded as IPv4's, as dockerd
+    /// binds and records it.
+    #[test]
+    fn a_mapped_address_is_ipv4s() {
+        let bound = bind(
+            &[Publish {
+                port: 7000,
+                proto: "tcp".into(),
+                host_ip: "::ffff:127.0.0.1".into(),
+                host_port: String::new(),
+            }],
+            &[],
+            |_, _| InUse::Host,
+        )
+        .unwrap();
+        let at = bound.listeners.first().unwrap().at;
+        assert_eq!(at.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(
+            bound.ports.first().unwrap().ip,
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        );
+        assert!(std::net::TcpStream::connect(at).is_ok());
+    }
+
+    /// A listener is close-on-exec and nonblocking from its making: no VM spawned on
+    /// another thread meanwhile has it.
+    #[test]
+    fn listeners_are_close_on_exec_and_nonblocking() {
+        for proto in [TCP, UDP] {
+            let (fd, _) = listen(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), proto).unwrap();
+            let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
+            // SAFETY: fcntl(2) reads of our descriptor's flags.
+            let (fd_flags, fl_flags) =
+                unsafe { (libc::fcntl(raw, libc::F_GETFD), libc::fcntl(raw, libc::F_GETFL)) };
+            assert_ne!(fd_flags & libc::FD_CLOEXEC, 0, "{proto}");
+            assert_ne!(fl_flags & libc::O_NONBLOCK, 0, "{proto}");
+        }
     }
 
     #[test]

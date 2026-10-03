@@ -5,10 +5,12 @@
 //! padding to the end, so a record is always whole.
 //!
 //! Each side treats the other as hostile, since a network process parses what the
-//! Internet sends and a VM process what a guest does: every position and length read from
-//! the shared memory is checked before it is used, and no reference into it is ever made,
-//! only copies through raw pointers. A peer that writes nonsense spoils its own frames,
-//! and is cut off, but reaches nothing of the reader's.
+//! Internet sends and a VM process what a guest does. A side keeps its own position to
+//! itself, and only writes the shared copy for the peer: where it reads and writes never
+//! comes from memory the peer can change. The peer's position, and every length, is
+//! checked against it before it is used, and no reference into the shared memory is ever
+//! made, only copies through raw pointers. A peer that writes nonsense spoils its own
+//! frames, and is cut off, but reaches nothing of this side's.
 
 #![cfg(unix)]
 
@@ -27,8 +29,6 @@ const HEADER: usize = 8;
 /// A record's kind, beside its length: a frame, or padding to the ring's end.
 const FRAME: u32 = 0;
 const PAD: u32 = 1;
-/// How many times a side checks again before it sleeps on its doorbell (PM M83).
-const SPINS: u32 = 2000;
 
 /// One direction's positions and flags, each on a cache line of its own.
 #[repr(C, align(64))]
@@ -69,11 +69,6 @@ unsafe impl Sync for Region {}
 pub const SIZE: usize = CONTROL + 2 * RING;
 
 impl Region {
-    /// A new region, zeroed: shared memory that only its descriptor names.
-    pub fn create() -> io::Result<Region> {
-        Region::map(memory()?)
-    }
-
     /// Maps the region a peer made and handed over as `fd`. Its size must be [`SIZE`].
     pub fn map(fd: OwnedFd) -> io::Result<Region> {
         // SAFETY: fstat(2) into a zeroed buffer, for a descriptor we own.
@@ -125,28 +120,35 @@ impl Region {
         }
     }
 
-    /// The producer end of direction `d`, ringing `doorbell` for its consumer.
-    pub fn producer(&self, d: usize, doorbell: OwnedFd, waits_on: OwnedFd) -> Producer<'_> {
+    /// The producer end of direction `d`, ringing `doorbell` for its consumer; its ring
+    /// starts empty.
+    pub fn producer(&self, d: usize, doorbell: OwnedFd) -> Producer<'_> {
         let (control, ring) = self.direction(d & 1);
-        Producer {
+        let producer = Producer {
             _region: self,
             control,
             ring,
+            head: 0,
             doorbell,
-            waits_on,
-        }
+        };
+        producer.control().head.0.store(0, Ordering::Release);
+        producer
     }
 
-    /// The consumer end of direction `d`, ringing `doorbell` for its producer.
+    /// The consumer end of direction `d`, ringing `doorbell` for its producer; it starts
+    /// at the ring's start.
     pub fn consumer(&self, d: usize, doorbell: OwnedFd, waits_on: OwnedFd) -> Consumer<'_> {
         let (control, ring) = self.direction(d & 1);
-        Consumer {
+        let consumer = Consumer {
             _region: self,
             control,
             ring,
+            tail: 0,
             doorbell,
             waits_on,
-        }
+        };
+        consumer.control().tail.0.store(0, Ordering::Release);
+        consumer
     }
 }
 
@@ -167,12 +169,21 @@ pub fn memory() -> io::Result<OwnedFd> {
 /// end for the side that wakes it. Both nonblocking: a ring already rung needs no more.
 pub fn doorbell() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
+    // Close-on-exec from its making where the kernel can (Linux): the daemon making it
+    // spawns VMs on other threads, which would otherwise have it. macOS cannot, and
+    // spawns with POSIX_SPAWN_CLOEXEC_DEFAULT.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     // SAFETY: an array of two descriptors.
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+    let made = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    // SAFETY: an array of two descriptors.
+    let made = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if made != 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: two descriptors just made, owned from here on.
     let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     for fd in [&r, &w] {
         // SAFETY: fcntl(2) on descriptors we own.
         unsafe {
@@ -188,21 +199,6 @@ fn ring_bell(fd: &OwnedFd) {
     let b = [1u8];
     // SAFETY: a one-byte write; a full pipe has a wakeup pending already.
     unsafe { libc::write(fd.as_raw_fd(), b.as_ptr().cast(), 1) };
-}
-
-/// Waits on a doorbell until it rings or `deadline_ms` passes (-1 for ever), and drains
-/// it.
-fn sleep(fd: &OwnedFd, deadline_ms: i32) {
-    let mut p = libc::pollfd {
-        fd: fd.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // SAFETY: one pollfd.
-    unsafe { libc::poll(&mut p, 1, deadline_ms) };
-    let mut buf = [0u8; 64];
-    // SAFETY: a buffer of the length given, from a nonblocking descriptor we own.
-    while unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
 }
 
 /// Why a ring was given up on: the peer broke its rules.
@@ -221,9 +217,11 @@ pub struct Producer<'r> {
     _region: &'r Region,
     control: *const Control,
     ring: *mut u8,
-    /// Rung for the consumer; slept on for room.
+    /// Bytes produced so far: this side's own, of which the shared `head` is a copy.
+    head: u64,
+    /// Rung for the consumer. A producer short of room is rung on its process's own
+    /// doorbell, which its consumer of the other direction sleeps on.
     doorbell: OwnedFd,
-    waits_on: OwnedFd,
 }
 
 // SAFETY: as Region's: atomics and raw-pointer copies alone.
@@ -241,71 +239,21 @@ impl Producer<'_> {
     }
 
     /// Room for a frame of `n` bytes now, the padding a wrap needs included; or why the
-    /// peer's positions cannot be believed.
+    /// consumer's position cannot be believed: past this side's, or more than a ring
+    /// behind it.
     fn room(&self, n: usize) -> Result<bool, Broken> {
-        let c = self.control();
-        let head = c.head.0.load(Ordering::Relaxed);
-        let tail = c.tail.0.load(Ordering::Acquire);
-        let used = head
+        let tail = self.control().tail.0.load(Ordering::Acquire);
+        let used = self
+            .head
             .checked_sub(tail)
             .ok_or(Broken("its tail is past the head"))?;
         if used > RING as u64 {
             return Err(Broken("it consumed more than was written"));
         }
-        let at = (head % RING as u64) as usize;
+        // This side's head is eight-aligned: `at` leaves room for a header.
+        let at = (self.head % RING as u64) as usize;
         let need = padded(n) + if at + padded(n) > RING { RING - at } else { 0 };
         Ok(RING as u64 - used >= need as u64)
-    }
-
-    /// Writes one frame, its `parts` gathered, waiting for room while the consumer
-    /// drains; false if `parts` are longer than [`MAX_FRAME`].
-    pub fn push(&mut self, parts: &[&[u8]]) -> Result<bool, Broken> {
-        let n: usize = parts.iter().map(|p| p.len()).sum();
-        if n > MAX_FRAME {
-            return Ok(false);
-        }
-        let mut spins = 0u32;
-        loop {
-            if self.room(n)? {
-                break;
-            }
-            spins += 1;
-            if spins < SPINS {
-                std::hint::spin_loop();
-                continue;
-            }
-            let c = self.control();
-            c.producer_waits.0.store(1, Ordering::SeqCst);
-            if self.room(n)? {
-                c.producer_waits.0.store(0, Ordering::SeqCst);
-                break;
-            }
-            sleep(&self.waits_on, -1);
-            c.producer_waits.0.store(0, Ordering::SeqCst);
-            spins = 0;
-        }
-        let c = self.control();
-        let mut head = c.head.0.load(Ordering::Relaxed);
-        let mut at = (head % RING as u64) as usize;
-        if at + padded(n) > RING {
-            // Padding to the end, so that the record is whole.
-            self.write_header(at, (RING - at - HEADER) as u32, PAD);
-            head += (RING - at) as u64;
-            at = 0;
-        }
-        self.write_header(at, n as u32, FRAME);
-        let mut off = at + HEADER;
-        for p in parts {
-            // SAFETY: `off..off + p.len()` lies in the ring: the record fits before its end.
-            unsafe { ptr::copy_nonoverlapping(p.as_ptr(), self.ring.add(off), p.len()) };
-            off += p.len();
-        }
-        c.head.0.store(head + padded(n) as u64, Ordering::Release);
-        fence(Ordering::SeqCst);
-        if c.consumer_waits.0.swap(0, Ordering::SeqCst) == 1 {
-            ring_bell(&self.doorbell);
-        }
-        Ok(true)
     }
 
     /// Writes one frame of `n` bytes if there is room now: `fill` gets where to copy them
@@ -319,13 +267,16 @@ impl Producer<'_> {
         if !self.room(n)? {
             let c = self.control();
             c.producer_waits.0.store(1, Ordering::SeqCst);
+            // The consumer stores its tail, fences, then looks at the flag; this side
+            // stores the flag, fences, then looks at the tail: one of the two sees the
+            // other.
+            fence(Ordering::SeqCst);
             if !self.room(n)? {
                 return Ok(None);
             }
             c.producer_waits.0.store(0, Ordering::SeqCst);
         }
-        let c = self.control();
-        let mut head = c.head.0.load(Ordering::Relaxed);
+        let mut head = self.head;
         let mut at = (head % RING as u64) as usize;
         if at + padded(n) > RING {
             self.write_header(at, (RING - at - HEADER) as u32, PAD);
@@ -335,7 +286,9 @@ impl Producer<'_> {
         self.write_header(at, n as u32, FRAME);
         // SAFETY: `at + HEADER .. + n` lies in the ring: the record fits before its end.
         fill(unsafe { self.ring.add(at + HEADER) });
-        c.head.0.store(head + padded(n) as u64, Ordering::Release);
+        self.head = head + padded(n) as u64;
+        let c = self.control();
+        c.head.0.store(self.head, Ordering::Release);
         fence(Ordering::SeqCst);
         if c.consumer_waits.0.swap(0, Ordering::SeqCst) == 1 {
             ring_bell(&self.doorbell);
@@ -359,6 +312,8 @@ pub struct Consumer<'r> {
     _region: &'r Region,
     control: *const Control,
     ring: *mut u8,
+    /// Bytes consumed so far: this side's own, of which the shared `tail` is a copy.
+    tail: u64,
     /// Rung for the producer once room is made; slept on for frames.
     doorbell: OwnedFd,
     waits_on: OwnedFd,
@@ -378,24 +333,31 @@ impl Consumer<'_> {
         self.waits_on.as_raw_fd()
     }
 
-    /// Whether a frame is ready.
-    pub fn ready(&self) -> Result<bool, Broken> {
-        let c = self.control();
-        let tail = c.tail.0.load(Ordering::Relaxed);
-        let head = c.head.0.load(Ordering::Acquire);
+    /// The producer's position, if it can be believed: not behind this side's, and not
+    /// more than a ring ahead of it.
+    fn head(&self) -> Result<u64, Broken> {
+        let head = self.control().head.0.load(Ordering::Acquire);
         let used = head
-            .checked_sub(tail)
+            .checked_sub(self.tail)
             .ok_or(Broken("its head is behind the tail"))?;
         if used > RING as u64 {
             return Err(Broken("it wrote more than the ring holds"));
         }
-        Ok(used > 0)
+        Ok(head)
+    }
+
+    /// Whether a frame is ready.
+    pub fn ready(&self) -> Result<bool, Broken> {
+        Ok(self.head()? != self.tail)
     }
 
     /// Asks to be rung when a frame comes, then whether one came meanwhile: if not, the
     /// caller may sleep on [`waits_on`](Self::waits_on).
     pub fn arm(&self) -> Result<bool, Broken> {
         self.control().consumer_waits.0.store(1, Ordering::SeqCst);
+        // The producer stores its head, fences, then looks at the flag; this side stores
+        // the flag, fences, then looks at the head: one of the two sees the other.
+        fence(Ordering::SeqCst);
         let ready = self.ready()?;
         if ready {
             self.control().consumer_waits.0.store(0, Ordering::SeqCst);
@@ -403,14 +365,11 @@ impl Consumer<'_> {
         Ok(ready)
     }
 
-    /// The next frame's length, if one is ready, without taking it.
-    pub fn peek_len(&self) -> Result<Option<usize>, Broken> {
-        if !self.ready()? {
-            return Ok(None);
-        }
-        let c = self.control();
-        let mut tail = c.tail.0.load(Ordering::Relaxed);
-        let head = c.head.0.load(Ordering::Acquire);
+    /// The next record past any padding, given the producer's `head`: where its frame
+    /// starts, its length, and this side's position after its padding.
+    fn next(&self, head: u64) -> Result<(usize, usize, u64), Broken> {
+        let mut tail = self.tail;
+        // This side's tail is eight-aligned: `at` leaves room for a header.
         let mut at = (tail % RING as u64) as usize;
         let (mut len, mut kind) = self.read_header(at);
         if kind == PAD {
@@ -426,7 +385,16 @@ impl Consumer<'_> {
         if kind != FRAME || n > MAX_FRAME || at + padded(n) > RING || head - tail < padded(n) as u64 {
             return Err(Broken("a frame's length runs past what was written"));
         }
-        Ok(Some(n))
+        Ok((at, n, tail))
+    }
+
+    /// The next frame's length, if one is ready, without taking it.
+    pub fn peek_len(&self) -> Result<Option<usize>, Broken> {
+        let head = self.head()?;
+        if head == self.tail {
+            return Ok(None);
+        }
+        Ok(Some(self.next(head)?.1))
     }
 
     /// Takes the next frame, if any, giving `take` its length and a function that copies
@@ -435,30 +403,11 @@ impl Consumer<'_> {
         &mut self,
         take: impl FnOnce(usize, &dyn Fn(usize, *mut u8, usize)) -> R,
     ) -> Result<Option<R>, Broken> {
-        if !self.ready()? {
+        let head = self.head()?;
+        if head == self.tail {
             return Ok(None);
         }
-        let c = self.control();
-        let mut tail = c.tail.0.load(Ordering::Relaxed);
-        let head = c.head.0.load(Ordering::Acquire);
-        let mut at = (tail % RING as u64) as usize;
-        let (mut len, mut kind) = self.read_header(at);
-        if kind == PAD {
-            let skip = RING - at;
-            if len as usize != skip - HEADER || head - tail < skip as u64 {
-                return Err(Broken("its padding is not to the end"));
-            }
-            tail += skip as u64;
-            at = 0;
-            if head == tail {
-                return Err(Broken("padding with no frame after it"));
-            }
-            (len, kind) = self.read_header(at);
-        }
-        let n = len as usize;
-        if kind != FRAME || n > MAX_FRAME || at + padded(n) > RING || head - tail < padded(n) as u64 {
-            return Err(Broken("a frame's length runs past what was written"));
-        }
+        let (at, n, tail) = self.next(head)?;
         let start = at + HEADER;
         let ring = self.ring;
         let copy = move |from: usize, to: *mut u8, count: usize| {
@@ -469,7 +418,9 @@ impl Consumer<'_> {
             }
         };
         let r = take(n, &copy);
-        c.tail.0.store(tail + padded(n) as u64, Ordering::Release);
+        self.tail = tail + padded(n) as u64;
+        let c = self.control();
+        c.tail.0.store(self.tail, Ordering::Release);
         fence(Ordering::SeqCst);
         if c.producer_waits.0.swap(0, Ordering::SeqCst) == 1 {
             ring_bell(&self.doorbell);
@@ -483,21 +434,6 @@ impl Consumer<'_> {
         unsafe { ptr::copy_nonoverlapping(self.ring.add(at), h.as_mut_ptr(), HEADER) };
         let [a, b, c, d, e, f, g, i] = h;
         (u32::from_le_bytes([a, b, c, d]), u32::from_le_bytes([e, f, g, i]))
-    }
-
-    /// Waits for a frame: spins, then sleeps on the doorbell, at most `ms` (-1 for ever).
-    pub fn wait(&self, ms: i32) -> Result<(), Broken> {
-        for _ in 0..SPINS {
-            if self.ready()? {
-                return Ok(());
-            }
-            std::hint::spin_loop();
-        }
-        if !self.arm()? {
-            sleep(&self.waits_on, ms);
-            self.control().consumer_waits.0.store(0, Ordering::SeqCst);
-        }
-        Ok(())
     }
 }
 
@@ -569,6 +505,43 @@ mod platform {
 mod tests {
     use super::*;
 
+    fn region() -> Region {
+        Region::map(memory().unwrap()).unwrap()
+    }
+
+    /// Sleeps on `fd` until it rings, and drains it.
+    fn sleep(fd: RawFd) {
+        let mut p = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one pollfd.
+        unsafe { libc::poll(&mut p, 1, -1) };
+        let mut buf = [0u8; 64];
+        // SAFETY: a buffer of the length given, from a nonblocking descriptor.
+        while unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
+    }
+
+    /// Writes one frame of `parts`, sleeping on `wait` while there is no room.
+    fn push(p: &mut Producer<'_>, wait: &OwnedFd, parts: &[&[u8]]) -> Result<bool, Broken> {
+        let n: usize = parts.iter().map(|part| part.len()).sum();
+        loop {
+            let pushed = p.try_push_with(n, |dst| {
+                let mut off = 0;
+                for part in parts {
+                    // SAFETY: `dst` has room for all `n` bytes.
+                    unsafe { ptr::copy_nonoverlapping(part.as_ptr(), dst.add(off), part.len()) };
+                    off += part.len();
+                }
+            })?;
+            match pushed {
+                Some(fit) => return Ok(fit),
+                None => sleep(wait.as_raw_fd()),
+            }
+        }
+    }
+
     fn frame(seq: u32, len: usize) -> Vec<u8> {
         (0..len)
             .map(|i| (seq as usize).wrapping_mul(31).wrapping_add(i) as u8)
@@ -585,13 +558,13 @@ mod tests {
     }
 
     /// Frames of every size cross in order, through every wrap of the ring, a thread on
-    /// each side, each sleeping when it must.
+    /// each side, each sleeping when it must, as the devices' loops do.
     #[test]
     fn frames_cross_in_order_through_every_wrap() {
-        let region = Region::create().unwrap();
+        let region = region();
         let (c_wait, p_ring) = doorbell().unwrap();
         let (p_wait, c_ring) = doorbell().unwrap();
-        let mut producer = region.producer(0, p_ring, p_wait);
+        let mut producer = region.producer(0, p_ring);
         let mut consumer = region.consumer(0, c_ring, c_wait);
         let sizes = [0usize, 1, 7, 8, 9, 60, 1514, 9014, MAX_FRAME, 4093];
         let n = 20_000u32;
@@ -600,7 +573,7 @@ mod tests {
                 for i in 0..n {
                     let f = frame(i, sizes[i as usize % sizes.len()]);
                     let (a, b) = f.split_at(f.len() / 2);
-                    assert!(producer.push(&[a, b]).unwrap());
+                    assert!(push(&mut producer, &p_wait, &[a, b]).unwrap());
                 }
             });
             for i in 0..n {
@@ -609,24 +582,26 @@ mod tests {
                         assert_eq!(f, frame(i, sizes[i as usize % sizes.len()]), "frame {i}");
                         break;
                     }
-                    consumer.wait(-1).unwrap();
+                    if !consumer.arm().unwrap() {
+                        sleep(consumer.waits_on());
+                    }
                 }
             }
         });
         assert!(take(&mut consumer).is_none());
-        assert!(!producer.push(&[&vec![0u8; MAX_FRAME + 1]]).unwrap());
+        assert_eq!(producer.try_push_with(MAX_FRAME + 1, |_| ()), Ok(Some(false)));
     }
 
-    /// A peer that writes nonsense into the shared positions or lengths is caught, and its
-    /// nonsense never leads the reader outside the ring.
+    /// A peer that writes nonsense into its shared position or a length is caught, and
+    /// its nonsense never leads the reader outside the ring.
     #[test]
     fn a_peer_that_breaks_the_ring_is_caught() {
-        let region = Region::create().unwrap();
+        let region = region();
         let (cw, pr) = doorbell().unwrap();
         let (pw, cr) = doorbell().unwrap();
-        let mut producer = region.producer(0, pr, pw);
+        let mut producer = region.producer(0, pr);
         let mut consumer = region.consumer(0, cr, cw);
-        producer.push(&[b"hello"]).unwrap();
+        push(&mut producer, &pw, &[b"hello"]).unwrap();
         // A length past what was written.
         // SAFETY: the test plays the hostile peer, writing the shared header directly.
         unsafe { ptr::copy_nonoverlapping(u32::MAX.to_le_bytes().as_ptr(), consumer.ring, 4) };
@@ -634,21 +609,56 @@ mod tests {
         // A head beyond the tail by more than the ring.
         consumer.control().head.0.store(u64::MAX, Ordering::SeqCst);
         assert!(consumer.ready().is_err());
-        assert!(producer.push(&[b"x"]).is_err());
+        // A tail past the head.
+        producer.control().tail.0.store(u64::MAX, Ordering::SeqCst);
+        assert!(push(&mut producer, &pw, &[b"x"]).is_err());
+    }
+
+    /// A peer that writes this side's own shared position moves nothing of this side's:
+    /// a hostile VM process that puts the network process's head four bytes short of the
+    /// last ring's end, its own tail there too, would have it write a header past the
+    /// mapping's end were that head believed.
+    #[test]
+    fn a_peer_cannot_move_this_sides_position() {
+        let region = region();
+        let (cw, pr) = doorbell().unwrap();
+        let (pw, cr) = doorbell().unwrap();
+        let mut producer = region.producer(1, pr);
+        let mut consumer = region.consumer(1, cr, cw);
+        let short = (RING - 4) as u64;
+        producer.control().head.0.store(short, Ordering::SeqCst);
+        producer.control().tail.0.store(short, Ordering::SeqCst);
+        assert_eq!(
+            producer.try_push_with(5, |_| ()),
+            Err(Broken("its tail is past the head"))
+        );
+        // The tail put back, the ring goes on from where this side was, not from where
+        // its peer said.
+        producer.control().tail.0.store(0, Ordering::SeqCst);
+        assert!(push(&mut producer, &pw, &[b"after"]).unwrap());
+        assert_eq!(take(&mut consumer).unwrap(), b"after");
+        // The consumer's own position, moved by its peer, moves nothing of its either.
+        assert!(push(&mut producer, &pw, &[b"again"]).unwrap());
+        consumer.control().tail.0.store(short, Ordering::SeqCst);
+        assert_eq!(take(&mut consumer).unwrap(), b"again");
+        assert_eq!(
+            consumer.control().tail.0.load(Ordering::SeqCst),
+            2 * padded(5) as u64
+        );
     }
 
     /// A region handed over by its descriptor is the same memory.
     #[test]
     fn a_region_mapped_from_its_descriptor_is_shared() {
-        let a = Region::create().unwrap();
+        let a = region();
         // SAFETY: dup(2) of a descriptor the region owns.
         let fd = unsafe { OwnedFd::from_raw_fd(libc::dup(a.fd())) };
         let b = Region::map(fd).unwrap();
         let (cw, pr) = doorbell().unwrap();
         let (pw, cr) = doorbell().unwrap();
-        let mut producer = a.producer(1, pr, pw);
+        let mut producer = a.producer(1, pr);
         let mut consumer = b.consumer(1, cr, cw);
-        producer.push(&[b"across"]).unwrap();
+        push(&mut producer, &pw, &[b"across"]).unwrap();
         assert_eq!(take(&mut consumer).unwrap(), b"across");
     }
 }
