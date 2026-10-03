@@ -1254,7 +1254,7 @@ impl<D: Disk> Daemon<D> {
         // The host's resolvers as dockerd gives a container them, on its bridge or on
         // none (the legacy transform, neither with IPv6), read as the run starts.
         prepared.spec.resolv = Some(crate::build::step::resolv(
-            &std::fs::read("/etc/resolv.conf").unwrap_or_default(),
+            &crate::build::step::host_resolv(),
             false,
         ));
         // The flags, the retention's two u64s, then the spec, in one allocation (audit D10).

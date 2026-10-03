@@ -63,6 +63,34 @@ pub fn hosts(hostname: &[u8], extra: &[HostIp]) -> Vec<u8> {
     out
 }
 
+/// The host's resolvers, as BuildKit (executor/oci resolvconfPath) and dockerd
+/// (libnetwork resolvconf.Path) read them: /etc/resolv.conf, unless its one nameserver is
+/// systemd-resolved's stub, 127.0.0.53, which within a guest is the guest's own address;
+/// then the servers systemd-resolved forwards to, which it lists in
+/// /run/systemd/resolve/resolv.conf.
+pub fn host_resolv() -> Vec<u8> {
+    pick_resolv(std::fs::read("/etc/resolv.conf").unwrap_or_default(), || {
+        std::fs::read("/run/systemd/resolve/resolv.conf").unwrap_or_default()
+    })
+}
+
+fn pick_resolv(main: Vec<u8>, systemd: impl FnOnce() -> Vec<u8>) -> Vec<u8> {
+    let text = String::from_utf8_lossy(&main);
+    let servers: Vec<IpAddr> = text
+        .lines()
+        .filter_map(
+            |line| match line.split_whitespace().collect::<Vec<_>>().as_slice() {
+                ["nameserver", addr, ..] => addr.parse().ok(),
+                _ => None,
+            },
+        )
+        .collect();
+    if servers == [IpAddr::from([127, 0, 0, 53])] {
+        return systemd();
+    }
+    main
+}
+
 /// `/etc/resolv.conf` made from the host's as BuildKit makes it for a step without the
 /// host's network (util/resolvconf: Parse, TransformForLegacyNw(true), Generate(false)),
 /// and as dockerd makes it for a container on a network without IPv6
@@ -149,6 +177,33 @@ pub fn failure(args: &[Vec<u8>], why: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// systemd-resolved's stub, alone, sends the reader to the servers it forwards to;
+    /// any other list, the stub among others included, is read as it is.
+    #[test]
+    fn systemd_resolveds_stub_is_read_past() {
+        let systemd = || b"nameserver 10.0.0.2\n".to_vec();
+        for (main, want) in [
+            (
+                &b"nameserver 127.0.0.53\noptions edns0 trust-ad\nsearch lan\n"[..],
+                &b"nameserver 10.0.0.2\n"[..],
+            ),
+            (b"# systemd\nnameserver   127.0.0.53\n", b"nameserver 10.0.0.2\n"),
+            (
+                b"nameserver 127.0.0.53\nnameserver 1.1.1.1\n",
+                b"nameserver 127.0.0.53\nnameserver 1.1.1.1\n",
+            ),
+            (b"nameserver 192.168.1.1\n", b"nameserver 192.168.1.1\n"),
+            (b"", b""),
+        ] {
+            assert_eq!(
+                pick_resolv(main.to_vec(), systemd),
+                want,
+                "{}",
+                String::from_utf8_lossy(main)
+            );
+        }
+    }
 
     #[test]
     fn a_steps_environment_is_buildkits() {
