@@ -674,6 +674,18 @@ fn reverse_pattern(b: &[u8]) -> Vec<u8> {
 
 /// A shell pattern: `?` any one rune, `*` any runes, the rest literal; neither crosses a
 /// newline, as `.` in Go's regular expressions does not.
+///
+/// It matches as Go's regexp matches what BuildKit makes of it, leftmost-first (Go's
+/// regexp documentation): the earliest start, and from it the end a backtracking matcher
+/// would reach first. Of the ends a match from one start can have, that is the furthest
+/// when stars are greedy and the nearest when they are lazy: take the preferred match and
+/// any other from the same start, and the first star where the other's span ends past
+/// the preferred's (greedy) can take the other's end, the rest following the other; the
+/// lazy case is the mirror image. So no backtracking: an NFA, a state for each token and
+/// one for a whole match, run 64 states to a word (Baeza-Yates and Gonnet, "A New
+/// Approach to Text Searching", CACM 35(10), 1992), back over the value to find where
+/// matches start and forward from a start to find its end. Its memory is linear in the
+/// pattern and the value, and its time in their product over 64.
 #[derive(Debug)]
 struct Pattern {
     toks: Vec<Tok>,
@@ -688,7 +700,8 @@ enum Tok {
 }
 
 impl Pattern {
-    /// `convertShellPatternToRegex`, its errors included.
+    /// `convertShellPatternToRegex`, its errors included. `**` is one star: it matches
+    /// what one does, from and to the same places.
     fn compile(pattern: &[u8], greedy: bool) -> Result<Pattern, Vec<u8>> {
         let mut s = Scanner::new(pattern);
         let mut toks = Vec::new();
@@ -698,7 +711,9 @@ impl Pattern {
                 break;
             }
             if is_ch(tok, '*') {
-                toks.push(Tok::Star);
+                if toks.last() != Some(&Tok::Star) {
+                    toks.push(Tok::Star);
+                }
             } else if is_ch(tok, '?') {
                 toks.push(Tok::Any);
             } else if is_ch(tok, '\\') {
@@ -722,115 +737,73 @@ impl Pattern {
         Ok(Pattern { toks, greedy })
     }
 
-    /// For each token `i` and rune position `j`, whether tokens `i..` match from `j`,
-    /// ending anywhere: one table, filled right to left, in time linear in their product.
-    fn table(&self, runes: &[(u32, usize)]) -> Table {
-        let (m, n) = (self.toks.len(), runes.len());
-        let mut can = Table::new(m + 1, n + 1);
-        for j in 0..=n {
-            can.set(m, j, true);
-        }
-        for i in (0..m).rev() {
-            for j in (0..=n).rev() {
-                let here = runes.get(j).map(|&(r, _)| r);
-                let v = match self.toks.get(i) {
-                    Some(Tok::Lit(c)) => here == Some(*c) && can.get(i + 1, j + 1),
-                    Some(Tok::Any) => here.is_some_and(|r| r != 0x0a) && can.get(i + 1, j + 1),
-                    Some(Tok::Star) => {
-                        can.get(i + 1, j) || (here.is_some_and(|r| r != 0x0a) && can.get(i, j + 1))
-                    }
-                    None => false,
-                };
-                can.set(i, j, v);
-            }
-        }
-        can
-    }
-
-    /// The rune position the preferred match from `j` ends at, given that one exists:
-    /// leftmost-first, each `*` taking the most runes (greedy) or the fewest.
-    fn end(&self, runes: &[(u32, usize)], can: &Table, mut j: usize) -> usize {
-        for (i, tok) in self.toks.iter().enumerate() {
-            match tok {
-                Tok::Lit(_) | Tok::Any => j += 1,
-                Tok::Star => {
-                    let mut lim = j;
-                    while runes.get(lim).is_some_and(|&(r, _)| r != 0x0a) {
-                        lim += 1;
-                    }
-                    let found = if self.greedy {
-                        (j..=lim).rev().find(|&k| can.get(i + 1, k))
-                    } else {
-                        (j..=lim).find(|&k| can.get(i + 1, k))
-                    };
-                    j = found.unwrap_or(j);
-                }
-            }
-        }
-        j
-    }
-
-    /// The runes of `b`, and each rune's byte offset with `b`'s length last.
-    fn runes(b: &[u8]) -> (Vec<(u32, usize)>, Vec<usize>) {
-        let mut runes = Vec::new();
-        let mut offsets = Vec::new();
-        let mut at = 0;
-        for (r, w) in go::runes(b) {
-            runes.push((r, at));
-            offsets.push(at);
-            at += w;
-        }
-        offsets.push(b.len());
-        (runes, offsets)
-    }
-
     /// The end of the preferred match at the start of `value`, if any.
     fn anchored(&self, value: &[u8]) -> Option<usize> {
-        let (runes, offsets) = Self::runes(value);
-        let can = self.table(&runes);
-        if !can.get(0, 0) {
-            return None;
-        }
-        offsets.get(self.end(&runes, &can, 0)).copied()
+        let nfa = Nfa::new(&self.toks);
+        let mut run = nfa.run();
+        run.end(go::runes(value), self.greedy).map(|(_, bytes)| bytes)
+    }
+
+    /// Where matches can start in `runes`: each position's bit, the one past the last
+    /// included.
+    fn starts(&self, runes: &[u32]) -> Vec<u64> {
+        let reversed: Vec<Tok> = self.toks.iter().rev().copied().collect();
+        Nfa::new(&reversed).starts(runes)
     }
 
     /// The leftmost match, as byte offsets.
     fn find(&self, value: &[u8]) -> Option<(usize, usize)> {
-        let (runes, offsets) = Self::runes(value);
-        let can = self.table(&runes);
-        let j = (0..=runes.len()).find(|&j| can.get(0, j))?;
-        Some((*offsets.get(j)?, *offsets.get(self.end(&runes, &can, j))?))
+        let runes = runes(value);
+        let j = next_set(&self.starts(&runes), 0)?;
+        let head = runes.get(..j)?;
+        let a: usize = head.iter().map(|&k| rune(k).1).sum();
+        let nfa = Nfa::new(&self.toks);
+        let (_, len) = nfa
+            .run()
+            .end(runes.get(j..)?.iter().map(|&k| rune(k)), self.greedy)?;
+        Some((a, a + len))
     }
 
     /// Every match replaced, as Go's `ReplaceAllString` replaces them: an empty match
     /// right after another is skipped, and `$0`/`${0}` in the replacement is the match.
     fn replace_all(&self, value: &[u8], replacement: &[u8]) -> Vec<u8> {
-        let (runes, offsets) = Self::runes(value);
-        let can = self.table(&runes);
-        let mut out = Vec::new();
-        let (mut last_end, mut search) = (0usize, 0usize);
+        let runes = runes(value);
+        let starts = self.starts(&runes);
+        let nfa = Nfa::new(&self.toks);
+        let mut run = nfa.run();
+        let mut out = Vec::with_capacity(value.len());
+        // Go's replaceAll, its offsets in bytes; `at` is `search`'s rune, and `to` a
+        // rune's offset, moved on as matches are.
+        let (mut last_end, mut search, mut at) = (0usize, 0usize, 0usize);
+        let (mut to, mut a) = (0usize, 0usize);
         while search <= value.len() {
-            let Some(from) = offsets.iter().position(|&o| o >= search) else {
+            let Some(j) = next_set(&starts, at) else {
                 break;
             };
-            let Some(j) = (from..=runes.len()).find(|&j| can.get(0, j)) else {
+            for &k in runes.get(to..j).unwrap_or_default() {
+                a += rune(k).1;
+            }
+            to = j;
+            let rest = runes.get(j..).unwrap_or_default();
+            let Some((len, bytes)) = run.end(rest.iter().map(|&k| rune(k)), self.greedy) else {
                 break;
             };
-            let (Some(&a), Some(&b)) = (offsets.get(j), offsets.get(self.end(&runes, &can, j))) else {
-                break;
-            };
+            let b = a + bytes;
             out.extend_from_slice(go::span(value, last_end, a));
             if b > last_end || a == 0 {
                 expand(&mut out, replacement, go::span(value, a, b));
             }
             last_end = b;
-            let (_, width) = go::decode(go::tail(value, search));
+            let width = runes.get(at).map_or(0, |&k| rune(k).1);
             if search + width > b {
                 search += width;
+                at += 1;
             } else if search + 1 > b {
                 search += 1;
+                at += 1;
             } else {
                 search = b;
+                at = j + len;
             }
         }
         out.extend_from_slice(go::tail(value, last_end));
@@ -838,37 +811,244 @@ impl Pattern {
     }
 }
 
-/// A table of bits, `rows` by `cols`; reads outside it are false.
-struct Table {
-    bits: Vec<u64>,
-    cols: usize,
+/// A byte that is no rune, as [`runes`] keeps it: U+FFFD to match, one byte wide.
+const INVALID: u32 = 1 << 31;
+
+/// The runes of `value` as Go decodes them, a byte that is none kept as [`INVALID`].
+fn runes(value: &[u8]) -> Vec<u32> {
+    go::runes(value)
+        .map(|(r, w)| if r == go::RUNE_ERROR && w == 1 { INVALID } else { r })
+        .collect()
 }
 
-impl Table {
-    fn new(rows: usize, cols: usize) -> Table {
-        Table {
-            bits: vec![0; (rows * cols).div_ceil(64)],
-            cols,
-        }
+/// What a rune [`runes`] kept matches as, and its width.
+fn rune(k: u32) -> (u32, usize) {
+    if k == INVALID {
+        (go::RUNE_ERROR, 1)
+    } else {
+        (k, char::from_u32(k).map_or(1, char::len_utf8))
     }
+}
 
-    fn get(&self, row: usize, col: usize) -> bool {
-        if col >= self.cols {
-            return false;
-        }
-        let at = row * self.cols + col;
-        self.bits.get(at / 64).is_some_and(|w| w >> (at % 64) & 1 == 1)
-    }
+/// A pattern's NFA: state `i` before token `i`, the last after them all, a match.
+#[derive(Debug)]
+struct Nfa {
+    /// The words a set of states takes.
+    words: usize,
+    accept: usize,
+    /// The states whose token is `?`, and those whose token is `*`.
+    any: Vec<u64>,
+    star: Vec<u64>,
+    /// The states each rune the pattern has is the literal of.
+    lits: Vec<Lits>,
+    /// Which of `lits` an ASCII rune's are, `NONE` for none; the other runes', by rune.
+    ascii: [usize; 128],
+    other: Vec<(u32, usize)>,
+}
 
-    fn set(&mut self, row: usize, col: usize, v: bool) {
-        let at = row * self.cols + col;
-        if let Some(w) = self.bits.get_mut(at / 64) {
-            if v {
-                *w |= 1 << (at % 64);
-            } else {
-                *w &= !(1 << (at % 64));
+const NONE: usize = usize::MAX;
+
+/// Where a rune is a literal: a set where it is so often that a list would take as long
+/// to apply, else a list. A pattern's sets come to no more words than it has tokens.
+#[derive(Debug)]
+enum Lits {
+    Set(Vec<u64>),
+    At(Vec<usize>),
+}
+
+impl Nfa {
+    fn new(toks: &[Tok]) -> Nfa {
+        let accept = toks.len();
+        let words = (accept + 1).div_ceil(64);
+        let (mut any, mut star) = (vec![0; words], vec![0; words]);
+        let mut at: std::collections::BTreeMap<u32, Vec<usize>> = Default::default();
+        for (i, tok) in toks.iter().enumerate() {
+            match tok {
+                Tok::Lit(r) => at.entry(*r).or_default().push(i),
+                Tok::Any => set(&mut any, i),
+                Tok::Star => set(&mut star, i),
             }
         }
+        let mut lits = Vec::with_capacity(at.len());
+        let (mut ascii, mut other) = ([NONE; 128], Vec::new());
+        for (r, states) in at {
+            let index = lits.len();
+            lits.push(if states.len() >= words {
+                let mut s = vec![0; words];
+                for i in states {
+                    set(&mut s, i);
+                }
+                Lits::Set(s)
+            } else {
+                Lits::At(states)
+            });
+            match usize::try_from(r).ok().and_then(|r| ascii.get_mut(r)) {
+                Some(slot) => *slot = index,
+                None => other.push((r, index)),
+            }
+        }
+        Nfa {
+            words,
+            accept,
+            any,
+            star,
+            lits,
+            ascii,
+            other,
+        }
+    }
+
+    fn run(&self) -> Run<'_> {
+        Run {
+            nfa: self,
+            d: vec![0; self.words],
+            next: vec![0; self.words],
+        }
+    }
+
+    fn lits(&self, r: u32) -> Option<&Lits> {
+        let index = match usize::try_from(r).ok().and_then(|r| self.ascii.get(r)) {
+            Some(&index) => index,
+            None => {
+                let at = self.other.binary_search_by_key(&r, |&(o, _)| o).ok()?;
+                self.other.get(at)?.1
+            }
+        };
+        self.lits.get(index)
+    }
+
+    /// Adds the start state to `d`.
+    fn enter(&self, d: &mut [u64]) {
+        if let Some(w) = d.first_mut() {
+            *w |= 1;
+        }
+        self.close(d);
+    }
+
+    /// Adds to `d` the states after each star in it, which a star taking nothing
+    /// reaches. No star follows a star, so that is all.
+    fn close(&self, d: &mut [u64]) {
+        let mut carry = 0;
+        for (w, &s) in d.iter_mut().zip(&self.star) {
+            let moved = *w & s;
+            *w |= moved << 1 | carry;
+            carry = moved >> 63;
+        }
+    }
+
+    /// The states `d`'s move to on `r`, into `next`.
+    fn step(&self, d: &[u64], r: u32, next: &mut [u64]) {
+        let newline = r == u32::from(b'\n');
+        for ((n, &x), &a) in next.iter_mut().zip(d).zip(&self.any) {
+            *n = if newline { 0 } else { x & a };
+        }
+        match self.lits(r) {
+            Some(Lits::Set(s)) => {
+                for ((n, &x), &l) in next.iter_mut().zip(d).zip(s) {
+                    *n |= x & l;
+                }
+            }
+            Some(Lits::At(states)) => {
+                for &i in states {
+                    if bit(d, i) {
+                        set(next, i);
+                    }
+                }
+            }
+            None => {}
+        }
+        // Each state whose token took `r` moves on; each star's that took it stays.
+        let mut carry = 0;
+        for ((n, &x), &s) in next.iter_mut().zip(d).zip(&self.star) {
+            let took = *n;
+            *n = took << 1 | carry;
+            carry = took >> 63;
+            if !newline {
+                *n |= x & s;
+            }
+        }
+        self.close(next);
+    }
+
+    /// Where the pattern this NFA is the reverse of can match from in `runes`: one pass
+    /// back over them, a match of the reverse able to begin at every position.
+    fn starts(&self, runes: &[u32]) -> Vec<u64> {
+        let mut starts = vec![0; (runes.len() + 1).div_ceil(64)];
+        let mut run = self.run();
+        self.enter(&mut run.d);
+        if bit(&run.d, self.accept) {
+            set(&mut starts, runes.len());
+        }
+        for (i, &k) in runes.iter().enumerate().rev() {
+            self.step(&run.d, rune(k).0, &mut run.next);
+            self.enter(&mut run.next);
+            std::mem::swap(&mut run.d, &mut run.next);
+            if bit(&run.d, self.accept) {
+                set(&mut starts, i);
+            }
+        }
+        starts
+    }
+}
+
+/// An NFA's sets of states as it runs.
+struct Run<'n> {
+    nfa: &'n Nfa,
+    d: Vec<u64>,
+    next: Vec<u64>,
+}
+
+impl Run<'_> {
+    /// The end of the preferred match from the start of `runes` (each a rune and its
+    /// width), in runes and in bytes: the furthest (`greedy`) or the nearest.
+    fn end(&mut self, runes: impl Iterator<Item = (u32, usize)>, greedy: bool) -> Option<(usize, usize)> {
+        let nfa = self.nfa;
+        self.d.fill(0);
+        nfa.enter(&mut self.d);
+        let mut found = bit(&self.d, nfa.accept).then_some((0, 0));
+        if found.is_some() && !greedy {
+            return found;
+        }
+        let (mut len, mut bytes) = (0, 0);
+        for (r, w) in runes {
+            nfa.step(&self.d, r, &mut self.next);
+            std::mem::swap(&mut self.d, &mut self.next);
+            len += 1;
+            bytes += w;
+            if bit(&self.d, nfa.accept) {
+                found = Some((len, bytes));
+                if !greedy {
+                    break;
+                }
+            }
+            if self.d.iter().all(|&w| w == 0) {
+                break;
+            }
+        }
+        found
+    }
+}
+
+fn bit(bits: &[u64], i: usize) -> bool {
+    bits.get(i / 64).is_some_and(|w| w >> (i % 64) & 1 == 1)
+}
+
+fn set(bits: &mut [u64], i: usize) {
+    if let Some(w) = bits.get_mut(i / 64) {
+        *w |= 1 << (i % 64);
+    }
+}
+
+/// The first bit set at `from` or after.
+fn next_set(bits: &[u64], from: usize) -> Option<usize> {
+    let mut word = from / 64;
+    let mut w = bits.get(word)? & u64::MAX << (from % 64);
+    loop {
+        if w != 0 {
+            return Some(word * 64 + w.trailing_zeros() as usize);
+        }
+        word += 1;
+        w = *bits.get(word)?;
     }
 }
 
@@ -939,8 +1119,8 @@ fn extract(s: &[u8]) -> Option<(Option<u64>, &[u8])> {
 mod tests {
     use super::*;
 
-    /// A long value against a pattern of many stars takes time linear in their product,
-    /// where a backtracking matcher would take exponential time.
+    /// A long value against a pattern of many stars takes time linear in it, where a
+    /// backtracking matcher would take exponential time.
     #[test]
     fn patterns_match_in_linear_time() {
         let value = vec![b'a'; 20_000];
@@ -952,6 +1132,213 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+
+    /// `${V//?/x}` over a long value replaces each of its runes in time linear in it.
+    #[test]
+    fn replacing_every_rune_takes_linear_time() {
+        let value = "aé\n".repeat(1 << 18).into_bytes();
+        let started = std::time::Instant::now();
+        let replaced = Pattern::compile(b"?", true).unwrap().replace_all(&value, b"x");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(replaced, "xx\n".repeat(1 << 18).into_bytes());
+    }
+
+    /// A deterministic generator for the cases below (xorshift64).
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            usize::try_from(self.0 % u64::try_from(n).unwrap()).unwrap()
+        }
+    }
+
+    /// Go's leftmost-first match, by backtracking as its documentation defines it: each
+    /// star tries its longest span first (greedy) or its shortest. What tokens `i..` match
+    /// from rune `j` depends on nothing else, so each is worked out once.
+    struct Backtrack<'a> {
+        toks: &'a [Tok],
+        runes: &'a [u32],
+        greedy: bool,
+        memo: std::collections::HashMap<(usize, usize), Option<usize>>,
+    }
+
+    impl Backtrack<'_> {
+        fn from(&mut self, i: usize, j: usize) -> Option<usize> {
+            if let Some(&known) = self.memo.get(&(i, j)) {
+                return known;
+            }
+            let here = self.runes.get(j).copied();
+            let end = match self.toks.get(i) {
+                None => Some(j),
+                Some(Tok::Lit(c)) => (here == Some(*c)).then(|| self.from(i + 1, j + 1)).flatten(),
+                Some(Tok::Any) => here.filter(|&r| r != 0x0a).and_then(|_| self.from(i + 1, j + 1)),
+                Some(Tok::Star) => {
+                    let mut lim = j;
+                    while self.runes.get(lim).is_some_and(|&r| r != 0x0a) {
+                        lim += 1;
+                    }
+                    if self.greedy {
+                        (j..=lim).rev().find_map(|k| self.from(i + 1, k))
+                    } else {
+                        (j..=lim).find_map(|k| self.from(i + 1, k))
+                    }
+                }
+            };
+            self.memo.insert((i, j), end);
+            end
+        }
+    }
+
+    /// What the pattern and the value are made of: newlines, a rune of two bytes, one
+    /// that is U+FFFD, a byte that is no rune (which matches as U+FFFD), and an escaped
+    /// star.
+    const RUNES: [&str; 6] = ["a", "b", "\n", "é", "\u{FFFD}", "*"];
+
+    fn pattern(toks: &[Tok]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for tok in toks {
+            match tok {
+                Tok::Star => out.push(b'*'),
+                Tok::Any => out.push(b'?'),
+                Tok::Lit(r) if *r == u32::from('*') => out.extend_from_slice(b"\\*"),
+                Tok::Lit(r) => go::push(&mut out, *r),
+            }
+        }
+        out
+    }
+
+    /// Each operation against the backtracking matcher's answer, on `toks` (stars side by
+    /// side included) and `value`.
+    fn agree(toks: &[Tok], value: &[u8]) {
+        let decoded: Vec<(u32, usize)> = go::runes(value).collect();
+        let runes: Vec<u32> = decoded.iter().map(|&(r, _)| r).collect();
+        let mut offsets = vec![0];
+        for &(_, w) in &decoded {
+            offsets.push(offsets.last().unwrap() + w);
+        }
+        let source = pattern(toks);
+        let shown = || {
+            (
+                String::from_utf8_lossy(&source).into_owned(),
+                String::from_utf8_lossy(value).into_owned(),
+            )
+        };
+        let reference = |greedy| Backtrack {
+            toks,
+            runes: &runes,
+            greedy,
+            memo: Default::default(),
+        };
+        for greedy in [true, false] {
+            let p = Pattern::compile(&source, greedy).unwrap();
+            let want = reference(greedy).from(0, 0).map(|e| offsets[e]);
+            assert_eq!(
+                p.anchored(value),
+                want,
+                "anchored, greedy {greedy}: {:?}",
+                shown()
+            );
+        }
+        let p = Pattern::compile(&source, true).unwrap();
+        let mut greedy = reference(true);
+        let mut from = |at: usize| (at..=runes.len()).find_map(|j| greedy.from(0, j).map(|e| (j, e)));
+        let want = from(0).map(|(j, e)| (offsets[j], offsets[e]));
+        assert_eq!(p.find(value), want, "find: {:?}", shown());
+        // Go's replaceAll, on the backtracking matcher.
+        let mut want = Vec::new();
+        let (mut last_end, mut search, mut at) = (0, 0, 0);
+        while search <= value.len() {
+            let Some((j, e)) = from(at) else { break };
+            let (a, b) = (offsets[j], offsets[e]);
+            want.extend_from_slice(&value[last_end..a]);
+            if b > last_end || a == 0 {
+                want.extend_from_slice(b"<");
+                want.extend_from_slice(&value[a..b]);
+                want.extend_from_slice(b">");
+            }
+            last_end = b;
+            let width = decoded.get(at).map_or(0, |&(_, w)| w);
+            if search + width > b {
+                search += width;
+                at += 1;
+            } else if search + 1 > b {
+                search += 1;
+                at += 1;
+            } else {
+                search = b;
+                at = e;
+            }
+        }
+        want.extend_from_slice(&value[last_end..]);
+        assert_eq!(p.replace_all(value, b"<$0>"), want, "replace_all: {:?}", shown());
+    }
+
+    /// The NFA's answers are the backtracking matcher's, on short patterns and values of
+    /// every kind.
+    #[test]
+    fn patterns_match_as_backtracking_does() {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for _ in 0..20_000 {
+            let toks: Vec<Tok> = (0..rng.below(7))
+                .map(|_| match rng.below(8) {
+                    0 | 1 => Tok::Star,
+                    2 => Tok::Any,
+                    _ => Tok::Lit(RUNES[rng.below(RUNES.len())].chars().next().unwrap().into()),
+                })
+                .collect();
+            let mut value = Vec::new();
+            for _ in 0..rng.below(11) {
+                match rng.below(RUNES.len() + 1) {
+                    i if i == RUNES.len() => value.push(0xFF),
+                    i => value.extend_from_slice(RUNES[i].as_bytes()),
+                }
+            }
+            agree(&toks, &value);
+        }
+    }
+
+    /// Patterns of hundreds of tokens, their states in several words and their runes in
+    /// sets and lists, match as backtracking does, in values made to hold their matches.
+    #[test]
+    fn long_patterns_match_as_backtracking_does() {
+        let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+        for _ in 0..300 {
+            let len = 64 + rng.below(200);
+            let toks: Vec<Tok> = (0..len)
+                .map(|_| match rng.below(40) {
+                    0..=2 => Tok::Star,
+                    3..=6 => Tok::Any,
+                    7 => Tok::Lit('é'.into()),
+                    8 => Tok::Lit(0x0a),
+                    _ => Tok::Lit(u32::from(b'a') + u32::try_from(rng.below(2)).unwrap()),
+                })
+                .collect();
+            // A match, each `?` and star given runes, between runes of no matter.
+            let mut value = Vec::new();
+            let noise = |rng: &mut Rng, value: &mut Vec<u8>| {
+                for _ in 0..rng.below(20) {
+                    value.extend_from_slice(RUNES[rng.below(4)].as_bytes());
+                }
+            };
+            noise(&mut rng, &mut value);
+            for tok in &toks {
+                match tok {
+                    Tok::Lit(r) => go::push(&mut value, *r),
+                    Tok::Any => value.push(b'b'),
+                    Tok::Star => value.extend_from_slice(&b"ab".repeat(rng.below(3))),
+                }
+            }
+            noise(&mut rng, &mut value);
+            agree(&toks, &value);
+        }
     }
 
     /// Nesting stops at its bound with an error, not a stack overflow.
