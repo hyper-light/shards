@@ -312,9 +312,17 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     safely, and those Linux has no number for.
   - They travel on a second vsock connection that the guest opens once the command runs,
     so unread stdin cannot hold them up.
-  - Through the daemon, a signal that arrives before the command runs waits for it
-    (D26). `vm run`, whose process is the VM, ends as that signal would end it. dockerd
-    instead drops a signal sent before its container starts (warm-pool-daemon.md §2.7).
+  - Through the daemon, a signal that arrives once the container is made, before the
+    command runs, waits for it (D26). `vm run`, whose process is the VM, ends as that
+    signal would end it. dockerd instead drops a signal sent before its container starts
+    (warm-pool-daemon.md §2.7).
+  - Before the container is made, as the image is pulled, SIGINT and SIGTERM end the
+    client with 128 and their number, saying nothing. The daemon sees its client's
+    connection end, lets the pull go and makes no container. That is `docker run`
+    interrupted as it pulls, measured on Docker 29.3.1 (its CLI cancels its request
+    until `ContainerCreate` returns, docker/cli `notifyContext`). The daemon tells the
+    client the container is made (`CREATED`), from which point it forwards signals. A
+    client that went hears nothing more of its run: the daemon holds its stderr.
   - A signal shards was started ignoring is forwarded too, as the Docker CLI's Go
     runtime takes it once asked. A script's `shards run ... &` starts with SIGINT and
     SIGQUIT ignored, and macOS drops an ignored signal even for a thread in `sigwait`
@@ -899,7 +907,10 @@ for the exit status.
   - A client of another build, told apart by its binary's file identity, gets
     `RESTART`. The daemon removes its socket, ends its runs as `shards daemon stop`
     does, and exits; the client starts its own, which takes the home once the old one
-    has gone (up to 20 s).
+    has gone. A daemon ending its runs names itself in `daemon.stopping` first, and the
+    new daemon and the client wait while that process lives, however long its runs'
+    stop timeouts make it; otherwise a daemon waits 20 s for another's lock, and a
+    client 30 s for its daemon to listen.
   - It follows each run to its end. The warm VM tells the daemon of its command's start
     (`STARTED`) before its client has any of the command's output, and of its end
     (`DONE`) before its client has the status; a Unix socket's send puts a message in
@@ -914,9 +925,12 @@ for the exit status.
     the same socket.
   - It exits after SHARDS_DAEMON_IDLE seconds (900) with no run in progress and none
     asked for. `shards daemon stop` first ends the runs in progress as dockerd ends its
-    containers when it shuts down: SIGTERM to each command, then SIGKILL after 10 s
-    (moby daemon/stop.go, daemon/config/config_linux.go), and ends a VM whose command
-    outlives that by 5 s, as dockerd gives up after 15 s (moby daemon/daemon.go). A
+    containers when it shuts down (moby daemon/daemon.go `shutdownContainer`,
+    daemon/stop.go): each command gets its container's stop signal (SIGTERM if it has
+    none), then SIGKILL once its stop timeout is up (10 s if it has none, never if it
+    is negative), and its VM ends if the command outlives that by 5 s, as dockerd gives
+    up 5 s after the longest stop timeout (`ShutdownTimeout`). The settings are those
+    the container was made with, read before its record is written if need be. A
     daemon that another build replaces does the same, as dockerd without live-restore
     stops its containers when it restarts: two daemons never keep one home's records.
     Keeping runs through a restart (live-restore) is a later milestone. `stop` returns

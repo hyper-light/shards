@@ -64,6 +64,7 @@ pub fn main() -> ! {
         "clean-cache" => clean_cache(arg(1)),
         "orphan" => orphan(),
         "trap" => trap(arg(1)),
+        "ignore" => ignore(arg(1)),
         "tty" => tty(arg(1)),
         "vsock" => vsock(args.get(1..).unwrap_or_default()),
         "loopback" => loopback(),
@@ -638,6 +639,23 @@ extern "C" fn caught(sig: libc::c_int) {
 }
 
 /// Catches the named signal, says `ready`, and reports the number it arrives with.
+/// Ignores the signal named, says it is ready, and waits for ever: what only another
+/// signal ends.
+fn ignore(name: &str) -> i32 {
+    let sig = match name {
+        "TERM" => libc::SIGTERM,
+        "USR1" => libc::SIGUSR1,
+        _ => return 2,
+    };
+    // SAFETY: a disposition of this process's own.
+    unsafe { libc::signal(sig, libc::SIG_IGN) };
+    let _ = writeln!(io::stdout(), "ready");
+    loop {
+        // SAFETY: blocks until a signal arrives.
+        unsafe { libc::pause() };
+    }
+}
+
 fn trap(name: &str) -> i32 {
     let sig = match name {
         "INT" => libc::SIGINT,

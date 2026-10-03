@@ -29,6 +29,15 @@ const KILL_WAIT: Duration = Duration::from_secs(10);
 const LAST_WAIT: Duration = Duration::from_secs(2);
 /// How long `stop` waits after a signal it could not send (moby daemon/stop.go).
 const UNSENT_WAIT: Duration = Duration::from_secs(2);
+
+/// A stop timeout's seconds as dockerd waits them: Go multiplies them into nanoseconds,
+/// wrapping (daemon/stop.go); a negative number waits for ever.
+fn grace_of(seconds: i64) -> Option<Duration> {
+    (seconds >= 0).then(|| {
+        let ns = seconds.wrapping_mul(1_000_000_000);
+        Duration::from_nanos(u64::try_from(ns).unwrap_or(0))
+    })
+}
 /// How many containers `stop`, `kill` and `rm` act on at once (docker/cli
 /// cli/command/container/utils.go, parallelOperation).
 const AT_ONCE: usize = 50;
@@ -624,14 +633,6 @@ impl<D: crate::containers::Disk> Daemon<D> {
             reply.err("conflicting options: cannot specify both --timeout and --time");
             return 1;
         }
-        // Go multiplies the seconds into nanoseconds, wrapping (daemon/stop.go); a negative
-        // number waits for ever.
-        let grace_of = |seconds: i64| {
-            (seconds >= 0).then(|| {
-                let ns = seconds.wrapping_mul(1_000_000_000);
-                Duration::from_nanos(u64::try_from(ns).unwrap_or(0))
-            })
-        };
         let told = (parsed.changed("timeout") || parsed.changed("time")).then(|| parsed.int("timeout"));
         let signal = parsed.string("signal");
         self.each(
@@ -645,24 +646,17 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 let cannot = |why: &str| {
                     format!("Error response from daemon: cannot stop container: {reference}: {why}")
                 };
-                // Unless told, the container's own: its stop signal (SIGTERM if it has
-                // none or one no longer valid) and its stop timeout, else 10 seconds
-                // (moby daemon/stop.go, container.StopSignal and StopTimeout).
-                let (own_signal, own_timeout) = lock(&self.containers)
-                    .get(&id)
-                    .map(|c| (c.stop_signal, c.stop_timeout))
-                    .unwrap_or_default();
-                let grace = match told.or(own_timeout) {
-                    Some(seconds) => grace_of(seconds),
-                    None => Some(STOP_GRACE),
-                };
+                // Unless told, the container's own (`own_stop`).
+                let (own_signal, own_grace) = self.own_stop(&id);
+                let grace = told.map_or(own_grace, grace_of);
                 let linux = if signal.is_empty() {
-                    own_signal.unwrap_or(15)
+                    own_signal
                 } else {
                     // A number Linux has no signal for cannot be sent.
-                    parse_signal(signal).map_err(|e| cannot(&e))?
+                    let n = parse_signal(signal).map_err(|e| cannot(&e))?;
+                    u32::try_from(n).ok().filter(|n| (1..=64).contains(n))
                 };
-                match u32::try_from(linux).ok().filter(|n| (1..=64).contains(n)) {
+                match linux {
                     Some(linux) if self.end(&id, linux, grace) => Ok(true),
                     None if self.end(&id, 9, Some(UNSENT_WAIT)) => Ok(true),
                     _ => Err(cannot(
@@ -672,6 +666,22 @@ impl<D: crate::containers::Disk> Daemon<D> {
             },
             reply,
         )
+    }
+
+    /// The stop container `id` asks for when nothing else is told, as dockerd reads it
+    /// (moby daemon/stop.go, container.StopSignal and StopTimeout): its stop signal, else
+    /// SIGTERM, `None` where Linux has no signal of its number; and how long its command
+    /// may take to end after it: its stop timeout, else 10 s, for ever if negative. Set
+    /// as the container was made, and read so: its record may not be written yet.
+    pub(super) fn own_stop(&self, id: &str) -> (Option<u32>, Option<Duration>) {
+        let (signal, timeout) = lock(&self.containers)
+            .made(id)
+            .map(|c| (c.stop_signal, c.stop_timeout))
+            .unwrap_or_default();
+        let signal = u32::try_from(signal.unwrap_or(15))
+            .ok()
+            .filter(|n| (1..=64).contains(n));
+        (signal, timeout.map_or(Some(STOP_GRACE), grace_of))
     }
 
     /// `shards kill [-s SIGNAL]`: the signal (SIGKILL) to each running container's command.

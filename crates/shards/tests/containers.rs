@@ -2828,6 +2828,58 @@ fn a_push_ends_with_its_client_and_the_daemon() {
     let_go("the uploads went on past the daemon");
 }
 
+/// A run interrupted as it pulls ends as `docker run` does, measured on Docker 29.3.1:
+/// at once, with 130 and nothing more said; its pull let go, and neither a container nor
+/// the image left.
+#[test]
+fn a_run_interrupted_as_it_pulls_ends_as_docker_runs_do() {
+    use std::sync::atomic::Ordering;
+    if cannot_run_vms() {
+        return;
+    }
+    let (index, blobs) = test_index();
+    let (port, begun, ended) = common::registry_stalling_blobs(index, blobs);
+    let image = format!("127.0.0.1:{port}/test/image:v1");
+    let home = TempDir::new("containers-run-interrupted");
+    let client = Command::new(shards())
+        .args(["run", &image, "true"])
+        .env("SHARDS_HOME", &*home)
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    eventually("the pull's blobs asked for", || begun.load(Ordering::SeqCst) >= 1);
+    let pid = libc::pid_t::try_from(client.id()).unwrap();
+    // SAFETY: kill(2) of the client this test started, not yet waited for.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+    let t0 = Instant::now();
+    let out = client.wait_with_output().unwrap();
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(130), "{stderr}");
+    assert_eq!(
+        stderr,
+        format!("Unable to find image '{image}' locally\nv1: Pulling from test/image\n"),
+        "{}",
+        std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
+    );
+    assert!(out.stdout.is_empty());
+    // Its pull let go: the registry's connections end.
+    let t0 = Instant::now();
+    while ended.load(Ordering::SeqCst) < begun.load(Ordering::SeqCst) {
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "the pull went on without its client"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(shards_in(&home, &["ps", "-aq"]).stdout, "");
+    assert_eq!(shards_in(&home, &["images", "-q"]).stdout, "");
+}
+
 /// A push goes with the credentials of the client that asks for it, as the Docker CLI
 /// sends its own with each request: not those of the client that started the daemon.
 #[test]

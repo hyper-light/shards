@@ -143,6 +143,11 @@ pub mod kind {
     /// listening socket; and back, once they are closed, so that the run's end is told
     /// only when its ports are free.
     pub const UNPUBLISH: u8 = 27;
+    /// Daemon → client: the run's container is made. Until then, a signal that would end
+    /// the client ends it, and with it the run, as one ends the Docker CLI's request until
+    /// `ContainerCreate` returns (docker/cli cmd/docker/docker.go, notifyContext); from
+    /// then on, the client passes signals on to the command.
+    pub const CREATED: u8 = 28;
 }
 
 /// An `EXEC_RUN` flag: the command reads the client's stdin (`-i`).
@@ -781,6 +786,30 @@ pub use unix::*;
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    /// A daemon is ending its runs while the process its file names lives: this one is,
+    /// one that has gone is not, and neither is a file naming no single process.
+    #[cfg(unix)]
+    #[test]
+    fn a_daemon_is_exiting_while_its_process_lives() {
+        let home = std::env::temp_dir().join(format!("shards-ipc-exiting-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(!exiting(&home), "no file");
+        let gone = std::process::Command::new("true").spawn().unwrap();
+        let gone_pid = gone.id();
+        let _ = { gone }.wait();
+        for (said, is) in [
+            (std::process::id().to_string(), true),
+            (gone_pid.to_string(), false),
+            ("0".to_string(), false),
+            ("-1".to_string(), false),
+            ("daemon".to_string(), false),
+        ] {
+            std::fs::write(home.join(STOPPING), format!("{said}\n")).unwrap();
+            assert_eq!(exiting(&home), is, "{said}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// A working set goes in parts each within a message's payload, and comes back whole,
     /// the last part alone flagged so; an empty one is one part, and a name too long for

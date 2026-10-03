@@ -103,7 +103,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             vec![named.to_string()]
         };
         // A shutdown ends it, and so does the client's going: its uploads stop at once.
-        let status = self.cancellable(asker.client, reply.0, |cancel| {
+        let (status, _) = self.cancellable(asker.client, reply.0, |cancel| {
             let mut notes = Vec::new();
             // One registry client for the repository and each repository blobs mount from:
             // its connections and the challenges it answered serve every tag.

@@ -4,7 +4,9 @@
 //! or with `-i` a pipe the client fills from its own stdin: then the command's stdin ends
 //! when the client does, as `docker run -i`'s does when its client goes (StdinOnce), and
 //! only the client reads its terminal. The client forwards the signals it gets, as
-//! `docker run` does, and exits with the command's status.
+//! `docker run` does, once its container is made; before, SIGINT and SIGTERM end it, and
+//! with it the run, as they end `docker run` as it pulls. It exits with the command's
+//! status.
 //!
 //! With `-t`, the command's stdio is a pty in the guest. With `-it` the client puts its
 //! terminal in raw mode for the run, as the Docker CLI does, and detaches, exiting 0, when
@@ -27,8 +29,8 @@ use shards_ipc::{Command, Run, SOCKET, kind, log};
 
 use crate::{NOT_RUN, terminal};
 
-/// How long a started daemon may take to listen: longer than the one it replaces may take
-/// to end its runs and exit (daemon.rs, TAKEOVER).
+/// How long a started daemon may take to listen, once the one it replaces has ended its
+/// runs (shards_ipc::exiting), which takes as long as their stop timeouts make it.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Runs `request` through the daemon of `home`, whose binary is `daemon`, detaching on
@@ -125,16 +127,31 @@ fn serve(home: &Path, daemon: &Path, request: &Attached, detach_keys: &[u8]) -> 
         if let Err(e) = shards_ipc::send(&conn, request.kind, &request.payload, &stdio) {
             return failed(&format!("asking the daemon: {e}"));
         }
-        match conn.try_clone() {
-            Ok(signals) => *current.lock().unwrap_or_else(PoisonError::into_inner) = Some(signals),
-            Err(e) => return failed(&format!("the daemon's connection: {e}")),
-        }
-        // The size as the command starts, in case it changed since the request.
-        if resizes {
-            resize(&conn);
+        // Signals go to the command, and its terminal follows ours, once it is there: a
+        // run's once the daemon has made its container, an exec's at once.
+        let attach = || -> Result<(), String> {
+            let signals = conn
+                .try_clone()
+                .map_err(|e| format!("the daemon's connection: {e}"))?;
+            *current.lock().unwrap_or_else(PoisonError::into_inner) = Some(signals);
+            // The size as the command starts, in case it changed since the request.
+            if resizes {
+                resize(&conn);
+            }
+            Ok(())
+        };
+        if request.kind != kind::START
+            && let Err(e) = attach()
+        {
+            return failed(&e);
         }
         loop {
             match shards_ipc::recv(&conn) {
+                Ok(Some(m)) if m.kind == kind::CREATED => {
+                    if let Err(e) = attach() {
+                        return failed(&e);
+                    }
+                }
                 Ok(Some(m)) if m.kind == kind::EXIT => {
                     let Some((&status, timing)) = m.payload.split_first() else {
                         return failed("the command's microVM sent no status");
@@ -310,8 +327,11 @@ fn connect(home: &Path, daemon: &Path, started: &mut bool) -> Result<UnixStream,
         start(daemon, home)?;
         *started = true;
     }
-    let deadline = Instant::now() + START_TIMEOUT;
+    let mut deadline = Instant::now() + START_TIMEOUT;
     loop {
+        if shards_ipc::exiting(home) {
+            deadline = Instant::now() + START_TIMEOUT;
+        }
         match UnixStream::connect(SOCKET) {
             Ok(conn) => return Ok(conn),
             Err(e) if Instant::now() >= deadline => {
@@ -419,8 +439,11 @@ fn resize(conn: &UnixStream) {
 /// even those this process was started ignoring, as the Docker CLI does
 /// (shards_ipc::take_forwarded). They are blocked in the calling thread, which every
 /// thread started later inherits, so only the forwarder's `sigwait` receives them. One that
-/// would end the client, arriving with no connection to send it on, ends the client as it
-/// would have, unless it was ignored, with the terminal restored first. With
+/// would end the client, arriving with no connection to send it on, ends the client,
+/// unless it was ignored, with the terminal restored first: SIGINT and SIGTERM as they
+/// end the Docker CLI before its container is made, with 128 and their number and
+/// nothing said (docker/cli cmd/docker/docker.go, notifyContext); SIGHUP and SIGQUIT as
+/// they would have. With
 /// `reads_terminal`, the terminal's job control applies to the client
 /// (shards_ipc::forwarded). With `resizes`, SIGWINCH first resizes the command's terminal,
 /// then goes to the command too, as both reach a Docker container's (docker/cli tty.go,
@@ -487,6 +510,9 @@ fn forward_signals(
                 let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
                 if !sent && ends && !ignored.contains(&sig) {
                     terminal::restore();
+                    if sig == libc::SIGINT || sig == libc::SIGTERM {
+                        std::process::exit(128 + sig);
+                    }
                     // SAFETY: the default action of a terminating signal, on this process.
                     unsafe {
                         libc::signal(sig, libc::SIG_DFL);

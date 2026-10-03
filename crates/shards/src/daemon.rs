@@ -83,8 +83,9 @@ const HANDOFF_TRIES: usize = 3;
 /// How long a warm VM may take to say it has taken a run: it does so right after it
 /// receives one.
 const TAKE_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long a daemon waits for the lock of one that is exiting: one ending its runs takes
-/// up to STOP_GRACE + SHUTDOWN_KILL, then its VMs end.
+/// How long a daemon waits for the lock of one that neither listens nor ends its runs
+/// (shards_ipc::exiting): one started at the same moment, which listens as soon as it
+/// has the lock. One ending its runs is waited for as long as it takes.
 const TAKEOVER: Duration = Duration::from_secs(20);
 /// How long `shards daemon stop` lets a command end after its SIGTERM, before SIGKILL:
 /// dockerd's default stop timeout (moby daemon/config/config_linux.go), which it gives
@@ -404,11 +405,25 @@ fn pool_of<'s>(state: &'s mut State, dir: &Path, rootfs: &Path) -> &'s mut Pool 
     pool
 }
 
-fn tracked(runs: &HashMap<String, RunState>) -> impl Iterator<Item = &Tracked> {
-    runs.values().filter_map(|r| match r {
-        RunState::Tracked(t) => Some(t),
-        _ => None,
-    })
+/// A run's stop as the daemon stops, once begun ([`Daemon::stop_each`]): SIGKILL at
+/// `kill`, if ever, then its VM's end SHUTDOWN_KILL later.
+struct Stop {
+    socket: Arc<RunSocket>,
+    vm: Arc<shards_ipc::Child>,
+    kill: Option<Instant>,
+    killed: bool,
+}
+
+impl Stop {
+    /// When its next step is due, if it has one.
+    fn next(&self) -> Option<Instant> {
+        let kill = self.kill?;
+        if self.killed {
+            kill.checked_add(SHUTDOWN_KILL)
+        } else {
+            Some(kill)
+        }
+    }
 }
 
 /// Why a template's pool gave no warm VM.
@@ -701,6 +716,7 @@ fn serve() -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", pid_file.display()))?;
     // Its daemon is gone, since this one holds the lock.
     let _ = std::fs::remove_file(socket);
+    let _ = std::fs::remove_file(home.join(shards_ipc::STOPPING));
     let listener = UnixListener::bind(socket).map_err(|e| format!("{}: {e}", home.join(socket).display()))?;
     listener
         .set_nonblocking(true)
@@ -735,6 +751,51 @@ fn descriptor_free(any: &impl AsRawFd) -> bool {
     true
 }
 
+/// Whether `conn`'s peer goes before `ended`'s does: its end read before anything it
+/// sends. Nothing is taken from `conn`: it is peeked at.
+fn hung_up(conn: &UnixStream, ended: &UnixStream) -> bool {
+    let mut polled = [conn.as_raw_fd(), ended.as_raw_fd()].map(|fd| libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    });
+    loop {
+        // SAFETY: poll(2) on two pollfds of descriptors this thread holds open.
+        if unsafe { libc::poll(polled.as_mut_ptr(), 2, -1) } < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return false;
+        }
+        let [client, own] = polled;
+        if own.revents != 0 {
+            return false;
+        }
+        if client.revents == 0 {
+            continue;
+        }
+        let mut byte = 0u8;
+        // SAFETY: recv(2) of at most one byte into a local, with MSG_PEEK: the byte stays
+        // for whoever reads the connection.
+        let peeked = unsafe {
+            libc::recv(
+                conn.as_raw_fd(),
+                (&raw mut byte).cast(),
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
+        match peeked {
+            0 => return true,
+            1.. => return false,
+            _ => match io::Error::last_os_error().kind() {
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => {}
+                _ => return true,
+            },
+        }
+    }
+}
+
 /// Whether `socket` has something to read now: a message, or its end.
 fn readable(socket: &UnixStream) -> bool {
     readable_fd(socket.as_raw_fd())
@@ -763,7 +824,7 @@ fn take_lock(home: &Path, socket: &Path) -> Result<Option<File>, String> {
         .mode(0o600)
         .open(&path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    let deadline = Instant::now() + TAKEOVER;
+    let mut deadline = Instant::now() + TAKEOVER;
     loop {
         // SAFETY: flock(2) on a descriptor we own.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
@@ -773,7 +834,12 @@ fn take_lock(home: &Path, socket: &Path) -> Result<Option<File>, String> {
         if e.kind() != io::ErrorKind::WouldBlock {
             return Err(format!("{}: {e}", path.display()));
         }
-        if UnixStream::connect(socket).is_ok() || Instant::now() >= deadline {
+        if UnixStream::connect(socket).is_ok() {
+            return Ok(None);
+        }
+        if shards_ipc::exiting(home) {
+            deadline = Instant::now() + TAKEOVER;
+        } else if Instant::now() >= deadline {
             return Ok(None);
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -1022,34 +1088,39 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Runs `work` with a cancel that a shutdown sets (`end_clients`), and that the
-    /// client's going sets: after its command the client sends nothing, so its connection
-    /// reading to its end means it went. The watch ends with the work, which shuts reading
-    /// down.
-    fn cancellable<T>(&self, client: u64, conn: &UnixStream, work: impl FnOnce(&Cancel) -> T) -> T {
+    /// client's going sets: its connection ending while `work` runs. Nothing the client
+    /// sends meanwhile is read here: it stays for what reads the connection next. Says
+    /// too whether the client went.
+    fn cancellable<T>(&self, client: u64, conn: &UnixStream, work: impl FnOnce(&Cancel) -> T) -> (T, bool) {
         let cancel = Cancel::new();
         lock(&self.preparing).insert(client, cancel.clone());
         if self.stopping.load(Ordering::SeqCst) {
             cancel.cancel();
         }
-        let watch = conn.try_clone().ok().and_then(|watched| {
+        // The watch ends once `done` goes: its peer then reads its end.
+        let watch = (|| -> io::Result<_> {
+            let (done, ended) = UnixStream::pair()?;
+            let watched = conn.try_clone()?;
             let cancel = cancel.clone();
-            std::thread::Builder::new()
-                .name("hangup".into())
-                .spawn(move || {
-                    let mut byte = [0u8; 1];
-                    if matches!(std::io::Read::read(&mut &watched, &mut byte), Ok(0) | Err(_)) {
-                        cancel.cancel();
-                    }
-                })
-                .ok()
-        });
+            let thread = std::thread::Builder::new().name("hangup".into()).spawn(move || {
+                let gone = hung_up(&watched, &ended);
+                if gone {
+                    cancel.cancel();
+                }
+                gone
+            })?;
+            Ok((done, thread))
+        })();
+        let watch = watch
+            .map_err(|e| log(format!("watching a client for its end: {e}")))
+            .ok();
         let out = work(&cancel);
         lock(&self.preparing).remove(&client);
-        let _ = conn.shutdown(std::net::Shutdown::Read);
-        if let Some(watch) = watch {
-            let _ = watch.join();
-        }
-        out
+        let gone = watch.is_some_and(|(done, thread)| {
+            drop(done);
+            thread.join().unwrap_or(false)
+        });
+        (out, gone)
     }
 
     /// Ends the VMs still waiting, lets go of the home, and exits. `shards daemon stop`
@@ -1058,6 +1129,7 @@ impl<D: Disk> Daemon<D> {
     /// process's descriptors from the highest down, kern_descrip.c fdt_invalidate).
     fn exit(&self) -> ! {
         let _ = std::fs::remove_file(self.home.join("daemon.pid"));
+        let _ = std::fs::remove_file(self.home.join(shards_ipc::STOPPING));
         let state = lock(&self.state);
         let waiting = state.pools.values().flat_map(|p| p.ready.iter().map(|r| &r.vm));
         for vm in waiting.chain(state.starting.values()) {
@@ -1198,19 +1270,26 @@ impl<D: Disk> Daemon<D> {
             run.hostname = Some(id.get(..12).unwrap_or(&id).to_string());
         }
         // The next run's spare is made once this one is answered, off its path. What it
-        // downloads, a shutdown cancels: registered, then checked, so a shutdown either
-        // finds it or came before (`end_clients`).
-        let cancel = Cancel::new();
-        lock(&self.preparing).insert(number, cancel.clone());
-        if self.stopping.load(Ordering::SeqCst) {
-            cancel.cancel();
+        // downloads, a shutdown cancels, and its client's going. A client that went gets no
+        // container, as a Docker CLI interrupted as it pulls gets none, and hears nothing
+        // more: its stderr, which this daemon holds, may be a terminal it gave back.
+        let (prepared, gone) = self.cancellable(number, conn, |cancel| {
+            let heard = |line: &str| {
+                if !cancel.is_cancelled() {
+                    say(line);
+                }
+            };
+            crate::run::prepare(&run, &self.home, &heard, cancel)
+        });
+        if gone {
+            self.discard(&id);
+            self.make_spare();
+            return None;
         }
-        let prepared = crate::run::prepare(&run, &self.home, &say, &cancel);
-        lock(&self.preparing).remove(&number);
         let mut prepared = match prepared {
             Ok(prepared) => prepared,
             Err(e) => {
-                refuse(if cancel.is_cancelled() {
+                refuse(if self.stopping.load(Ordering::SeqCst) {
                     "the daemon is shutting down"
                 } else {
                     &e
@@ -1255,6 +1334,8 @@ impl<D: Disk> Daemon<D> {
                 return None;
             }
         };
+        // From here, its client passes signals on to the command.
+        let _ = shards_ipc::send(conn, kind::CREATED, &[], &[]);
         if let Some(e) = unbound {
             start = network::Start::Fails(format!(
                 "failed to set up container networking: driver failed programming external connectivity on endpoint {name} ({id}): {e}"
@@ -1860,8 +1941,7 @@ impl<D: Disk> Daemon<D> {
 
     /// Registers the run of container `id`, just handed to `ready`'s VM: from here it
     /// runs, as commands see it. A run handed over while the daemon stops is stopped too:
-    /// `stop_runs` signals the runs it finds, under the same lock, and this one if it came
-    /// too late to be found. Returns the run's inbox, for [`follow`](Self::follow).
+    /// its registration wakes the stop thread (`stop_each`), which finds it. Returns the run's inbox, for [`follow`](Self::follow).
     fn register(&self, ready: Ready, id: &str, keep: Keep<'_>) -> Arc<Mutex<Inbox>> {
         let Keep {
             detached,
@@ -1902,15 +1982,8 @@ impl<D: Disk> Daemon<D> {
             vm: ready.vm,
             inbox: inbox.clone(),
         };
-        // Seen under the runs' lock, `ending` signals what stop_runs did not see; sent once
-        // it is let go of, as no send waits under it.
-        let mut runs = lock(&self.runs);
-        let ending = self.ending.load(Ordering::SeqCst).then(|| tracked.socket.clone());
-        runs.insert(id.to_string(), RunState::Tracked(tracked));
-        drop(runs);
-        if let Some(socket) = ending {
-            let _ = socket.send(kind::SIGNAL, &15u32.to_be_bytes(), &[]);
-        }
+        // As the daemon stops, the stop thread, which this wakes, stops it.
+        lock(&self.runs).insert(id.to_string(), RunState::Tracked(tracked));
         self.resolved.notify_all();
         inbox
     }
@@ -2211,6 +2284,12 @@ impl<D: Disk> Daemon<D> {
     /// have ended, as dockerd shuts down (`shards daemon stop`, or a client of another
     /// build, whose own daemon then takes the home).
     fn step_aside<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
+        // Before its socket goes: whoever then finds no daemon listening waits for this
+        // one while it ends its runs, however long their stop timeouts.
+        let stopping = self.home.join(shards_ipc::STOPPING);
+        if let Err(e) = std::fs::write(&stopping, format!("{}\n", std::process::id())) {
+            log(format!("{}: {e}", stopping.display()));
+        }
         self.close();
         self.stopping.store(true, Ordering::SeqCst);
         self.stop_runs(threads);
@@ -2221,62 +2300,106 @@ impl<D: Disk> Daemon<D> {
         self.changed.notify_all();
     }
 
-    /// Ends the runs in progress as dockerd ends its containers when it shuts down: SIGTERM
-    /// to each command, SIGKILL to any still running after STOP_GRACE, and the VM itself
-    /// if its command outlives even that (moby daemon/daemon.go Shutdown, daemon/stop.go).
+    /// Ends the runs in progress as dockerd ends its containers when it shuts down (moby
+    /// daemon/daemon.go Shutdown and shutdownContainer, daemon/stop.go containerStop): each
+    /// command gets its container's stop signal, SIGKILL once its stop timeout is up,
+    /// unless that is negative, and its VM goes too if the command outlives even that by
+    /// SHUTDOWN_KILL. A run handed to a VM as the daemon stops is stopped as it registers.
     fn stop_runs<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
-        // The runs' sockets, taken under their lock, signalled once it is let go of.
-        let sockets = |runs: &HashMap<String, RunState>| -> Vec<Arc<RunSocket>> {
-            tracked(runs).map(|t| t.socket.clone()).collect()
-        };
-        let signal = |sockets: Vec<Arc<RunSocket>>, linux: u32| {
-            for socket in sockets {
-                let _ = socket.send(kind::SIGNAL, &linux.to_be_bytes(), &[]);
-            }
-        };
-        let running = {
-            // Under the runs' lock: a run still starting is either here to be signalled,
-            // or sees `ending` when it commits or registers (audit A06).
-            let runs = lock(&self.runs);
+        {
+            // Under the runs' lock: a run still starting is either one the stop thread
+            // sees, or sees `ending` when it commits (audit A06).
+            let _runs = lock(&self.runs);
             if self.ending.swap(true, Ordering::SeqCst) {
                 return;
             }
-            sockets(&runs)
-        };
-        signal(running, 15);
-        let stopped = Instant::now();
-        let escalating = std::thread::Builder::new()
+        }
+        let stopping = std::thread::Builder::new()
             .name("stop".into())
-            .spawn_scoped(threads, move || {
-                // The runs left at `deadline`, if any are: the thread ends as soon as there
-                // are none to escalate against.
-                let left_at = |deadline: Instant| {
-                    let mut runs = lock(&self.runs);
-                    while !runs.is_empty() {
-                        let wait = deadline.checked_duration_since(Instant::now())?;
-                        runs = self
-                            .resolved
-                            .wait_timeout(runs, wait)
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .0;
-                    }
-                    None
-                };
-                let Some(runs) = left_at(stopped + STOP_GRACE) else {
-                    return;
-                };
-                let running = sockets(&runs);
-                drop(runs);
-                signal(running, 9);
-                let Some(runs) = left_at(stopped + STOP_GRACE + SHUTDOWN_KILL) else {
-                    return;
-                };
-                for t in tracked(&runs) {
-                    let _ = t.vm.kill(libc::SIGKILL);
-                }
-            });
-        if let Err(e) = escalating {
+            .spawn_scoped(threads, move || self.stop_each());
+        if let Err(e) = stopping {
             log(format!("the stop thread: {e}"));
+            self.stop_each();
+        }
+    }
+
+    /// The stop thread's work ([`stop_runs`](Self::stop_runs)): each run, once seen, gets
+    /// its stop signal, then the rest as their times come, until no run is left that may
+    /// still start.
+    fn stop_each(&self) {
+        let mut stops: HashMap<String, Stop> = HashMap::new();
+        loop {
+            // What is new, and what is due, seen under the runs' lock; done once it is let
+            // go of, as no send waits under it.
+            let (new, due) = {
+                let mut runs = lock(&self.runs);
+                loop {
+                    stops.retain(|id, _| matches!(runs.get(id), Some(RunState::Tracked(_))));
+                    let new: Vec<_> = runs
+                        .iter()
+                        .filter_map(|(id, run)| match run {
+                            RunState::Tracked(t) if !stops.contains_key(id) => {
+                                Some((id.clone(), t.socket.clone(), t.vm.clone()))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    let now = Instant::now();
+                    let due: Vec<String> = stops
+                        .iter()
+                        .filter(|(_, stop)| stop.next().is_some_and(|at| at <= now))
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    if !new.is_empty() || !due.is_empty() {
+                        break (new, due);
+                    }
+                    if runs.values().all(|run| matches!(run, RunState::Pending { .. })) {
+                        return;
+                    }
+                    runs = match stops.values().filter_map(Stop::next).min() {
+                        Some(at) => {
+                            self.resolved
+                                .wait_timeout(runs, at.saturating_duration_since(now))
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .0
+                        }
+                        None => self.resolved.wait(runs).unwrap_or_else(PoisonError::into_inner),
+                    };
+                }
+            };
+            for (id, socket, vm) in new {
+                let (signal, grace) = self.own_stop(&id);
+                let now = Instant::now();
+                let kill = match signal {
+                    Some(signal) => {
+                        let _ = socket.send(kind::SIGNAL, &signal.to_be_bytes(), &[]);
+                        grace.and_then(|grace| now.checked_add(grace))
+                    }
+                    // A signal Linux has no number for cannot be sent: SIGKILL at once.
+                    None => Some(now),
+                };
+                stops.insert(
+                    id,
+                    Stop {
+                        socket,
+                        vm,
+                        kill,
+                        killed: false,
+                    },
+                );
+            }
+            for id in due {
+                let Some(stop) = stops.get_mut(&id) else {
+                    continue;
+                };
+                if stop.killed {
+                    let _ = stop.vm.kill(libc::SIGKILL);
+                    stop.kill = None;
+                } else {
+                    let _ = stop.socket.send(kind::SIGNAL, &9u32.to_be_bytes(), &[]);
+                    stop.killed = true;
+                }
+            }
         }
     }
 
@@ -3025,6 +3148,27 @@ mod tests {
 
     use super::*;
 
+    /// A client's end is seen; what it sent first is not taken, and is no end; and the
+    /// watch ends when told to, though the client stays.
+    #[test]
+    fn a_clients_end_is_seen_and_nothing_it_sent_is_taken() {
+        use std::io::Read as _;
+        let (_done, ended) = UnixStream::pair().unwrap();
+        let (conn, client) = UnixStream::pair().unwrap();
+        drop(client);
+        assert!(hung_up(&conn, &ended));
+        let (conn, mut client) = UnixStream::pair().unwrap();
+        client.write_all(b"x").unwrap();
+        assert!(!hung_up(&conn, &ended));
+        let mut byte = [0u8; 1];
+        (&conn).read_exact(&mut byte).unwrap();
+        assert_eq!(&byte, b"x");
+        let (conn, _client) = UnixStream::pair().unwrap();
+        let (done, ended) = UnixStream::pair().unwrap();
+        drop(done);
+        assert!(!hung_up(&conn, &ended));
+    }
+
     /// A client's connection handed over while collections of in-flight descriptors run
     /// still carries the client's bytes: the daemon's copy keeps it reachable until the
     /// warm VM has it. Without that copy, macOS flushes it (shards_ipc; M24).
@@ -3289,6 +3433,11 @@ mod tests {
         /// Reserves container `name` as a client's run does, its record being written; its
         /// ID.
         fn reserve(&self, name: &str) -> String {
+            self.reserve_with(name, None)
+        }
+
+        /// [`reserve`](Self::reserve), with the container's own stop signal.
+        fn reserve_with(&self, name: &str, stop_signal: Option<&str>) -> String {
             let (id, _log) = self.t.daemon.new_container().unwrap();
             let run = Run {
                 image: "test".into(),
@@ -3304,7 +3453,7 @@ mod tests {
                 },
                 interactive: false,
                 lease: None,
-                stop_signal: None,
+                stop_signal: stop_signal.map(String::from),
                 options: crate::spec::Options::default(),
                 health: None,
                 shell: Vec::new(),
@@ -4439,6 +4588,33 @@ mod tests {
             let record = t.record(&id).unwrap();
             assert_eq!((record.state, record.exit_code), (Life::Exited, Some(3)));
             assert_eq!(t.ask(&["wait", "racer"]), (0, "3\n".into(), String::new()));
+        });
+    }
+
+    /// As the daemon stops, a run hears its container's own stop signal, though the
+    /// container's record is not written yet: what it was made with is read where it is.
+    #[test]
+    fn a_stop_signals_a_run_its_own_way_before_its_record_is_written() {
+        let t = Test::on("stop-arriving", Held::default());
+        t.run(|t| {
+            let held = &t.daemon.disk;
+            held.holding_writes.store(true, Ordering::SeqCst);
+            let id = t.reserve_with("racer", Some("USR1"));
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            t.until("the record's write is held", |d| {
+                d.disk.writing.load(Ordering::SeqCst)
+            });
+            t.t.daemon.stop_runs(t.threads);
+            // Linux numbers SIGUSR1 10.
+            assert_eq!(heard(&vm), signal(10));
+            held.let_through();
+            say(&vm, kind::DONE, &[128 + 10]);
+            joined(starting.run).unwrap();
         });
     }
 

@@ -710,6 +710,26 @@ pub fn registry(manifest: Vec<u8>, blobs: Vec<Vec<u8>>) -> (u16, Arc<AtomicUsize
 /// [`registry`], serving what `image` holds whenever it is asked: a test may replace it,
 /// and the tag names another image.
 pub fn registry_of(image: Served) -> (u16, Arc<AtomicUsize>, Served) {
+    registry_serving(image, None)
+}
+
+/// [`registry`], never answering a blob's GET: what a pull waits on. Counts the blob
+/// GETs begun, and those whose connection then ended.
+pub fn registry_stalling_blobs(
+    manifest: Vec<u8>,
+    blobs: Vec<Vec<u8>>,
+) -> (u16, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let stalls = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let image = Arc::new(std::sync::Mutex::new((manifest, blobs)));
+    let (port, _, _) = registry_serving(image, Some(stalls.clone()));
+    (port, stalls.0, stalls.1)
+}
+
+/// [`registry_of`], holding each blob's GET unanswered, counted, with `stalls`.
+fn registry_serving(
+    image: Served,
+    stalls: Option<(Arc<AtomicUsize>, Arc<AtomicUsize>)>,
+) -> (u16, Arc<AtomicUsize>, Served) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let served = Arc::new(AtomicUsize::new(0));
@@ -718,7 +738,7 @@ pub fn registry_of(image: Served) -> (u16, Arc<AtomicUsize>, Served) {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { return };
-            let (image, count) = (serving.clone(), count.clone());
+            let (image, count, stalls) = (serving.clone(), count.clone(), stalls.clone());
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut out = stream;
@@ -735,6 +755,16 @@ pub fn registry_of(image: Served) -> (u16, Arc<AtomicUsize>, Served) {
                     let (manifest, blobs) = image.lock().unwrap().clone();
                     let mut parts = line.split(' ');
                     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                    if let Some((begun, ended)) = &stalls
+                        && path.starts_with("/v2/test/image/blobs/")
+                    {
+                        begun.fetch_add(1, Ordering::SeqCst);
+                        // Never answered: held until the client lets it go.
+                        let mut byte = [0u8; 1];
+                        while matches!(reader.read(&mut byte), Ok(1)) {}
+                        ended.fetch_add(1, Ordering::SeqCst);
+                        return;
+                    }
                     // A document's own media type: an index's, or a manifest's, OCI's or
                     // Docker's v2.
                     let has = |doc: &[u8], what: &[u8]| doc.windows(what.len()).any(|w| w == what);

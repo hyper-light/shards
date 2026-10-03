@@ -315,6 +315,12 @@ impl Registry {
         self.by_id.get(id)
     }
 
+    /// The container with `id`, its record written yet or not: what was set as it was
+    /// made, which a run may need before its record is written.
+    pub fn made(&self, id: &str) -> Option<&Container> {
+        self.by_id.get(id).or_else(|| self.arriving.get(id))
+    }
+
     pub fn all(&self) -> impl Iterator<Item = &Container> {
         self.by_id.values()
     }

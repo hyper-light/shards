@@ -289,6 +289,114 @@ fn stop_ends_runs_and_waiting_vms() {
     });
 }
 
+/// `daemon stop` stops each run as dockerd stops each container as it shuts down: with
+/// its own stop signal, and SIGKILL once its own stop timeout is up.
+#[test]
+fn a_stop_gives_each_run_its_own_signal_and_time() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home("daemon-stop-own", &image);
+    let started = |args: &[&str]| {
+        let mut run = spawn_run(&home, args);
+        let mut line = String::new();
+        BufReader::new(run.stdout.as_mut().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert_eq!(line, "ready\n");
+        run
+    };
+    let mut caught = started(&["--pull", "never", "--stop-signal", "USR1", &image, "trap", "USR1"]);
+    let mut ignoring = started(&[
+        "--pull",
+        "never",
+        "--stop-signal",
+        "USR1",
+        "--stop-timeout",
+        "1",
+        &image,
+        "ignore",
+        "USR1",
+    ]);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let t0 = Instant::now();
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let took = t0.elapsed();
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+    assert_eq!(
+        wait(&mut caught),
+        Some(0),
+        "its own signal, caught: {}",
+        std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
+    );
+    let mut said = String::new();
+    std::io::Read::read_to_string(caught.stdout.as_mut().unwrap(), &mut said).unwrap();
+    // Linux numbers SIGUSR1 10.
+    assert_eq!(said, "got 10\n");
+    assert_eq!(
+        wait(&mut ignoring),
+        Some(128 + 9),
+        "killed once its own time was up: {}",
+        std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
+    );
+    assert!(
+        took >= Duration::from_secs(1) && took < Duration::from_secs(5),
+        "{took:?}"
+    );
+}
+
+/// A daemon ending its runs is waited for as long as their stop timeouts make it: a run
+/// asked for meanwhile is served by the next daemon once it is gone.
+#[test]
+fn a_daemon_ending_its_runs_is_waited_for() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home("daemon-stop-waited", &image);
+    // It takes 35 s to end: past the 20 s a daemon waits for another's lock otherwise,
+    // and the 30 s a client waits for a daemon it started.
+    let mut slow = spawn_run(
+        &home,
+        &[
+            "--pull",
+            "never",
+            "--stop-timeout",
+            "35",
+            &image,
+            "ignore",
+            "TERM",
+        ],
+    );
+    let mut line = String::new();
+    BufReader::new(slow.stdout.as_mut().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line, "ready\n");
+    let before = daemon_pid(&home).expect("a daemon pid");
+    let mut stopping = Command::new(shards())
+        .args(["daemon", "stop"])
+        .env("SHARDS_HOME", &*home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    eventually("the daemon did not begin to stop", || {
+        home.join("daemon.stopping").exists()
+    });
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let t0 = Instant::now();
+    let next = run_shards_env(&["run"], &["--pull", "never", &image, "exit", "0"], &env, TIMEOUT);
+    assert_eq!(next.status, Some(0), "{}", next.stderr);
+    assert!(t0.elapsed() >= Duration::from_secs(30), "{:?}", t0.elapsed());
+    assert_eq!(wait(&mut slow), Some(128 + 9));
+    assert_eq!(wait(&mut stopping), Some(0));
+    assert!(!alive(before), "the old daemon still lives");
+    assert_ne!(daemon_pid(&home), Some(before));
+}
+
 /// A daemon that dies leaves no VM waiting for a run it will never send.
 #[test]
 fn a_dead_daemons_waiting_vms_end() {
