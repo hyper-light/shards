@@ -189,7 +189,7 @@ pub fn fetch(
         None => Failure::CacheKey(e),
     };
     let (target, authorization) = userinfo(url).map_err(fail)?;
-    let parsed = Url::parse(&target).map_err(|e| fail(e.to_string()))?;
+    let parsed = Url::parse(&as_go_sends(&target)).map_err(|e| fail(e.to_string()))?;
     // Credentials from the userinfo go with the first request alone (net/http
     // Client.send), so never to where it redirects.
     let first = Cell::new(true);
@@ -457,6 +457,16 @@ fn userinfo(url: &str) -> Result<(String, Option<String>), String> {
     };
     let basic = shards_registry::auth::basic(&decode(user)?, &decode(password)?);
     Ok((format!("{scheme}://{host}{tail}"), Some(basic)))
+}
+
+/// `url` as Go's net/url writes it back (URL.String()), and so as its client asks for
+/// it: what Go takes in a path and RFC 3986 does not (a space, `|`, `{`) escaped, so that
+/// the strict parser takes it too.
+fn as_go_sends(url: &str) -> String {
+    match shards_dockerfile::url::parse(url.as_bytes()) {
+        Ok(u) => String::from_utf8_lossy(&u.string()).into_owned(),
+        Err(_) => url.to_string(),
+    }
 }
 
 /// `url` for an error, its password, if any, as Go's client shows one: `***`.
@@ -758,6 +768,20 @@ fn days_in(month: u32, year: i64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A URL is asked for as Go asks for it, what it escapes in a path escaped (measured,
+    /// go1.27.1: url.Parse(s).String()), and the strict parser takes that.
+    #[test]
+    fn urls_are_asked_for_as_go_asks_for_them() {
+        for (url, go) in [
+            ("http://h/a b|c{d}^`", "http://h/a%20b%7Cc%7Bd%7D%5E%60"),
+            ("http://h/caf\u{e9}", "http://h/caf%C3%A9"),
+            ("http://h:8080/x%20y/z?q=1", "http://h:8080/x%20y/z?q=1"),
+        ] {
+            assert_eq!(as_go_sends(url), go);
+            assert!(Url::parse(go).is_ok(), "{go}");
+        }
+    }
 
     /// What Go's http.ParseTime makes of each date, as BuildKit v0.28 gave it to a file
     /// in Docker Desktop (the mtimes measured, the second unchanged by the fraction).
