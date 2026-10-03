@@ -3063,3 +3063,23 @@ revision before comparing a changed API/implementation.
   about 7.5 MB. So the daemon's threads bind first: at two a run, macOS's 16,384 a
   process (`kern.num_taskthreads`) stop runs near 8,000, about 60 GB of VMs, on a host of
   128 GB. Following runs needs no thread of its own per run.
+
+### M90. What a daemon and its runs cost while they idle, once it waits on events
+
+- **Question.** With the daemon waiting on events (4a1bbce: one loop follows every run,
+  one scheduler checks health, the listener sleeps until something happens), what does an
+  idle running container still cost it, and what binds first now?
+- **Method.** M89's harness and arguments, `daemon-idle/run.py BIN alpine:3.22 0,10,100
+  30 DIR`, with 4a1bbce's signed binaries, 2026-10-03, the host of M84 (128 GiB), load
+  average 6 to 7 from other work.
+- **Result.** 0 containers: daemon 0.000 s of CPU, 2 threads (the listener and the
+  completer of `--rm` removals), 8.0 MiB. 10: 0.000 s, 17 threads, 19.9 MiB; VMs (12
+  processes, 2 of them warm) 262 MiB. 100: 0.000 s, 107 threads, 22.2 MiB; VMs (102)
+  1,983 MiB. `ps` counts CPU in hundredths of a second: under 10 ms in 30 s at 100, where
+  M89 saw 120 ms. No idle wakeups of the daemon in either window, where M89 saw 59.
+- **Consequence.** An idle running container costs the daemon no CPU `ps` can see, 0.14
+  MiB, and one thread: its VM's watcher, which waits for the VM process to end
+  (`waitpid`). At one a VM, macOS's 16,384 threads a process stop VMs near 16,000, about
+  120 GB of them at 7.5 MB each (M89): threads and a 128 GB host's memory now bind at
+  about the same number, and a larger host's memory later. Waiting for every VM's end at
+  once (kqueue `EVFILT_PROC`, Linux's pidfd) needs no thread per VM.
