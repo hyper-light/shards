@@ -336,7 +336,48 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         };
         let mut asked = Vec::with_capacity(args.len());
         for given in args {
-            let image = match super::images::resolve(&images, given) {
+            let resolved = super::images::resolve(&images, given);
+            let parsed = AnyReference::parse(given);
+            // dockerd's ExportImage: a name that is no start of the ID it found, nor holds
+            // a digest, and names a repository alone, is every tag of the repository,
+            // each saved by its name, in name order.
+            let by_id = resolved.as_ref().is_ok_and(|i| {
+                let algorithm = format!("{}:", i.id.algorithm().name());
+                i.id.hex()
+                    .starts_with(given.strip_prefix(&algorithm).unwrap_or(given))
+            });
+            let digested = matches!(&parsed, Ok(AnyReference::Named(r)) if r.digest.is_some())
+                || matches!(&parsed, Ok(AnyReference::Digest(_)));
+            if !by_id
+                && !digested
+                && let Ok(AnyReference::Named(repo)) = &parsed
+                && repo.tag.is_none()
+            {
+                let mut tagged: Vec<(String, &shards_image::store::Image)> = images
+                    .iter()
+                    .flat_map(|i| i.references.iter().map(move |r| (r, i)))
+                    .filter(|(r, _)| {
+                        shards_image::reference::Reference::parse_normalized(r)
+                            .is_ok_and(|r| r.name() == repo.name() && r.tag.is_some() && r.digest.is_none())
+                    })
+                    .map(|(r, i)| (r.clone(), i))
+                    .collect();
+                tagged.sort_by(|a, b| a.0.cmp(&b.0));
+                if tagged.is_empty() {
+                    return refuse(&format!(
+                        "Error response from daemon: No such image: {}:latest",
+                        repo.familiar()
+                    ));
+                }
+                for (name, image) in tagged {
+                    asked.push(shards_image::save::Asked {
+                        image,
+                        name: Some(name),
+                    });
+                }
+                continue;
+            }
+            let image = match resolved {
                 Ok(image) => image,
                 Err(e) => return refuse(&format!("Error response from daemon: {e}")),
             };

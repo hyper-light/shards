@@ -2191,6 +2191,39 @@ fn save_writes_images_as_docker_save_does() {
         file("manifest.json")
     );
     std::fs::remove_file(&by_id).unwrap();
+    // A repository named alone is every tag of it, each by its name: one manifest for
+    // one image, both tags on it, and an index entry for each name (measured, dockerd
+    // 29.3.1); a repository with none is refused for its latest.
+    for tag in ["savetest:b", "savetest:a"] {
+        assert_eq!(shards(&["tag", &image, tag]).status, Some(0));
+    }
+    let repo_tar = out.join("repo.tar");
+    let saved = shards(&["save", "-o", repo_tar.to_str().unwrap(), "savetest"]);
+    assert_eq!(saved.status, Some(0), "{saved}");
+    let records = ustar(&std::fs::read(&repo_tar).unwrap());
+    let file = |n: &str| {
+        String::from_utf8(records.iter().find(|(name, _, _)| name == n).unwrap().2.clone()).unwrap()
+    };
+    assert!(
+        file("manifest.json").contains(r#""RepoTags":["savetest:a","savetest:b"]"#),
+        "{}",
+        file("manifest.json")
+    );
+    let index = file("index.json");
+    let a = index.find(r#""io.containerd.image.name":"docker.io/library/savetest:a""#);
+    let b = index.find(r#""io.containerd.image.name":"docker.io/library/savetest:b""#);
+    assert!(a.is_some() && b.is_some() && a < b, "{index}");
+    assert!(!index.contains(":latest"), "{index}");
+    std::fs::remove_file(&repo_tar).unwrap();
+    let none = shards(&["save", "-o", repo_tar.to_str().unwrap(), "nosuchrepo"]);
+    assert_eq!(
+        (none.status, none.stderr.as_str()),
+        (
+            Some(1),
+            "Error response from daemon: No such image: nosuchrepo:latest\n"
+        ),
+        "{none}"
+    );
     // To stdout, the same archive.
     let piped = Command::new(common::shards())
         .args(["save", &image])
