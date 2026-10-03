@@ -3054,7 +3054,12 @@ revision before comparing a changed API/implementation.
   which a loaded host rarely is: 59 per 30 s at both 10 and 100, against the 12,000 the
   ticks alone make at 100. Not measured: 1,000 containers, about 19 GiB of VM RSS on a
   shared host short of free memory.
+- **What a VM holds of its own.** RSS counts each VM's share of its template's pages
+  again in every process. `footprint -p` of 6 of 10 running alpine VMs, the same day:
+  7.5 to 7.8 MB of physical footprint each against 19 MiB of RSS (the first, which
+  saved the template, 50 MB).
 - **Consequence.** An idle running container costs the daemon about 40 us of CPU a second
-  (0.4 % of a core per 100), growing with the ticks, and 0.18 MiB; its VM costs about
-  19 MiB of RSS. The VMs' memory binds thousands of containers before the daemon's
-  threads do (16,384 a process on macOS, `kern.num_taskthreads`).
+  (0.4 % of a core per 100), growing with the ticks, two threads and 0.18 MiB; its VM
+  about 7.5 MB. So the daemon's threads bind first: at two a run, macOS's 16,384 a
+  process (`kern.num_taskthreads`) stop runs near 8,000, about 60 GB of VMs, on a host of
+  128 GB. Following runs needs no thread of its own per run.
