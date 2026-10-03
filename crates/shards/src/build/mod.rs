@@ -981,12 +981,22 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     };
     let mut contents = vec![manifest_digest.clone(), config_digest.clone()];
     contents.extend(store_layers.iter().map(|l| l.blob.clone()));
-    for tag in parsed.many("tag") {
+    let tags = parsed.many("tag");
+    for tag in tags {
         let reference = Reference::parse(tag).map_err(|e| format!("invalid tag {tag:?}: {e}"))?;
         store
             .tag(&reference.to_string(), &desc, &manifest_digest, &contents)
             .map_err(|e| e.to_string())?;
         progress.borrow().line(&v, &format!("naming to {reference} done"));
+    }
+    // Unnamed, it is kept all the same, dangling, as dockerd keeps a build it was given no
+    // name for (moby daemon/containerd/image_builder.go): `images -a` lists it, and a
+    // collection leaves it.
+    if tags.is_empty() {
+        let dangling = format!("{}{manifest_digest}", store::DANGLING);
+        store
+            .tag(&dangling, &desc, &manifest_digest, &contents)
+            .map_err(|e| e.to_string())?;
     }
     progress.borrow().done(&v);
     print_warnings(&plan.warnings, quiet);

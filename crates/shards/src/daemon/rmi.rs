@@ -15,7 +15,7 @@ use shards_image::reference::{AnyReference, Digest, Reference};
 use crate::containers::State as Life;
 
 /// containerd's name for an image a container keeps when its last name goes.
-pub(super) const DANGLING: &str = "moby-dangling@";
+pub(super) use shards_image::store::DANGLING;
 
 /// A reference the store holds, and its image's ID.
 #[derive(Clone, Debug, PartialEq, Eq)]

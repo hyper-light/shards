@@ -137,6 +137,11 @@ fn still_at(file: &File, path: &Path) -> io::Result<bool> {
     }
 }
 
+/// The name of a dangling image's record, before its ID: dockerd's (moby
+/// daemon/containerd/image_delete.go, danglingImageName). An image keeps one while it has
+/// no other name.
+pub const DANGLING: &str = "moby-dangling@";
+
 /// A file being written under `ingest/`, removed unless committed.
 struct Partial {
     path: PathBuf,
@@ -825,17 +830,60 @@ impl Store {
         for dir in &dirs {
             sync_dir(dir)?;
         }
-        let record = serde_json::to_vec(&Tag {
+        self.replace_record(Tag {
             reference: reference.to_string(),
             manifest: manifest.clone(),
             resolved: Some(resolved.to_string()),
             source: source.map(String::from),
             target: target.cloned(),
         })
-        .map_err(|e| Error(e.to_string()))?;
+    }
+
+    /// Writes `tag`, in place of what its reference named, as dockerd's
+    /// createOrReplaceImage does (moby docker-v29.3.1 daemon/containerd/image_tag.go):
+    /// - the image it names already: nothing changes, the time it was named included;
+    /// - an image that loses its last name to it stays, dangling (softImageDelete,
+    ///   ensureDanglingImage), for its containers and its ID to find, and its record is
+    ///   written first, so that no crash between the two loses it;
+    /// - an image named again is dangling no more.
+    fn replace_record(&self, tag: Tag) -> Result<(), Error> {
+        let id = |t: &Tag| t.resolved.clone().unwrap_or_else(|| t.manifest.digest.clone());
+        let old = self.tag_record(&tag.reference)?;
+        if let Some(old) = &old
+            && id(old) == id(&tag)
+            && old.manifest == tag.manifest
+        {
+            return Ok(());
+        }
+        let naming = !tag.reference.starts_with(DANGLING);
+        if let Some(old) = old
+            && naming
+            && id(&old) != id(&tag)
+            && !self
+                .references()?
+                .iter()
+                .any(|(name, d)| *name != tag.reference && d.to_string() == id(&old))
+        {
+            let dangling = format!("{DANGLING}{}", id(&old));
+            self.write_record(&Tag {
+                reference: dangling,
+                ..old
+            })?;
+        }
+        self.write_record(&tag)?;
+        let dangling = format!("{DANGLING}{}", id(&tag));
+        if naming && self.tag_record(&dangling)?.is_some() {
+            self.untag(&dangling)?;
+        }
+        Ok(())
+    }
+
+    /// Writes `tag`'s record, durably, in place of any of its reference.
+    fn write_record(&self, tag: &Tag) -> Result<(), Error> {
+        let record = serde_json::to_vec(tag).map_err(|e| Error(e.to_string()))?;
         let mut partial = Partial::create(&self.root.join("ingest"))?;
         partial.write_all(&record)?;
-        partial.replace(&self.tag_path(reference))?;
+        partial.replace(&self.tag_path(&tag.reference))?;
         sync_dir(&self.root.join(format!("refs/v{REFS_VERSION}")))
     }
 
@@ -853,15 +901,10 @@ impl Store {
         let Some(tag) = self.tag_record(existing)? else {
             return bad(format!("{existing}: no such reference"));
         };
-        let record = serde_json::to_vec(&Tag {
+        self.replace_record(Tag {
             reference: reference.to_string(),
             ..tag
         })
-        .map_err(|e| Error(e.to_string()))?;
-        let mut partial = Partial::create(&self.root.join("ingest"))?;
-        partial.write_all(&record)?;
-        partial.replace(&self.tag_path(reference))?;
-        sync_dir(&self.root.join(format!("refs/v{REFS_VERSION}")))
     }
 
     /// Every reference, and what it resolved to. A record that cannot be read is left out.
@@ -2024,6 +2067,73 @@ mod tests {
         assert!(still_at(&third, &path).unwrap());
     }
 
+    /// A name moved to another image leaves the image it named dangling, when that was its
+    /// last name, as dockerd leaves it (`<none>`, still found by its ID); named again, it
+    /// is dangling no more; named again what it names, nothing is rewritten.
+    #[test]
+    fn an_image_that_loses_its_last_name_stays_dangling() {
+        let root = temp("dangling");
+        let store = Store::open(&root).unwrap();
+        let put = |blob: &[u8]| {
+            let d = sha256(blob);
+            store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
+            d
+        };
+        let layer = b"layer".to_vec();
+        put(&layer);
+        let manifest = |arch: &str| {
+            let config = format!(
+                r#"{{"architecture":"{arch}","os":"linux","rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+                sha256(&layer)
+            )
+            .into_bytes();
+            put(&config);
+            format!(
+                r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+                sha256(&config),
+                config.len(),
+                sha256(&layer),
+                layer.len()
+            )
+            .into_bytes()
+        };
+        let (x, y) = (manifest("arm64"), manifest("amd64"));
+        let (xd, yd) = (put(&x), put(&y));
+        let tag = |name: &str, m: &[u8], d: &Digest| store.tag(name, &described(d, m.len()), d, &[]).unwrap();
+        tag("docker.io/library/a:1", &x, &xd);
+        tag("docker.io/library/a:1", &y, &yd);
+        let dangling_x = format!("{DANGLING}{xd}");
+        let names = |d: &Digest| -> Vec<String> {
+            store
+                .references()
+                .unwrap()
+                .into_iter()
+                .filter(|(_, id)| id == d)
+                .map(|(name, _)| name)
+                .collect()
+        };
+        assert_eq!(names(&xd), std::slice::from_ref(&dangling_x));
+        assert_eq!(names(&yd), ["docker.io/library/a:1"]);
+        // Named again, it is dangling no more.
+        tag("docker.io/library/b:1", &x, &xd);
+        assert_eq!(names(&xd), ["docker.io/library/b:1"]);
+        // A name moved off an image that keeps another leaves nothing dangling.
+        tag("docker.io/library/c:1", &x, &xd);
+        tag("docker.io/library/c:1", &y, &yd);
+        assert_eq!(names(&xd), ["docker.io/library/b:1"]);
+        // The same image named again: its record is not rewritten.
+        let record = root.join(format!("refs/v{REFS_VERSION}"));
+        let path = fs::read_dir(&record)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| fs::read_to_string(p).unwrap().contains("docker.io/library/a:1"))
+            .unwrap();
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        tag("docker.io/library/a:1", &y, &yd);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+    }
+
     fn described(digest: &Digest, size: usize) -> Descriptor {
         Descriptor {
             media_type: oci::media::OCI_MANIFEST.into(),
@@ -2562,6 +2672,17 @@ mod tests {
         let (old_blobs, old_rootfs) = tagged(&store, "one:v1", &[&c]);
         let (first_blobs, first_rootfs) = tagged(&store, "one:v1", &[&a, &b]);
         let (second_blobs, second_rootfs) = tagged(&store, "two:v1", &[&a, &c]);
+        // What `one` named first, its name moved, stays dangling, as dockerd keeps it,
+        // until removed (rmi, prune): then it is the collection's.
+        let dangling: Vec<String> = store
+            .references()
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| name.starts_with(DANGLING))
+            .collect();
+        assert_eq!(dangling.len(), 1, "{dangling:?}");
+        store.untag(&dangling[0]).unwrap();
         let orphan = b"nobody's";
         let orphan_digest = sha256(orphan);
         store

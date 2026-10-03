@@ -1763,6 +1763,36 @@ fn images_lists_what_was_pulled_as_docker_images_does() {
 /// `shards tag SOURCE TARGET` as `docker tag` names an image again: by name or by a prefix
 /// of its ID, TARGET with `latest` if it names no tag; refused in the Docker client's and
 /// dockerd's words where it cannot.
+/// A name moved to another image leaves the image it named, when that was its last name,
+/// as dockerd leaves it: listed by `images -a` as `<untagged>`, and found by its ID
+/// (measured, Docker 29.3.1).
+#[test]
+fn an_image_whose_last_name_moves_stays_dangling() {
+    let Some((home, image)) = home("containers-dangling") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let variant = common::served_variant(b"other");
+    let pulled = shards(&["pull", "-q", &variant]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let id = shards(&["images", "-q", &variant]).stdout.trim().to_string();
+    assert_eq!(shards(&["tag", &variant, "solo:1"]).status, Some(0));
+    assert_eq!(shards(&["rmi", &variant]).status, Some(0));
+    let moved = shards(&["tag", &image, "solo:1"]);
+    assert_eq!(moved.status, Some(0), "{moved}");
+    let listed = shards(&["images", "-a"]);
+    assert!(
+        listed
+            .stdout
+            .lines()
+            .any(|row| row.starts_with("<untagged>") && row.contains(&id)),
+        "{listed}"
+    );
+    let inspected = shards(&["image", "inspect", &id]);
+    assert_eq!(inspected.status, Some(0), "{inspected}");
+    assert!(inspected.stdout.contains("\"RepoTags\": []"), "{inspected}");
+}
+
 #[test]
 fn tag_names_an_image_again_as_docker_tag_does() {
     let Some((home, image)) = home("containers-tag") else {

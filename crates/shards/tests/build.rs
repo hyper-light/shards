@@ -376,6 +376,34 @@ fn run_steps_reach_the_network_unless_it_is_none() {
     assert!(built.stderr.contains(" tcp error "), "{}", built.stderr);
 }
 
+/// A build given no name is kept all the same, dangling, as dockerd keeps it (measured,
+/// Docker 29.3.1): `images -a` lists it as `<untagged>`, and a collection leaves it.
+#[test]
+fn a_build_given_no_name_is_kept_dangling() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-unnamed-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context("build-unnamed-ctx", &format!("FROM {image}\nLABEL unnamed=1\n"));
+    let untagged = |out: &str| out.lines().filter(|row| row.starts_with("<untagged>")).count();
+    let built = shards(&["build", "-q", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let listed = shards(&["images", "-a"]);
+    assert_eq!(untagged(&listed.stdout), 1, "{}", listed.stdout);
+    // A pull marks a collection due; the next command's runs it.
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
+    let listed = shards(&["images", "-a"]);
+    assert_eq!(untagged(&listed.stdout), 1, "{}", listed.stdout);
+}
+
 #[test]
 fn a_dockerfile_error_shows_its_lines() {
     let home = TempDir::new("build-error-home");
