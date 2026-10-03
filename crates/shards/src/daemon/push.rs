@@ -152,7 +152,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             );
             // An index not all here: our platform's manifest alone (getPushDescriptor).
             if let Err(e) = &result
-                && e.kind() == shards_registry::ErrorKind::NotFound
+                && e.kind() == shards_registry::ErrorKind::Missing
                 && target.digest != image.manifest.to_string()
             {
                 let mut manifest = target.clone();

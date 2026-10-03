@@ -18,14 +18,17 @@
 //! - An OAuth2 POST, whose body carries the secret, follows redirects only within its
 //!   realm's origin. Go's client replays a 307 or 308 body wherever it points.
 //! - A token lasts `expires_in`, and at least 60 s, from `issued_at` or its receipt, as
-//!   distribution's client counts. containerd keeps a token without `expires_in` forever.
+//!   distribution's client counts (token.md). containerd keeps a token without
+//!   `expires_in` forever. `issued_at` is the server's clock, so it is measured against
+//!   the token response's `Date`, also the server's: no skew between that clock and ours
+//!   counts, and what is left is counted on a monotonic clock from receipt.
 //! - A request refused twice in a row is not retried again.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::io::Read;
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -237,7 +240,7 @@ struct Bearer {
 #[derive(Clone)]
 struct Token {
     value: String,
-    expires: SystemTime,
+    expires: Instant,
 }
 
 impl Hosts {
@@ -300,7 +303,7 @@ impl Authorizer {
                     let scopes = bearer.scopes_with(scopes);
                     let key = scopes.join(" ");
                     match tokens.get(&key) {
-                        Some(Slot::Ready(token)) if SystemTime::now() < token.expires => {
+                        Some(Slot::Ready(token)) if Instant::now() < token.expires => {
                             Next::Answer(Some(format!("Bearer {}", token.value)))
                         }
                         Some(Slot::Fetching) => Next::Wait,
@@ -539,7 +542,14 @@ fn read_token(response: &mut Response, oauth: bool) -> Result<Token, Error> {
     if !(200..400).contains(&response.status) {
         return Err(Error::new(format!("unexpected status {}", response.status)));
     }
-    let received = SystemTime::now();
+    let received = Instant::now();
+    // The server's clock as it answered (RFC 9110 §6.6.1): IMF-fixdate, which RFC 2822's
+    // grammar reads, `GMT` among its zones.
+    let answered = response.header("date").and_then(|d| {
+        time::OffsetDateTime::parse(d.trim(), &time::format_description::well_known::Rfc2822)
+            .ok()
+            .map(SystemTime::from)
+    });
     let mut body = Vec::new();
     response
         .take(MAX_TOKEN_RESPONSE + 1)
@@ -560,20 +570,28 @@ fn read_token(response: &mut Response, oauth: bool) -> Result<Token, Error> {
         _ => return Err(Error::new("the token server did not include a token")),
     };
     let issued = match parsed.issued_at {
-        None => received,
-        Some(at) => {
-            let at = time::OffsetDateTime::parse(&at, &time::format_description::well_known::Rfc3339)
-                .map_err(|e| Error::new(format!("a bad issued_at {at:?}: {e}")))?;
-            SystemTime::from(at)
-        }
+        None => None,
+        Some(at) => Some(SystemTime::from(
+            time::OffsetDateTime::parse(&at, &time::format_description::well_known::Rfc3339)
+                .map_err(|e| Error::new(format!("a bad issued_at {at:?}: {e}")))?,
+        )),
     };
     let lifetime = parsed
         .expires_in
         .and_then(|s| u64::try_from(s).ok())
         .map_or(MIN_LIFETIME, |s| Duration::from_secs(s).max(MIN_LIFETIME));
+    // What is left of it when it came: all of it, unless the server's own clock says it
+    // was issued a while before it answered.
+    let left = match (issued, answered) {
+        (Some(issued), Some(answered)) => issued
+            .checked_add(lifetime)
+            .and_then(|end| end.duration_since(answered).ok())
+            .map_or(Duration::ZERO, |left| left.min(lifetime)),
+        _ => lifetime,
+    };
     Ok(Token {
         value,
-        expires: issued.checked_add(lifetime).unwrap_or(issued),
+        expires: received.checked_add(left).unwrap_or(received),
     })
 }
 
@@ -602,6 +620,41 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    /// A token from a server whose clock is years behind ours lasts its whole lifetime:
+    /// its `issued_at` is measured against its own `Date`, not our clock.
+    #[test]
+    fn a_servers_clock_skew_does_not_shorten_its_tokens() {
+        let tokens = serve(
+            None,
+            vec![(
+                http(
+                    "200 OK",
+                    "Date: Wed, 01 Jan 2020 00:00:30 GMT\r\n",
+                    r#"{"access_token":"t1","expires_in":300,"issued_at":"2020-01-01T00:00:00Z"}"#,
+                ),
+                After::Keep,
+            )],
+        );
+        let auth = Authorizer::new(&registry(), Credentials::IdentityToken("idt".into()));
+        let challenge = format!(
+            r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
+            tokens.port
+        );
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
+        let client = plain();
+        let get = || auth.authorization(&client, &registry(), &pull("a/b")).unwrap();
+        assert_eq!(get().as_deref(), Some("Bearer t1"));
+        assert_eq!(
+            get().as_deref(),
+            Some("Bearer t1"),
+            "270 s of it left by its clock"
+        );
+        assert_eq!(tokens.requests().len(), 1);
     }
 
     fn http(status: &str, fields: &str, body: &str) -> Vec<u8> {
@@ -929,10 +982,24 @@ mod tests {
 
     #[test]
     fn identity_tokens_refresh_and_lifetimes_count_from_issued_at() {
-        let tokens = token_server(&[
-            r#"{"access_token":"old","expires_in":60,"issued_at":"2020-01-01T00:00:00Z"}"#,
-            r#"{"access_token":"new","expires_in":600}"#,
-        ]);
+        // The server answers years after it issued the first token, by its own clock.
+        let tokens = serve(
+            None,
+            vec![
+                (
+                    http(
+                        "200 OK",
+                        "Date: Thu, 01 Jan 2026 00:00:00 GMT\r\n",
+                        r#"{"access_token":"old","expires_in":60,"issued_at":"2020-01-01T00:00:00Z"}"#,
+                    ),
+                    After::Keep,
+                ),
+                (
+                    http("200 OK", "", r#"{"access_token":"new","expires_in":600}"#),
+                    After::Keep,
+                ),
+            ],
+        );
         let auth = Authorizer::new(&registry(), Credentials::IdentityToken("idt".into()));
         let challenge = format!(
             r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,

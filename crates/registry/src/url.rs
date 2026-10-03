@@ -154,9 +154,27 @@ impl Url {
     }
 }
 
-/// A URL or reference without its query and fragment, for messages.
-fn redact(s: &str) -> &str {
-    s.split(['?', '#']).next().unwrap_or_default()
+/// A URL or reference for messages: without its query and fragment, and its password, if
+/// it has one, shown as `xxxxx`, as Go's URL.Redacted shows it.
+fn redact(s: &str) -> String {
+    let s = s.split(['?', '#']).next().unwrap_or_default();
+    let start = s.find("://").map_or(0, |i| i + 3);
+    let rest = s.get(start..).unwrap_or_default();
+    let authority = rest
+        .get(..rest.find('/').unwrap_or(rest.len()))
+        .unwrap_or_default();
+    let Some(at) = authority.rfind('@') else {
+        return s.to_string();
+    };
+    let Some(colon) = authority.get(..at).and_then(|userinfo| userinfo.find(':')) else {
+        return s.to_string();
+    };
+    format!(
+        "{}{}:xxxxx{}",
+        s.get(..start).unwrap_or_default(),
+        authority.get(..colon).unwrap_or_default(),
+        rest.get(at..).unwrap_or_default()
+    )
 }
 
 impl Scheme {
@@ -238,6 +256,23 @@ mod tests {
             "https://h/a b",
         ] {
             assert!(Url::parse(bad).is_err(), "{bad}");
+        }
+        // A password is never shown, as Go's URL.Redacted shows none.
+        let said = Url::parse("https://user:s3cret@h/v2/?q=1")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("https://user:xxxxx@h/v2/") && !said.contains("s3cret"),
+            "{said}"
+        );
+        for (given, shown) in [
+            ("https://u:p:q@h/x", "https://u:xxxxx@h/x"),
+            ("https://u@h/x", "https://u@h/x"),
+            ("u:p@h/x", "u:xxxxx@h/x"),
+            ("https://h/a@b:c", "https://h/a@b:c"),
+            ("https://u:p@h", "https://u:xxxxx@h"),
+        ] {
+            assert_eq!(redact(given), shown, "{given}");
         }
     }
 

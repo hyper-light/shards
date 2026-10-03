@@ -311,24 +311,33 @@ fn ask_helper(helper: &str, key: &str, env: Env<'_>) -> Result<Option<HelperAnsw
     let mut child = command
         .spawn()
         .map_err(|e| Error::new(format!("running {program}: {e}")))?;
-    // A helper may exit without reading its input: its status and output then say what
-    // it had to say, as Go's os/exec, which Docker's helper client uses, ignores the
-    // broken pipe (exec.go, skipStdinCopyError).
-    if let Some(mut stdin) = child.stdin.take() {
-        match stdin.write_all(key.as_bytes()) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
-            Err(e) => return Err(Error::new(format!("{program}: {e}"))),
+    let talked = (|| {
+        // A helper may exit without reading its input: its status and output then say
+        // what it had to say, as Go's os/exec, which Docker's helper client uses, ignores
+        // the broken pipe (exec.go, skipStdinCopyError).
+        if let Some(mut stdin) = child.stdin.take() {
+            match stdin.write_all(key.as_bytes()) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+                Err(e) => return Err(Error::new(format!("{program}: {e}"))),
+            }
         }
-    }
-    let mut out = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        stdout
-            .take(MAX_HELPER_OUTPUT)
-            .read_to_end(&mut out)
-            .map_err(|e| Error::new(format!("{program}: {e}")))?;
+        let mut out = Vec::new();
+        if let Some(stdout) = child.stdout.take() {
+            stdout
+                .take(MAX_HELPER_OUTPUT)
+                .read_to_end(&mut out)
+                .map_err(|e| Error::new(format!("{program}: {e}")))?;
+        }
+        Ok(out)
+    })();
+    // However the talk went, the helper is waited for, so it leaves no zombie; one still
+    // running after a failed talk is ended first.
+    if talked.is_err() {
+        let _ = child.kill();
     }
     let status = child.wait().map_err(|e| Error::new(format!("{program}: {e}")))?;
+    let out = talked?;
     let text = String::from_utf8_lossy(&out);
     if !status.success() {
         if text.trim() == NOT_FOUND {

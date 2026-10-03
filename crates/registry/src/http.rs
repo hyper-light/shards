@@ -383,17 +383,30 @@ impl Client {
             }
             conn.io.get_mut().flush()
         });
-        if let Err(e) = written {
-            return Err(Failure::BeforeResponse(Error::new(format!(
-                "{}: sending: {e}",
-                req.url
-            ))));
-        }
+        // A server may answer before it has read the whole request, then close: a 413 or a
+        // 401 to an upload. Go's transport reads that answer as the request is written, so
+        // where the write fails as the server leaves, the answer it left is read.
+        let (head, early) = match written {
+            Ok(()) => (read_head(&mut conn, req.url)?, false),
+            Err(e) => {
+                let left = matches!(
+                    e.kind(),
+                    io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::ConnectionAborted
+                );
+                let sending = || Failure::BeforeResponse(Error::new(format!("{}: sending: {e}", req.url)));
+                if !left {
+                    return Err(sending());
+                }
+                (read_head(&mut conn, req.url).map_err(|_| sending())?, true)
+            }
+        };
         let Head {
             status,
             version,
             fields: headers,
-        } = read_head(&mut conn, req.url)?;
+        } = head;
         let framing = framing(req.method, status, version, &headers).map_err(Failure::Other)?;
         let close = match version {
             0 => {
@@ -412,7 +425,7 @@ impl Client {
         let mut body = Body {
             conn: Some(conn),
             framing,
-            reuse: !close && !both,
+            reuse: !close && !both && !early,
             pool: &self.pool,
         };
         body.finish_if_done();
@@ -457,11 +470,15 @@ impl Client {
                 Stream::Tls(Box::new(StreamOwned::new(tls, tcp)))
             }
         };
-        Ok(Conn {
+        let conn = Conn {
             key,
             io: BufReader::with_capacity(64 << 10, stream),
             watch,
-        })
+        };
+        // The request's writes are bounded too: a fresh connection would otherwise have
+        // none, or what was left of the handshake's.
+        conn.stall()?;
+        Ok(conn)
     }
 }
 
@@ -585,6 +602,7 @@ fn read_head(conn: &mut Conn, url: &Url) -> Result<Head, Failure> {
     let mut first = true;
     loop {
         let mut buf = Vec::new();
+        let mut lines = 0;
         let parsed = loop {
             let left = deadline
                 .checked_duration_since(Instant::now())
@@ -621,9 +639,23 @@ fn read_head(conn: &mut Conn, url: &Url) -> Result<Head, Failure> {
             }
             let old = buf.len();
             let take = available.len().min(budget.saturating_sub(old).saturating_add(1));
-            buf.extend_from_slice(available.get(..take).unwrap_or_default());
-            let slots = buf.iter().filter(|&&b| b == b'\n').count().max(1);
-            let mut fields = vec![httparse::EMPTY_HEADER; slots];
+            let new = available.get(..take).unwrap_or_default();
+            lines += new.iter().filter(|&&b| b == b'\n').count();
+            buf.extend_from_slice(new);
+            // A head ends with an empty line: parsed once one may have come, and as its
+            // first bytes come, so a malformed start fails at once. Parsing it again on
+            // each read would be quadratic in a head sent a byte at a time.
+            let tail = buf.get(old.saturating_sub(2)..).unwrap_or_default();
+            if old > 0 && !tail.windows(2).any(|w| w == b"\n\n") && !tail.windows(3).any(|w| w == b"\n\r\n") {
+                conn.io.consume(take);
+                if buf.len() > budget {
+                    return Err(Failure::Other(Error::new(format!(
+                        "{url}: the response head passes 10 MiB"
+                    ))));
+                }
+                continue;
+            }
+            let mut fields = vec![httparse::EMPTY_HEADER; lines.max(1)];
             let mut response = httparse::Response::new(&mut fields);
             match response.parse(&buf) {
                 Ok(httparse::Status::Complete(len)) => {
@@ -1273,6 +1305,82 @@ mod tests {
         let mut rest = Vec::new();
         let _ = conn.io.read_to_end(&mut rest);
         assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    }
+
+    /// A fresh connection's reads and writes are bounded from the start: the request is
+    /// written within them too, which nothing bounded before its response's head.
+    #[test]
+    fn fresh_connections_bound_their_writes() {
+        let server = serve(None, vec![]);
+        let url = at("http", "127.0.0.1", server.port);
+        let conn = plain().connect(&url, Key::of(&url)).unwrap();
+        let tcp = conn.io.get_ref().tcp();
+        assert_eq!(tcp.write_timeout().unwrap(), Some(STALL));
+        assert_eq!(tcp.read_timeout().unwrap(), Some(STALL));
+    }
+
+    /// A server that answers an upload before reading it, then leaves, is heard: its 413,
+    /// not the broken pipe, as Go's transport reads an answer while it writes.
+    #[test]
+    fn an_answer_before_the_body_is_read_is_heard() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                tcp.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            tcp.write_all(b"HTTP/1.1 413 Request Entity Too Large\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            // Gone with the body unread: the client's writes fail.
+        });
+        let path = std::env::temp_dir().join(format!("shards-early-{}", std::process::id()));
+        std::fs::write(&path, vec![0u8; 64 << 20]).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let url = at("http", "127.0.0.1", port);
+        let client = plain();
+        let status = client
+            .send(&Request {
+                method: "PUT",
+                url: &url,
+                headers: &[],
+                body: &[],
+                file: Some((&file, 64 << 20)),
+            })
+            .map(|r| r.status);
+        let _ = std::fs::remove_file(&path);
+        server.join().unwrap();
+        assert_eq!(status.unwrap(), 413);
+    }
+
+    /// A head sent a byte at a time, its lines ended by LF alone, reads as one sent whole.
+    #[test]
+    fn a_head_in_pieces_is_read_whole() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            let _ = tcp.set_nodelay(true);
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                tcp.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            for b in b"HTTP/1.1 200 OK\nX-One: 1\nContent-Length: 2\n\nhi" {
+                tcp.write_all(&[*b]).unwrap();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        let url = at("http", "127.0.0.1", port);
+        let (status, body) = fetch(&plain(), "GET", &url).unwrap();
+        server.join().unwrap();
+        assert_eq!((status, body.as_slice()), (200, &b"hi"[..]));
     }
 
     #[test]

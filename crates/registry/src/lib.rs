@@ -31,6 +31,8 @@ pub enum ErrorKind {
     Transient,
     /// The registry has no such content (404).
     NotFound,
+    /// The store has no such content: what a push was to send is not here.
+    Missing,
     /// The request was cancelled ([`http::Cancel`]): nothing tries it again.
     Cancelled,
     /// A stored copy is not what its digest names any more: a pull fetches it again.
@@ -71,13 +73,19 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Timeouts and early ends are transient, as Go's are to containerd.
+/// Timeouts and early ends are transient, as Go's are to containerd
+/// (isTransientTransportErr); and so is a connection reset, aborted or broken under a
+/// request, which containerd gives up on: a download resumes where it was cut, and the
+/// requests sent again are a GET or HEAD, a new upload, or a PUT by digest.
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Error {
         let kind = match e.kind() {
-            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock | io::ErrorKind::UnexpectedEof => {
-                ErrorKind::Transient
-            }
+            io::ErrorKind::TimedOut
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::BrokenPipe => ErrorKind::Transient,
             _ => ErrorKind::Other,
         };
         Error::of(kind, e.to_string())

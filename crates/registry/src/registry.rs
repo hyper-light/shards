@@ -104,20 +104,36 @@ impl Registry {
         }
     }
 
-    /// Uploads the blob `desc` describes from `file`, as containerd's pusher does: mounted
-    /// from `from`, a repository of the same registry, when given and the registry does;
-    /// else an upload begun with a POST and done with one PUT of it all. Whether it was
+    /// Uploads the blob `desc` describes from `file`, as containerd v2.4.1's pusher does
+    /// (core/remotes/docker/pusher.go, Push and Commit): mounted from `from`, a repository
+    /// of the same registry, when given and the registry does, and uploaded as if it were
+    /// not given when the mount is refused as unauthorized; else an upload begun with a
+    /// POST, which a 201 answers as there already, and done with one PUT of it all, whose
+    /// `Docker-Content-Digest`, if it sends one, must be the blob's. Whether it was
     /// mounted.
     pub fn upload(&self, desc: &Descriptor, file: &std::fs::File, from: Option<&str>) -> Result<bool, Error> {
-        let start = match from {
-            Some(repo) => format!("blobs/uploads/?mount={}&from={repo}", desc.digest),
-            None => "blobs/uploads/".to_string(),
+        let mut started = None;
+        if let Some(repo) = from {
+            let url = self
+                .base
+                .join(&format!("blobs/uploads/?mount={}&from={repo}", desc.digest))?;
+            let (response, _) = self.send("POST", &url, &[], &[], None)?;
+            // Not allowed to read `from`: uploaded instead.
+            if response.status != 401 {
+                started = Some((response, true));
+            }
+        }
+        let (response, mounting) = match started {
+            Some(started) => started,
+            None => (
+                self.send("POST", &self.base.join("blobs/uploads/")?, &[], &[], None)?
+                    .0,
+                false,
+            ),
         };
-        let url = self.base.join(&start)?;
-        let (response, _) = self.send("POST", &url, &[], &[], None)?;
         let location = match response.status {
-            201 if from.is_some() => return Ok(true),
-            202 => response
+            201 => return Ok(mounting),
+            200 | 202 | 204 => response
                 .header("location")
                 .map(str::to_string)
                 .ok_or_else(|| Error::new(format!("{}: an upload with no Location", desc.digest)))?,
@@ -133,10 +149,17 @@ impl Registry {
             &[],
             Some((file, size)),
         )?;
-        match response.status {
-            201 | 204 => Ok(false),
-            _ => Err(refused(response, &desc.digest)),
+        if !matches!(response.status, 200 | 201 | 202 | 204) {
+            return Err(refused(response, &desc.digest));
         }
+        if let Some(header) = response.header("docker-content-digest") {
+            let got = Digest::parse(header.trim())
+                .map_err(|e| Error::new(format!("invalid content digest in response: {e}")))?;
+            if got.to_string() != desc.digest {
+                return Err(Error::new(format!("got digest {got}, expected {}", desc.digest)));
+            }
+        }
+        Ok(false)
     }
 
     /// Puts a manifest or index as `reference` names it (a tag or its digest).
@@ -565,4 +588,121 @@ fn rate_limited(response: &Response) -> String {
         out.push_str(&format!("; retry after {}", after.trim()));
     }
     out
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::testing::{After, Seen, route};
+
+    fn http(status: &str, fields: &[(&str, &str)]) -> Vec<u8> {
+        let mut out = format!("HTTP/1.1 {status}\r\n");
+        for (n, v) in fields {
+            out.push_str(&format!("{n}: {v}\r\n"));
+        }
+        out.push_str("Content-Length: 0\r\n\r\n");
+        out.into_bytes()
+    }
+
+    /// Uploads a blob to a registry that answers each request with `answer`: whether it
+    /// was mounted, and the requests' first lines.
+    fn uploaded(
+        from: Option<&str>,
+        answer: impl Fn(&Seen) -> Vec<u8> + Send + Sync + 'static,
+    ) -> (Result<bool, Error>, Vec<String>) {
+        let blob = b"blob bytes";
+        let digest = Digest::from_hash(Algorithm::Sha256, &Sha256::digest(blob));
+        // A file of each call's own: the tests run at once in one process.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("shards-upload-{}-{n}", std::process::id()));
+        std::fs::write(&path, blob).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let server = route(None, move |seen| Some((answer(seen), After::Keep)));
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+        let http = Client::new(
+            Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+            "shards-test",
+        );
+        let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+        let desc = Descriptor {
+            media_type: "application/octet-stream".into(),
+            digest: digest.to_string(),
+            size: i64::try_from(blob.len()).unwrap(),
+            platform: None,
+            annotations: Default::default(),
+        };
+        let done = registry.upload(&desc, &file, from);
+        let _ = std::fs::remove_file(&path);
+        let lines = server
+            .requests()
+            .iter()
+            .map(|r| r.lines().next().unwrap_or_default().to_string())
+            .collect();
+        (done, lines)
+    }
+
+    /// A mount the registry refuses as unauthorized is uploaded instead, as containerd's
+    /// pusher falls back (pusher.go v2.4.1); one it grants is done.
+    #[test]
+    fn a_refused_mount_is_uploaded_instead() {
+        let (done, lines) = uploaded(Some("other/repo"), |seen| {
+            match (seen.method.as_str(), seen.target.as_str()) {
+                ("POST", t) if t.contains("mount=") => http("401 Unauthorized", &[]),
+                ("POST", _) => http("202 Accepted", &[("Location", "/v2/test/image/blobs/uploads/u1")]),
+                _ => http("201 Created", &[]),
+            }
+        });
+        assert!(!done.unwrap());
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(
+            lines[0].starts_with("POST /v2/test/image/blobs/uploads/?mount="),
+            "{lines:?}"
+        );
+        assert_eq!(lines[1], "POST /v2/test/image/blobs/uploads/ HTTP/1.1");
+        assert!(
+            lines[2].starts_with("PUT /v2/test/image/blobs/uploads/u1?digest=sha256%3A"),
+            "{lines:?}"
+        );
+        let (done, lines) = uploaded(Some("other/repo"), |_| http("201 Created", &[]));
+        assert!(done.unwrap());
+        assert_eq!(lines.len(), 1);
+    }
+
+    /// The statuses containerd takes: an upload begun with 200, 202 or 204, or found there
+    /// already with 201; done with 200, 201, 202 or 204, its digest checked when sent.
+    #[test]
+    fn uploads_take_the_statuses_containerd_takes() {
+        for (begun, done) in [
+            ("200 OK", "200 OK"),
+            ("204 No Content", "204 No Content"),
+            ("202 Accepted", "202 Accepted"),
+        ] {
+            let (result, lines) = uploaded(None, move |seen| match seen.method.as_str() {
+                "POST" => http(begun, &[("Location", "/v2/test/image/blobs/uploads/u2")]),
+                _ => http(done, &[]),
+            });
+            assert!(!result.unwrap(), "{begun} {done}");
+            assert_eq!(lines.len(), 2, "{lines:?}");
+        }
+        let (result, lines) = uploaded(None, |_| http("201 Created", &[]));
+        assert!(!result.unwrap());
+        assert_eq!(lines.len(), 1, "there already: no PUT");
+        let other = format!("sha256:{}", "0".repeat(64));
+        let (result, _) = uploaded(None, move |seen| match seen.method.as_str() {
+            "POST" => http("202 Accepted", &[("Location", "/v2/test/image/blobs/uploads/u3")]),
+            _ => http("201 Created", &[("Docker-Content-Digest", &other)]),
+        });
+        let said = result.unwrap_err().to_string();
+        assert!(
+            said.starts_with(&format!("got digest sha256:{}, expected sha256:", "0".repeat(64))),
+            "{said}"
+        );
+        let (result, _) = uploaded(None, |seen| match seen.method.as_str() {
+            "POST" => http("202 Accepted", &[("Location", "/v2/test/image/blobs/uploads/u4")]),
+            _ => http("400 Bad Request", &[]),
+        });
+        assert!(result.is_err());
+    }
 }

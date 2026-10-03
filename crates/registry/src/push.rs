@@ -29,7 +29,7 @@ pub enum Layer {
 /// A blob or document the store lacks: containerd's words, and its kind, so that the
 /// caller can push less.
 fn missing(d: &str) -> Error {
-    Error::of(ErrorKind::NotFound, format!("content digest {d}: not found"))
+    Error::of(ErrorKind::Missing, format!("content digest {d}: not found"))
 }
 
 /// Pushes what `target` describes, from `store`, to `registry`, `target` itself by
@@ -144,4 +144,73 @@ fn blob(registry: &Registry, store: &Store, desc: &Descriptor, from: Option<&str
         true => Layer::Mounted(from.unwrap_or_default().to_string()),
         false => Layer::Pushed,
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::auth::Credentials;
+    use crate::http::Client;
+    use crate::testing::{After, route};
+    use sha2::{Digest as _, Sha256};
+    use shards_image::reference::{Algorithm, Reference};
+
+    fn described(media_type: &str, bytes: &[u8]) -> Descriptor {
+        Descriptor {
+            media_type: media_type.into(),
+            digest: Digest::from_hash(Algorithm::Sha256, &Sha256::digest(bytes)).to_string(),
+            size: i64::try_from(bytes.len()).unwrap(),
+            platform: None,
+            annotations: Default::default(),
+        }
+    }
+
+    /// What is not here to push is `Missing`, and what the registry has no room for
+    /// `NotFound`: a caller that pushes less where content is missing here does not take
+    /// a registry's 404 for that.
+    #[test]
+    fn missing_content_and_a_registrys_404_are_told_apart() {
+        let dir = std::env::temp_dir().join(format!("shards-push-kinds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir).unwrap();
+        let server = route(None, |_| {
+            Some((
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+                After::Keep,
+            ))
+        });
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+        let http = Client::new(
+            Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+            "shards-test",
+        );
+        let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+        let config = br#"{"architecture":"arm64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
+        let config_type = "application/vnd.oci.image.config.v1+json";
+        let config_desc = described(config_type, config);
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"mediaType":"{}","config":{{"mediaType":"{}","digest":"{}","size":{}}},"layers":[]}}"#,
+            oci::media::OCI_MANIFEST,
+            config_type,
+            config_desc.digest,
+            config.len()
+        )
+        .into_bytes();
+        let manifest_desc = described(oci::media::OCI_MANIFEST, &manifest);
+        let quiet = |_: &Digest, _: Layer| {};
+        // Nothing of it here.
+        let missing = push(&registry, &store, &manifest_desc, Some("v1"), None, &quiet).unwrap_err();
+        assert_eq!(missing.kind(), ErrorKind::Missing, "{missing}");
+        // All of it here, and the registry answering 404.
+        for (desc, bytes) in [(&config_desc, &config[..]), (&manifest_desc, &manifest[..])] {
+            store
+                .ingest(&desc.digest().unwrap(), bytes.len() as u64, &mut &bytes[..])
+                .unwrap();
+        }
+        let refused = push(&registry, &store, &manifest_desc, Some("v1"), None, &quiet).unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::NotFound, "{refused}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
