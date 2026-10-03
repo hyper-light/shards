@@ -271,7 +271,8 @@ impl Client {
 
     /// Sends `req` and reads the response head. A GET or HEAD that fails on a reused
     /// connection before any response arrived is sent once more on a new one, as Go
-    /// retries replayable requests.
+    /// retries replayable requests; so is any request a reused connection answers with
+    /// 408, which says the server never had it whole.
     pub fn send(&self, req: &Request<'_>) -> Result<Response<'_>, Error> {
         self.checked(self.send_now(req))
     }
@@ -298,6 +299,10 @@ impl Client {
             match self.exchange(conn, req, &head) {
                 // The server may have closed it while it sat idle.
                 Err(Failure::BeforeResponse(_)) if matches!(req.method, "GET" | "HEAD") => {}
+                // Or said so, its 408 crossing the request: a request in transit may be
+                // repeated, on a new connection (RFC 9110 §15.5.9), whatever its method,
+                // as Chromium repeats it (net/http/http_network_transaction.cc, 687b43f).
+                Ok(response) if response.status == 408 => {}
                 result => return result.map_err(Failure::into_error),
             }
         }
@@ -460,7 +465,9 @@ impl Client {
         let mut body = Body {
             conn: Some(conn),
             framing,
-            reuse: !close && !both && !early,
+            // A 408's server stopped waiting for a request there, and may hold part of
+            // one: where it ends is lost (RFC 9110 §15.5.9).
+            reuse: !close && !both && !early && status != 408,
             pool: &self.pool,
         };
         body.finish_if_done();
@@ -1676,7 +1683,8 @@ mod tests {
 
     /// An idle connection the server has sent something on unasked, a 408 before it
     /// closes, is never taken: the next request would read it as its answer, which Go's
-    /// transport guards against in the same way.
+    /// transport guards against in the same way. A 408 not yet come as the connection is
+    /// taken crosses the request, which is then repeated (below).
     #[test]
     fn a_connection_with_an_unasked_answer_is_not_reused() {
         use std::net::TcpListener;
@@ -1703,7 +1711,9 @@ mod tests {
             first
                 .write_all(b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\n\r\n")
                 .unwrap();
-            // Written on loopback, it is in the client's socket now.
+            // On its way: macOS queues loopback's packets for its main input thread
+            // (xnu-11417.101.15 bsd/net/dlil_input.c, `dlil_input_async`), so it may come
+            // only after the client has taken the connection.
             sent.send(()).unwrap();
             let (mut second, _) = listener.accept().unwrap();
             head(&mut second);
@@ -1718,6 +1728,84 @@ mod tests {
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         unasked.recv().unwrap();
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"new".to_vec()));
+        server.join().unwrap();
+    }
+
+    /// A request a reused connection answers with 408, the server's idle timeout having
+    /// crossed it, is repeated on a new connection, whatever its method, body and all
+    /// (RFC 9110 §15.5.9); a new connection's 408 is the answer, and neither connection is
+    /// reused.
+    #[test]
+    fn a_408_on_a_reused_connection_has_the_request_repeated() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // A request's head, then its body, as long as it says.
+        let request = |tcp: &mut TcpStream| -> Vec<u8> {
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                tcp.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8(head).unwrap();
+            let len = head
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .map(str::to_string)
+                })
+                .map_or(0, |n| n.trim().parse().unwrap());
+            let mut body = vec![0u8; len];
+            tcp.read_exact(&mut body).unwrap();
+            body
+        };
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            request(&mut first);
+            first
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .unwrap();
+            assert_eq!(request(&mut first), b"put");
+            first
+                .write_all(b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            let (mut second, _) = listener.accept().unwrap();
+            assert_eq!(request(&mut second), b"put");
+            second
+                .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            let (mut third, _) = listener.accept().unwrap();
+            request(&mut third);
+            third
+                .write_all(b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            // Closed once answered: the next request comes on a new connection.
+            third.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut rest = Vec::new();
+            third.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty());
+            let (mut fourth, _) = listener.accept().unwrap();
+            request(&mut fourth);
+            fourth
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew")
+                .unwrap();
+        });
+        let url = at("http", "127.0.0.1", port);
+        let client = plain();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        let put = Request {
+            method: "PUT",
+            url: &url,
+            headers: &[],
+            body: b"put",
+            file: None,
+        };
+        assert_eq!(client.send(&put).unwrap().status, 201);
+        let other = plain();
+        assert_eq!(fetch(&other, "GET", &url).unwrap(), (408, Vec::new()));
+        assert_eq!(fetch(&other, "GET", &url).unwrap(), (200, b"new".to_vec()));
         server.join().unwrap();
     }
 

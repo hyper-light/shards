@@ -508,14 +508,27 @@ Registries are reached with a small blocking HTTP/1.1 client on rustls and httpa
     - lines end in CRLF only (RFC 9112 erratum 7633) and hold at most 4096 bytes;
     - sizes have at most 16 hex digits;
     - overhead is bounded, and trailers take at most 4 KiB.
-  - A connection is not reused after a response with both framings, or with bytes past
-    its end. The second rule is Go's too, and it keeps responses from desynchronizing.
+  - A connection is not reused after a response with both framings, with bytes past its
+    end, or after a 408, whose server stopped waiting there and may hold part of a
+    request (RFC 9110 §15.5.9). The second rule is Go's too, and it keeps responses from
+    desynchronizing.
 - **Connections as containerd's transport keeps them** (`core/remotes/docker/registry.go`):
   - 30 s to connect, racing addresses 300 ms apart (RFC 8305);
   - 10 s for the TLS handshake, 30 s for the response head;
   - at most 10 idle connections, each kept for 30 s.
   - A GET or HEAD that fails on a reused connection before its response is resent on a
     new one, as Go resends replayable requests.
+  - A request a reused connection answers with 408 is resent on a new one, whatever its
+    method: the server's idle timeout crossed it, and it never had the request whole
+    (RFC 9110 §15.5.9: one in transit "MAY" be repeated). Chromium resends it so
+    (net/http/http_network_transaction.cc, 687b43f); Go drops an idle connection on its
+    408 only once it has come, and returns one that crosses a request to the caller
+    (go1.26.1 net/http/transport.go `readLoopPeekFailLocked`, `shouldRetryRequest`).
+    Even a local server's 408 written before the client takes the connection can come
+    after: macOS gives loopback no input thread of its own, and queues its packets for
+    the main input thread rather than taking them in the sender's write (xnu-11417.101.15
+    bsd/net/dlil.c `ifnet_attach`; dlil_input.c `dlil_input_handler`,
+    `dlil_input_async`). Found as a test failing under load.
   - A body that makes no progress for 30 s fails, where Go would wait on its context.
 - **URLs** follow RFC 3986 (iri-string): references resolve as §5.2 says, and nothing is
   normalized, so a presigned URL keeps the exact bytes its signature covers. Messages
@@ -553,7 +566,8 @@ Registries are reached with a small blocking HTTP/1.1 client on rustls and httpa
 - **Tests:** a scripted loopback server covers:
   - every framing and 1xx skipping;
   - 16 malformed responses, all refused;
-  - reuse of plain and TLS connections, and a stale pooled connection replaced;
+  - reuse of plain and TLS connections, a stale pooled connection replaced, and a 408 on
+    a reused connection resent, on a new one not;
   - RFC 3986's own resolution examples.
 
 ### Registry auth (D21)
