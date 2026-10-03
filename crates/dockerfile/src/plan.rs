@@ -64,7 +64,8 @@ pub struct Resolved {
 /// Finds a base image's config: `ResolveImageConfig`; and when a source SOURCE_DATE_EPOCH
 /// names was made: `resolveSourceDateEpochFromState`.
 pub trait Resolver {
-    fn resolve(&self, name: &[u8], platform: &Platform) -> Result<Resolved, Vec<u8>>;
+    /// `log` is what the step that resolves it is named, as BuildKit names it.
+    fn resolve(&self, name: &[u8], platform: &Platform, log: &[u8]) -> Result<Resolved, Vec<u8>>;
     /// When `source` says it was made, if it says: seconds and nanoseconds since 1970.
     fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>>;
 }
@@ -246,6 +247,12 @@ struct ArgInfo {
 
 struct Planner<'a> {
     opts: &'a Options,
+    /// Whether progress names carry the platform (dockerui's MultiPlatformRequested).
+    multi_platform: bool,
+    /// What cache mounts' IDs are under (dockerui's CacheIDNamespace).
+    cache_ns: Vec<u8>,
+    /// What RUN steps are named (dockerui's Hostname).
+    hostname: Vec<u8>,
     resolver: &'a dyn Resolver,
     lint: &'a Linter,
     shlex: Lex,
@@ -309,19 +316,66 @@ fn check_frontend(text: &[u8], build_args: &BTreeMap<Vec<u8>, Vec<u8>>) -> Resul
     }
 }
 
+/// What dockerui's Client.init takes from build args, each in place of the option it
+/// names, the check's in place of `# check=` (dockerfile/1.27.1 frontend/dockerui).
+struct Dockerui {
+    multi_platform: bool,
+    cache_ns: Vec<u8>,
+    hostname: Vec<u8>,
+    check: Option<lint::Config>,
+}
+
+/// Client.init's reading of BUILDKIT_MULTI_PLATFORM, BUILDKIT_CACHE_MOUNT_NS,
+/// BUILDKIT_SANDBOX_HOSTNAME and BUILDKIT_DOCKERFILE_CHECK, in that order, its errors
+/// dockerui's.
+fn dockerui(opts: &Options) -> Result<Dockerui, Vec<u8>> {
+    let arg = |k: &str| opts.build_args.get(k.as_bytes());
+    let mut multi_platform = opts.multi_platform;
+    if let Some(v) = arg("BUILDKIT_MULTI_PLATFORM").filter(|v| !v.is_empty()) {
+        let b = go::parse_bool(v).ok_or_else(|| errb(&[b"invalid boolean value for multi-platform: ", v]))?;
+        if !b && multi_platform {
+            return Err(b"conflicting config: returning multiple target platforms is not allowed".to_vec());
+        }
+        multi_platform = b;
+    }
+    let hostname = match arg("BUILDKIT_SANDBOX_HOSTNAME") {
+        Some(v) if !v.is_empty() => v.clone(),
+        _ => opts.hostname.clone(),
+    };
+    let check = arg("BUILDKIT_DOCKERFILE_CHECK")
+        .map(|v| {
+            lint::parse_options(v)
+                .map_err(|e| errb(&[b"failed to parse build-arg:BUILDKIT_DOCKERFILE_CHECK: ", &e]))
+        })
+        .transpose()?;
+    Ok(Dockerui {
+        multi_platform,
+        cache_ns: arg("BUILDKIT_CACHE_MOUNT_NS").cloned().unwrap_or_default(),
+        hostname,
+        check,
+    })
+}
+
 /// Plans `text` as Dockerfile2LLB does.
 pub fn plan(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Plan, Error> {
+    let fail = |message| Error {
+        message,
+        location: Vec::new(),
+        warnings: Vec::new(),
+    };
+    let mut ui = dockerui(opts).map_err(fail)?;
     check_frontend(text, &opts.build_args).map_err(|Fail(message, location)| Error {
         message,
         location,
         warnings: Vec::new(),
     })?;
-    let check = parser::directive_value(text, b"check").unwrap_or_default();
-    let config = lint::parse_options(&check).map_err(|e| Error {
-        message: errb(&[b"failed to parse check options: ", &e]),
-        location: Vec::new(),
-        warnings: Vec::new(),
-    })?;
+    let config = match ui.check.take() {
+        Some(config) => config,
+        None => {
+            let check = parser::directive_value(text, b"check").unwrap_or_default();
+            lint::parse_options(&check).map_err(|e| fail(errb(&[b"failed to parse check options: ", &e])))?
+        }
+    };
     let linter = Linter::new(config);
     let done = |r: Result<Plan, Fail>, linter: &Linter| match r {
         Ok(mut p) => {
@@ -340,11 +394,17 @@ pub fn plan(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Plan
             &linter,
         );
     }
-    let r = plan_with(text, opts, resolver, &linter);
+    let r = plan_with(text, opts, &ui, resolver, &linter);
     done(r, &linter)
 }
 
-fn plan_with(text: &[u8], opts: &Options, resolver: &dyn Resolver, linter: &Linter) -> Result<Plan, Fail> {
+fn plan_with(
+    text: &[u8],
+    opts: &Options,
+    ui: &Dockerui,
+    resolver: &dyn Resolver,
+    linter: &Linter,
+) -> Result<Plan, Fail> {
     if opts.target_platform.os != b"linux" {
         return Err(Fail::new(errb(&[
             b"shards builds Linux guests: the target platform ",
@@ -419,6 +479,9 @@ fn plan_with(text: &[u8], opts: &Options, resolver: &dyn Resolver, linter: &Lint
         opts,
         resolver,
         lint: linter,
+        multi_platform: ui.multi_platform,
+        cache_ns: ui.cache_ns.clone(),
+        hostname: ui.hostname.clone(),
         shlex,
         target_platform: opts.target_platform.clone(),
         build_platforms,
@@ -1449,7 +1512,14 @@ impl Planner<'_> {
         let mut image = ds.image.clone();
         let mut scratch = false;
         if reachable {
-            let resolved = self.resolver.resolve(&base_name, &platform).map_err(|e| {
+            let mut log = b"[".to_vec();
+            if self.multi_platform {
+                log.extend_from_slice(&platform::format_all(&platform));
+                log.push(b' ');
+            }
+            log.extend_from_slice(b"internal] load metadata for ");
+            log.extend_from_slice(&base_name);
+            let resolved = self.resolver.resolve(&base_name, &platform, &log).map_err(|e| {
                 let mut names = self.names();
                 for n in [
                     "alpine", "busybox", "centos", "debian", "golang", "ubuntu", "fedora",
@@ -1493,7 +1563,7 @@ impl Planner<'_> {
             }
             image = img;
         }
-        let multi = self.opts.multi_platform;
+        let multi = self.multi_platform;
         let ds = self
             .states
             .get_mut(d)
@@ -1558,7 +1628,7 @@ impl Planner<'_> {
             }
             self.init(d);
             let target_platform = self.target_platform.clone();
-            let hostname = self.opts.hostname.clone();
+            let hostname = self.hostname.clone();
             {
                 let ds = self
                     .states
@@ -1958,7 +2028,7 @@ impl Planner<'_> {
         commit_it: bool,
         cmd: Option<(&[u8], &Location, &LinterView<'_>)>,
     ) -> Result<(), Fail> {
-        let multi = self.opts.multi_platform;
+        let multi = self.multi_platform;
         let epoch = self.epoch;
         let ds = self.ds(d)?;
         if commit_it {
@@ -2087,7 +2157,7 @@ impl Planner<'_> {
         sources: &[usize],
         code: &[u8],
     ) -> Result<(), Fail> {
-        let multi = self.opts.multi_platform;
+        let multi = self.multi_platform;
         let paths = self.ds(d)?.paths;
         if let Some(set) = self.path_sets.get_mut(paths) {
             set.insert(b"/".to_vec());
@@ -2307,7 +2377,7 @@ impl Planner<'_> {
                     m.id = go::clean(&m.target);
                 }
                 kind = MountKind::Cache {
-                    id: errb(&[b"/", &m.id]),
+                    id: errb(&[&self.cache_ns, b"/", &m.id]),
                     sharing,
                 };
             }
@@ -2380,7 +2450,7 @@ impl Planner<'_> {
         loc: &Location,
         lint: &LinterView<'_>,
     ) -> Result<(), Fail> {
-        let multi = self.opts.multi_platform;
+        let multi = self.multi_platform;
         let target_platform = self.target_platform.clone();
         let ds = self
             .states
@@ -3579,16 +3649,25 @@ impl LintError for Linter {
 mod tests {
     use super::*;
 
-    /// Resolves no base image, answers SOURCE_DATE_EPOCH's source as told, and keeps
-    /// what it was asked.
+    /// Resolves every base image as one of one layer for linux/amd64, answers
+    /// SOURCE_DATE_EPOCH's source as told, and keeps what it was asked.
     struct Times {
         asked: std::cell::RefCell<Vec<EpochSource>>,
         answer: Result<Option<(i64, u32)>, Vec<u8>>,
+        logged: std::cell::RefCell<Vec<String>>,
     }
 
     impl Resolver for Times {
-        fn resolve(&self, name: &[u8], _: &Platform) -> Result<Resolved, Vec<u8>> {
-            Err(errb(&[name, b": not found"]))
+        fn resolve(&self, name: &[u8], _: &Platform, log: &[u8]) -> Result<Resolved, Vec<u8>> {
+            self.logged
+                .borrow_mut()
+                .push(String::from_utf8_lossy(log).into_owned());
+            Ok(Resolved {
+                reference: name.to_vec(),
+                digest: None,
+                // A layer, or it is scratch, as BuildKit takes an image of none.
+                config: br#"{"architecture":"amd64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":["sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d"]}}"#.to_vec(),
+            })
         }
 
         fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
@@ -3601,7 +3680,7 @@ mod tests {
         text: &str,
         args: &[(&str, &str)],
         answer: Result<Option<(i64, u32)>, Vec<u8>>,
-    ) -> (Result<Plan, Error>, Vec<EpochSource>) {
+    ) -> (Result<Plan, Error>, Vec<EpochSource>, Vec<String>) {
         let opts = Options {
             target_platform: Platform::new("linux", "amd64"),
             build_args: args
@@ -3613,9 +3692,10 @@ mod tests {
         let times = Times {
             asked: Default::default(),
             answer,
+            logged: Default::default(),
         };
         let planned = plan(text.as_bytes(), &opts, &times);
-        (planned, times.asked.into_inner())
+        (planned, times.asked.into_inner(), times.logged.into_inner())
     }
 
     const SUM: &str = "sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d";
@@ -3632,7 +3712,7 @@ mod tests {
              FROM scratch\nWORKDIR /w\n"
         );
         let args = [("SOURCE_DATE_EPOCH", "SRC"), ("W", "-b")];
-        let (planned, asked) = planned(&text, &args, Ok(Some((1_700_000_000, 5))));
+        let (planned, asked, _) = planned(&text, &args, Ok(Some((1_700_000_000, 5))));
         let planned = planned.unwrap();
         assert_eq!(
             asked,
@@ -3672,10 +3752,10 @@ mod tests {
     /// resolver cannot answer fails the build with what it says.
     #[test]
     fn each_source_of_the_time_is_asked_for_as_it_is_named() {
-        let (_, asked) = planned("FROM scratch\n", &[("SOURCE_DATE_EPOCH", "context")], Ok(None));
+        let (_, asked, _) = planned("FROM scratch\n", &[("SOURCE_DATE_EPOCH", "context")], Ok(None));
         assert_eq!(asked, [EpochSource::Context]);
         let text = "FROM scratch AS src\nADD --checksum=abc123 https://github.com/moby/buildkit.git?ref=v1 /\n\nFROM scratch\n";
-        let (_, asked) = planned(text, &[("SOURCE_DATE_EPOCH", "src")], Ok(None));
+        let (_, asked, _) = planned(text, &[("SOURCE_DATE_EPOCH", "src")], Ok(None));
         let [EpochSource::Git { stage, git }] = asked.as_slice() else {
             panic!("{asked:?}");
         };
@@ -3684,9 +3764,9 @@ mod tests {
             (&b"src"[..], &b"abc123"[..])
         );
         assert_eq!(git.remote, b"https://github.com/moby/buildkit.git");
-        let (_, asked) = planned("FROM scratch\n", &[("SOURCE_DATE_EPOCH", "+42")], Ok(None));
+        let (_, asked, _) = planned("FROM scratch\n", &[("SOURCE_DATE_EPOCH", "+42")], Ok(None));
         assert!(asked.is_empty());
-        let (failed, _) = planned(
+        let (failed, _, _) = planned(
             "FROM scratch\n",
             &[("SOURCE_DATE_EPOCH", "context")],
             Err(b"no answer".to_vec()),
@@ -3704,6 +3784,7 @@ mod tests {
         let times = Times {
             asked: Default::default(),
             answer: Ok(None),
+            logged: Default::default(),
         };
         let planned = plan(text.as_bytes(), &opts, &times).unwrap();
         planned
@@ -3801,6 +3882,93 @@ mod tests {
                 vec![]
             ))
         );
+    }
+
+    /// The build args dockerui reads as options, each as BuildKit reads it (measured,
+    /// dockerfile/1.27.1): BUILDKIT_MULTI_PLATFORM names steps by platform, and fails as
+    /// no boolean; BUILDKIT_DOCKERFILE_CHECK stands in for `# check=`, and fails as no
+    /// check; BUILDKIT_SANDBOX_HOSTNAME names RUN's host; BUILDKIT_CACHE_MOUNT_NS is what
+    /// cache mounts' IDs are under.
+    #[test]
+    fn buildkits_build_arg_options_are_read_as_dockerui_reads_them() {
+        let message = |text: &str, args: &[(&str, &str)]| {
+            planned(text, args, Ok(None))
+                .0
+                .err()
+                .map(|e| String::from_utf8_lossy(&e.message).into_owned())
+        };
+        assert_eq!(
+            message("FROM scratch\n", &[("BUILDKIT_MULTI_PLATFORM", "x")]).as_deref(),
+            Some("invalid boolean value for multi-platform: x")
+        );
+        assert_eq!(
+            message("FROM scratch\n", &[("BUILDKIT_DOCKERFILE_CHECK", "nope")]).as_deref(),
+            Some("failed to parse build-arg:BUILDKIT_DOCKERFILE_CHECK: invalid check option \"nope\"")
+        );
+        assert_eq!(
+            message("FROM scratch\n", &[("BUILDKIT_DOCKERFILE_CHECK", "error=maybe")]).as_deref(),
+            Some(
+                "failed to parse build-arg:BUILDKIT_DOCKERFILE_CHECK: failed to parse check option \"error=maybe\": \
+                 strconv.ParseBool: parsing \"maybe\": invalid syntax"
+            )
+        );
+        let casing = "# check=skip=all\nFROM scratch\nRUN true\nrun true\n";
+        assert_eq!(message(casing, &[]), None);
+        assert_eq!(
+            message(casing, &[("BUILDKIT_DOCKERFILE_CHECK", "error=true")]).as_deref(),
+            Some("lint violation found for rules: ConsistentInstructionCasing")
+        );
+        // A base image's platform names steps; scratch has none, which names none (measured).
+        let text = "FROM alpine\nRUN --mount=type=cache,target=/c true\n";
+        let args = [
+            ("BUILDKIT_MULTI_PLATFORM", "1"),
+            ("BUILDKIT_SANDBOX_HOSTNAME", "myhost"),
+            ("BUILDKIT_CACHE_MOUNT_NS", "ns"),
+        ];
+        // The cache mount, from no stage, is from scratch, a stage of its own: so the one
+        // stage written keeps its name (measured, as each name here).
+        for (args, hostname, id, prefix, log) in [
+            (
+                &args[..],
+                "myhost",
+                "ns//c",
+                "[linux/amd64 stage-0 2/2] RUN",
+                "[linux/amd64 internal] load metadata for docker.io/library/alpine:latest",
+            ),
+            (
+                &[],
+                "",
+                "//c",
+                "[stage-0 2/2] RUN",
+                "[internal] load metadata for docker.io/library/alpine:latest",
+            ),
+        ] {
+            let (planned, _, logged) = planned(text, args, Ok(None));
+            assert_eq!(logged, [log]);
+            let planned = planned.unwrap();
+            let (run, process, mounts) = planned
+                .graph
+                .vertices
+                .iter()
+                .find_map(|v| match &v.kind {
+                    llb::Kind::Exec { process, mounts, .. } => Some((v, process, mounts)),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(process.hostname, hostname.as_bytes());
+            assert!(
+                mounts
+                    .iter()
+                    .any(|m| matches!(&m.kind, llb::MountKind::Cache { id: i, .. } if i == id.as_bytes())),
+                "{mounts:?}"
+            );
+            let name = run.meta.description.get(b"llb.customname".as_slice()).unwrap();
+            assert!(
+                name.starts_with(prefix.as_bytes()),
+                "{}",
+                String::from_utf8_lossy(name)
+            );
+        }
     }
 
     /// `strings.Index`: an empty needle is at the start.

@@ -518,6 +518,7 @@ impl shards_dockerfile::plan::Resolver for Images {
         &self,
         name: &[u8],
         _: &shards_dockerfile::platform::Platform,
+        _: &[u8],
     ) -> Result<shards_dockerfile::plan::Resolved, Vec<u8>> {
         let key = String::from_utf8_lossy(name).to_string();
         let Some(img) = self.0.get(&key) else {

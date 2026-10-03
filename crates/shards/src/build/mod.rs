@@ -203,12 +203,9 @@ struct Bases<'a> {
 }
 
 impl Resolver for Bases<'_> {
-    fn resolve(&self, name: &[u8], platform: &Platform) -> Result<Resolved, Vec<u8>> {
+    fn resolve(&self, name: &[u8], platform: &Platform, log: &[u8]) -> Result<Resolved, Vec<u8>> {
         let name = String::from_utf8_lossy(name).into_owned();
-        let v = self
-            .progress
-            .borrow_mut()
-            .start(&format!("[internal] load metadata for {name}"));
+        let v = self.progress.borrow_mut().start(&String::from_utf8_lossy(log));
         let r = self.fetch(&name, platform);
         let progress = self.progress.borrow();
         match &r {
