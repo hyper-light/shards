@@ -2447,6 +2447,53 @@ fn load_reads_archives_as_docker_load_does() {
     let doc: serde_json::Value =
         serde_json::from_str(&shards(&["image", "inspect", "reused:1"]).stdout).unwrap();
     assert_eq!(doc[0]["Id"], sha256_digest(reused.as_bytes()).as_str());
+    // Pulled with a Docker v2 manifest, its gzip layer is found as well.
+    let (_, v2_blobs) = common::test_image_with(Some(b"docker-v2"));
+    let (v2_config, v2_raw) = (&v2_blobs[0], &v2_blobs[1]);
+    let mut gzip = Command::new("gzip")
+        .arg("-c")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut feed = gzip.stdin.take().unwrap();
+    let raw = v2_raw.clone();
+    let feeding = std::thread::spawn(move || feed.write_all(&raw).unwrap());
+    let v2_gz = gzip.wait_with_output().unwrap().stdout;
+    feeding.join().unwrap();
+    let v2_manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{{"mediaType":"application/vnd.docker.container.image.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.docker.image.rootfs.diff.tar.gzip","digest":"{}","size":{}}}]}}"#,
+        sha256_digest(v2_config),
+        v2_config.len(),
+        sha256_digest(&v2_gz),
+        v2_gz.len()
+    );
+    let (v2_port, _) = registry(
+        v2_manifest.clone().into_bytes(),
+        vec![v2_config.clone(), v2_gz.clone()],
+    );
+    let pulled = shards(&["pull", "-q", &format!("127.0.0.1:{v2_port}/test/image:v1")]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let v2_reuse = common::tar(&[
+        ("cfg.json", 0o644, 0, Some(v2_config.as_slice())),
+        ("ghi", 0o755, 0, None),
+        ("ghi/layer.tar", 0o644, 0, Some(v2_raw.as_slice())),
+        (
+            "manifest.json",
+            0o644,
+            0,
+            Some(br#"[{"Config":"cfg.json","RepoTags":["reused:2"],"Layers":["ghi/layer.tar"]}]"#),
+        ),
+    ]);
+    let v2_tar = home.join("v2-reuse.tar");
+    std::fs::write(&v2_tar, v2_reuse).unwrap();
+    assert_eq!(
+        shards(&["load", "-i", v2_tar.to_str().unwrap()]).stdout,
+        "Loaded image: reused:2\n"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&shards(&["image", "inspect", "reused:2"]).stdout).unwrap();
+    assert_eq!(doc[0]["Id"], sha256_digest(v2_manifest.as_bytes()).as_str());
     // Saved by ID: no name, so loaded by its ID.
     let by_id = home.join("by-id.tar");
     let short = sha256_digest(&index);

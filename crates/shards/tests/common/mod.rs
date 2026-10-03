@@ -735,10 +735,14 @@ pub fn registry_of(image: Served) -> (u16, Arc<AtomicUsize>, Served) {
                     let (manifest, blobs) = image.lock().unwrap().clone();
                     let mut parts = line.split(' ');
                     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-                    // A document's own media type: an index's, or a manifest's.
+                    // A document's own media type: an index's, or a manifest's, OCI's or
+                    // Docker's v2.
+                    let has = |doc: &[u8], what: &[u8]| doc.windows(what.len()).any(|w| w == what);
                     let kind = |doc: &[u8]| {
-                        if doc.windows(b"image.index".len()).any(|w| w == b"image.index") {
+                        if has(doc, b"image.index") {
                             "application/vnd.oci.image.index.v1+json"
+                        } else if has(doc, b"application/vnd.docker.distribution.manifest.v2+json") {
+                            "application/vnd.docker.distribution.manifest.v2+json"
                         } else {
                             "application/vnd.oci.image.manifest.v1+json"
                         }

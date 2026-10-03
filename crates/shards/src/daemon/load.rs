@@ -250,11 +250,14 @@ fn compressed_layers(store: &Store) -> BTreeMap<Digest, (Digest, u64)> {
         let Some(config) = image.config.as_deref().and_then(|c| oci::parse_config(c).ok()) else {
             continue;
         };
-        let desc = blob_desc(oci::media::OCI_MANIFEST, &image.manifest, 0);
         let Ok(bytes) = std::fs::read(store.blob_path(&image.manifest)) else {
             continue;
         };
-        let Ok(oci::Document::Manifest(m)) = oci::parse_document(&bytes, &desc.media_type) else {
+        // As the manifest says it is, a Docker v2 one or an OCI one; one that says nothing
+        // is OCI's.
+        let parsed = oci::parse_document(&bytes, "")
+            .or_else(|_| oci::parse_document(&bytes, oci::media::OCI_MANIFEST));
+        let Ok(oci::Document::Manifest(m)) = parsed else {
             continue;
         };
         for (layer, diff_id) in m.layers.iter().zip(&config.rootfs.diff_ids) {
