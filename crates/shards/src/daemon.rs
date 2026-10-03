@@ -232,11 +232,38 @@ struct Keep<'a> {
 /// and of the daemon. The alternatives cost more: one lock over every run's state would
 /// serialize their record writes, and asking each run's thread would add a round trip per
 /// run to every command (docs/audit/2026-09-30_arc.md).
+/// A run's socket to its VM. A message bigger than the socket's buffer (8 KiB on macOS)
+/// goes out in more than one write, and another sender's between them would spoil both,
+/// and the VM's reading after them: senders take turns. A send waits for room at most
+/// TAKE_TIMEOUT, as a live VM reads what it is sent at once: one that has stopped reading
+/// fails it, rather than every sender after it.
+struct RunSocket {
+    stream: UnixStream,
+    sending: Mutex<()>,
+}
+
+impl RunSocket {
+    fn new(stream: UnixStream) -> RunSocket {
+        if let Err(e) = stream.set_write_timeout(Some(TAKE_TIMEOUT)) {
+            log(format!("a run's socket: {e}"));
+        }
+        RunSocket {
+            stream,
+            sending: Mutex::new(()),
+        }
+    }
+
+    fn send(&self, kind: u8, payload: &[u8], fds: &[BorrowedFd<'_>]) -> std::io::Result<()> {
+        let _turn = lock(&self.sending);
+        shards_ipc::send(&self.stream, kind, payload, fds)
+    }
+}
+
 struct Tracked {
     /// What its run was composed of: read, never changed, by each `exec` and health
     /// probe, on threads of their own, which share it rather than copy it each time.
     base: Arc<Base>,
-    socket: Arc<UnixStream>,
+    socket: Arc<RunSocket>,
     vm: Arc<shards_ipc::Child>,
     inbox: Arc<Mutex<Inbox>>,
 }
@@ -246,7 +273,7 @@ struct Tracked {
 /// command before it answers (`settle`). A run tells the daemon of its start and end
 /// before its client learns of them, so a command sees what any client has seen.
 struct Inbox {
-    socket: Arc<UnixStream>,
+    socket: Arc<RunSocket>,
     /// The warm VM's process ID, for the log.
     pid: u32,
     started: bool,
@@ -1267,32 +1294,27 @@ impl<D: Disk> Daemon<D> {
         let mut keep = keep;
         for _ in 0..HANDOFF_TRIES {
             let ready = acquire().map_err(|e| self.not_started(id, &e))?;
-            // Its published ports go to its VM's network process before the VM has the
-            // run, so that none of their connections wait on its start; taken, they are
-            // that process's alone, which closes them as the run ends.
-            let mut taken = false;
-            if let Some(net) = &ready.net
-                && !keep.published.is_empty()
-            {
-                let guest_ports: Vec<u8> = keep
-                    .published
-                    .iter()
-                    .flat_map(|l| {
-                        let [hi, lo] = l.guest_port.to_be_bytes();
-                        [hi, lo, l.proto]
-                    })
-                    .collect();
-                let fds: Vec<BorrowedFd<'_>> = keep.published.iter().map(|l| l.fd.as_fd()).collect();
-                let _ = net.set_read_timeout(Some(PUBLISH_PATIENCE));
-                taken = shards_ipc::send(net, kind::PUBLISH, &guest_ports, &fds)
-                    .and_then(|()| shards_ipc::recv(net))
-                    .map_err(|e| log(format!("warm VM {}'s published ports: {e}", ready.vm.id())))
-                    .is_ok_and(|m| m.is_some_and(|m| m.kind == kind::PUBLISH));
-            }
             // Every way on leaves `Handing` while `ready` holds the socket it names.
             if let Err(said) = self.commit(id, ready.socket.as_raw_fd()) {
                 self.give_back(threads, ready);
                 return Err(said);
+            }
+            // Its published ports go to its VM's network process before the VM has the
+            // run, so that none of their connections wait on its start; taken, they are
+            // that process's alone, which closes them as the run ends. Committed first:
+            // a VM given them never goes back to its pool. One that does not take them
+            // goes, and another is tried, rather than a run whose ports answer nobody.
+            if !keep.published.is_empty() {
+                let given = match &ready.net {
+                    Some(net) => give_ports(net, &keep.published),
+                    None => Err(std::io::Error::other("no network process")),
+                };
+                if let Err(e) = given {
+                    log(format!("warm VM {}'s published ports: {e}", ready.vm.id()));
+                    let _ = ready.vm.kill(libc::SIGKILL);
+                    self.uncommit(id);
+                    continue;
+                }
             }
             let handed = hand_over(&ready.socket, payload, fds);
             // Only now, so that starting its successor delays no run, and on a thread of
@@ -1301,12 +1323,9 @@ impl<D: Disk> Daemon<D> {
             match handed {
                 // The warm VM serves the client from here, and ours close. A detached
                 // client waits for the daemon to say whether its command started.
+                // The network process has the ports: the daemon's copies go (M24).
                 Ok(()) => {
-                    // Taken, the daemon's copies go; else they are held until the network
-                    // process has gone (M24).
-                    if taken {
-                        keep.published.clear();
-                    }
+                    keep.published.clear();
                     return Ok(self.register(ready, id, keep));
                 }
                 Err(Untaken::Surely(e)) => {
@@ -1346,6 +1365,9 @@ impl<D: Disk> Daemon<D> {
 
     /// Holds what container `id` publishes at `listeners`' addresses.
     fn hold_ports(&self, id: &str, listeners: &[publish::Listener]) {
+        if listeners.is_empty() {
+            return;
+        }
         let at = listeners.iter().map(|l| (l.at, l.proto)).collect();
         lock(&self.ports_held).push(publish::Held {
             container: id.to_string(),
@@ -1386,10 +1408,12 @@ impl<D: Disk> Daemon<D> {
                     publish::InUse::Host
                 };
             };
+            // Running, or starting: dockerd's allocator holds a port from the container's
+            // start, not from its command's.
             let running = lock(&self.containers)
                 .get(&holder)
                 .is_some_and(|c| c.state == Life::Running);
-            if running {
+            if running || lock(&self.runs).contains_key(&holder) {
                 return publish::InUse::Allocated;
             }
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
@@ -1807,7 +1831,7 @@ impl<D: Disk> Daemon<D> {
         }
         // Runs last as long as their commands.
         let _ = ready.socket.set_read_timeout(None);
-        let socket = Arc::new(ready.socket);
+        let socket = Arc::new(RunSocket::new(ready.socket));
         let detached = detached.and_then(|conn| {
             conn.try_clone()
                 .map_err(|e| log(format!("holding a detached client's connection: {e}")))
@@ -1832,12 +1856,15 @@ impl<D: Disk> Daemon<D> {
             vm: ready.vm,
             inbox: inbox.clone(),
         };
+        // Seen under the runs' lock, `ending` signals what stop_runs did not see; sent once
+        // it is let go of, as no send waits under it.
         let mut runs = lock(&self.runs);
-        if self.ending.load(Ordering::SeqCst) {
-            let _ = shards_ipc::send(&tracked.socket, kind::SIGNAL, &15u32.to_be_bytes(), &[]);
-        }
+        let ending = self.ending.load(Ordering::SeqCst).then(|| tracked.socket.clone());
         runs.insert(id.to_string(), RunState::Tracked(tracked));
         drop(runs);
+        if let Some(socket) = ending {
+            let _ = socket.send(kind::SIGNAL, &15u32.to_be_bytes(), &[]);
+        }
         self.resolved.notify_all();
         inbox
     }
@@ -1849,7 +1876,7 @@ impl<D: Disk> Daemon<D> {
     /// and if not, why not, as `docker run -d` does.
     fn follow(&self, id: &str, inbox: &Mutex<Inbox>) {
         // Open while `inbox` holds the socket.
-        let fd = lock(inbox).socket.as_raw_fd();
+        let fd = lock(inbox).socket.stream.as_raw_fd();
         // A command may have taken the run's end already; then this learns it within a
         // tick.
         while !self.take_messages(id, inbox) {
@@ -1867,8 +1894,8 @@ impl<D: Disk> Daemon<D> {
     /// ended.
     fn take_messages(&self, id: &str, inbox: &Mutex<Inbox>) -> bool {
         let mut inbox = lock(inbox);
-        while !inbox.ended && readable(&inbox.socket) {
-            match shards_ipc::recv(&inbox.socket) {
+        while !inbox.ended && readable(&inbox.socket.stream) {
+            match shards_ipc::recv(&inbox.socket.stream) {
                 Ok(Some(m)) if m.kind == kind::STARTED => self.run_started(id, &mut inbox),
                 Ok(Some(m)) if m.kind == kind::DONE => self.run_ended(id, &mut inbox, Some(&m.payload)),
                 Ok(Some(m)) if m.kind == kind::LOST => self.log_lost(id, &m.payload),
@@ -1908,14 +1935,11 @@ impl<D: Disk> Daemon<D> {
         let sent = match &made {
             Some((log, index)) => {
                 inbox.segment = seq;
-                shards_ipc::send(
-                    &inbox.socket,
-                    kind::SEGMENT,
-                    &seq.to_be_bytes(),
-                    &[log.as_fd(), index.as_fd()],
-                )
+                inbox
+                    .socket
+                    .send(kind::SEGMENT, &seq.to_be_bytes(), &[log.as_fd(), index.as_fd()])
             }
-            None => shards_ipc::send(&inbox.socket, kind::SEGMENT, &seq.to_be_bytes(), &[]),
+            None => inbox.socket.send(kind::SEGMENT, &seq.to_be_bytes(), &[]),
         };
         if let Err(e) = sent {
             log(format!("container {id}: answering for its log: {e}"));
@@ -2155,20 +2179,25 @@ impl<D: Disk> Daemon<D> {
     /// to each command, SIGKILL to any still running after STOP_GRACE, and the VM itself
     /// if its command outlives even that (moby daemon/daemon.go Shutdown, daemon/stop.go).
     fn stop_runs<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
-        let signal = |runs: &HashMap<String, RunState>, linux: u32| {
-            for t in tracked(runs) {
-                let _ = shards_ipc::send(&t.socket, kind::SIGNAL, &linux.to_be_bytes(), &[]);
+        // The runs' sockets, taken under their lock, signalled once it is let go of.
+        let sockets = |runs: &HashMap<String, RunState>| -> Vec<Arc<RunSocket>> {
+            tracked(runs).map(|t| t.socket.clone()).collect()
+        };
+        let signal = |sockets: Vec<Arc<RunSocket>>, linux: u32| {
+            for socket in sockets {
+                let _ = socket.send(kind::SIGNAL, &linux.to_be_bytes(), &[]);
             }
         };
-        {
+        let running = {
             // Under the runs' lock: a run still starting is either here to be signalled,
             // or sees `ending` when it commits or registers (audit A06).
             let runs = lock(&self.runs);
             if self.ending.swap(true, Ordering::SeqCst) {
                 return;
             }
-            signal(&runs, 15);
-        }
+            sockets(&runs)
+        };
+        signal(running, 15);
         let stopped = Instant::now();
         let escalating = std::thread::Builder::new()
             .name("stop".into())
@@ -2190,8 +2219,9 @@ impl<D: Disk> Daemon<D> {
                 let Some(runs) = left_at(stopped + STOP_GRACE) else {
                     return;
                 };
-                signal(&runs, 9);
+                let running = sockets(&runs);
                 drop(runs);
+                signal(running, 9);
                 let Some(runs) = left_at(stopped + STOP_GRACE + SHUTDOWN_KILL) else {
                     return;
                 };
@@ -2778,6 +2808,29 @@ impl<D: Disk> Daemon<D> {
     }
 }
 
+/// Gives a VM's network process a run's published listeners, at most a message's
+/// descriptors at a time, each batch acknowledged before the next: the daemon keeps its
+/// copies until the run has started (M24).
+fn give_ports(net: &UnixStream, published: &[publish::Listener]) -> std::io::Result<()> {
+    net.set_read_timeout(Some(PUBLISH_PATIENCE))?;
+    for batch in published.chunks(shards_ipc::MAX_FDS) {
+        let ports: Vec<u8> = batch
+            .iter()
+            .flat_map(|l| {
+                let [hi, lo] = l.guest_port.to_be_bytes();
+                [hi, lo, l.proto]
+            })
+            .collect();
+        let fds: Vec<BorrowedFd<'_>> = batch.iter().map(|l| l.fd.as_fd()).collect();
+        shards_ipc::send(net, kind::PUBLISH, &ports, &fds)?;
+        match shards_ipc::recv(net)? {
+            Some(m) if m.kind == kind::PUBLISH => {}
+            _ => return Err(std::io::Error::other("it did not take them")),
+        }
+    }
+    Ok(())
+}
+
 /// Why a warm VM did not say it took a run.
 #[derive(Debug, PartialEq, Eq)]
 enum Untaken {
@@ -2878,6 +2931,35 @@ fn ready(socket: &UnixStream, pid: u32) -> Result<(), String> {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use std::io::{Read, Write};
+
+    /// Senders take turns on a run's socket: messages bigger than its buffer, sent from
+    /// four threads at once, each arrive whole and as sent. Without the turns, a send's
+    /// writes and another's interleave.
+    #[test]
+    fn senders_on_a_run_socket_take_turns() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let socket = super::RunSocket::new(ours);
+        std::thread::scope(|scope| {
+            for sender in 0u8..4 {
+                let socket = &socket;
+                scope.spawn(move || {
+                    let message = vec![sender; 64 << 10];
+                    for _ in 0..16 {
+                        socket.send(kind::SIGNAL, &message, &[]).unwrap();
+                    }
+                });
+            }
+            for _ in 0..64 {
+                let m = shards_ipc::recv(&theirs).unwrap().unwrap();
+                assert_eq!(m.kind, kind::SIGNAL);
+                assert_eq!(m.payload.len(), 64 << 10);
+                assert!(
+                    m.payload.iter().all(|&b| b == m.payload[0]),
+                    "a message mixed with another"
+                );
+            }
+        });
+    }
 
     use crate::containers::{Disk, Real};
 

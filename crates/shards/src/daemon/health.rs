@@ -256,7 +256,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             spec.encode_into(&mut payload);
             lock(&inbox).execs_in_flight.push((number, held));
             let fds = [theirs.as_fd(), null.as_fd(), into.as_fd(), into.as_fd()];
-            if let Err(e) = shards_ipc::send(&socket, shards_ipc::kind::EXEC_RUN, &payload, &fds) {
+            if let Err(e) = socket.send(shards_ipc::kind::EXEC_RUN, &payload, &fds) {
                 lock(&inbox).execs_in_flight.retain(|(n, _)| *n != number);
                 return failed(format!("starting the health check: {e}"));
             }

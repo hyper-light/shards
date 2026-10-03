@@ -259,7 +259,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         lock(&inbox).execs_in_flight.push((number, held));
         let fds = [conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
-        if let Err(e) = shards_ipc::send(&socket, kind::EXEC_RUN, &payload, &fds) {
+        if let Err(e) = socket.send(kind::EXEC_RUN, &payload, &fds) {
             lock(&inbox).execs_in_flight.retain(|(n, _)| *n != number);
             refuse(&format!(
                 "Error response from daemon: the container's microVM: {e}"
@@ -421,12 +421,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// Sends Linux signal `linux` to the command of the container with `id`; whether it
     /// could.
     fn signal(&self, id: &str, linux: u32) -> bool {
-        match lock(&self.runs).get(id) {
-            Some(RunState::Tracked(t)) => {
-                shards_ipc::send(&t.socket, kind::SIGNAL, &linux.to_be_bytes(), &[]).is_ok()
-            }
-            _ => false,
-        }
+        // Sent once the runs' lock is let go of: no send waits under it.
+        let socket = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(t)) => t.socket.clone(),
+            _ => return false,
+        };
+        socket.send(kind::SIGNAL, &linux.to_be_bytes(), &[]).is_ok()
     }
 
     /// Ends the command of the running container with `id` as dockerd does (moby

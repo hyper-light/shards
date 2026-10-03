@@ -100,6 +100,44 @@ fn home(name: &str) -> Option<(TempDir, String)> {
     Some((home, image))
 }
 
+/// More published sockets than one message carries (shards_ipc::MAX_FDS, 8): five
+/// ports on every address are ten listeners, each handed to the VM's network process, and
+/// each reaching the guest.
+#[test]
+fn many_published_ports_all_reach_the_guest() {
+    use std::io::{Read as _, Write as _};
+    let Some((home, image)) = home("containers-publish-many") else {
+        return;
+    };
+    let mut run = start(
+        &home,
+        &image,
+        &[
+            "--name", "many", "-p", "7000", "-p", "7000", "-p", "7000", "-p", "7000", "-p", "7000",
+        ],
+        &["serve", "7000", "5"],
+    );
+    let listed = shards_in(&home, &["port", "many", "7000"]);
+    assert_eq!(listed.stdout.lines().count(), 10, "{listed}");
+    let ports: Vec<u16> = listed
+        .stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("0.0.0.0:"))
+        .map(|p| p.parse().unwrap())
+        .collect();
+    assert_eq!(ports.len(), 5, "{listed}");
+    for port in ports {
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        c.set_read_timeout(Some(TIMEOUT)).unwrap();
+        c.write_all(b"hello").unwrap();
+        c.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut got = String::new();
+        c.read_to_string(&mut got).unwrap();
+        assert_eq!(got, "from 172.17.0.1\nhello", "port {port}");
+    }
+    assert_eq!(exit(&mut run), Some(0));
+}
+
 #[test]
 fn a_run_leaves_its_container_until_rm() {
     let Some((home, image)) = home("containers-rm") else {
