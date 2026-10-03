@@ -2,6 +2,8 @@
 
 #[cfg(target_os = "linux")]
 mod build;
+#[cfg(target_os = "linux")]
+mod defaults;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod frames;
 #[cfg(target_os = "linux")]

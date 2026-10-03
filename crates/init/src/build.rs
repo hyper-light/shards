@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use shards_abi::build::{self, Mount, Network, Step, Tree, kind};
 use shards_abi::run;
 
+use crate::defaults::{self, CAPS, DEVICES, LINKS, MASKED, READONLY};
 use crate::inroot::{self, Root};
 use crate::linux::power_off;
 use crate::run::{dial, loopback_up, send};
@@ -35,33 +36,6 @@ const LAYERS: &str = "/l";
 const ROOT: &str = "/root";
 const CACHES: &str = "/c";
 const EMPTY: &str = "/empty";
-
-/// BuildKit's capabilities in its sandbox (containerd's defaults, docs/research/buildkit-
-/// run.md §4), by number (linux/capability.h).
-const SANDBOX_CAPS: [u32; 14] = [0, 1, 3, 4, 5, 6, 7, 8, 10, 13, 18, 27, 29, 31];
-
-/// Paths BuildKit masks and makes read-only in its sandbox (§3).
-const MASKED: [&str; 12] = [
-    "/proc/acpi",
-    "/proc/asound",
-    "/proc/interrupts",
-    "/proc/kcore",
-    "/proc/keys",
-    "/proc/latency_stats",
-    "/proc/timer_list",
-    "/proc/timer_stats",
-    "/proc/sched_debug",
-    "/sys/firmware",
-    "/sys/devices/virtual/powercap",
-    "/proc/scsi",
-];
-const READONLY: [&str; 5] = [
-    "/proc/bus",
-    "/proc/fs",
-    "/proc/irq",
-    "/proc/sys",
-    "/proc/sysrq-trigger",
-];
 
 fn err(what: impl std::fmt::Display) -> io::Error {
     io::Error::other(what.to_string())
@@ -728,16 +702,8 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
     )?;
     // The new tmpfs, as /dev now resolves.
     let dev = r.open_at(b"/dev", libc::O_PATH | libc::O_DIRECTORY)?;
-    let devs: &[(&str, u32, u32)] = &[
-        ("null", 1, 3),
-        ("zero", 1, 5),
-        ("full", 1, 7),
-        ("random", 1, 8),
-        ("urandom", 1, 9),
-        ("tty", 5, 0),
-    ];
-    for (name, major, minor) in devs {
-        inroot::mknodat(&dev, name, libc::S_IFCHR | 0o666, *major, *minor)?;
+    for (name, major, minor) in DEVICES {
+        inroot::mknodat(&dev, name, libc::S_IFCHR | 0o666, major, minor)?;
     }
     if step.insecure {
         // What BuildKit adds outside a user namespace with security.insecure (§4).
@@ -755,13 +721,7 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
         let net = r.open_at(b"/dev/net", libc::O_PATH | libc::O_DIRECTORY)?;
         inroot::mknodat(&net, "tun", libc::S_IFCHR | 0o660, 10, 200)?;
     }
-    for (target, link) in [
-        ("/proc/self/fd", "fd"),
-        ("/proc/self/fd/0", "stdin"),
-        ("/proc/self/fd/1", "stdout"),
-        ("/proc/self/fd/2", "stderr"),
-        ("pts/ptmx", "ptmx"),
-    ] {
+    for (target, link) in LINKS {
         inroot::symlinkat(target, &dev, link)?;
     }
     if Path::new("/proc/kcore").exists() {
@@ -990,35 +950,13 @@ fn bind(
     Ok(())
 }
 
-#[repr(C)]
-struct CapHeader {
-    version: u32,
-    pid: i32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct CapData {
-    effective: u32,
-    permitted: u32,
-    inheritable: u32,
-}
-
 /// Groups, gid and uid, then the capabilities BuildKit gives a step, as runc applies them:
 /// the bounding set first, the others kept across the change of user.
 fn identity(step: &Step) -> io::Result<()> {
-    let last = std::fs::read_to_string("/proc/sys/kernel/cap_last_cap")
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .unwrap_or(40);
-    let keep = |c: u32| step.insecure || SANDBOX_CAPS.contains(&c);
-    for c in 0..=last {
-        if !keep(c) {
-            // SAFETY: prctl(2) with constant arguments.
-            if unsafe { libc::prctl(libc::PR_CAPBSET_DROP, c as libc::c_ulong, 0, 0, 0) } != 0 {
-                return Err(os_err("dropping a capability"));
-            }
-        }
+    let last = defaults::last_cap();
+    let keep = |c: u32| step.insecure || CAPS.contains(&c);
+    if !defaults::bound(last, keep) {
+        return Err(os_err("dropping a capability"));
     }
     // SAFETY: prctl(2) with constant arguments.
     if unsafe { libc::prctl(libc::PR_SET_KEEPCAPS, 1, 0, 0, 0) } != 0 {
@@ -1042,20 +980,7 @@ fn identity(step: &Step) -> io::Result<()> {
     // file or ambient capabilities (capabilities(7)): as BuildKit's steps have it (CapPrm
     // and CapEff 0 for USER 1000:1000 and for nobody, Docker Desktop's BuildKit,
     // 2026-10-02).
-    let mut data = [CapData::default(); 2];
-    for c in (0..=last).filter(|&c| keep(c)) {
-        if let Some(d) = data.get_mut((c / 32) as usize) {
-            d.effective |= 1 << (c % 32);
-            d.permitted |= 1 << (c % 32);
-        }
-    }
-    let mut header = CapHeader {
-        // _LINUX_CAPABILITY_VERSION_3
-        version: 0x2008_0522,
-        pid: 0,
-    };
-    // SAFETY: capset(2) with a version 3 header and two data structs.
-    if unsafe { libc::syscall(libc::SYS_capset, &raw mut header, data.as_ptr()) } != 0 {
+    if !defaults::set(last, keep) {
         return Err(os_err("capset"));
     }
     Ok(())

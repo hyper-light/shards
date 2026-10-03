@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use shards_abi::run::{self, Size, Spec, kind};
 use shards_abi::{control, marker};
 
+use crate::defaults::{self, CAPS, DEVICES, LINKS, MASKED, READONLY};
 use crate::frames::{Outbox, each_frame};
 use crate::linux::power_off;
 use crate::orders::{Orders, cstrings, pointers};
@@ -216,7 +217,8 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     chdir_chroot(".", true)?;
     chdir_chroot("/", false)?;
     // Docker's mounts for a container (moby daemon/pkg/oci/defaults.go, a 64 MiB /dev/shm
-    // from daemon/config/config.go), except that /dev holds the VM's own devices.
+    // from daemon/config/config.go): /dev holds a container's devices alone, not the VM's
+    // disks, memory and console.
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
     for (source, target, fstype, flags, data) in [
         ("proc", "/proc", "proc", nosuid | noexec | nodev, ""),
@@ -227,7 +229,13 @@ fn mount_root(device: &str) -> Result<(), Failure> {
             nosuid | noexec | nodev | libc::MS_RDONLY,
             "",
         ),
-        ("devtmpfs", "/dev", "devtmpfs", nosuid, "mode=0755"),
+        (
+            "tmpfs",
+            "/dev",
+            "tmpfs",
+            nosuid | libc::MS_STRICTATIME,
+            "mode=755,size=65536k",
+        ),
         (
             "devpts",
             "/dev/pts",
@@ -247,11 +255,70 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         mkdir(target)?;
         mount(source, target, fstype, flags, data)?;
     }
+    devices()?;
     container_files()?;
     loopback_up().map_err(|e| setup_failed(e.to_string()))?;
     // A VM with a network: eth0 as the host named it, before any snapshot.
     if let Some((addr, prefix, gateway)) = crate::net::from_cmdline() {
         crate::net::configure(addr, prefix, gateway).map_err(|e| setup_failed(format!("eth0: {e}")))?;
+    }
+    // Last: init writes /proc/sys above, and no more after.
+    masked()
+}
+
+/// A container's devices in /dev, and runc's links (crate::defaults).
+fn devices() -> Result<(), Failure> {
+    for (name, major, minor) in DEVICES {
+        let path = c(&format!("/dev/{name}"))?;
+        // SAFETY: a NUL-terminated path; mknod(2) and chmod(2), the mode whatever the
+        // umask.
+        let made = unsafe {
+            libc::mknod(path.as_ptr(), libc::S_IFCHR | 0o666, libc::makedev(major, minor)) == 0
+                && libc::chmod(path.as_ptr(), 0o666) == 0
+        };
+        if !made {
+            return Err(setup_failed(format!(
+                "/dev/{name}: {}",
+                io::Error::last_os_error()
+            )));
+        }
+    }
+    let link = |target: &str, name: &str| {
+        std::os::unix::fs::symlink(target, format!("/dev/{name}"))
+            .map_err(|e| setup_failed(format!("/dev/{name}: {e}")))
+    };
+    for (target, name) in LINKS {
+        link(target, name)?;
+    }
+    if std::path::Path::new("/proc/kcore").exists() {
+        link("/proc/kcore", "core")?;
+    }
+    Ok(())
+}
+
+/// The paths a container has masked and read-only (crate::defaults), as runc makes
+/// them: a file under /dev/null, a directory under an empty read-only tmpfs, a
+/// read-only path bound onto itself and remounted so.
+fn masked() -> Result<(), Failure> {
+    let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
+    for p in MASKED {
+        match std::fs::symlink_metadata(p) {
+            Ok(m) if m.is_dir() => mount("tmpfs", p, "tmpfs", libc::MS_RDONLY, "")?,
+            Ok(_) => mount("/dev/null", p, "", libc::MS_BIND, "")?,
+            Err(_) => {}
+        }
+    }
+    for p in READONLY {
+        if std::fs::symlink_metadata(p).is_ok() {
+            mount(p, p, "", libc::MS_BIND | libc::MS_REC, "")?;
+            mount(
+                "",
+                p,
+                "",
+                libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | nosuid | noexec | nodev,
+                "",
+            )?;
+        }
     }
     Ok(())
 }
@@ -827,6 +894,8 @@ fn standby(ends: Ends) -> ! {
     };
     let (argv_ptrs, envp_ptrs) = (pointers(&argv), pointers(&envp));
     let [stdin, stdout, stderr] = &stdio;
+    // Read now, in this single-threaded fork of init, and not in `child`.
+    let last_cap = defaults::last_cap();
     // SAFETY: this process is the child of a fork of single-threaded init, and `child`
     // runs on data built above.
     unsafe {
@@ -840,6 +909,7 @@ fn standby(ends: Ends) -> ! {
             groups: &o.groups,
             candidates: &candidates,
             explicit: o.explicit,
+            last_cap,
             argv: argv_ptrs.as_ptr(),
             envp: envp_ptrs.as_ptr(),
         })
@@ -1425,6 +1495,8 @@ struct Child<'a> {
     groups: &'a [u32],
     candidates: &'a [CString],
     explicit: bool,
+    /// The kernel's last capability, for the bounding set's.
+    last_cap: u32,
     argv: *const *const libc::c_char,
     envp: *const *const libc::c_char,
 }
@@ -1485,10 +1557,23 @@ unsafe fn child(c: &Child<'_>) -> ! {
         }
         // As root first; if root may not, again as the user (runc does the same).
         let mut chdir_ok = libc::chdir(c.cwd.as_ptr()) == 0;
+        // A container's capabilities (crate::defaults), as runc applies them
+        // (finalizeNamespace): the bounding set first, the rest kept across the change of
+        // user, then set. For any user but root, execve then leaves none but the
+        // bounding set, there being no file or ambient capabilities (capabilities(7)),
+        // as Docker's are.
+        let keep = |cap: u32| CAPS.contains(&cap);
+        if !defaults::bound(c.last_cap, keep) || libc::prctl(libc::PR_SET_KEEPCAPS, 1, 0, 0, 0) != 0 {
+            fail(step::USER);
+        }
         if libc::setgroups(c.groups.len(), c.groups.as_ptr()) != 0
             || libc::setgid(c.gid) != 0
             || libc::setuid(c.uid) != 0
         {
+            fail(step::USER);
+        }
+        libc::prctl(libc::PR_SET_KEEPCAPS, 0, 0, 0, 0);
+        if !defaults::set(c.last_cap, keep) {
             fail(step::USER);
         }
         if !chdir_ok {

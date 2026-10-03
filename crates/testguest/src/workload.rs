@@ -265,6 +265,26 @@ fn report() -> i32 {
     let written =
         std::fs::write("/written", b"x").is_ok() && std::fs::read("/written").is_ok_and(|d| d == b"x");
     out.push_str(&format!("writable {written}\n"));
+    // What a container's /dev holds, and its paths read-only and masked.
+    let mut devs: Vec<String> = std::fs::read_dir("/dev")
+        .map(|d| {
+            d.filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    devs.sort();
+    out.push_str(&format!("devs {}\n", devs.join(",")));
+    let sysctl = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/proc/sys/kernel/domainname")
+        .is_ok();
+    out.push_str(&format!("sysctl_writable {sysctl}\n"));
+    let kcore = {
+        use std::os::unix::fs::FileTypeExt as _;
+        std::fs::metadata("/proc/kcore").is_ok_and(|m| m.file_type().is_char_device())
+    };
+    out.push_str(&format!("kcore_masked {kcore}\n"));
     let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
     for target in [
         "/",

@@ -178,11 +178,28 @@ fn commands_run_in_the_image_as_docker_runs_them() {
         ("default", "0000000000000000"),
         "{out}"
     );
+    // A container's capabilities, /dev and masked paths, as Docker's are (measured:
+    // Docker Desktop's dockerd 29.3.1, alpine).
+    for (key, want) in [
+        ("capinh", "0000000000000000"),
+        ("capprm", "00000000a80425fb"),
+        ("capeff", "00000000a80425fb"),
+        ("capbnd", "00000000a80425fb"),
+        ("capamb", "0000000000000000"),
+        (
+            "devs",
+            "core,fd,full,mqueue,null,ptmx,pts,random,shm,stderr,stdin,stdout,tty,urandom,zero",
+        ),
+        ("sysctl_writable", "false"),
+        ("kcore_masked", "true"),
+    ] {
+        assert_eq!(get(key), want, "{key}: {out}");
+    }
     for (target, fstype) in [
         ("/", "overlay"),
         ("/proc", "proc"),
         ("/sys", "sysfs"),
-        ("/dev", "devtmpfs"),
+        ("/dev", "tmpfs"),
         ("/dev/pts", "devpts"),
         ("/dev/shm", "tmpfs"),
         ("/dev/mqueue", "mqueue"),
@@ -209,6 +226,12 @@ fn commands_run_in_the_image_as_docker_runs_them() {
     );
     assert_eq!((get("cwd"), get("env HOME")), ("/work/dir", "/home/app"), "{out}");
     assert_eq!(get("writable"), "false", "app may not write to /");
+    // A user but root keeps the bounding set alone, as Docker's do.
+    assert_eq!(
+        (get("capprm"), get("capeff"), get("capbnd")),
+        ("0000000000000000", "0000000000000000", "00000000a80425fb"),
+        "{out}"
+    );
 
     // A numeric user with no passwd entry.
     let out = run(&image, &["-u", "4242"], &["/bin/testguest", "report"], b"");
