@@ -1319,6 +1319,50 @@ fn source_date_epoch_is_taken_from_a_source_stage() {
     }
 }
 
+/// ADD's checksum is held to the download by its own algorithm: SHA-384 and SHA-512
+/// ones match what they name, where BuildKit hashes with SHA-256 whatever the checksum
+/// names, so that none of them ever matches.
+#[test]
+fn add_checks_a_checksum_by_its_own_algorithm() {
+    if cannot_run_vms() {
+        return;
+    }
+    use sha2::Digest as _;
+    let url = format!("http://127.0.0.1:{}", epoch_server());
+    let home = TempDir::new("build-checksum-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let sha384 = format!("sha384:{}", hex(&sha2::Sha384::digest(b"x")));
+    let sha512 = format!("sha512:{}", hex(&sha2::Sha512::digest(b"x")));
+    let other = format!("sha512:{}", hex(&sha2::Sha512::digest(b"y")));
+    let ctx = context(
+        "build-checksum-ctx",
+        &format!(
+            "FROM scratch\nADD --checksum={sha384} {url}/plain /a\nADD --checksum={sha512} {url}/plain /b\n"
+        ),
+    );
+    let built = shards(&["build", "-q", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ctx = context(
+        "build-checksum-bad-ctx",
+        &format!("FROM scratch\nADD --checksum={other} {url}/plain /c\n"),
+    );
+    let failed = shards(&["build", "-q", ctx.to_str().unwrap()]);
+    assert_ne!(failed.status, Some(0));
+    assert!(
+        failed
+            .stderr
+            .contains(&format!("digest mismatch {sha512}: {other}")),
+        "{}",
+        failed.stderr
+    );
+}
+
 /// `ADD` of URLs as BuildKit adds them (dockerfile/1.27.1 source/http through Go's
 /// client; measured against Docker Desktop's BuildKit v0.28, and byte for byte on real
 /// URLs: scripts/build/realworld/cases/add-url):

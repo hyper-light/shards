@@ -237,13 +237,19 @@ pub fn fetch(
         written: 0,
         limit: limits.bytes,
     };
+    // Hashed as the checksum names: BuildKit hashes with SHA-256 whatever it names, so
+    // that no SHA-384 or SHA-512 checksum matches.
+    let algorithm = checksum
+        .and_then(|c| Digest::parse(c).ok())
+        .map_or(Algorithm::Sha256, |c| c.algorithm());
     let (size, got) = if gzipped {
         save(
             shards_image::store::gunzip(BufReader::new(&mut response)),
             &mut to,
+            algorithm,
         )
     } else {
-        save(&mut response, &mut to)
+        save(&mut response, &mut to, algorithm)
     }
     .map_err(|e| fail(e.to_string()))?;
     if let Some(want) = checksum
@@ -301,9 +307,42 @@ impl Bounded<'_> {
     }
 }
 
-/// Copies `body` to `file`: its length and SHA-256.
-fn save(mut body: impl Read, file: &mut Bounded<'_>) -> io::Result<(u64, Digest)> {
-    let mut hasher = sha2::Sha256::new();
+/// A hash by one of the algorithms a digest may name.
+enum Hasher {
+    Sha256(sha2::Sha256),
+    Sha384(sha2::Sha384),
+    Sha512(sha2::Sha512),
+}
+
+impl Hasher {
+    fn new(algorithm: Algorithm) -> Hasher {
+        match algorithm {
+            Algorithm::Sha256 => Hasher::Sha256(sha2::Sha256::new()),
+            Algorithm::Sha384 => Hasher::Sha384(sha2::Sha384::new()),
+            Algorithm::Sha512 => Hasher::Sha512(sha2::Sha512::new()),
+        }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        match self {
+            Hasher::Sha256(h) => h.update(data),
+            Hasher::Sha384(h) => h.update(data),
+            Hasher::Sha512(h) => h.update(data),
+        }
+    }
+
+    fn finish(self) -> Digest {
+        match self {
+            Hasher::Sha256(h) => Digest::from_hash(Algorithm::Sha256, &h.finalize()),
+            Hasher::Sha384(h) => Digest::from_hash(Algorithm::Sha384, &h.finalize()),
+            Hasher::Sha512(h) => Digest::from_hash(Algorithm::Sha512, &h.finalize()),
+        }
+    }
+}
+
+/// Copies `body` to `file`: its length and its hash by `algorithm`.
+fn save(mut body: impl Read, file: &mut Bounded<'_>, algorithm: Algorithm) -> io::Result<(u64, Digest)> {
+    let mut hasher = Hasher::new(algorithm);
     let mut buf = vec![0u8; 1 << 16];
     let mut size = 0u64;
     loop {
@@ -318,7 +357,7 @@ fn save(mut body: impl Read, file: &mut Bounded<'_>) -> io::Result<(u64, Digest)
         file.write(chunk)?;
         size = size.saturating_add(chunk.len() as u64);
     }
-    Ok((size, Digest::from_hash(Algorithm::Sha256, &hasher.finalize())))
+    Ok((size, hasher.finish()))
 }
 
 /// The name a download's file takes: BuildKit's pathutil.SafeFileName
