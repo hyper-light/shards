@@ -940,25 +940,27 @@ fn validate_no_secret_key(instruction: &[u8], key: &[u8], loc: &Location, lint: 
     ];
     const ALLOW: &[&[u8]] = &[b"public", b"file", b"version"];
     // `(?i)(?:_|^)(?:word)(?:_|$)`: a word that is the whole key, or begins or ends it at
-    // an underscore, or stands between two, ignoring case.
+    // an underscore, or stands between two. Go's regexp folds case by Unicode's simple
+    // case folding, the orbit of each of these ASCII letters being its two cases, and for
+    // k and s a third: the Kelvin sign and the long s (CaseFolding.txt).
+    let runes: Vec<u32> = go::runes(key).map(|(r, _)| r).collect();
+    let folds = |r: u32, c: u8| {
+        r == u32::from(c)
+            || r == u32::from(c.to_ascii_uppercase())
+            || (c == b'k' && r == 0x212A)
+            || (c == b's' && r == 0x17F)
+    };
+    let underscore = |i: usize| runes.get(i) == Some(&u32::from(b'_'));
     let has = |words: &[&[u8]]| {
-        let k = go::to_lower(key);
-        words.iter().any(|w| {
-            let mut at = 0;
-            while let Some(i) = k
-                .get(at..)
-                .and_then(|rest| rest.windows(w.len()).position(|win| win == *w))
-            {
-                let start = at + i;
-                let end = start + w.len();
-                let before = start == 0 || k.get(start - 1) == Some(&b'_');
-                let after = end == k.len() || k.get(end) == Some(&b'_');
-                if before && after {
-                    return true;
-                }
-                at = start + 1;
-            }
-            false
+        (0..runes.len()).any(|i| {
+            (i == 0 || underscore(i - 1))
+                && words.iter().any(|w| {
+                    let end = i + w.len();
+                    runes
+                        .get(i..end)
+                        .is_some_and(|run| run.iter().zip(w.iter()).all(|(&r, &c)| folds(r, c)))
+                        && (end == runes.len() || underscore(end))
+                })
         })
     };
     if has(DENY) && !has(ALLOW) {
@@ -1563,7 +1565,7 @@ impl Planner<'_> {
             }
             image = img;
         }
-        let multi = self.multi_platform;
+        let multi = self.named_by_platform();
         let ds = self
             .states
             .get_mut(d)
@@ -1576,7 +1578,7 @@ impl Planner<'_> {
             let name = prefix_command(
                 ds,
                 &errb(&[b"FROM ", &base_name]),
-                multi,
+                multi.as_ref(),
                 Some(&platform),
                 &EnvList::default(),
             );
@@ -1687,6 +1689,12 @@ impl Planner<'_> {
             p.insert(b"/".to_vec());
         }
         Ok(())
+    }
+
+    /// For a build whose steps are named by platform, the platform its frontend runs on.
+    fn named_by_platform(&self) -> Option<Platform> {
+        self.multi_platform
+            .then(|| self.build_platforms.first().cloned().unwrap_or_default())
     }
 
     fn env_of(&self, d: usize) -> &EnvList {
@@ -2028,7 +2036,7 @@ impl Planner<'_> {
         commit_it: bool,
         cmd: Option<(&[u8], &Location, &LinterView<'_>)>,
     ) -> Result<(), Fail> {
-        let multi = self.multi_platform;
+        let multi = self.named_by_platform();
         let epoch = self.epoch;
         let ds = self.ds(d)?;
         if commit_it {
@@ -2061,7 +2069,7 @@ impl Planner<'_> {
             let shown = uppercase_cmd(&process_cmd_env(&lexer, code, &env));
             let ds = self.ds(d)?;
             let platform = ds.platform.clone();
-            let name = prefix_command(ds, &shown, multi, platform.as_ref(), &env);
+            let name = prefix_command(ds, &shown, multi.as_ref(), platform.as_ref(), &env);
             let chown = (!ds.image.config.user.is_empty()).then(|| Chown::parse(&ds.image.config.user));
             let action = Action::Mkdir {
                 path: wd.clone(),
@@ -2157,7 +2165,7 @@ impl Planner<'_> {
         sources: &[usize],
         code: &[u8],
     ) -> Result<(), Fail> {
-        let multi = self.multi_platform;
+        let multi = self.named_by_platform();
         let paths = self.ds(d)?.paths;
         if let Some(set) = self.path_sets.get_mut(paths) {
             set.insert(b"/".to_vec());
@@ -2297,7 +2305,7 @@ impl Planner<'_> {
         let shown = uppercase_cmd(&process_cmd_env(&lexer, &custom, &shown_env));
         let platform = ds.state.platform.clone();
         let ds = self.ds(d)?;
-        let name = prefix_command(ds, &shown, multi, platform.as_ref(), &env);
+        let name = prefix_command(ds, &shown, multi.as_ref(), platform.as_ref(), &env);
         run.meta.description.insert(b"llb.customname".to_vec(), name);
         let state = ds.state.clone();
         let next = self.graph.run(&state, run);
@@ -2450,7 +2458,7 @@ impl Planner<'_> {
         loc: &Location,
         lint: &LinterView<'_>,
     ) -> Result<(), Fail> {
-        let multi = self.multi_platform;
+        let multi = self.named_by_platform();
         let target_platform = self.target_platform.clone();
         let ds = self
             .states
@@ -2492,7 +2500,7 @@ impl Planner<'_> {
         let env = ds.state.env.clone();
         let name = uppercase_cmd(&process_cmd_env(&self.shlex, &cfg.code, &env));
         let ds = self.ds(d)?;
-        let pg_name = prefix_command(ds, &name, multi, Some(&platform), &env);
+        let pg_name = prefix_command(ds, &name, multi.as_ref(), Some(&platform), &env);
         let mut actions = Vec::new();
         let source_state = cfg.from.clone().unwrap_or_else(|| {
             let mut s = State::scratch();
@@ -2658,7 +2666,7 @@ impl Planner<'_> {
             let group = self.graph.progress_group();
             let ds = self.ds(d)?;
             ds.cmd_index -= 1;
-            let pg_name = prefix_command(ds, &name, multi, Some(&platform), &env);
+            let pg_name = prefix_command(ds, &name, multi.as_ref(), Some(&platform), &env);
             let mut copy_meta = custom_name(pg_name.clone());
             copy_meta.progress_group = Some(ProgressGroup {
                 id: group,
@@ -2667,7 +2675,13 @@ impl Planner<'_> {
             });
             let ds = self.ds(d)?;
             ds.cmd_index -= 1;
-            let link_name = prefix_command(ds, &errb(&[b"LINK ", &name]), multi, Some(&platform), &env);
+            let link_name = prefix_command(
+                ds,
+                &errb(&[b"LINK ", &name]),
+                multi.as_ref(),
+                Some(&platform),
+                &env,
+            );
             let mut merge_meta = custom_name(link_name);
             merge_meta.progress_group = Some(ProgressGroup {
                 id: group,
@@ -3009,10 +3023,13 @@ fn custom_name(name: Vec<u8>) -> Meta {
 }
 
 /// `prefixCommand`: `[stage n/total] ` before a step's name, counting the step.
+/// `prefixCommand`. `multi` is, for a build whose steps are named by platform, the
+/// platform its frontend runs on, which completes a platform the environment names in part
+/// (containerd's platforms.Parse): the build's own here.
 fn prefix_command(
     ds: &mut Ds,
     s: &[u8],
-    prefix_platform: bool,
+    multi: Option<&Platform>,
     platform: Option<&Platform>,
     env: &EnvList,
 ) -> Vec<u8> {
@@ -3020,9 +3037,9 @@ fn prefix_command(
         return s.to_vec();
     }
     let mut out = b"[".to_vec();
-    if prefix_platform && let Some(p) = platform {
+    if let (Some(host), Some(p)) = (multi, platform) {
         out.extend_from_slice(&platform::format_all(p));
-        out.extend_from_slice(&format_target_platform(p, platform_from_env(env)));
+        out.extend_from_slice(&format_target_platform(p, platform_from_env(env, host)));
         out.push(b' ');
     }
     if !ds.stage_name.is_empty() {
@@ -3065,14 +3082,14 @@ fn format_target_platform(base: &Platform, target: Option<Platform>) -> Vec<u8> 
     Vec::new()
 }
 
-fn platform_from_env(env: &EnvList) -> Option<Platform> {
+fn platform_from_env(env: &EnvList, host: &Platform) -> Option<Platform> {
     let mut p = Platform::default();
     let mut set = false;
     for k in env.keys() {
         let v = env.get(k).unwrap_or_default();
         match k {
             b"TARGETPLATFORM" => {
-                if let Ok(p) = platform::parse(v, &Platform::new("linux", "amd64")) {
+                if let Ok(p) = platform::parse(v, host) {
                     return Some(p);
                 }
             }
@@ -3969,6 +3986,40 @@ mod tests {
                 String::from_utf8_lossy(name)
             );
         }
+    }
+
+    /// A platform the environment names in part is completed from the platform the
+    /// frontend runs on, the build's (containerd's platforms.Parse), not from any other.
+    #[test]
+    fn a_partial_target_platform_is_completed_from_the_builds() {
+        let opts = Options {
+            target_platform: Platform::new("linux", "amd64"),
+            build_platforms: vec![Platform::new("linux", "arm64")],
+            build_args: [("BUILDKIT_MULTI_PLATFORM", "1"), ("TARGETPLATFORM", "linux")]
+                .iter()
+                .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+                .collect(),
+            ..Default::default()
+        };
+        let times = Times {
+            asked: Default::default(),
+            answer: Ok(None),
+            logged: Default::default(),
+        };
+        let planned = plan(b"FROM alpine\nARG TARGETPLATFORM\nRUN true\n", &opts, &times).unwrap();
+        let names: Vec<String> = planned
+            .graph
+            .vertices
+            .iter()
+            .filter_map(|v| v.meta.description.get(b"llb.customname".as_slice()))
+            .map(|n| String::from_utf8_lossy(n).into_owned())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n.starts_with("[linux/amd64->arm64 ") && n.ends_with("] RUN true")),
+            "{names:?}"
+        );
     }
 
     /// `strings.Index`: an empty needle is at the start.

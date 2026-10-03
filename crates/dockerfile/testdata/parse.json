@@ -11808,6 +11808,83 @@
   ]
  },
  {
+  "file": "corpus/plan/secrets-fold.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(arg \\\"ſecret=1\\\")\\n(arg \\\"KEY_ID=2\\\")\\n(arg \\\"CREDENTİAL=3\\\")\\n(env \\\"MY_ſECRET_TOKEN\\\" \\\"4\\\" \\\"=\\\")\\n(env \\\"PUBLIC_KEY\\\" \\\"5\\\" \\\"=\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"ſecret=1\\\"\"",
+    "original": "\"ARG ſecret=1\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"KEY_ID=2\\\"\"",
+    "original": "\"ARG KEY_ID=2\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"CREDENTİAL=3\\\"\"",
+    "original": "\"ARG CREDENTİAL=3\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"MY_ſECRET_TOKEN\\\" \\\"4\\\" \\\"=\\\"\"",
+    "original": "\"ENV MY_ſECRET_TOKEN=4\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"env \\\"PUBLIC_KEY\\\" \\\"5\\\" \\\"=\\\"\"",
+    "original": "\"ENV PUBLIC_KEY=5\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/stage-base.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"base\\\")\\n(env \\\"B\\\" \\\"1\\\" \\\"=\\\")\\n(from \\\"base\\\")\\n(run \\\"echo $B\\\")\"",

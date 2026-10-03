@@ -18174,6 +18174,150 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/secrets-fold.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"ſecret\"",
+        "\"1\"",
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG ſecret=1\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "args": [
+       [
+        "\"KEY_ID\"",
+        "\"2\"",
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG KEY_ID=2\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "args": [
+       [
+        "\"CREDENTİAL\"",
+        "\"3\"",
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG CREDENTİAL=3\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"ENV MY_ſECRET_TOKEN=4\"",
+      "comments": [],
+      "env": [
+       [
+        "\"MY_ſECRET_TOKEN\"",
+        "\"4\"",
+        false
+       ]
+      ],
+      "kind": "*instructions.EnvCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "name": "\"ENV\""
+     },
+     {
+      "code": "\"ENV PUBLIC_KEY=5\"",
+      "comments": [],
+      "env": [
+       [
+        "\"PUBLIC_KEY\"",
+        "\"5\"",
+        false
+       ]
+      ],
+      "kind": "*instructions.EnvCommand",
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "name": "\"ENV\""
+     },
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/stage-base.Dockerfile",
   "meta_args": null,
   "stages": [
