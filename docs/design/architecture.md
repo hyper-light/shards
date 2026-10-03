@@ -960,7 +960,8 @@ for the exit status.
       later), reaping each as it ends: a network process still running its grace after
       its VM, a second, is ended, and the VM's ports are freed once both have gone. A VM's
       watcher thread lives until its VM is ready, where it waited out the VM's life, the
-      one thread an idle run still cost [PM M90]. macOS watches only ends to come, and
+      one thread an idle run still cost [PM M90]: now the daemon's threads stay 6 at 10
+      running containers and at 100, and an idle run costs it about 10 KiB [PM M92]. macOS watches only ends to come, and
       refuses a child that has ended already (`ESRCH`, measured), which is then reaped at
       once; a process whose end cannot be watched is waited for on a thread of its own.
     - One thread schedules the health checks of the containers that have one, from a

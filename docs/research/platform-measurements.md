@@ -3122,3 +3122,19 @@ revision before comparing a changed API/implementation.
   takes what else waits on the pools from up to 1.3 ms to under 0.2 ms: another pool's
   claim, a refill, the listener's next duty. What remains under the lock is mostly the
   template's look-up (`snapshot::exists`, a file read).
+
+### M92. What a run costs the daemon once VM processes are followed by its loop
+
+- **Question.** With every VM process's end, and its network process's, followed by the
+  followers' loop (5bbb111) rather than a thread each, what does an idle running
+  container still cost the daemon?
+- **Method.** M89's harness and arguments, `daemon-idle/run.py BIN alpine:3.22 0,10,100
+  30 DIR`, with 5bbb111's signed binaries, 2026-10-03, the host of M84.
+- **Result.** 0 containers: daemon 0.000 s of CPU, 2 threads, 7.9 MiB. 10: 0.000 s, 6
+  threads, 19.6 MiB; VMs (12 processes) 262 MiB. 100: 0.000 s, 6 threads, 20.5 MiB; VMs
+  (101) 1,973 MiB. No idle wakeups of the daemon in either window.
+- **Consequence.** The daemon's threads no longer grow with its runs: 6 at 10 and at 100
+  (the listener, the followers, the completer, the recorder, the refiller, and a client's
+  or a starting VM's), against 107 at 100 in M90 and 205 in M89. An idle run costs it
+  about 10 KiB and no CPU `ps` can see. VMs are bound by the host's memory and the
+  daemon's descriptors, no longer by its threads.
