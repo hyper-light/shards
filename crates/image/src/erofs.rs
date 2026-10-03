@@ -744,6 +744,16 @@ impl Tree {
         self.index.used = 0;
     }
 
+    /// [`compact`](Self::compact), once as many entries have been dropped since the last
+    /// as half the nodes the tree holds: the copying, then, costs no more in all than
+    /// dropping them did, and the tree holds at most twice what it needs, where compacting
+    /// after every change costs a whole copy each time.
+    pub fn compact_if_worth_it(&mut self) {
+        if self.dropped.saturating_mul(2) >= self.nodes.len() {
+            self.compact();
+        }
+    }
+
     pub fn compact(&mut self) {
         if self.dropped == 0 {
             return;
@@ -1579,6 +1589,40 @@ mod tests {
         (0..len)
             .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed))
             .collect()
+    }
+
+    /// A tree is compacted once what was dropped comes to half its nodes, not before: its
+    /// version, which compaction makes fresh, tells.
+    #[test]
+    fn compaction_waits_for_half_the_tree_to_be_dropped() {
+        let mut tree = Tree::new(meta(0o755));
+        let file = || Node {
+            kind: Kind::File {
+                size: 0,
+                data: DataRef { source: 0, offset: 0 },
+            },
+            meta: meta(0o644),
+        };
+        for i in 0..100 {
+            tree.insert(Tree::ROOT, format!("f{i}").as_bytes(), file())
+                .unwrap();
+        }
+        let version = tree.version();
+        for i in 0..40 {
+            tree.remove(Tree::ROOT, format!("f{i}").as_bytes());
+        }
+        tree.compact_if_worth_it();
+        assert_eq!(tree.version(), version, "compacted with 40 of 101 nodes dropped");
+        for i in 40..60 {
+            tree.remove(Tree::ROOT, format!("f{i}").as_bytes());
+        }
+        tree.compact_if_worth_it();
+        assert_ne!(
+            tree.version(),
+            version,
+            "not compacted with 60 of 101 nodes dropped"
+        );
+        assert_eq!(tree.len(), 41);
     }
 
     /// Files around every block boundary, a long symlink, a directory of several blocks

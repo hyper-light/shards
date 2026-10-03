@@ -214,8 +214,9 @@ impl<'a> Exec<'a> {
                 Ok(())
             };
             layer::apply(tree, id, BufReader::new(t.open().map_err(err)?), &mut count).map_err(err)?;
-            tree.compact();
+            tree.compact_if_worth_it();
         }
+        tree.compact();
         self.unpacked.extend(tars);
         Ok(Tally {
             entries,
