@@ -34,9 +34,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::Deserialize;
 
-use crate::Error;
 use crate::http::{Client, Redirects, Request, Response};
 use crate::url::{Scheme as UrlScheme, Url};
+use crate::{Error, ErrorKind, printable};
 
 /// What shards names itself to token servers (`client_id`; distribution's oauth.md asks
 /// for "a meaningful value").
@@ -350,16 +350,33 @@ impl Authorizer {
     /// says whether the same request was just refused as well.
     pub fn challenged(&self, url: &Url, response: &Response, repeated: bool) -> Result<bool, Error> {
         // dockerd never retries a registry token (`bearerAuthorizer.AddResponses`).
-        if matches!(self.credentials, Credentials::RegistryToken(_)) || repeated {
+        if matches!(self.credentials, Credentials::RegistryToken(_)) {
             return Ok(false);
+        }
+        let challenges = challenges(response.headers("www-authenticate"));
+        let why = |c: &Challenge| c.params.get("error").filter(|why| !why.is_empty()).cloned();
+        if repeated {
+            // Refused again, by a token server that says why: containerd's
+            // ErrInvalidAuthorization (authorizer.go, invalidAuthorization). The first
+            // challenge it answers decides, as there.
+            let answered = challenges
+                .iter()
+                .find(|c| matches!(c.scheme, Scheme::Bearer | Scheme::Basic));
+            return match answered.filter(|c| c.scheme == Scheme::Bearer).and_then(why) {
+                Some(why) => Err(Error::of(
+                    ErrorKind::Unauthorized,
+                    format!("server message: {}: authorization failed", printable(&why)),
+                )),
+                None => Ok(false),
+            };
         }
         let host = url.origin();
         let mut hosts = self.hosts();
-        for c in challenges(response.headers("www-authenticate")) {
+        for c in challenges {
             match c.scheme {
                 Scheme::Bearer => {
                     // `error=` means the token itself was refused: start again.
-                    if c.params.contains_key("error") && hosts.by_origin.remove(&host).is_some() {
+                    if why(&c).is_some() && hosts.by_origin.remove(&host).is_some() {
                         // Waiters on its fetches find it gone.
                         self.fetched.notify_all();
                     }
@@ -381,11 +398,12 @@ impl Authorizer {
                     } else {
                         ("", "")
                     };
+                    // containerd's words (core/remotes/docker/authorizer.go).
                     if username.is_empty() || secret.is_empty() {
-                        return Err(Error::new(format!(
-                            "{} asks for credentials, and there are none",
-                            url.authority()
-                        )));
+                        return Err(Error::of(
+                            ErrorKind::Unauthorized,
+                            "authorization failed: no basic auth credentials",
+                        ));
                     }
                     hosts.add(
                         host,
@@ -1131,12 +1149,31 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(get().as_deref(), Some("Bearer second"));
-        assert!(
-            !auth
-                .challenged(&registry(), &refusal(&plain(), &invalid), true)
-                .unwrap(),
-            "refused twice"
+        // Refused twice, saying why: containerd's ErrInvalidAuthorization, in its words.
+        let e = auth
+            .challenged(&registry(), &refusal(&plain(), &invalid), true)
+            .unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::Unauthorized);
+        assert_eq!(
+            e.to_string(),
+            "server message: invalid_token: authorization failed"
         );
+        // Refused twice without a reason, or with an empty one: no answer, and no error.
+        let silent = format!(r#"{challenge},error="""#);
+        for refused in [&challenge, &silent] {
+            assert!(
+                !auth
+                    .challenged(&registry(), &refusal(&plain(), refused), true)
+                    .unwrap(),
+                "{refused}"
+            );
+        }
+        // An empty reason is none: the token in hand is kept.
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &silent), false)
+                .unwrap()
+        );
+        assert_eq!(get().as_deref(), Some("Bearer second"));
     }
 
     #[test]

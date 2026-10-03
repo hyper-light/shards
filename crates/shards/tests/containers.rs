@@ -1657,6 +1657,24 @@ fn images_lists_what_was_pulled_as_docker_images_does() {
     let pulled = shards(&["pull", &image]);
     let id = sha256_digest(&index);
     assert!(pulled.stdout.contains(&format!("Digest: {id}")), "{pulled}");
+    // As `docker pull` says it, measured on Docker 29.3.1: the pull named once the tag
+    // resolved; a tag the registry lacks refused in dockerd's words, with nothing said
+    // to be pulling.
+    assert!(
+        pulled.stdout.starts_with("v1: Pulling from test/image\n"),
+        "{pulled}"
+    );
+    let missing = format!("127.0.0.1:{port}/test/image:nosuch");
+    let refused = shards(&["pull", &missing]);
+    assert_eq!(refused.status, Some(1), "{refused}");
+    assert_eq!(refused.stdout, "", "{refused}");
+    assert_eq!(
+        refused.stderr,
+        format!(
+            "Error response from daemon: failed to resolve reference \"{missing}\": {missing}: not found\n"
+        ),
+        "{refused}"
+    );
     let short = id.strip_prefix("sha256:").and_then(|hex| hex.get(..12)).unwrap();
     // What is here of it, as dockerd counts it: its manifests' blobs, not the index's; and
     // its root filesystem.
@@ -2843,8 +2861,16 @@ fn a_push_goes_with_its_clients_credentials() {
     assert_eq!(shards(&none, &["pull", "-q", &source]).status, Some(0));
     let target = format!("127.0.0.1:{port}/team/app:1");
     assert_eq!(shards(&none, &["tag", &source, &target]).status, Some(0));
+    // Refused as Docker 29.3.1 reports it, measured against registry:2 with basic auth.
     let refused = shards(&none, &["push", &target]);
-    assert_ne!(refused.status, Some(0), "{refused}");
+    assert_eq!(refused.status, Some(1), "{refused}");
+    assert!(
+        refused.stderr.ends_with(
+            "push access denied, repository does not exist or may require authorization: \
+             authorization failed: no basic auth credentials\n"
+        ),
+        "{refused}"
+    );
     let pushed = shards(&some, &["push", &target]);
     assert_eq!(pushed.status, Some(0), "{pushed}");
     // Every tag of the repository pushed by one client: challenged only as its first

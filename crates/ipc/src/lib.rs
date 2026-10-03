@@ -592,10 +592,10 @@ impl Run {
     }
 }
 
-/// What a registry's credentials and certificates are found by (shards_registry's
-/// credentials and certs): the Docker CLI's config, credential helpers on `PATH`, and the
-/// homes of `certs.d`.
-pub const REGISTRY_ENV: [&str; 7] = [
+/// What a registry is reached by (shards_registry's credentials, certs and proxy): the
+/// Docker CLI's config, credential helpers on `PATH`, the homes of `certs.d`, and the
+/// proxies Go's net/http takes from the environment.
+pub const REGISTRY_ENV: [&str; 14] = [
     "DOCKER_AUTH_CONFIG",
     "DOCKER_CONFIG",
     "HOME",
@@ -603,6 +603,13 @@ pub const REGISTRY_ENV: [&str; 7] = [
     "PATH",
     "PROGRAMDATA",
     "XDG_CONFIG_HOME",
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "REQUEST_METHOD",
 ];
 
 /// This process's [`REGISTRY_ENV`], as `NAME=VALUE`, those it has.

@@ -514,8 +514,34 @@ Registries are reached with a small blocking HTTP/1.1 client on rustls and httpa
   never show a query.
 - **Fields** holding CR, LF or NUL are refused (RFC 9110 §5.5), so a token from a server
   cannot inject fields.
-- **Not yet:** proxies (`HTTPS_PROXY`, `NO_PROXY`, CONNECT), and decoding a
-  `Content-Encoding`.
+- **Proxies** as Go's net/http takes them from the environment (x/net httpproxy, as
+  go1.26 vendors it; `crates/registry/src/proxy.rs`): `HTTPS_PROXY` for https and
+  `HTTP_PROXY` for http, uppercase first, `HTTP_PROXY` refused under CGI; loopback and
+  what `NO_PROXY` names (`*`, CIDRs, addresses with or without ports, domains and their
+  subdomains) go direct. HTTPS goes through a CONNECT tunnel, over TLS to an https proxy,
+  with the proxy's credentials from its URL; plain HTTP goes to the proxy whole. The
+  daemon reaches registries through the proxies of the client that asks.
+  - Unlike Go: a proxy value that is no URL, or names SOCKS, fails the requests it would
+    carry, where Go goes direct; `NO_PROXY` names are compared as written, not punycode.
+- **Content-Encoding**, as containerd v2.4.1's fetcher asks for and decodes it: zstd,
+  gzip and deflate accepted, each coding undone, last first; a resumed download asks for
+  the blob as it is, so its range counts the bytes already stored.
+- **Refusals** in Docker's words: measured on Docker 29.3.1 against registry:2 with
+  basic authentication, and otherwise taken from containerd v2.4.1 and moby.
+  - Each request's: `unexpected status from <METHOD> request to <URL>: <status>`. A
+    fetch's 404 is `content at <URL> not found`, a resolve's `<reference>: not found`.
+    A HEAD's 403 takes its reason from a GET answered 403 too (`withGETErrorBody`).
+  - A pull's or push's, as dockerd translates it (`translateRegistryError`): the
+    registry's own errors (`error from registry: …`), or a token server's `details`;
+    else `unknown:` before the error. A refused token, or no credentials for basic
+    authentication, is `pull access denied …` or `push access denied …`.
+  - Unlike Docker:
+    - a URL's query is hidden, where containerd prints a CDN's signature or an upload's
+      state;
+    - control characters in what a registry says are escaped, where Docker prints them
+      to the terminal;
+    - an error that is only its code is said once, where dockerd says it twice;
+    - a 429 is followed by its rate limits (§3.2).
 - **Tests:** a scripted loopback server covers:
   - every framing and 1xx skipping;
   - 16 malformed responses, all refused;

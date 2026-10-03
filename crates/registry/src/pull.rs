@@ -53,11 +53,41 @@ pub enum Event<'a> {
     Layer(&'a Digest),
     /// The root filesystem is being built.
     Building,
+    /// The manifest for our platform is known, and about to be fetched: where dockerd
+    /// says it is pulling (daemon/containerd/image_pull.go, on the first manifest).
+    Pulling,
 }
 
 /// Pulls `reference` for the platforms `targets` into `store`, its root filesystem built
-/// within `limits`.
+/// within `limits`. Fails as dockerd reports a pull's failure.
 pub fn pull(
+    registry: &Registry,
+    store: &Store,
+    reference: &Reference,
+    targets: &[Target],
+    limits: &Limits,
+    report: &(dyn Fn(Event<'_>) + Sync),
+) -> Result<Pulled, Error> {
+    pulled(registry, store, reference, targets, limits, report).map_err(|e| {
+        // daemon/containerd/image_pull.go: a refused authorization in dockerd's own
+        // words, but for want of basic credentials, which it leaves containerd's.
+        if e.kind() == ErrorKind::Unauthorized && !e.to_string().contains("no basic auth credentials") {
+            let mut bare = reference.clone();
+            bare.tag = None;
+            bare.digest = None;
+            return Error::of(
+                ErrorKind::Unauthorized,
+                format!(
+                    "pull access denied for {}, repository does not exist or may require 'docker login'",
+                    bare.familiar()
+                ),
+            );
+        }
+        e.in_dockerds_words()
+    })
+}
+
+fn pulled(
     registry: &Registry,
     store: &Store,
     reference: &Reference,
@@ -68,7 +98,9 @@ pub fn pull(
     let name = reference.familiar();
     // What it writes is recorded only at its end: no collection runs meanwhile.
     let _lease = store.lease()?;
-    let top = registry.resolve(store, reference)?;
+    let top = registry
+        .resolve(store, reference)
+        .map_err(|e| resolving(e, reference))?;
     let resolved = top.digest()?;
     // What the name resolved to, as the registry described it.
     let target = Descriptor {
@@ -78,21 +110,33 @@ pub fn pull(
     };
     // The attestations of the manifest chosen, as dockerd keeps them: provenance and SBOMs.
     let mut attestations: Vec<Descriptor> = Vec::new();
+    let pulling = std::sync::atomic::AtomicBool::new(false);
+    let say_pulling = || {
+        if !pulling.swap(true, Ordering::Relaxed) {
+            report(Event::Pulling);
+        }
+    };
+    if matches!(
+        top.media_type.as_str(),
+        oci::media::OCI_MANIFEST | oci::media::DOCKER_MANIFEST
+    ) {
+        say_pulling();
+    }
     let (manifest_desc, manifest) = match document(registry, store, &top)? {
-        Document::Manifest(m) => (top, m),
+        Document::Manifest(m) => {
+            say_pulling();
+            (top, m)
+        }
         Document::Index(index) => {
+            // containerd's words (LimitManifests), after dockerd's.
             let chosen = platform::select(&index, targets).ok_or_else(|| {
-                let offered: Vec<String> = index
-                    .manifests
-                    .iter()
-                    .filter_map(|d| d.platform.as_ref())
-                    .map(|p| format!("{}/{}", p.os, p.architecture))
-                    .collect();
-                Error::new(format!(
-                    "{name}: no manifest for {} among [{}]",
-                    wanted(targets),
-                    offered.join(", ")
-                ))
+                Error::of(
+                    ErrorKind::NotFound,
+                    format!(
+                        "no matching manifest for {} in the manifest list entries: no match for platform in manifest: not found",
+                        pulling_for(targets)
+                    ),
+                )
             })?;
             attestations = index
                 .manifests
@@ -103,6 +147,7 @@ pub fn pull(
                 })
                 .cloned()
                 .collect();
+            say_pulling();
             match document(registry, store, chosen)? {
                 Document::Manifest(m) => (chosen.clone(), m),
                 Document::Index(_) => {
@@ -212,6 +257,30 @@ fn build(
             }
             Ok(store.rootfs(layers, limits)?)
         }
+    }
+}
+
+/// A resolve's failure, as containerd's client reports it: after `failed to resolve
+/// reference`, and a refused authorization after its resolver's words for one.
+fn resolving(e: Error, reference: &Reference) -> Error {
+    let e = if e.kind() == ErrorKind::Unauthorized {
+        e.context("pull access denied, repository does not exist or may require authorization")
+    } else {
+        e
+    };
+    e.context(format!("failed to resolve reference \"{reference}\""))
+}
+
+/// The platform dockerd names where an index has none for it: the one it pulls for,
+/// containerd's `DefaultSpec` as `FormatAll` writes it. That is our first target, with
+/// arm64's variant as Linux reports every AArch64 CPU's (`CPU architecture: 8`): v8,
+/// which `Normalize` folds away.
+fn pulling_for(targets: &[Target]) -> String {
+    match targets.first() {
+        Some(t) if t.architecture == "arm64" && t.variant.is_empty() => format!("{}/arm64/v8", t.os),
+        Some(t) if t.variant.is_empty() => format!("{}/{}", t.os, t.architecture),
+        Some(t) => format!("{}/{}/{}", t.os, t.architecture, t.variant),
+        None => String::new(),
     }
 }
 
@@ -750,9 +819,17 @@ mod tests {
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
         let events = Mutex::new(Vec::new());
         let pulled = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|e| {
-            if let Event::Layer(d) = e {
-                events.lock().unwrap().push(d.to_string());
-            }
+            let event = match e {
+                // As dockerd says it: the index fetched, our manifest not yet.
+                Event::Pulling => format!(
+                    "pulling after {} GET",
+                    count(server, "GET /v2/test/image/manifests/")
+                ),
+                Event::Manifest(..) => "manifest".to_string(),
+                Event::Layer(_) => "layer".to_string(),
+                _ => return,
+            };
+            events.lock().unwrap().push(event);
         })
         .unwrap();
         let image_bytes = std::fs::read(&pulled.rootfs).unwrap();
@@ -771,7 +848,10 @@ mod tests {
             pulled.config.config.unwrap().cmd,
             Some(vec!["/bin/sh".to_string()])
         );
-        assert_eq!(events.lock().unwrap().len(), 2);
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["pulling after 1 GET", "manifest", "layer", "layer"]
+        );
         // One token; the tag resolved by HEAD; the index and our manifest each fetched once.
         assert_eq!(count(server, "GET /token"), 1);
         assert_eq!(
@@ -815,8 +895,8 @@ mod tests {
 
     #[test]
     fn platforms_our_guests_cannot_run_are_refused() {
-        let fake = fake(image("arm64", &[("a", b"a")], true), None);
-        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
+        let arm = fake(image("arm64", &[("a", b"a")], true), None);
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", arm.registry.port)).unwrap();
         let root = temp("platform");
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
@@ -829,9 +909,21 @@ mod tests {
             &|_| {},
         )
         .unwrap_err();
+        // dockerd's words, then containerd's (LimitManifests).
+        assert_eq!(e.kind(), ErrorKind::NotFound);
+        assert_eq!(
+            e.to_string(),
+            "no matching manifest for linux/riscv64 in the manifest list entries: no match for platform in manifest: not found"
+        );
+        // arm64 named as containerd's DefaultSpec names it on Linux: with its variant.
+        let amd64 = fake(image("amd64", &[("a", b"a")], true), None);
+        let reference =
+            Reference::parse(&format!("127.0.0.1:{}/test/image:v1", amd64.registry.port)).unwrap();
+        let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
+        let e = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap_err();
         assert!(
             e.to_string()
-                .contains("no manifest for linux/riscv64 among [linux/s390x, linux/arm64]"),
+                .starts_with("no matching manifest for linux/arm64/v8 in the manifest list entries"),
             "{e}"
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -854,6 +946,148 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A pull's failures as dockerd reports them: the first four as Docker 29.3.1 does
+    /// against registry:2 with basic authentication, measured; the rest as its source
+    /// and containerd v2.4.1's words them (translateRegistryError, withGETErrorBody,
+    /// invalidAuthorization).
+    #[test]
+    fn failures_are_reported_as_dockerd_reports_them() {
+        let tokens = route(None, |_| {
+            Some((
+                http(
+                    "200 OK",
+                    &[("Content-Type", "application/json".into())],
+                    br#"{"token":"t"}"#,
+                ),
+                After::Keep,
+            ))
+        });
+        let realm = format!(
+            r#"Bearer realm="http://127.0.0.1:{}/token",service="s""#,
+            tokens.port
+        );
+        let basic = || ("WWW-Authenticate", r#"Basic realm="r""#.to_string());
+        let denied = br#"{"errors":[{"code":"DENIED","message":"requested access to the resource is denied","detail":"quota"}]}"#;
+        let password = || Credentials::Password {
+            username: "u".into(),
+            password: "wrong".into(),
+        };
+        type Answer = Box<dyn Fn(&Seen) -> Vec<u8> + Send + Sync>;
+        let cases: Vec<(Credentials, Answer, &str, ErrorKind)> = vec![
+            (
+                Credentials::Anonymous,
+                Box::new(move |_| http("401 Unauthorized", &[basic()], b"")),
+                r#"failed to resolve reference "{R}": pull access denied, repository does not exist or may require authorization: authorization failed: no basic auth credentials"#,
+                ErrorKind::Unauthorized,
+            ),
+            (
+                password(),
+                Box::new(move |_| http("401 Unauthorized", &[basic()], b"")),
+                r#"unknown: failed to resolve reference "{R}": unexpected status from HEAD request to {U}: 401 Unauthorized"#,
+                ErrorKind::Other,
+            ),
+            (
+                Credentials::Anonymous,
+                Box::new(|_| http("404 Not Found", &[], b"")),
+                r#"failed to resolve reference "{R}": {R}: not found"#,
+                ErrorKind::NotFound,
+            ),
+            (
+                Credentials::Anonymous,
+                Box::new(move |seen| {
+                    let challenge = match seen.header("authorization") {
+                        Some(_) => format!(r#"{realm},error="insufficient_scope""#),
+                        None => realm.clone(),
+                    };
+                    http("401 Unauthorized", &[("WWW-Authenticate", challenge)], b"")
+                }),
+                "pull access denied for {N}, repository does not exist or may require 'docker login'",
+                ErrorKind::Unauthorized,
+            ),
+            (
+                Credentials::Anonymous,
+                Box::new(move |seen| match seen.method.as_str() {
+                    "HEAD" => http("403 Forbidden", &[], b""),
+                    _ => http("403 Forbidden", &[], denied),
+                }),
+                "error from registry: requested access to the resource is denied - quota",
+                ErrorKind::Other,
+            ),
+            (
+                Credentials::Anonymous,
+                Box::new(move |seen| match seen.method.as_str() {
+                    "HEAD" => http("403 Forbidden", &[], b""),
+                    _ => http("400 Bad Request", &[], denied),
+                }),
+                r#"unknown: failed to resolve reference "{R}": unexpected status from HEAD request to {U}: 403 Forbidden"#,
+                ErrorKind::Other,
+            ),
+        ];
+        let root = temp("dockerd-says");
+        let store = Store::open(&root).unwrap();
+        for (credentials, answer, expected, kind) in cases {
+            let server = route(None, move |seen| Some((answer(seen), After::Keep)));
+            let name = format!("127.0.0.1:{}/test/image", server.port);
+            let reference = Reference::parse(&format!("{name}:v1")).unwrap();
+            let registry = Registry::new(client(), &reference, credentials).unwrap();
+            // Nothing is said to be pulling where the reference did not resolve.
+            let pulling = AtomicBool::new(false);
+            let e = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|e| {
+                if matches!(e, Event::Pulling) {
+                    pulling.store(true, Ordering::SeqCst);
+                }
+            })
+            .unwrap_err();
+            assert!(!pulling.load(Ordering::SeqCst), "{expected}");
+            let expected = expected
+                .replace("{R}", &format!("{name}:v1"))
+                .replace("{N}", &name)
+                .replace(
+                    "{U}",
+                    &format!("http://127.0.0.1:{}/v2/test/image/manifests/v1", server.port),
+                );
+            assert_eq!(e.to_string(), expected);
+            assert_eq!(e.kind(), kind, "{expected}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A manifest at the tag itself is said to be pulled before it is fetched, as dockerd
+    /// says it of the first manifest it sees.
+    #[test]
+    fn a_tagged_manifest_is_said_to_be_pulled_before_it_is_fetched() {
+        let mut image = image("arm64", &[("a", b"a")], true);
+        let index: serde_json::Value = serde_json::from_slice(&image.manifests["v1"].0).unwrap();
+        let arm = index["manifests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["platform"]["architecture"] == "arm64")
+            .unwrap()["digest"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let manifest = image.manifests[&arm].clone();
+        image.manifests.insert("single".into(), manifest);
+        let fake = fake(image, None);
+        let server = &fake.registry;
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:single", server.port)).unwrap();
+        let root = temp("single");
+        let store = Store::open(&root).unwrap();
+        let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
+        let said = Mutex::new(Vec::new());
+        pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|e| {
+            if matches!(e, Event::Pulling) {
+                said.lock()
+                    .unwrap()
+                    .push(count(server, "GET /v2/test/image/manifests/"));
+            }
+        })
+        .unwrap();
+        assert_eq!(*said.lock().unwrap(), [0]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn rate_limits_are_reported_and_not_retried() {
         let server = route(None, |_| {
@@ -870,11 +1104,14 @@ mod tests {
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
         let e = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap_err();
-        let shown = e.to_string();
-        assert!(shown.contains("limit 100 per 21600 s; 0 left"), "{shown}");
-        assert!(
-            shown.contains("counted for 192.0.2.1; retry after 3600"),
-            "{shown}"
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "unknown: failed to resolve reference \"{reference}\": unexpected status from HEAD request to \
+                 http://127.0.0.1:{}/v2/test/image/manifests/v1: 429 Too Many Requests \
+                 (limit 100 per 21600 s; 0 left; counted for 192.0.2.1; retry after 3600)",
+                server.port
+            )
         );
         assert_eq!(server.requests().len(), 1);
         let _ = std::fs::remove_dir_all(&root);

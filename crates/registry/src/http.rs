@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, StreamOwned};
 
+use crate::proxy::{Proxies, Proxy};
 use crate::url::{Scheme, Url};
 use crate::{Error, ErrorKind};
 
@@ -43,6 +44,8 @@ const STALL: Duration = Duration::from_secs(30);
 const IDLE: Duration = Duration::from_secs(30);
 const MAX_IDLE: usize = 10;
 const MAX_HEAD: usize = 10 << 20;
+/// The most of a proxy's answer to CONNECT read.
+const MAX_TUNNEL_HEAD: usize = 64 << 10;
 const MAX_CHUNK_LINE: usize = 4096;
 const MAX_TRAILER: usize = 4096;
 const MAX_REDIRECTS: usize = 10;
@@ -59,6 +62,7 @@ pub struct Client {
     pool: Pool,
     user_agent: String,
     cancel: Option<Cancel>,
+    proxies: Proxies,
 }
 
 /// Stops a client's requests from another thread, as cancelling Go's request context
@@ -197,12 +201,23 @@ impl std::fmt::Debug for Request<'_> {
 #[derive(Debug)]
 pub struct Response<'c> {
     pub status: u16,
+    reason: String,
     url: Url,
     headers: Vec<(String, String)>,
     body: Body<'c>,
 }
 
 impl Response<'_> {
+    /// The status as Go's client keeps it (`Response.Status`): its code, and the reason
+    /// phrase if the server gave one.
+    pub fn status_text(&self) -> String {
+        if self.reason.is_empty() {
+            self.status.to_string()
+        } else {
+            format!("{} {}", self.status, self.reason)
+        }
+    }
+
     /// The URL that answered: after redirects, the last one.
     pub fn url(&self) -> &Url {
         &self.url
@@ -236,6 +251,7 @@ impl Client {
         Client {
             tls,
             pool: Pool::default(),
+            proxies: Proxies::default(),
             user_agent: user_agent.to_string(),
             cancel: None,
         }
@@ -244,6 +260,12 @@ impl Client {
     /// This client, its requests failing once `cancel` is cancelled.
     pub fn cancelled_by(mut self, cancel: Cancel) -> Client {
         self.cancel = Some(cancel);
+        self
+    }
+
+    /// This client, its requests going through `proxies` (crate::proxy).
+    pub fn with_proxies(mut self, proxies: Proxies) -> Client {
+        self.proxies = proxies;
         self
     }
 
@@ -268,8 +290,9 @@ impl Client {
         if let Some(cancel) = &self.cancel {
             cancel.check()?;
         }
-        let head = self.head(req)?;
-        let key = Key::of(req.url);
+        let proxy = self.proxies.for_url(req.url)?;
+        let head = self.head(req, proxy)?;
+        let key = Key::of(req.url, proxy);
         if let Some(mut conn) = self.pool.take(&key) {
             conn.watch = self.cancel.as_ref().map(|c| c.watch(conn.io.get_ref().tcp()));
             match self.exchange(conn, req, &head) {
@@ -278,7 +301,7 @@ impl Client {
                 result => return result.map_err(Failure::into_error),
             }
         }
-        let conn = self.connect(req.url, key)?;
+        let conn = self.connect(req.url, key, proxy)?;
         self.exchange(conn, req, &head).map_err(Failure::into_error)
     }
 
@@ -344,12 +367,23 @@ impl Client {
     }
 
     /// The request line and fields, refusing any value that could split them.
-    fn head(&self, req: &Request<'_>) -> Result<Vec<u8>, Error> {
-        let mut head = format!("{} {} HTTP/1.1\r\n", req.method, req.url.target());
+    fn head(&self, req: &Request<'_>, proxy: Option<&Proxy>) -> Result<Vec<u8>, Error> {
+        // To a proxy, plain HTTP names its whole URL (RFC 9112 §3.2.2), with the proxy's
+        // credentials; HTTPS goes through a tunnel (`tunnel`) as it would direct.
+        let forwarded = proxy.filter(|_| req.url.scheme() == Scheme::Http);
+        let target = match forwarded {
+            // As the URL is written, a default port left out: Go writes URL.String().
+            Some(_) => format!("http://{}{}", req.url.authority(), req.url.target()),
+            None => req.url.target().to_string(),
+        };
+        let mut head = format!("{} {target} HTTP/1.1\r\n", req.method);
         let mut fields: Vec<(&str, String)> = vec![
             ("Host", req.url.authority()),
             ("User-Agent", self.user_agent.clone()),
         ];
+        if let Some(authorization) = forwarded.and_then(|p| p.authorization.clone()) {
+            fields.push(("Proxy-Authorization", authorization));
+        }
         fields.extend(req.headers.iter().map(|(n, v)| (*n, v.to_string())));
         if let Some((_, len)) = req.file {
             fields.push(("Content-Length", len.to_string()));
@@ -404,6 +438,7 @@ impl Client {
         };
         let Head {
             status,
+            reason,
             version,
             fields: headers,
         } = head;
@@ -431,44 +466,35 @@ impl Client {
         body.finish_if_done();
         Ok(Response {
             status,
+            reason,
             url: req.url.clone(),
             headers,
             body,
         })
     }
 
-    fn connect(&self, url: &Url, key: Key) -> Result<Conn, Error> {
-        let tcp = dial(url, self.cancel.as_ref())?;
+    fn connect(&self, url: &Url, key: Key, proxy: Option<&Proxy>) -> Result<Conn, Error> {
+        // The first hop: the proxy, when there is one, else the server.
+        let first = proxy.map_or(url, |p| &p.url);
+        let tcp = dial(first, self.cancel.as_ref()).map_err(|e| match proxy {
+            Some(p) => e.context(format!("proxyconnect {}", p.url.authority())),
+            None => e,
+        })?;
         let _ = tcp.set_nodelay(true);
-        // Watched from here, the TLS handshake included.
+        // Watched from here, the handshakes and tunnel included.
         let watch = self.cancel.as_ref().map(|c| c.watch(&tcp));
+        let mut hop = match (proxy, first.scheme()) {
+            (Some(_), Scheme::Https) => Hop::Tls(Box::new(self.handshake(first, tcp)?)),
+            _ => Hop::Tcp(tcp),
+        };
+        if let Some(proxy) = proxy
+            && url.scheme() == Scheme::Https
+        {
+            tunnel(&mut hop, url, proxy, &self.user_agent)?;
+        }
         let stream = match url.scheme() {
-            Scheme::Http => Stream::Plain(tcp),
-            Scheme::Https => {
-                let config = (self.tls)(url)?;
-                let host = url.host().trim_start_matches('[').trim_end_matches(']');
-                let name =
-                    ServerName::try_from(host.to_string()).map_err(|e| Error::new(format!("{url}: {e}")))?;
-                let mut tls = ClientConnection::new(config, name)?;
-                let mut tcp = tcp;
-                let deadline = Instant::now() + HANDSHAKE;
-                while tls.is_handshaking() {
-                    let left = deadline
-                        .checked_duration_since(Instant::now())
-                        .filter(|d| !d.is_zero())
-                        .ok_or_else(|| {
-                            Error::of(
-                                ErrorKind::Transient,
-                                format!("{url}: the TLS handshake timed out"),
-                            )
-                        })?;
-                    tcp.set_read_timeout(Some(left))?;
-                    tcp.set_write_timeout(Some(left))?;
-                    tls.complete_io(&mut tcp)
-                        .map_err(|e| Error::from(e).context(format!("{url}: TLS handshake")))?;
-                }
-                Stream::Tls(Box::new(StreamOwned::new(tls, tcp)))
-            }
+            Scheme::Http => Stream::Plain(hop),
+            Scheme::Https => Stream::Tls(Box::new(self.handshake(url, hop)?)),
         };
         let conn = Conn {
             key,
@@ -480,6 +506,82 @@ impl Client {
         conn.stall()?;
         Ok(conn)
     }
+
+    /// A TLS session with `url`'s host over `io`, its handshake done within 10 s.
+    fn handshake<T: Wire>(&self, url: &Url, mut io: T) -> Result<StreamOwned<ClientConnection, T>, Error> {
+        let config = (self.tls)(url)?;
+        let host = url.host().trim_start_matches('[').trim_end_matches(']');
+        let name = ServerName::try_from(host.to_string()).map_err(|e| Error::new(format!("{url}: {e}")))?;
+        let mut tls = ClientConnection::new(config, name)?;
+        let deadline = Instant::now() + HANDSHAKE;
+        while tls.is_handshaking() {
+            let left = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|d| !d.is_zero())
+                .ok_or_else(|| {
+                    Error::of(
+                        ErrorKind::Transient,
+                        format!("{url}: the TLS handshake timed out"),
+                    )
+                })?;
+            io.tcp().set_read_timeout(Some(left))?;
+            io.tcp().set_write_timeout(Some(left))?;
+            tls.complete_io(&mut io)
+                .map_err(|e| Error::from(e).context(format!("{url}: TLS handshake")))?;
+        }
+        Ok(StreamOwned::new(tls, io))
+    }
+}
+
+/// Asks `proxy`, over `hop`, for a tunnel to `url`'s host (RFC 9110 §9.3.6), as Go's
+/// transport asks: `CONNECT host:port`, with the proxy's credentials, its answer awaited
+/// for 30 s. Anything but 200 is refused, in its status line's words, as Go's error says.
+fn tunnel(hop: &mut Hop, url: &Url, proxy: &Proxy, user_agent: &str) -> Result<(), Error> {
+    let target = format!("{}:{}", url.host(), url.port());
+    let proxying = |what: &dyn std::fmt::Display| {
+        Error::new(format!(
+            "proxyconnect {}: CONNECT {target}: {what}",
+            proxy.url.authority()
+        ))
+    };
+    let mut head = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nUser-Agent: {user_agent}\r\n");
+    if let Some(authorization) = &proxy.authorization {
+        head.push_str("Proxy-Authorization: ");
+        head.push_str(authorization);
+        head.push_str("\r\n");
+    }
+    head.push_str("\r\n");
+    hop.tcp().set_write_timeout(Some(HEAD))?;
+    hop.tcp().set_read_timeout(Some(HEAD))?;
+    hop.write_all(head.as_bytes())
+        .and_then(|()| hop.flush())
+        .map_err(|e| proxying(&e))?;
+    // Its head, a byte at a time: what follows is the tunnel's.
+    let mut answer = Vec::new();
+    let mut byte = [0u8; 1];
+    while !answer.ends_with(b"\r\n\r\n") {
+        if answer.len() > MAX_TUNNEL_HEAD {
+            return Err(proxying(&"an answer past 64 KiB"));
+        }
+        match hop.read(&mut byte) {
+            Ok(0) => return Err(proxying(&"the proxy closed the connection")),
+            Ok(_) => answer.extend_from_slice(&byte),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(proxying(&e)),
+        }
+    }
+    let mut fields = [httparse::EMPTY_HEADER; 64];
+    let mut response = httparse::Response::new(&mut fields);
+    match response.parse(&answer) {
+        Ok(httparse::Status::Complete(_)) if response.code == Some(200) => Ok(()),
+        Ok(httparse::Status::Complete(_)) => Err(proxying(&format!(
+            "{} {}",
+            response.code.unwrap_or_default(),
+            response.reason.unwrap_or_default()
+        ))),
+        Ok(httparse::Status::Partial) => Err(proxying(&"an answer cut short")),
+        Err(e) => Err(proxying(&e)),
+    }
 }
 
 /// Sends `len` bytes of `file`: on Linux a plain connection takes them as std copies a
@@ -488,7 +590,7 @@ impl Client {
 fn send_file(stream: &mut Stream, file: &std::fs::File, len: u64) -> io::Result<u64> {
     let mut body = file.take(len);
     #[cfg(target_os = "linux")]
-    if let Stream::Plain(tcp) = stream {
+    if let Stream::Plain(Hop::Tcp(tcp)) = stream {
         return io::copy(&mut body, tcp);
     }
     let mut buf = vec![0u8; 64 << 10];
@@ -656,6 +758,8 @@ fn interleave(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
 /// A response head: the status, the minor HTTP version, and the fields.
 struct Head {
     status: u16,
+    /// As httparse reads it: empty where the server gave none, or one it holds invalid.
+    reason: String,
     version: u8,
     fields: Vec<(String, String)>,
 }
@@ -726,6 +830,7 @@ fn read_head(conn: &mut Conn, url: &Url) -> Result<Head, Failure> {
                 Ok(httparse::Status::Complete(len)) => {
                     conn.io.consume(len.saturating_sub(old));
                     let status = response.code.unwrap_or_default();
+                    let reason = response.reason.unwrap_or_default().to_string();
                     let version = response.version.unwrap_or_default();
                     let fields = response
                         .headers
@@ -735,6 +840,7 @@ fn read_head(conn: &mut Conn, url: &Url) -> Result<Head, Failure> {
                     budget = budget.saturating_sub(len);
                     break Head {
                         status,
+                        reason,
                         version,
                         fields,
                     };
@@ -1033,29 +1139,84 @@ struct Key {
     scheme: Scheme,
     host: String,
     port: u16,
+    /// The proxy it goes through, if any.
+    proxy: Option<String>,
 }
 
 impl Key {
-    fn of(url: &Url) -> Key {
+    fn of(url: &Url, proxy: Option<&Proxy>) -> Key {
         Key {
             scheme: url.scheme(),
             host: url.host().to_string(),
             port: url.port(),
+            proxy: proxy.map(|p| p.url.to_string()),
+        }
+    }
+}
+
+/// A connection's first hop: TCP to the server or its proxy, or TLS to an https proxy.
+#[derive(Debug)]
+enum Hop {
+    Tcp(TcpStream),
+    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
+}
+
+/// What TLS runs over, and the socket beneath it, for its timeouts.
+trait Wire: Read + Write {
+    fn tcp(&self) -> &TcpStream;
+}
+
+impl Wire for TcpStream {
+    fn tcp(&self) -> &TcpStream {
+        self
+    }
+}
+
+impl Wire for Hop {
+    fn tcp(&self) -> &TcpStream {
+        match self {
+            Hop::Tcp(s) => s,
+            Hop::Tls(s) => &s.sock,
+        }
+    }
+}
+
+impl Read for Hop {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Hop::Tcp(s) => s.read(buf),
+            Hop::Tls(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for Hop {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Hop::Tcp(s) => s.write(buf),
+            Hop::Tls(s) => s.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Hop::Tcp(s) => s.flush(),
+            Hop::Tls(s) => s.flush(),
         }
     }
 }
 
 #[derive(Debug)]
 enum Stream {
-    Plain(TcpStream),
-    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
+    Plain(Hop),
+    Tls(Box<StreamOwned<ClientConnection, Hop>>),
 }
 
 impl Stream {
     fn tcp(&self) -> &TcpStream {
         match self {
-            Stream::Plain(s) => s,
-            Stream::Tls(s) => &s.sock,
+            Stream::Plain(s) => s.tcp(),
+            Stream::Tls(s) => s.sock.tcp(),
         }
     }
 }
@@ -1246,49 +1407,63 @@ mod tests {
         let chunked = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
         let long_line = format!("{chunked}5;{}\r\nhello\r\n0\r\n\r\n", "x".repeat(5000));
         let long_trailer = format!("{chunked}0\r\nT: {}\r\n\r\n", "y".repeat(5000));
-        for (response, why) in [
+        // Each refused for its own reason, not for any failure at all.
+        for (response, said) in [
             (
                 "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nok",
-                "conflicting lengths",
+                "conflicting Content-Length fields",
             ),
             (
                 "HTTP/1.1 200 OK\r\nContent-Length: +2\r\n\r\nok",
-                "a signed length",
+                "a bad Content-Length \"+2\"",
             ),
-            ("HTTP/1.1 200 OK\r\nContent-Length: \r\n\r\nok", "an empty length"),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: \r\n\r\nok",
+                "a bad Content-Length \"\"",
+            ),
             (
                 "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort",
-                "a short body",
+                "the body ended early",
             ),
             (
                 "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
-                "a coding besides chunked",
+                "unsupported transfer encoding",
             ),
             (
                 "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n",
-                "two Transfer-Encoding fields",
+                "unsupported transfer encoding [\"chunked\", \"chunked\"]",
             ),
-            (&format!("{chunked}5\nhello\r\n0\r\n\r\n"), "a bare LF"),
-            (&format!("{chunked}5\r\r\nhello\r\n0\r\n\r\n"), "a stray CR"),
+            (
+                &format!("{chunked}5\nhello\r\n0\r\n\r\n"),
+                "a chunk line must end in CRLF",
+            ),
+            (
+                &format!("{chunked}5\r\r\nhello\r\n0\r\n\r\n"),
+                "a chunk line must end in CRLF",
+            ),
             (
                 &format!("{chunked}00000000000000005\r\nhello\r\n0\r\n\r\n"),
-                "17 hex digits",
+                "a bad chunk size",
             ),
             (
                 &format!("{chunked}5 ;x\r\nhello\r\n0\r\n\r\n"),
-                "space before an extension",
+                "a bad chunk size",
             ),
             (
                 &format!("{chunked}5\r\nhelloXX0\r\n\r\n"),
-                "no CRLF after the data",
+                "malformed chunked encoding",
             ),
-            (&format!("{chunked}5\r\nhel"), "a cut chunk"),
-            (&long_line, "a 5000-byte chunk line"),
-            (&long_trailer, "a 5000-byte trailer"),
-            ("HTTP/1.1 101 Switching Protocols\r\n\r\n", "a protocol switch"),
-            ("HTTP/1.1 2000 OK\r\n\r\n", "a malformed status line"),
+            (&format!("{chunked}5\r\nhel"), "the chunked body ended early"),
+            (&long_line, "a line is too long"),
+            (&long_trailer, "a line is too long"),
+            (
+                "HTTP/1.1 101 Switching Protocols\r\n\r\n",
+                "an unexpected protocol switch",
+            ),
+            ("HTTP/1.1 2000 OK\r\n\r\n", "a malformed response head"),
         ] {
-            assert!(outcome(response).is_err(), "{why}");
+            let e = outcome(response).unwrap_err().to_string();
+            assert!(e.contains(said), "{said}: {e}");
         }
         // Go takes both framings, and the chunks win.
         let both = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
@@ -1367,8 +1542,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         let conn = Conn {
-            key: Key::of(&at("http", "127.0.0.1", port)),
-            io: BufReader::new(Stream::Plain(tcp)),
+            key: Key::of(&at("http", "127.0.0.1", port), None),
+            io: BufReader::new(Stream::Plain(Hop::Tcp(tcp))),
             watch: None,
         };
         conn.set_timeout(Duration::from_secs(30)).unwrap();
@@ -1407,7 +1582,7 @@ mod tests {
     fn fresh_connections_bound_their_writes() {
         let server = serve(None, vec![]);
         let url = at("http", "127.0.0.1", server.port);
-        let conn = plain().connect(&url, Key::of(&url)).unwrap();
+        let conn = plain().connect(&url, Key::of(&url, None), None).unwrap();
         let tcp = conn.io.get_ref().tcp();
         assert_eq!(tcp.write_timeout().unwrap(), Some(STALL));
         assert_eq!(tcp.read_timeout().unwrap(), Some(STALL));
@@ -1580,6 +1755,196 @@ mod tests {
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         assert_eq!(listening.accepted(), 1);
+    }
+
+    /// A proxy on loopback: each connection's request head is kept; a CONNECT answered
+    /// `connect` and, on 200, tunnelled to `upstream`; anything else answered `plain`.
+    fn test_proxy(
+        upstream: u16,
+        connect: &'static [u8],
+        plain: &'static [u8],
+    ) -> (u16, Arc<Mutex<Vec<String>>>) {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let heads = Arc::new(Mutex::new(Vec::new()));
+        let seen = heads.clone();
+        std::thread::spawn(move || {
+            for client in listener.incoming() {
+                let Ok(mut client) = client else { return };
+                let seen = seen.clone();
+                std::thread::spawn(move || {
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        if client.read_exact(&mut byte).is_err() {
+                            return;
+                        }
+                        head.push(byte[0]);
+                    }
+                    let text = String::from_utf8_lossy(&head).into_owned();
+                    seen.lock().unwrap().push(text.clone());
+                    if !text.starts_with("CONNECT ") {
+                        let _ = client.write_all(plain);
+                        return;
+                    }
+                    let _ = client.write_all(connect);
+                    if !connect.starts_with(b"HTTP/1.1 200") {
+                        return;
+                    }
+                    let server = TcpStream::connect(("127.0.0.1", upstream)).unwrap();
+                    let (mut up, mut down) = (server.try_clone().unwrap(), client.try_clone().unwrap());
+                    let relay = std::thread::spawn(move || {
+                        let _ = io::copy(&mut down, &mut up);
+                        let _ = up.shutdown(Shutdown::Write);
+                    });
+                    let (mut from, mut to) = (server, client);
+                    let _ = io::copy(&mut from, &mut to);
+                    let _ = to.shutdown(Shutdown::Write);
+                    let _ = relay.join();
+                });
+            }
+        });
+        (port, heads)
+    }
+
+    /// HTTPS goes through an HTTP proxy's tunnel, as Go's transport asks for one: CONNECT
+    /// to the server's name, with the proxy's credentials, then TLS to the server through
+    /// it, and the tunnel used again.
+    #[test]
+    fn https_goes_through_a_proxys_tunnel() {
+        let (ca, server) = crate::testing::registry_named("registry.test", &[&rustls::version::TLS13]);
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+        let upstream = serve(Some(server), vec![(ok.clone(), After::Keep), (ok, After::Keep)]);
+        let (proxy, heads) = test_proxy(upstream.port, b"HTTP/1.1 200 Connection established\r\n\r\n", b"");
+        let client = Client::new(
+            Box::new(move |_| client_config(vec![ca.clone()], None)),
+            "shards-test",
+        )
+        .with_proxies(Proxies::from_env(&|k| {
+            (k == "HTTPS_PROXY").then(|| format!("http://us:pw@127.0.0.1:{proxy}"))
+        }));
+        let url = Url::parse("https://registry.test/v2/").unwrap();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        let heads = heads.lock().unwrap().clone();
+        assert_eq!(heads.len(), 1, "one tunnel: {heads:?}");
+        assert!(
+            heads[0].starts_with("CONNECT registry.test:443 HTTP/1.1\r\nHost: registry.test:443\r\n"),
+            "{heads:?}"
+        );
+        assert!(
+            heads[0].contains("Proxy-Authorization: Basic dXM6cHc=\r\n"),
+            "{heads:?}"
+        );
+        assert_eq!(upstream.accepted(), 1);
+    }
+
+    /// Plain HTTP goes to the proxy whole: its URL as the request target, with the
+    /// proxy's credentials (RFC 9112 §3.2.2).
+    #[test]
+    fn http_goes_to_a_proxy_whole() {
+        let (proxy, heads) = test_proxy(9, b"", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+        let client = plain().with_proxies(Proxies::from_env(&|k| {
+            (k == "HTTP_PROXY").then(|| format!("127.0.0.1:{proxy}"))
+        }));
+        let url = Url::parse("http://registry.test/v2/x?y=1").unwrap();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"hi".to_vec()));
+        let heads = heads.lock().unwrap().clone();
+        assert!(
+            heads[0].starts_with("GET http://registry.test/v2/x?y=1 HTTP/1.1\r\nHost: registry.test\r\n"),
+            "{heads:?}"
+        );
+        assert!(!heads[0].contains("Proxy-Authorization"), "{heads:?}");
+    }
+
+    /// An https proxy is reached over TLS, and the server's TLS runs inside it.
+    #[test]
+    fn https_goes_through_an_https_proxy() {
+        use std::net::TcpListener;
+        let (registry_ca, server) =
+            crate::testing::registry_named("registry.test", &[&rustls::version::TLS13]);
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+        let upstream = serve(Some(server), vec![(ok, After::Keep)]);
+        let (proxy_ca, proxy_tls) = crate::testing::registry_named("127.0.0.1", &[&rustls::version::TLS13]);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy = listener.local_addr().unwrap().port();
+        let upstream_port = upstream.port;
+        let relaying = std::thread::spawn(move || {
+            let (tcp, _) = listener.accept().unwrap();
+            let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(proxy_tls).unwrap(), tcp);
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                tls.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            tls.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .unwrap();
+            tls.flush().unwrap();
+            let mut up = TcpStream::connect(("127.0.0.1", upstream_port)).unwrap();
+            // One stream each way, taken in turn: a TLS stream cannot be split.
+            let short = Some(Duration::from_millis(5));
+            tls.sock.set_read_timeout(short).unwrap();
+            up.set_read_timeout(short).unwrap();
+            let mut buf = [0u8; 16 << 10];
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let waiting =
+                |e: &io::Error| matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut);
+            while Instant::now() < deadline {
+                match tls.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => up.write_all(&buf[..n]).unwrap(),
+                    Err(e) if waiting(&e) => {}
+                    // The client gone, without a close_notify.
+                    Err(_) => break,
+                }
+                match up.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        tls.write_all(&buf[..n]).unwrap();
+                        tls.flush().unwrap();
+                    }
+                    Err(e) if waiting(&e) => {}
+                    Err(_) => break,
+                }
+            }
+            String::from_utf8_lossy(&head).into_owned()
+        });
+        let client = Client::new(
+            Box::new(move |_| client_config(vec![registry_ca.clone(), proxy_ca.clone()], None)),
+            "shards-test",
+        )
+        .with_proxies(Proxies::from_env(&|k| {
+            (k == "HTTPS_PROXY").then(|| format!("https://127.0.0.1:{proxy}"))
+        }));
+        let url = Url::parse("https://registry.test/v2/").unwrap();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        drop(client);
+        let head = relaying.join().unwrap();
+        assert!(
+            head.starts_with("CONNECT registry.test:443 HTTP/1.1\r\n"),
+            "{head}"
+        );
+    }
+
+    /// A tunnel the proxy refuses fails in the words of its status line.
+    #[test]
+    fn a_refused_tunnel_says_why() {
+        let (proxy, _) = test_proxy(
+            9,
+            b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n",
+            b"",
+        );
+        let client = plain().with_proxies(Proxies::from_env(&|k| {
+            (k == "HTTPS_PROXY").then(|| format!("127.0.0.1:{proxy}"))
+        }));
+        let e = fetch(&client, "GET", &Url::parse("https://registry.test/v2/").unwrap()).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("CONNECT registry.test:443: 407 Proxy Authentication Required"),
+            "{e}"
+        );
     }
 
     #[test]

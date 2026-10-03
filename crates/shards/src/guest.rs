@@ -109,7 +109,12 @@ const NO_KERNEL: &str =
 
 /// The default guest in `home`'s store: the pinned kernel, downloaded if it is not there
 /// yet, with what the download does said through `say`; and this build's init.
-pub fn default(home: &Path, say: &dyn Fn(&str), cancel: Option<&Cancel>) -> Result<Guest, String> {
+pub fn default(
+    home: &Path,
+    say: &dyn Fn(&str),
+    cancel: Option<&Cancel>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Guest, String> {
     let guest = pinned(home)?;
     let dir = home.join("guest");
     let pinned = KERNEL.ok_or(NO_KERNEL)?;
@@ -134,7 +139,7 @@ pub fn default(home: &Path, say: &dyn Fn(&str), cancel: Option<&Cancel>) -> Resu
         store(&dir, &guest.init, init_bytes()?)?;
     }
     if !guest.kernel.is_file() {
-        download(&dir, &guest.kernel, &pinned, say, cancel)?;
+        download(&dir, &guest.kernel, &pinned, say, cancel, env)?;
     }
     Ok(guest)
 }
@@ -180,6 +185,7 @@ fn download(
     pinned: &Pinned,
     say: &dyn Fn(&str),
     cancel: Option<&Cancel>,
+    env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(), String> {
     use shards_registry::http::{Client, Redirects, Request};
     use shards_registry::{tls, url::Url};
@@ -207,7 +213,8 @@ fn download(
     let http = match cancel {
         Some(cancel) => http.cancelled_by(cancel.clone()),
         None => http,
-    };
+    }
+    .with_proxies(shards_registry::proxy::Proxies::from_env(env));
     let request = Request {
         method: "GET",
         url: &url,

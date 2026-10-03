@@ -1147,7 +1147,8 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                             let g = match crate::guest::current(&home).map_err(|e| fail(&v, &e))? {
                                 Some(g) => g,
                                 None => {
-                                    crate::guest::default(&home, &|_| {}, None).map_err(|e| fail(&v, &e))?
+                                    crate::guest::default(&home, &|_| {}, None, &|k| std::env::var(k).ok())
+                                        .map_err(|e| fail(&v, &e))?
                                 }
                             };
                             (g.kernel, g.init)

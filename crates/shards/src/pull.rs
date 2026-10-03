@@ -11,6 +11,7 @@ use shards_image::reference::Reference;
 use shards_image::store::{Limits, Store};
 
 use shards_registry::http::{Cancel, Client};
+use shards_registry::proxy::Proxies;
 use shards_registry::pull::{self, Event, Pulled};
 use shards_registry::registry::{self, Registry};
 use shards_registry::{certs, credentials, tls};
@@ -40,8 +41,9 @@ pub fn pull(args: impl Iterator<Item = OsString>) -> ExitCode {
     };
     match run(&image, quiet) {
         Ok(()) => ExitCode::SUCCESS,
+        // As `docker pull` says what failed: the daemon's words, as they are.
         Err(e) => {
-            let _ = writeln!(std::io::stderr(), "shards: {e}");
+            let _ = writeln!(std::io::stderr(), "{e}");
             ExitCode::FAILURE
         }
     }
@@ -115,12 +117,13 @@ pub fn run(image: &str, quiet: bool) -> Result<(), String> {
                 downloaded.store(true, std::sync::atomic::Ordering::Relaxed);
                 say(&format!("{}: Download complete", short(&d.to_string())));
             }
-            Event::Manifest(..) | Event::Progress(..) | Event::Building => {}
+            Event::Manifest(..) | Event::Progress(..) | Event::Building | Event::Pulling => {}
         },
         &|line| say(line),
         None,
         &|k| std::env::var(k).ok(),
-    )?;
+    )
+    .map_err(|e| format!("Error response from daemon: {e}"))?;
     say(&format!("Digest: {}", pulled.0.resolved));
     // Docker's: up to date when the tag already named this image, or when a digest's
     // content was all here.
@@ -159,7 +162,8 @@ pub fn registry_for_push(
     let http = match cancel {
         Some(cancel) => http.cancelled_by(cancel.clone()),
         None => http,
-    };
+    }
+    .with_proxies(Proxies::from_env(env));
     let mounts: Vec<String> = mount.into_iter().map(String::from).collect();
     Registry::for_push(http, reference, credentials, &mounts).map_err(|e| e.to_string())
 }
@@ -171,7 +175,7 @@ pub fn fetch(
     home: &Path,
     reference: &Reference,
     report: &(dyn Fn(Event<'_>) + Sync),
-    say: &dyn Fn(&str),
+    say: &(dyn Fn(&str) + Sync),
     cancel: Option<&Cancel>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(Pulled, bool), String> {
@@ -191,20 +195,25 @@ pub fn fetch(
     let http = match cancel {
         Some(cancel) => http.cancelled_by(cancel.clone()),
         None => http,
-    };
+    }
+    .with_proxies(Proxies::from_env(env));
     let registry = Registry::new(http, reference, credentials).map_err(|e| e.to_string())?;
     let object = match &reference.digest {
         Some(d) => d.to_string(),
         None => reference.tag.clone().unwrap_or_else(|| "latest".into()),
     };
-    say(&format!("{object}: Pulling from {}", reference.path));
+    // Said once the registry has answered for the reference, as dockerd says it.
+    let report = |event: Event<'_>| match event {
+        Event::Pulling => say(&format!("{object}: Pulling from {}", reference.path)),
+        event => report(event),
+    };
     let before = store
         .tagged(&reference.to_string())
         .and_then(|d| d.map(|d| d.digest()).transpose())
         .map_err(|e| e.to_string())?;
     // Layers unpack without a cap, as Docker's do; each is checked against its DiffID.
     let limits = limits()?;
-    let pulled = pull::pull(&registry, &store, reference, &platform::guest(), &limits, report)
+    let pulled = pull::pull(&registry, &store, reference, &platform::guest(), &limits, &report)
         .map_err(|e| e.to_string())?;
     let same = before.as_ref() == Some(&pulled.manifest);
     // What the reference named before may be needed by nothing now: the daemon collects
@@ -220,4 +229,16 @@ pub fn fetch(
 fn short(digest: &str) -> &str {
     let hex = digest.split_once(':').map_or(digest, |(_, h)| h);
     hex.get(..12).unwrap_or(hex)
+}
+
+#[cfg(test)]
+mod tests {
+    /// The client sends every name a registry is reached by: its proxies' among them, so a
+    /// daemon reaches registries through the proxies of the client that asks.
+    #[test]
+    fn clients_send_every_name_registries_are_reached_by() {
+        for name in shards_registry::proxy::ENV {
+            assert!(shards_ipc::REGISTRY_ENV.contains(&name), "{name}");
+        }
+    }
 }

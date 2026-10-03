@@ -60,11 +60,15 @@ struct Job {
 impl Job {
     fn run(self) -> Result<Download, Failure> {
         let config = self.config;
+        // As BuildKit's http source reaches a URL: through the proxies the environment names.
         let client = Client::new(
             Box::new(move |_| Ok(config.clone())),
             &format!("shards/{}", env!("CARGO_PKG_VERSION")),
         )
-        .cancelled_by(self.cancel);
+        .cancelled_by(self.cancel)
+        .with_proxies(shards_registry::proxy::Proxies::from_env(&|k| {
+            std::env::var(k).ok()
+        }));
         fetch(
             &client,
             &self.url,

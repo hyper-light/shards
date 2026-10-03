@@ -959,6 +959,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-platform-verifier",
+ "ruzstd",
  "serde",
  "serde_json",
  "sha2",

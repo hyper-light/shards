@@ -30,14 +30,22 @@ fn params(sans: Vec<String>) -> CertificateParams {
 pub(crate) fn registry(
     versions: &[&'static rustls::SupportedProtocolVersion],
 ) -> (CertificateDer<'static>, Arc<ServerConfig>) {
+    registry_named("localhost", versions)
+}
+
+/// [`registry`], certifying the host as `name`.
+pub(crate) fn registry_named(
+    name: &str,
+    versions: &[&'static rustls::SupportedProtocolVersion],
+) -> (CertificateDer<'static>, Arc<ServerConfig>) {
     let mut ca = params(Vec::new());
     ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     ca.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::DigitalSignature];
     ca.distinguished_name
         .push(DnType::CommonName, "shards test registry CA");
     let ca = CertifiedIssuer::self_signed(ca, KeyPair::generate().unwrap()).unwrap();
-    let mut leaf = params(vec!["localhost".into()]);
-    leaf.distinguished_name.push(DnType::CommonName, "localhost");
+    let mut leaf = params(vec![name.into()]);
+    leaf.distinguished_name.push(DnType::CommonName, name);
     leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     leaf.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     let key = KeyPair::generate().unwrap();

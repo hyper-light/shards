@@ -111,7 +111,9 @@ pub fn prepare(
         }
         (None, None) => Boot::Stored(match crate::guest::current(home)? {
             Some(recorded) => recorded,
-            None => crate::guest::default(home, say, Some(cancel))?,
+            None => crate::guest::default(home, say, Some(cancel), &|k| {
+                shards_ipc::env_value(&request.registry_env, k)
+            })?,
         }),
         _ => return Err("--kernel and --init (or SHARDS_KERNEL and SHARDS_INIT) go together".into()),
     };
@@ -154,7 +156,7 @@ pub fn prepare(
             let report = |event: Event<'_>| match event {
                 Event::Layer(d) => say(&format!("{}: Download complete", short(&d.to_string()))),
                 Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
-                Event::Manifest(..) | Event::Progress(..) | Event::Building => {}
+                Event::Manifest(..) | Event::Progress(..) | Event::Building | Event::Pulling => {}
             };
             let (pulled, _) = crate::pull::fetch(home, &reference, &report, &say, Some(cancel), &|k| {
                 shards_ipc::env_value(&asked.registry_env, k)

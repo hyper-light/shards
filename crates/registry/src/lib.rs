@@ -8,6 +8,7 @@ pub mod auth;
 pub mod certs;
 pub mod credentials;
 pub mod http;
+pub mod proxy;
 pub mod pull;
 pub mod push;
 pub mod registry;
@@ -21,6 +22,18 @@ pub mod url;
 pub struct Error {
     message: String,
     kind: ErrorKind,
+    /// What dockerd says in its place, where a registry refused a request.
+    said: Option<Said>,
+}
+
+/// What dockerd says of a registry's refusal in place of containerd's words
+/// (`translateRegistryError`, daemon/containerd/registry_errors.go).
+#[derive(Debug)]
+pub(crate) enum Said {
+    /// The registry's own errors, which dockerd says alone.
+    Instead(String),
+    /// dockerd's word, before the whole error.
+    Before(&'static str),
 }
 
 /// What kind of failure an error is, where a caller acts on it.
@@ -33,6 +46,9 @@ pub enum ErrorKind {
     NotFound,
     /// The store has no such content: what a push was to send is not here.
     Missing,
+    /// The registry refused the request's authorization, or asked for credentials there
+    /// are none of: containerd's ErrInvalidAuthorization.
+    Unauthorized,
     /// The request was cancelled ([`http::Cancel`]): nothing tries it again.
     Cancelled,
     /// A stored copy is not what its digest names any more: a pull fetches it again.
@@ -49,7 +65,27 @@ impl Error {
         Error {
             message: message.into(),
             kind,
+            said: None,
         }
+    }
+
+    /// The same error, with what dockerd says of it.
+    pub(crate) fn said(self, said: Said) -> Error {
+        Error {
+            said: Some(said),
+            ..self
+        }
+    }
+
+    /// The error as dockerd reports a pull's or a push's: a registry's refusal in its
+    /// words, anything else as it is.
+    pub(crate) fn in_dockerds_words(self) -> Error {
+        let message = match self.said {
+            Some(Said::Instead(message)) => message,
+            Some(Said::Before(word)) => format!("{word}: {}", self.message),
+            None => self.message,
+        };
+        Error::of(self.kind, message)
     }
 
     pub fn kind(&self) -> ErrorKind {
@@ -61,6 +97,7 @@ impl Error {
         Error {
             message: format!("{context}: {}", self.message),
             kind: self.kind,
+            said: self.said,
         }
     }
 }
@@ -72,6 +109,19 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// `text` with its control characters escaped: what a registry says goes to a terminal.
+pub(crate) fn printable(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
 
 /// Timeouts and early ends are transient, as Go's are to containerd
 /// (isTransientTransportErr); and so is a connection reset, aborted or broken under a
