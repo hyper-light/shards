@@ -22,7 +22,7 @@ use crate::git;
 use crate::go;
 use crate::image::{History, Image};
 use crate::instructions::{self, ArgDef, Command, Kind, Location, Stage};
-use crate::lex::{self, Env as _, Lex};
+use crate::lex::{self, Lex};
 use crate::lint::{self, Linter, LinterView};
 use crate::llb::{
     self, Action, Chmod, Chown, CopyInfo, EnvList, Graph, Meta, Mount, MountKind, NetMode, Output,
@@ -996,20 +996,25 @@ impl Planner<'_> {
 
     /// `dispatchState.init`: a stage built on another starts from what that one made.
     fn init(&mut self, i: usize) {
-        let Some(b) = self.states.get(i).and_then(|d| d.base) else {
+        let Some(base) = self
+            .states
+            .get(i)
+            .and_then(|d| d.base)
+            .and_then(|b| self.states.get(b))
+        else {
             return;
         };
-        let Some(base) = self.states.get(b).cloned() else {
-            return;
-        };
+        // What it takes of the base, and no more: the base's stage and steps stay.
+        let (state, platform, mut image) = (base.state.clone(), base.platform.clone(), base.image.clone());
+        image.config.on_build.clear();
+        let (paths, workdir_set, build_args) = (base.paths, base.workdir_set, base.build_args.clone());
         if let Some(d) = self.states.get_mut(i) {
-            d.state = base.state.clone();
-            d.platform = base.platform.clone();
-            d.image = base.image.clone();
-            d.image.config.on_build.clear();
-            d.paths = base.paths;
-            d.workdir_set = base.workdir_set;
-            d.build_args.extend(base.build_args.iter().cloned());
+            d.state = state;
+            d.platform = platform;
+            d.image = image;
+            d.paths = paths;
+            d.workdir_set = workdir_set;
+            d.build_args.extend(build_args);
         }
     }
 
@@ -1301,17 +1306,21 @@ impl Planner<'_> {
                     ds.platform = Some(target_platform);
                 }
                 // PATH is always set.
-                let env = lex::EnvList::from_entries(ds.image.config.env.iter().map(Vec::as_slice));
-                if env.get(b"PATH").is_none() {
+                if !ds
+                    .image
+                    .config
+                    .env
+                    .iter()
+                    .any(|e| parse_key_value(e).0 == b"PATH")
+                {
                     ds.image
                         .config
                         .env
                         .push([b"PATH=".as_slice(), DEFAULT_PATH].concat());
                 }
-                for e in ds.image.config.env.clone() {
-                    let (k, v) = parse_key_value(&e);
-                    ds.state.env.add(k, v);
-                }
+                ds.state
+                    .env
+                    .extend(ds.image.config.env.iter().map(|e| parse_key_value(e)));
                 if !hostname.is_empty() {
                     ds.state.hostname = hostname;
                 }
@@ -1347,11 +1356,9 @@ impl Planner<'_> {
         Ok(())
     }
 
-    fn env_of(&self, d: usize) -> EnvList {
-        self.states
-            .get(d)
-            .map(|s| s.state.env.clone())
-            .unwrap_or_default()
+    fn env_of(&self, d: usize) -> &EnvList {
+        static NONE: EnvList = EnvList::new();
+        self.states.get(d).map_or(&NONE, |s| &s.state.env)
     }
 
     /// `reportUnmatchedVariables`.
@@ -1363,6 +1370,9 @@ impl Planner<'_> {
         unmatched: &BTreeSet<Vec<u8>>,
         lint: &LinterView<'_>,
     ) {
+        if unmatched.is_empty() {
+            return;
+        }
         let args: BTreeSet<&[u8]> = self
             .states
             .get(d)
@@ -1391,12 +1401,10 @@ impl Planner<'_> {
         word: &[u8],
     ) -> Result<Vec<u8>, Fail> {
         let env = self.env_of(d);
-        let r = lexer.process(word, &env);
-        let unmatched = match &r {
-            Ok(p) => p.unmatched.clone(),
-            Err(_) => BTreeSet::new(),
-        };
-        self.report_unmatched(d, loc, &env, &unmatched, lint);
+        let r = lexer.process(word, env);
+        if let Ok(p) = &r {
+            self.report_unmatched(d, loc, env, &p.unmatched, lint);
+        }
         Ok(r?.word)
     }
 
@@ -1792,10 +1800,9 @@ impl Planner<'_> {
         loc: &Location,
         lint: &LinterView<'_>,
     ) -> Result<(), Fail> {
-        let env = self.env_of(d);
         let mut words = Vec::new();
         for p in ports {
-            words.extend(self.shlex.process(p, &env)?.words);
+            words.extend(self.shlex.process(p, self.env_of(d))?.words);
         }
         let mut exposed = Vec::new();
         for raw in &words {
@@ -2439,9 +2446,9 @@ impl Planner<'_> {
         let platform = self.target_platform.clone();
         let t = self
             .states
-            .get(target)
+            .get_mut(target)
             .ok_or_else(|| Fail::new(b"no target".to_vec()))?;
-        let mut image = t.image.clone();
+        let mut image = std::mem::take(&mut t.image);
         // An explicit target platform is the image's.
         let same = platform.os == image.platform.os && platform.architecture == image.platform.architecture;
         image.platform.os = platform.os.clone();
@@ -2457,7 +2464,7 @@ impl Planner<'_> {
         }
         image.platform = platform::normalize(&image.platform);
         Ok(Plan {
-            state: t.state.clone(),
+            state: std::mem::take(&mut t.state),
             graph: self.graph,
             image,
             platform,

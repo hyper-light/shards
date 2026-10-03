@@ -329,9 +329,26 @@ impl Vertex {
 pub struct EnvList(Vec<(Vec<u8>, Vec<u8>)>);
 
 impl EnvList {
+    pub const fn new() -> EnvList {
+        EnvList(Vec::new())
+    }
+
     pub fn add(&mut self, key: &[u8], value: &[u8]) {
         self.0.retain(|(k, _)| k != key);
         self.0.push((key.to_vec(), value.to_vec()));
+    }
+
+    /// Adds each of `entries` in turn, as [`add`](Self::add) does, in time linear in
+    /// them and the list: each key ends up where it is added last.
+    pub fn extend<'a>(&mut self, entries: impl IntoIterator<Item = (&'a [u8], &'a [u8])>) {
+        let entries: Vec<(&[u8], &[u8])> = entries.into_iter().collect();
+        let last: HashMap<&[u8], usize> = entries.iter().enumerate().map(|(i, &(k, _))| (k, i)).collect();
+        self.0.retain(|(k, _)| !last.contains_key(k.as_slice()));
+        for (i, &(k, v)) in entries.iter().enumerate() {
+            if last.get(k) == Some(&i) {
+                self.0.push((k.to_vec(), v.to_vec()));
+            }
+        }
     }
 
     pub fn delete(&mut self, key: &[u8]) {
@@ -1056,5 +1073,40 @@ fn file_action(a: &Action, base_dir: &[u8], base: i64) -> OpActionKind {
                 required_paths: info.required_paths.clone(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// Adding entries together leaves what adding them one by one does: keys already
+    /// there and keys given twice end up where they are added last.
+    #[test]
+    fn entries_added_together_land_as_added_one_by_one() {
+        let start = [(&b"A"[..], &b"1"[..]), (b"B", b"2"), (b"C", b"3")];
+        let added = [
+            (&b"B"[..], &b"x"[..]),
+            (b"D", b"4"),
+            (b"B", b"y"),
+            (b"A", b"z"),
+            (b"D", b"5"),
+        ];
+        let mut one_by_one = EnvList::new();
+        let mut together = EnvList::new();
+        for (k, v) in start {
+            one_by_one.add(k, v);
+            together.add(k, v);
+        }
+        for (k, v) in added {
+            one_by_one.add(k, v);
+        }
+        together.extend(added);
+        assert_eq!(together, one_by_one);
+        assert_eq!(
+            together.to_array(),
+            [b"C=3".to_vec(), b"B=y".to_vec(), b"A=z".to_vec(), b"D=5".to_vec()]
+        );
     }
 }
