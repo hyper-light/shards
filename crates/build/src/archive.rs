@@ -158,6 +158,8 @@ struct Stream {
     from: mpsc::Receiver<Vec<u8>>,
     piece: Vec<u8>,
     at: usize,
+    /// Whether it was read to where the decompressor stopped.
+    ended: bool,
 }
 
 impl Read for Stream {
@@ -168,7 +170,10 @@ impl Read for Stream {
                     self.piece = piece;
                     self.at = 0;
                 }
-                Err(_) => return Ok(0),
+                Err(_) => {
+                    self.ended = true;
+                    return Ok(0);
+                }
             }
         }
         let rest = self.piece.get(self.at..).unwrap_or_default();
@@ -417,6 +422,7 @@ pub fn unpack(
             from,
             piece: Vec::new(),
             at: 0,
+            ended: false,
         };
         let unpacked = untar(dest, &mut stream, &mut contents, source, owner, &limits, held)
             .and_then(|()| contents.flush().map_err(e));
@@ -428,6 +434,60 @@ pub fn unpack(
     });
     dest.unchroot();
     r
+}
+
+/// When the newest regular member of the archive in `file` was modified, if it is one, as
+/// BuildKit takes a source's time from what it fetches (dockerfile/1.27.1 epoch.go,
+/// archiveMaxTimeFromRef, which allows what is no archive): decompressed as ADD
+/// decompresses an archive, and read as Go's archive/tar reads it, as far as its end. What
+/// cannot be read as one, or stops decompressing before its end, is none; what
+/// decompresses to more than `limits` allow fails.
+pub fn newest_file(file: File, limits: &Limits) -> Result<Option<(i64, u32)>, Error> {
+    let limit = limits.bytes;
+    std::thread::scope(|scope| {
+        let (to, from) = mpsc::sync_channel(PIECES);
+        let decompressor = std::thread::Builder::new()
+            .name("epoch-decompress".into())
+            .spawn_scoped(scope, move || {
+                let mut bytes = 0;
+                let mut out = Pieces {
+                    to,
+                    piece: Vec::with_capacity(PIECE),
+                    bytes: &mut bytes,
+                    limit,
+                };
+                // What came out before any error goes to the reader, as Go's reads it
+                // before it reads the error.
+                let decompressed = decompress(file, &mut out);
+                let flushed = out.flush().map_err(|e| Error(e.to_string()));
+                drop(out);
+                (decompressed.and(flushed), bytes)
+            })
+            .map_err(|e| Error(e.to_string()))?;
+        let mut stream = Stream {
+            from,
+            piece: Vec::new(),
+            at: 0,
+            ended: false,
+        };
+        let newest = tar::Reader::new(&mut stream).newest_regular();
+        let ended = stream.ended;
+        // Whatever the archive holds past its end is not read: the decompressor stops.
+        drop(stream);
+        let (decompressed, bytes) = decompressor
+            .join()
+            .map_err(|_| Error("decompressing the archive failed".into()))?;
+        if bytes > limit {
+            return Err(Error(over_budget(limit)));
+        }
+        Ok(match (newest, decompressed) {
+            // Go's reader would have read the decompressor's error where this one found
+            // the stream's end.
+            (Ok(_), Err(_)) if ended => None,
+            (Ok(newest), _) => newest,
+            (Err(_), _) => None,
+        })
+    })
 }
 
 fn next_id() -> u64 {
@@ -705,6 +765,7 @@ mod tests {
                     from,
                     piece: Vec::new(),
                     at: 0,
+                    ended: false,
                 };
                 let mut got = Vec::new();
                 s.read_to_end(&mut got).unwrap();
@@ -724,6 +785,61 @@ mod tests {
             (r, reader.join().unwrap())
         });
         (got.0, got.1, bytes)
+    }
+
+    fn limits(bytes: u64) -> Limits {
+        Limits {
+            bytes,
+            entries: u64::MAX,
+            metadata: u64::MAX,
+            keep_free: 0,
+            available: |_| Ok(u64::MAX),
+        }
+    }
+
+    /// When the newest regular member of `data` was modified, as `newest_file` finds it.
+    fn newest(data: &[u8], limit: u64) -> Result<Option<(i64, u32)>, Error> {
+        let path = std::env::temp_dir().join(format!("shards-newest-{}-{}", std::process::id(), next_id()));
+        std::fs::write(&path, data).unwrap();
+        let found = newest_file(File::open(&path).unwrap(), &limits(limit));
+        std::fs::remove_file(&path).unwrap();
+        found
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        let mut z = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(data).unwrap();
+        z.finish().unwrap()
+    }
+
+    /// An archive's newest regular member's time comes through its compression, to the
+    /// nanosecond; what is no archive has none; what decompresses past the limit fails; and
+    /// a decompressor's error where Go's reader would read it (here, a gzip checksum after
+    /// an archive with no end marker) leaves none, as Go's reader fails there, while one
+    /// past the archive's end changes nothing.
+    #[test]
+    fn an_archives_newest_file_is_found_through_its_compression() {
+        let tar = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../image/testdata/tar-newest/pax-nsec.tar"),
+        )
+        .unwrap();
+        let time = Some((1_700_000_000, 500_000_000));
+        assert_eq!(newest(&tar, u64::MAX).unwrap(), time);
+        assert_eq!(newest(&gzip(&tar), u64::MAX).unwrap(), time);
+        assert_eq!(newest(b"no archive at all", u64::MAX).unwrap(), None);
+        let e = newest(&gzip(&tar), 1024).unwrap_err();
+        assert!(e.0.contains("comes to more than 1024 bytes"), "{e:?}");
+        // The end marker's two blocks dropped: the archive ends where the stream does.
+        let unmarked = tar.get(..tar.len() - 1024).unwrap();
+        let mut crc = gzip(unmarked);
+        assert_eq!(newest(&crc, u64::MAX).unwrap(), time);
+        let at = crc.len() - 8;
+        crc[at] ^= 0xff;
+        assert_eq!(newest(&crc, u64::MAX).unwrap(), None);
+        let mut past = gzip(&tar);
+        let at = past.len() - 8;
+        past[at] ^= 0xff;
+        assert_eq!(newest(&past, u64::MAX).unwrap(), time);
     }
 
     /// Every byte is counted once, whatever the writes' sizes against the pieces', and

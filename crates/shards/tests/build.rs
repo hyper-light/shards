@@ -1153,6 +1153,172 @@ fn url_server(log: Asked, release: std::sync::mpsc::Receiver<()>) -> u16 {
     port
 }
 
+/// Serves what SOURCE_DATE_EPOCH's source stages fetch: `/lm.tar` with a Last-Modified,
+/// `/nsec.tar` and `/plain` without, and `/missing`, not found. The archives are those
+/// crates/image's newest.go crafted, whose times Go's archive/tar recorded.
+fn epoch_server() -> u16 {
+    use std::io::{BufRead as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            std::thread::spawn(move || {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut out = stream;
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    return;
+                }
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) <= 2 {
+                        break;
+                    }
+                }
+                let (head, body) = match line.split(' ').nth(1).unwrap_or("") {
+                    "/lm.tar" => (
+                        "200 OK\r\nLast-Modified: Sun, 06 Nov 1994 08:49:37 GMT",
+                        crafted("links.tar"),
+                    ),
+                    "/nsec.tar" => ("200 OK", crafted("pax-nsec.tar")),
+                    "/plain" => ("200 OK", b"x".to_vec()),
+                    _ => ("404 Not Found", Vec::new()),
+                };
+                let mut response = format!(
+                    "HTTP/1.1 {head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .into_bytes();
+                response.extend_from_slice(&body);
+                let _ = out.write_all(&response);
+            });
+        }
+    });
+    port
+}
+
+fn crafted(name: &str) -> Vec<u8> {
+    std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../image/testdata/tar-newest")
+            .join(name),
+    )
+    .unwrap()
+}
+
+/// SOURCE_DATE_EPOCH naming a stage that only fetches a source takes the build's time
+/// from it, as dockerfile/1.27.1 takes it (epoch.go): a URL's Last-Modified when it was
+/// fetched without a checksum, else the newest regular file in what it fetched, when
+/// that is an archive; none for what is neither, nor for `context`, a local directory;
+/// and a source that cannot be fetched fails the build, in BuildKit's words.
+#[test]
+fn source_date_epoch_is_taken_from_a_source_stage() {
+    if cannot_run_vms() {
+        return;
+    }
+    use sha2::Digest as _;
+    let url = format!("http://127.0.0.1:{}", epoch_server());
+    let home = TempDir::new("build-epoch-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let sum: String = sha2::Sha256::digest(crafted("links.tar"))
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let sum = format!("sha256:{sum}");
+    let build = |n: usize, add: &str, epoch: &str| {
+        let ctx = context(
+            &format!("build-epoch-ctx-{n}"),
+            &format!("FROM scratch AS src\nADD {add} /\n\nFROM scratch\nWORKDIR /w\n"),
+        );
+        let tag = format!("epoch:{n}");
+        let arg = format!("SOURCE_DATE_EPOCH={epoch}");
+        let built = shards(&[
+            "build",
+            "--progress=plain",
+            "--build-arg",
+            &arg,
+            "-t",
+            &tag,
+            ctx.to_str().unwrap(),
+        ]);
+        let created = shards(&["image", "inspect", &tag]).stdout;
+        (built, created)
+    };
+    for (n, add, epoch, created) in [
+        (1, format!("{url}/lm.tar"), "src", "1994-11-06T08:49:37Z"),
+        (
+            2,
+            format!("--checksum={sum} {url}/lm.tar"),
+            "SRC",
+            "2027-01-15T08:00:00Z",
+        ),
+        (3, format!("{url}/nsec.tar"), "src", "2023-11-14T22:13:20Z"),
+    ] {
+        let (built, inspected) = build(n, &add, epoch);
+        assert_eq!(built.status, Some(0), "{add}: {}", built.stderr);
+        assert!(
+            built
+                .stderr
+                .contains("[internal] resolve SOURCE_DATE_EPOCH source stage src\n"),
+            "{}",
+            built.stderr
+        );
+        assert!(
+            inspected.contains(&format!("\"Created\": \"{created}\"")),
+            "{add}: {inspected}"
+        );
+    }
+    for (n, add, epoch, step) in [
+        (
+            4,
+            format!("{url}/plain"),
+            "src",
+            "[internal] resolve SOURCE_DATE_EPOCH source stage src",
+        ),
+        (
+            5,
+            format!("{url}/plain"),
+            "context",
+            "[internal] resolve main build context metadata",
+        ),
+    ] {
+        let (built, inspected) = build(n, &add, epoch);
+        assert_eq!(built.status, Some(0), "{add}: {}", built.stderr);
+        assert!(built.stderr.contains(step), "{}", built.stderr);
+        for time in ["1970-01-01T00:00:00Z", "1994-11-06", "2027-01-15", "2023-11-14"] {
+            assert!(!inspected.contains(time), "{add}: {inspected}");
+        }
+    }
+    for (n, add, said) in [
+        (
+            6,
+            format!("{url}/missing"),
+            "failed to solve: invalid response status 404",
+        ),
+        (
+            7,
+            "https://github.com/moby/buildkit.git#v0.20.0".to_string(),
+            "failed to solve: taking SOURCE_DATE_EPOCH from a Git source is not supported yet",
+        ),
+        (
+            8,
+            format!("{url}/plain"),
+            "failed to solve: invalid SOURCE_DATE_EPOCH: nosuch",
+        ),
+    ] {
+        let epoch = if n == 8 { "nosuch" } else { "src" };
+        let (built, _) = build(n, &add, epoch);
+        assert_ne!(built.status, Some(0), "{add}");
+        assert!(built.stderr.contains(said), "{add}: {}", built.stderr);
+    }
+}
+
 /// `ADD` of URLs as BuildKit adds them (dockerfile/1.27.1 source/http through Go's
 /// client; measured against Docker Desktop's BuildKit v0.28, and byte for byte on real
 /// URLs: scripts/build/realworld/cases/add-url):

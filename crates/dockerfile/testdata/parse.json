@@ -8581,6 +8581,904 @@
   ]
  },
  {
+  "file": "corpus/plan/epoch-bad-base.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"${X:?missing}\\\" \\\"AS\\\" \\\"src\\\")\\n(add \\\"https://example.com/a.tar\\\" \\\"/\\\")\\n(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"${X:?missing}\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM ${X:?missing} AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://example.com/a.tar\\\" \\\"/\\\"\"",
+    "original": "\"ADD https://example.com/a.tar /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-bad-checksum.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\")\\n(add [\\\"--checksum=sha256:abc\\\"] \\\"https://example.com/a.tar\\\" \\\"/\\\")\\n(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM scratch AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--checksum=sha256:abc\\\"] \\\"https://example.com/a.tar\\\" \\\"/\\\"\"",
+    "original": "\"ADD --checksum=sha256:abc https://example.com/a.tar /\"",
+    "flags": [
+     "\"--checksum=sha256:abc\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-bad-git.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\")\\n(add \\\"git@github.com:moby/buildkit.git?branch=b\u0026tag=t\\\" \\\"/\\\")\\n(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM scratch AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"git@github.com:moby/buildkit.git?branch=b\u0026tag=t\\\" \\\"/\\\"\"",
+    "original": "\"ADD git@github.com:moby/buildkit.git?branch=b\u0026tag=t /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-context.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(arg \\\"SOURCE_DATE_EPOCH\\\")\\n(from \\\"alpine\\\")\\n(arg \\\"SOURCE_DATE_EPOCH\\\")\\n(run \\\"echo \\\\\\\"[$SOURCE_DATE_EPOCH]\\\\\\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"arg \\\"SOURCE_DATE_EPOCH\\\"\"",
+    "original": "\"ARG SOURCE_DATE_EPOCH\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"SOURCE_DATE_EPOCH\\\"\"",
+    "original": "\"ARG SOURCE_DATE_EPOCH\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo \\\\\\\"[$SOURCE_DATE_EPOCH]\\\\\\\"\\\"\"",
+    "original": "\"RUN echo \\\"[$SOURCE_DATE_EPOCH]\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-empty.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(arg \\\"SOURCE_DATE_EPOCH\\\")\\n(run \\\"echo \\\\\\\"[$SOURCE_DATE_EPOCH]\\\\\\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"SOURCE_DATE_EPOCH\\\"\"",
+    "original": "\"ARG SOURCE_DATE_EPOCH\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo \\\\\\\"[$SOURCE_DATE_EPOCH]\\\\\\\"\\\"\"",
+    "original": "\"RUN echo \\\"[$SOURCE_DATE_EPOCH]\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-fold.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"scratch\\\" \\\"AS\\\" \\\"kelvins\\\")\\n(add \\\"https://example.com/\\\" \\\"/\\\")\\n(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"scratch\\\" \\\"AS\\\" \\\"kelvins\\\"\"",
+    "original": "\"FROM scratch AS kelvins\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://example.com/\\\" \\\"/\\\"\"",
+    "original": "\"ADD https://example.com/ /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-git.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\")\\n(add \\\"https://github.com/moby/buildkit.git#v0.20.0\\\" \\\"/\\\")\\n(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM scratch AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://github.com/moby/buildkit.git#v0.20.0\\\" \\\"/\\\"\"",
+    "original": "\"ADD https://github.com/moby/buildkit.git#v0.20.0 /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-heredoc.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\")\\n(add \\\"\u003c\u003cEOF\\\" \\\"/a\\\")\\n(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM scratch AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"\u003c\u003cEOF\\\" \\\"/a\\\"\"",
+    "original": "\"ADD \u003c\u003cEOF /a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": [
+     {
+      "name": "\"EOF\"",
+      "fd": 0,
+      "expand": true,
+      "chomp": false,
+      "content": "\"hello\\n\""
+     }
+    ]
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-leading-zero.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(arg \\\"SOURCE_DATE_EPOCH\\\")\\n(from \\\"alpine\\\")\\n(arg \\\"SOURCE_DATE_EPOCH\\\")\\n(workdir \\\"/w\\\")\\n(run \\\"echo \\\\\\\"[$SOURCE_DATE_EPOCH]\\\\\\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"arg \\\"SOURCE_DATE_EPOCH\\\"\"",
+    "original": "\"ARG SOURCE_DATE_EPOCH\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"SOURCE_DATE_EPOCH\\\"\"",
+    "original": "\"ARG SOURCE_DATE_EPOCH\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"workdir \\\"/w\\\"\"",
+    "original": "\"WORKDIR /w\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo \\\\\\\"[$SOURCE_DATE_EPOCH]\\\\\\\"\\\"\"",
+    "original": "\"RUN echo \\\"[$SOURCE_DATE_EPOCH]\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-local-add.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\")\\n(add \\\"file.txt\\\" \\\"/\\\")\\n(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM scratch AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"file.txt\\\" \\\"/\\\"\"",
+    "original": "\"ADD file.txt /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-no-add.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\")\\n(arg \\\"A=1\\\")\\n(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM scratch AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"A=1\\\"\"",
+    "original": "\"ARG A=1\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-not-scratch.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"src\\\")\\n(add \\\"https://example.com/a.tar\\\" \\\"/\\\")\\n(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM alpine AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://example.com/a.tar\\\" \\\"/\\\"\"",
+    "original": "\"ADD https://example.com/a.tar /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-own-arg.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(arg \\\"SOURCE_DATE_EPOCH\\\")\\n(from \\\"${SOURCE_DATE_EPOCH:+not}scratch\\\" \\\"AS\\\" \\\"src\\\")\\n(add \\\"https://example.com/${SOURCE_DATE_EPOCH}a.tar\\\" \\\"/\\\")\\n(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"arg \\\"SOURCE_DATE_EPOCH\\\"\"",
+    "original": "\"ARG SOURCE_DATE_EPOCH\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"${SOURCE_DATE_EPOCH:+not}scratch\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM ${SOURCE_DATE_EPOCH:+not}scratch AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://example.com/${SOURCE_DATE_EPOCH}a.tar\\\" \\\"/\\\"\"",
+    "original": "\"ADD https://example.com/${SOURCE_DATE_EPOCH}a.tar /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-run.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\")\\n(add \\\"https://example.com/a.tar\\\" \\\"/\\\")\\n(run \\\"true\\\")\\n(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM scratch AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://example.com/a.tar\\\" \\\"/\\\"\"",
+    "original": "\"ADD https://example.com/a.tar /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"run true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-stage.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\")\\n(arg \\\"V=1.0\\\")\\n(arg \\\"SOURCE_DATE_EPOCH\\\")\\n(add [\\\"--checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\\\"] \\\"https://example.com/releases/app-${V}.tar.gz\\\" \\\"/\\\")\\n(from \\\"alpine\\\")\\n(arg \\\"SOURCE_DATE_EPOCH\\\")\\n(run \\\"echo \\\\\\\"[$SOURCE_DATE_EPOCH]\\\\\\\"\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM scratch AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"V=1.0\\\"\"",
+    "original": "\"ARG V=1.0\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"SOURCE_DATE_EPOCH\\\"\"",
+    "original": "\"ARG SOURCE_DATE_EPOCH\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\\\"] \\\"https://example.com/releases/app-${V}.tar.gz\\\" \\\"/\\\"\"",
+    "original": "\"ADD --checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d https://example.com/releases/app-${V}.tar.gz /\"",
+    "flags": [
+     "\"--checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\""
+    ],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"SOURCE_DATE_EPOCH\\\"\"",
+    "original": "\"ARG SOURCE_DATE_EPOCH\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo \\\\\\\"[$SOURCE_DATE_EPOCH]\\\\\\\"\\\"\"",
+    "original": "\"RUN echo \\\"[$SOURCE_DATE_EPOCH]\\\"\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-two-adds.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\")\\n(add \\\"https://example.com/a.tar\\\" \\\"/\\\")\\n(add \\\"https://example.com/b.tar\\\" \\\"/\\\")\\n(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM scratch AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://example.com/a.tar\\\" \\\"/\\\"\"",
+    "original": "\"ADD https://example.com/a.tar /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://example.com/b.tar\\\" \\\"/\\\"\"",
+    "original": "\"ADD https://example.com/b.tar /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-two-sources.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\")\\n(add \\\"https://example.com/a.tar\\\" \\\"https://example.com/b.tar\\\" \\\"/\\\")\\n(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"scratch\\\" \\\"AS\\\" \\\"src\\\"\"",
+    "original": "\"FROM scratch AS src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://example.com/a.tar\\\" \\\"https://example.com/b.tar\\\" \\\"/\\\"\"",
+    "original": "\"ADD https://example.com/a.tar https://example.com/b.tar /\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-unknown.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"app\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"app\\\"\"",
+    "original": "\"FROM alpine AS app\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/epoch.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"alpine\\\")\\n(workdir \\\"/w\\\")\\n(copy \\\"a\\\" \\\"/a\\\")\\n(add \\\"b\\\" \\\"/b\\\")\\n(run \\\"true\\\")\"",

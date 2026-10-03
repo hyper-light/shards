@@ -299,8 +299,10 @@ impl<'a> Exec<'a> {
                 kind: Kind::File { size: d.size, data },
                 meta: Meta {
                     mode: 0o600,
-                    mtime: d.mtime.0,
-                    mtime_nsec: d.mtime.1,
+                    // Without a Last-Modified, the time is 1970's, as BuildKit's save
+                    // leaves it.
+                    mtime: d.last_modified.map_or(0, |t| t.0),
+                    mtime_nsec: d.last_modified.map_or(0, |t| t.1),
                     ..Meta::default()
                 },
             },

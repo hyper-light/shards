@@ -22,7 +22,7 @@ use shards_dockerfile::export::{self, Layer};
 use shards_dockerfile::go::Time;
 use shards_dockerfile::image::Image;
 use shards_dockerfile::llb::OpKind;
-use shards_dockerfile::plan::{self, Options, Resolved, Resolver};
+use shards_dockerfile::plan::{self, EpochSource, Options, Resolved, Resolver};
 use shards_dockerfile::platform::{self, Platform};
 use shards_image::oci::{self, Descriptor, Document};
 use shards_image::platform as image_platform;
@@ -216,6 +216,62 @@ impl Resolver for Bases<'_> {
             Err(e) => progress.error(&v, &String::from_utf8_lossy(e)),
         }
         r
+    }
+
+    /// Each under the name of the step BuildKit's metadata resolution shows
+    /// (dockerfile/1.27.1 epoch.go).
+    fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+        let name = match source {
+            EpochSource::Context => "[internal] resolve main build context metadata".to_string(),
+            EpochSource::Http { stage, .. } | EpochSource::Git { stage, .. } => {
+                format!(
+                    "[internal] resolve SOURCE_DATE_EPOCH source stage {}",
+                    show(stage)
+                )
+            }
+        };
+        let v = self.progress.borrow_mut().start(&name);
+        let r = self.source_time(source);
+        let progress = self.progress.borrow();
+        match &r {
+            Ok(_) => progress.done(&v),
+            Err(e) => progress.error(&v, e),
+        }
+        r.map_err(String::into_bytes)
+    }
+}
+
+impl Bases<'_> {
+    /// When `source` says it was made (resolveSourceDateEpochFromState): a local context
+    /// says nothing, BuildKit's metadata of one being neither Git's nor HTTP's; a URL
+    /// fetched without a checksum, its Last-Modified if it has one; else the newest
+    /// regular file of what it fetches, if that is an archive.
+    fn source_time(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, String> {
+        match source {
+            EpochSource::Context => Ok(None),
+            EpochSource::Http { url, checksum, .. } => {
+                let limits = crate::pull::limits()?;
+                // Removed, with what it holds, once the time is known.
+                let stage = self.store.stage().map_err(|e| e.to_string())?;
+                let checksum = checksum.as_deref().map(show);
+                let fetched = http::fetch_now(
+                    &show(url),
+                    checksum.as_deref(),
+                    stage.path().join("source"),
+                    &limits,
+                )?;
+                if checksum.is_none()
+                    && let Some(t) = fetched.last_modified
+                {
+                    return Ok(Some(t));
+                }
+                let file = std::fs::File::open(&fetched.path).map_err(|e| e.to_string())?;
+                shards_build::archive::newest_file(file, &limits).map_err(|e| e.0)
+            }
+            EpochSource::Git { .. } => {
+                Err("taking SOURCE_DATE_EPOCH from a Git source is not supported yet".into())
+            }
+        }
     }
 }
 

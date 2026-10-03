@@ -12131,6 +12131,1734 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/epoch-bad-base.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"${X:?missing}\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://example.com/a.tar /\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/\"",
+       "paths": [
+        "\"https://example.com/a.tar\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM ${X:?missing} AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-bad-checksum.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"scratch\"",
+    "commands": [
+     {
+      "checksum": "\"sha256:abc\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --checksum=sha256:abc https://example.com/a.tar /\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/\"",
+       "paths": [
+        "\"https://example.com/a.tar\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM scratch AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-bad-git.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"scratch\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD git@github.com:moby/buildkit.git?branch=b\u0026tag=t /\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/\"",
+       "paths": [
+        "\"git@github.com:moby/buildkit.git?branch=b\u0026tag=t\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM scratch AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-context.Dockerfile",
+  "meta_args": [
+   {
+    "args": [
+     [
+      "\"SOURCE_DATE_EPOCH\"",
+      null,
+      "\"\""
+     ]
+    ],
+    "code": "\"ARG SOURCE_DATE_EPOCH\"",
+    "comments": [],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"ARG\""
+   }
+  ],
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"SOURCE_DATE_EPOCH\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG SOURCE_DATE_EPOCH\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"RUN echo \\\"[$SOURCE_DATE_EPOCH]\\\"\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo \\\"[$SOURCE_DATE_EPOCH]\\\"\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      2,
+      2
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-empty.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"SOURCE_DATE_EPOCH\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG SOURCE_DATE_EPOCH\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"RUN echo \\\"[$SOURCE_DATE_EPOCH]\\\"\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo \\\"[$SOURCE_DATE_EPOCH]\\\"\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-fold.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"scratch\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://example.com/ /\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/\"",
+       "paths": [
+        "\"https://example.com/\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"kelvins\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM scratch AS kelvins\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-git.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"scratch\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://github.com/moby/buildkit.git#v0.20.0 /\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/\"",
+       "paths": [
+        "\"https://github.com/moby/buildkit.git#v0.20.0\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM scratch AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-heredoc.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"scratch\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD \u003c\u003cEOF /a\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": [
+        [
+         "\"EOF\"",
+         "\"hello\\n\"",
+         true
+        ]
+       ],
+       "dest": "\"/a\"",
+       "paths": []
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM scratch AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      6,
+      6
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-leading-zero.Dockerfile",
+  "meta_args": [
+   {
+    "args": [
+     [
+      "\"SOURCE_DATE_EPOCH\"",
+      null,
+      "\"\""
+     ]
+    ],
+    "code": "\"ARG SOURCE_DATE_EPOCH\"",
+    "comments": [],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"ARG\""
+   }
+  ],
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"SOURCE_DATE_EPOCH\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG SOURCE_DATE_EPOCH\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"WORKDIR /w\"",
+      "comments": [],
+      "kind": "*instructions.WorkdirCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"WORKDIR\"",
+      "path": "\"/w\""
+     },
+     {
+      "code": "\"RUN echo \\\"[$SOURCE_DATE_EPOCH]\\\"\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo \\\"[$SOURCE_DATE_EPOCH]\\\"\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      2,
+      2
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-local-add.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"scratch\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD file.txt /\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/\"",
+       "paths": [
+        "\"file.txt\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM scratch AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-no-add.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"scratch\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"A\"",
+        "\"1\"",
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG A=1\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ARG\""
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM scratch AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-not-scratch.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://example.com/a.tar /\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/\"",
+       "paths": [
+        "\"https://example.com/a.tar\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-own-arg.Dockerfile",
+  "meta_args": [
+   {
+    "args": [
+     [
+      "\"SOURCE_DATE_EPOCH\"",
+      null,
+      "\"\""
+     ]
+    ],
+    "code": "\"ARG SOURCE_DATE_EPOCH\"",
+    "comments": [],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"ARG\""
+   }
+  ],
+  "stages": [
+   {
+    "base_name": "\"${SOURCE_DATE_EPOCH:+not}scratch\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://example.com/${SOURCE_DATE_EPOCH}a.tar /\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/\"",
+       "paths": [
+        "\"https://example.com/${SOURCE_DATE_EPOCH}a.tar\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      2,
+      2
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM ${SOURCE_DATE_EPOCH:+not}scratch AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      5,
+      5
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-run.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"scratch\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://example.com/a.tar /\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/\"",
+       "paths": [
+        "\"https://example.com/a.tar\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "code": "\"run true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "mounts": null,
+      "name": "\"run\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM scratch AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      5,
+      5
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-stage.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"scratch\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"V\"",
+        "\"1.0\"",
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG V=1.0\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "args": [
+       [
+        "\"SOURCE_DATE_EPOCH\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG SOURCE_DATE_EPOCH\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "checksum": "\"sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d https://example.com/releases/app-${V}.tar.gz /\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/\"",
+       "paths": [
+        "\"https://example.com/releases/app-${V}.tar.gz\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM scratch AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"SOURCE_DATE_EPOCH\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG SOURCE_DATE_EPOCH\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"RUN echo \\\"[$SOURCE_DATE_EPOCH]\\\"\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        8,
+        8
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo \\\"[$SOURCE_DATE_EPOCH]\\\"\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      6,
+      6
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-two-adds.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"scratch\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://example.com/a.tar /\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/\"",
+       "paths": [
+        "\"https://example.com/a.tar\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://example.com/b.tar /\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/\"",
+       "paths": [
+        "\"https://example.com/b.tar\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM scratch AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      5,
+      5
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-two-sources.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"scratch\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://example.com/a.tar https://example.com/b.tar /\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/\"",
+       "paths": [
+        "\"https://example.com/a.tar\"",
+        "\"https://example.com/b.tar\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"src\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM scratch AS src\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-unknown.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"app\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS app\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/epoch.Dockerfile",
   "meta_args": null,
   "stages": [

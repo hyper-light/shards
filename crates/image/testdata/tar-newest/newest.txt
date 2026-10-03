@@ -1,0 +1,106 @@
+archive go-tar/file-and-dir.tar
+newest 0 0
+archive go-tar/gnu-incremental.tar
+newest 1441973427 0
+archive go-tar/gnu-long-nul.tar
+newest 1486082191 0
+archive go-tar/gnu-multi-hdrs.tar
+none
+archive go-tar/gnu-nil-sparse-data.tar
+newest 0 0
+archive go-tar/gnu-nil-sparse-hole.tar
+newest 0 0
+archive go-tar/gnu-not-utf8.tar
+newest 0 0
+archive go-tar/gnu-utf8.tar
+newest 0 0
+archive go-tar/gnu.tar
+newest 1244436044 0
+archive go-tar/hardlink.tar
+newest 1425484303 0
+archive go-tar/hdr-only.tar
+newest 1442273747 0
+archive go-tar/invalid-go17.tar
+newest 0 0
+archive go-tar/issue10968.tar
+error archive/tar: invalid tar header
+archive go-tar/issue11169.tar
+error archive/tar: invalid tar header
+archive go-tar/issue12435.tar
+error archive/tar: invalid tar header
+archive go-tar/neg-size.tar
+error archive/tar: invalid tar header
+archive go-tar/nil-uid.tar
+newest 1365454838 0
+archive go-tar/pax-bad-hdr-file.tar
+error archive/tar: invalid tar header
+archive go-tar/pax-bad-mtime-file.tar
+error archive/tar: invalid tar header
+archive go-tar/pax-global-records.tar
+newest 1400000000 0
+archive go-tar/pax-multi-hdrs.tar
+none
+archive go-tar/pax-nil-sparse-data.tar
+newest 0 0
+archive go-tar/pax-nil-sparse-hole.tar
+newest 0 0
+archive go-tar/pax-nul-path.tar
+error archive/tar: invalid tar header
+archive go-tar/pax-nul-xattrs.tar
+error archive/tar: invalid tar header
+archive go-tar/pax-path-hdr.tar
+none
+archive go-tar/pax-pos-size-file.tar
+newest 1442282516 0
+archive go-tar/pax-records.tar
+newest 0 0
+archive go-tar/pax.tar
+newest 1350244992 23960108
+archive go-tar/sparse-formats.tar
+newest 1392398319 0
+archive go-tar/star.tar
+newest 1244592783 0
+archive go-tar/trailing-slash.tar
+none
+archive go-tar/ustar-file-devs.tar
+newest 0 0
+archive go-tar/ustar-file-reg.tar
+newest 1442282516 0
+archive go-tar/ustar.tar
+newest 1360135598 0
+archive go-tar/v7.tar
+newest 1244593104 0
+archive go-tar/writer.tar
+newest 1246508266 0
+archive go-tar/xattrs.tar
+newest 1386065770 449252304
+archive tar-newest/bad-global-uid.tar
+newest 1700000000 0
+archive tar-newest/bad-pax-uid.tar
+error archive/tar: invalid tar header
+archive tar-newest/dir-mode-bits.tar
+newest 1700000000 0
+archive tar-newest/empty.tar
+none
+archive tar-newest/fifo-mode-bits.tar
+newest 1700000000 0
+archive tar-newest/garbage.tar
+error archive/tar: invalid tar header
+archive tar-newest/global-drops-pax.tar
+newest 1700000000 0
+archive tar-newest/global-only.tar
+newest -62135596800 0
+archive tar-newest/global-then-file.tar
+newest 1700000000 0
+archive tar-newest/links.tar
+newest 1800000000 0
+archive tar-newest/long-name-slash.tar
+newest 1700000000 0
+archive tar-newest/pax-nsec.tar
+newest 1700000000 500000000
+archive tar-newest/pax-path-slash.tar
+newest 1700000000 0
+archive tar-newest/rega-slash.tar
+newest 1700000000 0
+archive tar-newest/unknown-type.tar
+newest 1800000000 0

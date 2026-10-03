@@ -61,9 +61,30 @@ pub struct Resolved {
     pub config: Vec<u8>,
 }
 
-/// Finds a base image's config: `ResolveImageConfig`.
+/// Finds a base image's config: `ResolveImageConfig`; and when a source SOURCE_DATE_EPOCH
+/// names was made: `resolveSourceDateEpochFromState`.
 pub trait Resolver {
     fn resolve(&self, name: &[u8], platform: &Platform) -> Result<Resolved, Vec<u8>>;
+    /// When `source` says it was made, if it says: seconds and nanoseconds since 1970.
+    fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>>;
+}
+
+/// Where SOURCE_DATE_EPOCH's time comes from when it is no number of seconds
+/// (dockerfile/1.27.1 epoch.go): the build context, or the one remote ADD of a stage
+/// that does nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EpochSource {
+    /// `context`.
+    Context,
+    /// A URL: its checksum, and the name its file takes (`sourceDateEpochHTTPFilename`).
+    Http {
+        stage: Vec<u8>,
+        url: Vec<u8>,
+        checksum: Option<Vec<u8>>,
+        filename: Vec<u8>,
+    },
+    /// A Git repository, its checksum the ADD's `--checksum` when it has one.
+    Git { stage: Vec<u8>, git: git::GitRef },
 }
 
 /// A planned build: its graph, the target's state, the image config and the warnings.
@@ -179,8 +200,8 @@ struct Ds {
     cmd_is_on_build: bool,
     cmd_total: usize,
     workdir_set: bool,
-    /// SOURCE_DATE_EPOCH, in seconds.
-    epoch: Option<i64>,
+    /// SOURCE_DATE_EPOCH: seconds and nanoseconds.
+    epoch: Option<(i64, u32)>,
     entrypoint: Tracker,
     cmd: Tracker,
     healthcheck: Tracker,
@@ -232,7 +253,10 @@ struct Planner<'a> {
     build_platforms: Vec<Platform>,
     global_args: EnvList,
     all_args: BTreeMap<Vec<u8>, ArgInfo>,
-    epoch: Option<i64>,
+    /// The build args, SOURCE_DATE_EPOCH's as resolved (`setBuildArgValue`).
+    build_args: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// SOURCE_DATE_EPOCH: seconds and nanoseconds.
+    epoch: Option<(i64, u32)>,
     states: Vec<Ds>,
     by_name: BTreeMap<Vec<u8>, usize>,
     path_sets: Vec<BTreeSet<Vec<u8>>>,
@@ -322,17 +346,16 @@ fn plan_with(text: &[u8], opts: &Options, resolver: &dyn Resolver, linter: &Lint
 
     let mut epoch = None;
     let mut global_args = global_args;
-    if let Some(v) = build_arg_value(&opts.build_args, &global_args, b"SOURCE_DATE_EPOCH") {
-        epoch = resolve_epoch(&v)?;
-        // setBuildArgValue: the value as resolved, in what already holds it.
-        let formatted = epoch.map(|t| t.to_string().into_bytes()).unwrap_or_default();
-        if global_args.get(b"SOURCE_DATE_EPOCH").is_some() {
-            if formatted.is_empty() {
-                global_args.delete(b"SOURCE_DATE_EPOCH");
-            } else {
-                global_args.add(b"SOURCE_DATE_EPOCH", &formatted);
-            }
-        }
+    let mut build_args = opts.build_args.clone();
+    if let Some(v) = build_arg_value(&build_args, &global_args, b"SOURCE_DATE_EPOCH") {
+        epoch = resolve_epoch(&v, &ins.stages, &build_args, &global_args, &shlex, resolver)?;
+        let formatted = epoch.map(|(s, _)| s.to_string().into_bytes()).unwrap_or_default();
+        set_build_arg_value(
+            &mut build_args,
+            &mut global_args,
+            b"SOURCE_DATE_EPOCH",
+            &formatted,
+        );
     }
 
     let mut graph = Graph::default();
@@ -354,13 +377,14 @@ fn plan_with(text: &[u8], opts: &Options, resolver: &dyn Resolver, linter: &Lint
         build_platforms,
         global_args,
         all_args,
+        proxy: proxy_env(&build_args),
+        build_args,
         epoch,
         states: Vec::new(),
         by_name: BTreeMap::new(),
         path_sets: Vec::new(),
         graph,
         context,
-        proxy: proxy_env(&opts.build_args),
     };
     p.build_dispatch_states(ins.stages)?;
     let target = p.resolve_target()?;
@@ -378,20 +402,208 @@ fn build_arg_value(build_args: &BTreeMap<Vec<u8>, Vec<u8>>, global: &EnvList, ke
     global.get(key).filter(|v| !v.is_empty()).map(<[u8]>::to_vec)
 }
 
-/// `resolveSourceDateEpochValue` for a number of seconds. A context or a stage to take
-/// the time from needs the build's sources, which planning does not reach.
-fn resolve_epoch(v: &[u8]) -> Result<Option<i64>, Fail> {
+/// `setBuildArgValue`: `value` for `key` in the build args and the global args, in each
+/// only if it holds the key; nothing removes it.
+fn set_build_arg_value(
+    build_args: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+    global: &mut EnvList,
+    key: &[u8],
+    value: &[u8],
+) {
+    if build_args.contains_key(key) {
+        if value.is_empty() {
+            build_args.remove(key);
+        } else {
+            build_args.insert(key.to_vec(), value.to_vec());
+        }
+    }
+    if global.get(key).is_some() {
+        if value.is_empty() {
+            global.delete(key);
+        } else {
+            global.add(key, value);
+        }
+    }
+}
+
+/// `resolveSourceDateEpochValue`: a number of seconds (`strconv.ParseInt`, which reads a
+/// sign and digits as i64's parse does), or a source to take the time from.
+fn resolve_epoch(
+    v: &[u8],
+    stages: &[Stage],
+    build_args: &BTreeMap<Vec<u8>, Vec<u8>>,
+    global_args: &EnvList,
+    shlex: &Lex,
+    resolver: &dyn Resolver,
+) -> Result<Option<(i64, u32)>, Fail> {
     if v.is_empty() {
         return Ok(None);
     }
-    match std::str::from_utf8(v).ok().and_then(|s| s.parse::<i64>().ok()) {
-        Some(n) if !v.starts_with(b"+") || v.len() > 1 => Ok(Some(n)),
-        _ => Err(Fail::new(errb(&[
-            b"SOURCE_DATE_EPOCH ",
-            go::quote(v).as_bytes(),
-            b": taking it from a context or a stage is not supported yet",
-        ]))),
+    if let Some(n) = std::str::from_utf8(v).ok().and_then(|s| s.parse::<i64>().ok()) {
+        return Ok(Some((n, 0)));
     }
+    let source = epoch_source(v, stages, build_args, global_args, shlex)?;
+    resolver.epoch(&source).map_err(Fail::new)
+}
+
+/// `resolveSourceDateEpochState`. shards takes no named contexts (`--build-context`), so
+/// the name is the context's or a stage's.
+fn epoch_source(
+    v: &[u8],
+    stages: &[Stage],
+    build_args: &BTreeMap<Vec<u8>, Vec<u8>>,
+    global_args: &EnvList,
+    shlex: &Lex,
+) -> Result<EpochSource, Fail> {
+    if v == b"context" {
+        return Ok(EpochSource::Context);
+    }
+    let Some(stage) = stages.iter().find(|s| equal_fold_name(&s.name, v)) else {
+        return Err(Fail::new(errb(&[b"invalid SOURCE_DATE_EPOCH: ", v])));
+    };
+    let mut args = global_args.clone();
+    args.delete(b"SOURCE_DATE_EPOCH");
+    epoch_stage_source(stage, build_args, args, shlex).map_err(|f| f.at(&stage.location))
+}
+
+/// `strings.EqualFold(name, v)` for a stage's name, which is lowercase ASCII: each of
+/// `v`'s runes is the name's byte in either case, or the one other rune that folds to it,
+/// the Kelvin sign to k and the long s to s (Unicode's CaseFolding.txt).
+fn equal_fold_name(name: &[u8], v: &[u8]) -> bool {
+    let mut runes = go::runes(v);
+    for &b in name {
+        let Some((r, _)) = runes.next() else {
+            return false;
+        };
+        let folds = match b {
+            b'k' => r == 0x212A,
+            b's' => r == 0x17F,
+            _ => false,
+        };
+        if !(r == u32::from(b) || r == u32::from(b.to_ascii_uppercase()) || folds) {
+            return false;
+        }
+    }
+    runes.next().is_none()
+}
+
+/// `sourceDateEpochStageSource`: a stage `FROM scratch` that only fetches the source, its
+/// ARGs set as they come and one remote ADD.
+fn epoch_stage_source(
+    stage: &Stage,
+    build_args: &BTreeMap<Vec<u8>, Vec<u8>>,
+    global_args: EnvList,
+    shlex: &Lex,
+) -> Result<EpochSource, Fail> {
+    let one = || Fail::new(b"SOURCE_DATE_EPOCH stage must contain exactly one remote ADD".to_vec());
+    let base = shlex.process(&stage.base_name, &global_args).map_err(|e| {
+        Fail::new(errb(&[
+            b"failed to process source stage base name ",
+            go::quote(&stage.base_name).as_bytes(),
+            b": ",
+            &e.0,
+        ]))
+    })?;
+    if base.word != b"scratch" {
+        return Err(Fail::new(
+            b"SOURCE_DATE_EPOCH stage must use FROM scratch".to_vec(),
+        ));
+    }
+    let mut env = global_args;
+    let mut source = None;
+    for cmd in &stage.commands {
+        match &cmd.kind {
+            Kind::Arg(defs) => {
+                for arg in defs {
+                    if let Some(v) = build_args.get(&arg.key) {
+                        env.add(&arg.key, v);
+                    } else if let Some(value) = &arg.value {
+                        let v = shlex.process(value, &env)?.word;
+                        env.add(&arg.key, &v);
+                    }
+                }
+            }
+            Kind::Add(add) => {
+                if source.is_some() {
+                    return Err(one());
+                }
+                source = Some(epoch_add_source(&stage.name, add, &env, shlex)?);
+            }
+            _ => {
+                return Err(Fail::new(errb(&[
+                    b"SOURCE_DATE_EPOCH stage does not meet source-only requirements: unsupported ",
+                    &cmd.name,
+                    b" instruction",
+                ])));
+            }
+        }
+    }
+    source.ok_or_else(one)
+}
+
+/// `sourceDateEpochAddSource`.
+fn epoch_add_source(
+    stage: &[u8],
+    add: &instructions::Add,
+    env: &EnvList,
+    shlex: &Lex,
+) -> Result<EpochSource, Fail> {
+    let ([path], []) = (add.sources.paths.as_slice(), add.sources.contents.as_slice()) else {
+        return Err(Fail::new(
+            b"SOURCE_DATE_EPOCH stage must contain exactly one remote ADD source".to_vec(),
+        ));
+    };
+    let src = shlex.process(path, env)?.word;
+    if is_http_source(&src) {
+        let checksum = if add.checksum.is_empty() {
+            None
+        } else {
+            Some(parse_checksum(&shlex.process(&add.checksum, env)?.word)?)
+        };
+        return Ok(EpochSource::Http {
+            stage: stage.to_vec(),
+            filename: http_filename(&src),
+            url: src,
+            checksum,
+        });
+    }
+    match git::parse_git_ref(&src) {
+        git::Parsed::BadGit(e) => Err(Fail::new(e)),
+        git::Parsed::Git(mut git) if !git.indistinguishable_from_local => {
+            if !add.checksum.is_empty() {
+                git.checksum = shlex.process(&add.checksum, env)?.word;
+            }
+            Ok(EpochSource::Git {
+                stage: stage.to_vec(),
+                git,
+            })
+        }
+        _ => Err(Fail::new(
+            b"SOURCE_DATE_EPOCH stage source must be a single HTTP(S) or Git ADD".to_vec(),
+        )),
+    }
+}
+
+/// The name a URL's file takes: the base of its path, or `__unnamed__`.
+fn http_filename(src: &[u8]) -> Vec<u8> {
+    match url::parse(src) {
+        Ok(u) => {
+            let base = path_base(&u.path);
+            if base != b"." && base != b"/" {
+                base
+            } else {
+                b"__unnamed__".to_vec()
+            }
+        }
+        Err(_) => b"__unnamed__".to_vec(),
+    }
+}
+
+/// `digest.Parse`, its errors go-digest's.
+fn parse_checksum(c: &[u8]) -> Result<Vec<u8>, Fail> {
+    let c = std::str::from_utf8(c).map_err(|_| Fail::new(b"invalid checksum digest format".to_vec()))?;
+    let dg = shards_image::reference::Digest::parse(c).map_err(|e| Fail::new(e.to_string().into_bytes()))?;
+    Ok(dg.to_string().into_bytes())
 }
 
 /// `defaultArgs`: the platform arguments every build has.
@@ -1735,7 +1947,8 @@ impl Planner<'_> {
                 mode: 0o755,
                 make_parents: true,
                 chown,
-                created: epoch.map(|e| e.saturating_mul(1_000_000_000)),
+                // UnixNano, which wraps where Go's does.
+                created: epoch.map(|(s, ns)| s.wrapping_mul(1_000_000_000).wrapping_add(i64::from(ns))),
             };
             let state = ds.state.clone();
             let next = self.graph.file(&state, vec![action], custom_name(name));
@@ -1758,7 +1971,7 @@ impl Planner<'_> {
         let mut commits = Vec::new();
         for mut arg in defs {
             validate_no_secret_key(b"ARG", &arg.key, loc, lint);
-            let has_value = self.opts.build_args.get(&arg.key).cloned();
+            let has_value = self.build_args.get(&arg.key).cloned();
             let has_default = arg.value.is_some();
             // Inherited from the global scope.
             if !has_default
@@ -2210,20 +2423,10 @@ impl Planner<'_> {
                     return Err(Fail::new(b"source can't be a URL for COPY".to_vec()));
                 }
                 // Not unpacked unless asked: remote archives stay as they are.
-                let mut name = b"__unnamed__".to_vec();
-                if let Ok(u) = url::parse(src) {
-                    let base = path_base(&u.path);
-                    if base != b"." && base != b"/" {
-                        name = base;
-                    }
-                }
+                let name = http_filename(src);
                 let mut attrs = BTreeMap::new();
                 if !checksum.is_empty() {
-                    let c = std::str::from_utf8(&checksum)
-                        .map_err(|_| Fail::new(b"invalid checksum digest format".to_vec()))?;
-                    let dg = shards_image::reference::Digest::parse(c)
-                        .map_err(|e| Fail::new(e.to_string().into_bytes()))?;
-                    attrs.insert(b"http.checksum".to_vec(), dg.to_string().into_bytes());
+                    attrs.insert(b"http.checksum".to_vec(), parse_checksum(&checksum)?);
                 }
                 attrs.insert(b"http.filename".to_vec(), name.clone());
                 let mut meta = custom_name(pg_name.clone());
@@ -2469,7 +2672,7 @@ impl Planner<'_> {
             image,
             platform,
             warnings: Vec::new(),
-            epoch: self.epoch,
+            epoch: self.epoch.map(|(s, _)| s),
         })
     }
 }
@@ -2623,7 +2826,10 @@ fn commit(ds: &mut Ds, mut msg: Vec<u8>, with_layer: bool, with_state: bool) {
 
 /// The time history entries carry: SOURCE_DATE_EPOCH's, in UTC.
 fn ds_epoch(ds: &Ds) -> Option<go::Time> {
-    ds.epoch.map(go::Time::from_unix)
+    ds.epoch.map(|(s, nanosecond)| go::Time {
+        nanosecond,
+        ..go::Time::from_unix(s)
+    })
 }
 
 fn custom_name(name: Vec<u8>) -> Meta {
@@ -3272,6 +3478,121 @@ impl LintError for Linter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Resolves no base image, answers SOURCE_DATE_EPOCH's source as told, and keeps
+    /// what it was asked.
+    struct Times {
+        asked: std::cell::RefCell<Vec<EpochSource>>,
+        answer: Result<Option<(i64, u32)>, Vec<u8>>,
+    }
+
+    impl Resolver for Times {
+        fn resolve(&self, name: &[u8], _: &Platform) -> Result<Resolved, Vec<u8>> {
+            Err(errb(&[name, b": not found"]))
+        }
+
+        fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+            self.asked.borrow_mut().push(source.clone());
+            self.answer.clone()
+        }
+    }
+
+    fn planned(
+        text: &str,
+        args: &[(&str, &str)],
+        answer: Result<Option<(i64, u32)>, Vec<u8>>,
+    ) -> (Result<Plan, Error>, Vec<EpochSource>) {
+        let opts = Options {
+            target_platform: Platform::new("linux", "amd64"),
+            build_args: args
+                .iter()
+                .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+                .collect(),
+            ..Default::default()
+        };
+        let times = Times {
+            asked: Default::default(),
+            answer,
+        };
+        let planned = plan(text.as_bytes(), &opts, &times);
+        (planned, times.asked.into_inner())
+    }
+
+    const SUM: &str = "sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d";
+
+    /// SOURCE_DATE_EPOCH naming a stage asks for the time of its one remote ADD, as the
+    /// stage's ARGs and the build args make it, without SOURCE_DATE_EPOCH itself; the time
+    /// answered is the build's, to the nanosecond in its history and its WORKDIRs, and to
+    /// the second where the exporter takes it (dockerfile/1.27.1 epoch.go, convert.go).
+    #[test]
+    fn a_source_stage_gives_the_build_its_time() {
+        let text = format!(
+            "ARG SOURCE_DATE_EPOCH\nFROM scratch AS Src\nARG V=1.${{SOURCE_DATE_EPOCH}}0\nARG W\n\
+             ADD --checksum={SUM} https://example.com/v${{V}}/app${{W}}.tar.gz?x=1 /\n\n\
+             FROM scratch\nWORKDIR /w\n"
+        );
+        let args = [("SOURCE_DATE_EPOCH", "SRC"), ("W", "-b")];
+        let (planned, asked) = planned(&text, &args, Ok(Some((1_700_000_000, 5))));
+        let planned = planned.unwrap();
+        assert_eq!(
+            asked,
+            [EpochSource::Http {
+                stage: b"src".to_vec(),
+                url: b"https://example.com/v1.0/app-b.tar.gz?x=1".to_vec(),
+                checksum: Some(SUM.as_bytes().to_vec()),
+                filename: b"app-b.tar.gz".to_vec(),
+            }]
+        );
+        assert_eq!(planned.epoch, Some(1_700_000_000));
+        let created: Vec<_> = planned.image.history.iter().map(|h| h.created).collect();
+        assert_eq!(created.len(), 1);
+        assert_eq!(
+            created[0].map(|t| (t.unix(), t.nanosecond)),
+            Some(((1_700_000_000, 5), 5))
+        );
+        let made: Vec<Option<i64>> = planned
+            .graph
+            .vertices
+            .iter()
+            .filter_map(|v| match &v.kind {
+                llb::Kind::File { actions, .. } => Some(actions),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|a| match a {
+                Action::Mkdir { created, .. } => Some(*created),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(made, [Some(1_700_000_000_000_000_005)]);
+    }
+
+    /// `context` asks for the context's time; a Git source, for its repository's, the
+    /// ADD's checksum in place of the URL's; a number asks for nothing; and what the
+    /// resolver cannot answer fails the build with what it says.
+    #[test]
+    fn each_source_of_the_time_is_asked_for_as_it_is_named() {
+        let (_, asked) = planned("FROM scratch\n", &[("SOURCE_DATE_EPOCH", "context")], Ok(None));
+        assert_eq!(asked, [EpochSource::Context]);
+        let text = "FROM scratch AS src\nADD --checksum=abc123 https://github.com/moby/buildkit.git?ref=v1 /\n\nFROM scratch\n";
+        let (_, asked) = planned(text, &[("SOURCE_DATE_EPOCH", "src")], Ok(None));
+        let [EpochSource::Git { stage, git }] = asked.as_slice() else {
+            panic!("{asked:?}");
+        };
+        assert_eq!(
+            (stage.as_slice(), git.checksum.as_slice()),
+            (&b"src"[..], &b"abc123"[..])
+        );
+        assert_eq!(git.remote, b"https://github.com/moby/buildkit.git");
+        let (_, asked) = planned("FROM scratch\n", &[("SOURCE_DATE_EPOCH", "+42")], Ok(None));
+        assert!(asked.is_empty());
+        let (failed, _) = planned(
+            "FROM scratch\n",
+            &[("SOURCE_DATE_EPOCH", "context")],
+            Err(b"no answer".to_vec()),
+        );
+        assert_eq!(failed.err().map(|e| e.message), Some(b"no answer".to_vec()));
+    }
 
     /// `strings.Index`: an empty needle is at the start.
     #[test]

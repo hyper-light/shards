@@ -34,7 +34,8 @@ use shards_registry::url::Url;
 pub struct Download {
     pub path: PathBuf,
     pub size: u64,
-    pub mtime: (i64, u32),
+    /// Its Last-Modified, as `http.ParseTime` reads it, if it has one Go can read.
+    pub last_modified: Option<(i64, u32)>,
 }
 
 /// Why a fetch failed, and when BuildKit fails it: while it works out the source's cache
@@ -223,10 +224,7 @@ pub fn fetch(
             )));
         }
     }
-    let mtime = response
-        .header("last-modified")
-        .and_then(parse_time)
-        .unwrap_or((0, 0));
+    let last_modified = response.header("last-modified").and_then(parse_time);
     let gzipped = response
         .header("content-encoding")
         .is_some_and(|e| e.eq_ignore_ascii_case("gzip"));
@@ -253,7 +251,34 @@ pub fn fetch(
     {
         return Err(Failure::Snapshot(format!("digest mismatch {got}: {want}")));
     }
-    Ok(Download { path, size, mtime })
+    Ok(Download {
+        path,
+        size,
+        last_modified,
+    })
+}
+
+/// Fetches `url` into `path` now, on this thread, within `limits`; `checksum` is the
+/// source's `http.checksum`.
+pub fn fetch_now(
+    url: &str,
+    checksum: Option<&str>,
+    path: PathBuf,
+    limits: &Limits,
+) -> Result<Download, String> {
+    // The platform's roots, as Go's default transport trusts: no registry's certs.d.
+    let config = shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?;
+    let job = Job {
+        config,
+        cancel: Cancel::new(),
+        url: url.to_string(),
+        checksum: checksum.map(String::from),
+        path,
+        limits: *limits,
+    };
+    job.run().map_err(|f| match f {
+        Failure::CacheKey(e) | Failure::Snapshot(e) => e,
+    })
 }
 
 /// A download's file, written within the bytes ADD may write and the room its

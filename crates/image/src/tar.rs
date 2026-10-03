@@ -270,6 +270,96 @@ impl<R: Read> Reader<R> {
         Ok(n)
     }
 
+    /// When the newest of what Go's `Reader.Next` returns that `FileInfo().Mode()` calls
+    /// regular was modified, as BuildKit takes a source's time from an archive
+    /// (dockerfile/1.27.1 epoch.go, archiveMaxTimeFromRef): `None` for an archive of none.
+    /// Go returns every member but metadata ones, hard links, sparse files and types it
+    /// knows nothing of included, and each global header as one of no time (year 1) and
+    /// no mode, which it calls regular.
+    pub fn newest_regular(mut self) -> Result<Option<(i64, u32)>, Error> {
+        let mut newest = None;
+        let mut pax = BTreeMap::new();
+        let mut long_name = Vec::new();
+        while !self.done {
+            let Some(block) = self.block()? else {
+                break;
+            };
+            if block.iter().all(|&b| b == 0) {
+                if self.block()?.is_some_and(|b| b.iter().any(|&c| c != 0)) {
+                    return bad("a zero block followed by a header");
+                }
+                break;
+            }
+            let h = header(&block)?;
+            if !header_only(h.flag) && h.size < 0 {
+                return bad(format!("negative size {}", h.size));
+            }
+            let (time, regular) = match h.flag {
+                b'x' => {
+                    pax = parse_pax(&self.special(h.size)?)?;
+                    continue;
+                }
+                b'L' => {
+                    long_name = c_str(&self.special(h.size)?).to_vec();
+                    continue;
+                }
+                b'K' => {
+                    self.special(h.size)?;
+                    continue;
+                }
+                // Its records are no member's: Go does not check them.
+                b'g' => {
+                    parse_pax(&self.special(h.size)?)?;
+                    ((GO_ZERO_TIME, 0), true)
+                }
+                flag => {
+                    let (mut name, mut time, mut size) = (h.name, (h.mtime, 0), h.size);
+                    // mergePAX: an empty value keeps the header's.
+                    for (key, value) in pax.iter().filter(|(_, v)| !v.is_empty()) {
+                        match key.as_slice() {
+                            b"path" => name.clone_from(value),
+                            b"mtime" => time = pax_time(value)?,
+                            b"size" => size = decimal(value)?,
+                            b"uid" | b"gid" => {
+                                decimal(value)?;
+                            }
+                            b"atime" | b"ctime" => {
+                                pax_time(value)?;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !long_name.is_empty() {
+                        name = std::mem::take(&mut long_name);
+                    }
+                    // An old GNU sparse file's extension blocks, each saying whether
+                    // another follows.
+                    let mut extended = flag == b'S' && block.get(482).is_some_and(|&b| b != 0);
+                    while extended {
+                        let Some(next) = self.block()? else {
+                            return bad("archive ends inside a header");
+                        };
+                        extended = next.get(504).is_some_and(|&b| b != 0);
+                    }
+                    let data = if header_only(flag) {
+                        0
+                    } else {
+                        u64::try_from(size).map_err(|_| Error(format!("negative size {size}")))?
+                    };
+                    self.skip(data)?;
+                    self.pad(data)?;
+                    (time, go_regular(flag, h.mode, &name))
+                }
+            };
+            pax.clear();
+            long_name.clear();
+            if regular && newest.is_none_or(|n| time > n) {
+                newest = Some(time);
+            }
+        }
+        Ok(newest)
+    }
+
     /// The next block: `None` at the end of the stream, an error if it ends inside one.
     fn block(&mut self) -> Result<Option<[u8; BLOCK]>, Error> {
         let mut b = [0u8; BLOCK];
@@ -328,6 +418,21 @@ impl<R: Read> Reader<R> {
         }
         Ok(())
     }
+}
+
+/// Go's zero Time, January 1 of year 1, in seconds since 1970.
+const GO_ZERO_TIME: i64 = -62_135_596_800;
+
+/// Whether Go's `FileInfo().Mode()` of a member is a regular file's: no file type in the
+/// type bits of its mode, which Go keeps 32 of, nor in its type flag, NUL with a name
+/// ending in a slash being a directory's (`Reader.next`, `headerFileInfo.Mode`).
+fn go_regular(flag: u8, mode: i64, name: &[u8]) -> bool {
+    let typed_mode = matches!(
+        mode & 0xffff_ffff & !0o7777,
+        0o40000 | 0o10000 | 0o120000 | 0o60000 | 0o20000 | 0o140000
+    );
+    let typed_flag = matches!(flag, b'2'..=b'6') || (flag == 0 && name.ends_with(b"/"));
+    !typed_mode && !typed_flag
 }
 
 /// Go's isHeaderOnlyType: types whose size is not followed by data.
@@ -682,6 +787,37 @@ pub(crate) mod tests {
     /// what Go reads from each (expect.go). Where Go returns an entry we support, we return
     /// the same one; where Go returns one we refuse (sparse files, GNU dumpdirs) or fails,
     /// we fail; global headers, which Go returns as entries, we skip.
+    /// testdata/tar-newest/newest.txt holds when Go's archive/tar (go1.27.1) finds the
+    /// newest regular member of each of Go's test archives and of the ones newest.go
+    /// crafts was modified, as BuildKit takes a source's time; where Go fails, we fail.
+    #[test]
+    fn finds_the_newest_regular_member_as_go_does() {
+        let testdata = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
+        let newest = std::fs::read_to_string(testdata.join("tar-newest/newest.txt")).unwrap();
+        let mut lines = newest.lines();
+        let mut checked = 0;
+        while let Some(line) = lines.next() {
+            let name = line.strip_prefix("archive ").unwrap();
+            let want = lines.next().unwrap();
+            let archive = std::fs::read(testdata.join(name)).unwrap();
+            let got = Reader::new(&archive[..]).newest_regular();
+            match want.split(' ').collect::<Vec<_>>().as_slice() {
+                ["newest", secs, nsec] => {
+                    assert_eq!(
+                        got.unwrap(),
+                        Some((secs.parse().unwrap(), nsec.parse().unwrap())),
+                        "{name}"
+                    );
+                }
+                ["none"] => assert_eq!(got.unwrap(), None, "{name}"),
+                ["error", ..] => assert!(got.is_err(), "{name}: {got:?}"),
+                _ => panic!("{want}"),
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 53);
+    }
+
     #[test]
     fn reads_what_go_reads() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/go-tar");

@@ -529,6 +529,11 @@ impl shards_dockerfile::plan::Resolver for Images {
             config: serde_json::to_vec(&img["config"]).unwrap(),
         })
     }
+
+    /// The generator plans with no client, with which BuildKit resolves no source's time.
+    fn epoch(&self, _: &shards_dockerfile::plan::EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+        Ok(None)
+    }
 }
 
 fn ustr(b: &[u8]) -> Value {

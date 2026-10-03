@@ -2574,6 +2574,668 @@
   "warnings": null
  },
  {
+  "error": "\"failed to process source stage base name \\\"${X:?missing}\\\": failed to process \\\"${X:?missing}\\\": X: missing\"",
+  "file": "corpus/plan/epoch-bad-base.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"invalid checksum digest length\"",
+  "file": "corpus/plan/epoch-bad-checksum.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"branch conflicts with tag\"",
+  "file": "corpus/plan/epoch-bad-git.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-context.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ARG SOURCE_DATE_EPOCH\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN |1 SOURCE_DATE_EPOCH= /bin/sh -c echo \\\"[$SOURCE_DATE_EPOCH]\\\" # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo \"[$SOURCE_DATE_EPOCH]\""
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo \"[$SOURCE_DATE_EPOCH]\"",
+      "llb.customname": "[2/2] RUN echo \"[$SOURCE_DATE_EPOCH]\""
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-empty.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ARG SOURCE_DATE_EPOCH\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN |1 SOURCE_DATE_EPOCH= /bin/sh -c echo \\\"[$SOURCE_DATE_EPOCH]\\\" # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo \"[$SOURCE_DATE_EPOCH]\""
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo \"[$SOURCE_DATE_EPOCH]\"",
+      "llb.customname": "[2/2] RUN echo \"[$SOURCE_DATE_EPOCH]\""
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-fold.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c true # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[stage-1 1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "true"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN true",
+      "llb.customname": "[stage-1 2/2] RUN true"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-git.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c true # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[stage-1 1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "true"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN true",
+      "llb.customname": "[stage-1 2/2] RUN true"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"SOURCE_DATE_EPOCH stage must contain exactly one remote ADD source\"",
+  "file": "corpus/plan/epoch-heredoc.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-leading-zero.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created\":\"1970-01-01T00:02:03Z\",\"created_by\":\"ARG SOURCE_DATE_EPOCH=123\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created\":\"1970-01-01T00:02:03Z\",\"created_by\":\"WORKDIR /w\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"1970-01-01T00:02:03Z\",\"created_by\":\"RUN |1 SOURCE_DATE_EPOCH=123 /bin/sh -c echo \\\"[$SOURCE_DATE_EPOCH]\\\" # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"],\"WorkingDir\":\"/w\"}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/3] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "mkdir": {
+        "makeParents": true,
+        "mode": 493,
+        "path": "/w",
+        "timestamp": "123000000000"
+       },
+       "secondaryInput": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/3] WORKDIR /w"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo \"[$SOURCE_DATE_EPOCH]\""
+      ],
+      "cwd": "/w",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+       "SOURCE_DATE_EPOCH=123"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo \"[$SOURCE_DATE_EPOCH]\"",
+      "llb.customname": "[3/3] RUN echo \"[123]\""
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"SOURCE_DATE_EPOCH stage source must be a single HTTP(S) or Git ADD\"",
+  "file": "corpus/plan/epoch-local-add.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"SOURCE_DATE_EPOCH stage must contain exactly one remote ADD\"",
+  "file": "corpus/plan/epoch-no-add.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"SOURCE_DATE_EPOCH stage must use FROM scratch\"",
+  "file": "corpus/plan/epoch-not-scratch.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/epoch-own-arg.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c true # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[stage-1 1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "true"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN true",
+      "llb.customname": "[stage-1 2/2] RUN true"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"SOURCE_DATE_EPOCH stage does not meet source-only requirements: unsupported run instruction\"",
+  "file": "corpus/plan/epoch-run.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": [
+   "\"ConsistentInstructionCasing|Command 'run' should match the case of the command majority (uppercase)|3-3\""
+  ]
+ },
+ {
+  "file": "corpus/plan/epoch-stage.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ARG SOURCE_DATE_EPOCH\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN |1 SOURCE_DATE_EPOCH= /bin/sh -c echo \\\"[$SOURCE_DATE_EPOCH]\\\" # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[stage-1 1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo \"[$SOURCE_DATE_EPOCH]\""
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo \"[$SOURCE_DATE_EPOCH]\"",
+      "llb.customname": "[stage-1 2/2] RUN echo \"[$SOURCE_DATE_EPOCH]\""
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"SOURCE_DATE_EPOCH stage must contain exactly one remote ADD\"",
+  "file": "corpus/plan/epoch-two-adds.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"SOURCE_DATE_EPOCH stage must contain exactly one remote ADD source\"",
+  "file": "corpus/plan/epoch-two-sources.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"invalid SOURCE_DATE_EPOCH: nosuch\"",
+  "file": "corpus/plan/epoch-unknown.Dockerfile",
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/epoch.Dockerfile",
   "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"WORKDIR /w\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"COPY a /a # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"ADD b /b # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"RUN /bin/sh -c true # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"],\"WorkingDir\":\"/w\"}}",
   "ops": [
