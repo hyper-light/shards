@@ -3035,3 +3035,26 @@ revision before comparing a changed API/implementation.
 - **Consequence.** The records keep names in a map and IDs in order (`Registry::named`,
   `Registry::id_prefixed`), as dockerd's name registrar and prefix index do: a lookup no
   longer grows with the containers; a prefix, which scanned twice, gains most.
+
+### M89. What a daemon and its runs cost while they idle
+
+- **Question.** Each running container holds two daemon threads (its follower, polling
+  its VM's socket with a 250 ms timeout, and its health monitor, even without a check),
+  and every waiting `wait` or `logs -f`, and the listener, look at their clocks every
+  250 ms (review findings 7.9, 7.16, 7.22). What do they cost, and which resource binds
+  first: threads, the daemon's memory or CPU, or the VMs?
+- **Method.** `docs/research/measurements/daemon-idle/run.py BIN alpine:3.22 0,10,100 30
+  DIR`: running containers whose command is `sleep`, then over 30 s the daemon's CPU time
+  (`ps` cputime), threads (`ps -M`) and RSS, and the VM processes' together; idle
+  wakeups from `top`'s IDLEW. d84b1d3's signed binaries, 2026-10-03, the host of M84
+  (128 GiB), load average 5 to 9 from other work.
+- **Result.** 0 containers: daemon 0.000 s of CPU, 1 thread, 7.8 MiB. 10: 0.020 s, 25
+  threads, 20.2 MiB; VMs (12 processes, 2 of them warm) 262 MiB. 100: 0.120 s, 205
+  threads, 25.6 MiB; VMs (102) 1,975 MiB. IDLEW counts only wakeups out of an idle CPU,
+  which a loaded host rarely is: 59 per 30 s at both 10 and 100, against the 12,000 the
+  ticks alone make at 100. Not measured: 1,000 containers, about 19 GiB of VM RSS on a
+  shared host short of free memory.
+- **Consequence.** An idle running container costs the daemon about 40 us of CPU a second
+  (0.4 % of a core per 100), growing with the ticks, and 0.18 MiB; its VM costs about
+  19 MiB of RSS. The VMs' memory binds thousands of containers before the daemon's
+  threads do (16,384 a process on macOS, `kern.num_taskthreads`).

@@ -292,35 +292,116 @@ fn binaries() -> &'static Path {
         let name = format!("shards-{}", digest.get(..16).unwrap());
         let root = workspace().join("target/e2e");
         let dir = root.join(&name);
-        if dir.exists() {
-            return dir;
-        }
-        let temp = root.join(format!("{name}.{}.tmp", std::process::id()));
-        let _ = std::fs::remove_dir_all(&temp);
-        std::fs::create_dir_all(&temp).unwrap();
-        for (bin, path) in built {
-            let copy = temp.join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
-            std::fs::copy(path, &copy).unwrap();
-            if cfg!(target_os = "macos") && bin == "shards-vm" {
-                // In App Sandbox, as releases sign it (resources/vm.entitlements).
-                let st = Command::new("codesign")
-                    .arg("--entitlements")
-                    .arg(workspace().join("resources/vm.entitlements"))
-                    .args(["-o", "runtime", "--force", "-s", "-"])
-                    .arg(&copy)
-                    .stderr(Stdio::null())
-                    .status()
-                    .unwrap();
-                assert!(st.success(), "codesign");
+        loop {
+            if !dir.exists() {
+                place(&root, &name, &built);
+            }
+            // Held while this process lives; another build's copies go once nothing holds
+            // them (every mutant's and past build's copy stayed: 3.4 GiB by 2026-10-03).
+            if hold(&dir) {
+                prune(&root, &name);
+                return dir;
             }
         }
-        // Another process may have placed the same build meanwhile: either copy serves.
-        if std::fs::rename(&temp, &dir).is_err() {
-            assert!(dir.exists(), "{} could not be placed", dir.display());
-            let _ = std::fs::remove_dir_all(&temp);
-        }
-        dir
     })
+}
+
+/// Copies `built` into `root`, as `name`, signed as a release is.
+fn place(root: &Path, name: &str, built: &[(&str, &Path)]) {
+    let dir = root.join(name);
+    let temp = root.join(format!("{name}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp);
+    std::fs::create_dir_all(&temp).unwrap();
+    for &(bin, path) in built {
+        let copy = temp.join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
+        std::fs::copy(path, &copy).unwrap();
+        if cfg!(target_os = "macos") && bin == "shards-vm" {
+            // In App Sandbox, as releases sign it (resources/vm.entitlements).
+            let st = Command::new("codesign")
+                .arg("--entitlements")
+                .arg(workspace().join("resources/vm.entitlements"))
+                .args(["-o", "runtime", "--force", "-s", "-"])
+                .arg(&copy)
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(st.success(), "codesign");
+        }
+    }
+    // Another process may have placed the same build meanwhile: either copy serves.
+    if std::fs::rename(&temp, &dir).is_err() {
+        assert!(dir.exists(), "{} could not be placed", dir.display());
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+}
+
+/// Holds `dir` shared for as long as this process lives, as long as it is still there
+/// once held: one pruned meanwhile is placed again. Not on Windows, which runs no E2E.
+fn hold(dir: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::fs::MetadataExt as _;
+        static HELD: std::sync::Mutex<Vec<std::fs::File>> = std::sync::Mutex::new(Vec::new());
+        let Ok(opened) = std::fs::File::open(dir) else {
+            return false;
+        };
+        // SAFETY: flock(2) on a descriptor this function owns.
+        if unsafe { libc::flock(opened.as_raw_fd(), libc::LOCK_SH) } != 0 {
+            return false;
+        }
+        let same = match (std::fs::metadata(dir), opened.metadata()) {
+            (Ok(now), Ok(held)) => now.ino() == held.ino() && now.dev() == held.dev(),
+            _ => false,
+        };
+        if same {
+            HELD.lock().unwrap().push(opened);
+        }
+        same
+    }
+    #[cfg(not(unix))]
+    {
+        dir.exists()
+    }
+}
+
+/// Removes the builds' copies in `root` but `keep` that no process holds, and copies left
+/// half-placed by processes that are gone.
+fn prune(root: &Path, keep: &str) {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd as _;
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("shards-") || name == keep {
+                continue;
+            }
+            let path = entry.path();
+            if let Some(pid) = name
+                .strip_suffix(".tmp")
+                .and_then(|rest| rest.rsplit('.').next())
+                .and_then(|pid| pid.parse::<libc::pid_t>().ok())
+            {
+                // SAFETY: kill(2) with signal 0 only asks whether the process exists.
+                if pid > 0 && unsafe { libc::kill(pid, 0) } != 0 {
+                    let _ = std::fs::remove_dir_all(&path);
+                }
+                continue;
+            }
+            let Ok(opened) = std::fs::File::open(&path) else {
+                continue;
+            };
+            // SAFETY: flock(2) on a descriptor this function owns.
+            if unsafe { libc::flock(opened.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (root, keep);
 }
 
 pub struct Run {
