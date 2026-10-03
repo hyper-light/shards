@@ -2780,30 +2780,34 @@ fn a_push_ends_with_its_client_and_the_daemon() {
             .spawn()
             .unwrap()
     };
-    // Its client killed: the upload's connection ends.
+    // Its uploads, the config's and the layer's, let go within 5 s: at once, not when an
+    // upload's 30 s wait for an answer runs out.
+    let let_go = |what: &str| {
+        let t0 = Instant::now();
+        while ended.load(Ordering::SeqCst) < begun.load(Ordering::SeqCst) {
+            assert!(t0.elapsed() < Duration::from_secs(5), "{what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    // Its client killed: its uploads' connections end.
     let mut client = push();
-    eventually("the upload begun", || begun.load(Ordering::SeqCst) == 1);
+    eventually("the uploads begun", || begun.load(Ordering::SeqCst) >= 1);
     client.kill().unwrap();
     let _ = client.wait();
-    // At once, not when the upload's 30 s wait for an answer runs out.
-    let t0 = Instant::now();
-    while ended.load(Ordering::SeqCst) < 1 {
-        assert!(
-            t0.elapsed() < Duration::from_secs(5),
-            "the upload went on without its client"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let_go("the uploads went on without their client");
     // The daemon stopped: it stops at once, and so does the push.
+    let first = begun.load(Ordering::SeqCst);
     let mut client = push();
-    eventually("the second upload begun", || begun.load(Ordering::SeqCst) == 2);
+    eventually("the second push's uploads begun", || {
+        begun.load(Ordering::SeqCst) > first
+    });
     let t0 = Instant::now();
     let stopped = shards(&["daemon", "stop"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
     let status = client.wait().unwrap();
     assert!(!status.success(), "{status}");
-    eventually("the second upload let go", || ended.load(Ordering::SeqCst) == 2);
+    let_go("the uploads went on past the daemon");
 }
 
 /// A push goes with the credentials of the client that asks for it, as the Docker CLI
@@ -2817,7 +2821,7 @@ fn a_push_goes_with_its_clients_credentials() {
     let (from, _) = registry(index, blobs);
     let source = format!("127.0.0.1:{from}/test/image:v1");
     // base64("shards:secret")
-    let (port, _) = common::writable_registry_requiring(Some("Basic c2hhcmRzOnNlY3JldA==".into()));
+    let (port, repos) = common::writable_registry_requiring(Some("Basic c2hhcmRzOnNlY3JldA==".into()));
     let home = TempDir::new("containers-push-credentials");
     let (none, some) = (TempDir::new("push-config-none"), TempDir::new("push-config-some"));
     std::fs::write(
@@ -2843,6 +2847,35 @@ fn a_push_goes_with_its_clients_credentials() {
     assert_ne!(refused.status, Some(0), "{refused}");
     let pushed = shards(&some, &["push", &target]);
     assert_eq!(pushed.status, Some(0), "{pushed}");
+    // Every tag of the repository pushed by one client: challenged only as its first
+    // requests, its two blobs' checks at once, meet the registry; not again per tag.
+    for tag in ["2", "3"] {
+        let more = format!("127.0.0.1:{port}/team/app:{tag}");
+        assert_eq!(shards(&none, &["tag", &source, &more]).status, Some(0));
+    }
+    let challenged = || {
+        repos
+            .lock()
+            .unwrap()
+            .log
+            .iter()
+            .filter(|l| l.starts_with("401 "))
+            .count()
+    };
+    let before = challenged();
+    let all = shards(&some, &["push", "-a", &format!("127.0.0.1:{port}/team/app")]);
+    assert_eq!(all.status, Some(0), "{all}");
+    assert!(challenged() - before <= 2, "{:?}", repos.lock().unwrap().log);
+    // Tag 1 named the same manifest already: asked for with a HEAD, and not put again,
+    // as containerd's pusher leaves it.
+    let puts = repos
+        .lock()
+        .unwrap()
+        .log
+        .iter()
+        .filter(|l| *l == "PUT /v2/team/app/manifests/1")
+        .count();
+    assert_eq!(puts, 1, "{:?}", repos.lock().unwrap().log);
     // A run's pull too.
     assert_eq!(shards(&none, &["rmi", &target]).status, Some(0));
     let refused = shards(&none, &["run", "--rm", &target, "exit", "0"]);

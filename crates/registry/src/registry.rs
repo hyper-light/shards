@@ -82,24 +82,33 @@ impl Registry {
         Ok(registry)
     }
 
-    /// Whether the repository has the blob `desc` describes.
-    pub fn has_blob(&self, desc: &Descriptor) -> Result<bool, Error> {
-        let url = self.base.join(&format!("blobs/{}", desc.digest))?;
-        let (response, _) = self.request("HEAD", &url, &[])?;
+    /// Whether the repository has what `desc` describes, as containerd's pusher asks
+    /// before it pushes anything (pusher.go v2.4.1): a HEAD of the blob, or of the
+    /// manifest or index by `tag` if given, else by its digest, accepting its type or any;
+    /// by a tag, it has it only where the tag names the same digest. A check refused as
+    /// unauthorized by a challenge that says why (containerd's ErrInvalidAuthorization)
+    /// is no answer: the push goes on.
+    pub fn exists(&self, desc: &Descriptor, manifest: bool, tag: Option<&str>) -> Result<bool, Error> {
+        let path = match (manifest, tag) {
+            (true, Some(tag)) => format!("manifests/{tag}"),
+            (true, None) => format!("manifests/{}", desc.digest),
+            (false, _) => format!("blobs/{}", desc.digest),
+        };
+        let url = self.base.join(&path)?;
+        let accept = format!("{}, */*", desc.media_type);
+        let (response, _) = self.request("HEAD", &url, &[("Accept", &accept)])?;
         match response.status {
-            200..=299 => Ok(true),
+            200 if manifest && tag.is_some() => Ok(response
+                .header("docker-content-digest")
+                .is_some_and(|d| d.trim() == desc.digest)),
+            200 => Ok(true),
             404 => Ok(false),
-            _ => Err(refused(response, &desc.digest)),
-        }
-    }
-
-    /// Whether the repository has the manifest `desc` describes.
-    pub fn has_manifest(&self, desc: &Descriptor) -> Result<bool, Error> {
-        let url = self.base.join(&format!("manifests/{}", desc.digest))?;
-        let (response, _) = self.request("HEAD", &url, &[("Accept", &desc.media_type)])?;
-        match response.status {
-            200..=299 => Ok(true),
-            404 => Ok(false),
+            401 if crate::auth::challenges(response.headers("www-authenticate"))
+                .iter()
+                .any(|c| c.params.contains_key("error")) =>
+            {
+                Ok(false)
+            }
             _ => Err(refused(response, &desc.digest)),
         }
     }
@@ -641,6 +650,77 @@ mod tests {
             .map(|r| r.lines().next().unwrap_or_default().to_string())
             .collect();
         (done, lines)
+    }
+
+    /// containerd's existence checks: by a tag, only the same digest counts; a 404 is
+    /// absence; a refusal whose challenge says why is no answer; anything else fails.
+    #[test]
+    fn existence_is_asked_as_containerd_asks_it() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU16, Ordering};
+        let ours = format!("sha256:{}", "a".repeat(64));
+        let other = format!("sha256:{}", "b".repeat(64));
+        let desc = Descriptor {
+            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+            digest: ours.clone(),
+            size: 10,
+            platform: None,
+            annotations: Default::default(),
+        };
+        // A registry answering every check with `answer`, made of its own port, and token
+        // requests with a token.
+        let check = |answer: Box<dyn Fn(u16) -> Vec<u8> + Send + Sync>, manifest: bool, tag: Option<&str>| {
+            let port = Arc::new(AtomicU16::new(0));
+            let held = port.clone();
+            let server = route(None, move |seen| {
+                let reply = if seen.target.starts_with("/token") {
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\n{\"token\":\"t\"}".to_vec()
+                } else {
+                    answer(held.load(Ordering::SeqCst))
+                };
+                Some((reply, After::Keep))
+            });
+            port.store(server.port, Ordering::SeqCst);
+            let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+            let http = Client::new(
+                Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+                "shards-test",
+            );
+            let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+            let checked = registry.exists(&desc, manifest, tag);
+            (checked, server.requests())
+        };
+        let digested = |d: String| -> Box<dyn Fn(u16) -> Vec<u8> + Send + Sync> {
+            Box::new(move |_| http("200 OK", &[("Docker-Content-Digest", &d)]))
+        };
+        let (found, requests) = check(digested(other.clone()), true, Some("v1"));
+        assert!(!found.unwrap(), "a tag naming another digest");
+        assert!(
+            requests[0].starts_with("HEAD /v2/test/image/manifests/v1 "),
+            "{requests:?}"
+        );
+        assert!(
+            requests[0].contains("Accept: application/vnd.oci.image.manifest.v1+json, */*"),
+            "{requests:?}"
+        );
+        let (found, _) = check(digested(ours.clone()), true, Some("v1"));
+        assert!(found.unwrap(), "a tag naming ours");
+        let (found, requests) = check(Box::new(|_| http("404 Not Found", &[])), false, None);
+        assert!(!found.unwrap());
+        assert!(
+            requests[0].starts_with(&format!("HEAD /v2/test/image/blobs/{ours} ")),
+            "{requests:?}"
+        );
+        // Refused again after a token, the challenge saying why: no answer, the push goes on.
+        let refused = |port: u16| {
+            let challenge =
+                format!(r#"Bearer realm="http://127.0.0.1:{port}/token",error="insufficient_scope""#);
+            http("401 Unauthorized", &[("WWW-Authenticate", &challenge)])
+        };
+        let (found, requests) = check(Box::new(refused), false, None);
+        assert!(!found.unwrap(), "{requests:?}");
+        let (failed, _) = check(Box::new(|_| http("500 Internal Server Error", &[])), false, None);
+        assert!(failed.is_err());
     }
 
     /// A mount the registry refuses as unauthorized is uploaded instead, as containerd's

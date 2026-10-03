@@ -105,6 +105,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         // A shutdown ends it, and so does the client's going: its uploads stop at once.
         let status = self.cancellable(asker.client, reply.0, |cancel| {
             let mut notes = Vec::new();
+            // One registry client for the repository and each repository blobs mount from:
+            // its connections and the challenges it answered serve every tag.
+            let mut registries = std::collections::HashMap::new();
             for name in &wanted {
                 let Some(named) = images.iter().find(|i| i.references.contains(name)) else {
                     let shown = Reference::parse_normalized(name).map_or_else(|_| name.clone(), |r| r.familiar());
@@ -121,17 +124,17 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 };
                 let target = image.targets.get(name).unwrap_or(&image.target).clone();
                 // A repository of the same registry the image came from: its blobs mount.
-                let from = image
-                    .sources
-                    .iter()
-                    .filter_map(|s| s.split_once('/'))
-                    .find(|(host, path)| *host == reference.domain && *path != reference.path)
-                    .map(|(_, path)| path.to_string());
-                let registry = match crate::pull::registry_for_push(&reference, from.as_deref(), Some(cancel), &|k| {
-                    shards_ipc::env_value(&asker.registry_env, k)
-                }) {
-                    Ok(r) => r,
-                    Err(e) => return refuse(&e),
+                let from = mount_source(&image.sources, &reference);
+                let registry = match registries.entry(from.clone()) {
+                    std::collections::hash_map::Entry::Occupied(held) => held.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        match crate::pull::registry_for_push(&reference, from.as_deref(), Some(cancel), &|k| {
+                            shards_ipc::env_value(&asker.registry_env, k)
+                        }) {
+                            Ok(r) => slot.insert(r),
+                            Err(e) => return refuse(&e),
+                        }
+                    }
                 };
                 let tag = reference.tag.clone();
                 let report = |digest: &Digest, fate: Layer| {
@@ -147,7 +150,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 };
                 let mut pushed = target.clone();
                 let mut result = shards_registry::push::push(
-                    &registry,
+                    registry,
                     &store,
                     &target,
                     tag.as_deref(),
@@ -180,7 +183,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                         manifest.media_type = kind;
                     }
                     result = shards_registry::push::push(
-                        &registry,
+                        registry,
                         &store,
                         &manifest,
                         tag.as_deref(),
@@ -230,5 +233,71 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         });
         drop(lease);
         status
+    }
+}
+
+/// The repository blobs are mounted from, as containerd's pusher picks it
+/// (selectRepositoryMountCandidate, pusher.go v2.4.1): of the repositories on the same
+/// registry the image came from, `sources`, sorted, not the target itself, the one whose
+/// path shares the most leading components with the target's, the later on a tie.
+fn mount_source(sources: &[String], target: &Reference) -> Option<String> {
+    let components: Vec<&str> = target.path.split('/').collect();
+    let shared = |path: &str| {
+        components
+            .iter()
+            .zip(path.split('/'))
+            .take_while(|(a, b)| *a == b)
+            .count()
+    };
+    sources
+        .iter()
+        .filter_map(|s| s.split_once('/'))
+        .filter(|(host, path)| *host == target.domain && *path != target.path)
+        .fold(None, |best: Option<(usize, &str)>, (_, path)| {
+            let n = shared(path);
+            match best {
+                Some((most, _)) if n < most => best,
+                _ => Some((n, path)),
+            }
+        })
+        .map(|(_, path)| path.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// containerd's pick: the most leading components shared, the later on a tie, never
+    /// the target itself or another registry's.
+    #[test]
+    fn blobs_mount_from_the_repository_containerd_picks() {
+        let target = Reference::parse_normalized("registry.example/team/app/web").unwrap();
+        let sources = |s: &[&str]| s.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        let pick = |s: &[&str]| mount_source(&sources(s), &target);
+        assert_eq!(
+            pick(&[
+                "registry.example/other/thing",
+                "registry.example/team/app/api",
+                "registry.example/team/x"
+            ])
+            .as_deref(),
+            Some("team/app/api")
+        );
+        assert_eq!(
+            pick(&["registry.example/a/one", "registry.example/b/two"]).as_deref(),
+            Some("b/two"),
+            "a tie: the later"
+        );
+        assert_eq!(
+            pick(&["registry.example/team/app/web"]),
+            None,
+            "the target itself"
+        );
+        assert_eq!(
+            pick(&["elsewhere.example/team/app/api"]),
+            None,
+            "another registry"
+        );
+        assert_eq!(pick(&[]), None);
     }
 }

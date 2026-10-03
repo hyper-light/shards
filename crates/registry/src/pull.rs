@@ -138,14 +138,33 @@ pub fn pull(
     };
     let (config, layers) = checked(&name, &manifest_desc, &manifest, &config, targets)?;
 
-    fetch_layers(registry, store, &manifest, limits, report)?;
-    report(Event::Building);
-    let rootfs = store.rootfs(&layers, limits)?;
+    // The attestations come as the layers download and the image is built, each a few
+    // small documents a round trip apart: not after it all.
+    let (rootfs, attested) = std::thread::scope(|scope| {
+        let attest = || {
+            let mut fetched = Vec::new();
+            for attestation in &attestations {
+                fetched.extend(fetch_attestation(registry, store, &name, attestation, limits)?);
+            }
+            Ok::<_, Error>(fetched)
+        };
+        let attesting = std::thread::Builder::new()
+            .name("shards-attest".into())
+            .spawn_scoped(scope, attest);
+        let built = build(registry, store, &manifest, &layers, limits, report);
+        let attested = match attesting {
+            Ok(thread) => thread
+                .join()
+                .unwrap_or_else(|_| Err(Error::new("fetching the attestations failed"))),
+            // No thread to spare: fetched here.
+            Err(_) => attest(),
+        };
+        (built, attested)
+    });
+    let rootfs = rootfs?;
     let mut contents = vec![manifest_digest.clone(), manifest.config.digest()?];
     contents.extend(layers.iter().map(|l| l.blob.clone()));
-    for attestation in &attestations {
-        contents.extend(fetch_attestation(registry, store, &name, attestation, limits)?);
-    }
+    contents.extend(attested?);
     store.tag_from(
         &reference.to_string(),
         &manifest_desc,
@@ -159,6 +178,41 @@ pub fn pull(
         config,
         rootfs,
     })
+}
+
+/// Downloads the layers `manifest` names that are not here, and builds the image's root
+/// filesystem from `layers`.
+fn build(
+    registry: &Registry,
+    store: &Store,
+    manifest: &Manifest,
+    layers: &[Layer],
+    limits: &Limits,
+    report: &(dyn Fn(Event<'_>) + Sync),
+) -> Result<PathBuf, Error> {
+    fetch_layers(registry, store, manifest, limits, report)?;
+    report(Event::Building);
+    match store.rootfs(layers, limits) {
+        Ok(rootfs) => Ok(rootfs),
+        Err(e) => {
+            // A layer stored before that has changed since fails its DiffID, and would on
+            // every pull: each such is fetched again in its place, and the image built
+            // once more. containerd takes what it stored as it stands.
+            let mut mended = false;
+            for layer in &manifest.layers {
+                let digest = layer.digest()?;
+                if !store.intact(&digest)? {
+                    registry
+                        .fetch_blob_again(store, layer, limits, &|n| report(Event::Progress(&digest, n)))?;
+                    mended = true;
+                }
+            }
+            if !mended {
+                return Err(e.into());
+            }
+            Ok(store.rootfs(layers, limits)?)
+        }
+    }
 }
 
 /// An index's tell for a manifest that attests to another (BuildKit's attestations).
@@ -913,6 +967,19 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        // A layer changed where it is stored, its root filesystem gone: the next pull
+        // fetches the layer again, where its DiffID would fail every build.
+        let layer = parsed.layers[0].digest().unwrap();
+        let layer_path = store.blob_path(&layer);
+        let original = std::fs::read(&layer_path).unwrap();
+        let mut changed = original.clone();
+        let middle = changed.len() / 2;
+        changed[middle] ^= 0xff;
+        std::fs::write(&layer_path, &changed).unwrap();
+        std::fs::remove_file(&pulled.rootfs).unwrap();
+        let mended = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
+        assert_eq!(mended.rootfs, pulled.rootfs);
+        assert_eq!(std::fs::read(&layer_path).unwrap(), original, "the layer mended");
         let _ = std::fs::remove_dir_all(&root);
     }
 

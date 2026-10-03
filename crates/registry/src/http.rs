@@ -376,7 +376,7 @@ impl Client {
             if let Some((mut file, len)) = req.file {
                 use std::io::{Seek as _, SeekFrom};
                 file.seek(SeekFrom::Start(0))?;
-                let sent = io::copy(&mut file.take(len), conn.io.get_mut())?;
+                let sent = send_file(conn.io.get_mut(), file, len)?;
                 if sent != len {
                     return Err(io::Error::other(format!("{sent} of the body's {len} bytes")));
                 }
@@ -482,6 +482,29 @@ impl Client {
     }
 }
 
+/// Sends `len` bytes of `file`: on Linux a plain connection takes them as std copies a
+/// file to a socket, by sendfile(2); otherwise in 64 KiB writes, four TLS records each,
+/// where io::copy's 8 KiB writes make a record and a send of each.
+fn send_file(stream: &mut Stream, file: &std::fs::File, len: u64) -> io::Result<u64> {
+    let mut body = file.take(len);
+    #[cfg(target_os = "linux")]
+    if let Stream::Plain(tcp) = stream {
+        return io::copy(&mut body, tcp);
+    }
+    let mut buf = vec![0u8; 64 << 10];
+    let mut sent = 0u64;
+    loop {
+        let n = match body.read(&mut buf) {
+            Ok(0) => return Ok(sent),
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        stream.write_all(buf.get(..n).unwrap_or_default())?;
+        sent = sent.saturating_add(n as u64);
+    }
+}
+
 /// Why an exchange failed: before any response byte (so a GET can be retried), or later.
 enum Failure {
     BeforeResponse(Error),
@@ -499,14 +522,56 @@ impl Failure {
 /// Connects to `url`'s host, racing its addresses as RFC 8305 §5 describes: families
 /// interleaved, the next attempt started 300 ms after the last or as soon as it fails.
 /// Gives up at once if `cancel` is cancelled; the attempts under way end on their own.
-fn dial(url: &Url, cancel: Option<&Cancel>) -> Result<TcpStream, Error> {
+/// The addresses `url`'s host names: at once for an address, and for a name looked up on a
+/// thread of its own, waited for until `deadline` or a cancel. getaddrinfo(3) takes no
+/// deadline; a lookup given up on ends on its own, its answer unread.
+fn resolve(url: &Url, deadline: Instant, cancel: Option<&Cancel>) -> Result<Vec<SocketAddr>, Error> {
     let host = url.host().trim_start_matches('[').trim_end_matches(']');
-    let found: Vec<SocketAddr> = (host, url.port())
-        .to_socket_addrs()
-        .map_err(|e| Error::new(format!("{}: resolving: {e}", url.host())))?
-        .collect();
-    let addrs = interleave(found);
+    let port = url.port();
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    let resolving = |e: &dyn std::fmt::Display| Error::new(format!("{}: resolving: {e}", url.host()));
+    let (tx, rx) = mpsc::channel();
+    let name = host.to_string();
+    std::thread::Builder::new()
+        .name("shards-resolve".into())
+        .spawn(move || {
+            let _ = tx.send(
+                (name.as_str(), port)
+                    .to_socket_addrs()
+                    .map(Iterator::collect::<Vec<_>>),
+            );
+        })
+        .map_err(|e| resolving(&e))?;
+    loop {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| {
+                Error::of(
+                    ErrorKind::Transient,
+                    format!("{}: resolving: timed out", url.host()),
+                )
+            })?;
+        match rx.recv_timeout(left.min(DIAL_POLL)) {
+            Ok(found) => return found.map_err(|e| resolving(&e)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if let Some(cancel) = cancel {
+                    cancel.check()?;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(resolving(&"the lookup ended unanswered"));
+            }
+        }
+    }
+}
+
+fn dial(url: &Url, cancel: Option<&Cancel>) -> Result<TcpStream, Error> {
+    // The name's lookup is within the dial's time, as Go's Dialer counts it.
     let deadline = Instant::now() + CONNECT;
+    let addrs = interleave(resolve(url, deadline, cancel)?);
     let (tx, rx) = mpsc::channel();
     let mut pending = 0usize;
     let mut last = None;
@@ -1070,11 +1135,19 @@ struct Pool {
 }
 
 impl Pool {
+    /// The newest idle connection to `key`'s origin that the server has neither closed
+    /// nor sent anything on: only those taken are looked at, each look three system calls
+    /// under the pool's lock.
     fn take(&self, key: &Key) -> Option<Conn> {
         let mut idle = self.idle.lock().unwrap_or_else(PoisonError::into_inner);
-        idle.retain(|(since, conn)| since.elapsed() < IDLE && conn.quiet());
-        let i = idle.iter().rposition(|(_, c)| c.key == *key)?;
-        Some(idle.remove(i).1)
+        idle.retain(|(since, _)| since.elapsed() < IDLE);
+        while let Some(i) = idle.iter().rposition(|(_, c)| c.key == *key) {
+            let (_, conn) = idle.remove(i);
+            if conn.quiet() {
+                return Some(conn);
+            }
+        }
+        None
     }
 
     fn put(&self, mut conn: Conn) {
@@ -1307,6 +1380,27 @@ mod tests {
         assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
     }
 
+    /// A name's lookup is within the dial's deadline, which an address needs none of.
+    #[test]
+    fn names_are_looked_up_within_the_dials_deadline() {
+        let spent = Instant::now();
+        let named = resolve(&at("http", "localhost", 5000), spent, None).unwrap_err();
+        assert_eq!(named.kind(), ErrorKind::Transient, "{named}");
+        assert!(named.to_string().contains("resolving: timed out"), "{named}");
+        let addressed = resolve(&at("http", "127.0.0.1", 5000), spent, None).unwrap();
+        assert_eq!(addressed, vec![SocketAddr::from(([127, 0, 0, 1], 5000))]);
+        let found = resolve(
+            &at("http", "localhost", 5000),
+            Instant::now() + Duration::from_secs(10),
+            None,
+        )
+        .unwrap();
+        assert!(
+            found.iter().all(|a| a.ip().is_loopback() && a.port() == 5000),
+            "{found:?}"
+        );
+    }
+
     /// A fresh connection's reads and writes are bounded from the start: the request is
     /// written within them too, which nothing bounded before its response's head.
     #[test]
@@ -1403,6 +1497,53 @@ mod tests {
         assert_eq!(fetch(&client, "GET", &url).unwrap().1, b"ok");
         assert_eq!(fetch(&client, "GET", &url).unwrap().1, b"new");
         assert_eq!(server.accepted(), 2);
+    }
+
+    /// An idle connection the server has sent something on unasked, a 408 before it
+    /// closes, is never taken: the next request would read it as its answer, which Go's
+    /// transport guards against in the same way.
+    #[test]
+    fn a_connection_with_an_unasked_answer_is_not_reused() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (sent, unasked) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let head = |tcp: &mut TcpStream| {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    tcp.read_exact(&mut byte).unwrap();
+                    head.push(byte[0]);
+                }
+            };
+            let (mut first, _) = listener.accept().unwrap();
+            head(&mut first);
+            first
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .unwrap();
+            // Once the client has put the connection back: no read of the answer takes
+            // this with it.
+            std::thread::sleep(Duration::from_millis(50));
+            first
+                .write_all(b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            // Written on loopback, it is in the client's socket now.
+            sent.send(()).unwrap();
+            let (mut second, _) = listener.accept().unwrap();
+            head(&mut second);
+            second
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew")
+                .unwrap();
+            // The first is held open, as a server about to close it would.
+            drop((first, second));
+        });
+        let url = at("http", "127.0.0.1", port);
+        let client = plain();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        unasked.recv().unwrap();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"new".to_vec()));
+        server.join().unwrap();
     }
 
     #[test]

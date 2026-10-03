@@ -1170,6 +1170,7 @@ pub fn writable_registry_requiring(authorization: Option<String>) -> (u16, Arc<s
                             .map(|v| v.replace("%3A", ":"))
                     };
                     if wanted.as_ref().is_some_and(|w| *w != given) {
+                        repos.lock().unwrap().log.push(format!("401 {method} {path}"));
                         let _ = out.write_all(
                             b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"test\"\r\nContent-Length: 0\r\n\r\n",
                         );

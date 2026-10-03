@@ -637,6 +637,27 @@ impl Store {
             .join(digest.hex())
     }
 
+    /// Whether the blob `digest` names is here and still what its digest says: read
+    /// whole and hashed, for content that failed a check made of it.
+    pub fn intact(&self, digest: &Digest) -> Result<bool, Error> {
+        let mut file = match File::open(self.blob_path(digest)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        let mut hasher = Hasher::new(digest.algorithm());
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => hasher.update(buf.get(..n).unwrap_or_default()),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(hasher.finish() == *digest)
+    }
+
     pub fn has(&self, digest: &Digest) -> bool {
         self.blob_path(digest).is_file()
     }

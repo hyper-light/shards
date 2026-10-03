@@ -15,8 +15,9 @@ use shards_image::store::{Held, Store};
 use crate::registry::Registry;
 use crate::{Error, ErrorKind};
 
-/// Layers uploaded at once, as many as a pull fetches (pull.rs).
-const CONCURRENT: usize = 3;
+/// Blobs uploaded at once: dockerd's default `max-concurrent-uploads` (daemon/config
+/// config.go, DefaultMaxConcurrentUploads).
+const CONCURRENT: usize = 5;
 
 /// What happened to a layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,9 @@ pub fn push(
         for child in &index.manifests {
             push_manifest(registry, store, child, None, from, report)?;
         }
+        if registry.exists(target, true, tag)? {
+            return Ok(());
+        }
         return put(registry, target, tag, &bytes);
     }
     push_manifest(registry, store, target, tag, from, report)
@@ -89,17 +93,23 @@ fn push_manifest(
             return Err(missing(&blob.digest));
         }
     }
-    blob(registry, store, &manifest.config, from)?;
+    // The config and the layers together, as containerd dispatches a manifest's children
+    // under one limiter; the layers' fates are what is told.
+    let blobs: Vec<&Descriptor> = std::iter::once(&manifest.config)
+        .chain(&manifest.layers)
+        .collect();
     let next = AtomicUsize::new(0);
     let failed: Mutex<Option<Error>> = Mutex::new(None);
     let stopped = || failed.lock().unwrap_or_else(PoisonError::into_inner).is_some();
     let work = || {
         while !stopped() {
-            let Some(layer) = manifest.layers.get(next.fetch_add(1, Ordering::Relaxed)) else {
+            let n = next.fetch_add(1, Ordering::Relaxed);
+            let Some(desc) = blobs.get(n) else {
                 return;
             };
-            match blob(registry, store, layer, from).and_then(|fate| Ok((layer.digest()?, fate))) {
-                Ok((digest, fate)) => report(&digest, fate),
+            match blob(registry, store, desc, from).and_then(|fate| Ok((desc.digest()?, fate))) {
+                Ok((digest, fate)) if n > 0 => report(&digest, fate),
+                Ok(_) => {}
                 Err(e) => {
                     failed
                         .lock()
@@ -110,7 +120,7 @@ fn push_manifest(
         }
     };
     std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..CONCURRENT.min(manifest.layers.len()))
+        let workers: Vec<_> = (0..CONCURRENT.min(blobs.len()))
             .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, work).ok())
             .collect();
         // Without a thread to spare, this one does the work.
@@ -121,7 +131,7 @@ fn push_manifest(
     if let Some(e) = failed.into_inner().unwrap_or_else(PoisonError::into_inner) {
         return Err(e);
     }
-    if tag.is_none() && registry.has_manifest(desc)? {
+    if registry.exists(desc, true, tag)? {
         return Ok(());
     }
     put(registry, desc, tag, &bytes)
@@ -134,7 +144,7 @@ fn put(registry: &Registry, desc: &Descriptor, tag: Option<&str>, bytes: &[u8]) 
 
 /// One blob: there already, mounted, or uploaded.
 fn blob(registry: &Registry, store: &Store, desc: &Descriptor, from: Option<&str>) -> Result<Layer, Error> {
-    if registry.has_blob(desc)? {
+    if registry.exists(desc, false, None)? {
         return Ok(Layer::Exists);
     }
     let digest = desc.digest()?;
