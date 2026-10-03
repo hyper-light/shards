@@ -3140,3 +3140,36 @@ revision before comparing a changed API/implementation.
   once a framework the daemon calls has used a dispatch queue. An idle run costs it
   about 10 KiB and no CPU `ps` can see. VMs are bound by the host's memory and the
   daemon's descriptors, no longer by its threads.
+
+### M93. Containers' records written outside the registry's lock
+
+- **Question.** A run's start and end wrote its container's record (a file written and
+  renamed into place) under the lock the registry is kept under, on the followers' loop
+  (review 7.7). How long did that hold the lock, which every other run's container
+  waits for, and every command?
+- **Method.** 1c40148 against the change (`daemon/record.rs`: the change kept at once, the
+  record written by the recorder thread outside the lock, a command answered once every
+  record changed before it is written, audit A15), each built with a probe (not kept)
+  logging how long a run's start and its end held the lock. M91's arms and harness:
+  `build-ab/ab.py`, `AB_BURST=8`, the default pool, 40 turns per arm, the old arm's
+  `shards-vm` with a sandbox identity of its own. 2026-10-03, the host of M84, load
+  average 7 to 8 from other work.
+- **Results.**
+
+| Held by | n | p50 | p90 | p99 | max | total |
+|---|---|---|---|---|---|---|
+| 1c40148, a run's start (its record written) | 352 | 457 µs | 108.3 ms | 192.2 ms | 215.9 ms | 13.6 s |
+| 1c40148, a run's end | 352 | 31.7 ms | 113.8 ms | 201.8 ms | 371.3 ms | 16.3 s |
+| The change, a run's start | 352 | 0 µs | 1 µs | 5 µs | 25 µs | 0.3 ms |
+| The change, a run's end | 352 | 3 µs | 13 µs | 46 µs | 92 µs | 2.1 ms |
+
+  At this load a record's write and rename waited tens to hundreds of milliseconds behind
+  other processes' I/O (M46: milliseconds at a busy host's p90), and every other
+  run's making of its container, every arrival and every command waited for it under the
+  lock. The runs' wall clock, 320 per arm: p50 45.0 ms against 44.1, p90 147.5 against
+  110.1, p99 299.5 against 137.3, max 315.9 against 156.4; paired, each burst's median
+  −0.3 ms (95% [−3.1, +1.3]), its slowest −3.6 ms ([−8.3, +0.6]).
+- **Consequence.** The lock is held microseconds for a run's start and end, where a
+  record's write held it up to 0.37 s; a burst's slowest runs, which made their
+  containers behind the others' writes, did not get slower, and their tail was lower
+  in this comparison, which a load this high moves (M91).

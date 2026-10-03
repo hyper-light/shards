@@ -181,9 +181,11 @@ impl Disk for Real {
 ///   record written beside the run's start, which never waits for it: a write waits on
 ///   whatever else the filesystem is doing, milliseconds at a busy host's p90 (PM M46).
 ///   What happens to a reserved container waits in its reservation, for the record.
-/// - What happened to a container's run is kept at once, since it happened, and its
-///   record is written after; a record that could not be written is behind, and is
-///   written again until it is not ([`catch_up`](Self::catch_up)).
+/// - What happened to a container's run is kept at once, since it happened
+///   ([`change`](Self::change)), and its record is written after, outside the lock the
+///   registry is kept under ([`snapshot`](Self::snapshot), [`written`](Self::written)); a
+///   record not written yet, or that could not be, is behind, and is written again until
+///   it is not.
 /// - Records are written and renamed into place, not synced: syncing one costs 8.5 ms on
 ///   macOS (PM M46). A removal is synced before its name is let go, so that a power loss
 ///   cannot bring back a container whose name another has taken.
@@ -422,11 +424,10 @@ impl Registry {
         }
     }
 
-    /// Records what happened to the container with `id`: `f` changes it, and the change
-    /// stands, since it happened. An error says its record could not be written and is
-    /// behind. A container with no record is an error: whoever changes one owns it until
-    /// it goes (audit A06).
-    pub fn update(&mut self, disk: &dyn Disk, id: &str, f: impl FnOnce(&mut Container)) -> io::Result<()> {
+    /// Keeps what happened to the container with `id`: `f` changes it, and the change
+    /// stands, since it happened; its record is behind until it is written. A container
+    /// with no record is an error: whoever changes one owns it until it goes (audit A06).
+    pub fn change(&mut self, id: &str, f: impl FnOnce(&mut Container)) -> io::Result<()> {
         // A reserved container's change waits in its reservation, for its record.
         if let Some(c) = self.arriving.get_mut(id) {
             f(c);
@@ -437,31 +438,43 @@ impl Registry {
             .get_mut(id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no record of the container"))?;
         f(c);
-        match write(disk, &self.root, c) {
-            Ok(()) => {
-                self.behind.remove(id);
-                Ok(())
-            }
-            Err(e) => {
-                self.behind.insert(id.to_string());
-                Err(e)
-            }
+        self.behind.insert(id.to_string());
+        Ok(())
+    }
+
+    /// [`change`](Self::change), its record written at once: as the registry opens. An
+    /// error says the record could not be written, and is behind.
+    pub fn update(&mut self, disk: &dyn Disk, id: &str, f: impl FnOnce(&mut Container)) -> io::Result<()> {
+        self.change(id, f)?;
+        let Some(c) = self.by_id.get(id) else {
+            return Ok(());
+        };
+        write(disk, &self.root, c)?;
+        self.behind.remove(id);
+        Ok(())
+    }
+
+    /// The record of the container with `id` as it stands, and what writes it, for a write
+    /// outside the registry's lock ([`written`](Self::written)).
+    pub fn snapshot(&self, id: &str) -> Option<(Recorder, Container)> {
+        let c = self.by_id.get(id)?.clone();
+        let recorder = Recorder {
+            root: self.root.clone(),
+        };
+        Some((recorder, c))
+    }
+
+    /// The container with `id` had its record written as `written`: it is behind no more,
+    /// unless it has changed since, to be written again.
+    pub fn written(&mut self, id: &str, written: &Container) {
+        if self.by_id.get(id).is_none_or(|c| c == written) {
+            self.behind.remove(id);
         }
     }
 
-    /// Writes again the records that are behind, and returns the IDs of those it wrote.
-    pub fn catch_up(&mut self, disk: &dyn Disk) -> Vec<String> {
-        let mut written = Vec::new();
-        for id in std::mem::take(&mut self.behind) {
-            match self.by_id.get(&id).map(|c| write(disk, &self.root, c)) {
-                Some(Ok(())) => written.push(id),
-                Some(Err(_)) => {
-                    self.behind.insert(id);
-                }
-                None => {}
-            }
-        }
-        written
+    /// The containers whose records are behind.
+    pub fn behind(&self) -> impl Iterator<Item = &String> {
+        self.behind.iter()
     }
 
     /// Takes the container with `id` out of sight: its directory is set aside first, so
@@ -912,7 +925,11 @@ mod tests {
         let e = create(&mut r, &disk, container("bb", "two", State::Created)).unwrap_err();
         assert!(e.to_string().contains("injected at write"), "{e}");
         assert!(r.get("bb").is_some(), "seen, its record behind");
-        assert_eq!(r.catch_up(&disk), vec!["bb".to_string()]);
+        assert_eq!(r.behind().collect::<Vec<_>>(), ["bb"]);
+        let (recorder, c) = r.snapshot("bb").unwrap();
+        recorder.write(&disk, &c).unwrap();
+        r.written("bb", &c);
+        assert_eq!(r.behind().count(), 0);
         assert!(open(&home).get("bb").is_some());
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -936,9 +953,22 @@ mod tests {
         assert!(e.to_string().contains("injected at rename"), "{e}");
         assert_eq!(r.get("aa").unwrap().exit_code, Some(3), "it happened");
         assert_eq!(open(&home).get("aa").unwrap().exit_code, Some(255), "behind");
-        assert_eq!(r.catch_up(&disk), vec!["aa".to_string()]);
-        assert!(r.catch_up(&disk).is_empty());
-        assert_eq!(open(&home).get("aa").unwrap().exit_code, Some(3));
+        assert_eq!(r.behind().collect::<Vec<_>>(), ["aa"]);
+        // Written as it stood, then changed: behind still, until written as it stands.
+        let (recorder, stood) = r.snapshot("aa").unwrap();
+        r.change("aa", |c| c.exit_code = Some(4)).unwrap();
+        recorder.write(&disk, &stood).unwrap();
+        r.written("aa", &stood);
+        assert_eq!(
+            r.behind().collect::<Vec<_>>(),
+            ["aa"],
+            "written as it no longer stands"
+        );
+        let (recorder, stands) = r.snapshot("aa").unwrap();
+        recorder.write(&disk, &stands).unwrap();
+        r.written("aa", &stands);
+        assert_eq!(r.behind().count(), 0);
+        assert_eq!(open(&home).get("aa").unwrap().exit_code, Some(4));
         let _ = std::fs::remove_dir_all(&home);
     }
 

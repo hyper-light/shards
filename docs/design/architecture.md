@@ -1315,8 +1315,15 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
     recorder writes again until what it wrote is current. `run -d` prints the ID once
     the container is seen.
   - **What happened to a run stands.** Its start and end are kept at once, and written
-    after; a record that cannot be written is behind, logged, told to a detached client
-    as a warning, and written again before any command is answered.
+    after, by the recorder's thread, outside the registry's lock (review 7.7): written
+    under it, a record held every other run's container and every command for as long
+    as the filesystem took, up to 0.37 s on a busy host, against microseconds now
+    [PM M93]. Records are written in the order their changes came, a container changed
+    again before its record is written once, as it then stands. A command is answered
+    once every record changed before it is written, a detached run's client hears of
+    its start once it is recorded, and the daemon exits once its records are written; a
+    record that cannot be written is behind, logged, told to a detached client as a
+    warning, and written again before any command is answered.
   - **A removal changes nothing until the container's directory is set aside**
     (`.ID.removing`), so one that fails leaves the container seen, and removable again.
     It is then synced before its name is let go and `rm` answers: an answered `rm` never

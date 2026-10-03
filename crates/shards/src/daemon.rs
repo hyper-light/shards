@@ -43,6 +43,7 @@ mod logs;
 mod network;
 mod publish;
 mod push;
+mod record;
 mod refill;
 mod rmi;
 use crate::run::{Boot, Prepared};
@@ -489,9 +490,8 @@ struct Daemon<D: Disk = Real> {
     disk: D,
     /// A reserved container was let be seen.
     arrived: Condvar,
-    /// Where reserved containers' records go to be written, in order, by one thread, once
-    /// the first run has started it.
-    recorder: Mutex<Option<mpsc::Sender<String>>>,
+    /// The containers' records to write, and the thread that writes them (record.rs).
+    recording: record::Recording,
     /// Who waits for each running container to end, for its exit code: `shards wait`,
     /// `stop`, `kill`, `rm -f`. Told under the containers' lock, as the record changes.
     /// Each waiter has a number, by which it goes if it stops waiting first.
@@ -752,6 +752,7 @@ fn serve() -> Result<(), String> {
     // The daemon exits from within, so its threads are never waited for here.
     std::thread::scope(|threads| {
         daemon.start_completer(threads);
+        daemon.start_recorder(threads);
         daemon.listen(threads, listener);
     });
     Ok(())
@@ -908,7 +909,7 @@ impl<D: Disk> Daemon<D> {
             containers: Mutex::new(containers),
             disk,
             arrived: Condvar::new(),
-            recorder: Mutex::default(),
+            recording: record::Recording::default(),
             waiters: Mutex::default(),
             next_waiter: AtomicU64::new(0),
             next_exec: AtomicU64::new(0),
@@ -1235,6 +1236,8 @@ impl<D: Disk> Daemon<D> {
         for vm in waiting.chain(state.starting.values()) {
             let _ = vm.kill(libc::SIGTERM);
         }
+        // What it last knew of its containers is what the next daemon reads.
+        self.await_recorded();
         log("exiting");
         // SAFETY: flock(2) on the lock's own descriptor.
         unsafe { libc::flock(self.home_lock.as_raw_fd(), libc::LOCK_UN) };
@@ -1766,47 +1769,19 @@ impl<D: Disk> Daemon<D> {
         Ok(name)
     }
 
-    /// Has the record of reserved container `id` written, on the recorder's thread, started
-    /// here if it is not yet; here, if it cannot be.
-    fn record_arrival<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, id: &str) {
-        let mut recorder = lock(&self.recorder);
-        if recorder.is_none() {
-            let (send, receive) = mpsc::channel::<String>();
-            // Until the sender goes, with the daemon's threads (`end_threads`).
-            let spawned =
-                std::thread::Builder::new()
-                    .name("recorder".into())
-                    .spawn_scoped(threads, move || {
-                        for id in receive {
-                            self.arrive(&id);
-                        }
-                    });
-            match spawned {
-                Ok(_) => *recorder = Some(send),
-                Err(e) => log(format!("the recorder's thread: {e}; recording here")),
-            }
-        }
-        let sent = recorder.as_ref().is_some_and(|r| r.send(id.to_string()).is_ok());
-        drop(recorder);
-        if !sent {
-            self.arrive(id);
-        }
-    }
-
     /// Writes the record of reserved container `id`, again while it changes as it is
     /// written, then lets it be seen. One whose record cannot be written is seen, its
-    /// record behind: it exists, and its run may have started.
-    fn arrive(&self, id: &str) {
+    /// record behind, which is said: it exists, and its run may have started.
+    fn arrive(&self, id: &str) -> io::Result<()> {
         loop {
             let Some((recorder, c)) = lock(&self.containers).arrival(id) else {
-                return;
+                return Ok(());
             };
             let written = recorder.write(&self.disk, &c);
             let mut registry = lock(&self.containers);
-            let seen = match written {
+            let seen = match &written {
                 Ok(()) => registry.admit(id, &c),
-                Err(e) => {
-                    log(format!("container {id}: its record is behind: {e}"));
+                Err(_) => {
                     registry.admit_behind(id);
                     true
                 }
@@ -1814,7 +1789,7 @@ impl<D: Disk> Daemon<D> {
             drop(registry);
             if seen {
                 self.arrived.notify_all();
-                return;
+                return written;
             }
         }
     }
@@ -1913,8 +1888,10 @@ impl<D: Disk> Daemon<D> {
                 Err(e) => log(format!("container {id}: removing it: {e}")),
             }
         }
-        if let Err(e) = registry.update(&self.disk, id, end) {
-            log(format!("container {id}: its record is behind: {e}"));
+        // Its record is written on the recorder's thread, outside this lock.
+        match registry.change(id, end) {
+            Ok(()) => self.record_soon(id, Vec::new()),
+            Err(e) => log(format!("container {id}: its end is lost: {e}")),
         }
         None
     }
@@ -2181,9 +2158,8 @@ impl<D: Disk> Daemon<D> {
         // its run goes on: a short run's client can have its status first. The answer
         // waits for every record being written, each a local write away.
         let mut registry = lock(&self.containers);
-        for id in registry.catch_up(&self.disk) {
-            log(format!("container {id}: its record is written again"));
-        }
+        // Records behind are written again, on the recorder's thread.
+        let behind: Vec<String> = registry.behind().cloned().collect();
         while registry.any_arriving() {
             registry = self
                 .arrived
@@ -2191,6 +2167,9 @@ impl<D: Disk> Daemon<D> {
                 .unwrap_or_else(PoisonError::into_inner);
         }
         drop(registry);
+        for id in behind {
+            self.record_soon(&id, Vec::new());
+        }
         // A run being handed over whose VM has said TAKEN may be running already, and its
         // client have seen it: what it sent is taken once it is registered, which its
         // handoff, reading TAKEN, does at once. One whose VM has not said it has started
@@ -2214,6 +2193,8 @@ impl<D: Disk> Daemon<D> {
         for (id, inbox) in runs {
             self.take_messages(&id, &inbox);
         }
+        // Answered once what it answers with is recorded, or behind (audit A15).
+        self.await_recorded();
     }
 
     /// Output of run `id` its log could not keep: counted on its container, for `logs` to
@@ -2225,30 +2206,30 @@ impl<D: Disk> Daemon<D> {
         log(format!(
             "container {id}: {lost} bytes of its output could not be kept in its log"
         ));
-        if let Err(e) =
-            lock(&self.containers).update(&self.disk, id, |c| c.log_lost = c.log_lost.saturating_add(lost))
-        {
-            log(format!("container {id}: its record is behind: {e}"));
+        match lock(&self.containers).change(id, |c| c.log_lost = c.log_lost.saturating_add(lost)) {
+            Ok(()) => self.record_soon(id, Vec::new()),
+            Err(e) => log(format!("container {id}: what its log lost is lost: {e}")),
         }
     }
 
+    /// Run `id` started. Its record is written on the recorder's thread, outside the
+    /// registry's lock; a detached run's client hears of the start once it is written, or
+    /// why it is behind, as dockerd records a start before `docker run -d` hears of it
+    /// (moby 0fed273 daemon/start.go, `containerStart`: `CheckpointTo` after
+    /// `SetRunning`).
     fn run_started(&self, id: &str, inbox: &mut Inbox) {
         inbox.started = true;
-        let recorded = lock(&self.containers).update(&self.disk, id, |c| {
+        let changed = lock(&self.containers).change(id, |c| {
             c.state = Life::Running;
             c.started = Some(containers::now());
         });
-        let behind = recorded.err().map(|e| {
-            let said = format!("container {id}: its record is behind: {e}");
-            log(&said);
-            said
-        });
-        if let Some(client) = inbox.detached.take() {
-            if let Some(said) = behind {
-                let warning = format!("WARNING: {said}\n");
-                let _ = shards_ipc::send(&client, kind::ERR, warning.as_bytes(), &[]);
+        let told: Vec<UnixStream> = inbox.detached.take().into_iter().collect();
+        match changed {
+            Ok(()) => self.record_soon(id, told),
+            Err(e) => {
+                log(format!("container {id}: its start is lost: {e}"));
+                record::tell(told, id, &Err(e));
             }
-            let _ = shards_ipc::send(&client, kind::END, &[0], &[]);
         }
     }
 
@@ -3592,6 +3573,12 @@ mod tests {
         /// ones it may take, and each it asks for is said on its other channel. The
         /// thread returns what the client was told, if the run did not start.
         fn start(&self, id: &str) -> Starting<'s> {
+            self.start_with(id, None)
+        }
+
+        /// [`start`](Self::start), detached: `client` is the client's connection, told
+        /// whether the command started.
+        fn start_with(&self, id: &str, client: Option<UnixStream>) -> Starting<'s> {
             let (warm, offered) = mpsc::channel::<Ready>();
             let (ask, asks) = mpsc::channel::<()>();
             let (daemon, threads, id) = (&self.t.daemon, self.threads, id.to_string());
@@ -3609,7 +3596,7 @@ mod tests {
                     b"run",
                     &[null.as_fd()],
                     Keep {
-                        detached: None,
+                        detached: client.as_ref(),
                         options: crate::spec::Options::default(),
                         health: None,
                         published: Vec::new(),
@@ -3650,7 +3637,7 @@ mod tests {
     impl<D: Disk> Drop for Ending<'_, D> {
         fn drop(&mut self) {
             let daemon = &self.test.daemon;
-            lock(&daemon.recorder).take();
+            daemon.recording.end();
             daemon.followers.end();
             daemon.completing.end();
             daemon.checks.end();
@@ -5099,6 +5086,118 @@ mod tests {
             t.until("the VM was not reaped", |_| reaped(vm.id()));
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
             assert!(reaped(net_pid));
+        });
+    }
+
+    /// A run's start and end are recorded off the registry's lock (review 7.7): while the
+    /// start's record waits on the filesystem, the lock is free and the run's end is taken
+    /// at once; a command waits only to answer with what is recorded (audit A15), and
+    /// then answers with the end, which is the record's last.
+    #[test]
+    fn a_records_write_holds_up_only_the_answers_that_need_it() {
+        let t = Test::on("record-held", Held::default());
+        t.run(|t| {
+            let id = t.create("held");
+            t.daemon.disk.holding_writes.store(true, Ordering::SeqCst);
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            t.until("the start's record is not being written", |d| {
+                d.disk.writing.load(Ordering::SeqCst)
+            });
+            say(&vm, kind::DONE, &[3]);
+            joined(starting.run).unwrap();
+            assert_eq!(
+                t.record(&id).map(|c| (c.state, c.exit_code)),
+                Some((Life::Exited, Some(3)))
+            );
+            let asking = t.asking(&["ps", "-a"]);
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(!asking.is_finished(), "answered before its record was written");
+            t.daemon.disk.let_through();
+            let (code, out, err) = asking.join().unwrap();
+            assert_eq!(code, 0, "{err}");
+            assert!(out.contains(" Exited (3) "), "{out}");
+            let on_disk = || {
+                let bytes = std::fs::read(t.home.join("containers").join(&id).join("config.json")).ok()?;
+                serde_json::from_slice::<Container>(&bytes).ok()
+            };
+            t.until("the run's end is not recorded", |_| {
+                on_disk().is_some_and(|c| c.state == Life::Exited && c.exit_code == Some(3))
+            });
+        });
+    }
+
+    /// A run's end, come while the record of its start is written, is recorded as it stands
+    /// once that write is done, with no command asking: the start's write, as the run
+    /// stood, leaves the record behind, and the end asked for its own.
+    #[test]
+    fn a_change_while_its_record_is_written_is_written_after() {
+        let t = Test::on("record-after", Held::default());
+        t.run(|t| {
+            let id = t.create("after");
+            t.daemon.disk.holding_writes.store(true, Ordering::SeqCst);
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            t.until("the start's record is not being written", |d| {
+                d.disk.writing.load(Ordering::SeqCst)
+            });
+            say(&vm, kind::DONE, &[4]);
+            joined(starting.run).unwrap();
+            t.daemon.disk.let_through();
+            let on_disk = || {
+                let bytes = std::fs::read(t.home.join("containers").join(&id).join("config.json")).ok()?;
+                serde_json::from_slice::<Container>(&bytes).ok()
+            };
+            t.until("the run's end is not recorded", |_| {
+                on_disk().is_some_and(|c| c.state == Life::Exited && c.exit_code == Some(4))
+            });
+            t.until("the record is behind still", |d| {
+                lock(&d.containers).behind().count() == 0
+            });
+        });
+    }
+
+    /// A detached run's client hears of its start once the start is recorded, or why it
+    /// is not, its record behind; and the record is written again once it can be.
+    #[test]
+    fn a_detached_runs_client_hears_its_start_once_recorded_or_why_not() {
+        let t = Test::on("record-detached", Held::default());
+        t.run(|t| {
+            let id = t.create("detached");
+            t.daemon.disk.failing.store(true, Ordering::SeqCst);
+            let (client, ours) = UnixStream::pair().unwrap();
+            let starting = t.start_with(&id, Some(ours));
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            client.set_read_timeout(Some(PATIENCE)).unwrap();
+            let warning = shards_ipc::recv(&client).unwrap().unwrap();
+            assert_eq!(warning.kind, kind::ERR);
+            let said = String::from_utf8_lossy(&warning.payload).into_owned();
+            assert_eq!(
+                said,
+                format!("WARNING: container {id}: its record is behind: a failing disk\n")
+            );
+            let end = shards_ipc::recv(&client).unwrap().unwrap();
+            assert_eq!((end.kind, end.payload.as_slice()), (kind::END, &[0u8][..]));
+            t.daemon.disk.failing.store(false, Ordering::SeqCst);
+            // The next command has it written again.
+            t.ask(&["ps"]);
+            t.until("the record is behind still", |d| {
+                lock(&d.containers).behind().count() == 0
+            });
+            say(&vm, kind::DONE, &[0]);
+            joined(starting.run).unwrap();
         });
     }
 
