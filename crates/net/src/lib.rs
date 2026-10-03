@@ -70,10 +70,14 @@ const BACKLOG: usize = 1024;
 /// What a VM may reach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
-    /// Everything but the host's own addresses: a build's steps, and `docker run`'s
-    /// default bridge.
+    /// The Internet and the host's networks, as BuildKit's default network reaches them:
+    /// a build's steps. Not the host itself (the gateway, its loopback); not link-local
+    /// addresses, a cloud's instance metadata (169.254.169.254) among them, which a
+    /// request made from the host's own stack would reach past the hop limit that keeps
+    /// it from Docker's bridged containers (AWS IMDSv2's); and not multicast or broadcast,
+    /// which Docker's bridge does not route out.
     AllowAll,
-    /// Nothing: what a VM without grants has.
+    /// Nothing: a run's, by default (spec §3), and a VM without grants.
     DenyAll,
 }
 
@@ -156,7 +160,14 @@ impl Config {
             Policy::DenyAll => false,
             // The gateway would be the host itself: never by default (rootless-security.md
             // R4.16).
-            Policy::AllowAll => to != self.gateway_ip && !to.is_loopback() && !to.is_unspecified(),
+            Policy::AllowAll => {
+                to != self.gateway_ip
+                    && !to.is_loopback()
+                    && !to.is_unspecified()
+                    && !to.is_link_local()
+                    && !to.is_multicast()
+                    && !to.is_broadcast()
+            }
         }
     }
 }
@@ -931,6 +942,31 @@ impl<'r> Stack<'r> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a build's steps reach: the Internet and the host's networks, not the host
+    /// itself, a cloud's instance metadata, multicast or broadcast; a run's, by default,
+    /// nothing.
+    #[test]
+    fn policies_reach_what_they_say() {
+        let allow = Config::docker_default(Policy::AllowAll, [2, 0, 0, 0, 0, 1]);
+        for to in [[8, 8, 8, 8], [192, 168, 1, 10], [10, 0, 0, 1], [172, 17, 0, 3]] {
+            assert!(allow.allows(Ipv4Addr::from(to)), "{to:?}");
+        }
+        for to in [
+            [172, 17, 0, 1],
+            [127, 0, 0, 1],
+            [0, 0, 0, 0],
+            [169, 254, 169, 254],
+            [169, 254, 0, 1],
+            [224, 0, 0, 251],
+            [239, 255, 255, 250],
+            [255, 255, 255, 255],
+        ] {
+            assert!(!allow.allows(Ipv4Addr::from(to)), "{to:?}");
+        }
+        let deny = Config::docker_default(Policy::DenyAll, [2, 0, 0, 0, 0, 1]);
+        assert!(!deny.allows(Ipv4Addr::new(8, 8, 8, 8)));
+    }
 
     /// UDP flows live as conntrack keeps them: 30 s from a datagram, until a reply has
     /// come and a datagram more than 2 s after the first; 120 s from then.
