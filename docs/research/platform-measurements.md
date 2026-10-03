@@ -3013,3 +3013,25 @@ revision before comparing a changed API/implementation.
   only what they name (`Store::image`); `images` reads them all, as it lists them all.
   What is left reads every record: an image's names are all its records', which only an
   index from image to names, kept as names come and go, would spare.
+
+### M88. Finding one container among many
+
+- **Question.** A container command finds its container by name, or by the start of its
+  ID, by looking at every container in sight under the records' lock. How much does that
+  cost as containers grow, and what does an index save?
+- **Method.** `docs/research/measurements/container-lookup/run.py A B N 300 DIR`: a home
+  of N exited containers' records for each build, then `shards port c-I` (by name) and
+  `shards port PREFIX` (12 hex digits of its ID) of a random container I with no ports,
+  the builds interleaved, the client's wall time. A is ace4820, which scans; B indexes
+  names (a map kept as containers come and go) and finds a prefix in the ordered IDs.
+  2026-10-03, the host of M84 (Apple M-series, macOS 26.4.1), load average 6 to 11 from
+  other work. A calibration of A against itself gave 2.45 ms p50 at 10 containers, 2.65
+  at 10,000, and 4.25 (name) and 6.53 (prefix) at 100,000.
+- **Result.** n 300 each, p50 (p90, p99, max) in ms:
+  - 10,000: by name A 3.49 (4.23, 4.83, 4.91), B 3.39 (4.13, 5.18, 6.53); by prefix
+    A 3.67 (4.45, 5.27, 6.28), B 3.34 (4.09, 4.83, 5.86).
+  - 100,000: by name A 5.57 (6.91, 8.21, 13.91), B 4.22 (4.95, 5.72, 6.07); by prefix
+    A 8.25 (9.70, 11.11, 13.84), B 4.05 (4.68, 5.52, 11.21).
+- **Consequence.** The records keep names in a map and IDs in order (`Registry::named`,
+  `Registry::id_prefixed`), as dockerd's name registrar and prefix index do: a lookup no
+  longer grows with the containers; a prefix, which scanned twice, gains most.

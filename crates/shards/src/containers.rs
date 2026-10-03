@@ -3,7 +3,7 @@
 //! `shards rm` removes it, or at once with `--rm`. The daemon keeps them, and writes each
 //! to `containers/ID/config.json` in the home, so that they outlive it ([`Registry`]).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -191,6 +191,9 @@ impl Disk for Real {
 pub struct Registry {
     root: PathBuf,
     by_id: BTreeMap<String, Container>,
+    /// The IDs of those in sight, by name: a command finds its container by name without
+    /// looking at every other, as dockerd's name registrar does (PM M88).
+    by_name: HashMap<String, String>,
     /// The containers whose records are behind.
     behind: BTreeSet<String>,
     /// Containers being removed, by ID: set aside, their names held until the removal is
@@ -225,6 +228,7 @@ impl Registry {
         let mut registry = Registry {
             root,
             by_id: BTreeMap::new(),
+            by_name: HashMap::new(),
             behind: BTreeSet::new(),
             leaving: BTreeMap::new(),
             arriving: BTreeMap::new(),
@@ -273,7 +277,7 @@ impl Registry {
                 removed |= Registry::gone(disk, &dir, note);
                 continue;
             }
-            registry.by_id.insert(c.id.clone(), c);
+            registry.see(c);
         }
         if removed && let Err(e) = disk.sync_dir(&registry.root) {
             note(format!("{}: {e}", registry.root.display()));
@@ -327,17 +331,27 @@ impl Registry {
 
     /// The container named `name`, of those in sight.
     pub fn named(&self, name: &str) -> Option<&Container> {
-        self.by_id.values().find(|c| c.name == name)
+        self.by_id.get(self.by_name.get(name)?)
+    }
+
+    /// Those in sight whose IDs start with `prefix`, found as their IDs are ordered.
+    pub fn id_prefixed<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a Container> {
+        use std::ops::Bound;
+        self.by_id
+            .range::<str, _>((Bound::Included(prefix), Bound::Unbounded))
+            .take_while(move |(id, _)| id.starts_with(prefix))
+            .map(|(_, c)| c)
     }
 
     /// The container holding `name`, for a new container: one in sight, one reserved, or
     /// one whose removal is not yet durable.
     pub fn name_taken(&self, name: &str) -> Option<&Container> {
-        self.by_id
-            .values()
-            .chain(self.arriving.values())
-            .chain(self.leaving.values())
-            .find(|c| c.name == name)
+        self.named(name).or_else(|| {
+            self.arriving
+                .values()
+                .chain(self.leaving.values())
+                .find(|c| c.name == name)
+        })
     }
 
     /// Reserves `c`, in the directory made for it: its name is held at once, and it is
@@ -383,9 +397,15 @@ impl Registry {
             return false;
         }
         if let Some(c) = self.arriving.remove(id) {
-            self.by_id.insert(c.id.clone(), c);
+            self.see(c);
         }
         true
+    }
+
+    /// Puts `c` in sight.
+    fn see(&mut self, c: Container) {
+        self.by_name.insert(c.name.clone(), c.id.clone());
+        self.by_id.insert(c.id.clone(), c);
     }
 
     /// Lets the reserved container with `id` be seen though its record could not be
@@ -393,7 +413,7 @@ impl Registry {
     pub fn admit_behind(&mut self, id: &str) {
         if let Some(c) = self.arriving.remove(id) {
             self.behind.insert(c.id.clone());
-            self.by_id.insert(c.id.clone(), c);
+            self.see(c);
         }
     }
 
@@ -456,6 +476,7 @@ impl Registry {
         let Some(c) = self.by_id.remove(id) else {
             return Ok(None);
         };
+        self.by_name.remove(&c.name);
         self.behind.remove(id);
         self.leaving.insert(id.to_string(), c.clone());
         Ok(Some(Removal {
@@ -745,6 +766,44 @@ mod tests {
         made(&mut registry, container("here", "here", State::Created));
         registry.update(&Real, "here", |c| c.exit_code = Some(1)).unwrap();
         assert_eq!(registry.get("here").unwrap().exit_code, Some(1));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Containers are found by name, and by the start of their IDs, as they come and go:
+    /// one reserved is not yet in sight though its name is held; one removed leaves sight
+    /// at once, its name held until the removal is durable; those reopened are found as
+    /// before.
+    #[test]
+    fn containers_are_found_by_name_and_id_prefix_as_they_come_and_go() {
+        let home = temp_home("found");
+        let mut r = open(&home);
+        made(&mut r, container("ab12", "web", State::Created));
+        made(&mut r, container("ab34", "db", State::Created));
+        made(&mut r, container("cd56", "cache", State::Created));
+        let ids = |r: &Registry, p: &str| r.id_prefixed(p).map(|c| c.id.clone()).collect::<Vec<_>>();
+        assert_eq!(r.named("db").map(|c| c.id.as_str()), Some("ab34"));
+        assert_eq!(ids(&r, "ab"), ["ab12", "ab34"]);
+        assert_eq!(ids(&r, "ab3"), ["ab34"]);
+        assert_eq!(ids(&r, "cd56"), ["cd56"]);
+        assert!(ids(&r, "e").is_empty());
+        assert!(ids(&r, "ab345").is_empty());
+        r.reserve(container("ef78", "queue", State::Created));
+        assert!(r.named("queue").is_none());
+        assert_eq!(r.name_taken("queue").map(|c| c.id.as_str()), Some("ef78"));
+        let removal = r.remove(&Real, "ab34").unwrap().unwrap();
+        assert!(r.named("db").is_none());
+        assert_eq!(r.by_name.len(), 2, "a name kept for a container out of sight");
+        assert_eq!(ids(&r, "ab"), ["ab12"]);
+        assert_eq!(r.name_taken("db").map(|c| c.id.as_str()), Some("ab34"));
+        removal.sync(&Real).unwrap();
+        removal.delete(&Real).unwrap();
+        r.release("ab34");
+        assert!(r.name_taken("db").is_none());
+        drop(r);
+        let r = open(&home);
+        assert_eq!(r.named("web").map(|c| c.id.as_str()), Some("ab12"));
+        assert_eq!(r.named("cache").map(|c| c.id.as_str()), Some("cd56"));
+        assert!(r.named("db").is_none());
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -429,7 +429,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if let Some(c) = registry.named(reference.strip_prefix('/').unwrap_or(reference)) {
             Ok(c.id.clone())
         } else {
-            let mut matching = registry.all().filter(|c| c.id.starts_with(reference));
+            let mut matching = registry.id_prefixed(reference);
             match (matching.next(), matching.next()) {
                 (Some(_), Some(_)) => Err(format!(
                     "Error response from daemon: multiple IDs found with provided prefix: {reference}"
