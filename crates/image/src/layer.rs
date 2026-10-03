@@ -356,19 +356,67 @@ pub fn meta(entry: &Entry, kind: &Kind) -> Meta {
 #[derive(Debug)]
 pub struct Archives<R>(pub Vec<R>);
 
-impl<R: Read + Seek> Source for Archives<R> {
+impl<R: ReadAt> Source for Archives<R> {
     fn read_at(&mut self, data: DataRef, at: u64, buf: &mut [u8]) -> io::Result<()> {
         let archive = usize::try_from(data.source)
             .ok()
-            .and_then(|i| self.0.get_mut(i))
+            .and_then(|i| self.0.get(i))
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such layer"))?;
         let pos = data
             .offset
             .checked_add(at)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "offset overflows"))?;
-        archive.seek(SeekFrom::Start(pos))?;
-        archive.read_exact(buf)
+        archive.read_exact_at(buf, pos)
     }
+}
+
+/// What an archive is read back from: by position, so each read is one call where a seek
+/// and a read would be two.
+pub trait ReadAt {
+    /// Fills `buf` from `pos` on.
+    fn read_exact_at(&self, buf: &mut [u8], pos: u64) -> io::Result<()>;
+}
+
+impl ReadAt for std::fs::File {
+    fn read_exact_at(&self, buf: &mut [u8], pos: u64) -> io::Result<()> {
+        read_exact_at(self, buf, pos)
+    }
+}
+
+impl<T: AsRef<[u8]>> ReadAt for io::Cursor<T> {
+    fn read_exact_at(&self, buf: &mut [u8], pos: u64) -> io::Result<()> {
+        let from = usize::try_from(pos)
+            .ok()
+            .and_then(|at| self.get_ref().as_ref().get(at..)?.get(..buf.len()))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "past the archive"))?;
+        buf.copy_from_slice(from);
+        Ok(())
+    }
+}
+
+/// Fills `buf` from `file` at `pos` by positional reads.
+#[cfg(unix)]
+pub fn read_exact_at(file: &std::fs::File, buf: &mut [u8], pos: u64) -> io::Result<()> {
+    std::os::unix::fs::FileExt::read_exact_at(file, buf, pos)
+}
+
+/// Fills `buf` from `file` at `pos` by positional reads, which on Windows may read less
+/// than asked.
+#[cfg(windows)]
+pub fn read_exact_at(file: &std::fs::File, mut buf: &mut [u8], mut pos: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match file.seek_read(buf, pos) {
+            Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "past the file")),
+            Ok(n) => {
+                buf = std::mem::take(&mut buf).get_mut(n..).unwrap_or_default();
+                pos = pos.saturating_add(n as u64);
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

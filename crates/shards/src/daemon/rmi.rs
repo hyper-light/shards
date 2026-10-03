@@ -79,12 +79,6 @@ const ACTIVE_REFERENCE: u8 = 2;
 const STOPPED: u8 = 4;
 const SOFT: u8 = ACTIVE_REFERENCE | STOPPED;
 
-/// stringid.TruncateID.
-fn short(id: &str) -> &str {
-    let id = id.split_once(':').map_or(id, |(_, hex)| hex);
-    id.get(..12).unwrap_or(id)
-}
-
 /// The familiar form of a record's name, as reference.FamiliarString writes it.
 fn familiar(name: &str) -> String {
     match AnyReference::parse(name) {
@@ -102,23 +96,9 @@ fn missing(given: &str) -> Refused {
     ))
 }
 
-/// checkTruncatedID: `given`, without `sha256:`, if it is 4 to 64 lowercase hex digits.
-fn truncated_id(given: &str) -> Option<&str> {
-    let id = given.strip_prefix("sha256:").unwrap_or(given);
-    ((4..=64).contains(&id.len())
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-    .then_some(id)
-}
-
 /// TagNameOnly's string: `latest` for a name that names neither tag nor digest.
 fn tagged(r: &Reference) -> String {
-    let mut r = r.clone();
-    if r.tag.is_none() && r.digest.is_none() {
-        r.tag = Some("latest".into());
-    }
-    r.to_string()
+    r.clone().tag_name_only().to_string()
 }
 
 /// resolveAllReferences: the record `given` names, if it names one, and every record of
@@ -128,7 +108,7 @@ fn resolve_all(records: &[Record], given: &str) -> Result<(Option<Record>, Vec<R
         AnyReference::parse(given).map_err(|e| refused(format!("Error response from daemon: {e}")))?;
     let mut id: Option<Digest> = None;
     let mut found: Option<Record> = None;
-    if let Some(prefix) = truncated_id(given) {
+    if let Some(prefix) = super::images::truncated_id(given) {
         match &parsed {
             AnyReference::Digest(d) => {
                 found = records.iter().find(|r| r.name == d.to_string()).cloned();
@@ -274,23 +254,29 @@ fn check_conflict(id: &Digest, all: &[Record], users: &[User], mask: u8) -> Resu
         && let Some(u) = using(true)
     {
         return Err(conflict(
-            short(&image),
+            super::images::truncate_id(&image),
             true,
-            &format!("image is being used by running container {}", short(&u.id)),
+            &format!(
+                "image is being used by running container {}",
+                super::images::truncate_id(&u.id)
+            ),
         ));
     }
     if mask & STOPPED != 0
         && let Some(u) = using(false)
     {
         return Err(conflict(
-            short(&image),
+            super::images::truncate_id(&image),
             false,
-            &format!("image is being used by stopped container {}", short(&u.id)),
+            &format!(
+                "image is being used by stopped container {}",
+                super::images::truncate_id(&u.id)
+            ),
         ));
     }
     if mask & ACTIVE_REFERENCE != 0 && all.len() > 1 {
         return Err(conflict(
-            short(&image),
+            super::images::truncate_id(&image),
             false,
             "image is referenced in multiple repositories",
         ));
@@ -354,8 +340,8 @@ pub(super) fn delete(
                         false,
                         &format!(
                             "container {} is using its referenced image {}",
-                            short(&u.id),
-                            short(&image)
+                            super::images::truncate_id(&u.id),
+                            super::images::truncate_id(&image)
                         ),
                     ));
                 }

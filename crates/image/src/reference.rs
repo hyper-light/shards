@@ -187,11 +187,16 @@ pub struct Reference {
 impl Reference {
     /// Parses a reference as `docker pull` does: `latest` when it names no tag or digest.
     pub fn parse(s: &str) -> Result<Reference, Error> {
-        let mut reference = Reference::parse_normalized(s)?;
-        if reference.tag.is_none() && reference.digest.is_none() {
-            reference.tag = Some(DEFAULT_TAG.into());
+        Reference::parse_normalized(s).map(Reference::tag_name_only)
+    }
+
+    /// `TagNameOnly`: `latest` as the tag of a reference that names neither tag nor digest.
+    #[must_use]
+    pub fn tag_name_only(mut self) -> Reference {
+        if self.tag.is_none() && self.digest.is_none() {
+            self.tag = Some(DEFAULT_TAG.into());
         }
-        Ok(reference)
+        self
     }
 
     /// Parses a reference as `ParseNormalizedNamed` does, with the tag or digest it names

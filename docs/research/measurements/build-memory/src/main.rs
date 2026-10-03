@@ -8,10 +8,10 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::fs::File;
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Write as _};
+use std::io::{self, BufReader, Write as _};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use shards_image::erofs::{self, DataRef, Source};
+use shards_image::erofs;
 use shards_image::layer;
 
 struct Counting;
@@ -51,20 +51,6 @@ static A: Counting = Counting;
 thread_local! {
     /// When the last step ended: each step's line says how long it took.
     static CLOCK: std::cell::Cell<std::time::Instant> = std::cell::Cell::new(std::time::Instant::now());
-}
-
-/// The layers' archives, by the index each was applied with.
-struct Many(Vec<File>);
-
-impl Source for Many {
-    fn read_at(&mut self, data: DataRef, at: u64, buf: &mut [u8]) -> io::Result<()> {
-        let file = self
-            .0
-            .get_mut(data.source as usize)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such layer"))?;
-        file.seek(SeekFrom::Start(data.offset + at))?;
-        file.read_exact(buf)
-    }
 }
 
 fn mb(n: usize) -> f64 {
@@ -142,7 +128,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     files.push(File::open(&path)?);
     tree.compact();
     step("compact", entries);
-    let written = erofs::write(&tree, &mut Many(files), &mut out)?;
+    // Read back as `Store::rootfs` reads them.
+    let written = erofs::write(&tree, &mut layer::Archives(files), &mut out)?;
     out.flush()?;
     step("write", entries);
     drop(tree);

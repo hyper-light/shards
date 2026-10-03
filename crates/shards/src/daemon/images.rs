@@ -109,7 +109,7 @@ fn go_g(v: f64, precision: usize) -> String {
 }
 
 /// stringid.TruncateID: what follows the algorithm, its first 12 characters.
-fn truncate_id(id: &str) -> &str {
+pub(super) fn truncate_id(id: &str) -> &str {
     let id = id.split_once(':').map_or(id, |(_, hex)| hex);
     id.get(..12).unwrap_or(id)
 }
@@ -223,26 +223,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 .as_deref()
                 .and_then(|c| shards_dockerfile::go::parse_rfc3339(c.as_bytes()).ok())
                 .map_or(0, |t| t.unix().0);
-            let size = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
             images.push(Summary {
-                manifests: img
-                    .manifests
-                    .iter()
-                    .map(|m| Manifest {
-                        id: m.digest.to_string(),
-                        kind: if m.attestation {
-                            Kind::Attestation
-                        } else {
-                            Kind::Image
-                        },
-                        platform: m.platform.clone().unwrap_or_default(),
-                        available: m.available,
-                        content: size(m.content),
-                        total: size(m.content.saturating_add(m.unpacked)),
-                        // Its runs use the one manifest of it they have.
-                        in_use: containers > 0 && m.available && !m.attestation,
-                    })
-                    .collect(),
+                manifests: manifests(&img, containers),
                 id,
                 tags,
                 digests,
@@ -255,6 +237,33 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         images.sort_by_key(|i| std::cmp::Reverse(i.created));
         Ok(images)
     }
+}
+
+/// Bytes as the API counts them.
+fn size(n: u64) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
+}
+
+/// An image's manifests as dockerd lists them: one is in use while a container runs it,
+/// as a container's ImageManifest names it (moby image_list.go), and a run here uses the
+/// image's manifest for our platform.
+fn manifests(img: &shards_image::store::Image, containers: i64) -> Vec<Manifest> {
+    img.manifests
+        .iter()
+        .map(|m| Manifest {
+            id: m.digest.to_string(),
+            kind: if m.attestation {
+                Kind::Attestation
+            } else {
+                Kind::Image
+            },
+            platform: m.platform.clone().unwrap_or_default(),
+            available: m.available,
+            content: size(m.content),
+            total: size(m.content.saturating_add(m.unpacked)),
+            in_use: containers > 0 && m.digest == img.manifest,
+        })
+        .collect()
 }
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
@@ -289,16 +298,14 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         if let Err(e) = AnyReference::parse(source) {
             return refuse(&invalid(source, &e));
         }
-        let mut tagged = match Reference::parse_normalized(target) {
+        let tagged = match Reference::parse_normalized(target) {
             Ok(r) => r,
             Err(e) => return refuse(&invalid(target, &e)),
         };
         if tagged.digest.is_some() {
             return refuse("refusing to create a tag with a digest reference");
         }
-        if tagged.tag.is_none() {
-            tagged.tag = Some("latest".into());
-        }
+        let tagged = tagged.tag_name_only();
         let mut bare = tagged.clone();
         bare.tag = None;
         if bare.familiar() == "sha256" {
@@ -308,7 +315,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         }
         let found = self.store().and_then(|store| {
             let store = store.ok_or_else(|| not_found(source))?;
-            let images = store.images().map_err(|e| e.to_string())?;
+            let images = store.named().map_err(|e| e.to_string())?;
             let image = resolve(&images, source)?;
             let existing = image.references.first().ok_or_else(|| not_found(source))?;
             store
@@ -403,12 +410,7 @@ pub(super) fn not_found(given: &str) -> String {
     use shards_image::reference::AnyReference;
     match AnyReference::parse(given) {
         Ok(AnyReference::Digest(d)) => format!("No such image: {d}"),
-        Ok(AnyReference::Named(mut r)) => {
-            if r.tag.is_none() && r.digest.is_none() {
-                r.tag = Some("latest".into());
-            }
-            format!("No such image: {}", r.familiar())
-        }
+        Ok(AnyReference::Named(r)) => format!("No such image: {}", r.tag_name_only().familiar()),
         Err(_) => format!("No such image: {given}"),
     }
 }
@@ -418,12 +420,12 @@ pub(super) fn not_found(given: &str) -> String {
 /// only in that repository; else by name, with `latest` if it names no tag; else by a
 /// prefix of its ID of 4 to 64 hex digits, refused if more than one image has it.
 pub(super) fn resolve<'a>(
-    images: &'a [shards_image::store::Image],
+    images: &'a [shards_image::store::Named],
     given: &str,
-) -> Result<&'a shards_image::store::Image, String> {
+) -> Result<&'a shards_image::store::Named, String> {
     use shards_image::reference::{AnyReference, Reference};
     let parsed = AnyReference::parse(given).map_err(|e| e.to_string())?;
-    let named = |i: &shards_image::store::Image, name: &str| {
+    let named = |i: &shards_image::store::Named, name: &str| {
         i.references
             .iter()
             .any(|r| Reference::parse_normalized(r).is_ok_and(|r| r.name() == name))
@@ -432,33 +434,20 @@ pub(super) fn resolve<'a>(
         AnyReference::Digest(d) => {
             return images.iter().find(|i| i.id == d).ok_or_else(|| not_found(given));
         }
-        AnyReference::Named(mut r) => match r.digest.clone() {
+        AnyReference::Named(r) => match r.digest.clone() {
             Some(d) => {
                 return images
                     .iter()
                     .find(|i| i.id == d && named(i, &r.name()))
                     .ok_or_else(|| not_found(given));
             }
-            None => {
-                if r.tag.is_none() {
-                    r.tag = Some("latest".into());
-                }
-                r.to_string()
-            }
+            None => r.tag_name_only().to_string(),
         },
     };
     if let Some(i) = images.iter().find(|i| i.references.contains(&tagged)) {
         return Ok(i);
     }
-    // checkTruncatedID: what follows `sha256:`, if any, 4 to 64 lowercase hex digits.
-    let id = given.strip_prefix("sha256:").unwrap_or(given);
-    if !(4..=64).contains(&id.len())
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err(not_found(given));
-    }
+    let id = truncated_id(given).ok_or_else(|| not_found(given))?;
     let mut matching = images
         .iter()
         .filter(|i| i.id.algorithm().name() == "sha256" && i.id.hex().starts_with(id));
@@ -467,6 +456,16 @@ pub(super) fn resolve<'a>(
         (Some(i), None) => Ok(i),
         (Some(_), Some(_)) => Err("ambiguous reference".into()),
     }
+}
+
+/// checkTruncatedID: `given`, without `sha256:`, if it is 4 to 64 lowercase hex digits.
+pub(super) fn truncated_id(given: &str) -> Option<&str> {
+    let id = given.strip_prefix("sha256:").unwrap_or(given);
+    ((4..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    .then_some(id)
 }
 
 /// The reference filter (moby daemon/containerd/image_list.go, distribution's
@@ -1059,6 +1058,40 @@ mod tests {
         }
     }
 
+    fn named(hex: &str, references: &[&str]) -> shards_image::store::Named {
+        let image = stored(hex, references);
+        shards_image::store::Named {
+            id: image.id,
+            references: image.references,
+            manifest: image.target,
+            tagged_at: None,
+            sources: Vec::new(),
+            targets: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// A manifest is in use while a container runs it, and a run uses the image's
+    /// manifest for our platform: not every manifest here, as dockerd matches each
+    /// container's ImageManifest.
+    #[test]
+    fn the_manifest_runs_use_is_the_one_in_use() {
+        let manifest = |hex: char, attestation: bool| shards_image::store::ImageManifest {
+            digest: shards_image::reference::Digest::parse(&format!("sha256:{}", hex.to_string().repeat(64)))
+                .unwrap(),
+            platform: Some("linux/amd64".into()),
+            attestation,
+            available: true,
+            content: 1,
+            unpacked: 0,
+        };
+        let mut img = stored(&"a".repeat(64), &["docker.io/library/a:1"]);
+        img.manifest = manifest('b', false).digest;
+        img.manifests = vec![manifest('c', false), manifest('b', false), manifest('d', true)];
+        let used: Vec<bool> = manifests(&img, 1).iter().map(|m| m.in_use).collect();
+        assert_eq!(used, [false, true, false]);
+        assert!(manifests(&img, 0).iter().all(|m| !m.in_use));
+    }
+
     /// Images are found as dockerd's containerd store finds them: by digest or ID, by a
     /// name with a digest only in its repository, by name with `latest` as its tag, and
     /// by an ID's prefix of 4 or more hex digits, refused where it is not one image's.
@@ -1070,12 +1103,12 @@ mod tests {
             "c".repeat(64),
         );
         let images = [
-            stored(
+            named(
                 &a,
                 &["docker.io/library/alpine:3.22", "docker.io/library/alpine:latest"],
             ),
-            stored(&b, &["docker.io/library/busybox:1"]),
-            stored(&c, &["localhost:5000/team/app:v1"]),
+            named(&b, &["docker.io/library/busybox:1"]),
+            named(&c, &["localhost:5000/team/app:v1"]),
         ];
         let found = |given: &str| resolve(&images, given).map(|i| i.id.hex().to_string());
         assert_eq!(found("alpine"), Ok(a.clone()));

@@ -78,7 +78,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             Ok(lease) => lease,
             Err(e) => return refuse(&e.to_string()),
         };
-        let images = match store.images() {
+        let images = match store.named() {
             Ok(images) => images,
             Err(e) => return refuse(&e.to_string()),
         };
@@ -104,9 +104,14 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         };
         let mut notes = Vec::new();
         for name in &wanted {
-            let Some(image) = images.iter().find(|i| i.references.contains(name)) else {
+            let Some(named) = images.iter().find(|i| i.references.contains(name)) else {
                 let shown = Reference::parse_normalized(name).map_or_else(|_| name.clone(), |r| r.familiar());
                 return refuse(&format!("tag does not exist: {shown}"));
+            };
+            // Only what is pushed is read.
+            let image = match store.image(named) {
+                Ok(image) => image,
+                Err(e) => return refuse(&e.to_string()),
             };
             let reference = match Reference::parse_normalized(name) {
                 Ok(r) => r,

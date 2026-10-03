@@ -2981,3 +2981,35 @@ revision before comparing a changed API/implementation.
   allocations an entry remain: the name the tar reader reads in each of apply's passes.
 - **Consequence.** Kept. An entry that borrowed its name from the reader would take the
   last two.
+
+### M86. Reading layers back by position
+
+- **Question.** Writing an image reads each file's data back from its layer's archive
+  (`layer::Archives`): a seek, then a read. One positional read does both; what does that
+  save?
+- **Method.** `apply-ab.py` (M85), its `write` step, which now reads through
+  `layer::Archives` as `Store::rootfs` does: fe0e7de against positional reads (pread(2);
+  `seek_read` on Windows), the image of golang:1.26.8's seven layers (967,258,112 bytes,
+  byte for byte the same both ways). 2026-10-03, the host of M84, load average 34 to 40
+  from other work.
+- **Result.** The write, n 7 each: 98.0 ms p50 (127.6 p90, 135.7 max) before, 79.3 ms
+  (97.6, 104.0) after. M78's million empty files, which read no data: 74.5 and 74.6 ms.
+- **Consequence.** Archives are read by position (`layer::ReadAt`). The build reads its
+  own sources through the same `read_exact_at`.
+
+### M87. Finding one image among many
+
+- **Question.** `image inspect`, `tag`, `save` and `push` each read every image in the
+  store (its index, manifests, configs and what of it is here) to find the one they were
+  given. Reading the records alone, then only the image found: what does that save?
+- **Method.** `docs/research/measurements/image-lookup/run.py A B 300 30 DIR`: a store of
+  300 images (an OCI archive of one shared layer and a config each, loaded by each build
+  into a home of its own), then `shards image inspect img-150`, the two builds
+  interleaved, the client's wall time. A is fe0e7de; B reads records, then the one image.
+  2026-10-03, the host of M84, load average 50 to 60 from other work.
+- **Result.** n 30 each: A 29.80 ms p50 (32.55 p90, 41.66 p99, 41.85 max); B 13.12 ms
+  (19.16, 20.96, 21.36).
+- **Consequence.** Commands that name images read the records (`Store::named`) and then
+  only what they name (`Store::image`); `images` reads them all, as it lists them all.
+  What is left reads every record: an image's names are all its records', which only an
+  index from image to names, kept as names come and go, would spare.

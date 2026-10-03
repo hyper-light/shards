@@ -230,11 +230,9 @@ fn import(store: &Store, input: &mut dyn Read) -> Result<(oci::Index, Vec<Digest
             continue;
         }
         for tag in &tags {
-            let mut r =
-                Reference::parse_normalized(tag).map_err(|e| format!("normalize image ref {tag:?}: {e}"))?;
-            if r.tag.is_none() && r.digest.is_none() {
-                r.tag = Some("latest".into());
-            }
+            let r = Reference::parse_normalized(tag)
+                .map_err(|e| format!("normalize image ref {tag:?}: {e}"))?
+                .tag_name_only();
             let mut named = desc.clone();
             named
                 .annotations
@@ -254,11 +252,10 @@ fn import(store: &Store, input: &mut dyn Read) -> Result<(oci::Index, Vec<Digest
 /// `containerd.io/uncompressed` label of content it holds.
 fn compressed_layers(store: &Store) -> BTreeMap<Digest, (Digest, u64)> {
     let mut found = BTreeMap::new();
-    for image in store.images().unwrap_or_default() {
-        let Some(config) = image.config.as_deref().and_then(|c| oci::parse_config(c).ok()) else {
-            continue;
-        };
-        let Ok(bytes) = std::fs::read(store.blob_path(&image.manifest)) else {
+    // Each image's manifest for our platform and its config, and nothing else of it.
+    for named in store.named().unwrap_or_default() {
+        let Ok(shards_image::store::Held::Whole(bytes)) = store.held(&named.manifest, oci::MAX_MANIFEST)
+        else {
             continue;
         };
         // As the manifest says it is, a Docker v2 one or an OCI one; one that says nothing
@@ -266,6 +263,12 @@ fn compressed_layers(store: &Store) -> BTreeMap<Digest, (Digest, u64)> {
         let parsed = oci::parse_document(&bytes, "")
             .or_else(|_| oci::parse_document(&bytes, oci::media::OCI_MANIFEST));
         let Ok(oci::Document::Manifest(m)) = parsed else {
+            continue;
+        };
+        let Ok(shards_image::store::Held::Whole(config)) = store.held(&m.config, oci::MAX_CONFIG) else {
+            continue;
+        };
+        let Ok(config) = oci::parse_config(&config) else {
             continue;
         };
         for (layer, diff_id) in m.layers.iter().zip(&config.rootfs.diff_ids) {
@@ -302,11 +305,10 @@ fn named(index: &oci::Index) -> Vec<Named> {
             .or_else(|| m.annotations.get("org.opencontainers.image.ref.name"))
             .cloned()
             .unwrap_or_default();
-        let reference = Reference::parse_normalized(&given).ok();
-        if let Some(mut r) = reference {
-            if r.tag.is_none() && r.digest.is_none() {
-                r.tag = Some("latest".into());
-            }
+        if let Some(r) = Reference::parse_normalized(&given)
+            .ok()
+            .map(Reference::tag_name_only)
+        {
             out.push(Named {
                 name: r.to_string(),
                 target: m.clone(),

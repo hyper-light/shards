@@ -7,7 +7,7 @@
 //! descriptor, and a layer only counts once its decompressed bytes match its DiffID
 //! (docs/research/registry-pull.md §5, rows 4 and 6).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -233,6 +233,20 @@ struct Tag {
     /// registry, for a pull; by an archive's index, annotations and all, for a load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     target: Option<Descriptor>,
+}
+
+/// An image as the store's records name it, before anything of it is read: what they
+/// resolved to (its ID), its references, sorted, the manifest our platform's runs use as
+/// its first record names it, when a record of it was last written, the repositories it
+/// was pulled from, and what each reference resolved to as its record describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Named {
+    pub id: Digest,
+    pub references: Vec<String>,
+    pub manifest: Descriptor,
+    pub tagged_at: Option<std::time::SystemTime>,
+    pub sources: Vec<String>,
+    pub targets: BTreeMap<String, Descriptor>,
 }
 
 /// An image the store's references name: what they resolved to (its ID, as dockerd's
@@ -650,7 +664,8 @@ impl Store {
         let mut partial = Partial::create(&self.root.join("ingest"))?;
         let mut hasher = Hasher::new(digest.algorithm());
         let mut taken = src.take(size.saturating_add(1));
-        let mut buf = vec![0u8; CHUNK];
+        // As much as the blob can fill, up to a chunk: a manifest takes no megabyte.
+        let mut buf = vec![0u8; usize::try_from(size.saturating_add(1)).map_or(CHUNK, |n| n.min(CHUNK))];
         let mut got: u64 = 0;
         loop {
             let n = match taken.read(&mut buf) {
@@ -943,11 +958,11 @@ impl Store {
             .map_err(|e| Error(format!("{reference}: {e}")))
     }
 
-    /// The images the references name, by what each resolved to, in its digest's order:
-    /// each one's references, manifests and what of it is here. A record that cannot be
-    /// read is left out.
-    pub fn images(&self) -> Result<Vec<Image>, Error> {
-        let mut images: Vec<Image> = Vec::new();
+    /// The images the references name, by what each resolved to, in its digest's order,
+    /// from the records alone: nothing of an image is read until [`Store::image`] reads
+    /// it. A record that cannot be read is left out.
+    pub fn named(&self) -> Result<Vec<Named>, Error> {
+        let mut records = Vec::new();
         for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
             let path = entry?.path();
             let Ok(bytes) = fs::read(&path) else {
@@ -960,43 +975,68 @@ impl Store {
                 continue;
             };
             let tagged_at = fs::metadata(&path).and_then(|m| m.modified()).ok();
-            let image = match images.iter_mut().position(|i| i.id == id) {
-                Some(at) => {
-                    let image = images.get_mut(at).ok_or_else(|| Error("an image gone".into()))?;
-                    image.references.push(tag.reference);
-                    image
-                }
-                None => {
-                    images.push(self.image(id, tag.reference, &tag.manifest)?);
-                    images.last_mut().ok_or_else(|| Error("an image gone".into()))?
-                }
+            records.push((id, tag, tagged_at));
+        }
+        // By reference: an image is read by the manifest its first record names, the same
+        // one each time.
+        records.sort_by(|a, b| a.1.reference.cmp(&b.1.reference));
+        let mut images: Vec<Named> = Vec::new();
+        let mut at: HashMap<Digest, usize> = HashMap::new();
+        for (id, tag, tagged_at) in records {
+            let i = *at.entry(id.clone()).or_insert_with(|| {
+                images.push(Named {
+                    id,
+                    references: Vec::new(),
+                    manifest: tag.manifest.clone(),
+                    tagged_at: None,
+                    sources: Vec::new(),
+                    targets: BTreeMap::new(),
+                });
+                images.len() - 1
+            });
+            let Some(image) = images.get_mut(i) else {
+                continue;
             };
             image.tagged_at = image.tagged_at.max(tagged_at);
             if let Some(target) = tag.target {
-                image
-                    .targets
-                    .insert(image.references.last().cloned().unwrap_or_default(), target);
+                image.targets.insert(tag.reference.clone(), target);
             }
             if let Some(source) = tag.source
                 && !image.sources.contains(&source)
             {
                 image.sources.push(source);
             }
+            image.references.push(tag.reference);
         }
         for image in &mut images {
-            image.references.sort();
             image.sources.sort();
         }
-        images.sort_by_key(|i| i.id.to_string());
+        images.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(images)
     }
 
-    /// Image `id`, named by `reference`, whose manifest for our platform `ours` describes.
-    /// Its content is counted as containerd and dockerd count an image's: each manifest's
-    /// own, the blobs its walk reaches that are here, each as often as it is named, and not
-    /// the index (dockerd 29.3.1, measured: a layer two platforms share counts in each, a
-    /// layer listed twice counts twice).
-    fn image(&self, id: Digest, reference: String, ours: &Descriptor) -> Result<Image, Error> {
+    /// The images the references name, read: each one's references, manifests and what
+    /// of it is here, in its digest's order.
+    pub fn images(&self) -> Result<Vec<Image>, Error> {
+        self.named()?.iter().map(|named| self.image(named)).collect()
+    }
+
+    /// The image `named` names, read.
+    pub fn image(&self, named: &Named) -> Result<Image, Error> {
+        let mut image = self.read_image(named.id.clone(), &named.manifest)?;
+        image.references.clone_from(&named.references);
+        image.tagged_at = named.tagged_at;
+        image.sources.clone_from(&named.sources);
+        image.targets.clone_from(&named.targets);
+        Ok(image)
+    }
+
+    /// Image `id`, whose manifest for our platform `ours` describes, with no references
+    /// yet. Its content is counted as containerd and dockerd count an image's: each
+    /// manifest's own, the blobs its walk reaches that are here, each as often as it is
+    /// named, and not the index (dockerd 29.3.1, measured: a layer two platforms share
+    /// counts in each, a layer listed twice counts twice).
+    fn read_image(&self, id: Digest, ours: &Descriptor) -> Result<Image, Error> {
         let size_here = |d: &Digest| {
             fs::metadata(self.blob_path(d))
                 .ok()
@@ -1093,7 +1133,7 @@ impl Store {
         }
         Ok(Image {
             id,
-            references: vec![reference],
+            references: Vec::new(),
             target,
             manifest: ours.digest().map_err(|e| Error(e.to_string()))?,
             config: image_config,

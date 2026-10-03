@@ -246,11 +246,8 @@ pub(super) fn indent(compact: &str, indent: &str) -> String {
 /// an ID or a digest.
 fn record_name(given: &str) -> Option<String> {
     match shards_image::reference::AnyReference::parse(given) {
-        Ok(shards_image::reference::AnyReference::Named(mut r)) if r.digest.is_none() => {
-            if r.tag.is_none() {
-                r.tag = Some("latest".into());
-            }
-            Some(r.to_string())
+        Ok(shards_image::reference::AnyReference::Named(r)) if r.digest.is_none() => {
+            Some(r.tag_name_only().to_string())
         }
         _ => None,
     }
@@ -260,15 +257,15 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// `shards image inspect IMAGE...` (docker/cli inspect.Inspect): the documents of the
     /// images found, as one array, then what could not be found.
     pub(super) fn image_inspect(&self, args: &[String], reply: &super::commands::Reply<'_>) -> u8 {
-        let images = match self.store() {
-            Ok(Some(store)) => match store.images() {
-                Ok(images) => images,
+        let (store, images) = match self.store() {
+            Ok(Some(store)) => match store.named() {
+                Ok(images) => (Some(store), images),
                 Err(e) => {
                     reply.err(&format!("Error response from daemon: {e}"));
                     return 1;
                 }
             },
-            Ok(None) => Vec::new(),
+            Ok(None) => (None, Vec::new()),
             Err(e) => {
                 reply.err(&format!("Error response from daemon: {e}"));
                 return 1;
@@ -276,8 +273,16 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         };
         let (mut documents, mut errors) = (Vec::new(), Vec::new());
         for given in args {
-            match super::images::resolve(&images, given) {
-                Ok(image) => documents.push(document(image, record_name(given).as_deref())),
+            // Only what is asked for is read.
+            let read = super::images::resolve(&images, given).and_then(|named| {
+                store
+                    .as_ref()
+                    .ok_or_else(|| super::images::not_found(given))?
+                    .image(named)
+                    .map_err(|e| e.to_string())
+            });
+            match read {
+                Ok(image) => documents.push(document(&image, record_name(given).as_deref())),
                 Err(e) => errors.push(format!("Error response from daemon: {e}")),
             }
         }
@@ -329,12 +334,12 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         let images = match lease
             .as_ref()
             .map_err(ToString::to_string)
-            .and_then(|_| store.images().map_err(|e| e.to_string()))
+            .and_then(|_| store.named().map_err(|e| e.to_string()))
         {
             Ok(images) => images,
             Err(e) => return refuse(&format!("Error response from daemon: {e}")),
         };
-        let mut asked = Vec::with_capacity(args.len());
+        let mut asked: Vec<(&shards_image::store::Named, Option<String>)> = Vec::with_capacity(args.len());
         for given in args {
             let resolved = super::images::resolve(&images, given);
             let parsed = AnyReference::parse(given);
@@ -353,7 +358,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 && let Ok(AnyReference::Named(repo)) = &parsed
                 && repo.tag.is_none()
             {
-                let mut tagged: Vec<(String, &shards_image::store::Image)> = images
+                let mut tagged: Vec<(String, &shards_image::store::Named)> = images
                     .iter()
                     .flat_map(|i| i.references.iter().map(move |r| (r, i)))
                     .filter(|(r, _)| {
@@ -370,10 +375,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     ));
                 }
                 for (name, image) in tagged {
-                    asked.push(shards_image::save::Asked {
-                        image,
-                        name: Some(name),
-                    });
+                    asked.push((image, Some(name)));
                 }
                 continue;
             }
@@ -383,16 +385,35 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             };
             // Asked by name, the name it was found by; by ID or digest, none.
             let name = match AnyReference::parse(given) {
-                Ok(AnyReference::Named(mut r)) if r.digest.is_none() => {
-                    if r.tag.is_none() {
-                        r.tag = Some("latest".into());
-                    }
-                    Some(r.to_string()).filter(|n| image.references.contains(n))
+                Ok(AnyReference::Named(r)) if r.digest.is_none() => {
+                    Some(r.tag_name_only().to_string()).filter(|n| image.references.contains(n))
                 }
                 _ => None,
             };
-            asked.push(shards_image::save::Asked { image, name });
+            asked.push((image, name));
         }
+        // Each image asked for, read once, however often it was asked for.
+        let mut read: std::collections::BTreeMap<
+            &shards_image::reference::Digest,
+            shards_image::store::Image,
+        > = std::collections::BTreeMap::new();
+        for (named, _) in &asked {
+            if !read.contains_key(&named.id) {
+                match store.image(named) {
+                    Ok(image) => {
+                        read.insert(&named.id, image);
+                    }
+                    Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+                }
+            }
+        }
+        let asked: Vec<shards_image::save::Asked<'_>> = asked
+            .into_iter()
+            .filter_map(|(named, name)| {
+                read.get(&named.id)
+                    .map(|image| shards_image::save::Asked { image, name })
+            })
+            .collect();
         let written = out.try_clone().map_err(|e| e.to_string()).and_then(|fd| {
             let w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::from(fd));
             shards_image::save::save(&store, &asked, w).map_err(|e| e.to_string())

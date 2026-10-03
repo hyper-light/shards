@@ -731,11 +731,6 @@ impl Tree {
         out
     }
 
-    /// Drops the nodes the root no longer reaches, and renumbers the rest from the root,
-    /// depth first, so ids held from before mean nothing after. A node with several
-    /// names, a hard link, stays one node (audit D11). Removed entries and the names of
-    /// replaced ones go too. Nothing is done if no entry was replaced or removed since the
-    /// last compaction.
     /// Lets the index of names go, for a tree that is only listed from now on, as
     /// [`write`] lists it: after its nodes, entries and names, the index is the tree's
     /// largest part. Looking a name up finds nothing afterwards.
@@ -754,6 +749,11 @@ impl Tree {
         }
     }
 
+    /// Drops the nodes the root no longer reaches, and renumbers the rest from the root,
+    /// depth first, so ids held from before mean nothing after. A node with several
+    /// names, a hard link, stays one node (audit D11). Removed entries and the names of
+    /// replaced ones go too. Nothing is done if no entry was replaced or removed since the
+    /// last compaction.
     pub fn compact(&mut self) {
         if self.dropped == 0 {
             return;

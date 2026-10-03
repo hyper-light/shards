@@ -64,7 +64,7 @@ impl Source for Sources {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "offset overflows"))?;
         let missing = || io::Error::new(io::ErrorKind::NotFound, "no such file source");
         match self.list.get_mut(data.source as usize).ok_or_else(missing)? {
-            Data::Archive(f) => read_exact_at(f, buf, pos),
+            Data::Archive(f) => shards_image::layer::read_exact_at(f, buf, pos),
             Data::Bytes(b) => {
                 let start = usize::try_from(pos).map_err(|_| missing())?;
                 let src = b
@@ -89,34 +89,8 @@ impl Source for Sources {
                     self.open = Some((data.source, f));
                 }
                 let (_, f) = self.open.as_ref().ok_or_else(missing)?;
-                read_exact_at(f, buf, pos)
+                shards_image::layer::read_exact_at(f, buf, pos)
             }
         }
     }
-}
-
-/// Fills `buf` from `file` at `pos` by positional reads: one call where a seek and a read
-/// would be two.
-#[cfg(unix)]
-fn read_exact_at(file: &File, buf: &mut [u8], pos: u64) -> io::Result<()> {
-    std::os::unix::fs::FileExt::read_exact_at(file, buf, pos)
-}
-
-/// Fills `buf` from `file` at `pos` by positional reads, which on Windows may read less
-/// than asked.
-#[cfg(windows)]
-fn read_exact_at(file: &File, mut buf: &mut [u8], mut pos: u64) -> io::Result<()> {
-    use std::os::windows::fs::FileExt;
-    while !buf.is_empty() {
-        match file.seek_read(buf, pos) {
-            Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "past the file")),
-            Ok(n) => {
-                buf = std::mem::take(&mut buf).get_mut(n..).unwrap_or_default();
-                pos = pos.saturating_add(n as u64);
-            }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
 }
