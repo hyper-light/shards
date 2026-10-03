@@ -1119,6 +1119,12 @@ pub struct Repos {
 /// HEAD; an upload begun by a POST, or a mount from another repository, done with a PUT
 /// whose digest is checked; a manifest PUT by tag or digest; and the GETs a pull makes.
 pub fn writable_registry() -> (u16, Arc<std::sync::Mutex<Repos>>) {
+    writable_registry_requiring(None)
+}
+
+/// [`writable_registry`], answering every request without `authorization`, when given,
+/// as its `Authorization` field, with a Basic challenge.
+pub fn writable_registry_requiring(authorization: Option<String>) -> (u16, Arc<std::sync::Mutex<Repos>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let repos = Arc::new(std::sync::Mutex::new(Repos::default()));
@@ -1127,6 +1133,7 @@ pub fn writable_registry() -> (u16, Arc<std::sync::Mutex<Repos>>) {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { return };
             let repos = held.clone();
+            let wanted = authorization.clone();
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut out = stream;
@@ -1137,6 +1144,7 @@ pub fn writable_registry() -> (u16, Arc<std::sync::Mutex<Repos>>) {
                     }
                     let mut length = 0usize;
                     let mut kind = String::new();
+                    let mut given = String::new();
                     loop {
                         let mut header = String::new();
                         if reader.read_line(&mut header).unwrap_or(0) <= 2 {
@@ -1146,6 +1154,7 @@ pub fn writable_registry() -> (u16, Arc<std::sync::Mutex<Repos>>) {
                         match name.to_ascii_lowercase().as_str() {
                             "content-length" => length = value.trim().parse().unwrap_or(0),
                             "content-type" => kind = value.trim().to_string(),
+                            "authorization" => given = value.trim().to_string(),
                             _ => {}
                         }
                     }
@@ -1160,6 +1169,12 @@ pub fn writable_registry() -> (u16, Arc<std::sync::Mutex<Repos>>) {
                             .find_map(|p| p.strip_prefix(&format!("{key}=")))
                             .map(|v| v.replace("%3A", ":"))
                     };
+                    if wanted.as_ref().is_some_and(|w| *w != given) {
+                        let _ = out.write_all(
+                            b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"test\"\r\nContent-Length: 0\r\n\r\n",
+                        );
+                        continue;
+                    }
                     let mut repos = repos.lock().unwrap();
                     repos.log.push(format!("{method} {path}"));
                     let rest = path.strip_prefix("/v2/").unwrap_or("");

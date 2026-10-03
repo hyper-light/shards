@@ -2711,6 +2711,146 @@ fn load_reads_archives_as_docker_load_does() {
 /// repository has, said so; every tag with `-a`; a blob mounted from another repository
 /// of the registry the image came from; an image of one manifest as it is; and the
 /// refusals.
+/// A registry that has no blob and never answers an upload: what a push waits on. Counts
+/// the uploads begun, and those whose connection ended.
+fn stalling_registry() -> (
+    u16,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use std::io::{Read as _, Write as _};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (begun, ended) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (b, e) = (begun.clone(), ended.clone());
+    std::thread::spawn(move || {
+        for tcp in listener.incoming() {
+            let Ok(mut tcp) = tcp else { return };
+            let (b, e) = (b.clone(), e.clone());
+            std::thread::spawn(move || {
+                loop {
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        match tcp.read(&mut byte) {
+                            Ok(1) => head.push(byte[0]),
+                            _ => return,
+                        }
+                    }
+                    if head.starts_with(b"POST ") {
+                        b.fetch_add(1, Ordering::SeqCst);
+                        // Never answered: held until the client lets it go.
+                        while matches!(tcp.read(&mut byte), Ok(1)) {}
+                        e.fetch_add(1, Ordering::SeqCst);
+                        return;
+                    }
+                    let _ = tcp.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+                }
+            });
+        }
+    });
+    (port, begun, ended)
+}
+
+/// A push in flight ends with the daemon, at once, and with its client: its uploads stop
+/// as its connection to the registry closes, where they waited on the registry before.
+#[test]
+fn a_push_ends_with_its_client_and_the_daemon() {
+    use std::sync::atomic::Ordering;
+    if cannot_run_vms() {
+        return;
+    }
+    let (index, blobs) = test_index();
+    let (from, _) = registry(index, blobs);
+    let source = format!("127.0.0.1:{from}/test/image:v1");
+    let (port, begun, ended) = stalling_registry();
+    let home = TempDir::new("containers-push-ends");
+    let shards = |args: &[&str]| shards_in(&home, args);
+    assert_eq!(shards(&["pull", "-q", &source]).status, Some(0));
+    let target = format!("127.0.0.1:{port}/team/app:1");
+    assert_eq!(shards(&["tag", &source, &target]).status, Some(0));
+    let push = || {
+        Command::new(common::shards())
+            .args(["push", &target])
+            .env("SHARDS_HOME", &*home)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    // Its client killed: the upload's connection ends.
+    let mut client = push();
+    eventually("the upload begun", || begun.load(Ordering::SeqCst) == 1);
+    client.kill().unwrap();
+    let _ = client.wait();
+    // At once, not when the upload's 30 s wait for an answer runs out.
+    let t0 = Instant::now();
+    while ended.load(Ordering::SeqCst) < 1 {
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "the upload went on without its client"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // The daemon stopped: it stops at once, and so does the push.
+    let mut client = push();
+    eventually("the second upload begun", || begun.load(Ordering::SeqCst) == 2);
+    let t0 = Instant::now();
+    let stopped = shards(&["daemon", "stop"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    let status = client.wait().unwrap();
+    assert!(!status.success(), "{status}");
+    eventually("the second upload let go", || ended.load(Ordering::SeqCst) == 2);
+}
+
+/// A push goes with the credentials of the client that asks for it, as the Docker CLI
+/// sends its own with each request: not those of the client that started the daemon.
+#[test]
+fn a_push_goes_with_its_clients_credentials() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (index, blobs) = test_index();
+    let (from, _) = registry(index, blobs);
+    let source = format!("127.0.0.1:{from}/test/image:v1");
+    // base64("shards:secret")
+    let (port, _) = common::writable_registry_requiring(Some("Basic c2hhcmRzOnNlY3JldA==".into()));
+    let home = TempDir::new("containers-push-credentials");
+    let (none, some) = (TempDir::new("push-config-none"), TempDir::new("push-config-some"));
+    std::fs::write(
+        some.join("config.json"),
+        format!(r#"{{"auths":{{"127.0.0.1:{port}":{{"auth":"c2hhcmRzOnNlY3JldA=="}}}}}}"#),
+    )
+    .unwrap();
+    let (kernel, init) = (kernel(), guest_init());
+    let shards = |config: &Path, args: &[&str]| {
+        let env: [(&str, &OsStr); 4] = [
+            ("SHARDS_HOME", home.as_os_str()),
+            ("DOCKER_CONFIG", config.as_os_str()),
+            ("SHARDS_KERNEL", kernel.as_os_str()),
+            ("SHARDS_INIT", init.as_os_str()),
+        ];
+        run_shards_env(&[], args, &env, TIMEOUT)
+    };
+    // The daemon starts from a client with no credentials.
+    assert_eq!(shards(&none, &["pull", "-q", &source]).status, Some(0));
+    let target = format!("127.0.0.1:{port}/team/app:1");
+    assert_eq!(shards(&none, &["tag", &source, &target]).status, Some(0));
+    let refused = shards(&none, &["push", &target]);
+    assert_ne!(refused.status, Some(0), "{refused}");
+    let pushed = shards(&some, &["push", &target]);
+    assert_eq!(pushed.status, Some(0), "{pushed}");
+    // A run's pull too.
+    assert_eq!(shards(&none, &["rmi", &target]).status, Some(0));
+    let refused = shards(&none, &["run", "--rm", &target, "exit", "0"]);
+    assert_ne!(refused.status, Some(0), "{refused}");
+    let ran = shards(&some, &["run", "--rm", &target, "exit", "0"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+}
+
 #[test]
 fn push_uploads_images_as_docker_push_does() {
     if cannot_run_vms() {

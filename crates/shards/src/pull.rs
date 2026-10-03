@@ -119,6 +119,7 @@ pub fn run(image: &str, quiet: bool) -> Result<(), String> {
         },
         &|line| say(line),
         None,
+        &|k| std::env::var(k).ok(),
     )?;
     say(&format!("Digest: {}", pulled.0.resolved));
     // Docker's: up to date when the tag already named this image, or when a digest's
@@ -139,40 +140,49 @@ pub fn run(image: &str, quiet: bool) -> Result<(), String> {
 /// of it would use, and pull access to `mount`, a repository of the same registry its
 /// blobs may be mounted from.
 #[cfg(unix)]
-pub fn registry_for_push(reference: &Reference, mount: Option<&str>) -> Result<Registry, String> {
-    let env = |k: &str| std::env::var(k).ok();
-    let (credentials, warnings) = credentials::lookup(&reference.domain, &env).map_err(|e| e.to_string())?;
+pub fn registry_for_push(
+    reference: &Reference,
+    mount: Option<&str>,
+    cancel: Option<&Cancel>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Registry, String> {
+    let (credentials, warnings) = credentials::lookup(&reference.domain, env).map_err(|e| e.to_string())?;
     for warning in warnings {
         let _ = writeln!(std::io::stderr(), "WARNING: {warning}");
     }
-    let material = certs::load(registry::host(reference), &env).map_err(|e| e.to_string())?;
+    let material = certs::load(registry::host(reference), env).map_err(|e| e.to_string())?;
     let config = tls::client_config(material.roots, material.client).map_err(|e| e.to_string())?;
     let http = Client::new(
         Box::new(move |_| Ok(config.clone())),
         &format!("shards/{}", env!("CARGO_PKG_VERSION")),
     );
+    let http = match cancel {
+        Some(cancel) => http.cancelled_by(cancel.clone()),
+        None => http,
+    };
     let mounts: Vec<String> = mount.into_iter().map(String::from).collect();
     Registry::for_push(http, reference, credentials, &mounts).map_err(|e| e.to_string())
 }
 
-/// Pulls `reference` into the store, until `cancel`, if given, is cancelled. Returns the
-/// pull, and whether the reference already named the same manifest.
+/// Pulls `reference` into the store, until `cancel`, if given, is cancelled, with the
+/// credentials and certificates `env` finds. Returns the pull, and whether the reference
+/// already named the same manifest.
 pub fn fetch(
     home: &Path,
     reference: &Reference,
     report: &(dyn Fn(Event<'_>) + Sync),
     say: &dyn Fn(&str),
     cancel: Option<&Cancel>,
+    env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(Pulled, bool), String> {
     let store = store(home)?;
-    let env = |k: &str| std::env::var(k).ok();
-    let (credentials, warnings) = credentials::lookup(&reference.domain, &env).map_err(|e| e.to_string())?;
+    let (credentials, warnings) = credentials::lookup(&reference.domain, env).map_err(|e| e.to_string())?;
     for warning in warnings {
         let _ = writeln!(std::io::stderr(), "WARNING: {warning}");
     }
     // One TLS configuration serves every host of the pull, as dockerd's per-registry client
     // does: the registry, its token realm and its CDN.
-    let material = certs::load(registry::host(reference), &env).map_err(|e| e.to_string())?;
+    let material = certs::load(registry::host(reference), env).map_err(|e| e.to_string())?;
     let config = tls::client_config(material.roots, material.client).map_err(|e| e.to_string())?;
     let http = Client::new(
         Box::new(move |_| Ok(config.clone())),

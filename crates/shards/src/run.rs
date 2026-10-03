@@ -156,7 +156,9 @@ pub fn prepare(
                 Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
                 Event::Manifest(..) | Event::Progress(..) | Event::Building => {}
             };
-            let (pulled, _) = crate::pull::fetch(home, &reference, &report, &say, Some(cancel))?;
+            let (pulled, _) = crate::pull::fetch(home, &reference, &report, &say, Some(cancel), &|k| {
+                shards_ipc::env_value(&asked.registry_env, k)
+            })?;
             say(&format!("Digest: {}", pulled.resolved));
             say(&format!(
                 "Status: Downloaded newer image for {}",

@@ -247,6 +247,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
             })
             .collect(),
         publish_all: parsed.bool("publish-all"),
+        registry_env: shards_ipc::registry_env(),
         ..Run::default()
     })
 }

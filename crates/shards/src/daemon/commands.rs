@@ -1425,6 +1425,10 @@ pub(super) fn tabulate<const N: usize>(rows: &[[String; N]], east_asian: bool) -
 
 /// Who asked for a container command, and what of theirs shapes the answer.
 pub(super) struct Asker {
+    /// Their number among the daemon's clients: what a shutdown cancels is theirs by it.
+    pub client: u64,
+    /// Their [`shards_ipc::REGISTRY_ENV`]: a registry is reached as they would reach it.
+    pub registry_env: Vec<String>,
     /// Their locale is East Asian, for `ps`'s widths.
     pub east_asian: bool,
     /// Their clock, nanoseconds since the epoch, and their zone's offset east of UTC in

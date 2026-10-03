@@ -121,6 +121,7 @@ fn container(
                     &daemon,
                     &shards_ipc::Command {
                         argv,
+                        registry_env: shards_ipc::registry_env(),
                         east_asian: shards_cmdline::width::east_asian(|name| {
                             std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
                         }),

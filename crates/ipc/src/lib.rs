@@ -221,6 +221,9 @@ impl Exec {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Command {
     pub argv: Vec<String>,
+    /// The client's [`REGISTRY_ENV`]: a registry it reaches is reached with its
+    /// credentials and certificates, as the Docker CLI sends its own with each request.
+    pub registry_env: Vec<String>,
     /// The client's locale is East Asian, where the Docker CLI counts ambiguous-width
     /// characters as two columns (shards_cmdline::width::east_asian).
     pub east_asian: bool,
@@ -240,6 +243,7 @@ impl Command {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Vec::new();
         put_list(&mut w, &self.argv);
+        put_list(&mut w, &self.registry_env);
         w.push(u8::from(self.east_asian));
         w.extend_from_slice(&self.now.to_be_bytes());
         w.extend_from_slice(&self.utc_offset.to_be_bytes());
@@ -255,6 +259,7 @@ impl Command {
         let mut r = Reader(bytes);
         let command = Command {
             argv: r.list()?,
+            registry_env: r.list()?,
             east_asian: r.flag()?,
             now: r.u64()? as i64,
             utc_offset: r.u32()? as i32,
@@ -337,6 +342,8 @@ pub struct Run {
     pub publish: Vec<Publish>,
     /// `-P`: every exposed port without a binding gets one to a port the host picks.
     pub publish_all: bool,
+    /// The client's [`REGISTRY_ENV`], for the image's pull.
+    pub registry_env: Vec<String>,
     /// The daemon binary this client would start.
     pub daemon: Identity,
 }
@@ -496,6 +503,7 @@ impl Run {
             put_str(&mut w, &p.host_port);
         }
         w.push(u8::from(self.publish_all));
+        put_list(&mut w, &self.registry_env);
         put_identity(&mut w, &self.daemon);
         w
     }
@@ -577,10 +585,41 @@ impl Run {
                     .collect::<Option<_>>()?
             },
             publish_all: r.flag()?,
+            registry_env: r.list()?,
             daemon: r.identity()?,
         };
         r.0.is_empty().then_some(run)
     }
+}
+
+/// What a registry's credentials and certificates are found by (shards_registry's
+/// credentials and certs): the Docker CLI's config, credential helpers on `PATH`, and the
+/// homes of `certs.d`.
+pub const REGISTRY_ENV: [&str; 7] = [
+    "DOCKER_AUTH_CONFIG",
+    "DOCKER_CONFIG",
+    "HOME",
+    "USERPROFILE",
+    "PATH",
+    "PROGRAMDATA",
+    "XDG_CONFIG_HOME",
+];
+
+/// This process's [`REGISTRY_ENV`], as `NAME=VALUE`, those it has.
+pub fn registry_env() -> Vec<String> {
+    REGISTRY_ENV
+        .iter()
+        .filter_map(|name| {
+            let value = std::env::var_os(name)?;
+            Some(format!("{name}={}", value.to_str()?))
+        })
+        .collect()
+}
+
+/// `name`'s value in `env`, a list [`registry_env`] made.
+pub fn env_value(env: &[String], name: &str) -> Option<String> {
+    env.iter()
+        .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('=').map(String::from))
 }
 
 fn put_str(w: &mut Vec<u8>, s: &str) {
@@ -792,6 +831,20 @@ mod tests {
         assert_eq!(Exec::decode(&Exec::default().encode()), Some(Exec::default()));
     }
 
+    /// A name's value is its own, not that of a name it begins.
+    #[test]
+    fn registry_env_values_are_found_by_their_whole_name() {
+        let env = [
+            "PATHS=/no".to_string(),
+            "PATH=/bin".to_string(),
+            "HOME=".to_string(),
+        ];
+        assert_eq!(env_value(&env, "PATH").as_deref(), Some("/bin"));
+        assert_eq!(env_value(&env, "HOME").as_deref(), Some(""));
+        assert_eq!(env_value(&env, "PAT"), None);
+        assert_eq!(env_value(&env, "DOCKER_CONFIG"), None);
+    }
+
     #[test]
     fn runs_round_trip_and_nothing_else_decodes() {
         let run = Run {
@@ -837,6 +890,7 @@ mod tests {
                 Publish::default(),
             ],
             publish_all: true,
+            registry_env: vec!["DOCKER_CONFIG=/d".into(), "PATH=/bin".into()],
             health: Some(Health {
                 test: vec!["CMD-SHELL".into(), "true".into()],
                 interval: 1,
@@ -865,6 +919,7 @@ mod tests {
         assert_eq!(Run::decode(&Run::default().encode()), Some(Run::default()));
         let command = Command {
             argv: vec!["ps".into(), "-a".into(), String::new()],
+            registry_env: vec!["HOME=/h".into()],
             east_asian: true,
             now: -5,
             utc_offset: -18_000,

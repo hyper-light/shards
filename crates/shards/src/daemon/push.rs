@@ -102,123 +102,133 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         } else {
             vec![named.to_string()]
         };
-        let mut notes = Vec::new();
-        for name in &wanted {
-            let Some(named) = images.iter().find(|i| i.references.contains(name)) else {
-                let shown = Reference::parse_normalized(name).map_or_else(|_| name.clone(), |r| r.familiar());
-                return refuse(&format!("tag does not exist: {shown}"));
-            };
-            // Only what is pushed is read.
-            let image = match store.image(named) {
-                Ok(image) => image,
-                Err(e) => return refuse(&e.to_string()),
-            };
-            let reference = match Reference::parse_normalized(name) {
-                Ok(r) => r,
-                Err(e) => return refuse(&e.to_string()),
-            };
-            let target = image.targets.get(name).unwrap_or(&image.target).clone();
-            // A repository of the same registry the image came from: its blobs mount.
-            let from = image
-                .sources
-                .iter()
-                .filter_map(|s| s.split_once('/'))
-                .find(|(host, path)| *host == reference.domain && *path != reference.path)
-                .map(|(_, path)| path.to_string());
-            let registry = match crate::pull::registry_for_push(&reference, from.as_deref()) {
-                Ok(r) => r,
-                Err(e) => return refuse(&e),
-            };
-            let tag = reference.tag.clone();
-            let report = |digest: &Digest, fate: Layer| {
-                let short = digest.hex().get(..12).unwrap_or_default().to_string();
-                if quiet {
-                    return;
-                }
-                reply.out(&match fate {
-                    Layer::Pushed => format!("{short}: Pushed"),
-                    Layer::Exists => format!("{short}: Layer already exists"),
-                    Layer::Mounted(repo) => format!("{short}: Mounted from {repo}"),
-                });
-            };
-            let mut pushed = target.clone();
-            let mut result = shards_registry::push::push(
-                &registry,
-                &store,
-                &target,
-                tag.as_deref(),
-                from.as_deref(),
-                &report,
-            );
-            // An index not all here: our platform's manifest alone (getPushDescriptor).
-            if let Err(e) = &result
-                && e.kind() == shards_registry::ErrorKind::Missing
-                && target.digest != image.manifest.to_string()
-            {
-                let mut manifest = target.clone();
-                manifest.digest = image.manifest.to_string();
-                manifest.media_type = shards_image::oci::media::OCI_MANIFEST.into();
-                manifest.annotations.clear();
-                manifest.platform = None;
-                if let Ok(meta) = std::fs::metadata(store.blob_path(&image.manifest)) {
-                    manifest.size = i64::try_from(meta.len()).unwrap_or(0);
-                }
-                if let Ok(bytes) = std::fs::read(store.blob_path(&image.manifest))
-                    && let Some(kind) =
-                        serde_json::from_slice::<serde_json::Value>(&bytes)
-                            .ok()
-                            .and_then(|v| {
-                                v.get("mediaType")
-                                    .and_then(serde_json::Value::as_str)
-                                    .map(String::from)
-                            })
-                {
-                    manifest.media_type = kind;
-                }
-                result = shards_registry::push::push(
+        // A shutdown ends it, and so does the client's going: its uploads stop at once.
+        let status = self.cancellable(asker.client, reply.0, |cancel| {
+            let mut notes = Vec::new();
+            for name in &wanted {
+                let Some(named) = images.iter().find(|i| i.references.contains(name)) else {
+                    let shown = Reference::parse_normalized(name).map_or_else(|_| name.clone(), |r| r.familiar());
+                    return refuse(&format!("tag does not exist: {shown}"));
+                };
+                // Only what is pushed is read.
+                let image = match store.image(named) {
+                    Ok(image) => image,
+                    Err(e) => return refuse(&e.to_string()),
+                };
+                let reference = match Reference::parse_normalized(name) {
+                    Ok(r) => r,
+                    Err(e) => return refuse(&e.to_string()),
+                };
+                let target = image.targets.get(name).unwrap_or(&image.target).clone();
+                // A repository of the same registry the image came from: its blobs mount.
+                let from = image
+                    .sources
+                    .iter()
+                    .filter_map(|s| s.split_once('/'))
+                    .find(|(host, path)| *host == reference.domain && *path != reference.path)
+                    .map(|(_, path)| path.to_string());
+                let registry = match crate::pull::registry_for_push(&reference, from.as_deref(), Some(cancel), &|k| {
+                    shards_ipc::env_value(&asker.registry_env, k)
+                }) {
+                    Ok(r) => r,
+                    Err(e) => return refuse(&e),
+                };
+                let tag = reference.tag.clone();
+                let report = |digest: &Digest, fate: Layer| {
+                    let short = digest.hex().get(..12).unwrap_or_default().to_string();
+                    if quiet {
+                        return;
+                    }
+                    reply.out(&match fate {
+                        Layer::Pushed => format!("{short}: Pushed"),
+                        Layer::Exists => format!("{short}: Layer already exists"),
+                        Layer::Mounted(repo) => format!("{short}: Mounted from {repo}"),
+                    });
+                };
+                let mut pushed = target.clone();
+                let mut result = shards_registry::push::push(
                     &registry,
                     &store,
-                    &manifest,
+                    &target,
                     tag.as_deref(),
                     from.as_deref(),
                     &report,
                 );
-                if result.is_ok() {
-                    let (red, green, reset) = if asker.terminal && asker.color {
-                        ("\x1b[31m", "\x1b[32m", "\x1b[0m")
-                    } else {
-                        ("", "", "")
-                    };
-                    notes.push(format!(
-                        "Not all multiplatform-content is present and only the available single-platform image was pushed\n{red}{}{reset} -> {green}{}{reset}",
-                        target.digest, manifest.digest
-                    ));
-                    pushed = manifest;
-                }
-            }
-            if let Err(e) = result {
-                for n in &notes {
-                    let _ = reply.bytes(
-                        crate::spec::LOG_STDOUT,
-                        note(n, asker.terminal && asker.color).as_bytes(),
+                // An index not all here: our platform's manifest alone (getPushDescriptor).
+                if let Err(e) = &result
+                    && e.kind() == shards_registry::ErrorKind::Missing
+                    && target.digest != image.manifest.to_string()
+                {
+                    let mut manifest = target.clone();
+                    manifest.digest = image.manifest.to_string();
+                    manifest.media_type = shards_image::oci::media::OCI_MANIFEST.into();
+                    manifest.annotations.clear();
+                    manifest.platform = None;
+                    if let Ok(meta) = std::fs::metadata(store.blob_path(&image.manifest)) {
+                        manifest.size = i64::try_from(meta.len()).unwrap_or(0);
+                    }
+                    if let Ok(bytes) = std::fs::read(store.blob_path(&image.manifest))
+                        && let Some(kind) =
+                            serde_json::from_slice::<serde_json::Value>(&bytes)
+                                .ok()
+                                .and_then(|v| {
+                                    v.get("mediaType")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(String::from)
+                                })
+                    {
+                        manifest.media_type = kind;
+                    }
+                    result = shards_registry::push::push(
+                        &registry,
+                        &store,
+                        &manifest,
+                        tag.as_deref(),
+                        from.as_deref(),
+                        &report,
                     );
+                    if result.is_ok() {
+                        let (red, green, reset) = if asker.terminal && asker.color {
+                            ("\x1b[31m", "\x1b[32m", "\x1b[0m")
+                        } else {
+                            ("", "", "")
+                        };
+                        notes.push(format!(
+                            "Not all multiplatform-content is present and only the available single-platform image was pushed\n{red}{}{reset} -> {green}{}{reset}",
+                            target.digest, manifest.digest
+                        ));
+                        pushed = manifest;
+                    }
                 }
-                return refuse(&e.to_string());
+                if let Err(e) = result {
+                    for n in &notes {
+                        let _ = reply.bytes(
+                            crate::spec::LOG_STDOUT,
+                            note(n, asker.terminal && asker.color).as_bytes(),
+                        );
+                    }
+                    // A push the daemon cancelled as it stops says so, as a run's prepare does.
+                    if cancel.is_cancelled() && self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                        return refuse("the daemon is shutting down");
+                    }
+                    return refuse(&e.to_string());
+                }
+                if let Some(tag) = &tag {
+                    say(format!("{tag}: digest: {} size: {}", pushed.digest, pushed.size));
+                }
             }
-            if let Some(tag) = &tag {
-                say(format!("{tag}: digest: {} size: {}", pushed.digest, pushed.size));
+            for n in &notes {
+                let _ = reply.bytes(
+                    crate::spec::LOG_STDOUT,
+                    note(n, asker.terminal && asker.color).as_bytes(),
+                );
             }
-        }
+            if quiet {
+                reply.out(&named.to_string());
+            }
+            0
+        });
         drop(lease);
-        for n in &notes {
-            let _ = reply.bytes(
-                crate::spec::LOG_STDOUT,
-                note(n, asker.terminal && asker.color).as_bytes(),
-            );
-        }
-        if quiet {
-            reply.out(&named.to_string());
-        }
-        0
+        status
     }
 }

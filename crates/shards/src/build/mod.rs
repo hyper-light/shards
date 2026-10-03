@@ -527,9 +527,11 @@ impl Bases<'_> {
         let pulled = match local {
             Some(p) => p,
             None => {
-                crate::pull::fetch(self.home, &reference, &|_: Event<'_>| {}, &|_| {}, None)
-                    .map_err(fail)?
-                    .0
+                crate::pull::fetch(self.home, &reference, &|_: Event<'_>| {}, &|_| {}, None, &|k| {
+                    std::env::var(k).ok()
+                })
+                .map_err(fail)?
+                .0
             }
         };
         // The manifest and config as stored, for the layers' descriptors and the config's

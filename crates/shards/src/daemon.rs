@@ -1021,6 +1021,37 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// Runs `work` with a cancel that a shutdown sets (`end_clients`), and that the
+    /// client's going sets: after its command the client sends nothing, so its connection
+    /// reading to its end means it went. The watch ends with the work, which shuts reading
+    /// down.
+    fn cancellable<T>(&self, client: u64, conn: &UnixStream, work: impl FnOnce(&Cancel) -> T) -> T {
+        let cancel = Cancel::new();
+        lock(&self.preparing).insert(client, cancel.clone());
+        if self.stopping.load(Ordering::SeqCst) {
+            cancel.cancel();
+        }
+        let watch = conn.try_clone().ok().and_then(|watched| {
+            let cancel = cancel.clone();
+            std::thread::Builder::new()
+                .name("hangup".into())
+                .spawn(move || {
+                    let mut byte = [0u8; 1];
+                    if matches!(std::io::Read::read(&mut &watched, &mut byte), Ok(0) | Err(_)) {
+                        cancel.cancel();
+                    }
+                })
+                .ok()
+        });
+        let out = work(&cancel);
+        lock(&self.preparing).remove(&client);
+        let _ = conn.shutdown(std::net::Shutdown::Read);
+        if let Some(watch) = watch {
+            let _ = watch.join();
+        }
+        out
+    }
+
     /// Ends the VMs still waiting, lets go of the home, and exits. `shards daemon stop`
     /// learns of it from its connection closing, which is done here, after the rest: the
     /// kernel would close it on exit, but in no order this could rely on (XNU closes a
@@ -1097,6 +1128,8 @@ impl<D: Disk> Daemon<D> {
                     return None;
                 }
                 let asker = commands::Asker {
+                    client: number,
+                    registry_env: command.registry_env,
                     east_asian: command.east_asian,
                     now: command.now,
                     utc_offset: command.utc_offset,
@@ -3390,6 +3423,8 @@ mod tests {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
         let asker = commands::Asker {
+            client: 0,
+            registry_env: Vec::new(),
             east_asian: false,
             now: 0,
             utc_offset: 0,
@@ -3680,6 +3715,7 @@ mod tests {
         let (daemon, client) = UnixStream::pair().unwrap();
         let command = shards_ipc::Command {
             argv: args.iter().map(|a| (*a).to_string()).collect(),
+            registry_env: Vec::new(),
             east_asian: false,
             now: 0,
             utc_offset: 0,
@@ -4033,6 +4069,8 @@ mod tests {
                 let argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
                 let asking = t.threads.spawn(move || {
                     let asker = commands::Asker {
+                        client: 0,
+                        registry_env: Vec::new(),
                         east_asian: false,
                         now: 0,
                         utc_offset: 0,
@@ -4084,6 +4122,8 @@ mod tests {
         });
         let argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
         let asker = commands::Asker {
+            client: 0,
+            registry_env: Vec::new(),
             east_asian: false,
             now: 0,
             utc_offset: 0,
@@ -4208,6 +4248,8 @@ mod tests {
             let asking = t.threads.spawn(move || {
                 let argv = vec!["logs".to_string(), "racer".to_string()];
                 let asker = commands::Asker {
+                    client: 0,
+                    registry_env: Vec::new(),
                     east_asian: false,
                     now: 0,
                     utc_offset: 0,
