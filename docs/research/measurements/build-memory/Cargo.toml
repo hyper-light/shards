@@ -1,6 +1,7 @@
 # Heap held at each step of building a root filesystem from one layer (PM M78): the
-# tree layer::apply builds, and what erofs::write adds. Not a workspace member:
-#   cargo run --release --manifest-path .../Cargo.toml -- LAYER.tar
+# tree layer::apply builds, and what erofs::write adds; and the allocations each made.
+# Not a workspace member:
+#   cargo run --release --manifest-path .../Cargo.toml -- [--below BASE.tar]... LAYER.tar
 [package]
 name = "build-memory"
 version = "0.0.0"

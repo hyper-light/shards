@@ -64,6 +64,10 @@ windows-sys = { workspace = true }
 
 [dev-dependencies]
 shards-testguest = { path = "../testguest" }
+# `load`'s archives of every compression (tests/containers.rs), written in-process.
+bzip2 = "0.6"
+lzma-rust2 = { version = "0.21", default-features = false, features = ["std", "xz", "encoder"] }
+ruzstd = "0.9"
 
 [[bench]]
 name = "boot"

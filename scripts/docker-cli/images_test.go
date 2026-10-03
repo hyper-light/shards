@@ -94,6 +94,11 @@ var imageSets = [][]shardsImage{
 	{
 		{idC, []string{"busybox:1.37"}, nil, 7, 6_140_000, 0, manifests(false)[1:2]},
 	},
+	// Pulled by digest: dockerd lists such a name among RepoTags.
+	{
+		{idC, []string{"busybox:1.37", "busybox@" + idC}, []string{"busybox@" + idC}, 7, 6_140_000, 0, manifests(false)[1:2]},
+		{idA, []string{"alpine@" + idA}, []string{"alpine@" + idA}, 60, 13_400_000, 0, manifests(false)},
+	},
 	nil,
 }
 

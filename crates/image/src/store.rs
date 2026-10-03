@@ -992,16 +992,18 @@ impl Store {
     }
 
     /// Image `id`, named by `reference`, whose manifest for our platform `ours` describes.
+    /// Its content is counted as containerd and dockerd count an image's: each manifest's
+    /// own, the blobs its walk reaches that are here, each as often as it is named, and not
+    /// the index (dockerd 29.3.1, measured: a layer two platforms share counts in each, a
+    /// layer listed twice counts twice).
     fn image(&self, id: Digest, reference: String, ours: &Descriptor) -> Result<Image, Error> {
-        let mut present: HashSet<Digest> = HashSet::new();
-        let mut size_of = |d: &Digest| -> u64 {
-            if !present.insert(d.clone()) {
-                return 0;
-            }
-            fs::metadata(self.blob_path(d)).map_or(0, |m| m.len())
+        let size_here = |d: &Digest| {
+            fs::metadata(self.blob_path(d))
+                .ok()
+                .filter(fs::Metadata::is_file)
+                .map(|m| m.len())
         };
         // The index's manifests, checked against its digest, or the one manifest it is.
-        let mut index_size = 0;
         let mut descriptors = vec![ours.clone()];
         let mut target = Descriptor {
             platform: None,
@@ -1022,7 +1024,6 @@ impl Store {
             if let Ok(Held::Whole(bytes)) = self.held(&desc, oci::MAX_MANIFEST)
                 && let Ok(index) = serde_json::from_slice::<oci::Index>(&bytes)
             {
-                index_size = size_of(&id);
                 target = Descriptor {
                     media_type: index.media_type.unwrap_or_else(|| oci::media::OCI_INDEX.into()),
                     ..desc
@@ -1050,13 +1051,13 @@ impl Store {
             // One that cannot be held, for whatever reason, is listed as not here, as
             // dockerd lists a manifest it cannot read (moby image_list.go).
             if let Ok(Held::Whole(bytes)) = self.held(&desc, oci::MAX_MANIFEST) {
-                listed.content = size_of(&digest);
+                listed.content = bytes.len() as u64;
                 if let Ok(oci::Document::Manifest(manifest)) = oci::parse_document(&bytes, &desc.media_type) {
                     let mut whole = true;
                     for part in std::iter::once(&manifest.config).chain(&manifest.layers) {
-                        match part.digest() {
-                            Ok(d) if self.has(&d) => listed.content += size_of(&d),
-                            _ => whole = false,
+                        match part.digest().ok().and_then(|d| size_here(&d)) {
+                            Some(size) => listed.content = listed.content.saturating_add(size),
+                            None => whole = false,
                         }
                     }
                     listed.available = whole;
@@ -1100,8 +1101,8 @@ impl Store {
             sources: Vec::new(),
             targets: BTreeMap::new(),
             created,
-            content: index_size + manifests.iter().map(|m| m.content).sum::<u64>(),
-            unpacked: manifests.iter().map(|m| m.unpacked).sum(),
+            content: manifests.iter().fold(0, |sum, m| sum.saturating_add(m.content)),
+            unpacked: manifests.iter().fold(0, |sum, m| sum.saturating_add(m.unpacked)),
             manifests,
         })
     }
@@ -1417,7 +1418,9 @@ impl Store {
             Compression::Gzip => {
                 io::copy(&mut flate2::bufread::MultiGzDecoder::new(src), &mut sink)?;
             }
-            Compression::Zstd => zstd(&mut src, &mut sink)?,
+            Compression::Zstd => {
+                io::copy(&mut Zstd::new(src), &mut sink)?;
+            }
             Compression::None => {}
         }
         check(sink.hasher)?;
@@ -1719,7 +1722,9 @@ impl Write for Sink<'_> {
     }
 }
 
-enum Compression {
+/// What a blob's first bytes say it is compressed with, as containerd tells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compression {
     None,
     Gzip,
     Zstd,
@@ -1728,7 +1733,7 @@ enum Compression {
 /// containerd's `DetectCompression` (`pkg/archive/compression/compression.go`), given a
 /// blob's first 8 bytes: gzip's magic and method, a zstd frame's magic, or a skippable
 /// frame's, which counts only once its 8-byte header is whole.
-fn compression(head: &[u8]) -> Compression {
+pub fn compression(head: &[u8]) -> Compression {
     match head {
         [0x1f, 0x8b, 0x08, ..] => Compression::Gzip,
         [0x28, 0xb5, 0x2f, 0xfd, ..] | [0x50..=0x5f, 0x2a, 0x4d, 0x18, _, _, _, _, ..] => Compression::Zstd,
@@ -1736,49 +1741,91 @@ fn compression(head: &[u8]) -> Compression {
     }
 }
 
-/// Decompresses every zstd frame in `src` and skips skippable ones (RFC 8878 §3.1.2), as
-/// klauspost/compress v1.20.0 does for containerd: each frame's checksum is verified, and
-/// its window may not pass 512 MiB. klauspost exempts single-segment frames up to 64 GiB,
-/// which it buffers whole; we cap those too.
-fn zstd(src: &mut BufReader<File>, out: &mut Sink<'_>) -> Result<(), Error> {
-    decode_zstd(src, out)
+/// What zstd `src` holds, read as it is decoded, as klauspost/compress v1.20.0 decodes it
+/// for containerd and moby: every frame, skippable ones skipped (RFC 8878 §3.1.2), each
+/// frame's checksum verified, and no window past 512 MiB. klauspost exempts
+/// single-segment frames up to 64 GiB, which it buffers whole; we cap those too.
+pub struct Zstd<R> {
+    src: R,
+    frame: ruzstd::decoding::FrameDecoder,
+    /// Whether a frame is begun and not yet read to its end.
+    within: bool,
+}
+
+impl<R> std::fmt::Debug for Zstd<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Zstd")
+            .field("within", &self.within)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R: BufRead> Zstd<R> {
+    pub fn new(src: R) -> Self {
+        let mut frame = ruzstd::decoding::FrameDecoder::new();
+        frame.set_max_window_size(ZSTD_MAX_WINDOW);
+        Zstd {
+            src,
+            frame,
+            within: false,
+        }
+    }
+}
+
+impl<R: BufRead> Read for Zstd<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use ruzstd::decoding::BlockDecodingStrategy;
+        use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
+        let invalid = |said: String| io::Error::new(io::ErrorKind::InvalidData, said);
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.within {
+                // As ruzstd's StreamingDecoder reads a frame: decoded until as much as is
+                // asked can be collected, or the frame ends.
+                while self.frame.can_collect() < buf.len() && !self.frame.is_finished() {
+                    let more = buf.len() - self.frame.can_collect();
+                    self.frame
+                        .decode_blocks(&mut self.src, BlockDecodingStrategy::UptoBytes(more))
+                        .map_err(io::Error::other)?;
+                }
+                let n = self.frame.read(buf)?;
+                if n > 0 {
+                    return Ok(n);
+                }
+                let stored = self.frame.get_checksum_from_data();
+                if stored.is_some() && stored != self.frame.get_calculated_checksum() {
+                    return Err(invalid(
+                        "zstd: a frame's checksum does not match its content".into(),
+                    ));
+                }
+                self.within = false;
+            }
+            if self.src.fill_buf()?.is_empty() {
+                return Ok(0);
+            }
+            match self.frame.reset(&mut self.src) {
+                Ok(()) => self.within = true,
+                Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame {
+                    length,
+                    ..
+                })) => {
+                    let length = u64::from(length);
+                    if io::copy(&mut (&mut self.src).take(length), &mut io::sink())? != length {
+                        return Err(invalid("a zstd skippable frame is cut short".into()));
+                    }
+                }
+                Err(e) => return Err(invalid(format!("zstd: {e}"))),
+            }
+        }
+    }
 }
 
 /// What gzip `src` holds, read as it is decoded, every member of it as Go's gzip reader
 /// reads them.
 pub fn gunzip<R: BufRead>(src: R) -> impl Read {
     flate2::bufread::MultiGzDecoder::new(src)
-}
-
-/// Decodes every zstd frame of `src` to `out`, skipping skippable frames, with each
-/// frame's checksum checked and windows no larger than klauspost/compress decodes, as
-/// containerd and moby decode zstd.
-pub fn decode_zstd(src: &mut dyn BufRead, out: &mut dyn Write) -> Result<(), Error> {
-    use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
-    use ruzstd::decoding::{FrameDecoder, StreamingDecoder};
-    let mut frame = FrameDecoder::new();
-    frame.set_max_window_size(ZSTD_MAX_WINDOW);
-    while !src.fill_buf()?.is_empty() {
-        match StreamingDecoder::new_with_decoder(&mut *src, &mut frame) {
-            Ok(mut decoder) => {
-                io::copy(&mut decoder, out)?;
-                let stored = frame.get_checksum_from_data();
-                if stored.is_some() && stored != frame.get_calculated_checksum() {
-                    return bad("zstd: a frame's checksum does not match its content");
-                }
-            }
-            Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame {
-                length, ..
-            })) => {
-                let skipped = io::copy(&mut (&mut *src).take(u64::from(length)), &mut io::sink())?;
-                if skipped != u64::from(length) {
-                    return bad("a zstd skippable frame is cut short");
-                }
-            }
-            Err(e) => return bad(format!("zstd: {e}")),
-        }
-    }
-    Ok(())
 }
 
 /// Where what wrote the root filesystem at `rootfs` is named.
@@ -1868,7 +1915,8 @@ mod tests {
 
     /// Images are listed by what their references resolved to, newest first: each one's
     /// references, its index's manifests (the attestation told apart, the one not here
-    /// not whole), and the bytes of it here, the index's among them.
+    /// not whole), and the bytes of each manifest here, a blob as often as it is named,
+    /// summed without the index's.
     #[test]
     fn images_are_listed_by_what_their_references_resolved_to() {
         let root = temp("images");
@@ -1886,13 +1934,17 @@ mod tests {
             )
             .into_bytes()
         };
-        let manifest = |config: &[u8]| {
-            format!(
-                r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
-                sha256(config),
-                config.len(),
+        let manifest = |config: &[u8], copies: usize| {
+            let layer = format!(
+                r#"{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}"#,
                 sha256(&layer),
                 layer.len()
+            );
+            format!(
+                r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{}]}}"#,
+                sha256(config),
+                config.len(),
+                vec![layer; copies].join(",")
             )
             .into_bytes()
         };
@@ -1900,13 +1952,19 @@ mod tests {
         let (old_config, new_config) = (config("2024-01-02T03:04:05Z"), config("2025-01-02T03:04:05Z"));
         put(&old_config);
         put(&new_config);
-        let (old, new) = (manifest(&old_config), manifest(&new_config));
+        let (old, new) = (manifest(&old_config, 1), manifest(&new_config, 1));
         let (old_digest, new_digest) = (put(&old), put(&new));
+        // Another platform's, which shares the layer and names it twice.
+        let twice_config = config("2023-01-02T03:04:05Z");
+        put(&twice_config);
+        let twice = manifest(&twice_config, 2);
+        let twice_digest = put(&twice);
         let absent = format!("sha256:{}", "1".repeat(64));
         let attestation = format!("sha256:{}", "2".repeat(64));
         let index = format!(
-            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{old_digest}","size":{},"platform":{{"architecture":"arm64","os":"linux","variant":"v8"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{absent}","size":9,"platform":{{"architecture":"amd64","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{attestation}","size":9,"annotations":{{"vnd.docker.reference.type":"attestation-manifest"}},"platform":{{"architecture":"unknown","os":"unknown"}}}}]}}"#,
-            old.len()
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{old_digest}","size":{},"platform":{{"architecture":"arm64","os":"linux","variant":"v8"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{twice_digest}","size":{},"platform":{{"architecture":"arm","os":"linux","variant":"v7"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{absent}","size":9,"platform":{{"architecture":"amd64","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{attestation}","size":9,"annotations":{{"vnd.docker.reference.type":"attestation-manifest"}},"platform":{{"architecture":"unknown","os":"unknown"}}}}]}}"#,
+            old.len(),
+            twice.len()
         )
         .into_bytes();
         let index_digest = put(&index);
@@ -1944,8 +2002,9 @@ mod tests {
         let a = by_id(&index_digest);
         assert_eq!(a.references, ["docker.io/library/a:1", "docker.io/library/a:2"]);
         assert_eq!(a.created.as_deref(), Some("2024-01-02T03:04:05Z"));
-        let here = (index.len() + old.len() + old_config.len() + layer.len()) as u64;
-        assert_eq!((a.content, a.unpacked), (here, 0));
+        let here = (old.len() + old_config.len() + layer.len()) as u64;
+        let twice_here = (twice.len() + twice_config.len() + 2 * layer.len()) as u64;
+        assert_eq!((a.content, a.unpacked), (here + twice_here, 0));
         let shown: Vec<(Option<&str>, bool, bool, u64)> = a
             .manifests
             .iter()
@@ -1954,7 +2013,8 @@ mod tests {
         assert_eq!(
             shown,
             [
-                (Some("linux/arm64/v8"), false, true, here - index.len() as u64),
+                (Some("linux/arm64/v8"), false, true, here),
+                (Some("linux/arm/v7"), false, true, twice_here),
                 (Some("linux/amd64"), false, false, 0),
                 (Some("unknown/unknown"), true, false, 0),
             ]

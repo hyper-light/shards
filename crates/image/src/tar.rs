@@ -229,9 +229,9 @@ impl<R: Read> Reader<R> {
             }
             _ => (0, 0),
         };
-        let path = if self.raw { name } else { clean(&name)? };
+        let path = if self.raw { name } else { clean(name)? };
         let link = match kind {
-            Type::HardLink if !self.raw => clean(&link)?,
+            Type::HardLink if !self.raw => clean(link)?,
             _ => link,
         };
         let entry = Entry {
@@ -640,24 +640,44 @@ fn pax_time(v: &[u8]) -> Result<(i64, u32), Error> {
 /// path to the root: empty and `.` components go, and `..` removes the component before
 /// it. A `..` at the root of an absolute path stays at the root; one that climbs out of a
 /// relative path is refused, as moby refuses it.
-fn clean(path: &[u8]) -> Result<Vec<u8>, Error> {
+fn clean(mut path: Vec<u8>) -> Result<Vec<u8>, Error> {
+    // In place: what is kept never runs ahead of what is read, as Go's lazybuf keeps it.
     let rooted = path.first() == Some(&b'/');
-    let mut parts: Vec<&[u8]> = Vec::new();
-    for part in path.split(|&c| c == b'/') {
-        match part {
+    let (mut read, mut kept) = (0, 0);
+    while read < path.len() {
+        let rest = path.get(read..).unwrap_or_default();
+        let len = rest.iter().position(|&c| c == b'/').unwrap_or(rest.len());
+        let end = read + len;
+        match rest.get(..len).unwrap_or_default() {
             b"" | b"." => {}
             b".." => {
-                if parts.pop().is_none() && !rooted {
-                    return bad(format!(
-                        "path {:?} leaves the root",
-                        String::from_utf8_lossy(path)
-                    ));
+                if kept == 0 {
+                    if !rooted {
+                        return bad(format!(
+                            "path {:?} leaves the root",
+                            String::from_utf8_lossy(&path)
+                        ));
+                    }
+                } else {
+                    let back = path.get(..kept).unwrap_or_default();
+                    kept = back.iter().rposition(|&c| c == b'/').unwrap_or(0);
                 }
             }
-            p => parts.push(p),
+            _ => {
+                if kept > 0 {
+                    if let Some(c) = path.get_mut(kept) {
+                        *c = b'/';
+                    }
+                    kept += 1;
+                }
+                path.copy_within(read..end, kept);
+                kept += len;
+            }
         }
+        read = end + 1;
     }
-    Ok(parts.join(&b'/'))
+    path.truncate(kept);
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -877,10 +897,10 @@ pub(crate) mod tests {
                     .map(|(k, v)| (unhex(k), unhex(v)))
                     .collect();
                 let want = Entry {
-                    path: clean(&unhex(go["name"])).unwrap(),
+                    path: clean(unhex(go["name"])).unwrap(),
                     kind,
                     link: if kind == Type::HardLink {
-                        clean(&link).unwrap()
+                        clean(link.clone()).unwrap()
                     } else {
                         link
                     },
@@ -1039,6 +1059,7 @@ pub(crate) mod tests {
 
     #[test]
     fn paths_are_cleaned() {
+        let clean = |p: &[u8]| clean(p.to_vec());
         assert_eq!(clean(b"./a//b/./c/").unwrap(), b"a/b/c");
         assert_eq!(clean(b"/abs/x").unwrap(), b"abs/x");
         assert_eq!(clean(b"a/../b").unwrap(), b"b");
@@ -1046,6 +1067,55 @@ pub(crate) mod tests {
         assert_eq!(clean(b"./").unwrap(), b"");
         assert!(clean(b"../x").is_err());
         assert!(clean(b"a/../../b").is_err());
+        // Against cleaning by components, every path of up to five of these, rooted or not.
+        let by_parts = |path: &[u8]| -> Option<Vec<u8>> {
+            let mut parts: Vec<&[u8]> = Vec::new();
+            for part in path.split(|&c| c == b'/') {
+                match part {
+                    b"" | b"." => {}
+                    b".." => {
+                        if parts.pop().is_none() && path.first() != Some(&b'/') {
+                            return None;
+                        }
+                    }
+                    p => parts.push(p),
+                }
+            }
+            Some(parts.join(&b'/'))
+        };
+        let words: [&[u8]; 6] = [b"", b".", b"..", b"a", b"bc", b"..."];
+        let mut paths: Vec<Vec<u8>> = vec![Vec::new()];
+        for _ in 0..5 {
+            let longer: Vec<Vec<u8>> = paths
+                .iter()
+                .flat_map(|p| {
+                    words.iter().map(move |w| {
+                        let mut q = p.clone();
+                        if !q.is_empty() {
+                            q.push(b'/');
+                        }
+                        q.extend_from_slice(w);
+                        q
+                    })
+                })
+                .collect();
+            paths.extend(longer.into_iter().filter(|q| q.len() < 16));
+            paths.sort();
+            paths.dedup();
+        }
+        let mut checked = 0;
+        for p in &paths {
+            for rooted in [false, true] {
+                let p = if rooted {
+                    [b"/", &p[..]].concat()
+                } else {
+                    p.clone()
+                };
+                assert_eq!(clean(&p).ok(), by_parts(&p), "{:?}", String::from_utf8_lossy(&p));
+                checked += 1;
+            }
+        }
+        assert!(checked > 10_000, "{checked}");
     }
 
     #[test]

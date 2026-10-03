@@ -215,9 +215,9 @@ impl Write for Contents {
     }
 }
 
-/// The compressions moby's Detect knows, in the order it tries them.
+/// The compressions moby's Detect knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Compression {
+pub enum Compression {
     None,
     Bzip2,
     Gzip,
@@ -225,25 +225,115 @@ enum Compression {
     Zstd,
 }
 
-/// compression.Detect, over the first bytes of a stream.
-fn detect(head: &[u8]) -> Compression {
+/// go-archive's compression.Detect, over the first bytes of a stream: bzip2's and xz's
+/// magic, or gzip's and zstd's as containerd matches them, which is as Detect does.
+pub fn detect(head: &[u8]) -> Compression {
+    use shards_image::store::{self, compression};
     if head.starts_with(&[0x42, 0x5A, 0x68]) {
         Compression::Bzip2
-    } else if head.starts_with(&[0x1F, 0x8B, 0x08]) {
-        Compression::Gzip
     } else if head.starts_with(&[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]) {
         Compression::Xz
-    } else if head.starts_with(&[0x28, 0xB5, 0x2F, 0xFD])
-        || (head.len() >= 8
-            && head
-                .get(..4)
-                .and_then(|b| <[u8; 4]>::try_from(b).ok())
-                .is_some_and(|b| u32::from_le_bytes(b) & 0xFFFF_FFF0 == 0x184D_2A50))
-    {
-        Compression::Zstd
     } else {
-        Compression::None
+        match compression(head) {
+            store::Compression::Gzip => Compression::Gzip,
+            store::Compression::Zstd => Compression::Zstd,
+            store::Compression::None => Compression::None,
+        }
     }
+}
+
+/// A stream with its first bytes read ahead, then buffered.
+pub type Peeked<R> = BufReader<io::Chain<io::Cursor<Vec<u8>>, R>>;
+
+/// A stream as DecompressStream gives it: decoded as its first bytes said, as it is read.
+pub enum Decoder<R: BufRead> {
+    None(R),
+    Bzip2(bzip2::bufread::MultiBzDecoder<R>),
+    Gzip(flate2::bufread::MultiGzDecoder<R>),
+    Xz(Box<lzma_rust2::XzReader<Full<R>>>),
+    Zstd(Box<shards_image::store::Zstd<R>>),
+}
+
+/// A stream whose reads fill all they are given, short only at its end, as lzma-rust2's
+/// XzReader needs its input: 0.21.0 reads a block's padding with one read and refuses
+/// fewer bytes (reader.rs consume_padding), which a buffered stream returns wherever the
+/// padding straddles its buffer's end.
+#[derive(Debug)]
+pub struct Full<R> {
+    inner: R,
+    /// An error met after some bytes were read, for the next read to return.
+    error: Option<io::Error>,
+}
+
+impl<R: Read> Read for Full<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if let Some(e) = self.error.take() {
+            return Err(e);
+        }
+        let mut n = 0;
+        while let Some(rest) = buf.get_mut(n..)
+            && !rest.is_empty()
+        {
+            match self.inner.read(rest) {
+                Ok(0) => break,
+                Ok(k) => n += k,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if n > 0 => {
+                    self.error = Some(e);
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(n)
+    }
+}
+
+impl<R: BufRead> std::fmt::Debug for Decoder<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Decoder::None(_) => "Decoder::None",
+            Decoder::Bzip2(_) => "Decoder::Bzip2",
+            Decoder::Gzip(_) => "Decoder::Gzip",
+            Decoder::Xz(_) => "Decoder::Xz",
+            Decoder::Zstd(_) => "Decoder::Zstd",
+        })
+    }
+}
+
+impl<R: BufRead> Read for Decoder<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Decoder::None(r) => r.read(buf),
+            Decoder::Bzip2(r) => r.read(buf),
+            Decoder::Gzip(r) => r.read(buf),
+            Decoder::Xz(r) => r.read(buf),
+            Decoder::Zstd(r) => r.read(buf),
+        }
+    }
+}
+
+/// DecompressStream: `input`, buffered by `capacity` bytes, read through the decoder its
+/// first ten bytes call for, as Peek(10) gives them to Detect: fewer only where the stream
+/// ends sooner, however few each read of it returns.
+pub fn decompressed<R: Read>(mut input: R, capacity: usize) -> io::Result<Decoder<Peeked<R>>> {
+    let mut head = Vec::with_capacity(10);
+    (&mut input).take(10).read_to_end(&mut head)?;
+    let compression = detect(&head);
+    let input = BufReader::with_capacity(capacity, io::Cursor::new(head).chain(input));
+    Ok(match compression {
+        Compression::None => Decoder::None(input),
+        Compression::Bzip2 => Decoder::Bzip2(bzip2::bufread::MultiBzDecoder::new(input)),
+        Compression::Gzip => Decoder::Gzip(flate2::bufread::MultiGzDecoder::new(input)),
+        Compression::Xz => Decoder::Xz(Box::new(lzma_rust2::XzReader::new(
+            Full {
+                inner: input,
+                error: None,
+            },
+            true,
+        ))),
+        Compression::Zstd => Decoder::Zstd(Box::new(shards_image::store::Zstd::new(input))),
+    })
 }
 
 /// A file's bytes in a snapshot, read in order.
@@ -268,25 +358,10 @@ impl Read for DataReader<'_> {
 
 /// Decompresses `input`, as DecompressStream detects it, into `out`.
 fn decompress(input: impl Read, out: &mut dyn Write) -> Result<(), Error> {
-    let mut input = BufReader::with_capacity(1 << 16, input);
-    let head = input.fill_buf().map_err(|e| Error(e.to_string()))?;
-    let head = head.get(..head.len().min(10)).unwrap_or_default().to_vec();
     let io_err = |e: io::Error| Error(e.to_string());
-    match detect(&head) {
-        Compression::None => io::copy(&mut input, out).map(drop).map_err(io_err),
-        Compression::Gzip => io::copy(&mut flate2::bufread::MultiGzDecoder::new(input), out)
-            .map(drop)
-            .map_err(io_err),
-        Compression::Bzip2 => io::copy(&mut bzip2::bufread::MultiBzDecoder::new(input), out)
-            .map(drop)
-            .map_err(io_err),
-        Compression::Xz => io::copy(&mut lzma_rust2::XzReader::new(input, true), out)
-            .map(drop)
-            .map_err(io_err),
-        Compression::Zstd => {
-            shards_image::store::decode_zstd(&mut input, out).map_err(|e| Error(e.to_string()))
-        }
-    }
+    io::copy(&mut decompressed(input, 1 << 16).map_err(io_err)?, out)
+        .map(drop)
+        .map_err(io_err)
 }
 
 /// A regular file at `p` in `fs`, its symlinks followed: its size and data.
@@ -298,23 +373,6 @@ fn regular(fs: &Fs, p: &[u8]) -> Option<(u64, DataRef)> {
     }
 }
 
-/// Writes nowhere, failing once more than a header's worth has been asked of it.
-struct Head(Vec<u8>);
-
-impl Write for Head {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.extend_from_slice(buf);
-        if self.0.len() >= DETECT {
-            return Err(io::Error::other("enough"));
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 /// unpack.go isArchivePath: a regular file whose stream decompresses to a tar with a
 /// first entry Go reads.
 pub fn is_archive(src: &Fs, p: &[u8], sources: &mut Sources) -> Result<bool, Error> {
@@ -322,16 +380,19 @@ pub fn is_archive(src: &Fs, p: &[u8], sources: &mut Sources) -> Result<bool, Err
     let Some((size, data)) = regular(src, &p) else {
         return Ok(false);
     };
-    let mut head = Head(Vec::new());
     let reader = DataReader {
         src: sources,
         data,
         size,
         at: 0,
     };
-    // A stream that fails to decompress past its start is no archive, as Go's Next fails.
-    let _ = decompress(reader, &mut head);
-    Ok(matches!(tar::Reader::raw(&head.0[..]).next_entry(), Ok(Some(_))))
+    // As much as its first header can take; a stream that fails to decompress past its
+    // start is no archive, as Go's Next fails.
+    let mut head = Vec::new();
+    if let Ok(decoder) = decompressed(reader, 1 << 16) {
+        let _ = decoder.take(DETECT as u64).read_to_end(&mut head);
+    }
+    Ok(matches!(tar::Reader::raw(&head[..]).next_entry(), Ok(Some(_))))
 }
 
 fn os(e: PathError) -> Error {
@@ -817,6 +878,113 @@ mod tests {
     /// a decompressor's error where Go's reader would read it (here, a gzip checksum after
     /// an archive with no end marker) leaves none, as Go's reader fails there, while one
     /// past the archive's end changes nothing.
+    /// DecompressStream: the first ten bytes tell the compression however few each read
+    /// returns (Peek(10)), and every compression Detect knows decodes, zstd after a
+    /// skippable frame too, whose magic tells only with its whole 8-byte header. The
+    /// streams are bzip2 1.0.8's, Apple gzip 479's, XZ Utils 5.8.4's and zstd 1.5.7's.
+    #[test]
+    fn streams_decompress_as_decompressstream_reads_them() {
+        /// Hands over one byte a read.
+        struct Dribble<'a>(&'a [u8]);
+        impl Read for Dribble<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let (Some((first, rest)), Some(to)) = (self.0.split_first(), buf.first_mut()) else {
+                    return Ok(0);
+                };
+                *to = *first;
+                self.0 = rest;
+                Ok(1)
+            }
+        }
+        const BZIP2: [u8; 62] = [
+            0x42, 0x5a, 0x68, 0x39, 0x31, 0x41, 0x59, 0x26, 0x53, 0x59, 0x48, 0x63, 0x7b, 0xef, 0x00, 0x00,
+            0x05, 0xd1, 0x80, 0x00, 0x10, 0x40, 0x00, 0x2e, 0x22, 0xdc, 0x80, 0x20, 0x00, 0x21, 0xa9, 0xea,
+            0x34, 0xc4, 0xc6, 0xa1, 0x00, 0x00, 0x18, 0x58, 0xc5, 0xd9, 0x24, 0x3d, 0xc4, 0x14, 0xed, 0x43,
+            0x16, 0x09, 0xa5, 0x3f, 0x17, 0x72, 0x45, 0x38, 0x50, 0x90, 0x48, 0x63, 0x7b, 0xef,
+        ];
+        const GZIP: [u8; 47] = [
+            0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x4b, 0x49, 0x4d, 0xce, 0x4f, 0x49,
+            0x4d, 0x51, 0x48, 0x2c, 0x56, 0xc8, 0x2c, 0x51, 0x28, 0x07, 0x52, 0xc9, 0xf9, 0xb9, 0x05, 0x45,
+            0xa9, 0xc5, 0xc5, 0xa9, 0x29, 0x5c, 0x00, 0x26, 0x1a, 0x96, 0x11, 0x1d, 0x00, 0x00, 0x00,
+        ];
+        const XZ: [u8; 96] = [
+            0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00, 0x00, 0x04, 0xe6, 0xd6, 0xb4, 0x46, 0x04, 0xc0, 0x21, 0x1d,
+            0x21, 0x01, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe6, 0x6a, 0x1c, 0x77,
+            0x01, 0x00, 0x1c, 0x64, 0x65, 0x63, 0x6f, 0x64, 0x65, 0x64, 0x20, 0x61, 0x73, 0x20, 0x69, 0x74,
+            0x20, 0x77, 0x61, 0x73, 0x20, 0x63, 0x6f, 0x6d, 0x70, 0x72, 0x65, 0x73, 0x73, 0x65, 0x64, 0x0a,
+            0x00, 0x00, 0x00, 0x00, 0x8f, 0xf1, 0xab, 0x12, 0x9a, 0x91, 0xa5, 0xd8, 0x00, 0x01, 0x3d, 0x1d,
+            0x4c, 0x91, 0x68, 0x29, 0x1f, 0xb6, 0xf3, 0x7d, 0x01, 0x00, 0x00, 0x00, 0x00, 0x04, 0x59, 0x5a,
+        ];
+        const ZSTD: [u8; 42] = [
+            0x28, 0xb5, 0x2f, 0xfd, 0x24, 0x1d, 0xe9, 0x00, 0x00, 0x64, 0x65, 0x63, 0x6f, 0x64, 0x65, 0x64,
+            0x20, 0x61, 0x73, 0x20, 0x69, 0x74, 0x20, 0x77, 0x61, 0x73, 0x20, 0x63, 0x6f, 0x6d, 0x70, 0x72,
+            0x65, 0x73, 0x73, 0x65, 0x64, 0x0a, 0xba, 0xe8, 0xe6, 0x6e,
+        ];
+        let plain = b"decoded as it was compressed\n";
+        let mut skipped = vec![0x5f, 0x2a, 0x4d, 0x18, 3, 0, 0, 0, 1, 2, 3];
+        skipped.extend_from_slice(&ZSTD);
+        for (stream, want) in [
+            (&plain[..], Compression::None),
+            (&b"short"[..], Compression::None),
+            (&BZIP2[..], Compression::Bzip2),
+            (&GZIP[..], Compression::Gzip),
+            (&XZ[..], Compression::Xz),
+            (&ZSTD[..], Compression::Zstd),
+            (&skipped[..], Compression::Zstd),
+        ] {
+            let mut decoder = decompressed(Dribble(stream), 64).unwrap();
+            let found = match decoder {
+                Decoder::None(_) => Compression::None,
+                Decoder::Bzip2(_) => Compression::Bzip2,
+                Decoder::Gzip(_) => Compression::Gzip,
+                Decoder::Xz(_) => Compression::Xz,
+                Decoder::Zstd(_) => Compression::Zstd,
+            };
+            assert_eq!(found, want);
+            let mut out = Vec::new();
+            decoder.read_to_end(&mut out).unwrap();
+            let expected: &[u8] = if stream == b"short" { b"short" } else { plain };
+            assert_eq!(out, expected, "{want:?}");
+        }
+    }
+
+    /// Full's reads fill what they are given past interruptions, and an error met after
+    /// some bytes comes with the next read.
+    #[test]
+    fn full_reads_fill_and_keep_their_errors() {
+        struct Steps(Vec<io::Result<u8>>);
+        impl Read for Steps {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.0.is_empty() {
+                    return Ok(0);
+                }
+                let byte = self.0.remove(0)?;
+                if let Some(to) = buf.first_mut() {
+                    *to = byte;
+                }
+                Ok(1)
+            }
+        }
+        let steps = vec![
+            Ok(1),
+            Err(io::ErrorKind::Interrupted.into()),
+            Ok(2),
+            Err(io::Error::other("broken")),
+            Ok(3),
+        ];
+        let mut full = Full {
+            inner: Steps(steps),
+            error: None,
+        };
+        let mut buf = [0u8; 4];
+        assert_eq!(full.read(&mut buf).unwrap(), 2);
+        assert_eq!(buf.get(..2), Some(&[1, 2][..]));
+        assert_eq!(full.read(&mut buf).unwrap_err().to_string(), "broken");
+        assert_eq!(full.read(&mut buf).unwrap(), 1);
+        assert_eq!(buf.first(), Some(&3));
+        assert_eq!(full.read(&mut buf).unwrap(), 0);
+    }
+
     #[test]
     fn an_archives_newest_file_is_found_through_its_compression() {
         let tar = std::fs::read(

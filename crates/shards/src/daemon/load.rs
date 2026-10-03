@@ -7,20 +7,20 @@
 //! (`moby-dangling@`) if it has none; each unpacked for our platform, if it has one.
 //!
 //! Unlike dockerd: a name that is not a reference is not recorded as it is written (the
-//! store records references); the image is kept by its digest instead. An archive
-//! compressed with bzip2 or xz is refused; gzip and zstd are read, as is a plain tar.
-//! Zstd layers in Docker's manifest.json get zstd's media type, where containerd gives
-//! every compressed layer gzip's, which no unpacker could then read.
+//! store records references); the image is kept by its digest instead. Zstd layers in
+//! Docker's manifest.json get zstd's media type, where containerd v2.4.1 gives every
+//! compressed layer gzip's, which no unpacker could then read.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 
 use shards_image::oci::{self, Descriptor};
 use shards_image::reference::{Digest, Reference};
 use shards_image::store::Store;
 
-/// The largest `oci-layout` or `manifest.json` read: containerd reads them whole.
-const MAX_JSON: u64 = 16 << 20;
+/// How much of an `oci-layout` or `manifest.json` is read for its JSON: containerd
+/// v2.4.1's jsonLimit (core/images/archive/importer.go, onUntarJSON).
+const MAX_JSON: u64 = 20 << 20;
 
 const DOCKER_MANIFEST: &str = "application/vnd.docker.distribution.manifest.v2+json";
 const DOCKER_CONFIG: &str = "application/vnd.docker.container.image.v1+json";
@@ -39,37 +39,49 @@ struct DockerManifest {
     layers: Vec<String>,
 }
 
-/// What an archive's compression is, by its first bytes (containerd's
-/// DetectCompression).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Compression {
-    None,
-    Gzip,
-    Zstd,
-    Bzip2,
-    Xz,
-}
-
-fn detect(head: &[u8]) -> Compression {
-    if head.starts_with(&[0x1f, 0x8b, 0x08]) {
-        Compression::Gzip
-    } else if head.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
-        Compression::Zstd
-    } else if head.starts_with(b"BZh") {
-        Compression::Bzip2
-    } else if head.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
-        Compression::Xz
-    } else {
-        Compression::None
-    }
-}
-
 /// An image the archive names, as containerd's Import makes it: a name and what it
 /// resolved to.
 struct Named {
     name: String,
     target: Descriptor,
     dangling: bool,
+}
+
+/// onUntarJSON: the first JSON value of the entry's first `MAX_JSON` bytes, as Go's
+/// decoder reads one through a LimitReader: the rest of the entry, and anything after the
+/// value, go unread. Nothing there is Go's `EOF`; a value cut short, its `unexpected EOF`.
+fn untar_json<T: serde::de::DeserializeOwned>(
+    tar: &mut shards_image::tar::Reader<&mut dyn Read>,
+    size: u64,
+) -> Result<T, String> {
+    /// Keeps what is written up to its limit, and lets the rest go.
+    struct Head(Vec<u8>);
+    impl std::io::Write for Head {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let room = usize::try_from(MAX_JSON)
+                .unwrap_or(usize::MAX)
+                .saturating_sub(self.0.len());
+            self.0
+                .extend_from_slice(buf.get(..buf.len().min(room)).unwrap_or_default());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut head = Head(Vec::with_capacity(
+        usize::try_from(size.min(MAX_JSON)).unwrap_or(0),
+    ));
+    tar.copy_data(&mut head).map_err(|e| go_tar(&e))?;
+    match serde_json::Deserializer::from_slice(&head.0)
+        .into_iter::<T>()
+        .next()
+    {
+        None => Err("EOF".into()),
+        Some(Err(e)) if e.is_eof() => Err("unexpected EOF".into()),
+        Some(Err(e)) => Err(e.to_string()),
+        Some(Ok(value)) => Ok(value),
+    }
 }
 
 /// Go's tar reader's words for an archive cut short.
@@ -105,27 +117,21 @@ fn import(store: &Store, input: &mut dyn Read) -> Result<(oci::Index, Vec<Digest
             _ => continue,
         }
         match name.as_str() {
-            "oci-layout" | "manifest.json" => {
-                if entry.size > MAX_JSON {
-                    return Err(format!("untar {name} {:?}: past {MAX_JSON} bytes", name));
+            "oci-layout" => {
+                #[derive(serde::Deserialize)]
+                struct Layout {
+                    #[serde(rename = "imageLayoutVersion", default)]
+                    version: String,
                 }
-                let mut bytes = Vec::with_capacity(usize::try_from(entry.size).unwrap_or(0));
-                tar.copy_data(&mut bytes).map_err(|e| go_tar(&e))?;
-                if name == "oci-layout" {
-                    #[derive(serde::Deserialize)]
-                    struct Layout {
-                        #[serde(rename = "imageLayoutVersion", default)]
-                        version: String,
-                    }
-                    let l: Layout = serde_json::from_slice(&bytes)
-                        .map_err(|e| format!("untar oci layout \"oci-layout\": {e}"))?;
-                    layout = Some(l.version);
-                } else {
-                    docker = Some(
-                        serde_json::from_slice(&bytes)
-                            .map_err(|e| format!("untar manifest \"manifest.json\": {e}"))?,
-                    );
-                }
+                let l: Layout = untar_json(&mut tar, entry.size)
+                    .map_err(|e| format!("untar oci layout \"oci-layout\": {e}"))?;
+                layout = Some(l.version);
+            }
+            "manifest.json" => {
+                docker = Some(
+                    untar_json(&mut tar, entry.size)
+                        .map_err(|e| format!("untar manifest \"manifest.json\": {e}"))?,
+                );
             }
             _ => {
                 let mut w = store.writer().map_err(|e| e.to_string())?;
@@ -184,14 +190,16 @@ fn import(store: &Store, input: &mut dyn Read) -> Result<(oci::Index, Vec<Digest
                 .ok_or_else(|| format!("failed to resolve layers: layer {l:?} not found"))?;
             let (digest, size) = compressed.get(digest).unwrap_or(&(digest.clone(), *size)).clone();
             let (digest, size) = (&digest, &size);
-            let mut head = [0u8; 10];
-            let n = std::fs::File::open(store.blob_path(digest))
-                .and_then(|mut f| f.read(&mut head))
+            // resolveLayers: its media type, as containerd's DecompressStream tells it from
+            // the first ten bytes.
+            let mut head = Vec::with_capacity(10);
+            std::fs::File::open(store.blob_path(digest))
+                .and_then(|f| f.take(10).read_to_end(&mut head))
                 .map_err(|e| format!("failed to resolve layers: {e}"))?;
-            let kind = match detect(head.get(..n).unwrap_or_default()) {
-                Compression::None => DOCKER_LAYER,
-                Compression::Zstd => OCI_LAYER_ZSTD,
-                _ => DOCKER_LAYER_GZIP,
+            let kind = match shards_image::store::compression(&head) {
+                shards_image::store::Compression::None => DOCKER_LAYER,
+                shards_image::store::Compression::Gzip => DOCKER_LAYER_GZIP,
+                shards_image::store::Compression::Zstd => OCI_LAYER_ZSTD,
             };
             layers.push(blob_desc(kind, digest, *size));
         }
@@ -389,33 +397,10 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             Ok(fd) => std::fs::File::from(fd),
             Err(e) => return refuse(&e.to_string()),
         };
-        let mut buffered = BufReader::with_capacity(1 << 20, file);
-        let head = buffered.fill_buf().map(<[u8]>::to_vec).unwrap_or_default();
-        let imported = match detect(&head) {
-            Compression::None => import(&store, &mut buffered),
-            Compression::Gzip => import(&store, &mut shards_image::store::gunzip(buffered)),
-            Compression::Zstd => std::thread::scope(|scope| {
-                // The store's zstd decoder writes: it feeds a pipe the import reads.
-                let (mut from, mut to) = match std::io::pipe() {
-                    Ok(pipe) => pipe,
-                    Err(e) => return Err(format!("failed to decompress input tar archive: {e}")),
-                };
-                let decoding = scope.spawn(move || {
-                    shards_image::store::decode_zstd(&mut buffered, &mut to).map_err(|e| e.to_string())
-                });
-                let imported = import(&store, &mut from);
-                drop(from);
-                match decoding.join() {
-                    Ok(Err(e)) if imported.is_ok() => {
-                        Err(format!("failed to decompress input tar archive: {e}"))
-                    }
-                    _ => imported,
-                }
-            }),
-            Compression::Bzip2 | Compression::Xz => Err(
-                "failed to decompress input tar archive: shards reads plain, gzip and zstd archives".into(),
-            ),
-        };
+        // DecompressStream: plain, bzip2, gzip, xz or zstd, as its first bytes say.
+        let imported = shards_build::archive::decompressed(file, 1 << 20)
+            .map_err(|e| format!("failed to decompress input tar archive: {e}"))
+            .and_then(|mut input| import(&store, &mut input));
         // What it ingested before failing goes with the next collection.
         let refuse = |said: &str| {
             self.collect.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -470,5 +455,69 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         // What the archive held that no image names goes with the next collection.
         self.collect.store(true, std::sync::atomic::Ordering::SeqCst);
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tar of one regular file, `name`, holding `data`.
+    fn one(name: &str, data: &[u8]) -> Vec<u8> {
+        let mut w = shards_image::tar::writer::Writer::new(Vec::new());
+        w.header(&shards_image::tar::writer::Header {
+            name: name.as_bytes().to_vec(),
+            typeflag: b'0',
+            mode: 0o644,
+            size: i64::try_from(data.len()).unwrap_or(0),
+            ..Default::default()
+        })
+        .unwrap();
+        w.write(data).unwrap();
+        w.finish().unwrap()
+    }
+
+    /// What `untar_json` makes of `data`, and whether the entry was read to its end, as
+    /// the archive goes on after it.
+    fn read_one(data: &[u8]) -> (Result<serde_json::Value, String>, bool) {
+        let archive = one("manifest.json", data);
+        let mut slice: &[u8] = &archive;
+        let input: &mut dyn Read = &mut slice;
+        let mut tar = shards_image::tar::Reader::new(input);
+        let entry = tar.next_entry().unwrap().unwrap();
+        let value = untar_json(&mut tar, entry.size);
+        (value, matches!(tar.next_entry(), Ok(None)))
+    }
+
+    /// onUntarJSON (containerd v2.4.1): the first value of the first 20 MiB, what follows
+    /// it unread; nothing is Go's `EOF`, and a value cut short its `unexpected EOF`.
+    #[test]
+    fn archive_json_is_read_as_containerd_reads_it() {
+        let read = |data: &[u8]| {
+            let (value, ended) = read_one(data);
+            assert!(ended, "the entry read to its end");
+            value
+        };
+        assert_eq!(
+            read(br#"[{"Config":"c"}] trailing"#).unwrap(),
+            serde_json::json!([{"Config": "c"}])
+        );
+        assert_eq!(read(b"").unwrap_err(), "EOF");
+        assert_eq!(read(b"  \n").unwrap_err(), "EOF");
+        assert_eq!(read(br#"[{"Config":"#).unwrap_err(), "unexpected EOF");
+        // A value within the limit, the entry past it.
+        let mut big = br#"{"a":1}"#.to_vec();
+        big.resize(usize::try_from(MAX_JSON).unwrap() + 10, b' ');
+        assert_eq!(read(&big).unwrap(), serde_json::json!({"a": 1}));
+        // A value of 18 MiB: within containerd's limit.
+        let mut within = br#"{"a":""#.to_vec();
+        within.resize(18 << 20, b'x');
+        within.extend_from_slice(br#""}"#);
+        assert!(read(&within).is_ok());
+        // A value past the limit: cut short.
+        let mut past = br#"{"a":""#.to_vec();
+        past.resize(usize::try_from(MAX_JSON).unwrap() + 10, b'x');
+        past.extend_from_slice(br#""}"#);
+        assert_eq!(read(&past).unwrap_err(), "unexpected EOF");
     }
 }

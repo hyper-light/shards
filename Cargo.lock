@@ -846,7 +846,10 @@ dependencies = [
 name = "shards"
 version = "0.1.0"
 dependencies = [
+ "bzip2",
  "libc",
+ "lzma-rust2",
+ "ruzstd",
  "serde",
  "serde_json",
  "sha2",

@@ -1658,15 +1658,15 @@ fn images_lists_what_was_pulled_as_docker_images_does() {
     let id = sha256_digest(&index);
     assert!(pulled.stdout.contains(&format!("Digest: {id}")), "{pulled}");
     let short = id.strip_prefix("sha256:").and_then(|hex| hex.get(..12)).unwrap();
-    // What is here of it: its index, our manifest, config and layer; and its root
-    // filesystem.
+    // What is here of it, as dockerd counts it: its manifests' blobs, not the index's; and
+    // its root filesystem.
     let dir_bytes = |dir: &Path| -> u64 {
         std::fs::read_dir(dir)
             .unwrap()
             .map(|e| e.unwrap().metadata().unwrap().len())
             .sum()
     };
-    let content = dir_bytes(&home.join("images/blobs/sha256"));
+    let content = dir_bytes(&home.join("images/blobs/sha256")) - index.len() as u64;
     let rootfs: u64 = std::fs::read_dir(home.join("images/rootfs"))
         .unwrap()
         .map(|v| dir_bytes(&v.unwrap().path()))
@@ -1761,6 +1761,20 @@ fn images_lists_what_was_pulled_as_docker_images_does() {
         assert_eq!(listed.stdout.lines().count(), rows, "{pattern}: {listed}");
     }
     assert_eq!(shards(&["rmi", "hubbish:1"]).status, Some(0));
+    // Pulled by digest too: that name is one of its names, listed on a row of its own as
+    // dockerd lists it (tagsByDigest); the table shows tags, so no row for it there.
+    let by_digest = format!("{repo}@{id}");
+    let pulled = shards(&["pull", "-q", &by_digest]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let names: Vec<String> = shards(&["images"])
+        .stdout
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().next().map(String::from))
+        .collect();
+    assert_eq!(names, [image.clone(), by_digest.clone()]);
+    let table = shards(&["images", "--digests"]);
+    assert_eq!(table.stdout.lines().count(), 2, "{table}");
     // Newest first: an image built from it now, before it, which records no time.
     let ctx = TempDir::new("containers-images-ctx");
     std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nLABEL built=yes\n")).unwrap();
@@ -1773,6 +1787,15 @@ fn images_lists_what_was_pulled_as_docker_images_does() {
         .collect();
     assert_eq!(ids.len(), 2, "{ids:?}");
     assert_eq!(ids[1], short, "{ids:?}");
+    // Removing a name by digest removes every name of its repository with it, as dockerd's
+    // getSameReferences does: here all of the image's, so the image goes too (measured,
+    // Docker 29.3.1).
+    let removed = shards(&["rmi", &by_digest]);
+    assert_eq!(
+        removed.stdout,
+        format!("Untagged: {image}\nUntagged: {by_digest}\nDeleted: {id}\n"),
+        "{removed}"
+    );
 }
 
 /// `shards tag SOURCE TARGET` as `docker tag` names an image again: by name or by a prefix
@@ -2078,6 +2101,60 @@ fn ustar(bytes: &[u8]) -> Vec<(String, u32, Vec<u8>)> {
     records
 }
 
+/// An interrupted `shards save -o` leaves nothing behind: its temporary file goes and its
+/// destination is never made, where Docker 29.3.1 renames what an interrupted save wrote
+/// into place (measured). Its daemon here takes the request and never answers, so the
+/// signal comes while the save is under way. The signals' default actions are restored in
+/// the client, which a test run under `cmd &` would otherwise start ignoring SIGINT.
+#[test]
+fn an_interrupted_save_leaves_nothing_behind() {
+    use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
+    let home = TempDir::new("containers-save-interrupted");
+    let _daemon = std::os::unix::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
+    let out = TempDir::new("containers-save-interrupted-out");
+    let dest = out.join("image.tar");
+    let left = || -> Vec<std::ffi::OsString> {
+        std::fs::read_dir(&*out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect()
+    };
+    for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        let mut save = Command::new(shards());
+        save.args(["save", "-o", dest.to_str().unwrap(), "any:1"])
+            .env("SHARDS_HOME", &*home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // SAFETY: signal(2), async-signal-safe, between fork and exec.
+        unsafe {
+            save.pre_exec(|| {
+                for s in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
+                    libc::signal(s, libc::SIG_DFL);
+                }
+                Ok(())
+            });
+        }
+        let mut save = save.spawn().unwrap();
+        eventually("the save's temporary file", || !left().is_empty());
+        // SAFETY: kill(2) of the client this test started.
+        assert_eq!(unsafe { libc::kill(save.id() as libc::pid_t, sig) }, 0);
+        let status = save.wait().unwrap();
+        assert_eq!(status.signal(), Some(sig), "{status}");
+        assert_eq!(left(), Vec::<std::ffi::OsString>::new(), "after signal {sig}");
+    }
+    // A client with no daemon to ask fails, and leaves nothing either.
+    let lone = TempDir::new("containers-save-lone");
+    std::fs::copy(shards(), lone.join("shards")).unwrap();
+    let failed = Command::new(lone.join("shards"))
+        .args(["save", "-o", dest.to_str().unwrap(), "any:1"])
+        .env("SHARDS_HOME", &*home)
+        .output()
+        .unwrap();
+    assert_ne!(failed.status.code(), Some(0));
+    assert_eq!(left(), Vec::<std::ffi::OsString>::new());
+}
+
 /// `shards save` as `docker save` writes images (byte for byte against dockerd 29.3.1:
 /// scripts/images/compare-save): an OCI layout with what is here of each image, its
 /// attestation included, Docker's manifest.json beside it; `-o` written whole, mode 0600,
@@ -2107,6 +2184,26 @@ fn save_writes_images_as_docker_save_does() {
         std::fs::metadata(&tar).unwrap().permissions().mode() & 0o777,
         0o600
     );
+    // 0600 whatever the umask, as atomicwriter's Close chmods it: made under umask 0377,
+    // the file would be 0400.
+    let strict = out.join("strict.tar");
+    let mut save = Command::new(common::shards());
+    save.args(["save", "-o", strict.to_str().unwrap(), &image])
+        .env("SHARDS_HOME", &*home)
+        .stdout(Stdio::null());
+    // SAFETY: umask(2), async-signal-safe, between fork and exec.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut save, || {
+            libc::umask(0o377);
+            Ok(())
+        });
+    }
+    assert!(save.status().unwrap().success());
+    assert_eq!(
+        std::fs::metadata(&strict).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    std::fs::remove_file(&strict).unwrap();
     let records = ustar(&std::fs::read(&tar).unwrap());
     let id = sha256_digest(&index);
     // The index, our manifest, config and layer, and our attestation's three: not the
@@ -2254,8 +2351,9 @@ fn save_writes_images_as_docker_save_does() {
 /// `shards load` as `docker load` reads an archive (dockerd 29.3.1's words and records:
 /// Docker's own archives load to images that inspect byte for byte as dockerd's do, by
 /// hand): what `save` wrote, into another home, where it runs; gzip-compressed, from
-/// stdin; Docker's older layout, manifest.json and `<id>/layer.tar`; an image with no
-/// name by its ID; and a broken archive refused in Go's words.
+/// stdin, and compressed with bzip2, xz and zstd; Docker's older layout, manifest.json and
+/// `<id>/layer.tar`; an image with no name by its ID; and a broken archive refused in Go's
+/// words.
 #[test]
 fn load_reads_archives_as_docker_load_does() {
     use std::io::Write as _;
@@ -2342,6 +2440,33 @@ fn load_reads_archives_as_docker_load_does() {
         ),
         (Some(0), format!("Loaded image: {image}\n"))
     );
+    // Every compression go-archive's DecompressStream reads, as dockerd loads them
+    // (measured, Docker 29.3.1): bzip2, xz, and zstd begun by a skippable frame.
+    let archive = std::fs::read(&saved_tar).unwrap();
+    let mut bz = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::fast());
+    bz.write_all(&archive).unwrap();
+    let mut xz = lzma_rust2::XzWriter::new(Vec::new(), lzma_rust2::XzOptions::with_preset(1)).unwrap();
+    xz.write_all(&archive).unwrap();
+    let mut zst = vec![0x5f, 0x2a, 0x4d, 0x18, 3, 0, 0, 0, 1, 2, 3];
+    zst.extend(ruzstd::encoding::compress_to_vec(
+        &archive[..],
+        ruzstd::encoding::CompressionLevel::Fastest,
+    ));
+    for (name, compressed) in [
+        ("bzip2", bz.finish().unwrap()),
+        ("xz", xz.finish().unwrap()),
+        ("zstd", zst),
+    ] {
+        let path = first.join(format!("image.tar.{name}"));
+        std::fs::write(&path, compressed).unwrap();
+        let home = TempDir::new(&format!("containers-load-{name}"));
+        let loaded = shards_in(&home, &["load", "-i", path.to_str().unwrap()]);
+        assert_eq!(
+            (loaded.status, loaded.stdout.as_str()),
+            (Some(0), format!("Loaded image: {image}\n").as_str()),
+            "{name}: {loaded}"
+        );
+    }
     // Docker's older layout: a config and a layer.tar, named by manifest.json; an image
     // of its own, so its layer is unpacked here.
     let (_, own) = common::test_image_with(Some(b"legacy"));

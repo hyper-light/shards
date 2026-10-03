@@ -202,12 +202,12 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 {
                     continue;
                 }
-                let mut bare = r.clone();
+                // Every name is one of its RepoTags, by digest too, as dockerd lists them
+                // (tagsByDigest); the table shows only those with a tag.
+                tags.push(r.familiar());
+                let mut bare = r;
                 bare.tag = None;
                 bare.digest = None;
-                if r.digest.is_none() {
-                    tags.push(r.familiar());
-                }
                 let digested = format!("{}@{}", bare.familiar(), img.id);
                 if !digests.contains(&digested) {
                     digests.push(digested);

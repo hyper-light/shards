@@ -1441,6 +1441,590 @@
       "output": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\n"
     },
     {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "trunc": true,
+      "quiet": false,
+      "digests": false,
+      "output": "REPOSITORY   TAG       IMAGE ID       CREATED              SIZE\nbusybox      1.37      bdf57e528e45   7 seconds ago        6.14MB\nalpine       \u003cnone\u003e    5291449c3df7   About a minute ago   13.4MB\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "trunc": true,
+      "quiet": false,
+      "digests": true,
+      "output": "REPOSITORY   TAG       DIGEST                                                                    IMAGE ID       CREATED              SIZE\nbusybox      1.37      sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9   bdf57e528e45   7 seconds ago        6.14MB\nalpine       \u003cnone\u003e    sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d   5291449c3df7   About a minute ago   13.4MB\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "trunc": true,
+      "quiet": true,
+      "digests": false,
+      "output": "bdf57e528e45\n5291449c3df7\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "trunc": true,
+      "quiet": true,
+      "digests": true,
+      "output": "bdf57e528e45\n5291449c3df7\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "trunc": false,
+      "quiet": false,
+      "digests": false,
+      "output": "REPOSITORY   TAG       IMAGE ID                                                                  CREATED              SIZE\nbusybox      1.37      sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9   7 seconds ago        6.14MB\nalpine       \u003cnone\u003e    sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d   About a minute ago   13.4MB\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "trunc": false,
+      "quiet": false,
+      "digests": true,
+      "output": "REPOSITORY   TAG       DIGEST                                                                    IMAGE ID                                                                  CREATED              SIZE\nbusybox      1.37      sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9   sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9   7 seconds ago        6.14MB\nalpine       \u003cnone\u003e    sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d   sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d   About a minute ago   13.4MB\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "trunc": false,
+      "quiet": true,
+      "digests": false,
+      "output": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\nsha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "trunc": false,
+      "quiet": true,
+      "digests": true,
+      "output": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\nsha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\n"
+    },
+    {
       "images": null,
       "trunc": true,
       "quiet": false,
@@ -5017,6 +5601,1612 @@
       "width": 10,
       "no_color": true,
       "output": "   Info -\u003e  U In Use\nIMAGE               \nbusybox:1.37        \n└─ linux/arm64/v8   \n\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": false,
+      "width": 0,
+      "no_color": false,
+      "output": "IMAGE                                                                             ID             DISK USAGE   CONTENT SIZE   EXTRA\nalpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d    5291449c3df7       13.4MB         8.31MB        \nbusybox:1.37                                                                      bdf57e528e45       6.14MB          4.1MB        \nbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9   bdf57e528e45       6.14MB          4.1MB        \n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": false,
+      "width": 120,
+      "no_color": false,
+      "output": "                                                                                                    \u001b[1m\u001b[106m\u001b[30mi\u001b[0m\u001b[0m \u001b[96mInfo → \u001b[0m\u001b[0m \u001b[38;5;0m\u001b[48;5;14m U \u001b[0m In Use\n\u001b[39m\u001b[1mIMAGE\u001b[0m                                                                   \u001b[39m\u001b[1mID\u001b[0m             \u001b[39m\u001b[1mDISK USAGE\u001b[0m   \u001b[39m\u001b[1mCONTENT SIZE\u001b[0m   \u001b[39m\u001b[1mEXTRA\u001b[0m\n\u001b[34m\u001b[1malpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\u001b[0m\n                                                                        \u001b[39m5291449c3df7\u001b[0m       \u001b[39m13.4MB\u001b[0m         \u001b[39m8.31MB\u001b[0m        \n\u001b[34m\u001b[1mbusybox:1.37\u001b[0m                                                            \u001b[39mbdf57e528e45\u001b[0m       \u001b[39m6.14MB\u001b[0m          \u001b[39m4.1MB\u001b[0m        \n\u001b[34m\u001b[1mbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\u001b[0m\n                                                                        \u001b[39mbdf57e528e45\u001b[0m       \u001b[39m6.14MB\u001b[0m          \u001b[39m4.1MB\u001b[0m        \n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": false,
+      "width": 120,
+      "no_color": true,
+      "output": "                                                                                                       Info -\u003e  U In Use\nIMAGE                                                                   ID             DISK USAGE   CONTENT SIZE   EXTRA\nalpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\n                                                                        5291449c3df7       13.4MB         8.31MB        \nbusybox:1.37                                                            bdf57e528e45       6.14MB          4.1MB        \nbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\n                                                                        bdf57e528e45       6.14MB          4.1MB        \n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": false,
+      "width": 80,
+      "no_color": false,
+      "output": "                                                            \u001b[1m\u001b[106m\u001b[30mi\u001b[0m\u001b[0m \u001b[96mInfo → \u001b[0m\u001b[0m \u001b[38;5;0m\u001b[48;5;14m U \u001b[0m In Use\n\u001b[39m\u001b[1mIMAGE\u001b[0m                           \u001b[39m\u001b[1mID\u001b[0m             \u001b[39m\u001b[1mDISK USAGE\u001b[0m   \u001b[39m\u001b[1mCONTENT SIZE\u001b[0m   \u001b[39m\u001b[1mEXTRA\u001b[0m\n\u001b[34m\u001b[1malpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\u001b[0m\n                                \u001b[39m5291449c3df7\u001b[0m       \u001b[39m13.4MB\u001b[0m         \u001b[39m8.31MB\u001b[0m        \n\u001b[34m\u001b[1mbusybox:1.37\u001b[0m                    \u001b[39mbdf57e528e45\u001b[0m       \u001b[39m6.14MB\u001b[0m          \u001b[39m4.1MB\u001b[0m        \n\u001b[34m\u001b[1mbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\u001b[0m\n                                \u001b[39mbdf57e528e45\u001b[0m       \u001b[39m6.14MB\u001b[0m          \u001b[39m4.1MB\u001b[0m        \n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": false,
+      "width": 80,
+      "no_color": true,
+      "output": "                                                               Info -\u003e  U In Use\nIMAGE                           ID             DISK USAGE   CONTENT SIZE   EXTRA\nalpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\n                                5291449c3df7       13.4MB         8.31MB        \nbusybox:1.37                    bdf57e528e45       6.14MB          4.1MB        \nbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\n                                bdf57e528e45       6.14MB          4.1MB        \n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": false,
+      "width": 50,
+      "no_color": false,
+      "output": "                              \u001b[1m\u001b[106m\u001b[30mi\u001b[0m\u001b[0m \u001b[96mInfo → \u001b[0m\u001b[0m \u001b[38;5;0m\u001b[48;5;14m U \u001b[0m In Use\n\u001b[39m\u001b[1mIMAGE\u001b[0m                    \u001b[39m\u001b[1mID\u001b[0m             \u001b[39m\u001b[1mDISK USAGE\u001b[0m\n\u001b[34m\u001b[1malpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\u001b[0m\n                         \u001b[39m5291449c3df7\u001b[0m       \u001b[39m13.4MB\u001b[0m\n\u001b[34m\u001b[1mbusybox:1.37\u001b[0m             \u001b[39mbdf57e528e45\u001b[0m       \u001b[39m6.14MB\u001b[0m\n\u001b[34m\u001b[1mbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\u001b[0m\n                         \u001b[39mbdf57e528e45\u001b[0m       \u001b[39m6.14MB\u001b[0m\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": false,
+      "width": 50,
+      "no_color": true,
+      "output": "                                 Info -\u003e  U In Use\nIMAGE                    ID             DISK USAGE\nalpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\n                         5291449c3df7       13.4MB\nbusybox:1.37             bdf57e528e45       6.14MB\nbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\n                         bdf57e528e45       6.14MB\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": false,
+      "width": 30,
+      "no_color": false,
+      "output": "          \u001b[1m\u001b[106m\u001b[30mi\u001b[0m\u001b[0m \u001b[96mInfo → \u001b[0m\u001b[0m \u001b[38;5;0m\u001b[48;5;14m U \u001b[0m In Use\n\u001b[39m\u001b[1mIMAGE\u001b[0m             \u001b[39m\u001b[1mID\u001b[0m          \n\u001b[34m\u001b[1malpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\u001b[0m\n                  \u001b[39m5291449c3df7\u001b[0m\n\u001b[34m\u001b[1mbusybox:1.37\u001b[0m      \u001b[39mbdf57e528e45\u001b[0m\n\u001b[34m\u001b[1mbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\u001b[0m\n                  \u001b[39mbdf57e528e45\u001b[0m\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": false,
+      "width": 30,
+      "no_color": true,
+      "output": "             Info -\u003e  U In Use\nIMAGE             ID          \nalpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\n                  5291449c3df7\nbusybox:1.37      bdf57e528e45\nbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\n                  bdf57e528e45\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": false,
+      "width": 10,
+      "no_color": false,
+      "output": "\u001b[1m\u001b[106m\u001b[30mi\u001b[0m\u001b[0m \u001b[96mInfo → \u001b[0m\u001b[0m \u001b[38;5;0m\u001b[48;5;14m U \u001b[0m In Use\n\u001b[39m\u001b[1mIMAGE\u001b[0m               \n\u001b[34m\u001b[1malpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\u001b[0m\n                    \n\u001b[34m\u001b[1mbusybox:1.37\u001b[0m        \n\u001b[34m\u001b[1mbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\u001b[0m\n                    \n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": false,
+      "width": 10,
+      "no_color": true,
+      "output": "   Info -\u003e  U In Use\nIMAGE               \nalpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\n                    \nbusybox:1.37        \nbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\n                    \n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": true,
+      "width": 0,
+      "no_color": false,
+      "output": "IMAGE                                                                             ID             DISK USAGE   CONTENT SIZE   EXTRA\nalpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d    5291449c3df7       13.4MB         8.31MB        \n├─ linux/amd64                                                                    aaaa00000000       4.21MB         4.21MB        \n└─ linux/arm64/v8                                                                 aaaa00000000       13.4MB          4.1MB        \n\nbusybox:1.37                                                                   \nbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9   bdf57e528e45       6.14MB          4.1MB        \n└─ linux/arm64/v8                                                                 aaaa00000000       13.4MB          4.1MB        \n\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": true,
+      "width": 120,
+      "no_color": false,
+      "output": "                                                                                                    \u001b[1m\u001b[106m\u001b[30mi\u001b[0m\u001b[0m \u001b[96mInfo → \u001b[0m\u001b[0m \u001b[38;5;0m\u001b[48;5;14m U \u001b[0m In Use\n\u001b[39m\u001b[1mIMAGE\u001b[0m                                                                   \u001b[39m\u001b[1mID\u001b[0m             \u001b[39m\u001b[1mDISK USAGE\u001b[0m   \u001b[39m\u001b[1mCONTENT SIZE\u001b[0m   \u001b[39m\u001b[1mEXTRA\u001b[0m\n\u001b[34m\u001b[1malpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\u001b[0m\n                                                                        \u001b[39m5291449c3df7\u001b[0m       \u001b[39m13.4MB\u001b[0m         \u001b[39m8.31MB\u001b[0m        \n\u001b[39m\u001b[2m├─ linux/amd64\u001b[0m                                                          \u001b[39m\u001b[2maaaa00000000\u001b[0m       \u001b[39m\u001b[2m4.21MB\u001b[0m         \u001b[39m\u001b[2m4.21MB\u001b[0m        \n\u001b[39m└─ linux/arm64/v8\u001b[0m                                                       \u001b[39maaaa00000000\u001b[0m       \u001b[39m13.4MB\u001b[0m          \u001b[39m4.1MB\u001b[0m        \n\n\u001b[34m\u001b[1mbusybox:1.37\u001b[0m                                                         \n\u001b[34m\u001b[1mbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\u001b[0m\n                                                                        \u001b[39mbdf57e528e45\u001b[0m       \u001b[39m6.14MB\u001b[0m          \u001b[39m4.1MB\u001b[0m        \n\u001b[39m└─ linux/arm64/v8\u001b[0m                                                       \u001b[39maaaa00000000\u001b[0m       \u001b[39m13.4MB\u001b[0m          \u001b[39m4.1MB\u001b[0m        \n\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": true,
+      "width": 120,
+      "no_color": true,
+      "output": "                                                                                                       Info -\u003e  U In Use\nIMAGE                                                                   ID             DISK USAGE   CONTENT SIZE   EXTRA\nalpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\n                                                                        5291449c3df7       13.4MB         8.31MB        \n├─ linux/amd64                                                          aaaa00000000       4.21MB         4.21MB        \n└─ linux/arm64/v8                                                       aaaa00000000       13.4MB          4.1MB        \n\nbusybox:1.37                                                         \nbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\n                                                                        bdf57e528e45       6.14MB          4.1MB        \n└─ linux/arm64/v8                                                       aaaa00000000       13.4MB          4.1MB        \n\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": true,
+      "width": 80,
+      "no_color": false,
+      "output": "                                                            \u001b[1m\u001b[106m\u001b[30mi\u001b[0m\u001b[0m \u001b[96mInfo → \u001b[0m\u001b[0m \u001b[38;5;0m\u001b[48;5;14m U \u001b[0m In Use\n\u001b[39m\u001b[1mIMAGE\u001b[0m                           \u001b[39m\u001b[1mID\u001b[0m             \u001b[39m\u001b[1mDISK USAGE\u001b[0m   \u001b[39m\u001b[1mCONTENT SIZE\u001b[0m   \u001b[39m\u001b[1mEXTRA\u001b[0m\n\u001b[34m\u001b[1malpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\u001b[0m\n                                \u001b[39m5291449c3df7\u001b[0m       \u001b[39m13.4MB\u001b[0m         \u001b[39m8.31MB\u001b[0m        \n\u001b[39m\u001b[2m├─ linux/amd64\u001b[0m                  \u001b[39m\u001b[2maaaa00000000\u001b[0m       \u001b[39m\u001b[2m4.21MB\u001b[0m         \u001b[39m\u001b[2m4.21MB\u001b[0m        \n\u001b[39m└─ linux/arm64/v8\u001b[0m               \u001b[39maaaa00000000\u001b[0m       \u001b[39m13.4MB\u001b[0m          \u001b[39m4.1MB\u001b[0m        \n\n\u001b[34m\u001b[1mbusybox:1.37\u001b[0m                 \n\u001b[34m\u001b[1mbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\u001b[0m\n                                \u001b[39mbdf57e528e45\u001b[0m       \u001b[39m6.14MB\u001b[0m          \u001b[39m4.1MB\u001b[0m        \n\u001b[39m└─ linux/arm64/v8\u001b[0m               \u001b[39maaaa00000000\u001b[0m       \u001b[39m13.4MB\u001b[0m          \u001b[39m4.1MB\u001b[0m        \n\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": true,
+      "width": 80,
+      "no_color": true,
+      "output": "                                                               Info -\u003e  U In Use\nIMAGE                           ID             DISK USAGE   CONTENT SIZE   EXTRA\nalpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\n                                5291449c3df7       13.4MB         8.31MB        \n├─ linux/amd64                  aaaa00000000       4.21MB         4.21MB        \n└─ linux/arm64/v8               aaaa00000000       13.4MB          4.1MB        \n\nbusybox:1.37                 \nbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\n                                bdf57e528e45       6.14MB          4.1MB        \n└─ linux/arm64/v8               aaaa00000000       13.4MB          4.1MB        \n\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": true,
+      "width": 50,
+      "no_color": false,
+      "output": "                              \u001b[1m\u001b[106m\u001b[30mi\u001b[0m\u001b[0m \u001b[96mInfo → \u001b[0m\u001b[0m \u001b[38;5;0m\u001b[48;5;14m U \u001b[0m In Use\n\u001b[39m\u001b[1mIMAGE\u001b[0m                    \u001b[39m\u001b[1mID\u001b[0m             \u001b[39m\u001b[1mDISK USAGE\u001b[0m\n\u001b[34m\u001b[1malpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\u001b[0m\n                         \u001b[39m5291449c3df7\u001b[0m       \u001b[39m13.4MB\u001b[0m\n\u001b[39m\u001b[2m├─ linux/amd64\u001b[0m           \u001b[39m\u001b[2maaaa00000000\u001b[0m       \u001b[39m\u001b[2m4.21MB\u001b[0m\n\u001b[39m└─ linux/arm64/v8\u001b[0m        \u001b[39maaaa00000000\u001b[0m       \u001b[39m13.4MB\u001b[0m\n\n\u001b[34m\u001b[1mbusybox:1.37\u001b[0m          \n\u001b[34m\u001b[1mbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\u001b[0m\n                         \u001b[39mbdf57e528e45\u001b[0m       \u001b[39m6.14MB\u001b[0m\n\u001b[39m└─ linux/arm64/v8\u001b[0m        \u001b[39maaaa00000000\u001b[0m       \u001b[39m13.4MB\u001b[0m\n\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": true,
+      "width": 50,
+      "no_color": true,
+      "output": "                                 Info -\u003e  U In Use\nIMAGE                    ID             DISK USAGE\nalpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\n                         5291449c3df7       13.4MB\n├─ linux/amd64           aaaa00000000       4.21MB\n└─ linux/arm64/v8        aaaa00000000       13.4MB\n\nbusybox:1.37          \nbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\n                         bdf57e528e45       6.14MB\n└─ linux/arm64/v8        aaaa00000000       13.4MB\n\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": true,
+      "width": 30,
+      "no_color": false,
+      "output": "          \u001b[1m\u001b[106m\u001b[30mi\u001b[0m\u001b[0m \u001b[96mInfo → \u001b[0m\u001b[0m \u001b[38;5;0m\u001b[48;5;14m U \u001b[0m In Use\n\u001b[39m\u001b[1mIMAGE\u001b[0m             \u001b[39m\u001b[1mID\u001b[0m          \n\u001b[34m\u001b[1malpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\u001b[0m\n                  \u001b[39m5291449c3df7\u001b[0m\n\u001b[39m\u001b[2m├─ linux/amd64\u001b[0m    \u001b[39m\u001b[2maaaa00000000\u001b[0m\n\u001b[39m└─ linux/arm64/v8\u001b[0m   \u001b[39maaaa00000000\u001b[0m\n\n\u001b[34m\u001b[1mbusybox:1.37\u001b[0m   \n\u001b[34m\u001b[1mbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\u001b[0m\n                  \u001b[39mbdf57e528e45\u001b[0m\n\u001b[39m└─ linux/arm64/v8\u001b[0m   \u001b[39maaaa00000000\u001b[0m\n\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": true,
+      "width": 30,
+      "no_color": true,
+      "output": "             Info -\u003e  U In Use\nIMAGE             ID          \nalpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\n                  5291449c3df7\n├─ linux/amd64    aaaa00000000\n└─ linux/arm64/v8   aaaa00000000\n\nbusybox:1.37   \nbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\n                  bdf57e528e45\n└─ linux/arm64/v8   aaaa00000000\n\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": true,
+      "width": 10,
+      "no_color": false,
+      "output": "\u001b[1m\u001b[106m\u001b[30mi\u001b[0m\u001b[0m \u001b[96mInfo → \u001b[0m\u001b[0m \u001b[38;5;0m\u001b[48;5;14m U \u001b[0m In Use\n\u001b[39m\u001b[1mIMAGE\u001b[0m               \n\u001b[34m\u001b[1malpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\u001b[0m\n                    \n\u001b[39m\u001b[2m├─ linux/amd64\u001b[0m      \n\u001b[39m└─ linux/arm64/v8\u001b[0m   \n\n\u001b[34m\u001b[1mbusybox:1.37\u001b[0m        \n\u001b[34m\u001b[1mbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\u001b[0m\n                    \n\u001b[39m└─ linux/arm64/v8\u001b[0m   \n\n"
+    },
+    {
+      "images": [
+        {
+          "id": "sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+          "tags": [
+            "busybox:1.37",
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "digests": [
+            "busybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+          ],
+          "ago": 7,
+          "size": 6140000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            }
+          ]
+        },
+        {
+          "id": "sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d",
+          "tags": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "digests": [
+            "alpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d"
+          ],
+          "ago": 60,
+          "size": 13400000,
+          "containers": 0,
+          "manifests": [
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+              "kind": "image",
+              "platform": "linux/amd64",
+              "available": false,
+              "content": 4210000,
+              "total": 4210000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "kind": "image",
+              "platform": "linux/arm64/v8",
+              "available": true,
+              "content": 4100000,
+              "total": 13400000,
+              "in_use": false
+            },
+            {
+              "id": "sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+              "kind": "attestation",
+              "for": "sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+              "available": true,
+              "content": 1200,
+              "total": 1200,
+              "in_use": false
+            }
+          ]
+        }
+      ],
+      "expanded": true,
+      "width": 10,
+      "no_color": true,
+      "output": "   Info -\u003e  U In Use\nIMAGE               \nalpine@sha256:5291449c3df7a8c0bd0a9e2aeb58fa40d1e1ba8cc4b6c01f12a4f8ec6b3e9b6d\n                    \n├─ linux/amd64      \n└─ linux/arm64/v8   \n\nbusybox:1.37        \nbusybox@sha256:bdf57e528e45b1b3f8d1c8a1b7e3d2f9e4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9\n                    \n└─ linux/arm64/v8   \n\n"
     },
     {
       "images": null,

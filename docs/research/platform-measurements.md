@@ -2914,3 +2914,70 @@ revision before comparing a changed API/implementation.
   maps the ring alone, never guest memory, so D31's isolation holds: the VM process copies
   between the virtqueues and the ring. The ring's latency comes of a receiver that spins
   before it sleeps; what that spin costs an idle VM is measured with the device.
+
+### M84. Where `load` decodes a compressed archive
+
+- **Question.** `docker load` reads an archive of any compression go-archive's
+  DecompressStream detects: plain, bzip2, gzip, xz and zstd, skippable frames before a
+  zstd one included (measured: Docker 29.3.1 loads each). shards read plain, gzip and zstd,
+  and zstd on a thread of its own, through a pipe, while the import read the pipe. Reading
+  every compression through one decoder in the import's own thread is simpler; what does
+  giving up the zstd thread cost?
+- **Method.** `docs/research/measurements/load-decode/ab.py`: `shards load -i` of an
+  archive of golang:1.26.8 whose layers are not compressed (915,750,400 bytes; BuildKit's
+  docker exporter with `compression=uncompressed`), zstd -3 (274,664,165 bytes) and gzip
+  -6 (299,263,848 bytes), a fresh home each run, the two builds interleaved. A is fe0e7de
+  (the zstd thread); B decodes in the import's thread. 2026-10-03, Apple M5 Max, 128 GB,
+  18 cores, macOS 26.4.1, load average 21 to 22 from other work.
+- **Result.** Wall time:
+
+  | Archive | Build | n | p50 | p90 | max |
+  |---|---|---|---|---|---|
+  | zstd | A | 15 | 3.541 s | 3.655 s | 3.793 s |
+  | zstd | B | 15 | 3.642 s | 3.671 s | 3.699 s |
+  | gzip | A | 5 | 3.521 s | 6.382 s | 8.261 s |
+  | gzip | B | 5 | 3.531 s | 3.718 s | 3.829 s |
+
+  Gzip was decoded in the import's thread by both builds. A load is mostly writing: the
+  archive's blobs, then the root filesystem; the zstd thread overlapped about 0.1 s of a
+  3.6 s load.
+- **Also found.** lzma-rust2 0.21.0's XzReader reads a block's padding with one `read` and
+  refuses fewer bytes (`src/xz/reader.rs`, consume_padding). A buffered stream returns
+  fewer wherever the padding straddles the end of its buffer, so a sound `.tar.xz` can
+  fail to decode. Fed a byte a read, XZ Utils 5.8.4's 96-byte stream of 29 bytes fails
+  with "incomplete XZ block padding".
+- **Consequence.** Every compression is decoded in the reading thread, through one
+  decoder (`crates/build/src/archive.rs`, `decompressed`), so a decoder's error reaches the
+  tar reader as itself, as Go's tar reader returns the decompressor's error. Keeping the
+  0.1 s would need a channel that carries errors, for every compression. The xz decoder
+  reads through `Full`, whose reads fill all they are asked for.
+
+### M85. The allocations of applying a layer
+
+- **Question.** `layer::apply` walked each entry's parent directory by copying every path
+  component into a queue, kept a stack of the directories above for `..`, and checked
+  whether each lower directory on the way was the layer's own by copying its name into a
+  set's key, though only a symlink or a non-directory needs the answer. The tar reader
+  cleaned each name into components and joined them again. What did it cost?
+- **Method.** `docs/research/measurements/build-memory` counts allocations per step;
+  `--below` applies lower layers first. `apply-ab.py` interleaves two builds of it, before
+  (fe0e7de) and after: walks over borrowed names, `..` resolved through the tree (a
+  directory has one name), freshness asked only where it decides, hard links to lower
+  nodes kept by directory, and names cleaned in place. Workloads: M78's million entries
+  (uncompressed), the same over itself, and golang:1.26.8's seven uncompressed layers.
+  2026-10-03, the host of M84, load average 21.
+- **Result.** The applies' time and allocations, summed, n 7 each:
+
+  | Workload | Build | p50 | p90 | allocations |
+  |---|---|---|---|---|
+  | a million entries | before | 957.6 ms | 1,009.2 ms | 9,000,052 |
+  | | after | 825.0 ms | 830.4 ms | 2,000,052 |
+  | the million over themselves | before | 2,000.9 ms | 2,175.8 ms | 19,000,085 |
+  | | after | 1,724.0 ms | 1,789.6 ms | 4,000,085 |
+  | golang:1.26.8 | before | 193.1 ms | 197.4 ms | 572,298 |
+  | | after | 173.7 ms | 176.1 ms | 80,075 |
+
+  The EROFS images of all three are byte for byte those of the build before. Two
+  allocations an entry remain: the name the tar reader reads in each of apply's passes.
+- **Consequence.** Kept. An entry that borrowed its name from the reader would take the
+  last two.

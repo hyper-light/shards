@@ -18,7 +18,7 @@
 //!   dropped, as containerd refuses them, and user.* ones on anything but files and
 //!   directories, as Linux refuses them; times before 1970 or past Go's range become 0.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Read, Seek, SeekFrom};
 
 use crate::erofs::{DataRef, Dir, Kind, Meta, Node, NodeId, Source, Tree};
@@ -60,7 +60,7 @@ pub fn apply(
         first: tree.len(),
         tree,
         source,
-        linked: HashSet::new(),
+        linked: HashMap::new(),
     };
 
     // Whiteouts, all found in the lower layers before any is applied.
@@ -137,16 +137,25 @@ struct Layer<'t> {
     source: u32,
     /// The first node this layer makes: every node from it on is the layer's own.
     first: NodeId,
-    /// The hard links this layer has made to nodes of lower layers, by directory and
-    /// name. With the layer's own nodes, they are the entries it has made: a set of every
-    /// entry would hold a million names for a layer of a million files (PM M78).
-    linked: HashSet<(NodeId, Vec<u8>)>,
+    /// The names of the hard links this layer has made to nodes of lower layers, by
+    /// directory. With the layer's own nodes, they are the entries it has made: a set of
+    /// every entry would hold a million names for a layer of a million files (PM M78).
+    linked: HashMap<NodeId, HashSet<Vec<u8>>>,
 }
 
 impl Layer<'_> {
     /// Whether this layer made the entry `name` of `dir`, which is `child`.
     fn fresh(&self, dir: NodeId, name: &[u8], child: NodeId) -> bool {
-        child >= self.first || self.linked.contains(&(dir, name.to_vec()))
+        child >= self.first || self.linked.get(&dir).is_some_and(|names| names.contains(name))
+    }
+
+    /// The directory `dir` is in; the root's is the root. A directory has one name, as no
+    /// hard link names one.
+    fn parent(&self, dir: NodeId) -> NodeId {
+        self.tree
+            .up(dir)
+            .and_then(|e| self.tree.entry(e))
+            .map_or(Tree::ROOT, |(parent, _)| parent)
     }
 
     /// The directory at `path` as this layer sees it: lower directories merge, the layer's
@@ -154,63 +163,73 @@ impl Layer<'_> {
     /// layer's non-directory in its way.
     fn dir(&mut self, path: &[u8]) -> Result<NodeId, Error> {
         let mut at = Tree::ROOT;
-        let mut up: Vec<NodeId> = Vec::new();
-        let mut todo: VecDeque<Vec<u8>> = path.split(|&c| c == b'/').map(<[u8]>::to_vec).collect();
+        let mut parts = path.split(|&c| c == b'/');
+        // The names of the symlink targets this walk follows, walked before the rest of
+        // `path`'s: copied, as the walk changes the tree they are in.
+        let mut todo: VecDeque<Vec<u8>> = VecDeque::new();
         let mut links = 0;
-        while let Some(name) = todo.pop_front() {
-            match name.as_slice() {
+        loop {
+            let held;
+            let name: &[u8] = match todo.pop_front() {
+                Some(name) => {
+                    held = name;
+                    &held
+                }
+                None => match parts.next() {
+                    Some(name) => name,
+                    None => return Ok(at),
+                },
+            };
+            match name {
                 b"" | b"." => continue,
                 b".." => {
-                    at = up.pop().unwrap_or(Tree::ROOT);
+                    at = self.parent(at);
                     continue;
                 }
                 _ => {}
             }
-            let child = self
-                .tree
-                .child(at, &name)
-                .and_then(|id| Some((id, &self.tree.node(id)?.kind)));
-            let fresh = child.is_some_and(|(id, _)| self.fresh(at, &name, id));
-            let next = match child {
-                Some((id, Kind::Dir(_))) => id,
-                Some((_, Kind::Symlink(target))) if fresh => {
+            let child = self.tree.child(at, name);
+            match child.and_then(|id| Some((id, &self.tree.node(id)?.kind))) {
+                Some((id, Kind::Dir(_))) => {
+                    at = id;
+                    continue;
+                }
+                Some((id, Kind::Symlink(target))) if self.fresh(at, name, id) => {
                     links += 1;
                     if links > MAX_LINKS {
                         return bad(format!("too many symlinks in {:?}", show(path)));
                     }
                     if target.first() == Some(&b'/') {
                         at = Tree::ROOT;
-                        up.clear();
                     }
                     for part in target.split(|&c| c == b'/').rev() {
                         todo.push_front(part.to_vec());
                     }
                     continue;
                 }
-                Some(_) if fresh => return bad(format!("{:?}: not a directory", show(path))),
-                _ => self.tree.insert(
-                    at,
-                    &name,
-                    Node {
-                        kind: Kind::Dir(Dir::default()),
-                        meta: Meta {
-                            mode: 0o755,
-                            ..Meta::default()
-                        },
+                Some((id, _)) if self.fresh(at, name, id) => {
+                    return bad(format!("{:?}: not a directory", show(path)));
+                }
+                _ => {}
+            }
+            at = self.tree.insert(
+                at,
+                name,
+                Node {
+                    kind: Kind::Dir(Dir::default()),
+                    meta: Meta {
+                        mode: 0o755,
+                        ..Meta::default()
                     },
-                )?,
-            };
-            up.push(at);
-            at = next;
+                },
+            )?;
         }
-        Ok(at)
     }
 
     /// The file a hard link names: looked up as `dir` walks, without making anything.
     fn target(&self, path: &[u8]) -> Result<NodeId, Error> {
         let missing = || Error(format!("hard link to missing {:?}", show(path)));
         let mut at = Tree::ROOT;
-        let mut up: Vec<NodeId> = Vec::new();
         let mut todo: VecDeque<&[u8]> = path.split(|&c| c == b'/').collect();
         let name = todo.pop_back().filter(|n| !n.is_empty()).ok_or_else(missing)?;
         let mut links = 0;
@@ -218,17 +237,14 @@ impl Layer<'_> {
             match part {
                 b"" | b"." => continue,
                 b".." => {
-                    at = up.pop().unwrap_or(Tree::ROOT);
+                    at = self.parent(at);
                     continue;
                 }
                 _ => {}
             }
             let id = self.tree.child(at, part).ok_or_else(missing)?;
             match &self.tree.node(id).ok_or_else(missing)?.kind {
-                Kind::Dir(_) => {
-                    up.push(at);
-                    at = id;
-                }
+                Kind::Dir(_) => at = id,
                 Kind::Symlink(target) if self.fresh(at, part, id) => {
                     links += 1;
                     if links > MAX_LINKS {
@@ -236,7 +252,6 @@ impl Layer<'_> {
                     }
                     if target.first() == Some(&b'/') {
                         at = Tree::ROOT;
-                        up.clear();
                     }
                     for p in target.split(|&c| c == b'/').rev() {
                         todo.push_front(p);
@@ -268,7 +283,7 @@ impl Layer<'_> {
                 let target = self.target(&entry.link)?;
                 self.tree.link(dir, name, target)?;
                 if target < self.first {
-                    self.linked.insert((dir, name.to_vec()));
+                    self.linked.entry(dir).or_default().insert(name.to_vec());
                 }
                 if let Some(node) = self.tree.node_mut(target) {
                     node.meta = meta(entry, &node.kind);
@@ -620,9 +635,11 @@ mod tests {
             symlink(b"abs", b"/real/../real"),
             dir(b"real/sub/", 0o755),
             symlink(b"real/sub/up", b"../.."),
+            symlink(b"real/sub/side", b"../other"),
             file(b"rel/a", b"a"),
             file(b"abs/b", b"b"),
             file(b"real/sub/up/real/c", b"c"),
+            file(b"real/sub/side/e", b"e"),
             hardlink(b"d", b"rel/a"),
         ]])
         .unwrap();
@@ -635,7 +652,10 @@ mod tests {
                 "/real/a file \"a\" 644 0:0",
                 "/real/b file \"b\" 644 0:0",
                 "/real/c file \"c\" 644 0:0",
+                "/real/other dir 755 0:0",
+                "/real/other/e file \"e\" 644 0:0",
                 "/real/sub dir 755 0:0",
+                "/real/sub/side -> ../other 777 0:0",
                 "/real/sub/up -> ../.. 777 0:0",
                 "/rel -> real 777 0:0",
             ]
@@ -645,6 +665,27 @@ mod tests {
         assert!(looped.is_err(), "a symlink loop");
         let through_file = flatten(&[vec![file(b"f", b"f"), file(b"f/x", b"x")]]);
         assert!(through_file.is_err(), "a path through the layer's own file");
+    }
+
+    /// A hard link a layer makes to a lower layer's symlink is the layer's own entry, as
+    /// in the directory containerd extracts the layer into: a path through it follows it.
+    #[test]
+    fn a_layers_hard_link_to_a_lower_symlink_is_followed() {
+        let (tree, mut archives) = flatten(&[
+            vec![dir(b"d/", 0o755), symlink(b"s", b"d")],
+            vec![hardlink(b"h", b"s"), file(b"h/f", b"f")],
+        ])
+        .unwrap();
+        assert_eq!(
+            lines(&tree, &mut archives),
+            [
+                "/d dir 755 0:0",
+                "/d/f file \"f\" 644 0:0",
+                "/h -> d 777 0:0",
+                "/s -> d 777 0:0",
+            ]
+            .join("\n")
+        );
     }
 
     #[test]
