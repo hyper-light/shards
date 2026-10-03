@@ -1268,8 +1268,7 @@ fn a_collection_waits_for_the_stores_lease() {
     let images = home.join("images");
     let due = images.join("collect-due");
     eventually("the pull's collection was not taken", || !due.exists());
-    let left = images.join("ingest").join("left");
-    std::fs::write(&left, b"left behind").unwrap();
+    // Once that collection, which may still run, is done.
     let lease = std::fs::File::options()
         .create(true)
         .truncate(false)
@@ -1277,6 +1276,8 @@ fn a_collection_waits_for_the_stores_lease() {
         .open(images.join(".lease"))
         .unwrap();
     lease.lock_shared().unwrap();
+    let left = images.join("ingest").join("left");
+    std::fs::write(&left, b"left behind").unwrap();
     std::fs::write(&due, b"").unwrap();
     eventually("the collection due was not seen", || !due.exists());
     std::thread::sleep(Duration::from_millis(500));

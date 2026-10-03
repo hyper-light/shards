@@ -3083,3 +3083,42 @@ revision before comparing a changed API/implementation.
   120 GB of them at 7.5 MB each (M89): threads and a 128 GB host's memory now bind at
   about the same number, and a larger host's memory later. Waiting for every VM's end at
   once (kqueue `EVFILT_PROC`, Linux's pidfd) needs no thread per VM.
+
+### M91. Warm VMs started outside the pools' lock
+
+- **Question.** A claim that found no VM ready started its own under the pools' lock, and
+  so did every refill (review 7.8): a VM's start spawns its process and its network
+  process. How long did that hold the lock, which every other claim, refill and the
+  listener's look at the pools waits for, and does starting VMs outside it change a
+  burst's runs?
+- **Method.** Two builds: 166ef50, and the change (`daemon/refill.rs`: planned and counted
+  as starting under the lock, started outside it, refills on one thread). Each arm a home
+  with `alpine:3.22` pulled and the same guest recorded (`shards guest use`, one kernel
+  and one shards-init for both), each restoring its own template: a template names its
+  home's root filesystem, and a VM is granted only its own home's. `build-ab/ab.py` with
+  `AB_BURST=8`: 8 runs of `true` at once per turn, the arms' turns alternating, the old
+  arm's `shards-vm` signed with an identifier of its own (`dev.shards.vm.ab-old`), since
+  launches on the runs' path otherwise pay M72's switch. First with no warm pool
+  (`SHARDS_POOL=0`, every claim starts its VM), 80 turns per arm; then with the default
+  pool (2), 40 turns, each build probed (not kept) to log how long each claim's and
+  refill's planning or starting held the lock. 2026-10-03, the host of M84, load average
+  3 to 10 from other work.
+- **Results.** The lock held, per claim or refill, with the default pool:
+
+| Held by | n | p50 | p90 | p99 | max | total |
+|---|---|---|---|---|---|---|
+| 166ef50, claims (VMs started under it) | 843 | 39 µs | 484 µs | 695 µs | 853 µs | 123.8 ms |
+| 166ef50, refills | 352 | 44 µs | 579 µs | 871 µs | 1,277 µs | 76.4 ms |
+| The change, claims (planning only) | 1,004 | 28 µs | 54 µs | 111 µs | 163 µs | 33.4 ms |
+| The change, refills | 338 | 34 µs | 87 µs | 130 µs | 169 µs | 14.3 ms |
+
+  A run's wall clock did not move. No pool, 640 runs per arm: p50 26.3 ms against 26.7,
+  each burst's median +0.8 ms (95% [−0.3, +3.3]), its slowest +0.2 ms ([−2.0, +2.2]).
+  Default pool, 320 runs per arm: the burst's median −0.2 ms ([−0.5, +0.9]), its slowest
+  +0.2 ms ([−1.8, +2.7]). The slow runs are a burst's last, its restores at once on a
+  loaded host, and their tails changed sides from one comparison to the next with the
+  host's load: a burst's 8 restores outweigh its spawns.
+- **Consequence.** Starting VMs outside the lock leaves a burst's runs as they were, and
+  takes what else waits on the pools from up to 1.3 ms to under 0.2 ms: another pool's
+  claim, a refill, the listener's next duty. What remains under the lock is mostly the
+  template's look-up (`snapshot::exists`, a file read).

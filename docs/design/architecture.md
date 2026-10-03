@@ -850,11 +850,19 @@ for the exit status.
       `kern.maxfilesperproc` on macOS, as Go's runtime raises its own (go1.25.0
       src/syscall/rlimit.go, after go.dev/issue/46279): macOS starts a process with 256.
   - It keeps up to SHARDS_POOL warm VMs (default 2) of each template it has served, as
-    many as its runs need (below). A pool refills once its VM has taken its run, since starting the next VM on the request's
-    path cost 200–600 µs [PM M26], and on a thread of its own, so that the run's own
-    messages are read as they come. A run with no template boots a VM that saves one on the way, and a
-    run with its own kernel and init boots every time. A template whose warm VMs fail
-    three times in a row is removed and saved again.
+    many as its runs need (below). A pool refills once its VM has taken its run, since
+    starting the next VM on the request's path cost 200–600 µs [PM M26]: on the refiller's
+    thread, which takes every pool asked for meanwhile, each once. A run with no template
+    boots a VM that saves one on the way, and a run with its own kernel and init boots
+    every time. A template whose warm VMs fail three times in a row is removed and saved
+    again.
+  - **VMs start outside the pools' lock** (review 7.8). What a pool needs is planned under
+    it and counted as starting at once, so that no other claim or refill starts it again,
+    then started without it: a start spawns the VM and its network process. A claim that
+    finds no VM ready starts its own on its own thread. Started under the lock, they held
+    every other claim, refill and the listener's look at the pools for up to 1.3 ms (p99
+    0.7 to 0.9 ms); now under 0.2 ms. A burst's runs took as long either way, its restores
+    outweighing its spawns [PM M91].
   - **Warm VMs are speculation, and bounded; runs are served regardless** (audit A13,
     A14).
     - A run that finds no VM ready has one started for it, unless one is already

@@ -43,6 +43,7 @@ mod logs;
 mod network;
 mod publish;
 mod push;
+mod refill;
 mod rmi;
 use crate::run::{Boot, Prepared};
 use crate::segments::log_segment;
@@ -516,6 +517,8 @@ struct Daemon<D: Disk = Real> {
     followers: follow::Followers,
     /// The removals of `--rm` containers that ended, made durable together (follow.rs).
     completing: follow::Completing,
+    /// The pools to refill and the spare to make, on the refiller's thread (refill.rs).
+    refills: refill::Refills,
     /// When each running container's health check is next due (health.rs).
     checks: health::Checks,
     /// Runs waiting for a VM booted for them, by number: told as the daemon stops.
@@ -918,6 +921,7 @@ impl<D: Disk> Daemon<D> {
             collect: AtomicBool::new(true),
             followers: follow::Followers::new()?,
             completing: follow::Completing::default(),
+            refills: refill::Refills::default(),
             checks: health::Checks::default(),
             booting: Mutex::default(),
             next_cold: AtomicU64::new(0),
@@ -1540,9 +1544,9 @@ impl<D: Disk> Daemon<D> {
                 }
             }
             let handed = hand_over(&ready.socket, payload, fds);
-            // Only now, so that starting its successor delays no run, and on a thread of
-            // its own, so that the run's own messages are read as they come (`follow`).
-            self.replace(threads, ready.pool.clone());
+            // Only now, so that starting its successor delays no run: on the refiller's
+            // thread.
+            self.refill_soon(threads, ready.pool.as_deref());
             match handed {
                 // The warm VM serves the client from here, and ours close. A detached
                 // client waits for the daemon to say whether its command started.
@@ -1826,26 +1830,6 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Starts the successor of a warm VM of `pool` that has just taken a run, and the next
-    /// run's spare container, on a thread of their own: a spawn and a file take
-    /// milliseconds that the run's start and end should not wait for.
-    fn replace<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, pool: Option<PathBuf>) {
-        let refill = move |pool: Option<&Path>| {
-            if let Some(dir) = pool {
-                let _ = self.refill(threads, &mut lock(&self.state), dir);
-            }
-            self.make_spare();
-        };
-        let theirs = pool.clone();
-        let spawned = std::thread::Builder::new()
-            .name("refill".into())
-            .spawn_scoped(threads, move || refill(theirs.as_deref()));
-        if let Err(e) = spawned {
-            log(format!("a refill thread: {e}; refilling here"));
-            refill(pool.as_deref());
-        }
-    }
-
     /// Makes a spare container, if there is none and none is being made, for the next run
     /// to take: making it costs a directory and a file that no run should wait for. One
     /// maker at a time, so no spare is made only to be dropped (audit A20).
@@ -2029,7 +2013,7 @@ impl<D: Disk> Daemon<D> {
                 let _ = ready.vm.kill(libc::SIGKILL);
             }
         }
-        self.replace(threads, None);
+        self.refill_soon(threads, None);
     }
 
     /// Waits while the run of container `id` is being started: until it runs, or never
@@ -2636,9 +2620,8 @@ impl<D: Disk> Daemon<D> {
         }
         crate::run::settle(&fresh, &dir);
         if ready.is_ok() && shards_vmm::snapshot::exists(&dir) {
-            let mut state = lock(&self.state);
-            pool_of(&mut state, &dir, &prepared.rootfs);
-            let _ = self.refill(threads, &mut state, &dir);
+            pool_of(&mut lock(&self.state), &dir, &prepared.rootfs);
+            self.refill_soon(threads, Some(&dir));
         }
         ready
     }
@@ -2683,15 +2666,23 @@ impl<D: Disk> Daemon<D> {
                 pool.waiting += 1;
                 waiting = true;
             }
-            // A VM that cannot be started is said at once, to this run and to those
-            // waiting with it, which try again: no VM comes for them otherwise.
-            if let Err(e) = self.refill(threads, &mut state, dir)
-                && state.pools.get(dir).is_none_or(|p| p.starting < p.waiting)
-            {
-                leave(&mut state, waiting);
+            // Its VM, unless one is starting for it, started outside the pools' lock,
+            // which no other claim then waits on (review 7.8). One that cannot be started
+            // is said at once, to this run and to those waiting with it, which try again:
+            // no VM comes for them otherwise.
+            if let Some(planned) = self.plan_refill(&mut state, dir, false) {
                 drop(state);
-                self.changed.notify_all();
-                return Err(Claim::Failed(e));
+                let started = self.start_planned(threads, planned);
+                state = lock(&self.state);
+                if let Err(e) = started
+                    && state.pools.get(dir).is_none_or(|p| p.starting < p.waiting)
+                {
+                    leave(&mut state, waiting);
+                    drop(state);
+                    self.changed.notify_all();
+                    return Err(Claim::Failed(e));
+                }
+                continue;
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -2707,76 +2698,6 @@ impl<D: Disk> Daemon<D> {
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
-    }
-
-    /// Starts warm VMs of the template in `dir`: one for each run waiting that none is
-    /// starting for, and until its pool will hold `target`, as far as `warm_max` allows,
-    /// all pools together, after evicting the ready VMs of the pools least recently
-    /// claimed from.
-    fn refill<'s, 'e>(
-        &'s self,
-        threads: &'s Threads<'s, 'e>,
-        state: &mut State,
-        dir: &Path,
-    ) -> Result<(), String> {
-        // A template collected is restored no more.
-        if !shards_vmm::snapshot::exists(dir) {
-            state.pools.remove(dir);
-            return Ok(());
-        }
-        let (for_runs, ahead) = {
-            let pool = state.pools.entry(dir.to_path_buf()).or_default();
-            if pool.failures >= MAX_FAILURES {
-                return Ok(());
-            }
-            let now = Instant::now();
-            pool.demand.begin(now);
-            let target = pool.demand.target(now, self.target, self.keep);
-            let have = pool.ready.len() + pool.starting;
-            let for_runs = pool.waiting.saturating_sub(pool.starting);
-            let ahead = target.saturating_sub(have + for_runs);
-            (for_runs, ahead)
-        };
-        let ahead = ahead.min(self.room(state, dir, ahead));
-        let State { pools, starting } = state;
-        let Some(pool) = pools.get_mut(dir) else {
-            return Ok(());
-        };
-        // It writes no file of the home: the daemon gives it its container's log (D30).
-        let mut args: Vec<OsString> = vec!["restore".into(), dir.into(), "--warm".into(), "3".into()];
-        if let Some(rootfs) = &pool.rootfs {
-            let mut backing = rootfs.as_os_str().to_os_string();
-            backing.push(":ro");
-            args.extend(["--backing".into(), backing]);
-        }
-        // A template that cannot be read gets no network process: its VM then fails to
-        // restore it, as any broken template's does, and the claim finds it broken.
-        let net = match pool.net {
-            Some(net) => net,
-            None => match shards_vmm::snapshot::net(dir) {
-                Ok(net) => *pool.net.insert(net),
-                Err(e) => {
-                    log(format!("reading the template {}: {e}", dir.display()));
-                    None
-                }
-            },
-        };
-        for _ in 0..for_runs + ahead {
-            match self.start(threads, &args, net, For::Pool(dir.to_path_buf())) {
-                Ok(vm) => {
-                    pool.starting += 1;
-                    starting.insert(vm.id(), vm);
-                }
-                // Not the template's failure, as a VM failing to restore it is, but the
-                // host's, which saving the template again would not mend.
-                Err(e) => {
-                    let e = format!("starting a warm VM of {}: {e}", dir.display());
-                    log(&e);
-                    return Err(e);
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Collects if a collection is due: it stays due until one has run, which it cannot
@@ -2890,7 +2811,7 @@ impl<D: Disk> Daemon<D> {
     /// Refills the pools claimed from more recently than `dir`'s, whose VM has just become
     /// ready: one that found no room while `dir`'s was starting, when only ready VMs can
     /// be ended, takes it now.
-    fn rebalance<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, state: &mut State, dir: &Path) {
+    fn rebalance<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, state: &State, dir: &Path) {
         let Some(since) = state.pools.get(dir).map(|p| p.demand.last()) else {
             return;
         };
@@ -2901,7 +2822,7 @@ impl<D: Disk> Daemon<D> {
             .map(|(d, _)| d.clone())
             .collect();
         for hot in hotter {
-            let _ = self.refill(threads, state, &hot);
+            self.refill_soon(threads, Some(&hot));
         }
     }
 
@@ -3001,7 +2922,7 @@ impl<D: Disk> Daemon<D> {
         args: &[OsString],
         net: Option<[u8; 6]>,
         dest: For,
-    ) -> Result<Arc<shards_ipc::Child>, String> {
+    ) -> Result<(), String> {
         // A run's microVM is on Docker's default bridge, and reaches nothing through it
         // until a grant opens it (AGENTFILE_ARCH.md §3, default deny); its published
         // ports' connections come in all the same.
@@ -3076,6 +2997,12 @@ impl<D: Disk> Daemon<D> {
         };
         let grants = grants.map(|(grants, _)| grants);
         let vm = Arc::new(child);
+        // Among those the daemon ends as it exits from now on: before its watcher can find
+        // it ready, which takes it out.
+        let pooled = matches!(dest, For::Pool(_));
+        if pooled {
+            lock(&self.state).starting.insert(vm.id(), vm.clone());
+        }
         let watched = vm.clone();
         let watching = std::thread::Builder::new()
             .name("warm vm".into())
@@ -3087,10 +3014,13 @@ impl<D: Disk> Daemon<D> {
                 }
             });
         if let Err(e) = watching {
+            if pooled {
+                lock(&self.state).starting.remove(&vm.id());
+            }
             let _ = vm.kill(libc::SIGKILL);
             return Err(format!("watching VM {}: {e}", vm.id()));
         }
-        Ok(vm)
+        Ok(())
     }
 
     /// Waits for a VM to be ready and hands it to whoever it is for; then waits for its
@@ -3132,7 +3062,7 @@ impl<D: Disk> Daemon<D> {
                             pool: Some(dir.clone()),
                             records: Some(dir.clone()),
                         });
-                        self.rebalance(threads, &mut state, dir);
+                        self.rebalance(threads, &state, dir);
                     }
                     Err(e) => {
                         log(&e);
@@ -3173,7 +3103,7 @@ impl<D: Disk> Daemon<D> {
             {
                 pool.ready.remove(i);
                 log(format!("warm VM {pid} ended while it waited ({status:?})"));
-                let _ = self.refill(threads, &mut state, &dir);
+                self.refill_soon(threads, Some(&dir));
                 return;
             }
         }
@@ -3736,8 +3666,14 @@ mod tests {
             daemon.followers.end();
             daemon.completing.end();
             daemon.checks.end();
+            daemon.refills.end();
             daemon.end_clients();
             for vm in lock(&self.test.vms).iter() {
+                let _ = vm.kill(libc::SIGKILL);
+            }
+            // And those the daemon started, as it ends them as it exits, whose watchers
+            // return once they have gone.
+            for vm in lock(&daemon.state).starting.values() {
                 let _ = vm.kill(libc::SIGKILL);
             }
             if let Some(joining) = self.joining.take() {
@@ -4208,13 +4144,11 @@ mod tests {
                     .demand
                     .claimed(t0 + Duration::from_millis(1), 1);
             }
-            t.t.daemon.rebalance(t.threads, &mut lock(&t.daemon.state), &cold);
-            let state = lock(&t.daemon.state);
-            assert!(
-                state.pools[&cold].ready.is_empty(),
-                "the colder pool kept the room"
-            );
-            drop(state);
+            t.t.daemon.rebalance(t.threads, &lock(&t.daemon.state), &cold);
+            // On the refiller's thread.
+            t.until("the colder pool kept the room", |d| {
+                lock(&d.state).pools[&cold].ready.is_empty()
+            });
             // Ended: its wait returns, as it would not for a sleep of 600 s.
             assert_eq!(vm.wait().unwrap(), 128 + libc::SIGKILL);
         });
@@ -5058,9 +4992,69 @@ mod tests {
             assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
             let state = lock(&t.daemon.state);
             assert_eq!(
-                state.pools.get(&dir).map(|p| (p.failures, p.waiting)),
-                Some((0, 0))
+                state.pools.get(&dir).map(|p| (p.failures, p.waiting, p.starting)),
+                Some((0, 0, 0))
             );
+        });
+    }
+
+    /// A template of a test's own, for its daemon to plan warm VMs of: a snapshot to the
+    /// daemon, which no VM could restore.
+    fn template(dir: &Path) {
+        std::fs::create_dir_all(dir.join("g-1")).unwrap();
+        std::fs::write(dir.join("current"), b"g-1\n").unwrap();
+        std::fs::write(dir.join("g-1").join("state"), b"").unwrap();
+    }
+
+    /// The warm VMs a refill plans count as starting at once, before any is started, so
+    /// that a claim or refill planning meanwhile starts none of them again; outside the
+    /// pools' lock, those that cannot start count no more. A pool never claimed from keeps
+    /// one (demand.rs).
+    #[test]
+    fn a_refills_vms_count_as_starting_once_planned() {
+        let mut t = Test::new("planned");
+        t.daemon.target = 2;
+        t.daemon.warm_max = 8;
+        t.run(|t| {
+            let dir = t.home.join("template");
+            template(&dir);
+            let planned = t.t.daemon.plan_refill(&mut lock(&t.daemon.state), &dir, true);
+            let planned = planned.expect("VMs planned");
+            assert_eq!(lock(&t.daemon.state).pools[&dir].starting, 1);
+            assert!(
+                t.daemon
+                    .plan_refill(&mut lock(&t.daemon.state), &dir, true)
+                    .is_none(),
+                "planned again"
+            );
+            // The test's daemon names a VM binary that is not there.
+            assert!(t.t.daemon.start_planned(t.threads, planned).is_err());
+            assert_eq!(lock(&t.daemon.state).pools[&dir].starting, 0);
+        });
+    }
+
+    /// Refills are the refiller's, which starts what a pool keeps ahead of its runs, no
+    /// more however often it is asked, and makes the spare container.
+    #[test]
+    fn the_refiller_starts_what_a_pool_keeps_and_the_spare() {
+        let mut t = Test::new("refiller");
+        t.daemon.target = 2;
+        t.daemon.warm_max = 8;
+        // A VM that never says it is ready.
+        let vm = t.home.join("vm");
+        std::fs::write(&vm, b"#!/bin/sh\nexec /bin/sleep 600\n").unwrap();
+        std::fs::set_permissions(&vm, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        t.daemon.vm = vm;
+        t.run(|t| {
+            let dir = t.home.join("template");
+            template(&dir);
+            for _ in 0..5 {
+                t.t.daemon.refill_soon(t.threads, Some(&dir));
+            }
+            t.until("the pool's VM started and the spare made", |d| {
+                lock(&d.state).starting.len() == 1 && matches!(*lock(&d.spare), Spare::Made(..))
+            });
+            assert_eq!(lock(&t.daemon.state).pools[&dir].starting, 1);
         });
     }
 
