@@ -373,6 +373,92 @@ fn recv_part(
     if let Some(deadline) = deadline {
         await_readable(sock, deadline)?;
     }
+    recv_msg(sock, buf, fds, 0)
+}
+
+/// Messages from a peer, taken as each comes in whole: what has come of one is kept until
+/// the rest does, so a reader never waits on a peer that stops partway through one, and
+/// reads nothing past it.
+#[derive(Debug, Default)]
+pub struct Incoming {
+    header: [u8; HEADER],
+    /// Bytes of the header that have come, then of the payload.
+    have: usize,
+    /// Once the header has come, the payload, as long as it says.
+    payload: Option<Vec<u8>>,
+    fds: Vec<OwnedFd>,
+}
+
+/// What [`Incoming::take`] found.
+#[derive(Debug)]
+pub enum Took {
+    Message(Message),
+    /// Some of the next message, or none of it, has come.
+    Partial,
+    /// The peer's end, with nothing of a message before it.
+    Ended,
+}
+
+impl Incoming {
+    /// The next message whole, from what `sock` has now: it waits for nothing.
+    pub fn take(&mut self, sock: &UnixStream) -> io::Result<Took> {
+        loop {
+            let (buf, whole) = match &mut self.payload {
+                None => (self.header.get_mut(self.have..).unwrap_or_default(), HEADER),
+                Some(payload) => {
+                    let len = payload.len();
+                    (payload.get_mut(self.have..).unwrap_or_default(), len)
+                }
+            };
+            if self.have < whole {
+                match recv_msg(sock, buf, &mut self.fds, libc::MSG_DONTWAIT) {
+                    Ok(0) if self.have == 0 && self.payload.is_none() && self.fds.is_empty() => {
+                        return Ok(Took::Ended);
+                    }
+                    Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                    Ok(n) => self.have += n,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(Took::Partial),
+                    Err(e) => return Err(e),
+                }
+                continue;
+            }
+            if self.payload.is_none() {
+                let [_, l0, l1, l2, l3] = self.header;
+                let len = u32::from_be_bytes([l0, l1, l2, l3]) as usize;
+                if len > MAX_PAYLOAD {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "message payload too large",
+                    ));
+                }
+                self.payload = Some(vec![0u8; len]);
+                self.have = 0;
+                continue;
+            }
+            if self.fds.len() > MAX_FDS {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "more descriptors than a message may carry",
+                ));
+            }
+            self.have = 0;
+            return Ok(Took::Message(Message {
+                kind: self.header[0],
+                payload: self.payload.take().unwrap_or_default(),
+                fds: std::mem::take(&mut self.fds),
+            }));
+        }
+    }
+}
+
+/// One recvmsg(2) of at most `buf.len()` bytes, with `flags`, its descriptors added to
+/// `fds`.
+fn recv_msg(
+    sock: &UnixStream,
+    buf: &mut [u8],
+    fds: &mut Vec<OwnedFd>,
+    flags: libc::c_int,
+) -> io::Result<usize> {
     let mut control = Control::new();
     let mut iov = libc::iovec {
         iov_base: buf.as_mut_ptr().cast(),
@@ -385,9 +471,7 @@ fn recv_part(
     msg.msg_control = control.0.as_mut_ptr().cast();
     msg.msg_controllen = CONTROL as _;
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    let flags = libc::MSG_CMSG_CLOEXEC;
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    let flags = 0;
+    let flags = flags | libc::MSG_CMSG_CLOEXEC;
     let got = loop {
         // SAFETY: a fully initialized msghdr over live buffers.
         let n = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags) };
@@ -829,6 +913,80 @@ mod tests {
     fn pipe() -> (File, File) {
         let (r, w) = io::pipe().unwrap();
         (File::from(OwnedFd::from(r)), File::from(OwnedFd::from(w)))
+    }
+
+    /// What has come of a message waits for the rest, however it is cut; nothing past a
+    /// message is read with it; its descriptors come with it; an end is told from a
+    /// message cut short by one.
+    #[test]
+    fn messages_are_taken_whole_as_they_come() {
+        use std::io::Write as _;
+        let frame = |kind: u8, payload: &[u8]| {
+            let mut f = vec![kind];
+            f.extend((payload.len() as u32).to_be_bytes());
+            f.extend_from_slice(payload);
+            f
+        };
+        let whole = |took: Took| match took {
+            Took::Message(m) => Some(m),
+            Took::Partial | Took::Ended => None,
+        };
+        let first = frame(3, b"payload");
+        let second = frame(4, b"");
+        for cut in 0..=first.len() {
+            let (mut a, b) = UnixStream::pair().unwrap();
+            let mut incoming = Incoming::default();
+            a.write_all(&first[..cut]).unwrap();
+            if cut < first.len() {
+                assert!(
+                    matches!(incoming.take(&b).unwrap(), Took::Partial),
+                    "cut at {cut}"
+                );
+                a.write_all(&first[cut..]).unwrap();
+            }
+            a.write_all(&second).unwrap();
+            let m = whole(incoming.take(&b).unwrap());
+            assert!(m.is_some(), "cut at {cut}: not whole");
+            let m = m.unwrap();
+            assert_eq!(
+                (m.kind, m.payload.as_slice()),
+                (3, &b"payload"[..]),
+                "cut at {cut}"
+            );
+            let m = whole(incoming.take(&b).unwrap()).unwrap();
+            assert_eq!((m.kind, m.payload.len()), (4, 0));
+            assert!(matches!(incoming.take(&b).unwrap(), Took::Partial));
+            // Ended as a socket, not by closing a descriptor: a child spawned meanwhile by
+            // another test may have inherited a copy (std makes a pair close-on-exec only
+            // after making it, on macOS).
+            a.shutdown(std::net::Shutdown::Write).unwrap();
+            assert!(matches!(incoming.take(&b).unwrap(), Took::Ended));
+        }
+        // Descriptors come with their message.
+        let (a, b) = UnixStream::pair().unwrap();
+        let (mut r, w) = pipe();
+        send(&a, 5, b"fd", &[w.as_fd()]).unwrap();
+        drop(w);
+        let m = whole(Incoming::default().take(&b).unwrap()).unwrap();
+        assert_eq!((m.kind, m.fds.len()), (5, 1));
+        File::from(m.fds.into_iter().next().unwrap())
+            .write_all(b"through")
+            .unwrap();
+        let mut got = [0u8; 7];
+        r.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"through");
+        // An end partway through a message is no end of the stream.
+        let (mut a, b) = UnixStream::pair().unwrap();
+        let mut incoming = Incoming::default();
+        a.write_all(&first[..6]).unwrap();
+        a.shutdown(std::net::Shutdown::Write).unwrap();
+        let cut = incoming.take(&b).unwrap_err();
+        assert_eq!(cut.kind(), io::ErrorKind::UnexpectedEof);
+        // A length past the limit is refused before anything is allocated for it.
+        let (mut a, b) = UnixStream::pair().unwrap();
+        a.write_all(&[1, 0xff, 0xff, 0xff, 0xff]).unwrap();
+        let big = Incoming::default().take(&b).unwrap_err();
+        assert_eq!(big.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::io::{self, Write as _};
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 use shards_cmdline::commands::{
@@ -20,7 +20,7 @@ use shards_ipc::kind;
 
 use super::logs::{self, LogFile, Piece, Reader};
 use super::{Daemon, RunState, STOP_GRACE, lock};
-use crate::containers::{Container, Removal, State as Life, now};
+use crate::containers::{Container, Registry, Removal, State as Life, now};
 use crate::spec::{LOG_STDERR, LOG_STDOUT};
 
 /// How long a command may take to end after SIGKILL before its VM goes too, and how long
@@ -280,8 +280,6 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// Runs container command `argv` for a client, answering on `reply`, and returns its
     /// exit status, the client being `asker`.
     pub(super) fn command(&self, argv: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
-        // What any client has seen of its run, the answer includes.
-        self.settle();
         let words: Vec<&str> = argv.iter().map(String::as_str).collect();
         let Some((command, path, named)) = commands::find(&words) else {
             reply.err(&format!("shards: no container command in {argv:?}"));
@@ -300,6 +298,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return status;
             }
         };
+        // What any client has seen of its run, an answer that reads containers includes:
+        // `images` and `rmi` read which use an image too.
+        if ![&TAG, &IMAGE_INSPECT, &SAVE, &LOAD, &PUSH]
+            .iter()
+            .any(|c| std::ptr::eq(command, *c))
+        {
+            self.settle();
+        }
         if std::ptr::eq(command, &PS) {
             self.ps(&parsed, asker.east_asian, reply)
         } else if std::ptr::eq(command, &WAIT) {
@@ -391,36 +397,50 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// The ID of the container `reference` names: all of its ID, its name, or the start of
     /// its ID and of no other's (moby daemon/container.go, GetContainer).
     pub(super) fn resolve(&self, reference: &str) -> Result<String, String> {
+        self.resolve_held(lock(&self.containers), reference).1
+    }
+
+    /// [`resolve`](Self::resolve) in `registry`, handed back with the answer, which holds
+    /// for as long as the caller holds it.
+    pub(super) fn resolve_held<'a>(
+        &'a self,
+        mut registry: MutexGuard<'a, Registry>,
+        reference: &str,
+    ) -> (MutexGuard<'a, Registry>, Result<String, String>) {
+        // As the Docker CLI's client sends a reference (moby client utils.go, trimID): its
+        // spaces trimmed, and none refused.
+        let reference = reference.trim();
+        if reference.is_empty() {
+            return (
+                registry,
+                Err("invalid container name or ID: value is empty".into()),
+            );
+        }
         // A container exists from its creation, as dockerd's does: one whose record is
         // still being written is waited for, not missed.
-        let mut registry = lock(&self.containers);
-        while !reference.is_empty() && registry.arriving_as(reference) {
+        while registry.arriving_as(reference) {
             registry = self
                 .arrived
                 .wait(registry)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        if !reference.is_empty() {
-            if registry.get(reference).is_some() {
-                return Ok(reference.to_string());
-            }
-            let name = reference.strip_prefix('/').unwrap_or(reference);
-            if let Some(c) = registry.named(name) {
-                return Ok(c.id.clone());
-            }
+        let found = if registry.get(reference).is_some() {
+            Ok(reference.to_string())
+        } else if let Some(c) = registry.named(reference.strip_prefix('/').unwrap_or(reference)) {
+            Ok(c.id.clone())
+        } else {
             let mut matching = registry.all().filter(|c| c.id.starts_with(reference));
-            if let Some(first) = matching.next() {
-                if matching.next().is_some() {
-                    return Err(format!(
-                        "Error response from daemon: multiple IDs found with provided prefix: {reference}"
-                    ));
-                }
-                return Ok(first.id.clone());
+            match (matching.next(), matching.next()) {
+                (Some(_), Some(_)) => Err(format!(
+                    "Error response from daemon: multiple IDs found with provided prefix: {reference}"
+                )),
+                (Some(only), None) => Ok(only.id.clone()),
+                (None, _) => Err(format!(
+                    "Error response from daemon: No such container: {reference}"
+                )),
             }
-        }
-        Err(format!(
-            "Error response from daemon: No such container: {reference}"
-        ))
+        };
+        (registry, found)
     }
 
     /// Whether the container with `id` runs: its run was handed over, and has not ended.
@@ -534,19 +554,26 @@ impl<D: crate::containers::Disk> Daemon<D> {
         u8::from(!errors.is_empty())
     }
 
-    /// `shards wait`: for each container in turn, its exit code once it stops.
+    /// `shards wait`: for each container in turn, its exit code once it stops. Found and
+    /// waited for under one hold of the records, as dockerd holds a container's state
+    /// once it has found it: an end in between, of a `--rm` container above all, is not
+    /// missed.
     fn wait(&self, references: &[String], reply: &Reply<'_>) -> u8 {
         let mut errors = Vec::new();
         for reference in references {
-            match self.resolve(reference) {
+            let (registry, found) = self.resolve_held(lock(&self.containers), reference);
+            match found {
                 Ok(id) => {
                     // Its client may hang up first: then nobody reads the rest.
-                    let Some(code) = self.await_exit(&id, None, Some(reply.0)) else {
+                    let Some(code) = self.await_exit_held(registry, &id, None, Some(reply.0)) else {
                         return 1;
                     };
                     reply.out(&code.to_string());
                 }
-                Err(e) => errors.push(e),
+                Err(e) => {
+                    drop(registry);
+                    errors.push(e);
+                }
             }
         }
         for e in &errors {
@@ -571,6 +598,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 if reference.is_empty() {
                     return Err("container name cannot be empty".into());
                 }
+                // Then as the CLI's client sends it (`resolve`), dockerd's words name it.
+                let reference = reference.trim();
                 let id = match self.resolve(reference) {
                     Ok(id) => id,
                     Err(_) if force => return Ok(false),
@@ -638,6 +667,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
         self.each(
             &parsed.args,
             &|reference| {
+                // As the Docker CLI's client sends it (`resolve`), dockerd's words name it.
+                let reference = reference.trim();
                 let id = self.resolve(reference)?;
                 self.await_start(&id);
                 if !self.running(&id) {
@@ -694,6 +725,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
         self.each(
             &parsed.args,
             &|reference| {
+                // As the Docker CLI's client sends it (`resolve`), dockerd's words name it.
+                let reference = reference.trim();
                 let cannot = |why: &str| {
                     format!("Error response from daemon: cannot kill container: {reference}: {why}")
                 };
@@ -704,9 +737,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     linux_signal(n)
                         .ok_or_else(|| cannot(&format!("the linux daemon does not support signal {n}")))?
                 };
-                let id = self
-                    .resolve(reference)
-                    .map_err(|e| cannot(e.trim_start_matches("Error response from daemon: ")))?;
+                // dockerd's refusals in its own words for a kill; the client's as they are.
+                let id = self.resolve(reference).map_err(|e| {
+                    match e.strip_prefix("Error response from daemon: ") {
+                        Some(said) => cannot(said),
+                        None => e,
+                    }
+                })?;
                 let not_running = || cannot(&format!("container {id} is not running"));
                 self.await_start(&id);
                 if !self.running(&id) {
@@ -747,6 +784,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         list.sort_by_key(|c| std::cmp::Reverse(c.created));
         list.truncate(last.unwrap_or(usize::MAX));
         let at = now();
+        let removing = lock(&self.removing).clone();
         let health = lock(&self.health);
         let listed: Vec<Listed> = list
             .iter()
@@ -755,7 +793,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 image: c.image.clone(),
                 command: command_line(&c.command),
                 created: c.created,
-                status: status(c, at, health.get(&c.id).map(|h| h.status)),
+                status: status(
+                    c,
+                    at,
+                    health.get(&c.id).map(|h| h.status),
+                    removing.contains(&c.id),
+                ),
                 // dockerd lists ports while a container runs.
                 ports: if c.state == Life::Running {
                     displayable_ports(
@@ -1382,9 +1425,9 @@ pub(super) fn human_duration(ns: u128) -> String {
 }
 
 /// A container's status as dockerd words it (moby daemon/container/state.go): up for how
-/// long, with its health if it has a check, or exited with what status how long ago, or
-/// created and never started.
-fn status(c: &Container, at: u128, health: Option<super::health::Status>) -> String {
+/// long, with its health if it has a check; else being removed, if it is; or exited with
+/// what status how long ago, or created and never started.
+fn status(c: &Container, at: u128, health: Option<super::health::Status>, removing: bool) -> String {
     match (c.state, c.started, c.finished) {
         (Life::Running, Some(started), _) => {
             let up = human_duration(at.saturating_sub(started));
@@ -1393,6 +1436,7 @@ fn status(c: &Container, at: u128, health: Option<super::health::Status>) -> Str
                 None => format!("Up {up}"),
             }
         }
+        _ if removing => "Removal In Progress".into(),
         (_, None, _) => "Created".into(),
         (_, Some(_), Some(finished)) => format!(
             "Exited ({}) {} ago",
