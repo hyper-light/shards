@@ -104,11 +104,37 @@ pub struct Collected {
 pub enum Held {
     /// Nothing under its digest.
     Missing,
+    /// A descriptor nothing can be held by, and why: its digest or size cannot be read,
+    /// its size is past the limit, or its blob is not of the size it says. The same at
+    /// every look, unlike a read that fails: a listing passes it by, as a collection
+    /// does, rather than fail every image for one record.
+    Invalid(String),
     /// A copy that is not what its digest names any more, and why: a pull fetches it
     /// again in its place.
     Changed(String),
     /// Its bytes, checked.
     Whole(Vec<u8>),
+}
+
+/// Whether `file` is still the file at `path`: not moved, by a download that finished
+/// with it, or replaced. Where files have no identity to compare (Windows offers none in
+/// std), it is taken to be.
+fn still_at(file: &File, path: &Path) -> io::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let ours = file.metadata()?;
+        match fs::symlink_metadata(path) {
+            Ok(m) => Ok(m.dev() == ours.dev() && m.ino() == ours.ino()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (file, path);
+        Ok(true)
+    }
 }
 
 /// A file being written under `ingest/`, removed unless committed.
@@ -120,11 +146,20 @@ struct Partial {
 impl Partial {
     fn create(dir: &Path) -> Result<Partial, Error> {
         // Unique among this store's writers: the process, then a counter. The name is
-        // never trusted; `create_new` refuses one that exists.
+        // never trusted; `create_new` refuses one that exists, which one a crashed
+        // process of the same ID left may: the next is tried, as os.CreateTemp tries
+        // up to 10,000.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = dir.join(format!("{}-{n}", std::process::id()));
-        let file = File::options().write(true).create_new(true).open(&path)?;
+        let mut tries = 0;
+        let (path, file) = loop {
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = dir.join(format!("{}-{n}", std::process::id()));
+            match File::options().write(true).create_new(true).open(&path) {
+                Ok(file) => break (path, file),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists && tries < 10_000 => tries += 1,
+                Err(e) => return Err(e.into()),
+            }
+        };
         Ok(Partial {
             path,
             file: Some(BufWriter::with_capacity(CHUNK, file)),
@@ -327,8 +362,9 @@ impl Download {
         let actual = hasher.finish();
         let file = file.into_inner().map_err(|e| Error(e.to_string()))?;
         if actual != digest {
-            drop(file);
+            // Gone before the lock is, so that no download waiting on it hashes it.
             let _ = fs::remove_file(&path);
+            drop(file);
             return bad(format!("{digest}: the content hashes to {actual}"));
         }
         file.sync_all()?;
@@ -674,15 +710,21 @@ impl Store {
             self.root
                 .join("ingest")
                 .join(format!("{}-{}.partial", digest.algorithm().name(), digest.hex()));
-        let mut file = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
-        file.lock()?;
-        // The lock may have been released by a download that finished. Its file has moved,
-        // and what is at `path` now is an empty file this call made.
+        // A download that held the lock before this one may have finished, its file moved
+        // into place while locked: only the file still at `path` is this download's to
+        // go on with, or to remove.
+        let mut file = loop {
+            let file = File::options()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)?;
+            file.lock()?;
+            if still_at(&file, &path)? {
+                break file;
+            }
+        };
         if self.has(digest) && !replace {
             drop(file);
             let _ = fs::remove_file(&path);
@@ -934,7 +976,7 @@ impl Store {
                 platform: None,
                 annotations: Default::default(),
             };
-            if let Held::Whole(bytes) = self.held(&desc, oci::MAX_MANIFEST)?
+            if let Ok(Held::Whole(bytes)) = self.held(&desc, oci::MAX_MANIFEST)
                 && let Ok(index) = serde_json::from_slice::<oci::Index>(&bytes)
             {
                 index_size = size_of(&id);
@@ -962,7 +1004,9 @@ impl Store {
                 content: 0,
                 unpacked: 0,
             };
-            if let Held::Whole(bytes) = self.held(&desc, oci::MAX_MANIFEST)? {
+            // One that cannot be held, for whatever reason, is listed as not here, as
+            // dockerd lists a manifest it cannot read (moby image_list.go).
+            if let Ok(Held::Whole(bytes)) = self.held(&desc, oci::MAX_MANIFEST) {
                 listed.content = size_of(&digest);
                 if let Ok(oci::Document::Manifest(manifest)) = oci::parse_document(&bytes, &desc.media_type) {
                     let mut whole = true;
@@ -973,7 +1017,7 @@ impl Store {
                         }
                     }
                     listed.available = whole;
-                    if let Held::Whole(bytes) = self.held(&manifest.config, oci::MAX_CONFIG)?
+                    if let Ok(Held::Whole(bytes)) = self.held(&manifest.config, oci::MAX_CONFIG)
                         && let Ok(config) = oci::parse_config(&bytes)
                     {
                         if desc.digest == ours.digest {
@@ -1151,7 +1195,12 @@ impl Store {
     fn roots(&self) -> Result<(HashSet<PathBuf>, HashSet<PathBuf>), Error> {
         let (mut blobs, mut rootfs) = (HashSet::new(), HashSet::new());
         for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
-            let bytes = fs::read(entry?.path())?;
+            // One removed since it was listed (an rmi meanwhile) holds nothing.
+            let bytes = match fs::read(entry?.path()) {
+                Ok(bytes) => bytes,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
             let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) else {
                 continue;
             };
@@ -1227,7 +1276,7 @@ impl Store {
     pub fn content(&self, desc: &Descriptor, max: u64) -> Result<Option<Vec<u8>>, Error> {
         match self.held(desc, max)? {
             Held::Missing => Ok(None),
-            Held::Changed(why) => Err(Error(why)),
+            Held::Changed(why) | Held::Invalid(why) => Err(Error(why)),
             Held::Whole(bytes) => Ok(Some(bytes)),
         }
     }
@@ -1235,10 +1284,18 @@ impl Store {
     /// What the store holds of the small blob `desc` describes, read as
     /// [`content`](Self::content) reads it.
     pub fn held(&self, desc: &Descriptor, max: u64) -> Result<Held, Error> {
-        let digest = desc.digest()?;
-        let size = desc.size()?;
+        let digest = match desc.digest() {
+            Ok(digest) => digest,
+            Err(e) => return Ok(Held::Invalid(e.to_string())),
+        };
+        let size = match desc.size() {
+            Ok(size) => size,
+            Err(e) => return Ok(Held::Invalid(e.to_string())),
+        };
         if size > max {
-            return bad(format!("{digest}: {size} bytes is over the {max}-byte limit"));
+            return Ok(Held::Invalid(format!(
+                "{digest}: {size} bytes is over the {max}-byte limit"
+            )));
         }
         let path = self.blob_path(&digest);
         let file = match File::open(&path) {
@@ -1258,10 +1315,10 @@ impl Store {
             )));
         }
         if bytes.len() as u64 != size {
-            return bad(format!(
+            return Ok(Held::Invalid(format!(
                 "{digest}: {} bytes, where its descriptor says {size}",
                 bytes.len()
-            ));
+            )));
         }
         Ok(Held::Whole(bytes))
     }
@@ -1877,6 +1934,94 @@ mod tests {
         fs::remove_file(store.blob_path(&sha256(&layer))).unwrap();
         let images = store.images().unwrap();
         assert!(!images.iter().find(|i| i.id == new_digest).unwrap().manifests[0].available);
+    }
+
+    /// A record whose descriptor nothing can be held by, its size not its blob's,
+    /// breaks neither the listing nor a collection: the listing shows its manifest as not
+    /// here, as dockerd lists one it cannot read, and the rest as ever; a collection runs,
+    /// and keeps what the other image needs.
+    #[test]
+    fn a_record_nothing_can_be_held_by_breaks_nothing_else() {
+        let root = temp("invalid-record");
+        let store = Store::open(&root).unwrap();
+        let put = |blob: &[u8]| {
+            let d = sha256(blob);
+            store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
+            d
+        };
+        let layer = b"layer bytes".to_vec();
+        put(&layer);
+        let manifest = |arch: &str| {
+            let config = format!(
+                r#"{{"architecture":"{arch}","os":"linux","rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+                sha256(&layer)
+            )
+            .into_bytes();
+            put(&config);
+            format!(
+                r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+                sha256(&config),
+                config.len(),
+                sha256(&layer),
+                layer.len()
+            )
+            .into_bytes()
+        };
+        let (good, bad) = (manifest("arm64"), manifest("amd64"));
+        let (good_digest, bad_digest) = (put(&good), put(&bad));
+        store
+            .tag(
+                "docker.io/library/good:1",
+                &described(&good_digest, good.len()),
+                &good_digest,
+                &[],
+            )
+            .unwrap();
+        store
+            .tag(
+                "docker.io/library/bad:1",
+                &described(&bad_digest, bad.len() + 1),
+                &bad_digest,
+                &[],
+            )
+            .unwrap();
+        let images = store.images().unwrap();
+        assert_eq!(images.len(), 2);
+        let listed = |d: &Digest| images.iter().find(|i| i.id == *d).unwrap();
+        assert!(listed(&good_digest).manifests.iter().all(|m| m.available));
+        assert!(listed(&bad_digest).manifests.iter().all(|m| !m.available));
+        assert!(store.collect().is_ok());
+        assert!(store.has(&good_digest) && store.has(&sha256(&layer)));
+    }
+
+    /// A download that opened the partial file before another moved it into place, and
+    /// then had the lock, finds it no longer at its path: it neither goes on with the
+    /// stored blob nor removes another's partial there, but starts over with a file of
+    /// its own (download_as).
+    #[cfg(unix)]
+    #[test]
+    fn a_download_waiting_on_a_finished_one_finds_its_file_moved() {
+        let root = temp("download-moved");
+        let store = Store::open(&root).unwrap();
+        let blob = b"the blob".to_vec();
+        let digest = sha256(&blob);
+        let limits = Limits::none();
+        let path = root
+            .join("ingest")
+            .join(format!("sha256-{}.partial", digest.hex()));
+        let mut first = store
+            .download(&digest, blob.len() as u64, &limits)
+            .unwrap()
+            .unwrap();
+        let waiting = File::options().read(true).write(true).open(&path).unwrap();
+        first.write(&blob).unwrap();
+        first.commit().unwrap();
+        waiting.lock().unwrap();
+        assert!(!still_at(&waiting, &path).unwrap());
+        // A third download's partial at the path is not the one waited on either.
+        let third = File::create(&path).unwrap();
+        assert!(!still_at(&waiting, &path).unwrap());
+        assert!(still_at(&third, &path).unwrap());
     }
 
     fn described(digest: &Digest, size: usize) -> Descriptor {

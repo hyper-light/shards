@@ -324,6 +324,7 @@ fn stored(store: &Store, name: &str, desc: &Descriptor, max: u64) -> Result<Vec<
     match store.held(desc, max)? {
         Held::Whole(bytes) => Ok(bytes),
         Held::Changed(why) => Err(Error::of(ErrorKind::Changed, why)),
+        Held::Invalid(why) => Err(Error::new(why)),
         Held::Missing => Err(Error::new(format!("{name}: {} is not in the store", desc.digest))),
     }
 }

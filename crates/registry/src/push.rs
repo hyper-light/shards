@@ -47,8 +47,10 @@ pub fn push(
     if let Document::Index(index) = oci::parse_document(&bytes, &target.media_type)? {
         // Every child first: an index whose content is not all here is not pushed.
         for child in &index.manifests {
-            if !matches!(store.held(child, oci::MAX_MANIFEST)?, Held::Whole(_)) {
-                return Err(missing(&child.digest));
+            match store.held(child, oci::MAX_MANIFEST)? {
+                Held::Whole(_) => {}
+                Held::Invalid(why) => return Err(Error::new(why)),
+                Held::Missing | Held::Changed(_) => return Err(missing(&child.digest)),
             }
         }
         for child in &index.manifests {
@@ -63,7 +65,8 @@ pub fn push(
 fn document(store: &Store, desc: &Descriptor) -> Result<Vec<u8>, Error> {
     match store.held(desc, oci::MAX_MANIFEST)? {
         Held::Whole(b) => Ok(b),
-        _ => Err(missing(&desc.digest)),
+        Held::Invalid(why) => Err(Error::new(why)),
+        Held::Missing | Held::Changed(_) => Err(missing(&desc.digest)),
     }
 }
 

@@ -128,6 +128,7 @@ fn present(store: &Store, image: &Image) -> Result<Vec<Digest>, Error> {
         vec![image.target.clone()]
     } else {
         match store.held(&image.target, oci::MAX_MANIFEST)? {
+            Held::Invalid(why) => return bad(why),
             Held::Whole(bytes) => {
                 found.push(image.id.clone());
                 match serde_json::from_slice::<oci::Index>(&bytes) {
@@ -213,8 +214,10 @@ fn docker_manifest(store: &Store, image: &Image, names: &[String]) -> Result<Str
         platform: None,
         annotations: BTreeMap::new(),
     };
-    let Held::Whole(bytes) = store.held(&desc, oci::MAX_MANIFEST)? else {
-        return bad(format!("{}: its manifest is not here", image.id));
+    let bytes = match store.held(&desc, oci::MAX_MANIFEST)? {
+        Held::Whole(bytes) => bytes,
+        Held::Invalid(why) => return bad(why),
+        Held::Missing | Held::Changed(_) => return bad(format!("{}: its manifest is not here", image.id)),
     };
     let manifest = match serde_json::from_slice::<oci::Manifest>(&bytes) {
         Ok(m) => m,

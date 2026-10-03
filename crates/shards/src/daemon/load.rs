@@ -393,6 +393,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 "failed to decompress input tar archive: shards reads plain, gzip and zstd archives".into(),
             ),
         };
+        // What it ingested before failing goes with the next collection.
+        let refuse = |said: &str| {
+            self.collect.store(true, std::sync::atomic::Ordering::SeqCst);
+            refuse(said)
+        };
         let (index, contents) = match imported {
             Ok(imported) => imported,
             Err(e) => return refuse(&e),

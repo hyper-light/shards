@@ -327,6 +327,7 @@ impl Registry {
         }
         let changed = match store.held(desc, MAX_MANIFEST)? {
             Held::Whole(bytes) => return Ok(bytes),
+            Held::Invalid(why) => return Err(Error::new(why)),
             Held::Missing => false,
             Held::Changed(_) => true,
         };
