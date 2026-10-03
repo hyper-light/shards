@@ -976,6 +976,34 @@ fn warm_vms_are_bounded_across_templates() {
 /// warm VM, not the most a pool may keep; runs at once keep more, up to that most; and a
 /// pool unclaimed past `SHARDS_POOL_KEEP` keeps none. The next run is served all the
 /// same, and its pool keeps VMs again.
+/// Each warm VM of a pool is given its template's root filesystem (`--backing`), the
+/// one file a restore of it may name, so that what the VM saving the template wrote does
+/// not choose what the next is given.
+#[test]
+fn warm_vms_are_given_their_templates_root_filesystem() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home_with("daemon-backing");
+    let env: [(&str, &OsStr); 2] = [("SHARDS_HOME", home.as_os_str()), ("SHARDS_POOL", "2".as_ref())];
+    let run = run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT);
+    assert_eq!(run.status, Some(0), "{}", run.stderr);
+    let templates = home.join("templates").to_string_lossy().into_owned();
+    let warm = || -> Vec<String> {
+        let out = Command::new("ps").args(["-axo", "args="]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.contains(&templates) && l.contains(" restore "))
+            .map(String::from)
+            .collect()
+    };
+    eventually("the pool refilled", || !warm().is_empty());
+    for vm in warm() {
+        assert!(vm.contains(" --backing /") && vm.contains("/rootfs/"), "{vm}");
+    }
+}
+
 #[test]
 fn pools_keep_what_their_runs_need_while_they_come() {
     if cannot_run_vms() || cannot_snapshot() {

@@ -33,9 +33,9 @@ const RUN_USAGE: &str = "usage: shards vm run --kernel PATH [--initrd PATH | --i
   --snapshot-dir: where to write a snapshot when the guest asks for one (then stop, by default)
   Console escape: Ctrl-A x stops the VM.";
 
-const RESTORE_USAGE: &str = "usage: shards vm restore DIR [--hold] [--vsock PATH] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
-       shards vm restore DIR [--hold] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
-       shards vm restore DIR --warm FD
+const RESTORE_USAGE: &str = "usage: shards vm restore DIR [--hold] [--vsock PATH] [--no-console] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
+       shards vm restore DIR [--hold] [--backing PATH[:ro]]... [WORKLOAD OPTIONS] -- COMMAND [ARG...]
+       shards vm restore DIR --warm FD [--backing PATH[:ro]]...
   Resumes the VM in snapshot directory DIR. With a COMMAND, DIR is a template saved by
   `shards vm run --rootfs`, and the command runs there as `docker run` would.
   Workload options, as for `docker run`: -e NAME[=VALUE], -w DIR, -u USER[:GROUP],
@@ -48,6 +48,8 @@ const RESTORE_USAGE: &str = "usage: shards vm restore DIR [--hold] [--vsock PATH
           request costs only the command.
   --warm: resume at once and connect, then take one command, with the stdio and connection
           of the client it is for, from the daemon on the Unix socket at descriptor FD.
+  --backing: a file the snapshot restores against, read-only with :ro: given, a snapshot
+             naming any other is refused, its state being what the VM saving it wrote.
   Console escape: Ctrl-A x stops the VM.";
 
 /// An argument that is text, with an error naming it if it is not UTF-8. Paths are taken
@@ -297,6 +299,7 @@ struct Restore {
 fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String> {
     let mut args = args;
     let (mut dir, mut common, mut hold, mut warm) = (None, Common::new(), false, None);
+    let mut backing = Vec::new();
     while let Some(arg) = args.next() {
         // The snapshot directory is a path, in whatever bytes; every option is text.
         let Some(flag) = arg.to_str().map(str::to_owned) else {
@@ -313,6 +316,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         match flag.as_str() {
             "-h" | "--help" => return Err(String::new()),
             "--hold" => hold = true,
+            "--backing" => backing.push(disk(value("--backing")?)),
             "--warm" => {
                 let fd = text(value("--warm")?)?;
                 warm = Some(
@@ -330,6 +334,12 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         }
     }
     common.check_workload()?;
+    if !backing.is_empty() {
+        let given = backing.into_iter().map(|d: Disk| (d.path, d.read_only)).collect();
+        BACKING
+            .set(given)
+            .map_err(|_| "--backing given twice".to_string())?;
+    }
     if warm.is_some()
         && (hold
             || common.workload_options
@@ -935,7 +945,25 @@ fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     granted_template(&cfg.dir)?;
     #[cfg(not(target_os = "macos"))]
     paths.read_under.push(cfg.dir.clone());
-    for (path, read_only) in shards_vmm::snapshot::backing_files(&cfg.dir)? {
+    let backing = shards_vmm::snapshot::backing_files(&cfg.dir)?;
+    // A spawner that says which files the template restores against gives those alone:
+    // the template's state, which a VM process wrote, names what this one is confined to
+    // and granted, and may name anything.
+    if let Some(given) = BACKING.get() {
+        let unasked: Vec<String> = backing
+            .iter()
+            .filter(|b| !given.contains(b))
+            .map(|(path, read_only)| format!("{}{}", path.display(), if *read_only { ":ro" } else { "" }))
+            .collect();
+        if !unasked.is_empty() {
+            return Err(format!(
+                "{}: the template names files it was not given: {}",
+                cfg.dir.display(),
+                unasked.join(", ")
+            ));
+        }
+    }
+    for (path, read_only) in backing {
         let list = if read_only {
             &mut paths.read
         } else {
@@ -959,6 +987,10 @@ fn absolute(path: &Path) -> Result<PathBuf, String> {
         _ => std::path::absolute(path).map_err(|e| format!("{}: {e}", path.display())),
     }
 }
+
+/// The files a restore's spawner gives it to restore against (`--backing PATH[:ro]`): a
+/// template naming another is refused.
+static BACKING: std::sync::OnceLock<Vec<(PathBuf, bool)>> = std::sync::OnceLock::new();
 
 /// The directory relative paths are of (`--cwd DIR`): `shards vm`'s own on macOS, where App
 /// Sandbox starts a VM process in its container instead.

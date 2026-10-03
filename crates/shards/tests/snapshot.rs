@@ -153,6 +153,40 @@ fn the_original_guest_can_continue_after_its_snapshot() {
     assert!(clone.stdout.contains("SHARDS-TEST PASS"), "{clone}");
 }
 
+/// A restore given the files its snapshot restores against (`--backing`) refuses a
+/// snapshot that names another: what a VM process wrote does not choose what the next
+/// one is given.
+#[test]
+fn a_restore_given_its_files_refuses_a_snapshot_naming_others() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let s = Scratch::new("snapshot-backing");
+    let r = boot_and_snapshot(&s, "stop");
+    assert_eq!(r.status, Some(0), "{r}");
+    let dir = s.snapshot();
+    let ours = s.disk();
+    let given = run_shards(
+        &["vm", "restore"],
+        &[dir.to_str().unwrap(), "--backing", &ours],
+        TIMEOUT,
+    );
+    assert!(given.stdout.contains("SHARDS-TEST PASS"), "{given}");
+    let other = format!("{}:ro", s.0.join("other.img").display());
+    let refused = run_shards(
+        &["vm", "restore"],
+        &[dir.to_str().unwrap(), "--backing", &other],
+        TIMEOUT,
+    );
+    assert_ne!(refused.status, Some(0), "{refused}");
+    assert!(
+        refused
+            .stderr
+            .contains(&format!("the template names files it was not given: {ours}")),
+        "{refused}"
+    );
+}
+
 /// A VM that resumes after its snapshot serves its run whatever becomes of the snapshot:
 /// one that cannot be written loses the template, not the run.
 #[cfg(unix)]

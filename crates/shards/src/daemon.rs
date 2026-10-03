@@ -159,6 +159,10 @@ struct Pool {
     /// Its template's network device's MAC, if it has one, once read: each of its VMs
     /// needs a network process of its own.
     net: Option<Option<[u8; 6]>>,
+    /// The root filesystem its template was saved from, which the daemon knows from the
+    /// run that made it: the one file a restore of it may be given (`--backing`), whatever
+    /// the template's state, which a VM process wrote, names.
+    rootfs: Option<PathBuf>,
     ready: VecDeque<Ready>,
     starting: usize,
     /// Warm VMs in a row that never became ready.
@@ -391,6 +395,15 @@ impl Waiter {
 }
 
 /// The runs handed over, of `runs`.
+/// The pool of the template in `dir`, saved from `rootfs`, which it keeps as the VM
+/// saving the template recorded it: resolved, links and all (vmm platform::input_path).
+fn pool_of<'s>(state: &'s mut State, dir: &Path, rootfs: &Path) -> &'s mut Pool {
+    let pool = state.pools.entry(dir.to_path_buf()).or_default();
+    pool.rootfs
+        .get_or_insert_with(|| std::fs::canonicalize(rootfs).unwrap_or_else(|_| rootfs.to_path_buf()));
+    pool
+}
+
 fn tracked(runs: &HashMap<String, RunState>) -> impl Iterator<Item = &Tracked> {
     runs.values().filter_map(|r| match r {
         RunState::Tracked(t) => Some(t),
@@ -2271,7 +2284,7 @@ impl<D: Disk> Daemon<D> {
         }
         let dir = crate::run::template(&self.home, guest, &prepared.rootfs, &cfg);
         if shards_vmm::snapshot::exists(&dir) {
-            match self.claim(threads, &dir) {
+            match self.claim(threads, &dir, &prepared.rootfs) {
                 Ok(ready) => return Ok(ready),
                 Err(Claim::Failed(e)) => return Err(e),
                 Err(Claim::Broken) => {
@@ -2300,7 +2313,9 @@ impl<D: Disk> Daemon<D> {
         }
         crate::run::settle(&fresh, &dir);
         if ready.is_ok() && shards_vmm::snapshot::exists(&dir) {
-            self.refill(threads, &mut lock(&self.state), &dir);
+            let mut state = lock(&self.state);
+            pool_of(&mut state, &dir, &prepared.rootfs);
+            self.refill(threads, &mut state, &dir);
         }
         ready
     }
@@ -2308,7 +2323,12 @@ impl<D: Disk> Daemon<D> {
     /// A warm VM of the template in `dir`, once one is ready: one waiting, or one started
     /// for this run where none is starting for it, so a run is served whatever its pool
     /// keeps, and a burst waits for no refill (audit A13, A14).
-    fn claim<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, dir: &Path) -> Result<Ready, Claim> {
+    fn claim<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        dir: &Path,
+        rootfs: &Path,
+    ) -> Result<Ready, Claim> {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut state = lock(&self.state);
         let mut waiting = false;
@@ -2318,7 +2338,7 @@ impl<D: Disk> Daemon<D> {
             }
         };
         loop {
-            let pool = state.pools.entry(dir.to_path_buf()).or_default();
+            let pool = pool_of(&mut state, dir, rootfs);
             if pool.failures >= MAX_FAILURES {
                 state.pools.remove(dir);
                 return Err(Claim::Broken);
@@ -2386,7 +2406,12 @@ impl<D: Disk> Daemon<D> {
             return;
         };
         // It writes no file of the home: the daemon gives it its container's log (D30).
-        let args: Vec<OsString> = vec!["restore".into(), dir.into(), "--warm".into(), "3".into()];
+        let mut args: Vec<OsString> = vec!["restore".into(), dir.into(), "--warm".into(), "3".into()];
+        if let Some(rootfs) = &pool.rootfs {
+            let mut backing = rootfs.as_os_str().to_os_string();
+            backing.push(":ro");
+            args.extend(["--backing".into(), backing]);
+        }
         // A template that cannot be read gets no network process: its VM then fails to
         // restore it, as any broken template's does, and the claim finds it broken.
         let net = match pool.net {
