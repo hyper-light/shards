@@ -63,8 +63,8 @@ const USAGE: &str = "usage: shards daemon [--detached | stop]
 /// template tens of them.
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a VM's network process may take to say it has a run's published ports: a
-/// round trip on a socket pair to a process polling it, the second `netproc::reap` gives
-/// one to end.
+/// round trip on a socket pair to a process polling it, the grace one is given to end
+/// (`netproc::GRACE`).
 const PUBLISH_PATIENCE: Duration = Duration::from_secs(1);
 /// A template whose warm VMs fail this many times in a row is removed and saved again.
 const MAX_FAILURES: u32 = 3;
@@ -1617,10 +1617,10 @@ impl<D: Disk> Daemon<D> {
 
     /// Whose host address `at`, found in use, is: the host's; a running container's of
     /// this daemon, as dockerd's allocator knows its own; or a run's that ended, waited
-    /// for until its network process has gone (`netproc::reap`'s second, and as long
+    /// for until its network process has gone (its grace, `netproc::GRACE`, and as long
     /// again).
     fn in_use(&self, at: std::net::SocketAddr, proto: u8) -> publish::InUse {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::netproc::GRACE.saturating_mul(2);
         let mut held = lock(&self.ports_held);
         let mut waited = false;
         loop {
@@ -3007,11 +3007,7 @@ impl<D: Disk> Daemon<D> {
         let watching = std::thread::Builder::new()
             .name("warm vm".into())
             .spawn_scoped(threads, move || {
-                self.watch(threads, &watched, ours, grants, net_control, dest);
-                if let Some(net) = net_process {
-                    crate::netproc::reap(&net);
-                    self.free_ports(None, Some(watched.id()));
-                }
+                self.watch(threads, watched, ours, grants, net_control, dest, net_process)
             });
         if let Err(e) = watching {
             if pooled {
@@ -3023,16 +3019,20 @@ impl<D: Disk> Daemon<D> {
         Ok(())
     }
 
-    /// Waits for a VM to be ready and hands it to whoever it is for; then waits for its
-    /// end. A pooled VM that ends while waiting leaves its pool, which refills.
+    /// Waits for a VM to be ready and hands it to whoever it is for; then has its end, and
+    /// its network process's, followed by the followers' loop (`follow_vm`), and returns:
+    /// no thread waits out a VM's life. A pooled VM that ends while waiting leaves its
+    /// pool, which refills.
+    #[allow(clippy::too_many_arguments)]
     fn watch<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
-        child: &Arc<shards_ipc::Child>,
+        child: Arc<shards_ipc::Child>,
         socket: UnixStream,
         grants: Option<UnixStream>,
         net: Option<UnixStream>,
         dest: For,
+        net_process: Option<shards_ipc::Child>,
     ) {
         let pid = child.id();
         let began = Instant::now();
@@ -3094,23 +3094,11 @@ impl<D: Disk> Daemon<D> {
                 }
             },
         }
-        let status = child.wait();
-        if let For::Pool(dir) = dest {
-            let mut state = lock(&self.state);
-            let pool = state.pools.get_mut(&dir);
-            if let Some(pool) = pool
-                && let Some(i) = pool.ready.iter().position(|r| r.vm.id() == pid)
-            {
-                pool.ready.remove(i);
-                log(format!("warm VM {pid} ended while it waited ({status:?})"));
-                self.refill_soon(threads, Some(&dir));
-                return;
-            }
-        }
-        // A VM that served exits 0, whatever its command's status: the client has that.
-        if !matches!(status, Ok(0)) {
-            log(format!("VM {pid} ended with {status:?}"));
-        }
+        let pool = match dest {
+            For::Pool(dir) => Some(dir),
+            For::Run(_) => None,
+        };
+        self.follow_vm(threads, child, pool, net_process);
     }
 }
 
@@ -4299,7 +4287,7 @@ mod tests {
             assert!(!readable(&t.daemon.listener_wake.1));
             let watched = vm.clone();
             let (daemon, threads) = (&t.t.daemon, t.threads);
-            threads.spawn(move || daemon.watch(threads, &watched, socket, None, None, For::Pool(dir)));
+            threads.spawn(move || daemon.watch(threads, watched, socket, None, None, For::Pool(dir), None));
             shards_ipc::send(&theirs, kind::READY, &[], &[]).unwrap();
             t.until("the listener woken", |d| readable(&d.listener_wake.1));
             assert!(t.daemon.next_duty(false).is_some());
@@ -4995,6 +4983,122 @@ mod tests {
                 state.pools.get(&dir).map(|p| (p.failures, p.waiting, p.starting)),
                 Some((0, 0, 0))
             );
+        });
+    }
+
+    /// Whether process `pid` is gone, reaped: one that has ended unreaped still answers a
+    /// signal of 0.
+    fn reaped(pid: u32) -> bool {
+        // SAFETY: kill(2) with signal 0 only asks whether the process exists.
+        unsafe { libc::kill(pid as libc::pid_t, 0) != 0 }
+    }
+
+    /// A warm VM that ends while it waits is reaped, and taken out of its pool, by the
+    /// followers' loop: no thread waits out its life (PM M90).
+    #[test]
+    fn a_warm_vm_ending_as_it_waits_is_reaped_and_leaves_its_pool() {
+        let t = Test::new("vm-end");
+        t.run(|t| {
+            // A template, so that its pool stays as it refills.
+            let dir = t.home.join("template");
+            template(&dir);
+            let (ready, _theirs) = t.warm_vm(Some(dir.to_str().unwrap()));
+            let vm = ready.vm.clone();
+            lock(&t.daemon.state)
+                .pools
+                .entry(dir.clone())
+                .or_default()
+                .ready
+                .push_back(ready);
+            t.t.daemon
+                .follow_vm(t.threads, vm.clone(), Some(dir.clone()), None);
+            let _ = vm.kill(libc::SIGKILL);
+            t.until("the VM did not leave its pool", |d| {
+                lock(&d.state).pools.get(&dir).is_some_and(|p| p.ready.is_empty())
+            });
+            t.until("the VM was not reaped", |_| reaped(vm.id()));
+        });
+    }
+
+    /// A VM's network process is given its grace once the VM has ended, then ended, and
+    /// the VM's ports are freed once both have gone, not before.
+    #[test]
+    fn a_network_process_is_ended_past_its_grace_and_the_ports_freed() {
+        let t = Test::new("net-end");
+        t.run(|t| {
+            let (ready, _theirs) = t.warm_vm(None);
+            let vm = ready.vm.clone();
+            let net = shards_ipc::spawn(Path::new("/bin/sleep"), &["600".as_ref()], &[], false).unwrap();
+            let net_pid = net.id();
+            lock(&t.daemon.ports_held).push(publish::Held {
+                container: "c".into(),
+                vm: Some(vm.id()),
+                at: Vec::new(),
+                listeners: Vec::new(),
+            });
+            t.t.daemon.follow_vm(t.threads, vm.clone(), None, Some(net));
+            let ended = Instant::now();
+            let _ = vm.kill(libc::SIGKILL);
+            t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
+            assert!(ended.elapsed() >= crate::netproc::GRACE, "freed within the grace");
+            assert!(reaped(net_pid), "the network process was not reaped");
+            assert!(reaped(vm.id()));
+        });
+    }
+
+    /// A network process that ends before its VM is reaped, and the VM's ports stay held
+    /// until the VM ends too: then they are freed at once.
+    #[test]
+    fn ports_are_freed_as_the_vm_ends_after_its_network_process() {
+        let t = Test::new("net-first");
+        t.run(|t| {
+            let (ready, _theirs) = t.warm_vm(None);
+            let vm = ready.vm.clone();
+            let net = shards_ipc::spawn(Path::new("/bin/sleep"), &["600".as_ref()], &[], false).unwrap();
+            let net_pid = net.id();
+            lock(&t.daemon.ports_held).push(publish::Held {
+                container: "c".into(),
+                vm: Some(vm.id()),
+                at: Vec::new(),
+                listeners: Vec::new(),
+            });
+            t.t.daemon.follow_vm(t.threads, vm.clone(), None, Some(net));
+            // SAFETY: kill(2) of the test's own child.
+            unsafe { libc::kill(net_pid as libc::pid_t, libc::SIGKILL) };
+            t.until("the network process was not reaped", |_| reaped(net_pid));
+            assert_eq!(lock(&t.daemon.ports_held).len(), 1, "freed with the VM running");
+            let ended = Instant::now();
+            let _ = vm.kill(libc::SIGKILL);
+            t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
+            assert!(ended.elapsed() < crate::netproc::GRACE, "{:?}", ended.elapsed());
+        });
+    }
+
+    /// A VM that has ended before it is followed is reaped at once, and its network
+    /// process given its grace: macOS watches only ends to come, and refuses one past, so
+    /// the follower finds it, not the loop, which it then wakes to keep the grace.
+    #[test]
+    fn a_vm_ended_before_it_is_followed_is_reaped() {
+        let t = Test::new("vm-gone");
+        t.run(|t| {
+            // The loop, started and asleep, with nothing due.
+            let (ready, _theirs) = t.warm_vm(None);
+            t.t.daemon.follow_vm(t.threads, ready.vm.clone(), None, None);
+            std::thread::sleep(Duration::from_millis(100));
+            let vm = Arc::new(shards_ipc::spawn(Path::new("/usr/bin/true"), &[], &[], false).unwrap());
+            vm.ended().unwrap();
+            let net = shards_ipc::spawn(Path::new("/bin/sleep"), &["600".as_ref()], &[], false).unwrap();
+            let net_pid = net.id();
+            lock(&t.daemon.ports_held).push(publish::Held {
+                container: "c".into(),
+                vm: Some(vm.id()),
+                at: Vec::new(),
+                listeners: Vec::new(),
+            });
+            t.t.daemon.follow_vm(t.threads, vm.clone(), None, Some(net));
+            t.until("the VM was not reaped", |_| reaped(vm.id()));
+            t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
+            assert!(reaped(net_pid));
         });
     }
 

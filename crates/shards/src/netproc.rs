@@ -118,16 +118,37 @@ pub fn start(
     ))
 }
 
-/// Waits for a network process whose VM is gone: it goes as its doorbell hangs up, and is
-/// ended after a second if it has not.
+/// How long a network process whose VM is gone has to go before it is ended: it goes as
+/// its doorbell hangs up.
+pub const GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Waits for a network process whose VM is gone, [`GRACE`] at most, then ends it: woken by
+/// its end (`Poller::add_exit`), where one cannot be watched by a look every millisecond.
 pub fn reap(net: &shards_ipc::Child) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while net.try_wait().is_none() {
-        if std::time::Instant::now() > deadline {
-            let _ = net.kill(libc::SIGKILL);
-            let _ = net.wait();
-            return;
+    let deadline = std::time::Instant::now() + GRACE;
+    let watched = shards_vmm::platform::Poller::new()
+        .and_then(|poller| poller.add_exit(net.id(), 0).map(|watch| (poller, watch)));
+    match watched {
+        Ok((poller, _watch)) => {
+            let mut ready = Vec::new();
+            // A signal's interruption is an empty wait: until its end, or the deadline.
+            while ready.is_empty() {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() || poller.wait(&mut ready, Some(left)).is_err() {
+                    break;
+                }
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        // Ended already (macOS refuses to watch it then).
+        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {}
+        Err(_) => {
+            while net.try_wait().is_none() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+    if net.try_wait().is_none() {
+        let _ = net.kill(libc::SIGKILL);
+        let _ = net.wait();
     }
 }

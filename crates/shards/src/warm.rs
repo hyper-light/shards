@@ -58,8 +58,8 @@ pub fn adopt_release(fd: RawFd) -> Result<(), String> {
 /// Has the network process close the run's published ports, and waits until it has, so
 /// that they are free once the run's end is told, as dockerd frees a container's before
 /// its exit is (`docker run --rm -p 80 …; docker run -p 80 …` finds it free). A network
-/// process that does not answer within a second is ended with the VM, as
-/// `netproc::reap` ends one, and frees them then.
+/// process that does not answer within a second is ended with the VM, as the daemon ends
+/// one past its grace (`netproc::GRACE`), and frees them then.
 fn release_ports() {
     if !PUBLISHED.load(std::sync::atomic::Ordering::Relaxed) {
         return;

@@ -955,6 +955,14 @@ for the exit status.
       (`platform::Poller`: kqueue(2) on macOS, epoll(7) on Linux, level-triggered) takes
       each run's messages as they come in whole. A socket the poller cannot take has its
       run followed on a thread of its own.
+    - The same thread follows every VM process to its end, and its network process to its
+      own (`Poller::add_exit`: kqueue's `EVFILT_PROC` on macOS, a pidfd on Linux 5.3 and
+      later), reaping each as it ends: a network process still running its grace after
+      its VM, a second, is ended, and the VM's ports are freed once both have gone. A VM's
+      watcher thread lives until its VM is ready, where it waited out the VM's life, the
+      one thread an idle run still cost [PM M90]. macOS watches only ends to come, and
+      refuses a child that has ended already (`ESRCH`, measured), which is then reaped at
+      once; a process whose end cannot be watched is waited for on a thread of its own.
     - One thread schedules the health checks of the containers that have one, from a
       heap of their due times, and runs each probe on a thread while it runs; dockerd
       keeps a goroutine per container and one per probe (moby 0fed273 daemon/health.go

@@ -656,6 +656,14 @@ fn clear_errno() {
     }
 }
 
+/// A child process's end, watched ([`Poller::add_exit`]): on Linux its descriptor, whose
+/// closing ends the watch; on macOS nothing, kqueue dropping the event once it is told.
+#[derive(Debug)]
+pub struct ExitWatch {
+    #[cfg(not(target_os = "macos"))]
+    _pidfd: std::os::fd::OwnedFd,
+}
+
 /// Descriptors waited on together for something to read, or their end, each named by
 /// a token: kqueue on macOS (kqueue(2), `EVFILT_READ`), epoll on Linux (epoll(7)). Level
 /// by level: one stays ready while anything is left to read, or once it has ended. A
@@ -707,6 +715,59 @@ impl Poller {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
+        }
+    }
+
+    /// Watches child process `pid` for its end, named `token`: ready once it has exited,
+    /// when its status is taken without waiting. On macOS once (`EVFILT_PROC`,
+    /// `NOTE_EXIT`, delivered `EV_ONESHOT`); on Linux until the watch is dropped, through
+    /// the process's descriptor (pidfd_open(2), Linux 5.3), readable once it has exited.
+    /// macOS attaches only what comes after (xnu-11417.101.15 bsd/kern/kern_event.c,
+    /// `filt_procattach`), and refuses a child that has ended already with `ESRCH`: look at
+    /// the child once its end is watched.
+    pub fn add_exit(&self, pid: u32, token: u64) -> io::Result<ExitWatch> {
+        let pid = libc::pid_t::try_from(pid)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a process ID out of range"))?;
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: kevent is plain data, for which all zeroes is a value.
+            let mut change: libc::kevent = unsafe { std::mem::zeroed() };
+            change.ident = pid.unsigned_abs() as libc::uintptr_t;
+            change.filter = libc::EVFILT_PROC;
+            change.flags = libc::EV_ADD;
+            change.fflags = libc::NOTE_EXIT;
+            change.udata = token as usize as *mut libc::c_void;
+            // SAFETY: kevent(2) applying one change, asking for no events.
+            if unsafe {
+                libc::kevent(
+                    self.fd.as_raw_fd(),
+                    &change,
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null(),
+                )
+            } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(ExitWatch {})
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            use std::os::fd::{AsFd as _, FromRawFd as _};
+            // SAFETY: pidfd_open(2) of a process, without flags: its descriptor is
+            // close-on-exec.
+            let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+            if raw < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let raw = std::os::fd::RawFd::try_from(raw)
+                .map_err(|_| io::Error::other("a descriptor out of range"))?;
+            // SAFETY: a descriptor just made, owned by nothing else.
+            let pidfd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+            self.add(pidfd.as_fd(), token)?;
+            Ok(ExitWatch { _pidfd: pidfd })
         }
     }
 

@@ -221,6 +221,54 @@ mod tests {
         }
     }
 
+    /// A child's end is told once it has exited, not before, and once; its status is
+    /// then taken without waiting. A child that has ended already is ready at once on
+    /// Linux, and refused on macOS (`ESRCH`, measured): its watcher looks at it instead.
+    #[cfg(unix)]
+    #[test]
+    fn a_poller_tells_of_a_childs_end() {
+        use std::time::Duration;
+        let poller = Poller::new().unwrap();
+        let mut ready = Vec::new();
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("0.3")
+            .spawn()
+            .unwrap();
+        {
+            let _watch = poller.add_exit(child.id(), 9).unwrap();
+            poller.wait(&mut ready, Some(Duration::from_millis(50))).unwrap();
+            assert!(ready.is_empty(), "told of an end to come");
+            poller.wait(&mut ready, Some(Duration::from_secs(10))).unwrap();
+            assert_eq!(ready, [9]);
+            assert!(child.try_wait().unwrap().is_some(), "not to be taken at once");
+        }
+        poller.wait(&mut ready, Some(Duration::from_millis(50))).unwrap();
+        assert!(ready.is_empty(), "told twice");
+        let mut ended = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 3"])
+            .spawn()
+            .unwrap();
+        // SAFETY: an all-zero siginfo_t is valid; waitid(2) fills it for our child, which it
+        // leaves unreaped (WNOWAIT).
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        let waited =
+            unsafe { libc::waitid(libc::P_PID, ended.id(), &mut info, libc::WEXITED | libc::WNOWAIT) };
+        assert_eq!(waited, 0);
+        let watched = poller.add_exit(ended.id(), 10);
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                watched.map(|_| ()).map_err(|e| e.raw_os_error()),
+                Err(Some(libc::ESRCH))
+            );
+        } else {
+            let _watch = watched.unwrap();
+            poller.wait(&mut ready, Some(Duration::from_secs(1))).unwrap();
+            assert_eq!(ready, [10]);
+        }
+        assert_eq!(ended.wait().unwrap().code(), Some(3));
+    }
+
     /// A watch on a directory wakes for a name's coming and going there, and for writes
     /// to the file it watches in it, only that file's, and waits again once cleared;
     /// all wherever the directory goes. A write to a file it does not watch wakes it not.

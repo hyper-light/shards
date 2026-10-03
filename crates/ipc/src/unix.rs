@@ -647,23 +647,27 @@ impl Child {
         self.pid.unsigned_abs()
     }
 
-    /// Waits for the child to end: its exit status, or 128 plus the signal that ended it.
-    pub fn wait(&self) -> io::Result<i32> {
-        // Waits for the end without reaping (WNOWAIT): the pid is still the child's while
-        // `kill` may look at it.
+    /// Waits for the child to end, without reaping it (WNOWAIT): its pid stays the child's,
+    /// for `kill` to look at, until [`wait`](Self::wait) takes its status.
+    pub fn ended(&self) -> io::Result<()> {
         loop {
             // SAFETY: an all-zero siginfo_t is valid; waitid(2) fills it for our child.
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
             // SAFETY: as above.
             let r = unsafe { libc::waitid(libc::P_PID, self.id(), &mut info, libc::WEXITED | libc::WNOWAIT) };
             if r == 0 {
-                break;
+                return Ok(());
             }
             let e = io::Error::last_os_error();
             if e.kind() != io::ErrorKind::Interrupted {
                 return Err(e);
             }
         }
+    }
+
+    /// Waits for the child to end: its exit status, or 128 plus the signal that ended it.
+    pub fn wait(&self) -> io::Result<i32> {
+        self.ended()?;
         let mut reaped = self.reaped.lock().unwrap_or_else(PoisonError::into_inner);
         let mut status = 0;
         loop {
