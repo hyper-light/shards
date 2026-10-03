@@ -2378,6 +2378,47 @@ fn load_reads_archives_as_docker_load_does() {
         (Some(0), "Loaded image: linked:1\n"),
         "{loaded}"
     );
+    // An image for another platform is loaded and not unpacked, and nothing more is said
+    // of it, as dockerd says nothing (measured, Docker 29.3.1, an amd64 archive on arm64);
+    // a run of it is refused, as no guest here runs it.
+    let (_, foreign) = common::test_image_with(Some(b"foreign"));
+    let host_arch = format!(
+        r#""architecture":"{}""#,
+        if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "amd64"
+        }
+    );
+    let foreign_config = String::from_utf8(foreign[0].clone())
+        .unwrap()
+        .replace(&host_arch, r#""architecture":"s390x""#)
+        .into_bytes();
+    assert_ne!(
+        foreign_config, foreign[0],
+        "the config named the host's architecture"
+    );
+    let other = common::tar(&[
+        ("cfg.json", 0o644, 0, Some(foreign_config.as_slice())),
+        ("fff", 0o755, 0, None),
+        ("fff/layer.tar", 0o644, 0, Some(foreign[1].as_slice())),
+        (
+            "manifest.json",
+            0o644,
+            0,
+            Some(br#"[{"Config":"cfg.json","RepoTags":["foreign:1"],"Layers":["fff/layer.tar"]}]"#),
+        ),
+    ]);
+    let other_tar = home.join("foreign.tar");
+    std::fs::write(&other_tar, other).unwrap();
+    let loaded = shards(&["load", "-i", other_tar.to_str().unwrap()]);
+    assert_eq!(
+        (loaded.status, loaded.stdout.as_str(), loaded.stderr.as_str()),
+        (Some(0), "Loaded image: foreign:1\n", ""),
+        "{loaded}"
+    );
+    let ran = run_in(&home, "foreign:1", &["--rm"], &["exit", "0"]);
+    assert_ne!(ran.status, Some(0), "{ran}");
     // Its manifest as containerd writes one for it, byte for byte: its ID is that.
     let manifest = format!(
         r#"{{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{{"mediaType":"application/vnd.docker.container.image.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.docker.image.rootfs.diff.tar","digest":"{}","size":{}}}]}}"#,

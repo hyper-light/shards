@@ -319,16 +319,39 @@ fn named(index: &oci::Index) -> Vec<Named> {
 }
 
 /// The manifest of `target` for our platform, if the archive holds one: `target`
-/// itself if it is a manifest for it, or what its index offers for it.
+/// itself if it is a manifest for it, as its descriptor labels it or else its config says,
+/// as an unpack checks it; or the best its index offers for it of what the archive holds,
+/// as an index may list platforms it was saved without. An image for another platform
+/// is loaded, not unpacked, and nothing is said of it, as dockerd says nothing.
 fn ours(store: &Store, target: &Descriptor) -> Option<Descriptor> {
     let targets = shards_image::platform::guest();
-    let bytes = match store.held(target, oci::MAX_MANIFEST) {
-        Ok(shards_image::store::Held::Whole(b)) => b,
-        _ => return None,
+    let held = |d: &Descriptor, limit: u64| match store.held(d, limit) {
+        Ok(shards_image::store::Held::Whole(b)) => Some(b),
+        _ => None,
     };
+    let bytes = held(target, oci::MAX_MANIFEST)?;
     match oci::parse_document(&bytes, &target.media_type).ok()? {
-        oci::Document::Index(index) => shards_image::platform::select(&index, &targets).cloned(),
-        oci::Document::Manifest(_) => Some(target.clone()),
+        oci::Document::Index(mut index) => {
+            index
+                .manifests
+                .retain(|d| d.digest().is_ok_and(|d| store.has(&d)));
+            shards_image::platform::select(&index, &targets).cloned()
+        }
+        oci::Document::Manifest(m) => {
+            let platform = match &target.platform {
+                Some(p) => p.clone(),
+                None => {
+                    let config = oci::parse_config(&held(&m.config, oci::MAX_CONFIG)?).ok()?;
+                    oci::Platform {
+                        architecture: config.architecture,
+                        os: config.os,
+                        variant: config.variant,
+                        ..oci::Platform::default()
+                    }
+                }
+            };
+            shards_image::platform::runs(&platform, &targets).then(|| target.clone())
+        }
     }
 }
 
