@@ -312,17 +312,25 @@ fn split_wildcards(p: &[u8]) -> (Vec<u8>, Vec<u8>) {
 }
 
 /// fsutil's resolveWildcards: a `filepath.Walk` of `base` keeping what `comp` matches,
-/// and not descending into a directory it keeps.
+/// and not descending into a directory it keeps. `filepath.Match` matches no `/` with a
+/// wildcard, so what it matches has as many components as `comp`: the walk goes no
+/// deeper, where fsutil's walks the whole tree to find nothing more.
 fn match_walk(fs: &Fs, base: &[u8], comp: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
     let mut out = Vec::new();
+    let depth = comp.iter().filter(|&&c| c == b'/').count() + 1;
     let root = fs.lstat(base).map_err(|e| Error(e.to_string()))?;
     walk_dir(fs, base, root, &mut |path, id| {
         let rel = rel(base, path);
         if rel == b"." {
             return Ok(Visit::Continue);
         }
+        let deepest = rel.iter().filter(|&&c| c == b'/').count() + 1 >= depth;
         if !glob::filepath_match(comp, &rel).unwrap_or(false) {
-            return Ok(Visit::Continue);
+            return Ok(if deepest && fs.is_dir(id) {
+                Visit::SkipDir
+            } else {
+                Visit::Continue
+            });
         }
         out.push(path.to_vec());
         Ok(if fs.is_dir(id) {
