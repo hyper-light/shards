@@ -915,62 +915,64 @@ impl Planner<'_> {
         Ok(())
     }
 
-    /// `validateCircularDependency`: a stage that reads itself through others.
+    /// `validateCircularDependency`: a stage that reads itself through others. Depth
+    /// first, as BuildKit's recursion goes, on a stack of our own: a chain of stages as
+    /// long as a Dockerfile can hold exhausts no thread's.
     fn validate_circular_dependency(&self) -> Result<(), Fail> {
-        let mut visited = vec![false; self.states.len()];
-        for start in 0..self.states.len() {
+        let n = self.states.len();
+        let (mut visited, mut path) = (vec![false; n], vec![false; n]);
+        // Each stage on the path, with the next of its dependencies to visit; `current`,
+        // the steps that led to each but the first.
+        let mut stack: Vec<(usize, usize)> = Vec::new();
+        let mut current: Vec<Location> = Vec::new();
+        let mark = |marks: &mut Vec<bool>, i: usize, on: bool| {
+            if let Some(m) = marks.get_mut(i) {
+                *m = on;
+            }
+        };
+        for start in 0..n {
             if visited.get(start).copied().unwrap_or(true) {
                 continue;
             }
-            // Depth first, with the steps that led here and the stages on the path.
-            let mut path = vec![false; self.states.len()];
-            if let Some(cmds) = self.visit_cycle(start, &mut visited, &mut path, &mut Vec::new()) {
-                let name = self
+            mark(&mut visited, start, true);
+            mark(&mut path, start, true);
+            stack.push((start, 0));
+            while let Some((state, next)) = stack.last_mut() {
+                let deps = self
                     .states
-                    .get(start)
-                    .map(|s| s.stage_name.clone())
+                    .get(*state)
+                    .map(|s| s.deps.as_slice())
                     .unwrap_or_default();
-                let mut f = Fail::new(errb(&[b"circular dependency detected on stage: ", &name]));
-                for loc in &cmds {
-                    f = f.at(loc);
+                let Some((dep, loc)) = deps.get(*next) else {
+                    mark(&mut path, *state, false);
+                    stack.pop();
+                    current.pop();
+                    continue;
+                };
+                *next += 1;
+                current.push(loc.clone());
+                if path.get(*dep).copied().unwrap_or(false) {
+                    let name = self
+                        .states
+                        .get(start)
+                        .map(|s| s.stage_name.clone())
+                        .unwrap_or_default();
+                    let mut f = Fail::new(errb(&[b"circular dependency detected on stage: ", &name]));
+                    for loc in &current {
+                        f = f.at(loc);
+                    }
+                    return Err(f);
                 }
-                return Err(f);
+                if visited.get(*dep).copied().unwrap_or(true) {
+                    current.pop();
+                    continue;
+                }
+                mark(&mut visited, *dep, true);
+                mark(&mut path, *dep, true);
+                stack.push((*dep, 0));
             }
         }
         Ok(())
-    }
-
-    fn visit_cycle(
-        &self,
-        state: usize,
-        visited: &mut Vec<bool>,
-        path: &mut Vec<bool>,
-        current: &mut Vec<Location>,
-    ) -> Option<Vec<Location>> {
-        if visited.get(state).copied().unwrap_or(true) {
-            return None;
-        }
-        if let Some(v) = visited.get_mut(state) {
-            *v = true;
-        }
-        if let Some(p) = path.get_mut(state) {
-            *p = true;
-        }
-        let deps = self.states.get(state).map(|s| s.deps.clone()).unwrap_or_default();
-        for (dep, loc) in deps {
-            current.push(loc);
-            if path.get(dep).copied().unwrap_or(false) {
-                return Some(current.clone());
-            }
-            if let Some(c) = self.visit_cycle(dep, visited, path, current) {
-                return Some(c);
-            }
-            current.pop();
-        }
-        if let Some(p) = path.get_mut(state) {
-            *p = false;
-        }
-        None
     }
 
     fn reachable(&self, from: usize) -> BTreeSet<usize> {
@@ -2496,7 +2498,11 @@ fn set_dep(deps: &mut Vec<(usize, Location)>, s: usize, loc: &Location) {
     }
 }
 
+/// `strings.Index`: where `needle` first is in `hay`; an empty one is at 0.
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
@@ -3253,5 +3259,19 @@ impl LintError for Linter {
             }
         }
         format!("lint violation found for rules: {}", seen.join(", ")).into_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `strings.Index`: an empty needle is at the start.
+    #[test]
+    fn an_empty_needle_is_found_at_the_start() {
+        assert_eq!(find(b"abc", b""), Some(0));
+        assert_eq!(find(b"", b""), Some(0));
+        assert_eq!(find(b"abc", b"c"), Some(2));
+        assert_eq!(find(b"abc", b"d"), None);
     }
 }

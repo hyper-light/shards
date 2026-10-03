@@ -1271,3 +1271,47 @@ fn add_fetches_urls_as_buildkit_does() {
         );
     }
 }
+
+/// Two bases, the one's tag the start of the other's, as `python:3.12` and
+/// `python:3.12-slim` are: each stage is built on its own base's layers.
+#[test]
+fn bases_whose_names_share_a_start_are_each_their_own() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (port, repos) = common::writable_registry();
+    {
+        let mut repos = repos.lock().unwrap();
+        let kind = "application/vnd.oci.image.manifest.v1+json".to_string();
+        for (tag, variant) in [("v1", &b"one"[..]), ("v1-x", b"two")] {
+            let (manifest, blobs) = common::test_image_with(Some(variant));
+            let manifests = repos.manifests.entry("test/base".into()).or_default();
+            manifests.insert(tag.into(), (kind.clone(), manifest.clone()));
+            manifests.insert(common::sha256_digest(&manifest), (kind.clone(), manifest));
+            let stored = repos.blobs.entry("test/base".into()).or_default();
+            for blob in blobs {
+                stored.insert(common::sha256_digest(&blob), blob);
+            }
+        }
+    }
+    let home = TempDir::new("build-two-bases-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let base = format!("127.0.0.1:{port}/test/base");
+    let ctx = context(
+        "build-two-bases",
+        &format!("FROM {base}:v1 AS one\nFROM {base}:v1-x\nCOPY --from=one /etc/variant /one\n"),
+    );
+    let built = shards(&["build", "-t", "two:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "--rm", "two:1", "stat", "/etc/variant", "/one"]);
+    assert_eq!(
+        ran.stdout, "/etc/variant file 644 0:0 3\n= two\n/one file 644 0:0 3\n= one\n",
+        "{}",
+        ran.stderr
+    );
+}

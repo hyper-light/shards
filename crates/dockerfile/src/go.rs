@@ -350,7 +350,8 @@ pub(crate) fn parse_duration(orig: &[u8]) -> Result<i64, Vec<u8>> {
                 return Err(invalid());
             }
         }
-        d += v;
+        // Go's uint64 sum, which wraps past 2^64 as it does.
+        d = d.wrapping_add(v);
         if d > LIMIT {
             return Err(invalid());
         }
@@ -1224,6 +1225,18 @@ mod tests {
         assert!(!equal_fold_ascii(b"ke", b"key"));
         assert!(!equal_fold_ascii("\u{130}".as_bytes(), b"i"));
     }
+    /// Durations past 2^63 as Go 1.26's ParseDuration reads them: two halves wrap to 0,
+    /// a sum past the limit is refused, and the least of them is taken.
+    #[test]
+    fn durations_wrap_as_gos() {
+        assert_eq!(
+            parse_duration(b"9223372036854775808ns9223372036854775808ns"),
+            Ok(0)
+        );
+        assert!(parse_duration(b"9223372036854775807ns1ns").is_err());
+        assert_eq!(parse_duration(b"-9223372036854775808ns"), Ok(i64::MIN));
+    }
+
     /// Times parse and print as Go 1.26's `Time.UnmarshalJSON` and `MarshalJSON` do; the
     /// answers are Go's. tests/oracle.rs holds the rest, as image configs' times.
     #[test]

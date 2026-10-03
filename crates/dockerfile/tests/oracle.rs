@@ -1301,3 +1301,30 @@ fn dockerignore_files_read_as_buildkits_frontend_reads_them() {
         assert_eq!(&Value::Object(got), want, "{file:?}");
     }
 }
+
+/// A chain of stages each reading the next, none of them the target, longer than the
+/// stack of a test's thread held when the cycle check recursed (10,000 overflowed 2 MiB):
+/// planned, as BuildKit plans it, and a cycle through it still found.
+#[test]
+fn a_long_chain_of_stages_plans() {
+    const STAGES: usize = 20_000;
+    let mut text = String::new();
+    for i in 0..STAGES - 1 {
+        text.push_str(&format!("FROM scratch AS s{i}\nCOPY --from=s{} /a /a\n", i + 1));
+    }
+    text.push_str(&format!("FROM scratch AS s{}\n", STAGES - 1));
+    let opts = shards_dockerfile::plan::Options {
+        target_platform: shards_dockerfile::platform::Platform::new("linux", "amd64"),
+        build_platforms: vec![shards_dockerfile::platform::Platform::new("linux", "amd64")],
+        ..Default::default()
+    };
+    let none = Images(serde_json::Map::new());
+    let planned = shards_dockerfile::plan::plan(text.as_bytes(), &opts, &none);
+    assert!(planned.is_ok(), "{:?}", planned.err());
+    text.push_str("COPY --from=s0 /a /a\n");
+    let cycle = shards_dockerfile::plan::plan(text.as_bytes(), &opts, &none);
+    let said = cycle
+        .err()
+        .map(|e| String::from_utf8_lossy(&e.message).into_owned());
+    assert_eq!(said.as_deref(), Some("circular dependency detected on stage: s0"));
+}

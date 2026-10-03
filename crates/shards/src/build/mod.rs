@@ -186,7 +186,6 @@ fn host_memory() -> Option<u64> {
 
 /// A base image as the build resolved it.
 struct Base {
-    reference: Reference,
     image: Image,
     layers: Vec<Layer>,
 }
@@ -198,6 +197,8 @@ struct Bases<'a> {
     store: &'a Store,
     pull: bool,
     progress: &'a RefCell<Progress>,
+    /// Each base, by what the planner names its source: the name it resolved, without
+    /// any digest it carried, then `@` and the digest it resolved to.
     resolved: RefCell<BTreeMap<String, Base>>,
 }
 
@@ -290,14 +291,10 @@ impl Bases<'_> {
             digest: Some(pulled.resolved.to_string().into_bytes()),
             config,
         };
-        self.resolved.borrow_mut().insert(
-            name.to_string(),
-            Base {
-                reference,
-                image,
-                layers,
-            },
-        );
+        let bare = name.rsplit_once('@').map_or(name, |(bare, _)| bare);
+        self.resolved
+            .borrow_mut()
+            .insert(format!("{bare}@{}", pulled.resolved), Base { image, layers });
         Ok(resolved)
     }
 }
@@ -616,8 +613,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                     let layers = bases
                         .resolved
                         .borrow()
-                        .values()
-                        .find(|b| reference.starts_with(&b.reference.to_string()))
+                        .get(&reference)
                         .map(|b| b.layers.clone())
                         .ok_or_else(|| format!("{reference}: not resolved"))?;
                     if !layers.is_empty() {
@@ -722,8 +718,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 let base = bases
                     .resolved
                     .borrow()
-                    .values()
-                    .find(|b| reference.starts_with(&b.reference.to_string()))
+                    .get(&reference)
                     .map(|b| b.layers.clone())
                     .ok_or_else(|| format!("{reference}: not resolved"))?;
                 let r = if read.contains(&i) {
@@ -899,12 +894,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 OpKind::Source { identifier, .. } => {
                     if let Some(reference) = identifier.strip_prefix(b"docker-image://") {
                         let reference = show(reference);
-                        base_image = bases
-                            .resolved
-                            .borrow()
-                            .values()
-                            .find(|b| reference.starts_with(&b.reference.to_string()))
-                            .map(|b| b.image.clone());
+                        base_image = bases.resolved.borrow().get(&reference).map(|b| b.image.clone());
                     }
                     break;
                 }
