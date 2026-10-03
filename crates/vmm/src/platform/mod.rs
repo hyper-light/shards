@@ -164,9 +164,66 @@ mod tests {
         ready == 1
     }
 
+    /// A poller names what has something to read, or has ended, by its token; waits out
+    /// its timeout when nothing is; names one again while anything is left to read
+    /// (level); forgets what it no longer watches; and gives what one wait cannot hold
+    /// in the next.
+    #[cfg(unix)]
+    #[test]
+    fn a_poller_names_what_is_ready() {
+        use std::io::Read as _;
+        use std::os::fd::AsFd as _;
+        use std::os::unix::net::UnixStream;
+        use std::time::{Duration, Instant};
+        let poller = Poller::new().unwrap();
+        let (mut a, a_peer) = UnixStream::pair().unwrap();
+        let (b, b_peer) = UnixStream::pair().unwrap();
+        poller.add(a_peer.as_fd(), 7).unwrap();
+        poller.add(b_peer.as_fd(), 9).unwrap();
+        let mut ready = Vec::new();
+        let t0 = Instant::now();
+        poller.wait(&mut ready, Some(Duration::from_millis(50))).unwrap();
+        assert!(ready.is_empty());
+        assert!(t0.elapsed() >= Duration::from_millis(50), "{:?}", t0.elapsed());
+        a.write_all(b"x").unwrap();
+        poller.wait(&mut ready, None).unwrap();
+        assert_eq!(ready, [7]);
+        poller.wait(&mut ready, Some(Duration::ZERO)).unwrap();
+        assert_eq!(ready, [7], "ready while unread");
+        let mut byte = [0u8; 1];
+        (&a_peer).read_exact(&mut byte).unwrap();
+        poller.wait(&mut ready, Some(Duration::ZERO)).unwrap();
+        assert!(ready.is_empty());
+        // An end is ready: shut, not closed, so no copy a child took keeps it open.
+        b.shutdown(std::net::Shutdown::Write).unwrap();
+        poller.wait(&mut ready, None).unwrap();
+        assert_eq!(ready, [9]);
+        poller.remove(b_peer.as_fd()).unwrap();
+        poller.wait(&mut ready, Some(Duration::ZERO)).unwrap();
+        assert!(ready.is_empty());
+        // More ready than one wait holds: each comes, as what is read stops being ready.
+        let pairs: Vec<(UnixStream, UnixStream)> = (0..150).map(|_| UnixStream::pair().unwrap()).collect();
+        for (i, (_, theirs)) in pairs.iter().enumerate() {
+            poller.add(theirs.as_fd(), 100 + i as u64).unwrap();
+        }
+        for (mut ours, _) in pairs.iter().map(|(o, t)| (o, t)) {
+            ours.write_all(b"y").unwrap();
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        while seen.len() < pairs.len() {
+            poller.wait(&mut ready, Some(Duration::from_secs(5))).unwrap();
+            assert!(!ready.is_empty(), "{} of {} seen", seen.len(), pairs.len());
+            for &token in &ready {
+                let (_, theirs) = &pairs[(token - 100) as usize];
+                (&*theirs).read_exact(&mut byte).unwrap();
+                assert!(seen.insert(token), "{token} twice");
+            }
+        }
+    }
+
     /// A watch on a directory wakes for a name's coming and going there, and for writes
     /// to the file it watches in it, only that file's, and waits again once cleared;
-    /// all wherever the directory goes.
+    /// all wherever the directory goes. A write to a file it does not watch wakes it not.
     #[cfg(unix)]
     #[test]
     fn a_watch_sees_a_directory_and_its_file_change() {
@@ -184,7 +241,11 @@ mod tests {
         let opened = open_dir(&dir).unwrap();
         let mut watch = FileWatch::new(&opened).unwrap();
         assert!(!readable(watch.fd()));
+        a.write_all(b"w").unwrap();
+        assert!(!readable(watch.fd()), "a write, with no file watched");
         watch.file(&File::open(dir.join("a")).unwrap()).unwrap();
+        b.write_all(b"w").unwrap();
+        assert!(!readable(watch.fd()), "a write to a file not watched");
         a.write_all(b"x").unwrap();
         assert!(readable(watch.fd()), "a write to the file watched");
         watch.clear();
@@ -193,6 +254,9 @@ mod tests {
         assert!(readable(watch.fd()), "a name come");
         watch.clear();
         watch.file(&File::open(dir.join("b")).unwrap()).unwrap();
+        watch.clear();
+        a.write_all(b"w").unwrap();
+        assert!(!readable(watch.fd()), "a write to the file watched before");
         b.write_all(b"y").unwrap();
         assert!(readable(watch.fd()), "a write to the file watched now");
         watch.clear();

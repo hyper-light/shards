@@ -656,11 +656,183 @@ fn clear_errno() {
     }
 }
 
+/// Descriptors waited on together for something to read, or their end, each named by
+/// a token: kqueue on macOS (kqueue(2), `EVFILT_READ`), epoll on Linux (epoll(7)). Level
+/// by level: one stays ready while anything is left to read, or once it has ended. A
+/// wait costs what is ready, not what is watched.
+#[derive(Debug)]
+pub struct Poller {
+    fd: std::os::fd::OwnedFd,
+}
+
+impl Poller {
+    pub fn new() -> io::Result<Poller> {
+        use std::os::fd::FromRawFd as _;
+        #[cfg(target_os = "macos")]
+        // SAFETY: kqueue(2) takes no arguments. A kqueue is not inherited by a child.
+        let raw = unsafe { libc::kqueue() };
+        #[cfg(not(target_os = "macos"))]
+        // SAFETY: epoll_create1(2) with a flag.
+        let raw = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+        if raw < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a descriptor just made, owned by nothing else.
+        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+        Ok(Poller { fd })
+    }
+
+    /// Watches `fd`, named `token`, until it is [`remove`](Self::remove)d or closed.
+    pub fn add(&self, fd: std::os::fd::BorrowedFd<'_>, token: u64) -> io::Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            self.change(fd, libc::EV_ADD, token)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut event = libc::epoll_event {
+                events: (libc::EPOLLIN | libc::EPOLLRDHUP) as u32,
+                u64: token,
+            };
+            // SAFETY: epoll_ctl(2) adding a descriptor the caller holds open.
+            if unsafe {
+                libc::epoll_ctl(
+                    self.fd.as_raw_fd(),
+                    libc::EPOLL_CTL_ADD,
+                    fd.as_raw_fd(),
+                    &mut event,
+                )
+            } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    /// Stops watching `fd`.
+    pub fn remove(&self, fd: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            self.change(fd, libc::EV_DELETE, 0)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // SAFETY: epoll_ctl(2) removing a descriptor; the event is ignored (and may be
+            // null since Linux 2.6.9).
+            if unsafe {
+                libc::epoll_ctl(
+                    self.fd.as_raw_fd(),
+                    libc::EPOLL_CTL_DEL,
+                    fd.as_raw_fd(),
+                    std::ptr::null_mut(),
+                )
+            } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn change(&self, fd: std::os::fd::BorrowedFd<'_>, flags: u16, token: u64) -> io::Result<()> {
+        // SAFETY: kevent is plain data, for which all zeroes is a value.
+        let mut change: libc::kevent = unsafe { std::mem::zeroed() };
+        change.ident = fd.as_raw_fd() as libc::uintptr_t;
+        change.filter = libc::EVFILT_READ;
+        change.flags = flags;
+        change.udata = token as usize as *mut libc::c_void;
+        // SAFETY: kevent(2) applying one change, asking for no events.
+        if unsafe {
+            libc::kevent(
+                self.fd.as_raw_fd(),
+                &change,
+                1,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            )
+        } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Waits until some of those watched are ready, or `timeout` passes (`None`: for as
+    /// long as it takes), and puts their tokens in `ready`, which it empties first. A
+    /// signal's interruption is a wait that found nothing.
+    pub fn wait(&self, ready: &mut Vec<u64>, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        ready.clear();
+        const AT_ONCE: usize = 64;
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: kevent is plain data, for which all zeroes is a value.
+            let mut events: [libc::kevent; AT_ONCE] = unsafe { std::mem::zeroed() };
+            let spec = timeout.map(|t| libc::timespec {
+                tv_sec: libc::time_t::try_from(t.as_secs()).unwrap_or(libc::time_t::MAX),
+                tv_nsec: libc::c_long::from(t.subsec_nanos()),
+            });
+            // SAFETY: kevent(2) asking for up to AT_ONCE events into a buffer that size.
+            let n = unsafe {
+                libc::kevent(
+                    self.fd.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    events.as_mut_ptr(),
+                    AT_ONCE as libc::c_int,
+                    spec.as_ref()
+                        .map_or(std::ptr::null(), |s| s as *const libc::timespec),
+                )
+            };
+            let n = match usize::try_from(n) {
+                Ok(n) => n,
+                Err(_) => return interrupted_or(io::Error::last_os_error()),
+            };
+            ready.extend(events.iter().take(n).map(|e| e.udata as usize as u64));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // SAFETY: epoll_event is plain data, for which all zeroes is a value.
+            let mut events: [libc::epoll_event; AT_ONCE] = unsafe { std::mem::zeroed() };
+            // Rounded up: a wait of 0 ms would return at once, and spin.
+            let ms = timeout.map_or(-1, |t| {
+                libc::c_int::try_from(t.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
+            });
+            // SAFETY: epoll_wait(2) for up to AT_ONCE events into a buffer that size.
+            let n = unsafe {
+                libc::epoll_wait(
+                    self.fd.as_raw_fd(),
+                    events.as_mut_ptr(),
+                    AT_ONCE as libc::c_int,
+                    ms,
+                )
+            };
+            let n = match usize::try_from(n) {
+                Ok(n) => n,
+                Err(_) => return interrupted_or(io::Error::last_os_error()),
+            };
+            ready.extend(events.iter().take(n).map(|e| e.u64));
+        }
+        Ok(())
+    }
+}
+
+/// A wait a signal cut short found nothing; any other failure is one.
+fn interrupted_or(e: io::Error) -> io::Result<()> {
+    if e.kind() == io::ErrorKind::Interrupted {
+        Ok(())
+    } else {
+        Err(e)
+    }
+}
+
 /// A watch on a directory, for other processes' changes to it: its descriptor becomes
-/// readable once a name in it has come or gone, or a file of it that is watched has been
-/// written, for poll(2) to wait on beside others. kqueue's `EVFILT_VNODE` on macOS, on the
-/// directory and on each file watched (kqueue(2)); inotify on Linux, whose watch on a
-/// directory sees its files' writes too (inotify(7)).
+/// readable once a name in it has come or gone, or the file of it that is watched has
+/// been written, and for no other file's writes, for poll(2) to wait on beside others.
+/// kqueue's `EVFILT_VNODE` on macOS (kqueue(2)), inotify on Linux (inotify(7)), each on
+/// the directory and on the file watched.
 #[derive(Debug)]
 pub struct FileWatch {
     fd: std::os::fd::OwnedFd,
@@ -669,6 +841,9 @@ pub struct FileWatch {
     _dir: File,
     #[cfg(target_os = "macos")]
     file: Option<File>,
+    /// inotify's watch of the file watched.
+    #[cfg(not(target_os = "macos"))]
+    file: Option<libc::c_int>,
 }
 
 impl FileWatch {
@@ -706,8 +881,9 @@ impl FileWatch {
             // which inotify follows.
             let name = std::ffi::CString::new(format!("/proc/self/fd/{}", dir.as_raw_fd()))
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))?;
-            let mask = libc::IN_MODIFY
-                | libc::IN_CREATE
+            // Names alone: a write to a file in it is not one, nor seen unless the file
+            // is watched (`file`).
+            let mask = libc::IN_CREATE
                 | libc::IN_DELETE
                 | libc::IN_MOVED_TO
                 | libc::IN_MOVED_FROM
@@ -718,12 +894,13 @@ impl FileWatch {
             if unsafe { libc::inotify_add_watch(raw, name.as_ptr(), mask) } < 0 {
                 return Err(io::Error::last_os_error());
             }
-            Ok(FileWatch { fd })
+            Ok(FileWatch { fd, file: None })
         }
     }
 
     /// Watches `file`, one in the directory, for writes, in place of the one watched
-    /// before. On Linux the directory's watch sees them already.
+    /// before. On Linux that may wake it once: the watch replaced says it has gone
+    /// (`IN_IGNORED`, inotify(7)).
     pub fn file(&mut self, file: &File) -> io::Result<()> {
         #[cfg(target_os = "macos")]
         {
@@ -733,7 +910,24 @@ impl FileWatch {
             self.file = Some(file);
         }
         #[cfg(not(target_os = "macos"))]
-        let _ = file;
+        {
+            let name = std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))?;
+            // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
+            let watched =
+                unsafe { libc::inotify_add_watch(self.fd.as_raw_fd(), name.as_ptr(), libc::IN_MODIFY) };
+            if watched < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // The same file again is the same watch, its mask replaced (inotify(7)); one
+            // whose file is gone went with it, and its removal fails harmlessly.
+            if let Some(before) = self.file.replace(watched)
+                && before != watched
+            {
+                // SAFETY: inotify_rm_watch(2) of a watch of this descriptor's.
+                unsafe { libc::inotify_rm_watch(self.fd.as_raw_fd(), before) };
+            }
+        }
         Ok(())
     }
 

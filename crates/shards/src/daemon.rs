@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -27,12 +27,14 @@ use std::time::{Duration, Instant};
 
 use shards_ipc::{Identity, Run, kind};
 use shards_registry::http::Cancel;
+use shards_vmm::platform::FileWatch;
 use shards_vmm::vm::Config;
 
 use crate::containers::{self, Container, Disk, Real, Registry, Removal, State as Life};
 
 mod commands;
 mod demand;
+mod follow;
 mod health;
 mod images;
 mod inspect;
@@ -95,10 +97,11 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 /// its VM goes too: dockerd gives up on its containers after the larger of its shutdown
 /// timeout (15 s) and the stop timeout plus 5 s (moby daemon/daemon.go, ShutdownTimeout).
 const SHUTDOWN_KILL: Duration = Duration::from_secs(5);
-/// How often the daemon looks at its clock when no client arrives.
-const TICK: libc::c_int = 250;
-/// [`TICK`], as a duration: how often a waiting command looks at its client.
-const TICK_TIME: Duration = Duration::from_millis(TICK.unsigned_abs() as u64);
+/// How often a listener out of descriptors looks for one again: nothing tells of one
+/// closed anywhere in the process. And how often one whose watches could not be made
+/// looks at its home, and one whose collection waits for the store's lease tries again:
+/// nothing tells of a lock let go (flock(2)).
+const RETRY: Duration = Duration::from_millis(250);
 /// How long a client may take to send its whole request (audit A07). One sends it as it
 /// connects; one that has not by now is broken, or trickling it out.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -274,7 +277,7 @@ struct Tracked {
 }
 
 /// What a run has told the daemon, and the socket it tells it on: read under this lock
-/// alone, by the run's own thread as messages come (`follow`), and by every container
+/// alone, by the followers' loop as messages come (`follow`), and by every container
 /// command before it answers (`settle`). A run tells the daemon of its start and end
 /// before its client learns of them, so a command sees what any client has seen.
 struct Inbox {
@@ -383,22 +386,18 @@ fn gather(set: &mut WorkingSet, limit: u64, payload: &[u8]) -> Gathered {
 /// One waiting for a container to end ([`Daemon::await_exit`]), by its number.
 struct Waiter {
     number: u64,
-    tell: mpsc::Sender<u8>,
-    /// Written to as it is told, for one that waits in poll(2): `logs -f`.
-    wake: Option<UnixStream>,
+    /// Written the exit code: its other end, which the waiter waits on in poll(2) beside
+    /// its client's connection, then reads it.
+    wake: UnixStream,
 }
 
 impl Waiter {
     /// Tells it the container's exit code.
     fn hear(&self, code: u8) {
-        let _ = self.tell.send(code);
-        if let Some(wake) = &self.wake {
-            let _ = (&*wake).write_all(&[code]);
-        }
+        let _ = (&self.wake).write_all(&[code]);
     }
 }
 
-/// The runs handed over, of `runs`.
 /// The pool of the template in `dir`, saved from `rootfs`, which it keeps as the VM
 /// saving the template recorded it: resolved, links and all (vmm platform::input_path).
 fn pool_of<'s>(state: &'s mut State, dir: &Path, rootfs: &Path) -> &'s mut Pool {
@@ -463,8 +462,9 @@ struct Daemon<D: Disk = Real> {
     /// connection is its command's once its request is read, and leaves here then.
     clients: Mutex<HashMap<u64, Arc<UnixStream>>>,
     next_client: AtomicU64,
-    /// A client left: another may be taken.
-    admitted: Condvar,
+    /// Written to wake the listener: a client left, a run ended (`wake_listener`). Its
+    /// other end, which the listener waits on, read.
+    listener_wake: (UnixStream, UnixStream),
     /// What runs still being prepared are downloading, by client: a shutdown cancels it.
     preparing: Mutex<HashMap<u64, Cancel>>,
     last: Mutex<Instant>,
@@ -512,6 +512,15 @@ struct Daemon<D: Disk = Real> {
     saved: AtomicU64,
     /// A collection is due: at start, and once a pull has moved a reference (audit A13).
     collect: AtomicBool,
+    /// Every run followed to its end by one thread (follow.rs).
+    followers: follow::Followers,
+    /// The removals of `--rm` containers that ended, made durable together (follow.rs).
+    completing: follow::Completing,
+    /// When each running container's health check is next due (health.rs).
+    checks: health::Checks,
+    /// Runs waiting for a VM booted for them, by number: told as the daemon stops.
+    booting: Mutex<HashMap<u64, mpsc::Sender<Result<Ready, String>>>>,
+    next_cold: AtomicU64,
     /// The home's lock, held while this daemon lives.
     home_lock: File,
 }
@@ -527,12 +536,11 @@ struct Busy<'a, D: Disk>(&'a Daemon<D>, u64);
 impl<D: Disk> Drop for Busy<'_, D> {
     fn drop(&mut self) {
         *lock(&self.0.last) = Instant::now();
-        // Under the lock the listener waits with, so its wakeup is not lost.
         let mut clients = lock(&self.0.clients);
         clients.remove(&self.1);
         self.0.busy.fetch_sub(1, Ordering::SeqCst);
         drop(clients);
-        self.0.admitted.notify_all();
+        self.0.wake_listener();
     }
 }
 
@@ -729,7 +737,8 @@ fn serve() -> Result<(), String> {
     let vm = shards_ipc::vm_binary(&exe);
     let containers = Registry::open(&home, &mut |note| log(note))
         .map_err(|e| format!("{}: {e}", home.join("containers").display()))?;
-    let daemon = Daemon::new(home, vm, identity, settings, containers, Real, home_lock);
+    let daemon = Daemon::new(home, vm, identity, settings, containers, Real, home_lock)
+        .map_err(|e| format!("following runs: {e}"))?;
     daemon.make_spare();
     log(format!(
         "serving {} on {}, with up to {} descriptors open",
@@ -738,7 +747,10 @@ fn serve() -> Result<(), String> {
         descriptors.map_or_else(|| "an unknown number of".to_string(), |n| n.to_string())
     ));
     // The daemon exits from within, so its threads are never waited for here.
-    std::thread::scope(|threads| daemon.listen(threads, listener));
+    std::thread::scope(|threads| {
+        daemon.start_completer(threads);
+        daemon.listen(threads, listener);
+    });
     Ok(())
 }
 
@@ -859,8 +871,8 @@ impl<D: Disk> Daemon<D> {
         containers: Registry,
         disk: D,
         home_lock: File,
-    ) -> Daemon<D> {
-        Daemon {
+    ) -> io::Result<Daemon<D>> {
+        Ok(Daemon {
             home,
             vm,
             identity,
@@ -876,7 +888,12 @@ impl<D: Disk> Daemon<D> {
             busy: AtomicUsize::new(0),
             clients: Mutex::default(),
             next_client: AtomicU64::new(0),
-            admitted: Condvar::new(),
+            listener_wake: {
+                let (tell, heard) = UnixStream::pair()?;
+                tell.set_nonblocking(true)?;
+                heard.set_nonblocking(true)?;
+                (tell, heard)
+            },
             preparing: Mutex::default(),
             last: Mutex::new(Instant::now()),
             stopping: AtomicBool::new(false),
@@ -899,8 +916,13 @@ impl<D: Disk> Daemon<D> {
             spare: Mutex::default(),
             saved: AtomicU64::new(0),
             collect: AtomicBool::new(true),
+            followers: follow::Followers::new()?,
+            completing: follow::Completing::default(),
+            checks: health::Checks::default(),
+            booting: Mutex::default(),
+            next_cold: AtomicU64::new(0),
             home_lock,
-        }
+        })
     }
 
     /// Removes the socket, once: no client arrives from here on.
@@ -914,8 +936,23 @@ impl<D: Disk> Daemon<D> {
     /// removes the socket, so no client arrives after, serves any that already did, and
     /// exits.
     fn listen<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, mut listener: UnixListener) {
-        // Out of descriptors, since when: said once, not every tick.
+        // Out of descriptors, since when: said once, not every retry.
         let mut starved_since: Option<Instant> = None;
+        // The home, whose removal and its socket's the listener must see, and its images,
+        // where a pull leaves a collection due (pull.rs, `collect_due`). Where a watch
+        // cannot be made, the listener looks again every RETRY.
+        let watch = |dir: &Path| match File::open(dir).and_then(|d| FileWatch::new(&d)) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                log(format!("watching {}: {e}", dir.display()));
+                None
+            }
+        };
+        let images = self.home.join("images");
+        if let Err(e) = shards_vmm::platform::create_private_dir(&images) {
+            log(format!("{}: {e}", images.display()));
+        }
+        let watches = [watch(&self.home), watch(&images)];
         loop {
             let closing = self.closed.load(Ordering::SeqCst);
             // A daemon whose home is gone has nothing left to serve, and its runs' containers
@@ -996,25 +1033,87 @@ impl<D: Disk> Daemon<D> {
             if self.closed.load(Ordering::SeqCst) && quiet {
                 self.exit();
             }
-            // At the cap, or starved, the listener would be readable at once: wait for a
-            // client to leave instead, or a tick.
-            let clients = lock(&self.clients);
-            if starved || self.busy.load(Ordering::SeqCst) >= MAX_CLIENTS {
-                drop(
-                    self.admitted
-                        .wait_timeout(clients, TICK_TIME)
-                        .unwrap_or_else(PoisonError::into_inner),
-                );
-                continue;
-            }
-            drop(clients);
-            let mut pfd = libc::pollfd {
-                fd: listener.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
+            // At the cap, or starved, the listener would be readable at once: it waits for
+            // a client to leave instead.
+            let accepting = !starved && self.busy.load(Ordering::SeqCst) < MAX_CLIENTS;
+            let looking =
+                starved || watches.iter().any(Option::is_none) || self.collect.load(Ordering::SeqCst);
+            let timeout = if looking {
+                Some(RETRY.min(self.next_duty(quiet).unwrap_or(RETRY)))
+            } else {
+                self.next_duty(quiet)
             };
-            // SAFETY: poll(2) on one valid pollfd.
-            unsafe { libc::poll(&mut pfd, 1, TICK) };
+            self.wait_for_work(accepting.then_some(&listener), &watches, timeout);
+        }
+    }
+
+    /// Wakes the listener: something it waits for may have happened.
+    fn wake_listener(&self) {
+        // A full buffer is a wakeup already pending.
+        let _ = (&self.listener_wake.0).write(&[0]);
+    }
+
+    /// How long until the listener has something to do that no client asks for: the idle
+    /// exit, once nothing runs (`quiet`), or a pool's keep-alive running out.
+    fn next_duty(&self, quiet: bool) -> Option<Duration> {
+        let now = Instant::now();
+        let idle = quiet
+            .then(|| lock(&self.last).checked_add(self.idle))
+            .flatten()
+            .map(|at| at.saturating_duration_since(now));
+        let aging = lock(&self.state)
+            .pools
+            .values()
+            .filter(|p| p.waiting == 0 && !p.ready.is_empty())
+            // Never claimed from, it has expired already (`Demand::expired`).
+            .filter_map(|p| {
+                p.demand
+                    .last()
+                    .map_or(Some(now), |last| last.checked_add(self.keep))
+            })
+            .map(|at| at.saturating_duration_since(now))
+            .min();
+        idle.into_iter().chain(aging).min()
+    }
+
+    /// Waits until a client arrives (`listener`, when given), the listener is woken, a
+    /// watch sees a change, or `timeout` passes (for ever if `None`).
+    fn wait_for_work(
+        &self,
+        listener: Option<&UnixListener>,
+        watches: &[Option<FileWatch>; 2],
+        timeout: Option<Duration>,
+    ) {
+        let pollfd = |fd: RawFd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let watched = |w: &Option<FileWatch>| w.as_ref().map_or(-1, |w| w.fd().as_raw_fd());
+        let mut polled = [
+            pollfd(self.listener_wake.1.as_raw_fd()),
+            pollfd(watched(&watches[0])),
+            pollfd(watched(&watches[1])),
+            pollfd(listener.map_or(-1, AsRawFd::as_raw_fd)),
+        ];
+        // Rounded up: a wait of 0 ms would return at once, and spin.
+        let ms = timeout.map_or(-1, |t| {
+            libc::c_int::try_from(t.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
+        });
+        // SAFETY: poll(2) on pollfds of descriptors this daemon holds open (negative ones
+        // are ignored).
+        unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, ms) };
+        let [wake, home, images, _] = polled;
+        if wake.revents != 0 {
+            let mut drained = [0u8; 64];
+            while matches!((&self.listener_wake.1).read(&mut drained), Ok(n) if n > 0) {}
+        }
+        for (ready, watch) in [(home, &watches[0]), (images, &watches[1])] {
+            if ready.revents != 0
+                && let Some(watch) = watch
+            {
+                watch.clear();
+            }
         }
     }
 
@@ -1055,15 +1154,9 @@ impl<D: Disk> Daemon<D> {
                 };
                 // The client's descriptors are closed by now: its run goes on in the VM.
                 if let Some((id, inbox)) = handed {
-                    // Its health checks, beside it, as dockerd's monitor runs them.
-                    let watched = id.clone();
-                    if let Err(e) = std::thread::Builder::new()
-                        .name("health".into())
-                        .spawn_scoped(threads, move || self.monitor_health(&watched))
-                    {
-                        log(format!("container {id}: its health checks' thread: {e}"));
-                    }
-                    self.follow(&id, &inbox);
+                    // Its health checks, as dockerd's monitor runs them.
+                    self.watch_health(threads, &id);
+                    self.follow(threads, id, inbox);
                 }
             });
         if let Err(e) = spawned {
@@ -1605,6 +1698,23 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         }
+        // A name held by a container that ended with `--rm`, its end not yet taken or its
+        // removal not yet durable, is free once that is done, as dockerd's is by the time
+        // `docker run --rm` returns: its end is taken, and its removal waited for.
+        if let Some(given) = &run.name {
+            let name = given.strip_prefix('/').unwrap_or(given);
+            let holder = lock(&self.containers).name_taken(name).map(|c| c.id.clone());
+            if let Some(holder) = holder {
+                let inbox = match lock(&self.runs).get(&holder) {
+                    Some(RunState::Tracked(t)) => Some(t.inbox.clone()),
+                    _ => None,
+                };
+                if let Some(inbox) = inbox {
+                    self.take_messages(&holder, &inbox);
+                }
+                self.await_released(name);
+            }
+        }
         let mut registry = lock(&self.containers);
         let name = match &run.name {
             Some(given) => {
@@ -1846,6 +1956,29 @@ impl<D: Disk> Daemon<D> {
         synced
     }
 
+    /// [`complete`](Self::complete) of a batch: one sync of their directory makes every
+    /// removal set aside before it durable.
+    fn complete_batch(&self, batch: &[Removal]) {
+        let Some(first) = batch.first() else {
+            return;
+        };
+        let synced = first.sync(&self.disk);
+        for removal in batch {
+            let id = &removal.container.id;
+            match &synced {
+                Ok(()) => lock(&self.containers).release(id),
+                Err(e) => log(format!(
+                    "container {id}: its removal may not outlast a crash, and its name stays held: {e}"
+                )),
+            }
+            if let Err(e) = removal.delete(&self.disk) {
+                log(format!(
+                    "container {id}: deleting its files: {e}; the next start deletes them"
+                ));
+            }
+        }
+    }
+
     /// Commits the run of container `id` to the warm VM in hand, unless `rm` cancelled it
     /// or the daemon is stopping: then it never starts, and the error is what its client
     /// is told. `stop_runs` sets `ending` under the same lock, so a run either commits
@@ -1990,27 +2123,6 @@ impl<D: Disk> Daemon<D> {
         lock(&self.runs).insert(id.to_string(), RunState::Tracked(tracked));
         self.resolved.notify_all();
         inbox
-    }
-
-    /// Follows a run to its end, and keeps its container's record: running once the VM
-    /// says STARTED, exited at its DONE, or at the VM's end if the VM dies first. A command
-    /// that never started leaves its container created, with the status that says why
-    /// (moby daemon/start.go). A detached run's client learns whether its command started,
-    /// and if not, why not, as `docker run -d` does.
-    fn follow(&self, id: &str, inbox: &Mutex<Inbox>) {
-        // Open while `inbox` holds the socket.
-        let fd = lock(inbox).socket.stream.as_raw_fd();
-        // A command may have taken the run's end already; then this learns it within a
-        // tick.
-        while !self.take_messages(id, inbox) {
-            let mut pfd = libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: poll(2) on one valid pollfd.
-            unsafe { libc::poll(&mut pfd, 1, TICK) };
-        }
     }
 
     /// Takes the messages run `id` has sent and nobody has taken yet; whether it has
@@ -2194,6 +2306,7 @@ impl<D: Disk> Daemon<D> {
                 }
             });
             lock(&self.runs).remove(id);
+            lock(&self.health).remove(id);
             self.resolved.notify_all();
             for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
                 waiter.hear(status);
@@ -2201,7 +2314,7 @@ impl<D: Disk> Daemon<D> {
             removal
         };
         if let Some(removal) = removal {
-            let _ = self.complete(&removal);
+            self.complete_soon(removal);
         }
         // A detached command that never started: why, as `docker run -d` says it.
         if let Some(client) = inbox.detached.take() {
@@ -2210,6 +2323,8 @@ impl<D: Disk> Daemon<D> {
             let _ = shards_ipc::send(&client, kind::END, &[exits], &[]);
         }
         *lock(&self.last) = Instant::now();
+        // The last run's end starts the idle clock.
+        self.wake_listener();
     }
 
     /// Waits up to `limit` (for ever if `None`, or if it is too long to count) for the
@@ -2237,41 +2352,68 @@ impl<D: Disk> Daemon<D> {
             ) {
                 return Some(registry.get(id).and_then(|c| c.exit_code).unwrap_or(0));
             }
-            let (tell, told) = mpsc::channel();
+            let (told, wake) = match UnixStream::pair() {
+                Ok(pair) => pair,
+                Err(e) => {
+                    log(format!("container {id}: waiting for its end: {e}"));
+                    return None;
+                }
+            };
             let number = self.next_waiter.fetch_add(1, Ordering::Relaxed);
             lock(&self.waiters)
                 .entry(id.to_string())
                 .or_default()
-                .push(Waiter {
-                    number,
-                    tell,
-                    wake: None,
-                });
+                .push(Waiter { number, wake });
             (number, told)
         };
         // Registered: an end is heard from here, which needs the records' lock to be told.
         drop(registry);
         let deadline = limit.and_then(|l| Instant::now().checked_add(l));
+        // Its code, its client's end (a command's client sends nothing after its request:
+        // anything to read is its end), or the limit: nothing else wakes it.
         loop {
-            let step = deadline.map_or(TICK_TIME, |d| {
-                d.saturating_duration_since(Instant::now()).min(TICK_TIME)
+            let ms = deadline.map_or(-1, |d| {
+                let left = d.saturating_duration_since(Instant::now());
+                libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
             });
-            match told.recv_timeout(step) {
-                Ok(code) => return Some(code),
-                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    let over = deadline.is_some_and(|d| Instant::now() >= d);
-                    // A command's client sends nothing after its request: anything to
-                    // read is its end.
-                    if over || client.is_some_and(readable) {
-                        break;
-                    }
+            if ms == 0 {
+                break;
+            }
+            let mut polled = [
+                libc::pollfd {
+                    fd: told.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: client.map_or(-1, |c| c.as_raw_fd()),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            // SAFETY: poll(2) on two pollfds of descriptors this function holds open (a
+            // negative one is ignored).
+            if unsafe { libc::poll(polled.as_mut_ptr(), 2, ms) } < 0
+                && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
+            {
+                break;
+            }
+            let [code, hung_up] = polled;
+            if code.revents != 0 {
+                let mut byte = [0u8; 1];
+                if matches!((&told).read(&mut byte), Ok(1)) {
+                    return Some(byte[0]);
                 }
+            }
+            if hung_up.revents != 0 {
+                break;
             }
         }
         self.forget_waiter(id, number);
         // Its code may have come as it gave up.
-        told.try_recv().ok()
+        let _ = told.set_nonblocking(true);
+        let mut byte = [0u8; 1];
+        matches!((&told).read(&mut byte), Ok(1)).then_some(byte[0])
     }
 
     /// For `logs -f`: a socket readable once run `id` ends, and its waiter's number, to
@@ -2287,11 +2429,7 @@ impl<D: Disk> Daemon<D> {
         lock(&self.waiters)
             .entry(id.to_string())
             .or_default()
-            .push(Waiter {
-                number,
-                tell: mpsc::channel().0,
-                wake: Some(theirs),
-            });
+            .push(Waiter { number, wake: theirs });
         Ok(Some((number, ours)))
     }
 
@@ -2318,6 +2456,9 @@ impl<D: Disk> Daemon<D> {
         }
         self.close();
         self.stopping.store(true, Ordering::SeqCst);
+        for (_, booting) in lock(&self.booting).drain() {
+            let _ = booting.send(Err("the daemon is shutting down".into()));
+        }
         self.stop_runs(threads);
         self.end_clients();
         // Runs waiting for a warm VM look at `stopping` again; the lock orders the wakeup
@@ -2834,20 +2975,22 @@ impl<D: Disk> Daemon<D> {
             None
         };
         let (tx, rx) = mpsc::channel();
-        self.start(threads, &args, net, For::Run(tx))?;
-        // A VM given up on ends as its socket closes, the daemon's end dropped with it.
-        loop {
-            match rx.recv_timeout(TICK_TIME) {
-                Ok(ready) => return ready,
-                Err(mpsc::RecvTimeoutError::Timeout) if self.stopping.load(Ordering::SeqCst) => {
-                    return Err("the daemon is shutting down".into());
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err("the VM's watcher ended without a word".into());
-                }
-            }
+        // Told by a shutdown too: registered, then checked, so a shutdown either finds it
+        // or came before (`step_aside`).
+        let waiting = self.next_cold.fetch_add(1, Ordering::Relaxed);
+        lock(&self.booting).insert(waiting, tx.clone());
+        if self.stopping.load(Ordering::SeqCst) {
+            lock(&self.booting).remove(&waiting);
+            return Err("the daemon is shutting down".into());
         }
+        let started = self.start(threads, &args, net, For::Run(tx));
+        // A VM given up on ends as its socket closes, the daemon's end dropped with it.
+        let ready = started.and_then(|_| {
+            rx.recv()
+                .unwrap_or_else(|_| Err("the VM's watcher ended without a word".into()))
+        });
+        lock(&self.booting).remove(&waiting);
+        ready
     }
 
     /// Starts shards-vm with `args` as a warm VM whose daemon socket is its descriptor 3,
@@ -2977,6 +3120,7 @@ impl<D: Disk> Daemon<D> {
                 state.starting.remove(&pid);
                 let pool = state.pools.entry(dir.clone()).or_default();
                 pool.starting = pool.starting.saturating_sub(1);
+                let came = ready.is_ok();
                 match ready {
                     Ok(()) => {
                         pool.failures = 0;
@@ -2997,6 +3141,12 @@ impl<D: Disk> Daemon<D> {
                     }
                 }
                 self.changed.notify_all();
+                drop(state);
+                // A pool with a VM ready ages: a duty the listener, asleep since before,
+                // would sleep past (`next_duty`).
+                if came {
+                    self.wake_listener();
+                }
             }
             For::Run(tx) => match ready {
                 Ok(()) => {
@@ -3380,7 +3530,8 @@ mod tests {
                 containers,
                 disk,
                 home_lock,
-            );
+            )
+            .unwrap();
             Test {
                 daemon,
                 home,
@@ -3485,15 +3636,16 @@ mod tests {
         /// Reserves container `name` as a client's run does, its record being written; its
         /// ID.
         fn reserve(&self, name: &str) -> String {
-            self.reserve_with(name, None)
+            self.reserve_with(name, None, false)
         }
 
-        /// [`reserve`](Self::reserve), with the container's own stop signal.
-        fn reserve_with(&self, name: &str, stop_signal: Option<&str>) -> String {
+        /// [`reserve`](Self::reserve), with the container's own stop signal, and `--rm`.
+        fn reserve_with(&self, name: &str, stop_signal: Option<&str>, remove: bool) -> String {
             let (id, _log) = self.t.daemon.new_container().unwrap();
             let run = Run {
                 image: "test".into(),
                 name: Some(name.into()),
+                remove,
                 ..Run::default()
             };
             let prepared = Prepared {
@@ -3546,7 +3698,8 @@ mod tests {
                     },
                     acquire,
                 )?;
-                daemon.follow(&id, &inbox);
+                daemon.follow(threads, id.clone(), inbox);
+                until_ended(daemon, &id);
                 Ok(())
             });
             Starting {
@@ -3580,6 +3733,9 @@ mod tests {
         fn drop(&mut self) {
             let daemon = &self.test.daemon;
             lock(&daemon.recorder).take();
+            daemon.followers.end();
+            daemon.completing.end();
+            daemon.checks.end();
             daemon.end_clients();
             for vm in lock(&self.test.vms).iter() {
                 let _ = vm.kill(libc::SIGKILL);
@@ -3596,6 +3752,14 @@ mod tests {
                         }
                     });
             }
+        }
+    }
+
+    /// Waits until run `id` is followed no more: it has ended.
+    fn until_ended<D: Disk>(daemon: &Daemon<D>, id: &str) {
+        let mut runs = lock(&daemon.runs);
+        while matches!(runs.get(id), Some(RunState::Tracked(_))) {
+            runs = daemon.resolved.wait(runs).unwrap_or_else(PoisonError::into_inner);
         }
     }
 
@@ -4138,6 +4302,74 @@ mod tests {
             assert!(collected, "a collection with no lease held never went ahead");
             assert!(ours.exists(), "a template being saved was collected");
             assert!(!left.exists() && !unknown.exists());
+        });
+    }
+
+    /// The listener's duty for a pool is when `age_pools` first finds it expired: its
+    /// keep-alive after its last claim, or at once if it was never claimed from; none for
+    /// a pool with no VM ready, or one a run waits on.
+    #[test]
+    fn a_pool_is_the_listeners_duty_once_it_would_expire() {
+        let mut t = Test::new("duty");
+        t.daemon.keep = Duration::from_secs(60);
+        t.run(|t| {
+            assert_eq!(t.daemon.next_duty(false), None);
+            let claimed = PathBuf::from("claimed");
+            lock(&t.daemon.state)
+                .pools
+                .entry(claimed.clone())
+                .or_default()
+                .demand
+                .begin(Instant::now());
+            assert_eq!(t.daemon.next_duty(false), None, "no VM ready");
+            let (ready, _vm) = t.warm_vm(Some("claimed"));
+            lock(&t.daemon.state)
+                .pools
+                .get_mut(&claimed)
+                .unwrap()
+                .ready
+                .push_back(ready);
+            let due = t.daemon.next_duty(false).unwrap();
+            assert!(
+                due > Duration::from_secs(59) && due <= Duration::from_secs(60),
+                "{due:?}"
+            );
+            lock(&t.daemon.state).pools.get_mut(&claimed).unwrap().waiting = 1;
+            assert_eq!(t.daemon.next_duty(false), None, "a run waits");
+            let (ready, _never_vm) = t.warm_vm(Some("never"));
+            lock(&t.daemon.state)
+                .pools
+                .entry(PathBuf::from("never"))
+                .or_default()
+                .ready
+                .push_back(ready);
+            assert_eq!(t.daemon.next_duty(false), Some(Duration::ZERO));
+        });
+    }
+
+    /// A warm VM coming ready wakes the listener: its pool ages from then on, a duty the
+    /// listener, asleep since before, would sleep past.
+    #[test]
+    fn a_warm_vm_coming_ready_wakes_the_listener() {
+        let t = Test::new("ready-wakes");
+        t.run(|t| {
+            let (ready, theirs) = t.warm_vm(None);
+            let Ready { vm, socket, .. } = ready;
+            let dir = t.home.join("template");
+            lock(&t.daemon.state)
+                .pools
+                .entry(dir.clone())
+                .or_default()
+                .demand
+                .begin(Instant::now());
+            assert!(!readable(&t.daemon.listener_wake.1));
+            let watched = vm.clone();
+            let (daemon, threads) = (&t.t.daemon, t.threads);
+            threads.spawn(move || daemon.watch(threads, &watched, socket, None, None, For::Pool(dir)));
+            shards_ipc::send(&theirs, kind::READY, &[], &[]).unwrap();
+            t.until("the listener woken", |d| readable(&d.listener_wake.1));
+            assert!(t.daemon.next_duty(false).is_some());
+            let _ = vm.kill(libc::SIGKILL);
         });
     }
 
@@ -4840,7 +5072,7 @@ mod tests {
         t.run(|t| {
             let held = &t.daemon.disk;
             held.holding_writes.store(true, Ordering::SeqCst);
-            let id = t.reserve_with("racer", Some("USR1"));
+            let id = t.reserve_with("racer", Some("USR1"), false);
             let starting = t.start(&id);
             let (ready, vm) = t.warm_vm(None);
             starting.warm.send(ready).unwrap();
@@ -4866,6 +5098,8 @@ mod tests {
         through: Mutex<bool>,
         turn: std::sync::Condvar,
         syncing: AtomicBool,
+        /// Syncs begun.
+        syncs: AtomicUsize,
         failing: AtomicBool,
         /// Its writes too wait until let through, while this is set.
         holding_writes: AtomicBool,
@@ -4910,11 +5144,92 @@ mod tests {
             Real.remove_dir_all(path)
         }
         fn sync_dir(&self, dir: &Path) -> io::Result<()> {
+            self.syncs.fetch_add(1, Ordering::SeqCst);
             self.syncing.store(true, Ordering::SeqCst);
             let through = lock(&self.through);
             drop(self.turn.wait_while(through, |t| !*t).unwrap());
             Real.sync_dir(dir)
         }
+    }
+
+    /// The name a `--rm` container held is free for the next container as soon as its run
+    /// has ended: its end is taken, by the followers or by the next container's making,
+    /// and its removal, which the completer makes durable, waited for; as dockerd's name
+    /// is free by the time `docker run --rm` returns.
+    #[test]
+    fn a_rm_containers_name_is_free_once_its_run_ends() {
+        let t = Test::new("rm-name");
+        t.run(|t| {
+            t.t.daemon.start_completer(t.threads);
+            let id = t.reserve_with("reused", None, true);
+            t.t.daemon.await_arrival(&id);
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            say(&vm, kind::DONE, &[0]);
+            let again = t.reserve("reused");
+            assert_ne!(again, id);
+            joined(starting.run).unwrap();
+            assert!(t.record(&id).is_none());
+        });
+    }
+
+    /// `--rm` containers that end together are made durable together: the removals that
+    /// queue while one sync waits take one more, for them all.
+    #[test]
+    fn removals_ending_together_take_one_sync() {
+        let t = Test::on("rm-batch", Held::default());
+        t.run(|t| {
+            t.t.daemon.start_completer(t.threads);
+            let runs: Vec<_> = (0..3)
+                .map(|i| {
+                    let id = t.reserve_with(&format!("batch{i}"), None, true);
+                    t.t.daemon.await_arrival(&id);
+                    let starting = t.start(&id);
+                    let (ready, vm) = t.warm_vm(None);
+                    starting.warm.send(ready).unwrap();
+                    assert_eq!(heard(&vm).0, kind::RUN);
+                    say(&vm, kind::TAKEN, &[]);
+                    say(&vm, kind::STARTED, &[]);
+                    (starting, vm)
+                })
+                .collect();
+            say(&runs[0].1, kind::DONE, &[0]);
+            t.until("the first removal's sync waits", |d| {
+                d.disk.syncing.load(Ordering::SeqCst)
+            });
+            say(&runs[1].1, kind::DONE, &[0]);
+            say(&runs[2].1, kind::DONE, &[0]);
+            t.until("the others queued", |d| lock(&d.completing.pending).len() == 2);
+            t.daemon.disk.let_through();
+            for (starting, _) in runs {
+                joined(starting.run).unwrap();
+            }
+            t.until("every name let go", |d| {
+                let registry = lock(&d.containers);
+                (0..3).all(|i| registry.name_taken(&format!("batch{i}")).is_none())
+            });
+            assert_eq!(t.daemon.disk.syncs.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    /// The followers let a run go once it has ended, whoever took its end: the loop, or a
+    /// command, after which its VM's end does.
+    #[test]
+    fn ended_runs_are_followed_no_more() {
+        let t = Test::new("followed-no-more");
+        t.run(|t| {
+            let (_, starting, vm) = running(t, "taken");
+            assert_eq!(lock(&t.daemon.followers.runs).len(), 1);
+            say(&vm, kind::DONE, &[0]);
+            t.t.daemon.settle();
+            joined(starting.run).unwrap();
+            drop(vm);
+            t.until("followed no more", |d| lock(&d.followers.runs).is_empty());
+        });
     }
 
     /// A removed container's name is let go only once its removal is durable: a power

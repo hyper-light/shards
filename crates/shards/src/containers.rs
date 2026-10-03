@@ -362,6 +362,11 @@ impl Registry {
     }
 
     /// Whether any container is reserved, its record not yet written.
+    /// Whether a container being removed still holds `name`.
+    pub fn is_leaving_name(&self, name: &str) -> bool {
+        self.leaving.values().any(|c| c.name == name)
+    }
+
     pub fn any_arriving(&self) -> bool {
         !self.arriving.is_empty()
     }

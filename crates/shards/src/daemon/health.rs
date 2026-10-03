@@ -5,15 +5,19 @@
 //! start period while it has never been healthy. Like dockerd's, it lives in the daemon's
 //! memory, not on disk: a probe a few seconds apart writes nothing.
 
-use std::collections::VecDeque;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::Duration;
+use std::time::Instant;
 
 use std::io::Read as _;
 use std::os::fd::AsFd as _;
 
 use shards_ipc::Health as Config;
 
-use super::{RunState, lock};
+use super::{RunState, Threads, lock};
 
 /// What dockerd uses where a check leaves a setting at 0.
 const INTERVAL: Duration = Duration::from_secs(30);
@@ -40,6 +44,28 @@ impl Status {
             Status::Healthy => "healthy",
             Status::Unhealthy => "unhealthy",
         }
+    }
+}
+
+/// When the checks of running containers are due, soonest first, for one thread to run
+/// them (`check_all`): a thread a container with a check would bound the containers the
+/// daemon can check to the threads a process may have (PM M89), and wake every one of
+/// them at each run's start and end.
+#[derive(Default)]
+pub(super) struct Checks {
+    due: Mutex<BinaryHeap<Reverse<(Instant, String)>>>,
+    changed: Condvar,
+    started: AtomicBool,
+    ended: AtomicBool,
+}
+
+impl Checks {
+    /// Ends the checks' thread: a test's daemon's, as its scope ends.
+    #[cfg(test)]
+    pub(super) fn end(&self) {
+        self.ended.store(true, Ordering::SeqCst);
+        let _due = lock(&self.due);
+        self.changed.notify_all();
     }
 }
 
@@ -148,62 +174,115 @@ pub(super) fn kept_output(bytes: &[u8], more: bool) -> String {
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
     /// Checks container `id`'s health while it runs, as dockerd's monitor does: one probe
-    /// at a time, the next an interval after the last ended. Ends with the run; nothing
-    /// happens for a container without a check.
-    pub(super) fn monitor_health(&self, id: &str) {
-        let check = match lock(&self.runs).get(id) {
+    /// at a time, the next an interval after the last ended; on the checks' thread, which
+    /// the first starts. Nothing for a container without a check.
+    pub(super) fn watch_health<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, id: &str) {
+        let Some((cfg, _)) = self.check_of(id) else {
+            return;
+        };
+        lock(&self.health).insert(id.to_string(), State::default());
+        self.due_after(id, interval(&cfg, Duration::ZERO, Status::Starting));
+        let c = &self.checks;
+        if !c.started.swap(true, Ordering::SeqCst)
+            && let Err(e) = std::thread::Builder::new()
+                .name("health".into())
+                .spawn_scoped(threads, move || self.check_all(threads))
+        {
+            c.started.store(false, Ordering::SeqCst);
+            super::log(format!("the health checks' thread: {e}"));
+        }
+    }
+
+    /// Container `id`'s check and the command it runs, while its run goes on.
+    fn check_of(&self, id: &str) -> Option<(Config, Vec<String>)> {
+        match lock(&self.runs).get(id) {
             Some(RunState::Tracked(run)) => run
                 .base
                 .health
                 .as_ref()
                 .and_then(|(cfg, shell)| Some((cfg.clone(), command(cfg, shell)?))),
             _ => None,
-        };
-        let Some((cfg, argv)) = check else {
-            return;
-        };
-        lock(&self.health).insert(id.to_string(), State::default());
-        let since_start = || {
-            let started = lock(&self.containers).get(id).and_then(|c| c.started);
-            let now = crate::spec::now();
-            let ns = started.map_or(0, |s| now.saturating_sub(s));
-            Duration::from_nanos(u64::try_from(ns).unwrap_or(u64::MAX))
-        };
-        loop {
-            let status = lock(&self.health).get(id).map_or(Status::Starting, |s| s.status);
-            if !self.runs_for(id, interval(&cfg, since_start(), status)) {
-                break;
-            }
-            let since = since_start();
-            let probe = self.probe(id, &argv, &cfg);
-            // A result after the run ended counts for nothing, as dockerd drops one.
-            if !matches!(lock(&self.runs).get(id), Some(RunState::Tracked(_))) {
-                break;
-            }
-            if let Some(state) = lock(&self.health).get_mut(id) {
-                state.record(&cfg, probe, since);
-            }
         }
-        lock(&self.health).remove(id);
     }
 
-    /// Waits `wait`, or until run `id` ends: whether it still runs.
-    fn runs_for(&self, id: &str, wait: Duration) -> bool {
-        let deadline = std::time::Instant::now() + wait;
-        let mut runs = lock(&self.runs);
+    /// Makes container `id`'s next probe due `wait` from now.
+    fn due_after(&self, id: &str, wait: Duration) {
+        let Some(at) = Instant::now().checked_add(wait) else {
+            return;
+        };
+        lock(&self.checks.due).push(Reverse((at, id.to_string())));
+        self.checks.changed.notify_all();
+    }
+
+    /// How long ago container `id` started.
+    fn since_start(&self, id: &str) -> Duration {
+        let started = lock(&self.containers).get(id).and_then(|c| c.started);
+        let ns = started.map_or(0, |s| crate::spec::now().saturating_sub(s));
+        Duration::from_nanos(u64::try_from(ns).unwrap_or(u64::MAX))
+    }
+
+    /// Runs each probe as it comes due, on a thread of its own, until [`Checks::end`].
+    fn check_all<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
+        let c = &self.checks;
         loop {
-            if !matches!(runs.get(id), Some(RunState::Tracked(_))) {
-                return false;
-            }
-            let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
-                return true;
+            let id = {
+                let mut due = lock(&c.due);
+                loop {
+                    if c.ended.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let now = Instant::now();
+                    due = match due.peek() {
+                        None => c.changed.wait(due).unwrap_or_else(PoisonError::into_inner),
+                        Some(Reverse((at, _))) if *at > now => {
+                            let wait = at.saturating_duration_since(now);
+                            c.changed
+                                .wait_timeout(due, wait)
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .0
+                        }
+                        Some(_) => match due.pop() {
+                            Some(Reverse((_, id))) => break id,
+                            None => continue,
+                        },
+                    };
+                }
             };
-            runs = self
-                .resolved
-                .wait_timeout(runs, left)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
+            // A run that has ended is checked no more.
+            let Some((cfg, argv)) = self.check_of(&id) else {
+                lock(&self.health).remove(&id);
+                continue;
+            };
+            let next = interval(&cfg, self.since_start(&id), Status::Starting);
+            let watched = id.clone();
+            if let Err(e) = std::thread::Builder::new()
+                .name("probe".into())
+                .spawn_scoped(threads, move || self.probe_once(&watched, &cfg, &argv))
+            {
+                super::log(format!("container {id}: a health probe's thread: {e}"));
+                self.due_after(&id, next);
+            }
         }
+    }
+
+    /// One probe of container `id`, recorded, and the next made due an interval after it
+    /// ends; nothing of one that ends after the run did, as dockerd drops its result.
+    fn probe_once(&self, id: &str, cfg: &Config, argv: &[String]) {
+        let since = self.since_start(id);
+        let probe = self.probe(id, argv, cfg);
+        if !matches!(lock(&self.runs).get(id), Some(RunState::Tracked(_))) {
+            lock(&self.health).remove(id);
+            return;
+        }
+        let status = {
+            let mut health = lock(&self.health);
+            let Some(state) = health.get_mut(id) else {
+                return;
+            };
+            state.record(cfg, probe, since);
+            state.status
+        };
+        self.due_after(id, interval(cfg, self.since_start(id), status));
     }
 
     /// One probe of container `id`: `argv` run beside its workload as an exec without

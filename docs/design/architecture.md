@@ -888,8 +888,8 @@ for the exit status.
         published, and no traces of agents' runs exist here to set them.
     - **What nothing needs is collected** (`Store::collect`, daemon.rs
       `collect_garbage`), at the daemon's start and once a pull, by a run or by `shards
-      pull`, has moved a reference (it leaves `images/collect-due`, which the daemon's
-      tick takes).
+      pull`, has moved a reference (it leaves `images/collect-due`, whose coming the
+      daemon's watch of `images` sees).
       - The roots are the references: each one's manifest, config and layers, and the
         root filesystem of its layers' ChainID. Every other blob and root filesystem
         goes, with older versions' records and root filesystems and what `ingest/`
@@ -929,14 +929,39 @@ for the exit status.
     (`STARTED`) before its client has any of the command's output, and of its end
     (`DONE`) before its client has the status; a Unix socket's send puts a message in
     the daemon's queue before it returns. Every container command first takes what
-    each run has sent (`settle`), under a lock per run that the run's own thread reads
-    under too, so it answers with all any client has seen: `ps` lists a container whose
+    each run has sent (`settle`), under a lock per run that the followers' loop (below)
+    reads under too, so it answers with all any client has seen: `ps` lists a container whose
     output has appeared, and not a `--rm` one whose `run` has returned, as dockerd
     records a container's state before `docker run` learns it (docker/cli run.go
     `waitExitOrRemoved`). Waiting for the daemon to acknowledge each instead cost a run
     241 µs at the median (95% [206, 293], `build-ab/ab.py`, n = 400); this costs none
     measurable (+16 µs, 95% [−30, +73]). The daemon can signal a command meanwhile, on
     the same socket.
+  - **It waits on events, not a clock** (review 7.16, 7.22). Each run had a thread
+    following it and another for its health checks, check or none, each waking every
+    250 ms, as the listener and every `wait` and `logs -f` did: an idle running
+    container cost the daemon two threads, 0.18 MiB and about 40 µs of CPU a second, and
+    threads, 16,384 a process on macOS, would stop runs near 8,000, where their VMs take
+    60 GB of a 128 GB host [PM M89].
+    - One thread follows every run: a readiness poller over all their VMs' sockets
+      (`platform::Poller`: kqueue(2) on macOS, epoll(7) on Linux, level-triggered) takes
+      each run's messages as they come in whole. A socket the poller cannot take has its
+      run followed on a thread of its own.
+    - One thread schedules the health checks of the containers that have one, from a
+      heap of their due times, and runs each probe on a thread while it runs; dockerd
+      keeps a goroutine per container and one per probe (moby 0fed273 daemon/health.go
+      `monitor`).
+    - One thread makes `--rm` containers' removals durable: one sync of their directory
+      serves every removal pending, so runs that end together share it. A run named as
+      one still being removed waits for the name.
+    - The listener sleeps until a client arrives or leaves, a run ends, a warm VM comes
+      ready, a name comes or goes in the home or in `images` (kqueue's `EVFILT_VNODE`,
+      inotify(7)), or its next duty is due: the idle exit once nothing runs, or a pool's
+      keep-alive. It looks every 250 ms only out of descriptors, where a watch cannot be
+      made, or while a collection waits for the store's lease, whose release nothing
+      tells of (flock(2)).
+    - A `wait` sleeps on a socket its run's end writes to and on its client's
+      connection together, as a `logs -f` sleeps on that and on its log.
   - It exits after SHARDS_DAEMON_IDLE seconds (900) with no run in progress and none
     asked for. `shards daemon stop` first ends the runs in progress as dockerd ends its
     containers when it shuts down (moby daemon/daemon.go `shutdownContainer`,

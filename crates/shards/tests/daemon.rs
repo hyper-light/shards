@@ -471,6 +471,45 @@ fn idle_daemons_exit() {
     assert!(daemon_pid(&home).is_none(), "the daemon left its pid file");
 }
 
+/// A daemon's idle time runs from its last run's end, which nothing else need follow: the
+/// run's own end starts the clock, long after its client left the daemon. Its home holds
+/// the image's template already, so the run changes nothing there the daemon watches.
+#[test]
+fn a_daemon_idles_from_its_last_runs_end() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home("daemon-idle-end", &image);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+    let mut client = Command::new(shards())
+        .args(["run", "-i", "--pull", "never", &image, "cat"])
+        .env("SHARDS_HOME", &*home)
+        .env("SHARDS_DAEMON_IDLE", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = client.stdin.take().unwrap();
+    stdin.write_all(b"running\n").unwrap();
+    let mut out = BufReader::new(client.stdout.take().unwrap());
+    let mut line = String::new();
+    out.read_line(&mut line).unwrap();
+    assert_eq!(line, "running\n");
+    let daemon = daemon_pid(&home).expect("a daemon pid");
+    // Past its idle time, but with a run: it stays.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(alive(daemon), "the daemon exited while a run went on");
+    drop(stdin);
+    assert_eq!(wait(&mut client), Some(0));
+    eventually("the daemon did not exit once idle after its last run", || {
+        !alive(daemon)
+    });
+}
+
 /// With -i the command reads the client's stdin, and that stdin ends when the client
 /// goes, as `docker run -i`'s does (StdinOnce): `cat` then ends, and its VM with it.
 #[test]
@@ -1197,6 +1236,53 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
         Some(0)
     );
+}
+
+/// A collection another process leaves due, as `shards build`'s pull of a base image
+/// leaves one, is taken by a daemon that nothing else wakes: its watch of `images` sees
+/// the mark come.
+#[test]
+fn a_collection_another_process_leaves_due_is_taken() {
+    let home = TempDir::new("daemon-due");
+    let daemon = start_daemon(&home, None);
+    // Once its client's going has woken it, and it sleeps again.
+    std::thread::sleep(Duration::from_millis(300));
+    let due = home.join("images").join("collect-due");
+    std::fs::write(&due, b"").unwrap();
+    eventually("the daemon did not take the collection due", || !due.exists());
+    assert!(alive(daemon));
+}
+
+/// A collection due while another process holds the image store's lease, as `shards
+/// build` holds it while it prepares a root filesystem, runs once the lease is let go,
+/// though nothing else happens meanwhile.
+#[test]
+fn a_collection_waits_for_the_stores_lease() {
+    let (image, _) = served();
+    let home = TempDir::new("daemon-lease");
+    start_daemon(&home, None);
+    // A process of its own, whose collection the daemon takes.
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let pulled = run_shards_env(&["pull"], &[image.as_str()], &env, TIMEOUT);
+    assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
+    let images = home.join("images");
+    let due = images.join("collect-due");
+    eventually("the pull's collection was not taken", || !due.exists());
+    let left = images.join("ingest").join("left");
+    std::fs::write(&left, b"left behind").unwrap();
+    let lease = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(images.join(".lease"))
+        .unwrap();
+    lease.lock_shared().unwrap();
+    std::fs::write(&due, b"").unwrap();
+    eventually("the collection due was not seen", || !due.exists());
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(left.exists(), "collected under the lease");
+    drop(lease);
+    eventually("nothing collected once the lease was let go", || !left.exists());
 }
 
 /// What no reference needs is collected (audit A13). `shards pull` moving a tag to another
