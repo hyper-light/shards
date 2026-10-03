@@ -36,6 +36,14 @@ pub fn main() -> ! {
         "report" => report(),
         "cat" => cat(),
         "stat" => stat(args.get(1..).unwrap_or_default()),
+        "mtime" => {
+            use std::os::unix::fs::MetadataExt as _;
+            for p in args.get(1..).unwrap_or_default() {
+                let t = std::fs::symlink_metadata(p).map_or(-1, |m| m.mtime());
+                let _ = writeln!(io::stdout(), "{p} {t}");
+            }
+            0
+        }
         "stderr" => {
             let _ = io::stderr().write_all(arg(1).as_bytes());
             0

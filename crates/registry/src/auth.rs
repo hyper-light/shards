@@ -58,6 +58,11 @@ pub struct Challenge {
     pub params: BTreeMap<String, String>,
 }
 
+/// An `Authorization` value of the Basic scheme (RFC 7617): `user:secret` in base64.
+pub fn basic(user: &[u8], secret: &[u8]) -> String {
+    format!("Basic {}", BASE64.encode([user, b":", secret].concat()))
+}
+
 /// The challenges in `values`, one per field line, best first (`ParseAuthHeader`).
 pub fn challenges<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<Challenge> {
     let mut found: Vec<Challenge> = values.into_iter().filter_map(challenge).collect();
@@ -379,8 +384,10 @@ impl Authorizer {
                             url.authority()
                         )));
                     }
-                    let basic = format!("Basic {}", BASE64.encode(format!("{username}:{secret}")));
-                    hosts.add(host, Handler::Basic(basic));
+                    hosts.add(
+                        host,
+                        Handler::Basic(basic(username.as_bytes(), secret.as_bytes())),
+                    );
                     return Ok(true);
                 }
                 Scheme::Digest => {}
@@ -499,12 +506,8 @@ impl Bearer {
         } else {
             Url::parse(&format!("{base}?{query}"))?
         };
-        let basic = (!self.secret.is_empty()).then(|| {
-            format!(
-                "Basic {}",
-                BASE64.encode(format!("{}:{}", self.username, self.secret))
-            )
-        });
+        let basic =
+            (!self.secret.is_empty()).then(|| basic(self.username.as_bytes(), self.secret.as_bytes()));
         let realm = &self.realm;
         let mut response = http.follow(
             &Request {

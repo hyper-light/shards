@@ -159,9 +159,14 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     manifest.size = i64::try_from(meta.len()).unwrap_or(0);
                 }
                 if let Ok(bytes) = std::fs::read(store.blob_path(&image.manifest))
-                    && let Some(kind) = serde_json::from_slice::<serde_json::Value>(&bytes)
-                        .ok()
-                        .and_then(|v| v.get("mediaType").and_then(serde_json::Value::as_str).map(String::from))
+                    && let Some(kind) =
+                        serde_json::from_slice::<serde_json::Value>(&bytes)
+                            .ok()
+                            .and_then(|v| {
+                                v.get("mediaType")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(String::from)
+                            })
                 {
                     manifest.media_type = kind;
                 }

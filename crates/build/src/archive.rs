@@ -56,6 +56,21 @@ impl Budget {
             held: Held::default(),
         }
     }
+
+    /// Counts `n` bytes a download wrote.
+    pub fn fetched(&mut self, n: u64) -> Result<(), Error> {
+        self.bytes = self.bytes.saturating_add(n);
+        if self.bytes > self.limits.bytes {
+            return Err(Error(over_budget(self.limits.bytes)));
+        }
+        Ok(())
+    }
+}
+
+/// What a build's ADDs write past `limit`, their downloads and decompressed archives
+/// together.
+pub fn over_budget(limit: u64) -> String {
+    format!("what ADD fetches and unpacks comes to more than {limit} bytes (SHARDS_MAX_IMAGE_BYTES)")
 }
 
 impl Held {
@@ -120,10 +135,7 @@ impl Write for Pieces<'_> {
         let n = buf.len().min(PIECE - self.piece.len());
         *self.bytes = self.bytes.saturating_add(n as u64);
         if *self.bytes > self.limit {
-            return Err(io::Error::other(format!(
-                "the archives ADD unpacks decompress to more than {} bytes (SHARDS_MAX_IMAGE_BYTES)",
-                self.limit
-            )));
+            return Err(io::Error::other(over_budget(self.limit)));
         }
         self.piece.extend_from_slice(buf.get(..n).unwrap_or_default());
         if self.piece.len() == PIECE {
@@ -726,7 +738,7 @@ mod tests {
             assert_eq!(got, (0..total).map(|i| (i % 251) as u8).collect::<Vec<_>>());
             let (r, _, _) = through(total, step, total as u64 - 1);
             let e = r.unwrap_err().to_string();
-            assert!(e.contains("decompress to more than"), "{e}");
+            assert!(e.contains("fetches and unpacks comes to more than"), "{e}");
         }
     }
 }

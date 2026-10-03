@@ -37,7 +37,8 @@ const RACE: Duration = Duration::from_millis(300);
 /// How often a dial waiting on its attempts looks for a cancel.
 const DIAL_POLL: Duration = Duration::from_millis(100);
 const HANDSHAKE: Duration = Duration::from_secs(10);
-const HEAD: Duration = Duration::from_secs(30);
+/// How long a request waits for its response's head.
+pub const HEAD: Duration = Duration::from_secs(30);
 const STALL: Duration = Duration::from_secs(30);
 const IDLE: Duration = Duration::from_secs(30);
 const MAX_IDLE: usize = 10;

@@ -1520,11 +1520,9 @@ impl Limits {
 /// How much a build writes before it looks again at what is left free.
 const LOOK_EVERY: u64 = 64 << 20;
 
-/// The room a build has on its filesystem: looked at as it starts, and again every
-/// `LOOK_EVERY` bytes written, so it stops before it would leave less than `keep_free`,
-/// give or take what it wrote since.
 /// The room a file system has for what is written to it: past `Limits::keep_free`, the
-/// writing stops (audit A10). Free space is looked at again every `LOOK_EVERY` bytes.
+/// writing stops (audit A10). Free space is looked at as it starts, and again every
+/// `LOOK_EVERY` bytes.
 #[derive(Debug)]
 pub struct Room {
     dir: PathBuf,
@@ -1646,15 +1644,15 @@ fn zstd(src: &mut BufReader<File>, out: &mut Sink<'_>) -> Result<(), Error> {
     decode_zstd(src, out)
 }
 
-/// Decodes every zstd frame of `src` to `out`, skipping skippable frames, with each
-/// frame's checksum checked and windows no larger than klauspost/compress decodes, as
-/// containerd and moby decode zstd.
 /// What gzip `src` holds, read as it is decoded, every member of it as Go's gzip reader
 /// reads them.
 pub fn gunzip<R: BufRead>(src: R) -> impl Read {
     flate2::bufread::MultiGzDecoder::new(src)
 }
 
+/// Decodes every zstd frame of `src` to `out`, skipping skippable frames, with each
+/// frame's checksum checked and windows no larger than klauspost/compress decodes, as
+/// containerd and moby decode zstd.
 pub fn decode_zstd(src: &mut dyn BufRead, out: &mut dyn Write) -> Result<(), Error> {
     use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
     use ruzstd::decoding::{FrameDecoder, StreamingDecoder};

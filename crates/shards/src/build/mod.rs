@@ -32,6 +32,7 @@ use shards_registry::pull::{self as registry_pull, Event};
 
 mod builder;
 mod exec;
+mod http;
 pub(crate) mod step;
 
 const PATH: &str = "shards buildx build";
@@ -116,6 +117,11 @@ impl Progress {
 
     fn error(&self, v: &Vertex, message: &str) {
         self.say(&format!("#{} ERROR: {message}\n", v.index));
+    }
+
+    /// A vertex the build's failure stopped.
+    fn canceled(&self, v: &Vertex) {
+        self.say(&format!("#{} CANCELED\n", v.index));
     }
 
     /// A step's output, as progressui's plain mode prints it: each line with the seconds
@@ -330,6 +336,11 @@ fn stored_at(path: &Path) -> Option<Time> {
     let mut t = Time::from_unix(i64::try_from(since.as_secs()).ok()?);
     t.nanosecond = since.subsec_nanos();
     Some(t)
+}
+
+/// An HTTP source's identifier: its URL.
+fn is_http(identifier: &[u8]) -> bool {
+    identifier.starts_with(b"https://") || identifier.starts_with(b"http://")
 }
 
 fn show(b: &[u8]) -> String {
@@ -631,6 +642,27 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             todo.extend(op.inputs.iter().map(|inp| inp.op));
         }
     }
+    // Every HTTP source is fetched from the start, as BuildKit's solver fetches them; a
+    // step waits only for the one it reads.
+    let sources: Vec<(usize, String, Option<String>)> = def
+        .ops
+        .iter()
+        .enumerate()
+        .filter_map(|(i, op)| match &op.kind {
+            OpKind::Source { identifier, attrs } if is_http(identifier) => Some((
+                i,
+                show(identifier),
+                attrs.get(b"http.checksum".as_slice()).map(|c| show(c)),
+            )),
+            _ => None,
+        })
+        .collect();
+    let dir = if sources.is_empty() {
+        PathBuf::new()
+    } else {
+        exec.stage()?
+    };
+    let mut downloads = http::Downloads::start(sources, &dir, limits)?;
     let mut builder: Option<builder::Builder> = None;
     let mut results: Vec<Vec<exec::Ref>> = Vec::with_capacity(def.ops.len());
     // What other operations read, so a base image is unpacked only when one does.
@@ -657,11 +689,31 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                     .ok_or_else(|| format!("input {}:{} is not ready", inp.op, inp.index))
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let fail = |v: &Vertex, why: &str| {
+        // `why` on the step, and in the build's error after `stage`, what BuildKit was
+        // doing when it failed.
+        let fail_in = |v: &Vertex, stage: &str, why: &str| {
             progress.borrow().error(v, why);
             print_warnings(&plan.warnings, quiet);
-            format!("failed to build: failed to solve: {why}")
+            format!("failed to build: failed to solve: {stage}{why}")
         };
+        let fail = |v: &Vertex, why: &str| fail_in(v, "", why);
+        // A fetch that failed fails the build on the step of its source.
+        let fetch_failed = |op: usize, failure: http::Failure| {
+            let named = def
+                .metadata
+                .get(op)
+                .and_then(|m| m.description.get(b"llb.customname".as_slice()))
+                .map(|n| show(n))
+                .unwrap_or_default();
+            let v = progress.borrow_mut().start(&named);
+            match failure {
+                http::Failure::CacheKey(e) => fail_in(&v, "failed to load cache key: ", &e),
+                http::Failure::Snapshot(e) => fail(&v, &e),
+            }
+        };
+        if let Some((op, failure)) = downloads.failed() {
+            return Err(fetch_failed(op, failure));
+        }
         let outs = match &op.kind {
             OpKind::Source { identifier, .. } if identifier.starts_with(b"docker-image://") => {
                 let v = progress.borrow_mut().start(&name);
@@ -710,6 +762,28 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 progress
                     .borrow()
                     .line(&v, &format!("read {files} files, {} done", human_size(bytes)));
+                progress.borrow().done(&v);
+                vec![r]
+            }
+            OpKind::Source { identifier, attrs } if is_http(identifier) => {
+                let v = progress.borrow_mut().start(&name);
+                let download = match downloads.take(i) {
+                    Ok(d) => d,
+                    Err((op, failure)) if op == i => {
+                        return Err(match failure {
+                            http::Failure::CacheKey(e) => fail_in(&v, "failed to load cache key: ", &e),
+                            http::Failure::Snapshot(e) => fail(&v, &e),
+                        });
+                    }
+                    Err((op, failure)) => {
+                        progress.borrow().canceled(&v);
+                        return Err(fetch_failed(op, failure));
+                    }
+                };
+                let file = attrs
+                    .get(b"http.filename".as_slice())
+                    .ok_or_else(|| fail(&v, "an HTTP source without a file name"))?;
+                let r = exec.downloaded(download, file).map_err(|e| fail(&v, &e))?;
                 progress.borrow().done(&v);
                 vec![r]
             }

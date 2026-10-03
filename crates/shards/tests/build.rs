@@ -795,9 +795,19 @@ fn add_unpacks_archives_of_every_compression_in_the_vm() {
 #[test]
 fn add_stops_at_the_image_limits_and_leaves_nothing() {
     let (image, _) = served();
-    for (archive_name, setting, limit) in [
-        ("bomb.tar.gz", "SHARDS_MAX_IMAGE_BYTES", "16777216"),
-        ("many.tar.gz", "SHARDS_MAX_IMAGE_ENTRIES", "1000"),
+    for (archive_name, setting, limit, said) in [
+        (
+            "bomb.tar.gz",
+            "SHARDS_MAX_IMAGE_BYTES",
+            "16777216",
+            "ERROR: what ADD fetches and unpacks comes to more than",
+        ),
+        (
+            "many.tar.gz",
+            "SHARDS_MAX_IMAGE_ENTRIES",
+            "1000",
+            "ERROR: the archives ADD unpacks hold more than",
+        ),
     ] {
         let home = TempDir::new(&format!("build-limit-home-{setting}"));
         let ctx = context(
@@ -811,7 +821,7 @@ fn add_stops_at_the_image_limits_and_leaves_nothing() {
         let shown = format!("--- stdout\n{}\n--- stderr\n{}", r.stdout, r.stderr);
         assert_eq!(r.status, Some(1), "{shown}");
         // ADD's own limit, before the archive is written out whole: not the export's.
-        assert!(r.stderr.contains("ERROR: the archives ADD unpacks"), "{shown}");
+        assert!(r.stderr.contains(said), "{shown}");
         assert!(r.stderr.contains(&format!("({setting})")), "{shown}");
         let left: Vec<_> = std::fs::read_dir(home.join("images/ingest"))
             .unwrap()
@@ -1006,4 +1016,258 @@ fn an_images_exposed_ports_publish_with_publish_all() {
     assert_eq!(greeting, "from 172.17.0.1\n");
     let waited = shards(&["wait", "all"]);
     assert_eq!(waited.stdout, "0\n", "{}", waited.stderr);
+}
+
+/// Each request a test server was sent: its path, and its fields.
+type Asked = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<String>)>>>;
+
+/// A server for `ADD` of URLs: each request's path and fields go to `log`; `/a` answers
+/// only once `/b` has been asked for, `/hang` holds its request until `release`, and
+/// `/endless` sends a body that never ends.
+fn url_server(log: Asked, release: std::sync::mpsc::Receiver<()>) -> u16 {
+    use std::io::{BufRead as _, Write as _};
+    use std::sync::{Arc, Condvar, Mutex};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let asked_b = Arc::new((Mutex::new(false), Condvar::new()));
+    let release = Arc::new(Mutex::new(release));
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let (log, asked_b, release) = (log.clone(), asked_b.clone(), release.clone());
+            std::thread::spawn(move || {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut out = stream;
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    return;
+                }
+                let mut fields = Vec::new();
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) <= 2 {
+                        break;
+                    }
+                    fields.push(h.trim_end().to_string());
+                }
+                let path = line.split(' ').nth(1).unwrap_or("").to_string();
+                log.lock().unwrap().push((path.clone(), fields));
+                let gz: &[u8] = &[
+                    31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 171, 202, 44, 40, 72, 77, 225, 2, 0, 172, 0, 58, 199,
+                    7, 0, 0, 0,
+                ];
+                let (head, body): (&str, &[u8]) = match path.as_str() {
+                    "/file.txt" => (
+                        "200 OK\r\nLast-Modified: Sun, 06 Nov 1994 08:49:37 GMT",
+                        b"hello\n",
+                    ),
+                    "/plain" => ("200 OK", b"x"),
+                    "/moved" | "/auth" => ("302 Found\r\nLocation: /final", b""),
+                    "/final" => ("200 OK", b"final\n"),
+                    "/gz" => ("200 OK\r\nContent-Encoding: GZIP", gz),
+                    "/three" => ("300 Multiple Choices", b"choices\n"),
+                    "/a" => {
+                        let (asked, cv) = &*asked_b;
+                        let asked = cv
+                            .wait_timeout_while(asked.lock().unwrap(), Duration::from_secs(60), |a| !*a)
+                            .unwrap();
+                        if *asked.0 {
+                            ("200 OK", b"a\n")
+                        } else {
+                            ("500 Not Concurrent", b"")
+                        }
+                    }
+                    "/b" => {
+                        *asked_b.0.lock().unwrap() = true;
+                        asked_b.1.notify_all();
+                        ("200 OK", b"b\n")
+                    }
+                    "/hang" => {
+                        let _ = release.lock().unwrap().recv();
+                        return;
+                    }
+                    "/endless" => {
+                        let mut chunk = b"10000\r\n".to_vec();
+                        chunk.extend_from_slice(&[0; 0x10000]);
+                        chunk.extend_from_slice(b"\r\n");
+                        let _ = out.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
+                        while out.write_all(&chunk).is_ok() {}
+                        return;
+                    }
+                    _ => ("404 Not Found", b""),
+                };
+                let mut response = format!(
+                    "HTTP/1.1 {head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .into_bytes();
+                response.extend_from_slice(body);
+                let _ = out.write_all(&response);
+            });
+        }
+    });
+    port
+}
+
+/// `ADD` of URLs as BuildKit adds them (dockerfile/1.27.1 source/http through Go's
+/// client; measured against Docker Desktop's BuildKit v0.28, and byte for byte on real
+/// URLs: scripts/build/realworld/cases/add-url):
+/// - a file named for the URL's path, mode 0600 unless `--chmod` says, its mtime the
+///   response's `Last-Modified` or the epoch;
+/// - redirects followed; a 3xx without one kept; a gzipped body undone;
+/// - the userinfo sent as Basic to the URL, not to where it redirects;
+/// - every source fetched at once (`/a` answers only once `/b` was asked for);
+/// - refused in BuildKit's words: a status from 400 while the cache key is worked out, a
+///   checksum that differs (whatever the status) while the snapshot is made;
+/// - a failed fetch fails the build at once, while another still hangs.
+#[test]
+fn add_fetches_urls_as_buildkit_does() {
+    if cannot_run_vms() {
+        return;
+    }
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (release, held) = std::sync::mpsc::channel();
+    let port = url_server(log.clone(), held);
+    let (image, _) = served();
+    let home = TempDir::new("build-add-url-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let url = format!("http://127.0.0.1:{port}");
+    let ctx = context(
+        "build-add-url-ctx",
+        &format!(
+            "FROM {image}\nADD {url}/file.txt /a/\nADD --chmod=644 {url}/plain /p\nADD {url}/moved /m\n\
+             ADD {url}/gz /gz\nADD {url}/three /three\nADD http://us%65r:pa%40ss@127.0.0.1:{port}/auth /auth\n\
+             ADD {url}/a {url}/b /c/\n"
+        ),
+    );
+    let built = shards(&["build", "-t", "added:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let stat = shards(&[
+        "run",
+        "--rm",
+        "-u",
+        "root",
+        "added:1",
+        "stat",
+        "/a/file.txt",
+        "/p",
+        "/m",
+        "/gz",
+        "/three",
+        "/auth",
+        "/c/a",
+        "/c/b",
+    ]);
+    assert_eq!(
+        stat.stdout,
+        "/a/file.txt file 600 0:0 6\n= hello\\n\n/p file 644 0:0 1\n= x\n/m file 600 0:0 6\n= final\\n\n\
+         /gz file 600 0:0 7\n= zipped\\n\n/three file 600 0:0 8\n= choices\\n\n/auth file 600 0:0 6\n= final\\n\n\
+         /c/a file 600 0:0 2\n= a\\n\n/c/b file 600 0:0 2\n= b\\n\n",
+        "{}",
+        stat.stderr
+    );
+    let times = shards(&["run", "--rm", "added:1", "mtime", "/a/file.txt", "/p"]);
+    assert_eq!(times.stdout, "/a/file.txt 784111777\n/p 0\n", "{}", times.stderr);
+    let asked = log.lock().unwrap().clone();
+    let fields = |path: &str| -> Vec<String> {
+        asked
+            .iter()
+            .filter(|(p, _)| p == path)
+            .flat_map(|(_, f)| f.iter().map(|f| f.to_ascii_lowercase()))
+            .collect()
+    };
+    assert!(
+        fields("/gz").contains(&"accept-encoding: gzip".to_string()),
+        "{asked:?}"
+    );
+    assert!(
+        fields("/auth").contains(&"authorization: basic dxnlcjpwyubzcw==".to_string()),
+        "{asked:?}"
+    );
+    assert!(
+        !fields("/final").iter().any(|f| f.starts_with("authorization")),
+        "{asked:?}"
+    );
+
+    let fails = |name: &str, dockerfile: String| {
+        let ctx = context(name, &dockerfile);
+        shards(&["build", ctx.to_str().unwrap()]).stderr
+    };
+    let zeros = "0".repeat(64);
+    let gone = fails(
+        "build-add-url-gone",
+        format!("FROM {image}\nADD {url}/nothing /n\n"),
+    );
+    assert!(
+        gone.contains("ERROR: invalid response status 404\n")
+            && gone.contains("ERROR: failed to build: failed to solve: failed to load cache key: invalid response status 404"),
+        "{gone}"
+    );
+    let differs = fails(
+        "build-add-url-differs",
+        format!("FROM {image}\nADD --checksum=sha256:{zeros} {url}/plain /p\n"),
+    );
+    assert!(
+        differs.contains(&format!(
+            "ERROR: failed to build: failed to solve: digest mismatch \
+             sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881: sha256:{zeros}"
+        )),
+        "{differs}"
+    );
+    // With a checksum the status goes unchecked: the 404's empty body is what differs.
+    let missing = fails(
+        "build-add-url-missing",
+        format!("FROM {image}\nADD --checksum=sha256:{zeros} {url}/nothing /p\n"),
+    );
+    assert!(
+        missing.contains(&format!(
+            "digest mismatch sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855: sha256:{zeros}"
+        )),
+        "{missing}"
+    );
+    // The hang is still held when the build ends, which cancels it rather than wait
+    // for it to time out.
+    let started = std::time::Instant::now();
+    let hung = fails(
+        "build-add-url-hung",
+        format!("FROM {image}\nADD {url}/hang /h\nADD {url}/nothing /n\n"),
+    );
+    assert!(
+        hung.contains("failed to load cache key: invalid response status 404"),
+        "{hung}"
+    );
+    assert!(
+        started.elapsed() < shards_registry::http::HEAD,
+        "{:?}",
+        started.elapsed()
+    );
+    let _ = release.send(());
+    // Downloads count against what ADD may write, as unpacked archives do: one past it
+    // alone, one that would never end, and two that are only together.
+    for (limit, dockerfile) in [
+        ("5", format!("FROM scratch\nADD {url}/file.txt /a\n")),
+        ("1048576", format!("FROM scratch\nADD {url}/endless /e\n")),
+        (
+            "10",
+            format!("FROM scratch\nADD {url}/file.txt /a\nADD {url}/moved /m\n"),
+        ),
+    ] {
+        let ctx = context(&format!("build-add-url-limit-{limit}"), &dockerfile);
+        let limit_value = std::ffi::OsString::from(limit);
+        let mut limited = env.to_vec();
+        limited.push(("SHARDS_MAX_IMAGE_BYTES", limit_value.as_os_str()));
+        let over = run_shards_env(&[], &["build", ctx.to_str().unwrap()], &limited, TIMEOUT);
+        assert!(
+            over.stderr.contains(&format!(
+                "what ADD fetches and unpacks comes to more than {limit} bytes (SHARDS_MAX_IMAGE_BYTES)"
+            )),
+            "{}",
+            over.stderr
+        );
+    }
 }

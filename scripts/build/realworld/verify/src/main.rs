@@ -16,6 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         digest: cfg["digest"].as_str().unwrap().into(),
         size: cfg["size"].as_i64().unwrap(),
         platform: None,
+        annotations: Default::default(),
     };
     let config: serde_json::Value =
         serde_json::from_slice(&store.content(&cdesc, 1 << 20)?.ok_or("no config")?)?;

@@ -277,6 +277,45 @@ impl<'a> Exec<'a> {
         })
     }
 
+    /// A directory that lasts as long as the build, for its downloads.
+    pub fn stage(&mut self) -> Result<PathBuf, String> {
+        let stage = self.store.stage().map_err(err)?;
+        let path = stage.path().to_path_buf();
+        self.stages.push(stage);
+        Ok(path)
+    }
+
+    /// What an HTTP source makes of its download (BuildKit dockerfile/1.27.1 source/http,
+    /// save): one file named as `name` is made safe, mode 0600, owned by root, with the
+    /// download's mtime. Its bytes count against the build's budget for what ADD writes.
+    pub fn downloaded(&mut self, d: super::http::Download, name: &[u8]) -> Result<Ref, String> {
+        self.budget.fetched(d.size).map_err(|e| e.0)?;
+        let name = super::http::safe_file_name(name);
+        let data = self.sources.host(d.path, d.size).map_err(err)?;
+        let mut fs = scratch();
+        fs.put(
+            &name,
+            Node {
+                kind: Kind::File { size: d.size, data },
+                meta: Meta {
+                    mode: 0o600,
+                    mtime: d.mtime.0,
+                    mtime_nsec: d.mtime.1,
+                    ..Meta::default()
+                },
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        fs.begin();
+        let fs = Rc::new(fs);
+        Ok(Ref {
+            fs: fs.clone(),
+            layers: Vec::new(),
+            stack: Stack::unknown("a download, which no layers make"),
+            origin: Rc::new(Origin::Whole { id: origin_id(), fs }),
+        })
+    }
+
     /// A merge (COPY --link's): the inputs' layers one after another, and the snapshot
     /// they stack to.
     pub fn merge(&mut self, inputs: &[Ref]) -> Result<Ref, String> {

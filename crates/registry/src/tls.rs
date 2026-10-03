@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use rustls::ClientConfig;
+pub use rustls::ClientConfig;
 use rustls::crypto::aws_lc_rs;
 use rustls::pki_types::CertificateDer;
 use rustls_platform_verifier::Verifier;
