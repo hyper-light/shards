@@ -383,8 +383,10 @@ fn a_daemon_ending_its_runs_is_waited_for() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    // Ending its runs, and no longer listening: a run asked for before then is one it
+    // serves itself.
     eventually("the daemon did not begin to stop", || {
-        home.join("daemon.stopping").exists()
+        home.join("daemon.stopping").exists() && !home.join("daemon.sock").exists()
     });
     let env = [("SHARDS_HOME", home.as_os_str())];
     let t0 = Instant::now();
