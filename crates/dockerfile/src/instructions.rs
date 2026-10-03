@@ -334,17 +334,16 @@ impl Flags {
             if a == b"--" {
                 return Ok(());
             }
-            let Some(rest) = a.strip_prefix(b"--") else {
+            if !a.starts_with(b"--") {
                 return Err(errf(&[b"arg should start with -- : ", a]));
-            };
+            }
             let (flag_name, value, has_value) = match a.iter().position(|&b| b == b'=') {
                 Some(at) => (go::head(a, at), go::tail(a, at + 1), true),
                 None => (a.as_slice(), &[][..], false),
             };
             let arg = go::tail(flag_name, 2);
-            let _ = rest;
-            let names: Vec<&[u8]> = self.defined.iter().map(|f| f.name.as_bytes()).collect();
             let Some(flag) = self.defined.iter_mut().find(|f| f.name.as_bytes() == arg) else {
+                let names: Vec<&[u8]> = self.defined.iter().map(|f| f.name.as_bytes()).collect();
                 return Err(with_suggestion(
                     errf(&[b"unknown flag: ", flag_name]),
                     arg,

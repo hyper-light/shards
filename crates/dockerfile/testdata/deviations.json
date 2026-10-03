@@ -1056,5 +1056,13 @@
    ]
   },
   "reason": "Go matches a Unicode property class from Unicode's category and script tables, which shards does not carry; a pattern with one is refused rather than matched differently."
+ },
+ {
+  "kind": "plan",
+  "file": "corpus/plan/suggest-library.Dockerfile",
+  "reason": "BuildKit's commonImageNames joins docker.io/library and each name without the slash, so the image it suggests for a misspelt official one names no image; shards suggests docker.io/library/<name> (src/plan.rs, resolve_base_image).",
+  "fields": {
+   "error": "\"docker.io/library/alpne: docker.io/library/alpne:latest: not found (did you mean docker.io/library/alpine?)\""
+  }
  }
 ]

@@ -12061,6 +12061,33 @@
   ]
  },
  {
+  "file": "corpus/plan/suggest-library.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"docker.io/library/alpne\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"docker.io/library/alpne\\\"\"",
+    "original": "\"FROM docker.io/library/alpne\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/target.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"a\\\")\\n(run \\\"echo a\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"b\\\")\\n(run \\\"echo b\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"c\\\")\\n(run \\\"echo c\\\")\"",

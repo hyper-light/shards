@@ -1527,9 +1527,11 @@ impl Planner<'_> {
                     "alpine", "busybox", "centos", "debian", "golang", "ubuntu", "fedora",
                 ] {
                     names.push(n.as_bytes().to_vec());
-                    names.push(format!("docker.io/library{n}").into_bytes());
+                    // commonImageNames joins these without the slash, so that what it
+                    // offers names no image: shards offers the name.
+                    names.push(format!("docker.io/library/{n}").into_bytes());
                     names.push(format!("{n}:latest").into_bytes());
-                    names.push(format!("docker.io/library{n}:latest").into_bytes());
+                    names.push(format!("docker.io/library/{n}:latest").into_bytes());
                 }
                 let options: Vec<&[u8]> = names.iter().map(Vec::as_slice).collect();
                 Fail::new(instructions::with_suggestion(

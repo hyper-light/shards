@@ -18642,6 +18642,55 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/suggest-library.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"docker.io/library/alpne\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM docker.io/library/alpne\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/target.Dockerfile",
   "meta_args": null,
   "stages": [
