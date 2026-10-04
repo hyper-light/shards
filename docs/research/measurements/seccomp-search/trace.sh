@@ -13,7 +13,7 @@ echo 0 > $t/tracing_on
 echo function_graph > $t/current_tracer
 echo "$depth" > $t/max_graph_depth
 echo "$entry" > $t/set_graph_function
-for variant in allow allow-bare search linear; do
+for variant in allow allow-bare linear searched search; do
   for run in 1 2 3; do
     echo > $t/trace
     echo 1 > $t/tracing_on

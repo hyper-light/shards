@@ -108,29 +108,32 @@ pub fn compile(rules: &[Rule]) -> Result<Filter, String> {
         let nr = u32::try_from(syscall).map_err(|_| format!("syscall {syscall}: not a number"))?;
         syscalls.push((nr, verdict(syscall, group)?));
     }
-    let mut prog = vec![
+    let prog = vec![
         op(LD_W_ABS, 0, 0, ARCH),
         op(JEQ_K, 1, 0, AUDIT_ARCH),
         op(RET_K, 0, 0, libc::SECCOMP_RET_KILL_PROCESS),
         op(LD_W_ABS, 0, 0, NR),
     ];
-    let allow = |_: &u32, prog: &mut Vec<libc::sock_filter>| {
-        prog.push(op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW));
-        Ok(())
+    let keys: Vec<u32> = syscalls.iter().map(|(nr, _)| *nr).collect();
+    let target = |i: usize| match syscalls.get(i) {
+        Some((_, Verdict::Check(..))) => Target::Block(i),
+        Some((_, Verdict::Return(action))) => Target::Ret(*action),
+        None => Target::Ret(libc::SECCOMP_RET_TRAP),
     };
-    let block = |(_, verdict): &(u32, Verdict), prog: &mut Vec<libc::sock_filter>| match verdict {
-        Verdict::Return(action) => {
-            prog.push(op(RET_K, 0, 0, *action));
-            Ok(())
-        }
-        // The argument over the number in A, which no other block needs: each ends in a
-        // RET.
-        Verdict::Check(index, values) => {
-            prog.push(op(LD_W_ABS, 0, 0, arg_low(*index)));
-            search(values, |v| *v, &allow, prog)
-        }
+    // A syscall's check: its argument loaded over the number in A, which nothing after it
+    // needs, and found among its values by a search of their own, each value allowed.
+    let check = |i: usize| -> Result<Vec<libc::sock_filter>, String> {
+        let Some((_, Verdict::Check(index, values))) = syscalls.get(i) else {
+            return Err("a check of no syscall's argument".to_string());
+        };
+        search(
+            vec![op(LD_W_ABS, 0, 0, arg_low(*index))],
+            values,
+            &|_| Target::Ret(libc::SECCOMP_RET_ALLOW),
+            &|_| Err("a value's check".to_string()),
+        )
     };
-    search(&syscalls, |(nr, _)| *nr, &block, &mut prog)?;
+    let prog = search(prog, &keys, &target, &check)?;
     // The kernel refuses a longer one (kernel/seccomp.c, seccomp_prepare_filter).
     if prog.len() > libc::BPF_MAXINSNS as usize {
         return Err(format!(
@@ -193,60 +196,233 @@ fn verdict(syscall: libc::c_long, rules: &[&Rule]) -> Result<Verdict, String> {
 /// as many, for three more.
 const LEAF: usize = 4;
 
-/// Emits into `prog` the search for the number in A among `entries`, sorted by `key` and
-/// distinct: halved while more than [`LEAF`] are left, then compared one by one. Each
-/// entry's search ends in what `block` emits for it, which must end every path in a RET;
-/// a number none of them is ends in a trap. Whichever it is, a number takes at most
-/// ⌈log2(n / LEAF)⌉ halvings and LEAF comparisons, each one instruction, and one more, a
-/// JA, where what it skips is past 255 instructions.
-fn search<E>(
-    entries: &[E],
-    key: fn(&E) -> u32,
-    block: &impl Fn(&E, &mut Vec<libc::sock_filter>) -> Result<(), String>,
-    prog: &mut Vec<libc::sock_filter>,
-) -> Result<(), String> {
-    if entries.len() <= LEAF {
-        for entry in entries {
-            let at = prog.len();
-            prog.push(op(JEQ_K, 0, 0, key(entry)));
-            block(entry, prog)?;
-            // Not this one: over its block.
-            skip(prog, at, false)?;
-        }
-        prog.push(op(RET_K, 0, 0, libc::SECCOMP_RET_TRAP));
-        return Ok(());
-    }
-    let (low, high) = entries.split_at(entries.len() / 2);
-    let at = prog.len();
-    prog.push(op(JGT_K, 0, 0, low.last().map_or(0, key)));
-    search(low, key, block, prog)?;
-    // Above the low half: past it.
-    skip(prog, at, true)?;
-    search(high, key, block, prog)
+/// Where a comparison that holds goes, or a search's last that does not: a return, or the
+/// check of syscall `.0`'s argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Ret(u32),
+    Block(usize),
 }
 
-/// Points the jump at `at`, which goes on to the code after it, over that code: when its
-/// condition holds if `when`, else when it fails. A jump's 8 bits reach 255 instructions;
-/// past that it goes through a JA of 32 bits inserted after it, which the other way skips.
-fn skip(prog: &mut Vec<libc::sock_filter>, at: usize, when: bool) -> Result<(), String> {
-    let over = prog.len().saturating_sub(at + 1);
-    let Some(jump) = prog.get_mut(at) else {
-        return Err("a jump past the filter's end".to_string());
-    };
-    match u8::try_from(over) {
-        Ok(over) if when => jump.jt = over,
-        Ok(over) => jump.jf = over,
-        Err(_) => {
-            let far = u32::try_from(over).map_err(|_| "a filter too long".to_string())?;
-            if when {
-                jump.jf = 1;
-            } else {
-                jump.jt = 1;
-            }
-            prog.insert(at + 1, op(JA, 0, 0, far));
+/// The farthest a comparison jumps: its offsets have 8 bits.
+const REACH: usize = u8::MAX as usize;
+
+/// The search for the number in A among `keys`, sorted and distinct, key `i` going to
+/// `target(i)`, and a number none of them is to a trap, laid after the code in `prog`:
+/// halved while more than [`LEAF`] are left, then compared one by one, each comparison
+/// jumping straight to its target in a pool after the code: each return once, and each
+/// check `block` makes. A program spends its instructions on comparisons, and its install
+/// time with them (PM M107). Whichever number it is, it takes at most ⌈log2(n / LEAF)⌉
+/// halvings and LEAF comparisons, each one instruction, and one more, a JA, where what a
+/// jump skips is past 255 instructions.
+fn search(
+    mut prog: Vec<libc::sock_filter>,
+    keys: &[u32],
+    target: &impl Fn(usize) -> Target,
+    block: &impl Fn(usize) -> Result<Vec<libc::sock_filter>, String>,
+) -> Result<Vec<libc::sock_filter>, String> {
+    if keys.is_empty() {
+        prog.push(op(RET_K, 0, 0, libc::SECCOMP_RET_TRAP));
+        return Ok(prog);
+    }
+    // A subtree's pool holds at most every return the search has, and its checks: the
+    // returns, counted while few (past that, each half pools apart), and how many of the
+    // keys before each are checks, where any is.
+    let mut rets = [libc::SECCOMP_RET_TRAP; 8];
+    let (mut distinct, mut checks) = (1, 0);
+    for i in 0..keys.len() {
+        match target(i) {
+            Target::Block(_) => checks += 1,
+            Target::Ret(action) if rets.get(..distinct).is_some_and(|seen| seen.contains(&action)) => {}
+            Target::Ret(action) => match rets.get_mut(distinct) {
+                Some(slot) => {
+                    *slot = action;
+                    distinct += 1;
+                }
+                None => distinct = REACH,
+            },
         }
     }
-    Ok(())
+    let mut checks_before = Vec::new();
+    if checks > 0 {
+        checks_before.reserve_exact(keys.len() + 1);
+        checks_before.push(0);
+        for i in 0..keys.len() {
+            let before = checks_before.last().copied().unwrap_or(0);
+            checks_before.push(before + usize::from(matches!(target(i), Target::Block(_))));
+        }
+    }
+    prog.reserve(2 * keys.len() + distinct + checks);
+    let mut search = Search {
+        prog,
+        pending: Vec::with_capacity(keys.len() + keys.len().div_ceil(2)),
+        rets: distinct,
+        checks_before,
+        target,
+        block,
+    };
+    search.dispatch(keys, 0)?;
+    search.pool(search.prog.len(), 0)?;
+    Ok(search.prog)
+}
+
+/// A search being laid out, in one buffer: its code, and the jumps in it whose targets
+/// wait for a pool, each the index of a jump, whether it is its `jt` (else its `jf`), and
+/// where it goes.
+struct Search<'a, T, B> {
+    prog: Vec<libc::sock_filter>,
+    pending: Vec<(usize, bool, Target)>,
+    /// The returns the search has, each once.
+    rets: usize,
+    /// How many of the keys before each are checks; empty where none is.
+    checks_before: Vec<usize>,
+    target: &'a T,
+    block: &'a B,
+}
+
+impl<T, B> Search<'_, T, B>
+where
+    T: Fn(usize) -> Target,
+    B: Fn(usize) -> Result<Vec<libc::sock_filter>, String>,
+{
+    /// Lays the comparisons for `keys`, the `first`th key on, their jumps to targets
+    /// pending: one pool after both halves where every jump in them reaches it, else a
+    /// pool after each.
+    fn dispatch(&mut self, keys: &[u32], first: usize) -> Result<(), String> {
+        if keys.len() <= LEAF {
+            for (i, &key) in keys.iter().enumerate() {
+                self.pending
+                    .push((self.prog.len(), true, (self.target)(first + i)));
+                self.prog.push(op(JEQ_K, 0, 0, key));
+            }
+            // None of them: the last comparison's other way.
+            let last = self.prog.len().saturating_sub(1);
+            self.pending
+                .push((last, false, Target::Ret(libc::SECCOMP_RET_TRAP)));
+            return Ok(());
+        }
+        let half = keys.len() / 2;
+        let (low, high) = keys.split_at(half);
+        let at = self.prog.len();
+        self.prog.push(op(JGT_K, 0, 0, low.last().copied().unwrap_or(0)));
+        let from = self.pending.len();
+        self.dispatch(low, first)?;
+        let (mid, from_high) = (self.prog.len(), self.pending.len());
+        self.dispatch(high, first + half)?;
+        // The halving, maybe two instructions, both halves, and a pool of their targets,
+        // each check reached through a JA at worst.
+        let checks = self.checks_before.get(first + keys.len()).copied().unwrap_or(0)
+            - self.checks_before.get(first).copied().unwrap_or(0);
+        let pooled = self.prog.len() - at + 1 + self.rets + checks;
+        let mut below = mid - (at + 1);
+        if pooled > REACH + 1 {
+            // The high half's at its end first, which leaves the low half where it is.
+            self.pool(self.prog.len(), from_high)?;
+            below += self.pool(mid, from)?;
+        }
+        match u8::try_from(below) {
+            // Above the low half: past it, where a jump's 8 bits reach.
+            Ok(over) => self.at(at)?.jt = over,
+            // Else through a jump of 32 bits, which the low half skips. Only halves pooled
+            // apart are so long, so no jump in them is pending, to be moved with them.
+            Err(_) => {
+                let far = u32::try_from(below).map_err(|_| "a filter too long".to_string())?;
+                self.at(at)?.jf = 1;
+                self.prog.insert(at + 1, op(JA, 0, 0, far));
+            }
+        }
+        Ok(())
+    }
+
+    fn at(&mut self, at: usize) -> Result<&mut libc::sock_filter, String> {
+        self.prog
+            .get_mut(at)
+            .ok_or_else(|| "a jump past the code".to_string())
+    }
+
+    /// Lays at `place` the pool the pending jumps from the `from`th on go to, and points
+    /// them there: each return once, then each check, straight after where its jump
+    /// reaches it, else through a JA among the returns. Each such JA moves the checks after
+    /// it further: until none needs one more. How many instructions it laid.
+    fn pool(&mut self, place: usize, from: usize) -> Result<usize, String> {
+        let mut rets: Vec<u32> = Vec::new();
+        // Each check, and the jump to it: a check is one syscall's, which one comparison
+        // finds.
+        let mut checks: Vec<(usize, usize)> = Vec::new();
+        for &(at, _, to) in self.pending.get(from..).unwrap_or_default() {
+            match to {
+                Target::Ret(action) if !rets.contains(&action) => rets.push(action),
+                Target::Ret(_) => {}
+                Target::Block(i) => checks.push((i, at)),
+            }
+        }
+        let bodies = checks
+            .iter()
+            .map(|&(i, _)| (self.block)(i))
+            .collect::<Result<Vec<_>, String>>()?;
+        let mut through = vec![false; checks.len()];
+        loop {
+            let mut at = place + rets.len() + through.iter().filter(|t| **t).count();
+            let mut more = false;
+            for ((&(_, jump), body), via) in checks.iter().zip(&bodies).zip(&mut through) {
+                if !*via && at.saturating_sub(jump + 1) > REACH {
+                    *via = true;
+                    more = true;
+                }
+                at += body.len();
+            }
+            if !more {
+                break;
+            }
+        }
+        // Where each check is reached: its JA, or its start.
+        let mut entries = Vec::with_capacity(checks.len());
+        let header = rets.len() + through.iter().filter(|t| **t).count();
+        let (mut ja, mut start) = (place + rets.len(), place + header);
+        let mut pool = Vec::with_capacity(header + bodies.iter().map(Vec::len).sum::<usize>());
+        pool.extend(rets.iter().map(|&action| op(RET_K, 0, 0, action)));
+        for (body, via) in bodies.iter().zip(&through) {
+            if *via {
+                let far = u32::try_from(start - (ja + 1)).map_err(|_| "a filter too long".to_string())?;
+                pool.push(op(JA, 0, 0, far));
+                entries.push(ja);
+                ja += 1;
+            } else {
+                entries.push(start);
+            }
+            start += body.len();
+        }
+        for body in bodies {
+            pool.extend(body);
+        }
+        for i in from..self.pending.len() {
+            let Some(&(at, jt, to)) = self.pending.get(i) else {
+                break;
+            };
+            let target = match to {
+                Target::Ret(action) => rets.iter().position(|&r| r == action).map(|k| place + k),
+                Target::Block(b) => checks
+                    .iter()
+                    .position(|&(c, _)| c == b)
+                    .and_then(|k| entries.get(k).copied()),
+            }
+            .ok_or("a jump to no target")?;
+            let offset = target
+                .checked_sub(at + 1)
+                .and_then(|o| u8::try_from(o).ok())
+                .ok_or("a jump past reach")?;
+            let insn = self.at(at)?;
+            if jt {
+                insn.jt = offset;
+            } else {
+                insn.jf = offset;
+            }
+        }
+        self.pending.truncate(from);
+        let laid = pool.len();
+        self.prog.splice(place..place, pool);
+        Ok(laid)
+    }
 }
 
 /// Installs `filter` on the calling thread, or with `all_threads` on every thread of the
@@ -669,6 +845,65 @@ mod tests {
         answers_as_its_rules_say(&wide);
     }
 
+    /// Filters of every size up to 600 syscalls, some failed and some with a check of 1 to
+    /// 40 values, one of 300, compile to programs the kernel takes, answering as their rules say:
+    /// their jumps reach their pools wherever a subtree's falls against 255 instructions.
+    #[test]
+    fn filters_of_every_size_compile() {
+        for n in 1..=600i64 {
+            let rules: Vec<Rule> = (0..n)
+                .map(|i| match i % 11 {
+                    3 => {
+                        let count = if i == 3 { 300 } else { (i as u32 * 7) % 40 + 1 };
+                        Rule::with(i, 1, &(0..count).map(|v| v * 5).collect::<Vec<_>>())
+                    }
+                    7 => Rule::fails(i, (i % 3 + 1) as u16),
+                    _ => Rule::any(i),
+                })
+                .collect();
+            let prog = compile(&rules).unwrap_or_else(|e| panic!("{n} rules: {e}")).0;
+            check(&prog);
+            for nr in [0, (n / 2) as u32, (n - 1) as u32, n as u32] {
+                let (verdict, _) = run(&prog, &data(nr, AUDIT_ARCH, [0, 5, 0, 0, 0, 0]));
+                assert_eq!(
+                    verdict,
+                    model(&rules, nr, [0, 5, 0, 0, 0, 0]),
+                    "{n} rules, syscall {nr}"
+                );
+            }
+        }
+    }
+
+    /// Every jump reaches its pool, whatever a subtree's size against 255 instructions,
+    /// when a search has as many returns as it counts, seven and the trap, or every key
+    /// a check too far to reach but through a JA: each key goes where it says.
+    #[test]
+    fn every_jump_reaches_its_pool() {
+        let errno = |i: usize| libc::SECCOMP_RET_ERRNO | (i % 7 + 1) as u32;
+        // Six instructions each: all but the first few dozen past reach of their jumps.
+        let long = |_: usize| Ok(vec![op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW); 6]);
+        for n in 1..=400usize {
+            let keys: Vec<u32> = (0..n as u32).map(|k| k * 2).collect();
+            let number = || vec![op(LD_W_ABS, 0, 0, NR)];
+            let returns = search(number(), &keys, &|i| Target::Ret(errno(i)), &long)
+                .unwrap_or_else(|e| panic!("{n} returns: {e}"));
+            let checks =
+                search(number(), &keys, &Target::Block, &long).unwrap_or_else(|e| panic!("{n} checks: {e}"));
+            for (prog, expect) in [
+                (returns, errno as fn(usize) -> u32),
+                (checks, |_| libc::SECCOMP_RET_ALLOW),
+            ] {
+                check(&prog);
+                for (i, &key) in keys.iter().enumerate() {
+                    let found = run(&prog, &data(key, AUDIT_ARCH, [0; 6])).0;
+                    assert_eq!(found, expect(i), "{n} keys, key {key}");
+                    let between = run(&prog, &data(key + 1, AUDIT_ARCH, [0; 6])).0;
+                    assert_eq!(between, libc::SECCOMP_RET_TRAP, "{n} keys, {}", key + 1);
+                }
+            }
+        }
+    }
+
     /// The halvings a search over `n` entries takes: ⌈log2(⌈n / LEAF⌉)⌉.
     fn halvings(n: usize) -> usize {
         (usize::BITS - (n.div_ceil(LEAF).max(1) - 1).leading_zeros()) as usize
@@ -684,6 +919,15 @@ mod tests {
             let n = 1usize << k;
             let rules: Vec<Rule> = (0..n as libc::c_long).map(|i| Rule::any(i * 2 + 1)).collect();
             let prog = compile(&rules).unwrap().0;
+            // A comparison a syscall, a halving between leaves of two to four, and pools of
+            // a return and a trap, one for every 128 syscalls at most, each halving maybe
+            // through a JA.
+            let most = 4 + n + n / 2 + 2 * n.div_ceil(128) + n / 128;
+            assert!(
+                prog.len() <= most,
+                "{n} rules: {} instructions, past {most}",
+                prog.len()
+            );
             // The architecture's check and the number's load; the search; its RET.
             let bound = 3 + 2 * halvings(n) + LEAF + 1;
             for nr in 0..=2 * n as u32 + 2 {
@@ -707,6 +951,8 @@ mod tests {
         }
         let most = answers_as_its_rules_say(&shaped());
         assert!(most <= 19, "{most} instructions");
+        let len = compile(&shaped()).unwrap().0.len();
+        assert!(len <= 222, "{len} instructions, where 7a0d8a0's search laid 406");
     }
 
     #[test]
@@ -754,8 +1000,8 @@ mod tests {
             vec![Rule::with(1, u32::MAX, &[1])],
             vec![Rule::any(-1)],
             vec![Rule::any(1 << 32)],
-            // Past the instructions a filter may have.
-            (0..3000).map(Rule::any).collect(),
+            // Past the instructions a filter may have: a comparison each, and more.
+            (0..4096).map(Rule::any).collect(),
         ] {
             assert!(compile(&wrong).is_err(), "{wrong:?}");
         }

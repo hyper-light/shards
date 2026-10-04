@@ -1,8 +1,10 @@
 //! What a seccomp filter's layout costs the syscalls it checks (review 1.7, PM M107).
 //!
 //! shards-vm's rules (crates/shards/src/confine.rs, those of them this architecture has),
-//! compiled two ways: `linear`, each rule in turn, as shards did before (frozen here from
-//! 57c5eff), and `search`, shards' own `compile` now. Each variant runs in a process of
+//! compiled three ways: `linear`, each rule in turn, as shards did before (frozen here from
+//! 57c5eff); `searched`, the binary search of 7a0d8a0, each comparison followed by its
+//! target (frozen here too); and `search`, shards' own `compile` now, its comparisons
+//! jumping to targets pooled after them. Each variant runs in a process of
 //! its own, which installs it as shards-vm does (no_new_privs, then the filter over every
 //! thread), and the variants take turns, round by round, in alternating order:
 //!
@@ -287,6 +289,92 @@ fn linear(rules: &[Rule]) -> Vec<libc::sock_filter> {
     prog
 }
 
+/// shards' compile at 7a0d8a0: a binary search over the syscalls' numbers and over an
+/// argument's values, each comparison followed by its target, a return or a check, and
+/// each leaf's comparisons by a trap.
+fn searched(rules: &[Rule]) -> Vec<libc::sock_filter> {
+    enum Verdict {
+        Return(u32),
+        Check(u32, Vec<u32>),
+    }
+    fn search<E>(
+        entries: &[E],
+        key: fn(&E) -> u32,
+        block: &impl Fn(&E, &mut Vec<libc::sock_filter>),
+        prog: &mut Vec<libc::sock_filter>,
+    ) {
+        if entries.len() <= 4 {
+            for entry in entries {
+                let at = prog.len();
+                prog.push(op(JEQ_K, 0, 0, key(entry)));
+                block(entry, prog);
+                skip(prog, at, false);
+            }
+            prog.push(op(RET_K, 0, 0, libc::SECCOMP_RET_TRAP));
+            return;
+        }
+        let (low, high) = entries.split_at(entries.len() / 2);
+        let at = prog.len();
+        prog.push(op(JGT_K, 0, 0, key(low.last().expect("a low half"))));
+        search(low, key, block, prog);
+        skip(prog, at, true);
+        search(high, key, block, prog);
+    }
+    fn skip(prog: &mut Vec<libc::sock_filter>, at: usize, when: bool) {
+        let over = prog.len() - (at + 1);
+        match u8::try_from(over) {
+            Ok(over) if when => prog[at].jt = over,
+            Ok(over) => prog[at].jf = over,
+            Err(_) => {
+                if when {
+                    prog[at].jf = 1;
+                } else {
+                    prog[at].jt = 1;
+                }
+                prog.insert(at + 1, op(JA, 0, 0, over as u32));
+            }
+        }
+    }
+    let mut sorted: Vec<&Rule> = rules.iter().collect();
+    sorted.sort_by_key(|r| r.syscall);
+    let mut syscalls: Vec<(u32, Verdict)> = Vec::new();
+    for group in sorted.chunk_by(|a, b| a.syscall == b.syscall) {
+        let verdict = if let Some(errno) = group.iter().find_map(|r| r.errno) {
+            Verdict::Return(libc::SECCOMP_RET_ERRNO | u32::from(errno))
+        } else if group.iter().any(|r| r.arg.is_none()) {
+            Verdict::Return(libc::SECCOMP_RET_ALLOW)
+        } else {
+            let index = group[0].arg.as_ref().expect("a check").0;
+            let mut values: Vec<u32> = group
+                .iter()
+                .flat_map(|r| r.arg.as_ref().expect("a check").1.clone())
+                .collect();
+            values.sort_unstable();
+            values.dedup();
+            Verdict::Check(index, values)
+        };
+        syscalls.push((group[0].syscall as u32, verdict));
+    }
+    let mut prog = vec![
+        op(LD_W_ABS, 0, 0, 4),
+        op(JEQ_K, 1, 0, AUDIT_ARCH),
+        op(RET_K, 0, 0, libc::SECCOMP_RET_KILL_PROCESS),
+        op(LD_W_ABS, 0, 0, 0),
+    ];
+    let allow = |_: &u32, prog: &mut Vec<libc::sock_filter>| {
+        prog.push(op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW));
+    };
+    let block = |(_, verdict): &(u32, Verdict), prog: &mut Vec<libc::sock_filter>| match verdict {
+        Verdict::Return(action) => prog.push(op(RET_K, 0, 0, *action)),
+        Verdict::Check(index, values) => {
+            prog.push(op(LD_W_ABS, 0, 0, 16 + 8 * index));
+            search(values, |v| *v, &allow, prog);
+        }
+    };
+    search(&syscalls, |(nr, _)| *nr, &block, &mut prog);
+    prog
+}
+
 /// The instructions of a filter shards compiled, from its Debug form.
 fn instructions(filter: &seccomp::Filter) -> Vec<libc::sock_filter> {
     let text = format!("{filter:?}");
@@ -369,6 +457,7 @@ fn install(variant: &str) {
     let allow = [op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW)];
     match variant {
         "linear" => drop(install_raw(&linear(&rules), FLAGS)),
+        "searched" => drop(install_raw(&searched(&rules), FLAGS)),
         "search" => seccomp::install(&seccomp::compile(&rules).expect("compiles"), true).expect("installs"),
         "allow" => drop(install_raw(&allow, FLAGS)),
         "allow-bare" => drop(install_raw(&allow, 0)),
@@ -382,24 +471,41 @@ fn child(variant: &str) {
     let rules = rules();
     let devnull = std::fs::File::open("/dev/null").expect("/dev/null");
     let fd = std::os::fd::AsRawFd::as_raw_fd(&devnull);
-    let (filter, prog) = (seccomp::compile(&rules).expect("compiles"), linear(&rules));
     let allow = [op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW)];
     let mut out = String::new();
     let parts = |out: &mut String, (nnp, filter): (f64, f64)| {
         out.push_str(&format!("nnp {nnp}\nfilter {filter}\ninstall {}\n", nnp + filter));
     };
+    // The variant's compile, its process's first, as a VM process's own is.
+    let cold = |out: &mut String, start: Instant| {
+        out.push_str(&format!("cold {}\n", start.elapsed().as_secs_f64() * 1e6));
+    };
     match variant {
-        "linear" => parts(&mut out, install_raw(&prog, FLAGS)),
+        "linear" => {
+            let start = Instant::now();
+            let prog = linear(&rules);
+            cold(&mut out, start);
+            parts(&mut out, install_raw(&prog, FLAGS));
+        }
+        "searched" => {
+            let start = Instant::now();
+            let prog = searched(&rules);
+            cold(&mut out, start);
+            parts(&mut out, install_raw(&prog, FLAGS));
+        }
+        "search" => {
+            let start = Instant::now();
+            let filter = seccomp::compile(&rules).expect("compiles");
+            cold(&mut out, start);
+            let start = Instant::now();
+            seccomp::install(&filter, true).expect("installs");
+            out.push_str(&format!("install {}\n", start.elapsed().as_secs_f64() * 1e6));
+        }
         "allow" => parts(&mut out, install_raw(&allow, FLAGS)),
         "allow-bare" => parts(&mut out, install_raw(&allow, 0)),
         "allow-again" => {
             install_raw(&allow, FLAGS);
             parts(&mut out, install_raw(&allow, FLAGS));
-        }
-        "search" => {
-            let start = Instant::now();
-            seccomp::install(&filter, true).expect("installs");
-            out.push_str(&format!("install {}\n", start.elapsed().as_secs_f64() * 1e6));
         }
         _ => {}
     }
@@ -462,15 +568,7 @@ fn main() {
         jit.trim()
     );
     let rules = rules();
-    let (filter, old) = (seccomp::compile(&rules).expect("compiles"), linear(&rules));
-    let new = instructions(&filter);
     let request = [0, u64::from(KVM_RUN), 0, 0, 0, 0];
-    let (verdict_old, ran_old) = run(&old, libc::SYS_ioctl as u32, request);
-    let (verdict_new, ran_new) = run(&new, libc::SYS_ioctl as u32, request);
-    assert_eq!(
-        (verdict_old, verdict_new),
-        (libc::SECCOMP_RET_ALLOW, libc::SECCOMP_RET_ALLOW)
-    );
     let most = |prog: &[libc::sock_filter]| {
         rules
             .iter()
@@ -493,34 +591,57 @@ fn main() {
             .max()
             .unwrap_or(0)
     };
-    println!(
-        "{} rules; linear: {} instructions, KVM_RUN runs {ran_old}, the most any allowed runs {}; search: {} instructions, KVM_RUN runs {ran_new}, the most {}",
-        rules.len(),
-        old.len(),
-        most(&old),
-        new.len(),
-        most(&new)
-    );
-    let mut compile = [Vec::new(), Vec::new()];
+    print!("{} rules;", rules.len());
+    for (name, prog) in [
+        ("linear", linear(&rules)),
+        ("searched", searched(&rules)),
+        (
+            "search",
+            instructions(&seccomp::compile(&rules).expect("compiles")),
+        ),
+    ] {
+        let (verdict, ran) = run(&prog, libc::SYS_ioctl as u32, request);
+        assert_eq!(verdict, libc::SECCOMP_RET_ALLOW, "{name}");
+        print!(
+            " {name}: {} instructions, KVM_RUN runs {ran}, the most any allowed runs {};",
+            prog.len(),
+            most(&prog)
+        );
+    }
+    println!();
+    let mut compile = [Vec::new(), Vec::new(), Vec::new()];
     for i in 0..2000 {
-        for which in [i % 2, 1 - i % 2] {
+        for k in 0..3 {
+            let which = (i + k) % 3;
             let start = Instant::now();
-            if which == 0 {
-                std::hint::black_box(linear(std::hint::black_box(&rules)));
-            } else {
-                std::hint::black_box(seccomp::compile(std::hint::black_box(&rules)).expect("compiles"));
+            match which {
+                0 => drop(std::hint::black_box(linear(std::hint::black_box(&rules)))),
+                1 => drop(std::hint::black_box(searched(std::hint::black_box(&rules)))),
+                _ => drop(std::hint::black_box(
+                    seccomp::compile(std::hint::black_box(&rules)).expect("compiles"),
+                )),
             }
             compile[which].push(start.elapsed().as_secs_f64() * 1e6);
         }
     }
     report("compile", "µs", "linear", &mut compile[0]);
-    report("compile", "µs", "search", &mut compile[1]);
-    let variants = ["none", "allow", "linear", "search", "allow-bare", "allow-again"];
+    report("compile", "µs", "searched", &mut compile[1]);
+    report("compile", "µs", "search", &mut compile[2]);
+    let variants = [
+        "none",
+        "allow",
+        "linear",
+        "searched",
+        "search",
+        "allow-bare",
+        "allow-again",
+    ];
     let mut install: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
     let mut nnp: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
     let mut filter: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
     let mut ioctl: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
     let mut getpid: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
+    let mut cold: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
     let exe = std::env::current_exe().expect("this program");
     for round in 0..rounds {
         let mut order: Vec<usize> = (0..variants.len()).collect();
@@ -545,18 +666,22 @@ fn main() {
                     "install" => install[v].push(x),
                     "nnp" => nnp[v].push(x),
                     "filter" => filter[v].push(x),
+                    "cold" => cold[v].push(x),
                     "ioctl" => ioctl[v].push(x),
                     _ => getpid[v].push(x),
                 }
             }
         }
     }
-    // The calls under the first four; the others' filters are allow's.
-    for v in 0..4 {
+    // The calls under the first five; the others' filters are allow's.
+    for v in 0..5 {
         report("ioctl(KVM_RUN)", "ns", variants[v], &mut ioctl[v]);
     }
-    for v in 0..4 {
+    for v in 0..5 {
         report("getpid", "ns", variants[v], &mut getpid[v]);
+    }
+    for v in 2..5 {
+        report("compile, a process's first", "µs", variants[v], &mut cold[v]);
     }
     for v in 1..variants.len() {
         report("install", "µs", variants[v], &mut install[v]);
