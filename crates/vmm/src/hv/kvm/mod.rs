@@ -89,15 +89,28 @@ fn open() -> std::result::Result<sys::Kvm, String> {
     Ok(kvm)
 }
 
+/// /dev/kvm, opened and checked once a process (review 1.8): a start asked whether the
+/// host runs VMs, how many vCPUs one may have, and made its VM, each opening it and
+/// asking its API version and capabilities again. Only a handle that passed is kept: a
+/// host whose KVM is missing now is looked at again next time.
+fn kvm() -> std::result::Result<&'static sys::Kvm, String> {
+    static KVM: OnceLock<sys::Kvm> = OnceLock::new();
+    if let Some(kvm) = KVM.get() {
+        return Ok(kvm);
+    }
+    let opened = open()?;
+    Ok(KVM.get_or_init(|| opened))
+}
+
 /// Ok when this host can run VMs: /dev/kvm opens and offers what shards needs.
 pub fn check_host() -> std::result::Result<(), String> {
-    open().map(drop)
+    kvm().map(drop)
 }
 
 /// The most vCPUs one VM can have: KVM's limit, and 254, since the MADT carries 8-bit
 /// APIC ids (research doc §3.5).
 pub fn max_vcpus() -> Result<u32> {
-    let kvm = open().map_err(Error::Guest)?;
+    let kvm = kvm().map_err(Error::Guest)?;
     let max = kvm
         .check_extension(sys::CAP_MAX_VCPUS)
         .map_err(call("KVM_CHECK_EXTENSION"))?;
@@ -165,7 +178,7 @@ impl Vm {
     /// (research doc §9 step 2). No PIT: with a HW-reduced FADT the guest never uses one.
     pub fn new(config: VmConfig) -> Result<Vm> {
         install_kick_handler()?;
-        let kvm = open().map_err(Error::Guest)?;
+        let kvm = kvm().map_err(Error::Guest)?;
         let fd = kvm.create_vm().map_err(call("KVM_CREATE_VM"))?;
         fd.set_tss_addr(layout::TSS).map_err(call("KVM_SET_TSS_ADDR"))?;
         fd.set_identity_map_addr(layout::IDENTITY_MAP)
@@ -772,5 +785,25 @@ impl Kicker {
             // `tgid` keeps a reused ID in another process from being signalled.
             unsafe { libc::syscall(libc::SYS_tgkill, tgid, tid, libc::SIGRTMIN()) };
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// /dev/kvm is opened and checked once a process: the next start takes the same handle
+    /// (review 1.8).
+    #[test]
+    fn kvm_is_opened_and_checked_once() {
+        if let Err(e) = check_host() {
+            eprintln!("SKIP: {e}");
+            return;
+        }
+        let first: *const sys::Kvm = kvm().unwrap();
+        let again: *const sys::Kvm = kvm().unwrap();
+        assert_eq!(first, again);
+        assert!(max_vcpus().unwrap() >= 1);
     }
 }

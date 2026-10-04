@@ -245,7 +245,7 @@ impl Output {
         };
         let written = file.metadata().map(|m| m.len() > 0).unwrap_or(false);
         let done = (|| -> std::io::Result<()> {
-            file.sync_all()?;
+            shards_ipc::sync_durable(&file)?;
             file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
             drop(file);
             if status == 0 && written {

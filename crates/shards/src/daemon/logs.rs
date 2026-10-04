@@ -287,9 +287,8 @@ fn index_legacy(dir: &Path, log: &File) -> io::Result<()> {
         out.write_all(&entry.to_be_bytes())?;
         at = end;
     }
-    out.into_inner()
-        .map_err(io::IntoInnerError::into_error)?
-        .sync_all()?;
+    let file = out.into_inner().map_err(io::IntoInnerError::into_error)?;
+    shards_vmm::platform::sync_durable(&file)?;
     std::fs::rename(&aside, dir.join(INDEX))
 }
 

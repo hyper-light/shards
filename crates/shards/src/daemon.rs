@@ -1602,6 +1602,20 @@ impl<D: Disk> Daemon<D> {
                 return None;
             }
         };
+        // The host's resolvers as dockerd gives a container them, on its bridge or on
+        // none (the legacy transform, neither with IPv6), read as the run starts; with
+        // them the command still within a frame (review 1.y), as spec.rs measured it
+        // without.
+        prepared.spec.resolv = Some(crate::build::step::resolv(
+            &crate::build::step::host_resolv(),
+            false,
+        ));
+        if let Err(e) = crate::spec::fits(&prepared.spec) {
+            refuse(&e);
+            self.discard(&id);
+            self.make_spare();
+            return None;
+        }
         // Its published ports, bound now so that its record lists them; a binding that
         // fails, fails the start once the container is made, as dockerd's does. On none,
         // dockerd publishes nothing, and says nothing of it.
@@ -1670,12 +1684,6 @@ impl<D: Disk> Daemon<D> {
             vec![conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()]
         };
         fds.extend([container_log.log.as_fd(), container_log.index.as_fd()]);
-        // The host's resolvers as dockerd gives a container them, on its bridge or on
-        // none (the legacy transform, neither with IPv6), read as the run starts.
-        prepared.spec.resolv = Some(crate::build::step::resolv(
-            &crate::build::step::host_resolv(),
-            false,
-        ));
         // The flags, the retention's two u64s, then the spec, in one allocation (audit D10).
         let mut payload = Vec::with_capacity(17 + prepared.spec.encoded_len().unwrap_or(0));
         payload.push(flags);

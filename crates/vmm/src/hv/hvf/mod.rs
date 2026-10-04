@@ -708,7 +708,7 @@ impl Vcpu {
     /// writes to read-only memory and pages listed twice, so a damaged list costs no more
     /// than touching guest memory once. Returns how many pages it touched.
     ///
-    /// For a fresh vCPU, before its state is restored: it runs [`PREFETCH_CODE`] at EL1
+    /// For a fresh vCPU, before its state is restored: it runs `PREFETCH_CODE` at EL1
     /// with its own MMU state, all of which the restore sets again.
     pub fn prefetch(&mut self, vm: &Vm, pages: &[Touch]) -> Result<usize> {
         const TABLE: usize = 4 << 10;

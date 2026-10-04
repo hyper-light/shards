@@ -167,14 +167,14 @@ impl Identity {
     }
 }
 
-/// The files the snapshot in `dir` restores against, disks then pmem, each with whether
-/// the guest only reads it: what a restore will open, for a sandbox to allow before it
-/// does (shards confine.rs).
-pub fn backing_files(dir: &Path) -> Result<Vec<(PathBuf, bool)>, String> {
-    let pinned = read(dir)?;
-    Ok(backing(&pinned.snapshot.config)
+/// The files `pinned` restores against, disks then pmem, each with whether the guest only
+/// reads it: what a restore will open, for a sandbox to allow before it does (shards
+/// confine.rs). Of a snapshot already read, which the restore goes on to resume, so
+/// that it reads and decodes its state once (review 1.12).
+pub fn backing_of(pinned: &Pinned) -> Vec<(PathBuf, bool)> {
+    backing(&pinned.snapshot.config)
         .map(|(path, read_only)| (path.to_path_buf(), read_only))
-        .collect())
+        .collect()
 }
 
 /// The MAC of the snapshot in `dir`'s network device, if it has one: a VM restored from
@@ -452,11 +452,14 @@ enum Step {
 
 /// Writes a snapshot of a paused VM into `dir` as a new generation, creating `dir` if
 /// needed, and makes it the one in use. Returns the generation's directory, held open:
-/// where a working set recorded from it goes, wherever it goes.
-pub fn write(dir: &Path, snap: &Snapshot, memory: &GuestMemory) -> Result<File, String> {
+/// where a working set recorded from it goes, wherever it goes. The tests' way; a VM
+/// stages its snapshot and commits it apart (review 1.17).
+#[cfg(all(test, unix))]
+fn write(dir: &Path, snap: &Snapshot, memory: &GuestMemory) -> Result<File, String> {
     write_with(dir, snap, memory, &mut |_| Ok(()))
 }
 
+#[cfg(all(test, unix))]
 fn write_with(
     dir: &Path,
     snap: &Snapshot,
@@ -740,22 +743,15 @@ fn decode_working_set(bytes: &[u8], page: u64, max_pages: usize) -> codec::Resul
 
 /// Saves `pages`, recorded at stage-2 pages of `page` bytes, as the working set of the
 /// generation whose directory `generation` holds open, wherever it has gone.
-pub fn write_working_set(generation: &File, pages: &[Touch], page: u64) -> Result<(), String> {
+fn write_working_set(generation: &File, pages: &[Touch], page: u64) -> Result<(), String> {
     platform::write_in(generation, WORKING_SET, &encode_working_set(pages, page))
         .map_err(|e| format!("the working set: {e}"))
 }
 
-/// The working set saved with the generation `generation` holds open, if it has one
-/// recorded at stage-2 pages of `page` bytes. It holds at most `max_pages` pages, as many
-/// as the guest has; a file too long for that is not read.
 /// The working set `bytes` holds, as [`encode_working_set`] wrote it and as a restore
 /// would take it: its pages aligned, distinct and no more than `max_pages`; `None` for one
 /// recorded at another page size.
-pub fn decode_working_set_bytes(
-    bytes: &[u8],
-    page: u64,
-    max_pages: u64,
-) -> Result<Option<Vec<Touch>>, String> {
+fn decode_working_set_bytes(bytes: &[u8], page: u64, max_pages: u64) -> Result<Option<Vec<Touch>>, String> {
     let at = |e: &dyn std::fmt::Display| format!("the working set: {e}");
     let max_pages = usize::try_from(max_pages).map_err(|e| at(&e))?;
     decode_working_set(bytes, page, max_pages).map_err(|e| at(&e))
@@ -787,6 +783,9 @@ pub fn accept_working_set(
     Ok(pages.len())
 }
 
+/// The working set saved in generation directory `generation`, if it has one recorded at
+/// stage-2 pages of `page` bytes. It holds at most `max_pages` pages, as many as the
+/// guest has; a file too long for that is not read.
 pub fn read_working_set(generation: &Path, page: u64, max_pages: u64) -> Result<Option<Vec<Touch>>, String> {
     let at = |e: &dyn std::fmt::Display| format!("the working set: {e}");
     let max_bytes = max_pages

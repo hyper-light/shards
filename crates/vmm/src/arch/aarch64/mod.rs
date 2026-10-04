@@ -18,7 +18,7 @@ pub mod layout {
     pub const UART: u64 = 0x0900_0000;
     /// PL031 RTC (4 KiB).
     pub const RTC: u64 = 0x0901_0000;
-    /// shards control page: boot-time markers written by the guest.
+    /// The shards control page ([`shards_abi::control`]).
     pub const CONTROL: u64 = shards_abi::CONTROL_PAGE;
     /// virtio-mmio transports, `VIRTIO_MMIO_STRIDE` apart.
     pub const VIRTIO_MMIO: u64 = 0x0a00_0000;

@@ -982,11 +982,14 @@ fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     // VM process wrote and may name anything: what it names past them is refused, and a
     // state made to mislead its reader is read where nothing else can be reached. Without
     // a spawner's word, the state names them, and is read first.
-    match BACKING.get() {
+    // The state is read once, and the generation checked is the one resumed (review
+    // 1.12).
+    let pinned = match BACKING.get() {
         Some(given) => {
             add(&mut paths, given);
             confine(&paths)?;
-            let backing = shards_vmm::snapshot::backing_files(&cfg.dir)?;
+            let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
+            let backing = shards_vmm::snapshot::backing_of(&pinned);
             let unasked: Vec<String> = backing
                 .iter()
                 .filter(|b| !given.contains(b))
@@ -999,14 +1002,16 @@ fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
                     unasked.join(", ")
                 ));
             }
+            pinned
         }
         None => {
-            let backing = shards_vmm::snapshot::backing_files(&cfg.dir)?;
-            add(&mut paths, &backing);
+            let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
+            add(&mut paths, &shards_vmm::snapshot::backing_of(&pinned));
             confine(&paths)?;
+            pinned
         }
-    }
-    vm::restore(cfg)
+    };
+    vm::restore_from(cfg, pinned)
 }
 
 /// `path` made whole against the working directory.

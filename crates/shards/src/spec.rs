@@ -91,10 +91,17 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
         resolv: None,
         stdin: o.interactive,
     };
+    fits(&spec)?;
+    Ok(spec)
+}
+
+/// Whether `spec` goes to the guest in one frame, as everything a run sends it does: once
+/// it is built, and again once the daemon has added its resolvers (review 1.y).
+pub fn fits(spec: &run::Spec) -> Result<(), String> {
     if spec.encoded_len().is_none_or(|n| n > run::MAX_PAYLOAD as usize) {
         return Err("the command and its environment are too large".into());
     }
-    Ok(spec)
+    Ok(())
 }
 
 /// Go's ReplaceOrAppendEnvValues (moby daemon/container/env.go): each of `overrides`
@@ -171,6 +178,25 @@ fn os_bytes(value: &std::ffi::OsStr) -> Vec<u8> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A spec within a frame without its resolvers, and past it with them, is refused once
+    /// they are added (review 1.y).
+    #[test]
+    fn a_spec_its_resolvers_push_past_a_frame_is_refused() {
+        let mut spec = run::Spec {
+            argv: vec![b"true".to_vec()],
+            ..run::Spec::default()
+        };
+        let room = run::MAX_PAYLOAD as usize - spec.encoded_len().unwrap() - 4;
+        spec.env = vec![vec![b'x'; room]];
+        assert_eq!(spec.encoded_len(), Some(run::MAX_PAYLOAD as usize));
+        assert_eq!(fits(&spec), Ok(()));
+        spec.resolv = Some(b"nameserver 10.0.0.1\n".to_vec());
+        assert_eq!(
+            fits(&spec),
+            Err("the command and its environment are too large".to_string())
+        );
+    }
 
     /// The environment for `-e` entries `env`, with shards' own environment holding only
     /// `FROM_SHARDS=yes`.

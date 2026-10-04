@@ -95,10 +95,8 @@ fn read_bounded(opened: io::Result<File>, name: &str, max: u64) -> io::Result<Op
 /// crash once this returns. Linux takes an fsync of the directory itself (fsync(2)); macOS
 /// takes `sync_durable`'s flush, whose `F_FULLFSYNC` directories accept (PM M46).
 pub fn sync_dir(path: &std::path::Path) -> io::Result<()> {
-    #[cfg(target_os = "macos")]
-    return sync_durable(&File::open(path)?);
-    #[cfg(all(unix, not(target_os = "macos")))]
-    return File::open(path)?.sync_all();
+    #[cfg(unix)]
+    return sync_entries(&File::open(path)?);
     #[cfg(not(unix))]
     {
         let _ = path;
@@ -138,6 +136,19 @@ pub fn stdout_file() -> io::Result<File> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// What a filesystem without F_FULLFSYNC holds is made durable with fsync instead:
+    /// /dev/null refuses F_FULLFSYNC and takes fsync, as an SMB share does, where std's
+    /// sync_all fails (review 1.13).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_file_without_full_fsync_is_synced_still() {
+        let null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
+        assert!(null.sync_all().is_err(), "std's sync_all took F_FULLFSYNC here");
+        sync_durable(&null).unwrap();
+        let dir = std::fs::File::open(std::env::temp_dir()).unwrap();
+        sync_entries(&dir).unwrap();
+    }
 
     fn temp_file(tag: &str, contents: &[u8]) -> (std::path::PathBuf, File) {
         let path = std::env::temp_dir().join(format!("shards-platform-{tag}-{}", std::process::id()));

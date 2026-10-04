@@ -622,13 +622,13 @@ pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
     Ok(touched)
 }
 
-/// How many pages of its working set a restored machine mapped ahead.
 /// What a machine keeps of its [`Start`] once its vCPUs are set up, for its release and
 /// its diagnostics; the rest is dropped (audit D03).
 #[derive(Debug)]
 pub struct Kept {
     /// A restore's: vCPU 0's TSC, and where the snapshot has it start.
     tsc: Option<(hv::Tsc, Option<hv::TscStart>)>,
+    /// How many pages of its working set a restored machine mapped ahead.
     prefetched: usize,
 }
 

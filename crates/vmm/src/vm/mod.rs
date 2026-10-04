@@ -29,14 +29,16 @@ mod barrier;
 mod runtime;
 #[cfg(hv)]
 pub use runtime::{
-    Handle, Running, accept_working_set, check_host, max_vcpus, restore, start, working_set_limit,
+    Handle, Running, accept_working_set, check_host, max_vcpus, restore, restore_from, start,
+    working_set_limit,
 };
 
 #[cfg(not(hv))]
 mod unsupported;
 #[cfg(not(hv))]
 pub use unsupported::{
-    Handle, Running, accept_working_set, check_host, max_vcpus, restore, start, working_set_limit,
+    Handle, Running, accept_working_set, check_host, max_vcpus, restore, restore_from, start,
+    working_set_limit,
 };
 
 /// The host sides of a VM's devices that live outside it.
@@ -219,7 +221,7 @@ pub struct RestoreConfig {
     /// restore ahead of its request, which it moves off the request's path (PM M30).
     pub prefetch: bool,
     /// Record a working set for the snapshot, where it has none and this backend records
-    /// restores' ([`RESTORES_RECORD`]), until [`Handle::save_working_set`] saves it.
+    /// restores' ([`RESTORES_RECORD`]), until [`Handle::take_working_set`] takes it.
     pub record: bool,
 }
 
@@ -229,7 +231,7 @@ pub struct SnapshotPolicy {
     pub dir: PathBuf,
     pub then: AfterSnapshot,
     /// Once resumed from its snapshot, record the pages the guest touches, until
-    /// [`Handle::save_working_set`] saves them with the snapshot.
+    /// [`Handle::take_working_set`] takes them, for the snapshot.
     pub working_set: bool,
 }
 

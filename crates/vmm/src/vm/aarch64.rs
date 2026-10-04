@@ -464,13 +464,13 @@ pub fn recorder(_m: &Machine) -> Option<Recorder> {
     None
 }
 
-/// How many pages of its working set a restored machine prefetched.
 /// What a machine keeps of its [`Start`] once its vCPUs are set up, for its release and
 /// its diagnostics; the rest is dropped (audit D03).
 #[derive(Debug)]
 pub struct Kept {
     /// A restore's guest counter at its snapshot.
     counter: Option<u64>,
+    /// How many pages of its working set a restored machine prefetched.
     prefetched: usize,
 }
 

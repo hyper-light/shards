@@ -19,6 +19,13 @@ pub fn restore(_cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     Err(no_backend())
 }
 
+pub fn restore_from(
+    _cfg: &RestoreConfig,
+    _pinned: crate::snapshot::Pinned,
+) -> Result<(Handle, Running), String> {
+    Err(no_backend())
+}
+
 pub fn check_host() -> Result<(), String> {
     Err(no_backend())
 }

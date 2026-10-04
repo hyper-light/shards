@@ -258,7 +258,7 @@ pub unsafe fn untouched(ptr: *const u8, len: usize, page: usize) -> io::Result<O
                 .as_chunks::<8>()
                 .0
                 .iter()
-                .map(|e| u64::from_le_bytes(*e) & (PRESENT | SWAPPED) == 0)
+                .map(|e| u64::from_ne_bytes(*e) & (PRESENT | SWAPPED) == 0)
                 .collect(),
         ))
     }
@@ -567,7 +567,19 @@ pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
         unsafe { libc::unlinkat(dir.as_raw_fd(), tmp.as_ptr(), 0) };
         return Err(e);
     }
-    dir.sync_all()
+    sync_entries(dir)
+}
+
+/// Makes the entries of the directory `dir` holds open durable: the renames into it
+/// survive a crash once this returns (review 1.13). Linux takes an fsync of the directory
+/// itself (fsync(2)); macOS takes [`sync_durable`]'s flush, whose `F_FULLFSYNC`
+/// directories accept (PM M46), and whose fsync a filesystem without it gets instead,
+/// where std's `sync_all` would fail.
+pub fn sync_entries(dir: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    return sync_durable(dir);
+    #[cfg(not(target_os = "macos"))]
+    return dir.sync_all();
 }
 
 /// Makes completed writes durable on stable storage. On macOS `fsync` does not flush the
@@ -659,7 +671,7 @@ fn clear_errno() {
 /// How many threads this process may have, as far as the system says: macOS's limit for a
 /// process (`kern.num_taskthreads`); on Linux the least of its user's (`RLIMIT_NPROC`,
 /// which counts threads there: getrlimit(2)), the system's (`/proc/sys/kernel/threads-max`,
-/// proc(5)), and its control groups' ([`pids_max`]). `None` where none is said.
+/// proc(5)), and its control groups' (`pids_max`). `None` where none is said.
 pub fn thread_limit() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {

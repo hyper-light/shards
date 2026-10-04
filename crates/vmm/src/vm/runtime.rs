@@ -62,8 +62,6 @@ impl Handle {
         self.shared.stop(ExitReason::Stopped);
     }
 
-    /// Starts the vCPUs of a VM restored with `hold`. Everything else is ready, so this
-    /// is all a start request costs.
     /// Waits until no snapshot is being taken: one the guest asked for is durable and in
     /// use when this returns, though the guest ran again before it was (PM M63). Returns
     /// at once if none is, or the VM is stopping.
@@ -74,6 +72,8 @@ impl Handle {
         }
     }
 
+    /// Starts the vCPUs of a VM restored with `hold`. Everything else is ready, so this
+    /// is all a start request costs.
     pub fn release(&self) {
         self.shared.release_vcpus();
     }
@@ -356,12 +356,19 @@ fn guest_pages(snap: &snapshot::Snapshot) -> u64 {
 /// Resumes the VM a snapshot holds, in this process.
 pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     check_host()?;
+    restore_from(cfg, snapshot::read(&cfg.dir)?)
+}
+
+/// [`restore`] of `pinned`, the snapshot in `cfg.dir` already read, on a host its caller
+/// has checked ([`check_host`]): a restore that read it to learn its backing files reads
+/// and decodes it once, and resumes the very generation it checked (review 1.12).
+pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Handle, Running), String> {
     let snapshot::Pinned {
         snapshot: snap,
         memory: memory_file,
         path: generation,
         name,
-    } = snapshot::read(&cfg.dir)?;
+    } = pinned;
     check_vcpus(snap.config.vcpus)?;
     let mut working_set = if cfg.prefetch {
         snapshot::read_working_set(&generation, machine::PAGE, guest_pages(&snap)).unwrap_or_else(|e| {
@@ -408,7 +415,7 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
 }
 
 /// The most bytes a working set of the snapshot in `dir` can take encoded: its header and
-/// 8 bytes for each page its guest has ([`guest_pages`]). The daemon takes no more of one.
+/// 8 bytes for each page its guest has (`guest_pages`). The daemon takes no more of one.
 pub fn working_set_limit(dir: &Path) -> Result<u64, String> {
     let pinned = snapshot::read(dir)?;
     guest_pages(&pinned.snapshot)
@@ -419,7 +426,7 @@ pub fn working_set_limit(dir: &Path) -> Result<u64, String> {
 
 /// Writes the working set a VM recorded from generation `name` of the snapshot in `dir`,
 /// for the daemon (`snapshot::accept_working_set`): at this host's page size, within the
-/// snapshot's guest ([`guest_pages`]).
+/// snapshot's guest (`guest_pages`).
 pub fn accept_working_set(dir: &Path, name: &str, bytes: &[u8]) -> Result<usize, String> {
     snapshot::accept_working_set(dir, name, bytes, machine::PAGE, guest_pages)
 }

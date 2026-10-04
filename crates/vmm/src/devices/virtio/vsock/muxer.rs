@@ -39,6 +39,12 @@ use crate::vm::VsockHost;
 const MAX_CONNECTIONS: usize = 1023;
 /// RSTs owed for packets that matched no connection, beyond which more are dropped.
 const MAX_STRAY_RSTS: usize = 256;
+/// Streams a snapshot holds the ports of, at most (review 1.15): a muxer's connections and
+/// owed resets, and a restored one's are all owed resets, which a save made before they
+/// go out holds again beside its own connections. So the bound is that of 64 saves in a
+/// row with none sent between, not of one; past it the oldest owed go unsaid, and a
+/// stream of theirs is reset as its next packet finds no connection.
+const MAX_SAVED: usize = 64 * (MAX_CONNECTIONS + MAX_STRAY_RSTS);
 /// The shortest handshake line, `CONNECT 0\n`. Reading this much first, then a byte at a
 /// time, never consumes data a client sends after its line.
 const MIN_HANDSHAKE: usize = 10;
@@ -86,7 +92,7 @@ impl Saved {
     }
 
     pub fn read(r: &mut Reader<'_>) -> codec::Result<Saved> {
-        let ports = r.seq(MAX_CONNECTIONS + MAX_STRAY_RSTS, 8, |r| Ok((r.u32()?, r.u32()?)))?;
+        let ports = r.seq(MAX_SAVED, 8, |r| Ok((r.u32()?, r.u32()?)))?;
         Ok(Saved {
             ports,
             last_local_port: r.u32()?,
@@ -158,11 +164,15 @@ impl Muxer {
         self.local_ports.clear();
     }
 
-    /// The streams the guest may hold, for a snapshot.
+    /// The streams the guest may hold, for a snapshot: its connections, then the resets
+    /// owed, newest first, as many as a restore reads.
     pub fn saved(&self) -> Saved {
         let conns = self.conns.keys().map(|k| (k.local_port, k.peer_port));
         Saved {
-            ports: self.stray_rsts.iter().copied().chain(conns).collect(),
+            ports: conns
+                .chain(self.stray_rsts.iter().rev().copied())
+                .take(MAX_SAVED)
+                .collect(),
             last_local_port: self.last_local_port,
         }
     }
@@ -757,6 +767,48 @@ mod tests {
             ]
         );
         assert_eq!(arrived.try_iter().count(), 3);
+    }
+
+    /// A restored muxer saved again before it has sent the resets it owes saves them
+    /// beside its own, and a restore reads them all (review 1.15): a full snapshot's, saved
+    /// again, round-trips.
+    #[test]
+    fn a_save_before_a_restores_resets_go_out_reads_back() {
+        let dir = std::env::temp_dir().join(format!("shards-vsock-resave-{}", std::process::id()));
+        let mut m = Muxer::new(VsockHost::at(dir), 3).unwrap();
+        let full = MAX_CONNECTIONS + MAX_STRAY_RSTS;
+        let ports: Vec<(u32, u32)> = (0..full as u32)
+            .map(|i| (LOCAL_PORT_BASE + i, 1000 + i))
+            .collect();
+        m.restore(Saved {
+            ports: ports.clone(),
+            last_local_port: LOCAL_PORT_BASE + full as u32,
+        });
+        // As many streams again as its own connections would hold (which a save holds
+        // beside the resets owed): past what one snapshot holds.
+        let own: Vec<(u32, u32)> = (0..MAX_CONNECTIONS as u32)
+            .map(|i| (LOCAL_PORT_BASE + 10_000 + i, 1))
+            .collect();
+        m.stray_rsts.extend(own.iter().copied());
+        let saved = m.saved();
+        assert_eq!(saved.ports.len(), full + MAX_CONNECTIONS);
+        let mut w = Writer::default();
+        saved.write(&mut w);
+        let bytes = w.into_bytes();
+        let mut r = Reader::new(&bytes);
+        let read = Saved::read(&mut r).unwrap();
+        assert!(read.ports.iter().all(|p| ports.contains(p) || own.contains(p)));
+        assert_eq!(read.ports.len(), full + MAX_CONNECTIONS);
+        // Saved more than a restore reads, it keeps the newest.
+        let mut big = Muxer::new(VsockHost::at(std::env::temp_dir().join("shards-vsock-big")), 3).unwrap();
+        let many: Vec<(u32, u32)> = (0..(MAX_SAVED + 5) as u32).map(|i| (i, i)).collect();
+        big.stray_rsts.extend(many);
+        let saved = big.saved();
+        assert_eq!(saved.ports.len(), MAX_SAVED);
+        assert_eq!(
+            saved.ports.first(),
+            Some(&((MAX_SAVED + 4) as u32, (MAX_SAVED + 4) as u32))
+        );
     }
 
     #[test]

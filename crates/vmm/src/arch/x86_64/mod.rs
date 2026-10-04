@@ -32,7 +32,7 @@ pub mod layout {
     /// The 32-bit MMIO gap: RAM stops here and resumes at 4 GiB.
     pub const MMIO_GAP: u64 = 0xc000_0000;
     pub const MMIO_GAP_END: u64 = 1 << 32;
-    /// The shards control page, first in the gap (crates/abi).
+    /// The shards control page ([`shards_abi::control`]), first in the gap.
     pub const CONTROL: u64 = shards_abi::CONTROL_PAGE;
     /// virtio-mmio transports, `VIRTIO_MMIO_STRIDE` apart, on GSIs from `GSI_VIRTIO`.
     pub const VIRTIO_MMIO: u64 = 0xc000_1000;

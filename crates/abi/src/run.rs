@@ -196,8 +196,12 @@ impl Spec {
         for s in [&self.cwd, &self.user, &self.hostname] {
             n = n.checked_add(4)?.checked_add(s.len())?;
         }
+        let resolv = match &self.resolv {
+            Some(r) => r.len().checked_add(5)?,
+            None => 0,
+        };
         n.checked_add(if self.tty.is_some() { 5 } else { 0 })?
-            .checked_add(self.resolv.as_ref().map_or(0, |r| 5 + r.len()))?
+            .checked_add(resolv)?
             .checked_add(usize::from(self.stdin))
     }
 
@@ -298,6 +302,18 @@ mod tests {
         let bytes = spec.encode();
         assert_eq!(bytes.len(), spec.encoded_len().unwrap());
         assert_eq!(Spec::decode(&bytes), Some(spec.clone()));
+        // Its length measured as written, whichever optional sections it has (review 1.20).
+        for sections in 0..8u8 {
+            let some = Spec {
+                tty: (sections & 1 != 0).then_some(Size { rows: 1, cols: 2 }),
+                resolv: (sections & 2 != 0).then(|| b"nameserver 10.0.0.1\n".to_vec()),
+                stdin: sections & 4 != 0,
+                ..spec.clone()
+            };
+            let written = some.encode();
+            assert_eq!(written.len(), some.encoded_len().unwrap(), "{sections:03b}");
+            assert_eq!(Spec::decode(&written), Some(some), "{sections:03b}");
+        }
         let piped = Spec {
             tty: None,
             resolv: None,
