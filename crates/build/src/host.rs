@@ -690,9 +690,11 @@ mod tests {
         let f = open(&path).unwrap();
         assert!(lease(&f), "{}", io::Error::last_os_error());
         let held = std::time::Duration::from_millis(200);
+        // Timed from before the writer starts: the lease goes no sooner than `held` after
+        // it, where the writer's own start may come later.
+        let start = std::time::Instant::now();
         let opened = std::thread::scope(|s| {
             let writer = s.spawn(|| {
-                let start = std::time::Instant::now();
                 let w = fs::File::options().write(true).open(&path).unwrap();
                 (start.elapsed(), w)
             });
