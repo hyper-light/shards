@@ -336,14 +336,16 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
 }
 
 /// The most stage-2 pages `snap`'s guest can have, RAM and pmem regions (each its file
-/// rounded up to [`pmem::ALIGN`]): the bound on its working set. A pmem file that cannot
-/// be read adds nothing; the restore reports it.
+/// rounded up to [`pmem::ALIGN`]): the bound on its working set. A pmem file's size is
+/// its granted descriptor's where it has one, as a VM in App Sandbox reaches it alone,
+/// where a look up of its path may be denied and left its pages out (review 1.11). One
+/// that cannot be read adds nothing; the restore reports it.
 fn guest_pages(snap: &snapshot::Snapshot) -> u64 {
     let pmem: u64 = snap
         .config
         .pmem
         .iter()
-        .filter_map(|path| std::fs::metadata(path).ok())
+        .filter_map(|path| platform::input_metadata(path).ok())
         .map(|m| m.len().checked_next_multiple_of(pmem::ALIGN).unwrap_or(u64::MAX))
         .fold(0, u64::saturating_add);
     snap.config
@@ -717,5 +719,36 @@ impl Coordinator {
             devices: w.into_bytes(),
         };
         snapshot::stage(&self.policy.dir, &snap, &self.memory)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pmem file's pages count whether the process reaches its path or only the
+    /// descriptor granted for it, as a VM in App Sandbox does (review 1.11): each file
+    /// at its size rounded up to the alignment pmem maps it at, beside the RAM.
+    #[test]
+    fn a_granted_pmem_files_pages_count() {
+        let file = std::env::temp_dir().join(format!("shards-guest-pages-{}", std::process::id()));
+        std::fs::write(&file, vec![0u8; 3 << 20]).unwrap();
+        let granted = std::path::PathBuf::from(format!("/nowhere/shards-{}.erofs", std::process::id()));
+        platform::grant_input(granted.clone(), Some(std::fs::File::open(&file).unwrap().into()));
+        let snap = Snapshot {
+            config: MachineConfig {
+                vcpus: 1,
+                memory_mib: 16,
+                disks: Vec::new(),
+                pmem: vec![granted, file.clone()],
+                vsock: false,
+                net: None,
+            },
+            arch: Vec::new(),
+            devices: Vec::new(),
+        };
+        assert_eq!(pmem::ALIGN, 2 << 20);
+        assert_eq!(guest_pages(&snap), ((16 + 4 + 4) << 20) / machine::PAGE);
+        let _ = std::fs::remove_file(&file);
     }
 }
