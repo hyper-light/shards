@@ -536,6 +536,9 @@ struct Daemon<D: Disk = Real> {
     /// The listener is out of descriptors: no collection starts, whose files would take
     /// what its clients wait for.
     starving: AtomicBool,
+    /// The home is gone or going ([`Daemon::home_going`]): the daemon steps aside, and
+    /// removes what is left of it as it exits.
+    home_gone: AtomicBool,
     /// Every run followed to its end by one thread (follow.rs).
     followers: follow::Followers,
     /// The removals of `--rm` containers that ended, made durable together (follow.rs).
@@ -948,6 +951,7 @@ impl<D: Disk> Daemon<D> {
                 ..Collecting::default()
             },
             starving: AtomicBool::new(false),
+            home_gone: AtomicBool::new(false),
             followers: follow::Followers::new()?,
             completing: follow::Completing::default(),
             refills: refill::Refills::default(),
@@ -991,12 +995,14 @@ impl<D: Disk> Daemon<D> {
             // A daemon whose home is gone has nothing left to serve, and its runs' containers
             // are gone with it, so no command could reach them: they end as `daemon stop`
             // ends them, rather than run on unseen.
-            if !closing && std::fs::symlink_metadata(&self.home).is_err() {
+            if !closing && self.home_going() {
                 log(format!("{} is gone", self.home.display()));
+                self.home_gone.store(true, Ordering::SeqCst);
                 self.step_aside(threads);
                 continue;
             }
-            // Someone may remove the socket while the daemon runs.
+            // Someone may remove the socket while the daemon runs; a removal of the home,
+            // which takes the lock too, is seen above once it has.
             if !closing && std::fs::symlink_metadata(self.socket).is_err() {
                 match UnixListener::bind(self.socket).and_then(|l| l.set_nonblocking(true).map(|()| l)) {
                     Ok(l) => {
@@ -1074,6 +1080,16 @@ impl<D: Disk> Daemon<D> {
             };
             self.wait_for_work(accepting.then_some(&listener), &watches, timeout);
         }
+    }
+
+    /// Whether the home is gone, or going: removed, or its lock unlinked, which none but a
+    /// removal of the home does, and after which a new daemon would take the home as free.
+    /// A removal takes a directory's names before the directory: one that took the
+    /// socket, which the listener made again, and then the lock, is seen once it has.
+    fn home_going(&self) -> bool {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::symlink_metadata(&self.home).is_err()
+            || self.home_lock.metadata().is_ok_and(|m| m.nlink() == 0)
     }
 
     /// Wakes the listener: something it waits for may have happened.
@@ -1255,6 +1271,11 @@ impl<D: Disk> Daemon<D> {
     fn exit(&self) -> ! {
         let _ = std::fs::remove_file(self.home.join("daemon.pid"));
         let _ = std::fs::remove_file(self.home.join(shards_ipc::STOPPING));
+        // A home being removed is removed: the socket the listener made again as its
+        // removal went may have kept it (rmdir(2): ENOTEMPTY). Only once empty.
+        if self.home_gone.load(Ordering::SeqCst) {
+            let _ = std::fs::remove_dir(&self.home);
+        }
         let state = lock(&self.state);
         let waiting = state.pools.values().flat_map(|p| p.ready.iter().map(|r| &r.vm));
         for vm in waiting.chain(state.starting.values()) {

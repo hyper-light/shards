@@ -869,6 +869,46 @@ fn clients_past_the_cap_wait_their_turn() {
     );
 }
 
+/// A home removed once, as `rm -rf` or a test's directory removes it, goes with its daemon
+/// whatever order its names go in. One that takes the socket first, which the daemon then
+/// listens at again, and the rest after, the lock among them, fails to remove the
+/// directory, not empty: the daemon, seeing its lock gone, exits and removes what it made.
+/// Before, it listened on in a home holding nothing but its socket. No VM needed.
+#[test]
+fn a_home_removed_once_is_gone_with_its_daemon() {
+    let home = TempDir::new("daemon-home-once");
+    let daemon = start_daemon(&home, None);
+    let path = home.to_path_buf();
+    let sock = path.join("daemon.sock");
+    std::fs::remove_file(&sock).unwrap();
+    eventually("the daemon did not listen again", || sock.exists());
+    // Every other name but the lock, then the directory, which the socket keeps: the
+    // removal has failed. Then the lock, which a removal in another order takes before
+    // it fails: the daemon, seeing it gone, exits and finishes the removal.
+    let lock = path.join("daemon.lock");
+    for entry in std::fs::read_dir(&path).unwrap() {
+        let name = entry.unwrap().path();
+        if name == sock || name == lock {
+            continue;
+        }
+        // The daemon may be writing in it as it goes, a spare container: until it is gone.
+        if name.is_dir() {
+            eventually("a directory of the home could not be removed", || {
+                std::fs::remove_dir_all(&name).is_ok() || !name.exists()
+            });
+        } else {
+            std::fs::remove_file(&name).unwrap();
+        }
+    }
+    assert!(
+        std::fs::remove_dir(&path).is_err(),
+        "removed with the socket in it"
+    );
+    std::fs::remove_file(&lock).unwrap();
+    eventually("the daemon outlived its home", || !alive(daemon));
+    eventually("what was left of the home was left", || !path.exists());
+}
+
 /// A daemon out of descriptors leaves connections in its backlog and waits for room,
 /// rather than spinning on a listener that stays readable (Linux), or dropping them one
 /// by one as its accepts fail (macOS), and serves again once clients leave (audit A07).
