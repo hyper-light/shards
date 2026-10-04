@@ -23,6 +23,8 @@ pub(super) struct Planned {
     args: Vec<OsString>,
     /// Its template's network device's MAC, if read already.
     net: Option<Option<[u8; 6]>>,
+    /// Whether the most bytes its working sets may take has been read.
+    limited: bool,
     count: usize,
 }
 
@@ -151,6 +153,7 @@ impl<D: Disk> Daemon<D> {
             dir: dir.to_path_buf(),
             args,
             net: pool.net,
+            limited: pool.working_set_limit.is_some(),
             count,
         })
     }
@@ -168,6 +171,7 @@ impl<D: Disk> Daemon<D> {
             dir,
             args,
             net,
+            limited,
             count,
         } = planned;
         // A template that cannot be read gets no network process: its VM then fails to
@@ -187,6 +191,17 @@ impl<D: Disk> Daemon<D> {
                 }
             },
         };
+        // What its VMs' working sets may take, read once, here, off the followers' loop,
+        // which gathers them (files.rs). A template that cannot be read has its VMs' sets
+        // refused, as the VMs fail to restore it.
+        if !limited {
+            let limit = shards_vmm::vm::working_set_limit(&dir)
+                .map_err(|e| log(format!("reading the template {}: {e}", dir.display())))
+                .ok();
+            if let Some(pool) = lock(&self.state).pools.get_mut(&dir) {
+                pool.working_set_limit.get_or_insert(limit);
+            }
+        }
         for started in 0..count {
             if let Err(e) = self.start(threads, &args, net, For::Pool(dir.clone())) {
                 let e = format!("starting a warm VM of {}: {e}", dir.display());

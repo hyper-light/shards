@@ -34,6 +34,7 @@ use crate::containers::{self, Container, Disk, Real, Registry, Removal, State as
 
 mod commands;
 mod demand;
+mod files;
 mod follow;
 mod health;
 mod images;
@@ -106,9 +107,9 @@ const RETRY: Duration = Duration::from_millis(250);
 /// connects; one that has not by now is broken, or trickling it out.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// The threads the daemon keeps besides its clients': its listener, and the followers',
-/// the completer's, the recorder's, the collector's, the refiller's and the health
-/// checks' (PM M92).
-const OWN_THREADS: u64 = 7;
+/// the completer's, the files', the recorder's, the collector's, the refiller's and the
+/// health checks' (PM M92, M98).
+const OWN_THREADS: u64 = 8;
 /// The threads a client in hand may hold: its own, and the watcher of a VM started for
 /// its run, until that VM is ready.
 const CLIENT_THREADS: u64 = 2;
@@ -177,7 +178,16 @@ struct Ready {
     pool: Option<PathBuf>,
     /// The template the working set it records goes with: its pool's, or the one it saves.
     /// The daemon writes it there; no VM may write a template (D30).
-    records: Option<PathBuf>,
+    records: Option<Records>,
+}
+
+/// The template a VM's working set goes with, and the most bytes the set may take there
+/// (`shards_vmm::vm::working_set_limit`): read where the VM was started, so that the
+/// followers' loop, which gathers the set, reads no template.
+#[derive(Debug, Clone)]
+struct Records {
+    dir: PathBuf,
+    limit: u64,
 }
 
 /// The warm VMs of one template.
@@ -186,6 +196,9 @@ struct Pool {
     /// Its template's network device's MAC, if it has one, once read: each of its VMs
     /// needs a network process of its own.
     net: Option<Option<[u8; 6]>>,
+    /// The most bytes a working set of its template may take, once read: none where the
+    /// template could not be read, and its VMs' sets are not taken.
+    working_set_limit: Option<Option<u64>>,
     /// The root filesystem its template was saved from, which the daemon knows from the
     /// run that made it: the one file a restore of it may be given (`--backing`), whatever
     /// the template's state, which a VM process wrote, names.
@@ -332,10 +345,8 @@ struct Inbox {
     detached: Option<UnixStream>,
     ended: bool,
     /// The template its working set goes with, and the parts of it that have come.
-    records: Option<PathBuf>,
+    records: Option<Records>,
     working_set: WorkingSet,
-    /// The most bytes it may take, read from the template at its first part.
-    working_set_limit: Option<u64>,
     /// The run's container's directory, and the log segment the VM writes there, which
     /// the daemon made.
     container: PathBuf,
@@ -351,38 +362,24 @@ struct Inbox {
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
 /// daemon writes with the template it goes with once the last has come: only as much as
 /// that template's guest can hold, and only if the template is still at the generation it
-/// was recorded from (`shards_vmm::vm::accept_working_set`). A VM that sends more, or for
-/// no template, loses its prefetch and nothing else.
-fn working_set_part(id: &str, inbox: &mut Inbox, payload: &[u8]) {
-    let Some(dir) = inbox.records.clone() else {
-        return;
-    };
-    let limit = match inbox.working_set_limit {
-        Some(limit) => limit,
-        None => match shards_vmm::vm::working_set_limit(&dir) {
-            Ok(limit) => *inbox.working_set_limit.insert(limit),
-            Err(e) => {
-                log(format!("container {id}: its working set: {e}"));
-                inbox.records = None;
-                return;
-            }
-        },
-    };
+/// was recorded from (`shards_vmm::vm::accept_working_set`). Gathered here, in memory;
+/// the whole set is returned, to be written on the files' thread. A VM that sends more,
+/// or for no template, loses its prefetch and nothing else.
+fn working_set_part(id: &str, inbox: &mut Inbox, payload: &[u8]) -> Option<files::Job> {
+    let limit = inbox.records.as_ref()?.limit;
     match gather(&mut inbox.working_set, limit, payload) {
-        Gathered::More => {}
+        Gathered::More => None,
         Gathered::Refused(why) => {
             log(format!("container {id}: its working set: {why}"));
             inbox.records = None;
             inbox.working_set = WorkingSet::default();
+            None
         }
-        Gathered::Whole(name, set) => {
-            inbox.records = None;
-            match shards_vmm::vm::accept_working_set(&dir, &name, &set) {
-                Ok(0) => {}
-                Ok(n) => log(format!("{}: a working set of {n} pages", dir.display())),
-                Err(e) => log(format!("{}: its working set: {e}", dir.display())),
-            }
-        }
+        Gathered::Whole(name, set) => inbox.records.take().map(|r| files::Job::WorkingSet {
+            dir: r.dir,
+            name,
+            set,
+        }),
     }
 }
 
@@ -570,6 +567,8 @@ struct Daemon<D: Disk = Real> {
     followers: follow::Followers,
     /// The removals of `--rm` containers that ended, made durable together (follow.rs).
     completing: follow::Completing,
+    /// The files runs' VMs ask for, made on a thread of their own (files.rs).
+    files: files::Files,
     /// The pools to refill and the spare to make, on the refiller's thread (refill.rs).
     refills: refill::Refills,
     /// When each running container's health check is next due (health.rs).
@@ -1000,6 +999,7 @@ impl<D: Disk> Daemon<D> {
             home_gone: AtomicBool::new(false),
             followers: follow::Followers::new()?,
             completing: follow::Completing::default(),
+            files: files::Files::default(),
             refills: refill::Refills::default(),
             checks: health::Checks::default(),
             booting: Mutex::default(),
@@ -2210,7 +2210,6 @@ impl<D: Disk> Daemon<D> {
             ended: false,
             records: ready.records,
             working_set: WorkingSet::default(),
-            working_set_limit: None,
             container: lock(&self.containers).dir(id),
             segment: 0,
             execs_in_flight: Vec::new(),
@@ -2247,8 +2246,12 @@ impl<D: Disk> Daemon<D> {
                 kind::STARTED => self.run_started(id, inbox),
                 kind::DONE => self.run_ended(id, inbox, Some(&m.payload)),
                 kind::LOST => self.log_lost(id, &m.payload),
-                kind::WORKING_SET => working_set_part(id, inbox, &m.payload),
-                kind::LOG_SEGMENT => self.make_segment(id, inbox, &m.payload),
+                kind::WORKING_SET => {
+                    if let Some(whole) = working_set_part(id, inbox, &m.payload) {
+                        self.make_soon(whole);
+                    }
+                }
+                kind::LOG_SEGMENT => self.ask_segment(id, inbox, &m.payload),
                 kind::EXEC_TAKEN => {
                     if let Ok(n) = <[u8; 8]>::try_from(m.payload.as_slice()).map(u64::from_be_bytes) {
                         inbox.execs_in_flight.retain(|(held, _)| *held != n);
@@ -2260,36 +2263,31 @@ impl<D: Disk> Daemon<D> {
         guard.ended
     }
 
-    /// Makes the log segment run `id`'s VM asks for, the one after the last made, in its
-    /// container, and answers with its files, or with none where it is not that one or
-    /// cannot be made: the VM then keeps no more output (workload.rs, `Logger`).
-    fn make_segment(&self, id: &str, inbox: &mut Inbox, payload: &[u8]) {
+    /// Has the log segment run `id`'s VM asks for made, the one after the last asked for,
+    /// in its container, on the files' thread, which answers with its files, or with none
+    /// where it cannot be made: the VM then keeps no more output (workload.rs, `Logger`).
+    /// One asked for out of turn is answered with none here.
+    fn ask_segment(&self, id: &str, inbox: &mut Inbox, payload: &[u8]) {
         let asked = <[u8; 8]>::try_from(payload).ok().map(u64::from_be_bytes);
-        let next = inbox.segment.checked_add(1);
-        let made = match asked {
-            Some(seq) if Some(seq) == next => File::open(&inbox.container)
-                .and_then(|d| crate::segments::new_segment(&d, seq, self.logs.files))
-                .map_err(|e| log(format!("container {id}: log segment {seq}: {e}")))
-                .ok(),
+        match asked {
+            Some(seq) if Some(seq) == inbox.segment.checked_add(1) => {
+                inbox.segment = seq;
+                self.make_soon(files::Job::Segment {
+                    id: id.to_string(),
+                    dir: inbox.container.clone(),
+                    seq,
+                    socket: inbox.socket.clone(),
+                });
+            }
             _ => {
                 log(format!(
                     "container {id}: a VM asked for a log segment out of turn"
                 ));
-                None
+                let seq = asked.unwrap_or_default();
+                if let Err(e) = inbox.socket.send(kind::SEGMENT, &seq.to_be_bytes(), &[]) {
+                    log(format!("container {id}: answering for its log: {e}"));
+                }
             }
-        };
-        let seq = asked.unwrap_or_default();
-        let sent = match &made {
-            Some((log, index)) => {
-                inbox.segment = seq;
-                inbox
-                    .socket
-                    .send(kind::SEGMENT, &seq.to_be_bytes(), &[log.as_fd(), index.as_fd()])
-            }
-            None => inbox.socket.send(kind::SEGMENT, &seq.to_be_bytes(), &[]),
-        };
-        if let Err(e) = sent {
-            log(format!("container {id}: answering for its log: {e}"));
         }
     }
 
@@ -2731,19 +2729,28 @@ impl<D: Disk> Daemon<D> {
         let n = self.saved.fetch_add(1, Ordering::Relaxed);
         let fresh = dir.with_extension(format!("new-{}-{n}", std::process::id()));
         let mut ready = self.cold(threads, &cfg, &prepared.rootfs, Some(&fresh));
-        // What its run touches is the template's working set, which the daemon writes once
-        // the template is settled.
-        if let Ok(r) = &mut ready {
-            r.records = Some(dir.clone());
-        }
         if ready.is_ok()
             && let Err(e) = crate::run::Origin::of(guest, &prepared.rootfs).write(&fresh)
         {
             log(format!("{}: {e}", fresh.display()));
         }
         crate::run::settle(&fresh, &dir);
-        if ready.is_ok() && shards_vmm::snapshot::exists(&dir) {
-            pool_of(&mut lock(&self.state), &dir, &prepared.rootfs);
+        if let Ok(r) = &mut ready
+            && shards_vmm::snapshot::exists(&dir)
+        {
+            // What its run touches is the template's working set, which the daemon writes
+            // once its last part has come, within what the template's guest can hold: read
+            // here, where a boot is waited for anyway, and kept for the pool's VMs.
+            let limit = shards_vmm::vm::working_set_limit(&dir)
+                .map_err(|e| log(format!("{}: {e}", dir.display())))
+                .ok();
+            r.records = limit.map(|limit| Records {
+                dir: dir.clone(),
+                limit,
+            });
+            pool_of(&mut lock(&self.state), &dir, &prepared.rootfs)
+                .working_set_limit
+                .get_or_insert(limit);
             self.refill_soon(threads, Some(&dir));
         }
         ready
@@ -3213,12 +3220,18 @@ impl<D: Disk> Daemon<D> {
                     Ok(()) => {
                         pool.failures = 0;
                         pool.demand.refilled(began.elapsed());
+                        // Its working set, where it records one, goes with its template,
+                        // within what the refiller read the template's guest can hold.
+                        let records = pool.working_set_limit.flatten().map(|limit| Records {
+                            dir: dir.clone(),
+                            limit,
+                        });
                         pool.ready.push_back(Ready {
                             vm: child.clone(),
                             socket,
                             net,
                             pool: Some(dir.clone()),
-                            records: Some(dir.clone()),
+                            records,
                         });
                         self.rebalance(threads, &state, dir);
                     }
@@ -3827,6 +3840,7 @@ mod tests {
             daemon.recording.end();
             daemon.followers.end();
             daemon.completing.end();
+            daemon.files.end();
             daemon.checks.end();
             daemon.refills.end();
             daemon.collecting.end();
@@ -4495,7 +4509,8 @@ mod tests {
     }
 
     /// A warm VM coming ready wakes the listener: its pool ages from then on, a duty the
-    /// listener, asleep since before, would sleep past.
+    /// listener, asleep since before, would sleep past. Its working set, if it records
+    /// one, goes with its template, within what was read the template's guest can hold.
     #[test]
     fn a_warm_vm_coming_ready_wakes_the_listener() {
         let t = Test::new("ready-wakes");
@@ -4503,19 +4518,27 @@ mod tests {
             let (ready, theirs) = t.warm_vm(None);
             let Ready { vm, socket, .. } = ready;
             let dir = t.home.join("template");
-            lock(&t.daemon.state)
-                .pools
-                .entry(dir.clone())
-                .or_default()
-                .demand
-                .begin(Instant::now());
+            {
+                let mut state = lock(&t.daemon.state);
+                let pool = state.pools.entry(dir.clone()).or_default();
+                pool.demand.begin(Instant::now());
+                pool.working_set_limit = Some(Some(4096));
+            }
             assert!(!readable(&t.daemon.listener_wake.1));
             let watched = vm.clone();
             let (daemon, threads) = (&t.t.daemon, t.threads);
-            threads.spawn(move || daemon.watch(threads, watched, socket, None, None, For::Pool(dir), None));
+            let watching = dir.clone();
+            threads
+                .spawn(move || daemon.watch(threads, watched, socket, None, None, For::Pool(watching), None));
             shards_ipc::send(&theirs, kind::READY, &[], &[]).unwrap();
             t.until("the listener woken", |d| readable(&d.listener_wake.1));
             assert!(t.daemon.next_duty(false).is_some());
+            let records = lock(&t.daemon.state).pools.get(&dir).and_then(|p| {
+                p.ready
+                    .front()
+                    .and_then(|r| r.records.as_ref().map(|r| (r.dir.clone(), r.limit)))
+            });
+            assert_eq!(records, Some((dir.clone(), 4096)));
             let _ = vm.kill(libc::SIGKILL);
         });
     }
@@ -5427,6 +5450,12 @@ mod tests {
                 state.pools.get(&dir).map(|p| (p.failures, p.waiting, p.starting)),
                 Some((0, 0, 0))
             );
+            // What its VMs' working sets may take was read before any started, once:
+            // nothing, of a state that is no snapshot.
+            assert_eq!(
+                state.pools.get(&dir).map(|p| p.working_set_limit),
+                Some(Some(None))
+            );
         });
     }
 
@@ -6096,6 +6125,65 @@ mod tests {
             let (status, _, err) = ask(&t.daemon, &["logs", "gone"]);
             assert_eq!(status, 1, "{err}");
             assert!(err.contains("its log"), "{err}");
+        });
+    }
+
+    /// The files a run's VM asks for are made on the files' thread, never on the
+    /// followers' loop (PM M98): while that thread is busy, the loop goes on taking the
+    /// run's messages, its end among them, and leaves the segment and the working set it
+    /// asked for queued, the first set alone; a segment asked for out of turn is refused
+    /// at once.
+    #[test]
+    fn a_runs_files_are_made_off_the_followers_loop() {
+        let t = Test::new("files-off-loop");
+        t.run(|t| {
+            let id = t.create("chatty");
+            let starting = t.start(&id);
+            let (mut ready, vm) = t.warm_vm(None);
+            ready.records = Some(Records {
+                dir: t.home.join("template"),
+                limit: 1 << 20,
+            });
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            // Following the run started the files' thread.
+            t.until("the files' thread was not started", |d| d.files.started());
+            let (free, held) = mpsc::channel();
+            t.daemon.make_soon(files::Job::Hold(held));
+            say(&vm, kind::LOG_SEGMENT, &1u64.to_be_bytes());
+            say(&vm, kind::LOG_SEGMENT, &5u64.to_be_bytes());
+            // Twice: one set is taken of a run, the first.
+            for _ in 0..2 {
+                for part in shards_ipc::working_set_parts("g-1", &[7; 64]) {
+                    say(&vm, kind::WORKING_SET, &part);
+                }
+            }
+            let refused = shards_ipc::recv(&vm).unwrap().unwrap();
+            say(&vm, kind::DONE, &[0]);
+            let ended = finishes(&starting.run);
+            let queued = t.daemon.files.queued();
+            free.send(()).unwrap();
+            assert_eq!(
+                (refused.kind, refused.payload.as_slice(), refused.fds.len()),
+                (kind::SEGMENT, &5u64.to_be_bytes()[..], 0)
+            );
+            assert!(ended, "its end waited for its files");
+            assert_eq!(queued, 2, "its files made on the loop");
+            joined(starting.run).unwrap();
+            let made = shards_ipc::recv(&vm).unwrap().unwrap();
+            assert_eq!(
+                (made.kind, made.payload.as_slice(), made.fds.len()),
+                (kind::SEGMENT, &1u64.to_be_bytes()[..], 2)
+            );
+            assert!(
+                t.home
+                    .join("containers")
+                    .join(&id)
+                    .join(crate::segments::log_segment(1).0)
+                    .is_file()
+            );
         });
     }
 

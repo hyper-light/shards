@@ -842,7 +842,7 @@ for the exit status.
       each a thread, the watcher of a VM started for its run, and up to six
       descriptors; past that, connections wait in the listener's backlog. The threads
       are the system's to say: `kern.num_taskthreads` on macOS (16,384 here, so 8,188
-      clients past the daemon's own seven threads), and on Linux the least of
+      clients past the daemon's own eight threads), and on Linux the least of
       `RLIMIT_NPROC`, `threads-max` and the `pids.max` of its control groups, up to the
       root its namespace sees, where a container's limit is (Linux
       Documentation/admin-guide/cgroup-v2.rst). Where none is said, POSIX's
@@ -973,14 +973,19 @@ for the exit status.
       memory, in its reservation if its record is not yet written, its record written by
       the recorder and a `--rm` container's removal set aside by the completer. Waiting
       there for the record, or for the removal's rename, held up every other run's
-      messages by 81 ms at a loaded host's p90 [PM M96].
+      messages by 81 ms at a loaded host's p90 [PM M96]. Nor does it make the files a
+      run's VM asks for: a working set is gathered there, in memory, within the bound
+      read where the VM was started, and the set written, and each log segment made, on
+      the files' thread (`daemon/files.rs`). On the loop, a segment held them 10.9 ms at
+      a loaded host's p90 [PM M98].
     - The same thread follows every VM process to its end, and its network process to its
       own (`Poller::add_exit`: kqueue's `EVFILT_PROC` on macOS, a pidfd on Linux 5.3 and
       later), reaping each as it ends: a network process still running its grace after
       its VM, a second, is ended, and the VM's ports are freed once both have gone. A VM's
       watcher thread lives until its VM is ready, where it waited out the VM's life, the
       one thread an idle run still cost [PM M90]: now the daemon's threads stay 6 at 10
-      running containers and at 100, and an idle run costs it about 10 KiB [PM M92]. macOS watches only ends to come, and
+      running containers and at 100, and an idle run costs it about 10 KiB [PM M92];
+      7 since the files' thread [PM M98]. macOS watches only ends to come, and
       refuses a child that has ended already (`ESRCH`, measured), which is then reaped at
       once; a process whose end cannot be watched is waited for on a thread of its own.
     - One thread schedules the health checks of the containers that have one, from a
@@ -990,6 +995,8 @@ for the exit status.
     - One thread makes `--rm` containers' removals durable: one sync of their directory
       serves every removal pending, so runs that end together share it. A run named as
       one still being removed waits for the name.
+    - One thread makes the files runs' VMs ask for, in the order asked: log segments, and
+      working sets, each synced into its template.
     - The listener sleeps until a client arrives or leaves, a run ends, a warm VM comes
       ready, a name comes or goes in the home or in `images` (kqueue's `EVFILT_VNODE`,
       inotify(7)), or its next duty is due: the idle exit once nothing runs, or a pool's
