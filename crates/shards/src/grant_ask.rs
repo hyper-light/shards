@@ -233,7 +233,13 @@ pub fn dial(
     let answer = shards_ipc::recv(link)?
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the spawner went"))?;
     match (answer.kind, answer.fds.into_iter().next()) {
-        (kind::GRANTED, Some(fd)) => Ok(std::os::unix::net::UnixStream::from(fd)),
+        (kind::GRANTED, Some(fd)) => {
+            // Had: the spawner lets go of its copy, which held the connection open past
+            // the VM's close of it (review 8.7). One not told keeps it until the VM asks
+            // again, or goes.
+            let _ = shards_ipc::send(link, kind::TAKEN, &[], &[]);
+            Ok(std::os::unix::net::UnixStream::from(fd))
+        }
         (kind::ERR, _) => Err(std::io::Error::new(
             std::io::ErrorKind::ConnectionRefused,
             String::from_utf8_lossy(&answer.payload).into_owned(),

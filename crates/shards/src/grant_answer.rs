@@ -238,9 +238,11 @@ pub fn serve(link: &std::os::unix::net::UnixStream) -> Result<(), String> {
     use std::os::fd::AsFd as _;
     // The vsock path granted, beside which alone dials go.
     let mut listening: Option<PathBuf> = None;
-    // What was sent with the last answers, held until the VM asks again or goes: XNU's
-    // collector flushes a socket in flight that no process holds (M24), and a flushed
-    // socket reads as ended. The VM asks again only once it has received them.
+    // What was sent with the last answers, held until the VM says it has it, asks again,
+    // or goes: XNU's collector flushes a socket in flight that no process holds (M24), and
+    // a flushed socket reads as ended. The VM asks again only once it has received them,
+    // and says so of a dialled connection at once, whose far end sees no end while a copy
+    // here holds it open.
     let mut held: Vec<std::os::fd::OwnedFd> = Vec::new();
     // Its vsock path granted, the last it asks for (and what any dial needs first): the VM
     // has started, its guest running. It asks for no access after that, so a request is
@@ -252,6 +254,10 @@ pub fn serve(link: &std::os::unix::net::UnixStream) -> Result<(), String> {
         let Some(asked) = asked else {
             return Ok(());
         };
+        // The VM has what was sent last, let go above.
+        if asked.kind == kind::TAKEN {
+            continue;
+        }
         if asked.kind == kind::DIAL {
             let port = <[u8; 4]>::try_from(asked.payload.as_slice())
                 .map(u32::from_be_bytes)
@@ -456,10 +462,21 @@ mod tests {
             UnixStream::connect(&vsock).unwrap();
             assert!(listener.accept().is_ok(), "the granted listener is at the path");
             let dialled = dial(&vm, 5000).unwrap();
-            let (accepted, _) = host.accept().unwrap();
+            let (mut accepted, _) = host.accept().unwrap();
             assert_eq!(
                 dialled.peer_addr().unwrap().as_pathname(),
                 Some(dir.join("v_5000").as_path())
+            );
+            // The VM's close is the end the host sees: the spawner holds no copy open.
+            // (Set first: macOS refuses options on a socket its peer has closed.)
+            accepted
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            drop(dialled);
+            let mut byte = [0u8; 1];
+            assert_eq!(
+                std::io::Read::read(&mut accepted, &mut byte).map_err(|e| e.kind()),
+                Ok(0)
             );
             drop(accepted);
             assert!(dial(&vm, 5001).is_err(), "nothing listens on that port");

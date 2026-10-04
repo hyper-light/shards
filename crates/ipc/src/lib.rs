@@ -69,6 +69,8 @@ pub mod kind {
     /// Client → daemon: exit once the runs in hand are handed over.
     pub const STOP: u8 = 7;
     /// Warm VM → daemon: it has the run's descriptors, so the daemon may close its own.
+    /// VM → its spawner: it has the connection a `DIAL` was answered with, which the
+    /// spawner may close, so that the far end sees the VM's close as the end.
     pub const TAKEN: u8 = 8;
     /// Warm VM → daemon: the command ended with this status (one byte); then, if the
     /// command never ran, why not. Sent before the client has the status, as `STARTED`
