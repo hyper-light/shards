@@ -3350,3 +3350,68 @@ revision before comparing a changed API/implementation.
 - **Consequence.** Looked for before every accept on macOS: 250 ns a client, 0.005% of a
   5 ms run, and no client is dropped (the test, which allowed one, now allows none:
   15 runs of 15). Linux, which leaves the client queued, looks only once starved.
+
+### M100. A context file taken whole while it is written
+
+- **Question.** `shards build` takes each context file as one version (`host::Stage`): it
+  read the file's metadata, took its bytes, and refused the file if the metadata had
+  changed, as GNU tar's "file changed as we read it". CI's aarch64 Linux runner accepted a
+  snapshot that mixed two versions (`a_file_written_while_it_is_taken_is_one_version_or_
+  refused`). How often do reads and writes interleave, how often does that comparison see
+  it, and what makes a take one version on Linux and macOS?
+- **Method.** `context-snapshots/torn.rs`: a writer rewrites a file, each version one
+  write(2) of one byte value; a reader takes it as the stage did (fstat, read or clone,
+  fstat) and counts the snapshots that mix versions, those the comparison misses, and on
+  macOS those the file's write count (getattrlist `ATTR_CMN_GEN_COUNT`) misses. Then the
+  stage itself, `crates/build/tests/context.rs` `snapshots_at_length`: 64 KiB packed, 4 and
+  64 MiB cloned, a writer holding the file open or opening it for each version, every
+  snapshot taken checked whole; and `a_take_costs`, a take of a 1 KiB file no one writes,
+  f2d85b4 against the change, interleaved. macOS on the host of M84 (APFS), 2026-10-04;
+  Linux in Docker Desktop's VM on it (kernel 6.12.76, before multigrain timestamps), on
+  overlayfs, ext4 and tmpfs.
+- **Results.** The comparison alone, Linux:
+
+  | File system | Size | Takes | Torn | Missed |
+  |---|---|---|---|---|
+  | overlayfs | 64 KiB | 20,000 | 376 | 365 |
+  | overlayfs | 4 MiB | 3,000 | 38 | 33 |
+  | overlayfs | 64 MiB | 300 | 50 | 43 |
+  | ext4 | 64 KiB | 20,000 | 744 | 735 |
+  | ext4 | 4 MiB | 3,000 | 45 | 40 |
+  | ext4 | 64 MiB | 300 | 41 | 26 |
+  | tmpfs | 64 KiB | 20,000 | 95 | 86 |
+  | tmpfs | 4 MiB | 3,000 | 2,230 | 2,230 |
+  | tmpfs | 64 MiB | 300 | 222 | 222 |
+
+  Linux stamps a write's times as it begins (fs/ext4/file.c, `file_modified` in
+  `ext4_write_checks`) from its coarse clock (fs/inode.c, `current_time`), and holds the
+  inode's lock until the write's last byte is in place: a write in the clock's tick of the
+  last, or under way when the file is looked at, leaves its times as they were.
+
+  APFS, read: 64 KiB 20,000 takes, 16,301 torn, 0 missed; 256 KiB, 512 KiB and 1 MiB,
+  20,000 takes each and again with the writer pausing, 46,783 torn, 0 missed; 4 MiB,
+  4,000 takes, 397 torn, 0 missed. 64 MiB, 6,000 takes and 4,000 with pauses: 24 and 27
+  torn, the times missing 18 and 27, the write count 3 and 3. APFS stamps a write's times
+  as it ends, which misses a write that spans the whole read; its write count, though it
+  moves as a write goes on, misses some too. Cloned (fclonefileat): 64 MiB 6,000 takes
+  and 4 MiB 10,000, under the same writers, 0 torn.
+
+  The stage, changed as below: Linux, 5,000 takes a size (500 at 64 MiB) on each file
+  system, both writers, none torn; macOS, 20,000 (2,000), none torn. Under a writer that
+  never pauses most takes are refused, the file having no version to take: on Linux
+  4,971 to 4,999 of 5,000, on macOS 17 to 18,685 of 20,000, cloned files taken most.
+
+  A take of 1 KiB, n = 20,000, three runs each: macOS p50 8.2 to 8.4 µs before and 9.0 to
+  9.1 µs with the write count, the change keeping the times alone; Linux ext4 p50 1.17 µs
+  and p99 1.75 to 1.92 µs before, 1.54 µs and 2.79 to 2.96 µs after.
+- **Consequence.** Linux takes a read lease where it is granted (fs/locks.c: while no one
+  has the file open for writing), and one who opens the file for writing or truncates it
+  waits until the take is done (fs/open.c, `break_lease`). Without one, the stage waits
+  until the file's ctime is behind the coarse clock's tick, so a write begun since moves
+  it, and before taking the bytes waits out a write under way with lseek(2) `SEEK_DATA`,
+  which takes the inode's lock shared on ext4, Btrfs and tmpfs (XFS's reads take its own).
+  macOS lets no process but Apple's take a lease (bsd/vfs/vfs_subr.c, `vnode_setlease`):
+  files under 1 MiB are read, where the times saw every torn read, and larger ones cloned,
+  which takes one version; the write count is not kept, as it saw nothing the times did
+  not on the stage's paths. Writes through a shared mapping are not seen where no lease is
+  granted.

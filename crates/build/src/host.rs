@@ -289,11 +289,18 @@ pub enum Taken {
 /// else copies.
 ///
 /// A source is held open while it is taken, never through a symlink put in its place nor
-/// blocking on a FIFO. One that changes while it is taken has no one version to take and
-/// is refused, as GNU tar reports "file changed as we read it": its identity, size, mtime
-/// and ctime are read before and after, and Linux and macOS move ctime on every write,
-/// which nothing can set back. On Windows the source is opened sharing reads only, so no
-/// one writes it meanwhile.
+/// blocking on a FIFO, and what is taken is one version it had, or it is refused, as GNU
+/// tar reports "file changed as we read it"; BuildKit's copy takes whatever it reads.
+/// Reads and writes interleave on ext4 and APFS alike, so a read can take part of two
+/// versions (PM M100): writers are kept off where the system lets a process do so, and
+/// any write while the file is taken is seen where it does not ([`settle`]):
+/// - Linux keeps them off with a read lease. Without one, the file's ctime shows any
+///   write begun since it was looked at, once its tick has passed and a write under way
+///   has finished.
+/// - macOS lets no process but Apple's take a lease. APFS stamps a write's times as it
+///   ends, which misses only a write that spans the whole read, one far longer than the
+///   files read here (PM M100), and its clones of larger files take one version.
+/// - Windows: the source is opened sharing reads only, so no one writes it meanwhile.
 #[derive(Debug)]
 pub struct Stage {
     dir: PathBuf,
@@ -335,11 +342,13 @@ impl Stage {
 
     /// Takes one version of the regular file `src`.
     pub fn take(&mut self, src: &Path) -> io::Result<(Snapshot, Taken)> {
-        let (f, before) = open(src)?;
-        if !before.is_file() {
+        let f = open(src)?;
+        let before = settle(&f, src)?;
+        let meta = &before.meta;
+        if !meta.is_file() {
             return Err(io::Error::other(format!("{}: not a regular file", src.display())));
         }
-        let size = before.len();
+        let size = meta.len();
         let taken = if size >= CLONE_MIN {
             let dst = self.dir.join(self.next.to_string());
             self.next += 1;
@@ -364,9 +373,9 @@ impl Stage {
         };
         Ok((
             Snapshot {
-                mode: mode_of(&before),
+                mode: mode_of(meta),
                 size,
-                mtime: since_epoch(&before),
+                mtime: since_epoch(meta),
             },
             taken,
         ))
@@ -374,28 +383,160 @@ impl Stage {
 }
 
 #[cfg(unix)]
-fn open(src: &Path) -> io::Result<(fs::File, fs::Metadata)> {
+fn open(src: &Path) -> io::Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    let f = fs::File::options()
+    fs::File::options()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(src)?;
-    let m = f.metadata()?;
-    Ok((f, m))
+        .open(src)
 }
 
 #[cfg(windows)]
-fn open(src: &Path) -> io::Result<(fs::File, fs::Metadata)> {
+fn open(src: &Path) -> io::Result<fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     // FILE_SHARE_READ: others may read, not write or delete, while it is held.
-    let f = fs::File::options().read(true).share_mode(0x1).open(src)?;
-    let m = f.metadata()?;
-    Ok((f, m))
+    fs::File::options().read(true).share_mode(0x1).open(src)
+}
+
+/// What a source was as its taking began, which it must still be once taken.
+struct Before {
+    meta: fs::Metadata,
+}
+
+/// Readies `f` to be taken, and says what it was. A read lease, which Linux grants while
+/// no one has the file open for writing (fs/locks.c, lease_open_conflict), makes one who
+/// opens it for writing, or truncates it, wait until the lease goes with `f` (fs/open.c,
+/// break_lease): what is read is one version.
+///
+/// Without one, a write while `f` is taken must show in its ctime, which Linux stamps as
+/// a write begins, holding the inode's lock until its last byte is in place (fs/ext4/
+/// file.c, ext4_buffered_write_iter and ext4_write_checks). A ctime still in the tick of
+/// the coarse clock it is stamped from (fs/inode.c, current_time) is waited past, as a
+/// write stamped in that tick too would leave it as it was; and lseek(2) SEEK_DATA, which
+/// takes the inode's lock shared on ext4, Btrfs and tmpfs (and overlayfs's, theirs),
+/// waits out a write under way, as XFS's reads take its own. A file written again while
+/// its tick is waited past is refused.
+#[cfg(target_os = "linux")]
+fn settle(f: &fs::File, src: &Path) -> io::Result<Before> {
+    use std::os::unix::fs::MetadataExt;
+    if lease(f) {
+        return Ok(Before { meta: f.metadata()? });
+    }
+    for _ in 0..2 {
+        let now = coarse_now()?;
+        let meta = f.metadata()?;
+        let (ctime, grain) = (nanos(meta.ctime(), meta.ctime_nsec()), grain(meta.ctime_nsec()));
+        match unseen_until(ctime, grain, now) {
+            None => {
+                barrier(f)?;
+                return Ok(Before { meta });
+            }
+            Some(after) => {
+                while coarse_now()? < after {
+                    std::thread::sleep(std::time::Duration::from_nanos(
+                        u64::try_from(after - coarse_now()?).unwrap_or(0),
+                    ));
+                }
+            }
+        }
+    }
+    Err(Stage::changed(src))
+}
+
+/// F_SETSIG, the signal a lease's break is told with (include/uapi/asm-generic/fcntl.h,
+/// which x86_64 and arm64 take): the libc crate has it for none of shards' targets.
+#[cfg(target_os = "linux")]
+const F_SETSIG: libc::c_int = 10;
+
+/// Takes a read lease on `f`, if Linux grants one. Its break is told with SIGURG, which
+/// a process ignores unless it handles it, rather than SIGIO, which ends one that does
+/// not: the lease goes as soon as the file is taken, and the writer waiting with it.
+#[cfg(target_os = "linux")]
+fn lease(f: &fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    let fd = f.as_raw_fd();
+    // SAFETY: fcntl(2) on a descriptor `f` holds open.
+    unsafe {
+        libc::fcntl(fd, F_SETSIG, libc::SIGURG) == 0 && libc::fcntl(fd, libc::F_SETLEASE, libc::F_RDLCK) == 0
+    }
+}
+
+/// Waits out a write of `f` under way: lseek(2) SEEK_DATA, under the inode's lock, which
+/// the write holds; the offset is put back.
+#[cfg(target_os = "linux")]
+fn barrier(f: &fs::File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let fd = f.as_raw_fd();
+    // SAFETY: lseek(2) on a descriptor `f` holds open. What SEEK_DATA finds, an offset or
+    // ENXIO in a file of holes alone, is not wanted.
+    unsafe {
+        libc::lseek(fd, 0, libc::SEEK_DATA);
+        if libc::lseek(fd, 0, libc::SEEK_SET) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// CLOCK_REALTIME_COARSE, the clock Linux stamps file times from, in nanoseconds.
+#[cfg(target_os = "linux")]
+fn coarse_now() -> io::Result<i128> {
+    // SAFETY: an all-zero timespec is valid; clock_gettime(2) fills it.
+    let mut t: libc::timespec = unsafe { std::mem::zeroed() };
+    // SAFETY: as above, into a timespec of ours.
+    if unsafe { libc::clock_gettime(libc::CLOCK_REALTIME_COARSE, &mut t) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(nanos(t.tv_sec, t.tv_nsec))
+}
+
+#[cfg(target_os = "linux")]
+fn nanos(sec: i64, nsec: i64) -> i128 {
+    i128::from(sec) * 1_000_000_000 + i128::from(nsec)
+}
+
+/// The coarsest stamp a file system could have given a time of `nsec`: the largest power
+/// of ten that divides it, a second where it is 0. ext4's 128-byte inodes keep seconds
+/// alone, FAT's ctime hundredths (fs/ext4/super.c, fs/fat/inode.c, s_time_gran).
+#[cfg(target_os = "linux")]
+fn grain(nsec: i64) -> i128 {
+    if nsec == 0 {
+        return 1_000_000_000;
+    }
+    let (mut n, mut g) = (nsec, 1i128);
+    while n % 10 == 0 {
+        n /= 10;
+        g *= 10;
+    }
+    g
+}
+
+/// When a write could leave a ctime of `ctime`, stamped in steps of `grain`, as it was,
+/// the coarse clock being at `now`: until the clock leaves its step, if it is in it or
+/// within a second ahead of it (a step back of the clock leaves times further ahead,
+/// which a write now would change); `None` where a write now changes it.
+#[cfg(target_os = "linux")]
+fn unseen_until(ctime: i128, grain: i128, now: i128) -> Option<i128> {
+    let step = now - now.rem_euclid(grain);
+    (ctime >= step && ctime - step <= 1_000_000_000).then(|| ctime - ctime.rem_euclid(grain) + grain)
+}
+
+/// macOS keeps leases for Apple's own processes (bsd/vfs/vfs_subr.c, vnode_setlease: the
+/// private entitlement com.apple.private.vfs.file-leases): what the file was is all.
+#[cfg(target_os = "macos")]
+fn settle(f: &fs::File, _: &Path) -> io::Result<Before> {
+    Ok(Before { meta: f.metadata()? })
+}
+
+/// On Windows no one writes it while it is open (`open`).
+#[cfg(windows)]
+fn settle(f: &fs::File, _: &Path) -> io::Result<Before> {
+    Ok(Before { meta: f.metadata()? })
 }
 
 /// Whether `f` is as `before` was: its identity, size, mtime and ctime.
 #[cfg(unix)]
-fn unchanged(f: &fs::File, before: &fs::Metadata) -> io::Result<bool> {
+fn unchanged(f: &fs::File, before: &Before) -> io::Result<bool> {
     use std::os::unix::fs::MetadataExt;
     let v = |m: &fs::Metadata| {
         (
@@ -408,12 +549,12 @@ fn unchanged(f: &fs::File, before: &fs::Metadata) -> io::Result<bool> {
             m.ctime_nsec(),
         )
     };
-    Ok(v(before) == v(&f.metadata()?))
+    Ok(v(&before.meta) == v(&f.metadata()?))
 }
 
 /// On Windows no one could write it meanwhile.
 #[cfg(windows)]
-fn unchanged(_: &fs::File, _: &fs::Metadata) -> io::Result<bool> {
+fn unchanged(_: &fs::File, _: &Before) -> io::Result<bool> {
     Ok(true)
 }
 
@@ -499,4 +640,71 @@ fn clone(_: &fs::File, _: &Path) -> io::Result<bool> {
 /// `filepath.EvalSymlinks`, as fsutil.NewFS resolves the context's directory.
 pub fn eval_symlinks(p: &Path) -> io::Result<std::path::PathBuf> {
     fs::canonicalize(p)
+}
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod tests {
+    use super::*;
+
+    /// A file of `bytes` in a directory of the test's own.
+    fn file(name: &str, bytes: &[u8]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("shards-host-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("f");
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_times_grain_is_the_power_of_ten_it_could_have_been_stamped_in() {
+        assert_eq!(grain(0), 1_000_000_000);
+        assert_eq!(grain(123_456_789), 1);
+        assert_eq!(grain(120_000_000), 10_000_000);
+        assert_eq!(grain(500_000_000), 100_000_000);
+    }
+
+    /// A ctime is waited past while a write now could leave it as it is: in the coarse
+    /// clock's step, or a little ahead of it; not once the clock is past its step, nor
+    /// far ahead of the clock, as after the clock was set back.
+    #[test]
+    fn a_ctime_is_waited_past_only_while_a_write_could_leave_it() {
+        let s = 1_000_000_000i128;
+        // Nanosecond stamps: unseen until the clock passes it.
+        assert_eq!(unseen_until(100 * s + 5, 1, 100 * s + 5), Some(100 * s + 6));
+        assert_eq!(unseen_until(100 * s + 5, 1, 100 * s + 4), Some(100 * s + 6));
+        assert_eq!(unseen_until(100 * s + 5, 1, 100 * s + 6), None);
+        // Second stamps: unseen until the clock's second is past it.
+        assert_eq!(unseen_until(100 * s, s, 100 * s + 999), Some(101 * s));
+        assert_eq!(unseen_until(100 * s, s, 101 * s), None);
+        // Far ahead of the clock: a write now stamps an earlier time.
+        assert_eq!(unseen_until(200 * s, 1, 100 * s), None);
+    }
+
+    /// A read lease is granted where no one has the file open for writing, and one who
+    /// opens it for writing meanwhile waits until it goes; none is granted while one has.
+    #[test]
+    fn a_lease_keeps_writers_off_while_it_is_held() {
+        let path = file("lease", b"one");
+        let f = open(&path).unwrap();
+        assert!(lease(&f), "{}", io::Error::last_os_error());
+        let held = std::time::Duration::from_millis(200);
+        let opened = std::thread::scope(|s| {
+            let writer = s.spawn(|| {
+                let start = std::time::Instant::now();
+                let w = fs::File::options().write(true).open(&path).unwrap();
+                (start.elapsed(), w)
+            });
+            std::thread::sleep(held);
+            drop(f);
+            writer.join().unwrap()
+        });
+        assert!(opened.0 >= held, "the writer opened it in {:?}", opened.0);
+        let f = open(&path).unwrap();
+        assert!(!lease(&f), "granted while a writer has it open");
+        drop(opened.1);
+        assert!(lease(&f), "{}", io::Error::last_os_error());
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
 }
