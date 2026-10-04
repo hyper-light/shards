@@ -3589,3 +3589,48 @@ revision before comparing a changed API/implementation.
   does; timers wait in a heap, a connection's armed once for its deadline; the
   connections a full ring held back wait in a queue of their own. A round trip costs
   the same beside 3,500 idle connections as beside none, and bulk transfer what it did.
+
+### M107. What a seccomp filter's layout costs the syscalls it checks
+
+- **Question.** shards-vm's filter compared a syscall's number with each rule in turn,
+  and an argument with each of its values (review 1.7): ioctl, the call of every vCPU
+  run, came after 84 rules, and KVM_RUN after 11 requests. Since Linux 5.11 the kernel
+  skips a filter for a syscall it allows whatever the arguments (kernel/seccomp.c,
+  `seccomp_cache_check_allow`), so what is left to cost is the syscalls it checks the
+  arguments of, ioctl first, and the install, which runs every syscall's number through
+  the filter for that cache (`seccomp_cache_prepare_bitmap`). What does each layout cost
+  them, against a binary search?
+- **Method.** `docs/research/measurements/seccomp-search` (`run.sh 200 7a0d8a0`):
+  shards-vm's rules as confine.rs has them, less the 11 syscalls aarch64 lacks, compiled
+  by the pre-7a0d8a0 layout (frozen in the harness) and by shards' `compile` at 7a0d8a0.
+  Each variant in a process of its own, installed as shards-vm installs it, the
+  variants in turns, round by round, in alternating order, 200 rounds: no filter;
+  `allow`, a filter of one instruction that allows everything; `linear`; `search`. In
+  each process, 500 samples of 64 `ioctl(/dev/null, KVM_RUN)` calls (ENOTTY, after the
+  filter allows it) and of 64 `getpid` calls, as ns a call; the install timed once a
+  process; each compile 2,000 times in turns. Instructions run counted by running both
+  programs. Linux 6.12.76-linuxkit, aarch64, 18 CPUs, `bpf_jit_enable` 1: Docker
+  Desktop's VM on an Apple M5 Max, macOS 26.4.1, load average 2.6–4.4, 2026-10-04.
+- **Results.**
+  - Instructions: KVM_RUN's ioctl ran 157 under `linear` and 16 under `search`; the
+    most any allowed syscall ran, 192 and 18. The programs: 310 and 376 instructions.
+  - A call, ns, n = 100,000 each:
+
+    | | none | allow | linear | search |
+    |---|---|---|---|---|
+    | ioctl(KVM_RUN), p50 / p90 / p99 / max | 123.7 / 132.8 / 179.0 / 1,090 | 123.7 / 133.5 / 179.0 / 2,747 | 140.0 / 150.4 / 196.6 / 1,272 | 132.2 / 141.9 / 188.1 / 1,665 |
+    | getpid, p50 / p90 / p99 / max | 113.3 / 121.1 / 165.4 / 1,839 | 113.3 / 121.8 / 165.4 / 2,349 | 113.3 / 121.7 / 164.7 / 786 | 113.3 / 121.7 / 164.7 / 760 |
+
+    The filter's cost to KVM_RUN, over none: 16.3 ns at p50 and 17.6 at p99 under
+    `linear`, 8.5 and 9.1 under `search`. `getpid`, which the cache lets skip each
+    filter, cost the same under all four; the maxima of 1–3 µs came under no filter as
+    under each.
+  - The install, µs, n = 200 each: `allow` 138.5 / 170.8 / 400.0 / 499.4 (p50 / p90 /
+    p99 / max), `linear` 208.7 / 241.8 / 455.9 / 495.9, `search` 156.0 / 184.8 / 421.1 /
+    454.1. Compile: p50 3.2 µs `linear`, 1.7 `search`.
+- **Consequence.** Filters find a syscall's rule, and an argument's value, by a binary
+  search (7a0d8a0). Under shards-vm's rules a vCPU's run pays the filter about half what
+  it did, and a VM process's install 53 µs less at p50, its layout's share 17.5 µs where
+  it was 70. Most of the install is what any filter's costs here, 138.5 µs at p50 for one
+  instruction, on the start of every VM process that confines itself; what it is made
+  of is not yet measured.

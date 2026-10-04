@@ -1529,10 +1529,17 @@ audit's "Security and test coverage").
     with ENOSYS, as Firecracker's filters have it, so the C library falls back to
     `clone`, which must carry a thread's flags (glibc's or musl's). No exec, no fork,
     no network.
-  - Compiled to classic BPF: the architecture first, then each syscall's block behind
-    a jump, arguments compared in their low 32 bits (the ones filtered are `int`s to
-    the kernel, and musl passes ioctl's request sign-extended). A refused syscall
-    traps; a SIGSYS handler names it and the thread, and the process exits 159.
+  - Compiled to classic BPF: the architecture first, then a binary search over the
+    syscalls' numbers, and over an argument's values, as libseccomp's binary tree does
+    [man: seccomp_attr_set(3), `SCMP_FLTATR_CTL_OPTIMIZE`]. KVM_RUN's ioctl runs 16
+    instructions where comparing each rule in turn ran 157, which halves what the
+    filter costs a vCPU's run, and the install, which runs every number through the
+    filter for the kernel's cache of syscalls allowed whatever their arguments
+    [kernel/seccomp.c, `seccomp_cache_prepare_bitmap`], costs 53 µs less [PM M107].
+    Only the instructions that cache follows (`seccomp_is_const_allow`). Arguments are
+    compared in their low 32 bits (the ones filtered are `int`s to the kernel, and musl
+    passes ioctl's request sign-extended). A refused syscall traps; a SIGSYS handler
+    names it and the thread, and the process exits 159.
   - Every VM test runs under it on CI's KVM runners, glibc and musl, with VMs required.
   - One filter for every thread: the lists are the union. Per-thread filters, as
     Firecracker keeps, would narrow a vCPU thread to its KVM ioctls: the next step
