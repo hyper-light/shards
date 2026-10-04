@@ -838,8 +838,20 @@ for the exit status.
     - A client has 10 s to send its whole request. The deadline bounds the message, not
       each read, so a client trickling it out a byte at a time gains nothing
       (`shards_ipc::recv_by`).
-    - It holds at most 256 clients at once, each a thread and up to six descriptors;
-      past that, connections wait in the listener's backlog.
+    - It holds as many clients at once as the threads it may have hold (review 7.9),
+      each a thread, the watcher of a VM started for its run, and up to six
+      descriptors; past that, connections wait in the listener's backlog. The threads
+      are the system's to say: `kern.num_taskthreads` on macOS (16,384 here, so 8,188
+      clients past the daemon's own seven threads), and on Linux the least of
+      `RLIMIT_NPROC`, `threads-max` and the `pids.max` of its control groups, up to the
+      root its namespace sees, where a container's limit is (Linux
+      Documentation/admin-guide/cgroup-v2.rst). Where none is said, POSIX's
+      `_POSIX_THREAD_THREADS_MAX` (64). `SHARDS_MAX_CLIENTS` sets fewer. The 256
+      before was chosen, not derived.
+    - A client that waits long, on a container's end (`wait`) or its output
+      (`logs -f`), counts among those in hand no more, so that waiters shut out no
+      client however many there are. A thread that cannot be spawned still drops its
+      client.
     - Out of descriptors, it waits for room rather than spin on a listener that stays
       readable, and accepts again only once a descriptor is free: an accept that fails
       for want of one leaves the client queued on Linux (net/socket.c,

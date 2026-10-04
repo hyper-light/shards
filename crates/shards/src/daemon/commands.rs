@@ -309,7 +309,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         if std::ptr::eq(command, &PS) {
             self.ps(&parsed, asker.east_asian, reply)
         } else if std::ptr::eq(command, &WAIT) {
-            self.wait(&parsed.args, reply)
+            self.wait(&parsed.args, asker.client, reply)
         } else if std::ptr::eq(command, &LOGS) {
             self.logs(&parsed, asker, reply)
         } else if std::ptr::eq(command, &RM) {
@@ -558,7 +558,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// waited for under one hold of the records, as dockerd holds a container's state
     /// once it has found it: an end in between, of a `--rm` container above all, is not
     /// missed.
-    fn wait(&self, references: &[String], reply: &Reply<'_>) -> u8 {
+    fn wait(&self, references: &[String], client: u64, reply: &Reply<'_>) -> u8 {
+        // Its client waits long: it shuts no other out (review 7.9).
+        self.waits_long(client);
         let mut errors = Vec::new();
         for reference in references {
             let (registry, found) = self.resolve_held(lock(&self.containers), reference);
@@ -933,6 +935,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 }
                 return Ok(());
             };
+            // Its client waits long: it shuts no other out (review 7.9).
+            self.waits_long(asker.client);
             let followed = (|| -> io::Result<()> {
                 loop {
                     if !show.read(&mut reader, &log)? {

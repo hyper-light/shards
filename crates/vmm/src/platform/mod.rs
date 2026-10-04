@@ -221,6 +221,58 @@ mod tests {
         }
     }
 
+    /// The threads a process may have are read where the system says: on macOS always,
+    /// `kern.num_taskthreads`; in a Linux container with a cgroup namespace of its own, no
+    /// more than its own group's limit.
+    #[cfg(unix)]
+    #[test]
+    fn a_thread_limit_is_read_where_the_system_says_one() {
+        let limit = thread_limit();
+        if cfg!(target_os = "macos") {
+            assert!(limit.is_some_and(|n| n >= 64), "{limit:?}");
+        }
+        assert!(limit.is_none_or(|n| n > 0), "{limit:?}");
+        #[cfg(target_os = "linux")]
+        if std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|g| g == "0::/\n")
+            && let Some(n) = std::fs::read_to_string("/sys/fs/cgroup/pids.max")
+                .ok()
+                .and_then(|t| t.trim().parse::<u64>().ok())
+        {
+            assert!(limit.is_some_and(|l| l <= n), "{limit:?}, the group's {n}");
+        }
+    }
+
+    /// A process's control groups' task limit, as cgroupfs holds it: the least of its
+    /// group's and those above it, the root of those it sees included; cgroup v2's, v1's
+    /// pids controller's, or both; none where none is set, or where its group is out of
+    /// the namespace's sight.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_control_groups_task_limit_is_the_least_up_to_its_root() {
+        let root = std::env::temp_dir().join(format!("pids-max-{}", std::process::id()));
+        let write = |at: &str, text: &str| {
+            let path = root.join(at);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        let pids_max = |groups: &str| super::unix::pids_max(&root, groups);
+        assert_eq!(pids_max("0::/\n"), None);
+        // A container's, with a namespace of its own: at the root it sees.
+        write("pids.max", "100\n");
+        assert_eq!(pids_max("0::/\n"), Some(100));
+        write("a/b/pids.max", "max\n");
+        write("a/pids.max", "50\n");
+        assert_eq!(pids_max("0::/a/b\n"), Some(50));
+        write("pids/x/pids.max", "70\n");
+        write("pids/pids.max", "max\n");
+        assert_eq!(pids_max("12:pids:/x\n11:cpu,cpuacct:/x\n"), Some(70));
+        assert_eq!(pids_max("12:cpu,pids:/x\n0::/\n"), Some(70));
+        assert_eq!(pids_max("12:cpu,pids:/x\n0::/a/b\n"), Some(50));
+        assert_eq!(pids_max("11:cpu:/x\n"), None);
+        assert_eq!(pids_max("0::/../c\n"), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     /// A child's end is told once it has exited, not before, and once; its status is
     /// then taken without waiting. A child that has ended already is ready at once on
     /// Linux, and refused on macOS (`ESRCH`, measured): its watcher looks at it instead.

@@ -828,13 +828,26 @@ fn a_client_that_says_nothing_holds_up_no_stop() {
     );
 }
 
-/// Past its cap of 256 clients in hand, the daemon leaves connections in its backlog, and
-/// takes the next as soon as one in hand leaves (audit A07). No VM needed.
+/// Past its cap of clients in hand, here 16 (`SHARDS_MAX_CLIENTS`), the daemon leaves
+/// connections in its backlog, and takes the next as soon as one in hand leaves (audit
+/// A07). No VM needed.
 #[test]
 fn clients_past_the_cap_wait_their_turn() {
     more_descriptors();
     let home = TempDir::new("daemon-cap");
-    let daemon = start_daemon(&home, None);
+    let started = Command::new(shards())
+        .arg("ps")
+        .env("SHARDS_HOME", &*home)
+        .env("SHARDS_MAX_CLIENTS", "16")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let daemon = daemon_pid(&home).expect("a daemon pid");
     // Its soft limit on descriptors is raised to its hard limit, where Linux shows it.
     if let Ok(limits) = std::fs::read_to_string(format!("/proc/{daemon}/limits")) {
         let line = limits.lines().find(|l| l.starts_with("Max open files")).unwrap();
@@ -842,7 +855,7 @@ fn clients_past_the_cap_wait_their_turn() {
         assert_eq!(fields[3], fields[4], "{line}");
     }
     let sock = home.join("daemon.sock");
-    let mut silent: Vec<UnixStream> = (0..256).map(|_| connect_patiently(&sock)).collect();
+    let mut silent: Vec<UnixStream> = (0..16).map(|_| connect_patiently(&sock)).collect();
     let mut listing = Command::new(shards())
         .arg("ps")
         .env("SHARDS_HOME", &*home)
@@ -907,6 +920,61 @@ fn a_home_removed_once_is_gone_with_its_daemon() {
     std::fs::remove_file(&lock).unwrap();
     eventually("the daemon outlived its home", || !alive(daemon));
     eventually("what was left of the home was left", || !path.exists());
+}
+
+/// Clients waiting long, on a container's end (`wait`) or its output (`logs -f`), shut
+/// out no other, however few the daemon serves at once: here one (review 7.9).
+#[test]
+fn waiters_shut_out_no_client() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home("daemon-waiters", &image);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+    let capped: [(&str, &OsStr); 2] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_MAX_CLIENTS", "1".as_ref()),
+    ];
+    let up = run_shards_env(
+        &["run"],
+        &["-d", "--name", "up", "--pull", "never", &image, "sleep"],
+        &capped,
+        TIMEOUT,
+    );
+    assert_eq!(up.status, Some(0), "{}", up.stderr);
+    let mut waiting = Command::new(shards())
+        .args(["wait", "up"])
+        .env("SHARDS_HOME", &*home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut following = Command::new(shards())
+        .args(["logs", "-f", "up"])
+        .env("SHARDS_HOME", &*home)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // Waiting and following by now.
+    std::thread::sleep(Duration::from_millis(500));
+    let t0 = Instant::now();
+    let listed = run_shards_env(&["ps"], &["-q"], &env, TIMEOUT);
+    assert_eq!(listed.status, Some(0), "{}", listed.stderr);
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    let killed = run_shards_env(&["kill"], &["up"], &env, TIMEOUT);
+    assert_eq!(killed.status, Some(0), "{}", killed.stderr);
+    let mut code = String::new();
+    waiting.stdout.take().unwrap().read_to_string(&mut code).unwrap();
+    assert_eq!(wait(&mut waiting), Some(0));
+    assert_eq!(code, "137\n");
+    assert_eq!(wait(&mut following), Some(0));
+    // Gone, it frees no room it did not hold: the next client is served.
+    let after = run_shards_env(&["ps"], &["-q"], &env, Duration::from_secs(10));
+    assert_eq!(after.status, Some(0), "{}", after.stderr);
 }
 
 /// A daemon out of descriptors leaves connections in its backlog and waits for room,
@@ -1079,6 +1147,14 @@ fn a_daemon_refuses_settings_it_cannot_keep() {
         (
             &[("SHARDS_WARM_MAX", "100000")][..],
             "SHARDS_WARM_MAX: 100000 is more than",
+        ),
+        (
+            &[("SHARDS_MAX_CLIENTS", "0")][..],
+            "SHARDS_MAX_CLIENTS: the daemon serves at least one client",
+        ),
+        (
+            &[("SHARDS_MAX_CLIENTS", "100000000")][..],
+            "SHARDS_MAX_CLIENTS: 100000000 is more than the",
         ),
         (&[("SHARDS_DAEMON_IDLE", "soon")][..], "SHARDS_DAEMON_IDLE"),
         (

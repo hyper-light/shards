@@ -58,7 +58,9 @@ const USAGE: &str = "usage: shards daemon [--detached | stop]
   stop: have the running daemon end its runs, as dockerd ends containers, and exit.
   SHARDS_POOL: the most warm microVMs kept for each image (default 2): as many as its
     runs have come at once, while it is used.
-  SHARDS_POOL_KEEP: seconds an image's warm microVMs are kept after its last run (600).";
+  SHARDS_POOL_KEEP: seconds an image's warm microVMs are kept after its last run (600).
+  SHARDS_MAX_CLIENTS: the most clients served at once (default: as many as the threads
+    the daemon may have hold).";
 
 /// How long a VM may take to be ready: a restore takes milliseconds, a boot that saves a
 /// template tens of them.
@@ -74,9 +76,6 @@ const DEFAULT_POOL: usize = 2;
 /// A13): a warm VM's own memory is 3.4 MiB, the rest of its RSS its template's pages it
 /// shares, so the default holds about 55 MiB (PM M49).
 const DEFAULT_WARM_MAX: usize = 16;
-/// The most `SHARDS_WARM_MAX` may be: each warm VM holds a thread and descriptors of the
-/// daemon, whose clients are capped at `MAX_CLIENTS` for the same reason.
-const MAX_WARM_MAX: usize = MAX_CLIENTS;
 const DEFAULT_IDLE: Duration = Duration::from_secs(900);
 /// How long a pool keeps warm VMs after its last claim unless `SHARDS_POOL_KEEP` says: as
 /// AWS keeps an idle function, 10 minutes (Shahrad et al., "Serverless in the Wild",
@@ -106,11 +105,34 @@ const RETRY: Duration = Duration::from_millis(250);
 /// How long a client may take to send its whole request (audit A07). One sends it as it
 /// connects; one that has not by now is broken, or trickling it out.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-/// Clients in hand at once (audit A07). Each holds a thread and up to six descriptors
-/// (its connection, its stdio, its container's log and a VM's socket) until its run is
-/// handed over or its command answered; beyond this many, connections wait in the
-/// listener's backlog.
-const MAX_CLIENTS: usize = 256;
+/// The threads the daemon keeps besides its clients': its listener, and the followers',
+/// the completer's, the recorder's, the collector's, the refiller's and the health
+/// checks' (PM M92).
+const OWN_THREADS: u64 = 7;
+/// The threads a client in hand may hold: its own, and the watcher of a VM started for
+/// its run, until that VM is ready.
+const CLIENT_THREADS: u64 = 2;
+/// The threads a process may have at the least, where the system says nothing: POSIX's
+/// `_POSIX_THREAD_THREADS_MAX` (limits.h).
+const POSIX_THREADS: u64 = 64;
+
+/// The most clients in hand at once (audit A07, review 7.9): as many as the threads the
+/// process may have hold, past the daemon's own, at [`CLIENT_THREADS`] each. A client is
+/// in hand until its run is handed over or its command answered, or it waits long (`wait`,
+/// `logs -f`, [`Daemon::waits_long`]); it holds up to six descriptors meanwhile (its
+/// connection, its stdio, its container's log and a VM's socket), which the daemon waits
+/// for room for where they run out. Past this many, connections wait in the listener's
+/// backlog. Before, 256, chosen.
+fn most_clients() -> usize {
+    clients_for(shards_vmm::platform::thread_limit().unwrap_or(POSIX_THREADS))
+}
+
+/// The clients a process of `threads` threads may have in hand at once: at least one.
+fn clients_for(threads: u64) -> usize {
+    usize::try_from(threads.saturating_sub(OWN_THREADS) / CLIENT_THREADS)
+        .unwrap_or(usize::MAX)
+        .max(1)
+}
 
 pub fn daemon(args: impl Iterator<Item = OsString>) -> ExitCode {
     let args: Vec<OsString> = args.collect();
@@ -476,8 +498,12 @@ struct Daemon<D: Disk = Real> {
     request_timeout: Duration,
     state: Mutex<State>,
     changed: Condvar,
-    /// Clients connected and not yet handed over.
+    /// Clients in hand: connected, and not yet handed over, answered, or waiting long.
     busy: AtomicUsize,
+    /// The most clients in hand at once ([`most_clients`]).
+    max_clients: usize,
+    /// The clients that wait long, by number, in hand no more ([`Daemon::waits_long`]).
+    long_waits: Mutex<HashSet<u64>>,
     /// The connections of clients in hand whose threads the daemon's shutdown ends, by
     /// number: those still sending their request, and those of container commands. A run's
     /// connection is its command's once its request is read, and leaves here then.
@@ -567,7 +593,10 @@ impl<D: Disk> Drop for Busy<'_, D> {
         *lock(&self.0.last) = Instant::now();
         let mut clients = lock(&self.0.clients);
         clients.remove(&self.1);
-        self.0.busy.fetch_sub(1, Ordering::SeqCst);
+        // One that waited long counts no more already.
+        if !lock(&self.0.long_waits).remove(&self.1) {
+            self.0.busy.fetch_sub(1, Ordering::SeqCst);
+        }
         drop(clients);
         self.0.wake_listener();
     }
@@ -698,18 +727,31 @@ struct Settings {
     /// How much of each container's output its log keeps: `SHARDS_LOG_MAX_SIZE` and
     /// `SHARDS_LOG_MAX_FILE`.
     logs: LogRetention,
+    /// Clients in hand at once: `SHARDS_MAX_CLIENTS`, at most [`most_clients`].
+    max_clients: usize,
 }
 
 /// The daemon's settings, checked before it serves: a malformed or excessive one stops it
 /// (audit A14).
 fn settings() -> Result<Settings, String> {
     let as_usize = |name: &str, n: u64| usize::try_from(n).map_err(|_| format!("{name}: {n} is too many"));
+    let most = most_clients();
+    let max_clients = as_usize("SHARDS_MAX_CLIENTS", count("SHARDS_MAX_CLIENTS", most as u64)?)?;
+    if max_clients == 0 {
+        return Err("SHARDS_MAX_CLIENTS: the daemon serves at least one client".into());
+    }
+    if max_clients > most {
+        return Err(format!(
+            "SHARDS_MAX_CLIENTS: {max_clients} is more than the {most} the threads the daemon may have hold"
+        ));
+    }
     let warm_max = as_usize(
         "SHARDS_WARM_MAX",
         count("SHARDS_WARM_MAX", DEFAULT_WARM_MAX as u64)?,
     )?;
-    if warm_max > MAX_WARM_MAX {
-        return Err(format!("SHARDS_WARM_MAX: {warm_max} is more than {MAX_WARM_MAX}"));
+    // Each warm VM takes a thread of the daemon while it starts, as a client does.
+    if warm_max > most {
+        return Err(format!("SHARDS_WARM_MAX: {warm_max} is more than {most}"));
     }
     let pool = as_usize("SHARDS_POOL", count("SHARDS_POOL", DEFAULT_POOL as u64)?)?;
     if pool > warm_max {
@@ -735,6 +777,7 @@ fn settings() -> Result<Settings, String> {
         idle,
         keep,
         logs,
+        max_clients,
     })
 }
 
@@ -917,6 +960,8 @@ impl<D: Disk> Daemon<D> {
             state: Mutex::default(),
             changed: Condvar::new(),
             busy: AtomicUsize::new(0),
+            max_clients: settings.max_clients,
+            long_waits: Mutex::default(),
             clients: Mutex::default(),
             next_client: AtomicU64::new(0),
             listener_wake: {
@@ -1016,7 +1061,7 @@ impl<D: Disk> Daemon<D> {
                 }
             }
             let mut starved = false;
-            while self.busy.load(Ordering::SeqCst) < MAX_CLIENTS {
+            while self.busy.load(Ordering::SeqCst) < self.max_clients {
                 // Once starved, it accepts only when a descriptor is free: an accept that
                 // fails for want of one leaves the client queued on Linux (net/socket.c,
                 // __sys_accept4_file) but drops it on macOS (xnu-11417.101.15
@@ -1071,7 +1116,7 @@ impl<D: Disk> Daemon<D> {
             }
             // At the cap, or starved, the listener would be readable at once: it waits for
             // a client to leave instead.
-            let accepting = !starved && self.busy.load(Ordering::SeqCst) < MAX_CLIENTS;
+            let accepting = !starved && self.busy.load(Ordering::SeqCst) < self.max_clients;
             let looking = starved || watches.iter().any(Option::is_none);
             let timeout = if looking {
                 Some(RETRY.min(self.next_duty(quiet).unwrap_or(RETRY)))
@@ -1208,6 +1253,18 @@ impl<D: Disk> Daemon<D> {
             lock(&self.clients).remove(&number);
             self.busy.fetch_sub(1, Ordering::SeqCst);
             log(format!("a client's thread: {e}"));
+        }
+    }
+
+    /// Client `number` waits long, for a container's end or its log's growth (`wait`,
+    /// `logs -f`): it counts among the clients in hand no more, so that waiters shut out
+    /// no client however many there are (review 7.9). Its connection stays the daemon's
+    /// to end as it stops, and its thread holds on.
+    pub(super) fn waits_long(&self, number: u64) {
+        let in_hand = lock(&self.clients).contains_key(&number);
+        if in_hand && lock(&self.long_waits).insert(number) {
+            self.busy.fetch_sub(1, Ordering::SeqCst);
+            self.wake_listener();
         }
     }
 
@@ -3505,6 +3562,7 @@ mod tests {
                     idle: DEFAULT_IDLE,
                     keep: DEFAULT_KEEP,
                     logs: DEFAULT_LOGS,
+                    max_clients: most_clients(),
                 },
                 containers,
                 disk,
@@ -4125,9 +4183,10 @@ mod tests {
     }
 
     /// A daemon told to stop ends the clients it would otherwise wait for: one that never
-    /// sends its request, and container commands waiting on a run that ignores its
-    /// SIGTERM, whose connections are shut down. The audit's reproduction (A07): before,
-    /// the daemon waited for the first until its client closed.
+    /// sends its request, in hand, and container commands waiting long on a run that
+    /// ignores its SIGTERM (review 7.9), whose connections are shut down. The audit's
+    /// reproduction (A07): before, the daemon waited for the first until its client
+    /// closed.
     #[test]
     fn a_stopping_daemon_ends_the_clients_it_would_wait_for() {
         let t = Test::new("stop-clients");
@@ -4139,14 +4198,18 @@ mod tests {
             t.t.daemon.take(t.threads, waiting);
             let (following, following_client) = commanding(&["logs", "-f", "racer"]);
             t.t.daemon.take(t.threads, following);
-            t.until("three clients in hand, one waiting", |d| {
-                d.busy.load(Ordering::SeqCst) == 3 && lock(&d.waiters).contains_key(&id)
+            t.until("one client in hand, two waiting long", |d| {
+                d.busy.load(Ordering::SeqCst) == 1
+                    && lock(&d.long_waits).len() == 2
+                    && lock(&d.waiters).contains_key(&id)
             });
             let t0 = Instant::now();
             t.t.daemon.step_aside(t.threads);
             // The run hears its SIGTERM, and goes on regardless.
             assert_eq!(heard(&vm), signal(15));
-            t.until("clients still in hand", |d| d.busy.load(Ordering::SeqCst) == 0);
+            t.until("clients still in hand", |d| {
+                d.busy.load(Ordering::SeqCst) == 0 && lock(&d.long_waits).is_empty()
+            });
             assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
             for client in [&idle_client, &waiting_client, &following_client] {
                 // macOS refuses options on a socket shut down both ways (EINVAL): this one's
@@ -4307,6 +4370,37 @@ mod tests {
             t.daemon.have_room();
             t.until("not collected once the listener had room", |_| !left.exists());
         });
+    }
+
+    /// The clients in hand at once are what the threads a process may have hold, past the
+    /// daemon's own, two a client: 8,188 of macOS's 16,384, 28 of POSIX's least, 64; and
+    /// one at the least.
+    #[test]
+    fn clients_are_what_the_threads_hold() {
+        assert_eq!(clients_for(16_384), 8_188);
+        assert_eq!(clients_for(POSIX_THREADS), 28);
+        assert_eq!(clients_for(0), 1);
+    }
+
+    /// A client in hand that waits long counts no more, once however often it says so,
+    /// and its end then frees no room it did not hold; a command answered for no client
+    /// in hand changes nothing (review 7.9).
+    #[test]
+    fn a_client_that_waits_long_counts_no_more_once() {
+        let t = Test::new("waits-long");
+        let busy = || t.daemon.busy.load(Ordering::SeqCst);
+        t.daemon.waits_long(7);
+        assert_eq!(busy(), 0);
+        let (conn, _peer) = UnixStream::pair().unwrap();
+        lock(&t.daemon.clients).insert(7, Arc::new(conn));
+        t.daemon.busy.fetch_add(1, Ordering::SeqCst);
+        t.daemon.waits_long(7);
+        t.daemon.waits_long(7);
+        assert_eq!(busy(), 0);
+        drop(Busy(&t.daemon, 7));
+        assert_eq!(busy(), 0);
+        assert!(lock(&t.daemon.long_waits).is_empty());
+        assert!(lock(&t.daemon.clients).is_empty());
     }
 
     /// The listener's duty for a pool is when `age_pools` first finds it expired: its

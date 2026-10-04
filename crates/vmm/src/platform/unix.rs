@@ -656,6 +656,107 @@ fn clear_errno() {
     }
 }
 
+/// How many threads this process may have, as far as the system says: macOS's limit for a
+/// process (`kern.num_taskthreads`); on Linux the least of its user's (`RLIMIT_NPROC`,
+/// which counts threads there: getrlimit(2)), the system's (`/proc/sys/kernel/threads-max`,
+/// proc(5)), and its control groups' ([`pids_max`]). `None` where none is said.
+pub fn thread_limit() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut per_process: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>();
+        // SAFETY: sysctlbyname(3) reading one int into a local of its size.
+        let read = unsafe {
+            libc::sysctlbyname(
+                c"kern.num_taskthreads".as_ptr(),
+                (&raw mut per_process).cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if read != 0 {
+            return None;
+        }
+        u64::try_from(per_process).ok()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut least: Option<u64> = None;
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit(2) into a local.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NPROC, &mut lim) } == 0
+            && lim.rlim_cur != libc::RLIM_INFINITY
+        {
+            least = fewer(least, Some(lim.rlim_cur));
+        }
+        least = fewer(least, count(std::path::Path::new("/proc/sys/kernel/threads-max")));
+        if let Ok(groups) = std::fs::read_to_string("/proc/self/cgroup") {
+            least = fewer(least, pids_max(std::path::Path::new("/sys/fs/cgroup"), &groups));
+        }
+        least
+    }
+}
+
+/// The fewer of two limits, either of which may be none.
+#[cfg(not(target_os = "macos"))]
+fn fewer(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        _ => a.or(b),
+    }
+}
+
+/// The number a file of the kernel's holds, if it holds one (`max` is none).
+#[cfg(not(target_os = "macos"))]
+fn count(path: &std::path::Path) -> Option<u64> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// The fewest tasks the control groups of a process allow it, from what its
+/// `/proc/PID/cgroup` says (`groups`), with cgroupfs at `root`, where systemd and runc
+/// mount it (runc libcontainer/cgroups/utils.go): the `pids.max` of its group and of each
+/// above it, to the root of those it sees, included, which is where a container with a
+/// cgroup namespace of its own finds its limit (Linux Documentation/admin-guide/
+/// cgroup-v2.rst, "PID" and "Namespace"). cgroup v2's unified hierarchy (`0::PATH`), and
+/// v1's pids controller (`N:pids:PATH`, under `root/pids`: cgroup-v1/pids.rst), both read,
+/// as a host mounting both (systemd's hybrid) has its limits on v1. A group out of the
+/// namespace's sight (`/../…`) has none it can read.
+#[cfg(not(target_os = "macos"))]
+pub(super) fn pids_max(root: &std::path::Path, groups: &str) -> Option<u64> {
+    let mut least = None;
+    for line in groups.lines() {
+        let mut fields = line.splitn(3, ':');
+        let (Some(_), Some(controllers), Some(path)) = (fields.next(), fields.next(), fields.next()) else {
+            continue;
+        };
+        if std::path::Path::new(path)
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+        {
+            continue;
+        }
+        let base = if controllers.is_empty() {
+            root.to_path_buf()
+        } else if controllers.split(',').any(|c| c == "pids") {
+            root.join("pids")
+        } else {
+            continue;
+        };
+        let mut dir = base.join(path.trim_start_matches('/'));
+        while dir.starts_with(&base) {
+            least = fewer(least, count(&dir.join("pids.max")));
+            if dir == base || !dir.pop() {
+                break;
+            }
+        }
+    }
+    least
+}
+
 /// A child process's end, watched ([`Poller::add_exit`]): on Linux its descriptor, whose
 /// closing ends the watch; on macOS nothing, kqueue dropping the event once it is told.
 #[derive(Debug)]
