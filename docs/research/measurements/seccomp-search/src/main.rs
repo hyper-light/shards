@@ -14,7 +14,11 @@
 //!   process.
 //! - The install: no_new_privs and seccomp(2), one sample a process, as µs; and of
 //!   `allow`, a filter of one instruction that allows everything, which the cache lets
-//!   every syscall skip: what any install costs.
+//!   every syscall skip: what any install costs. What that is made of (review 1.22):
+//!   `allow-bare`, the same without the LOG and TSYNC flags shards-vm asks for;
+//!   `allow-again`, the same installed a second time in one process; and, for each filter
+//!   this program installs itself, no_new_privs apart from seccomp(2). `trace.sh` shows
+//!   the kernel's part of each, by function.
 //! - The compile, in this process, as µs.
 //!
 //! The instructions each layout runs to allow KVM_RUN are counted by running its program,
@@ -331,23 +335,44 @@ fn run(prog: &[libc::sock_filter], nr: u32, args: [u64; 6]) -> (u32, usize) {
     }
 }
 
-/// no_new_privs and the filter over every thread, as shards' install does.
-fn install_raw(prog: &[libc::sock_filter]) {
+/// The flags shards' install asks for.
+const FLAGS: libc::c_ulong = libc::SECCOMP_FILTER_FLAG_LOG | libc::SECCOMP_FILTER_FLAG_TSYNC;
+
+/// no_new_privs and the filter, with `flags`: how long each took, in µs.
+fn install_raw(prog: &[libc::sock_filter], flags: libc::c_ulong) -> (f64, f64) {
     let fprog = libc::sock_fprog {
         len: prog.len() as u16,
         filter: prog.as_ptr().cast_mut(),
     };
-    // SAFETY: prctl(2) and seccomp(2) with a program that outlives the call.
-    unsafe {
-        assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
-        let flags = libc::SECCOMP_FILTER_FLAG_LOG | libc::SECCOMP_FILTER_FLAG_TSYNC;
-        let r = libc::syscall(
+    let start = Instant::now();
+    // SAFETY: prctl(2) with integer arguments.
+    assert_eq!(unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) }, 0);
+    let nnp = start.elapsed();
+    let start = Instant::now();
+    // SAFETY: seccomp(2) with a program that outlives the call.
+    let r = unsafe {
+        libc::syscall(
             libc::SYS_seccomp,
             libc::SECCOMP_SET_MODE_FILTER,
             flags,
             &raw const fprog,
-        );
-        assert_eq!(r, 0, "{}", std::io::Error::last_os_error());
+        )
+    };
+    let filter = start.elapsed();
+    assert_eq!(r, 0, "{}", std::io::Error::last_os_error());
+    (nnp.as_secs_f64() * 1e6, filter.as_secs_f64() * 1e6)
+}
+
+/// Installs `variant` as the child would, once, and nothing else: for `trace.sh`.
+fn install(variant: &str) {
+    let rules = rules();
+    let allow = [op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW)];
+    match variant {
+        "linear" => drop(install_raw(&linear(&rules), FLAGS)),
+        "search" => seccomp::install(&seccomp::compile(&rules).expect("compiles"), true).expect("installs"),
+        "allow" => drop(install_raw(&allow, FLAGS)),
+        "allow-bare" => drop(install_raw(&allow, 0)),
+        other => panic!("no variant {other}"),
     }
 }
 
@@ -358,16 +383,26 @@ fn child(variant: &str) {
     let devnull = std::fs::File::open("/dev/null").expect("/dev/null");
     let fd = std::os::fd::AsRawFd::as_raw_fd(&devnull);
     let (filter, prog) = (seccomp::compile(&rules).expect("compiles"), linear(&rules));
-    let start = Instant::now();
+    let allow = [op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW)];
+    let mut out = String::new();
+    let parts = |out: &mut String, (nnp, filter): (f64, f64)| {
+        out.push_str(&format!("nnp {nnp}\nfilter {filter}\ninstall {}\n", nnp + filter));
+    };
     match variant {
-        "linear" => install_raw(&prog),
-        "search" => seccomp::install(&filter, true).expect("installs"),
-        "allow" => install_raw(&[op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW)]),
+        "linear" => parts(&mut out, install_raw(&prog, FLAGS)),
+        "allow" => parts(&mut out, install_raw(&allow, FLAGS)),
+        "allow-bare" => parts(&mut out, install_raw(&allow, 0)),
+        "allow-again" => {
+            install_raw(&allow, FLAGS);
+            parts(&mut out, install_raw(&allow, FLAGS));
+        }
+        "search" => {
+            let start = Instant::now();
+            seccomp::install(&filter, true).expect("installs");
+            out.push_str(&format!("install {}\n", start.elapsed().as_secs_f64() * 1e6));
+        }
         _ => {}
     }
-    let install = start.elapsed();
-    let mut out = String::new();
-    out.push_str(&format!("install {}\n", install.as_secs_f64() * 1e6));
     for _ in 0..SAMPLES {
         let start = Instant::now();
         for _ in 0..BATCH {
@@ -411,9 +446,10 @@ fn report(what: &str, unit: &str, variant: &str, xs: &mut [f64]) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("child") {
-        child(&args[2]);
-        return;
+    match args.get(1).map(String::as_str) {
+        Some("child") => return child(&args[2]),
+        Some("install") => return install(&args[2]),
+        _ => {}
     }
     let rounds: usize = args.get(1).map_or(20, |r| r.parse().expect("ROUNDS"));
     let rev = args.get(2).cloned().unwrap_or_else(|| "unknown".into());
@@ -479,13 +515,15 @@ fn main() {
     }
     report("compile", "µs", "linear", &mut compile[0]);
     report("compile", "µs", "search", &mut compile[1]);
-    let variants = ["none", "allow", "linear", "search"];
+    let variants = ["none", "allow", "linear", "search", "allow-bare", "allow-again"];
     let mut install: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
+    let mut nnp: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
+    let mut filter: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
     let mut ioctl: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
     let mut getpid: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
     let exe = std::env::current_exe().expect("this program");
     for round in 0..rounds {
-        let mut order = [0, 1, 2, 3];
+        let mut order: Vec<usize> = (0..variants.len()).collect();
         if round % 2 == 1 {
             order.reverse();
         }
@@ -505,19 +543,28 @@ fn main() {
                 let x: f64 = x.parse().expect("a number");
                 match what {
                     "install" => install[v].push(x),
+                    "nnp" => nnp[v].push(x),
+                    "filter" => filter[v].push(x),
                     "ioctl" => ioctl[v].push(x),
                     _ => getpid[v].push(x),
                 }
             }
         }
     }
-    for v in 0..variants.len() {
+    // The calls under the first four; the others' filters are allow's.
+    for v in 0..4 {
         report("ioctl(KVM_RUN)", "ns", variants[v], &mut ioctl[v]);
     }
-    for v in 0..variants.len() {
+    for v in 0..4 {
         report("getpid", "ns", variants[v], &mut getpid[v]);
     }
     for v in 1..variants.len() {
         report("install", "µs", variants[v], &mut install[v]);
+    }
+    for v in 1..variants.len() {
+        if !nnp[v].is_empty() {
+            report("  no_new_privs", "µs", variants[v], &mut nnp[v]);
+            report("  seccomp(2)", "µs", variants[v], &mut filter[v]);
+        }
     }
 }

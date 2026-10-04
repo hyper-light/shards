@@ -1,0 +1,31 @@
+name: seccomp search
+
+# What a seccomp filter's layout costs the syscalls it checks, and what an install of a
+# filter is made of, on x86_64, where shards-vm confines itself
+# (docs/research/measurements/seccomp-search, PM M107, review 1.22). Runs when the
+# experiment changes, or when asked.
+on:
+  push:
+    paths:
+      - docs/research/measurements/seccomp-search/**
+      - .github/workflows/seccomp-search.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.0 # keep in sync with rust-toolchain.toml
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install "$TOOLCHAIN" --profile minimal
+      - run: uname -a && nproc && grep -m1 'model name' /proc/cpuinfo && uptime
+      - run: docs/research/measurements/seccomp-search/run.sh 200 "${GITHUB_SHA::7}"
+      - name: An install, by kernel function
+        run: sudo docs/research/measurements/seccomp-search/trace.sh docs/research/measurements/seccomp-search/target/release/seccomp-search 5
