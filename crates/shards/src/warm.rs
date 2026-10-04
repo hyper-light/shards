@@ -68,8 +68,12 @@ fn release_ports() {
     if shards_ipc::send(release, kind::UNPUBLISH, &[], &[]).is_err() {
         return;
     }
-    let _ = release.set_read_timeout(Some(std::time::Duration::from_secs(1)));
-    let _ = shards_ipc::recv(release);
+    // Bounded by poll(2), not a socket option: the VM process's seccomp filter refuses
+    // setsockopt(2) (confine.rs).
+    let _ = shards_ipc::recv_by(
+        release,
+        std::time::Instant::now() + std::time::Duration::from_secs(1),
+    );
 }
 
 fn daemon_socket(fd: RawFd) -> Result<UnixStream, String> {
