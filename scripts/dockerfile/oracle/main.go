@@ -25,6 +25,7 @@ import (
 	"unicode"
 
 	"github.com/docker/go-units"
+	"github.com/tonistiigi/go-csvvalue"
 	"github.com/moby/patternmatcher"
 	"github.com/moby/patternmatcher/ignorefile"
 	"github.com/moby/buildkit/client/llb/sourceresolver"
@@ -365,6 +366,29 @@ type planOpts struct {
 	Target    string            `json:"target"`
 	Labels    map[string]string `json:"labels"`
 	Hostname  string            `json:"hostname"`
+	// The frontend's `ulimit` option, as buildx sends --ulimit's values.
+	Ulimit string `json:"ulimit"`
+}
+
+// parseUlimits reads the frontend's `ulimit` option as dockerui's own (unexported)
+// parseUlimits does: CSV fields, each read by go-units.
+func parseUlimits(v string) ([]*pb.Ulimit, error) {
+	if v == "" {
+		return nil, nil
+	}
+	fields, err := csvvalue.Fields(v, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*pb.Ulimit, 0)
+	for _, field := range fields {
+		u, err := units.ParseUlimit(field)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, &pb.Ulimit{Name: u.Name, Soft: u.Soft, Hard: u.Hard})
+	}
+	return out, nil
 }
 
 // What BuildKit's Dockerfile2LLB plans for a file: every operation of its graph, in an
@@ -382,6 +406,10 @@ func planFile(root, rel string, images resolver) map[string]any {
 			panic(err)
 		}
 	}
+	ulimits, err := parseUlimits(opts.Ulimit)
+	if err != nil {
+		panic(err)
+	}
 	var warnings []string
 	platform := ocispecs.Platform{OS: "linux", Architecture: "amd64"}
 	caps := pb.Caps.CapSet(pb.Caps.All())
@@ -391,6 +419,7 @@ func planFile(root, rel string, images resolver) map[string]any {
 			Target:         opts.Target,
 			Labels:         opts.Labels,
 			Hostname:       opts.Hostname,
+			Ulimits:        ulimits,
 			BuildPlatforms: []ocispecs.Platform{platform},
 		},
 		TargetPlatform: &platform,

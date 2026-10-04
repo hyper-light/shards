@@ -1967,11 +1967,23 @@ microVM rather than a container on the build host's kernel.
   the differ writes as BuildKit's (the `RUN` E2E test, and every `RUN` of a real
   Dockerfile compared entry by entry, `scripts/build/realworld`).
 - **Better than the reference where it can be.** Every step is a VM's, not the build
-  host's: `--security=insecure` grants privilege inside the VM alone. A guest's change
-  stream is exact, so nothing diffs the lower tree.
+  host's: `--security=insecure` grants privilege inside the VM alone, so `--allow
+  security.insecure` (and `network.host`) grants it on the client's word, where BuildKit's
+  daemon must also be set up to (`entitlements.WhiteList`, "not allowed by build daemon
+  configuration"): the daemon's gate guards a host the builder VM does not share. A
+  guest's change stream is exact, so nothing diffs the lower tree.
+- **The build's secrets and limits** (`--secret`, `--ulimit`; shards_cmdline::buildflags,
+  held to buildx's answers by crates/cmdline/tests/buildx.rs, and to BuildKit's plans by
+  the corpus). Secrets are read once, as the build starts, so every step sees one value,
+  where BuildKit reads one each time a step asks; held in the client's memory alone and
+  overwritten when dropped; as large as a step's frame carries (1 MiB,
+  `shards_abi::run::MAX_PAYLOAD`), where BuildKit's gRPC session caps them at 500 KiB; and
+  mounted on a tmpfs of their own, in no layer. `--ulimit` takes `as` too, which go-units
+  refuses for the way Docker starts a container; every RUN takes the limits, as
+  Dockerfile2LLB's AddUlimit gives them, the run alone.
 - **Not yet as BuildKit:** a step's network is its own loopback until the guest has a
-  network (D31); BuildKit's seccomp profile; caches kept past one build; secrets and ssh
-  from the client; memory plugged as a build needs it (PM M82: a builder pays about 21
+  network (D31); BuildKit's seccomp profile; caches kept past one build; ssh from the
+  client; memory plugged as a build needs it (PM M82: a builder pays about 21
   MiB and 4 ms per GiB of guest memory, and takes half the host's, as Docker Desktop's VM
   has). Each is an item of AGENTFILE_ARCH.md §11.
 

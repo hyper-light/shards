@@ -710,16 +710,25 @@ pub struct RunOp<'o> {
     pub mounts: &'o [shards_dockerfile::llb::OpMount],
     pub network: shards_dockerfile::llb::NetMode,
     pub security: shards_dockerfile::llb::Security,
-    /// Secrets as variables: name, secret id, whether it may be missing.
+    /// Secrets as variables: secret id, the variable's name, whether it may be missing (as
+    /// the plan gives them, `pb.SecretEnv`'s order).
     pub secret_env: &'o [(Vec<u8>, Vec<u8>, bool)],
+    /// The build's secrets, by id, read as it began (`--secret`).
+    pub secrets: &'o std::collections::BTreeMap<String, shards_cmdline::buildflags::SecretBytes>,
     /// `--allow security.insecure` and `--allow network.host`.
     pub insecure: bool,
     pub network_host: bool,
 }
 
+/// Secret `id`'s bytes, if the build was given it.
+fn secret<'s>(op: &'s RunOp<'_>, id: &[u8]) -> Option<&'s [u8]> {
+    let id = std::str::from_utf8(id).ok()?;
+    op.secrets.get(id).map(|s| s.bytes())
+}
+
 /// Linux's resource numbers, the same on every architecture shards runs, by the names
 /// `--ulimit` takes (client/llb/exec.go).
-const RLIMITS: [(&str, u32); 15] = [
+const RLIMITS: [(&str, u32); 16] = [
     ("cpu", 0),
     ("fsize", 1),
     ("data", 2),
@@ -735,6 +744,7 @@ const RLIMITS: [(&str, u32); 15] = [
     ("msgqueue", 12),
     ("nice", 13),
     ("rtprio", 14),
+    ("rttime", 15),
 ];
 
 impl Exec<'_> {
@@ -810,7 +820,13 @@ impl Exec<'_> {
             .iter()
             .find(|m| m.dest == b"/")
             .ok_or("a command with no root mount")?;
-        if op.mounts.iter().any(|m| m.dest != b"/" && m.output >= 0) {
+        // Only a bind mount has an output: a secret's, a cache's or a tmpfs's index is
+        // protobuf's default 0, which BuildKit's solver never reads (exec.go, Marshal).
+        if op
+            .mounts
+            .iter()
+            .any(|m| m.dest != b"/" && m.output >= 0 && matches!(m.kind, OpMountKind::Bind))
+        {
             return Err("a command's output other than its root".into());
         }
         let root = input(root_mount.input)?;
@@ -833,14 +849,15 @@ impl Exec<'_> {
             _ => shards_user::buildkit(b"", None, None),
         }
         .map_err(|e| fail(&e))?;
-        // Secrets as variables: none are given to a build yet, so a missing one is empty or,
-        // when required, an error (solver/llbsolver/ops/exec.go, loadSecretEnv).
+        // Secrets as variables: the build's, and a missing one empty or, when required, an
+        // error (solver/llbsolver/ops/exec.go, loadSecretEnv).
         let mut secrets = Vec::new();
-        for (name, id, optional) in op.secret_env {
-            if !optional {
-                return Err(format!("secret {}: not found", String::from_utf8_lossy(id)));
+        for (id, name, optional) in op.secret_env {
+            match secret(op, id) {
+                Some(value) => secrets.push((name.clone(), value.to_vec())),
+                None if *optional => secrets.push((name.clone(), Vec::new())),
+                None => return Err(format!("secret {}: not found", String::from_utf8_lossy(id))),
             }
-            secrets.push((name.clone(), Vec::new()));
         }
         let env = super::step::env(&p.env, p.proxy.as_ref(), &secrets);
         let env = shards_user::prepare_env(&env, user.uid, passwd.ok().flatten().as_deref())
@@ -895,12 +912,22 @@ impl Exec<'_> {
                     size: u64::try_from(*size).unwrap_or(0),
                     readonly: m.readonly,
                 },
-                OpMountKind::Secret { id, optional, .. } => {
-                    if *optional {
-                        continue;
-                    }
-                    return Err(format!("secret {}: not found", String::from_utf8_lossy(id)));
-                }
+                OpMountKind::Secret {
+                    id,
+                    uid,
+                    gid,
+                    mode,
+                    optional,
+                } => match secret(op, id) {
+                    Some(data) => Mount::Secret {
+                        data: data.to_vec(),
+                        mode: *mode,
+                        uid: *uid,
+                        gid: *gid,
+                    },
+                    None if *optional => continue,
+                    None => return Err(format!("secret {}: not found", String::from_utf8_lossy(id))),
+                },
                 OpMountKind::Ssh { id, optional, .. } => {
                     if *optional {
                         continue;
@@ -965,5 +992,26 @@ impl Exec<'_> {
             layer,
         };
         Ok(vec![self.commit(Some(root), fs, description, Some(origin))?])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every resource `--ulimit` takes is one the builder can set, by Linux's number for
+    /// it: go-units' names, and `as` (shards_cmdline::buildflags::ULIMITS).
+    #[test]
+    fn every_ulimit_names_a_resource() {
+        for name in shards_cmdline::buildflags::ULIMITS {
+            assert!(RLIMITS.iter().any(|&(n, _)| n == name), "{name}");
+        }
+        let mut numbers: Vec<u32> = RLIMITS.iter().map(|&(_, n)| n).collect();
+        numbers.sort_unstable();
+        assert_eq!(
+            numbers,
+            (0..16).collect::<Vec<_>>(),
+            "RLIMIT_CPU to RLIMIT_RTTIME, once each"
+        );
     }
 }

@@ -101,10 +101,10 @@ impl Drop for SecretBytes {
 /// a file or a variable is the variable of its id if there is one, else the file of that
 /// name, as BuildKit's store finds it; a variable's value is empty if unset. A file must
 /// be there, and no secret may hold more than `max` bytes, what a build step can carry.
-/// `env` is the client's environment.
+/// `env` is the client's environment, its values' bytes as they are.
 pub fn store(
     secrets: Vec<Secret>,
-    env: &dyn Fn(&str) -> Option<String>,
+    env: &dyn Fn(&str) -> Option<Vec<u8>>,
     max: u64,
 ) -> Result<BTreeMap<String, SecretBytes>, String> {
     let mut store = BTreeMap::new();
@@ -132,7 +132,7 @@ pub fn store(
             }
             None => {
                 let name = if s.env.is_empty() { &s.id } else { &s.env };
-                env(name).unwrap_or_default().into_bytes()
+                env(name).unwrap_or_default()
             }
         };
         if bytes.len() as u64 > max {

@@ -658,6 +658,24 @@ fn op_v(op: &shards_dockerfile::llb::Op, md: &shards_dockerfile::llb::Meta, orde
                 m.insert("proxy_env".into(), Value::Object(pe));
             }
             put(&mut m, "hostname", ustr(&process.hostname));
+            if !process.ulimits.is_empty() {
+                // protojson: zero fields left out, 64-bit integers as strings.
+                let us = process
+                    .ulimits
+                    .iter()
+                    .map(|u| {
+                        let mut o = serde_json::Map::new();
+                        put(&mut o, "Name", ustr(&u.name));
+                        for (k, v) in [("Soft", u.soft), ("Hard", u.hard)] {
+                            if v != 0 {
+                                o.insert(k.into(), Value::String(v.to_string()));
+                            }
+                        }
+                        Value::Object(o)
+                    })
+                    .collect();
+                m.insert("ulimit".into(), Value::Array(us));
+            }
             put(&mut m, "cgroupParent", ustr(&process.cgroup_parent));
             m.insert("removeMountStubsRecursive".into(), Value::Bool(true));
             let mut e = serde_json::Map::new();
@@ -964,6 +982,25 @@ fn plans_are_buildkits() {
                 .unwrap_or_default()
                 .as_bytes()
                 .to_vec(),
+            ulimits: opts_v["ulimit"]
+                .as_str()
+                .filter(|v| !v.is_empty())
+                .map(|v| {
+                    shards_cmdline::go::csv_fields(v.as_bytes())
+                        .unwrap()
+                        .iter()
+                        .map(|f| {
+                            let u = shards_cmdline::buildflags::parse_ulimit(std::str::from_utf8(f).unwrap())
+                                .unwrap();
+                            shards_dockerfile::llb::Ulimit {
+                                name: u.name.into_bytes(),
+                                soft: u.soft,
+                                hard: u.hard,
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             multi_platform: false,
             context_id: b"*".to_vec(),
             excludes: Vec::new(),

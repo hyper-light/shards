@@ -18143,6 +18143,122 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/run-ulimit.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN echo zero\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo zero\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"first\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS first\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN echo one\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo one\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN echo two\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo two\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      3,
+      3
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/run.Dockerfile",
   "meta_args": null,
   "stages": [

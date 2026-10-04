@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+use shards_cmdline::buildflags;
 use shards_cmdline::commands::BUILD;
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_dockerfile::export::{self, Layer};
@@ -51,7 +52,7 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
             Err(a) => return failed(&format!("{a:?} is not UTF-8")),
         }
     }
-    let parsed = match flags::parse(&BUILD, PATH, &argv, &|_, value| Ok(value.to_string())) {
+    let parsed = match flags::parse(&BUILD, PATH, &argv, &buildflags::validate) {
         Outcome::Run(parsed) => parsed,
         Outcome::Help { notices } => {
             let _ = write!(std::io::stdout(), "{notices}{}", flags::help(&BUILD, PATH, 80));
@@ -798,6 +799,24 @@ fn excerpt(file: &str, text: &[u8], ranges: &[(usize, usize)]) -> String {
 
 fn run(parsed: &Parsed) -> Result<(), String> {
     crate::phase("start");
+    // What the build is given, in the order buildx's runBuild meets it: its secrets, read
+    // now and once, each as large as a step carries; then its entitlements; its ulimits
+    // were read with its flags (shards_cmdline::buildflags).
+    let env = |name: &str| std::env::var_os(name).map(os_bytes);
+    let secrets = buildflags::store(
+        buildflags::parse_secrets(parsed.many("secret"))?,
+        &env,
+        u64::from(shards_abi::run::MAX_PAYLOAD),
+    )?;
+    let allowed = buildflags::parse_entitlements(parsed.many("allow"))?;
+    let ulimits: Vec<shards_dockerfile::llb::Ulimit> = buildflags::ulimits(parsed.many("ulimit"))?
+        .into_iter()
+        .map(|u| shards_dockerfile::llb::Ulimit {
+            name: u.name.into_bytes(),
+            soft: u.soft,
+            hard: u.hard,
+        })
+        .collect();
     let context_arg = parsed.args.first().cloned().unwrap_or_default();
     if context_arg == "-" || context_arg.contains("://") || context_arg.starts_with("git@") {
         return Err(format!(
@@ -896,6 +915,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         target: parsed.string("target").as_bytes().to_vec(),
         labels: build_args(parsed.many("label"), false),
         hostname: Vec::new(),
+        ulimits,
         multi_platform: false,
         context_id: format!("shards-{}", std::process::id()).into_bytes(),
         excludes,
@@ -1203,10 +1223,12 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                     network: *network,
                     security: *security,
                     secret_env,
-                    // `--allow` is not served yet: no entitlement is granted, as BuildKit
-                    // grants none without it.
-                    insecure: false,
-                    network_host: false,
+                    secrets: &secrets,
+                    // Granted on `--allow` alone: what BuildKit's daemon must be set up to
+                    // grant as well, a builder that is a VM of the build's own grants with
+                    // no host to guard (docs/design/architecture.md D33).
+                    insecure: allowed.grants(buildflags::SECURITY_INSECURE),
+                    network_host: allowed.grants(buildflags::NETWORK_HOST),
                 };
                 let mut log = StepLog::new(log_limits);
                 let r = exec.run(b, &inputs, &op, &name, &mut |which, bytes| {
@@ -1448,6 +1470,18 @@ fn print_warnings(warnings: &[shards_dockerfile::lint::Warning], quiet: bool) {
         out.push_str(&format!(" - {short}\n"));
     }
     let _ = write!(std::io::stderr(), "{out}");
+}
+
+/// An environment variable's value, its bytes as they are.
+fn os_bytes(v: std::ffi::OsString) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        std::os::unix::ffi::OsStringExt::into_vec(v)
+    }
+    #[cfg(not(unix))]
+    {
+        v.to_string_lossy().into_owned().into_bytes()
+    }
 }
 
 #[cfg(test)]

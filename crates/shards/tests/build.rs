@@ -309,6 +309,121 @@ fn run_steps_run_in_a_builder_as_buildkit_runs_them() {
     );
 }
 
+/// A build's secrets, ulimits and entitlements reach its `RUN` steps as BuildKit's do: a
+/// secret mounted at /run/secrets/ID, mode 0400 and root's, or where and as the step asks,
+/// or in a variable, and an optional one missing leaves nothing; every step takes
+/// `--ulimit`'s limits, `as` too, which buildx refuses; `--security=insecure` runs with
+/// every capability once `--allow security.insecure` grants it, and fails without. No
+/// secret is left in the image, and a required one not given fails the build.
+#[test]
+fn run_steps_take_the_builds_secrets_ulimits_and_entitlements() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-given-home");
+    let secrets = TempDir::new("build-given-secrets");
+    let token = secrets.join("token");
+    std::fs::write(&token, "s3cret").unwrap();
+    let ctx = context(
+        "build-given-ctx",
+        &format!(
+            "FROM {image}\n\
+             USER root\n\
+             RUN --mount=type=secret,id=tok [\"/bin/testguest\", \"stat\", \"/run/secrets/tok\"]\n\
+             RUN --mount=type=secret,id=tok,target=/s,mode=0440,uid=7,gid=8 [\"/bin/testguest\", \"stat\", \"/s\"]\n\
+             RUN --mount=type=secret,id=var,env=TOKEN --mount=type=secret,id=gone,required=false --mount=type=secret,id=gone,env=GONE,required=false [\"/bin/testguest\", \"report\"]\n\
+             RUN --security=insecure [\"/bin/testguest\", \"report\"]\n\
+             CMD [\"stat\", \"/run/secrets/tok\", \"/s\"]\n"
+        ),
+    );
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+        ("SHARDS_TEST_TOKEN", "from the environment".as_ref()),
+    ];
+    let secret = format!("id=tok,src={}", token.display());
+    let args = [
+        "--progress=plain",
+        "--secret",
+        &secret,
+        "--secret",
+        "id=var,env=SHARDS_TEST_TOKEN",
+        "--ulimit",
+        "nofile=1024:2048",
+        "--ulimit",
+        "as=4294967296",
+        "--allow",
+        "security.insecure",
+        "-t",
+        "given:1",
+        ctx.to_str().unwrap(),
+    ];
+    let built = run_shards_env(&["build"], &args, &env, TIMEOUT);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
+    assert_eq!(built.status, Some(0), "{shown}");
+    for line in [
+        " /run/secrets/tok file 400 0:0 6\n",
+        " = s3cret\n",
+        " /s file 440 7:8 6\n",
+        " env TOKEN=from the environment\n",
+        // An optional secret not given: its variable empty, as loadSecretEnv sets it.
+        " env GONE=\n",
+        " rlimit-nofile 1024:2048\n",
+        " rlimit-as 4294967296:4294967296\n",
+    ] {
+        assert!(built.stderr.contains(line), "{line:?}\n{shown}");
+    }
+    let reports = step_reports(&built.stderr);
+    assert_eq!(reports.len(), 4, "{shown}");
+    let caps = |r: &std::collections::BTreeMap<String, String>| r.get("capeff").cloned().unwrap_or_default();
+    assert_eq!(
+        caps(&reports[2]),
+        "00000000a80425fb",
+        "a step as BuildKit runs it\n{shown}"
+    );
+    assert_ne!(
+        caps(&reports[3]),
+        "00000000a80425fb",
+        "an insecure step, every capability\n{shown}"
+    );
+    assert!(!caps(&reports[3]).is_empty(), "{shown}");
+
+    // Nothing of the secrets in the image.
+    let ran = run_shards_env(&["run"], &["--rm", "given:1"], &env, TIMEOUT);
+    assert_eq!(ran.status, Some(1), "{}", ran.stderr);
+    assert!(ran.stdout.contains("/run/secrets/tok missing"), "{}", ran.stdout);
+    assert!(ran.stdout.contains("/s missing"), "{}", ran.stdout);
+
+    // Without the grant, an insecure step fails; without a required secret, its step.
+    let insecure = context(
+        "build-given-insecure-ctx",
+        &format!("FROM {image}\nRUN --security=insecure [\"/bin/testguest\", \"exit\", \"0\"]\n"),
+    );
+    let failed = run_shards_env(&["build"], &[insecure.to_str().unwrap()], &env, TIMEOUT);
+    assert_eq!(failed.status, Some(1), "{}", failed.stderr);
+    assert!(
+        failed.stderr.contains("security.insecure is not allowed"),
+        "{}",
+        failed.stderr
+    );
+    let required = context(
+        "build-given-required-ctx",
+        &format!(
+            "FROM {image}\nRUN --mount=type=secret,id=tok,required=true [\"/bin/testguest\", \"exit\", \"0\"]\n"
+        ),
+    );
+    let failed = run_shards_env(&["build"], &[required.to_str().unwrap()], &env, TIMEOUT);
+    assert_eq!(failed.status, Some(1), "{}", failed.stderr);
+    assert!(
+        failed.stderr.contains("secret tok: not found"),
+        "{}",
+        failed.stderr
+    );
+}
+
 /// A `RUN` step reaches the network through its builder's network process, as BuildKit's
 /// steps reach their host's: here a server on this host, at the host's own address (its
 /// loopback and the gateway are no guest's to reach). With `--network=none` it reaches

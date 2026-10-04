@@ -257,6 +257,28 @@ fn report() -> i32 {
             out.push_str(&format!("{} {}\n", k.to_lowercase(), v.trim()));
         }
     }
+    // Its resource limits, as `ulimit` and `--ulimit` name them: soft and hard, -1 for
+    // none.
+    for (name, resource) in [
+        ("nofile", libc::RLIMIT_NOFILE),
+        ("core", libc::RLIMIT_CORE),
+        ("as", libc::RLIMIT_AS),
+        ("rttime", libc::RLIMIT_RTTIME),
+    ] {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit(2) writing into a limit of ours.
+        if unsafe { libc::getrlimit(resource, &mut limit) } == 0 {
+            let shown = |v: libc::rlim_t| if v == libc::RLIM_INFINITY { -1 } else { v as i64 };
+            out.push_str(&format!(
+                "rlimit-{name} {}:{}\n",
+                shown(limit.rlim_cur),
+                shown(limit.rlim_max)
+            ));
+        }
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())

@@ -44,6 +44,8 @@ pub struct Options {
     pub target: Vec<u8>,
     pub labels: BTreeMap<Vec<u8>, Vec<u8>>,
     pub hostname: Vec<u8>,
+    /// The ulimits every RUN takes (the frontend's `ulimit` option, `--ulimit`'s).
+    pub ulimits: Vec<llb::Ulimit>,
     /// Whether progress names carry the platform, as for a multi-platform build.
     pub multi_platform: bool,
     /// The build context's `local.unique`.
@@ -2355,11 +2357,17 @@ impl Planner<'_> {
         };
         let shown = uppercase_cmd(&process_cmd_env(&lexer, &custom, &shown_env));
         let platform = ds.state.platform.clone();
+        let opts = self.opts;
         let ds = self.ds(d)?;
         let name = prefix_command(ds, &shown, multi.as_ref(), platform.as_ref(), &env);
         run.meta.description.insert(b"llb.customname".to_vec(), name);
-        let state = ds.state.clone();
-        let next = self.graph.run(&state, run);
+        // AddUlimit, an option of the run alone (dispatchRun): the stage's next state is
+        // its root mount's, which keeps none of it.
+        let mut state = ds.state.clone();
+        let kept = state.ulimits.clone();
+        state.ulimits.extend(opts.ulimits.iter().cloned());
+        let mut next = self.graph.run(&state, run);
+        next.ulimits = kept;
         let build_args = self
             .states
             .get(d)

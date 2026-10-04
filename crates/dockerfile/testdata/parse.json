@@ -11858,6 +11858,63 @@
   ]
  },
  {
+  "file": "corpus/plan/run-ulimit.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"first\\\")\\n(run \\\"echo zero\\\")\\n(from \\\"alpine\\\")\\n(run \\\"echo one\\\")\\n(run \\\"echo two\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"first\\\"\"",
+    "original": "\"FROM alpine AS first\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo zero\\\"\"",
+    "original": "\"RUN echo zero\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo one\\\"\"",
+    "original": "\"RUN echo one\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo two\\\"\"",
+    "original": "\"RUN echo two\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/run.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo one\\\")\\n(run \\\"echo\\\" \\\"two\\\")\\n(env \\\"X\\\" \\\"1\\\" \\\"=\\\")\\n(run \\\"echo $X\\\")\"",
