@@ -529,9 +529,15 @@ impl Bases<'_> {
         let pulled = match local {
             Some(p) => p,
             None => {
-                crate::pull::fetch(self.home, &reference, &|_: Event<'_>| {}, &|_| {}, None, &|k| {
-                    std::env::var(k).ok()
-                })
+                crate::pull::fetch(
+                    self.home,
+                    &reference,
+                    &image_platform::guest(),
+                    &|_: Event<'_>| {},
+                    &|_| {},
+                    None,
+                    &|k| std::env::var(k).ok(),
+                )
                 .map_err(fail)?
                 .0
             }

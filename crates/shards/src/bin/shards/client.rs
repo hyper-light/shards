@@ -222,29 +222,89 @@ pub fn container(home: &Path, daemon: &Path, command: &Command, fds: &[std::os::
         if let Err(e) = shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), fds) {
             return failed(&format!("asking the daemon: {e}"));
         }
-        loop {
-            match shards_ipc::recv(&conn) {
-                Ok(Some(m)) if m.kind == kind::OUT => {
-                    let _ = io::stdout().write_all(&m.payload);
-                }
-                Ok(Some(m)) if m.kind == kind::ERR => {
-                    let _ = io::stderr().write_all(&m.payload);
-                }
-                Ok(Some(m)) if m.kind == kind::END => {
-                    return m.payload.first().copied().unwrap_or(1);
-                }
-                Ok(Some(m)) if m.kind == kind::RESTART => break,
-                Ok(Some(_)) => {}
-                Ok(None) | Err(_) => {
-                    return failed(&format!(
-                        "the daemon hung up before it answered; see {}",
-                        log(home).display()
-                    ));
-                }
-            }
+        let answered = std::thread::scope(|scope| answer(scope, &conn, home, command.east_asian));
+        if let Some(status) = answered {
+            return status;
         }
     }
     failed("the daemon kept asking for a restart")
+}
+
+/// The daemon's answer on `conn`: its output, as it comes, and its status, or `None`
+/// when it asks for a restart. Steps of a pull, which the daemon sends a terminal, are
+/// shown by a display of their own (show.rs), on a thread of this `scope`; the daemon's
+/// text then goes through it, below its frame.
+fn answer<'s>(
+    scope: &'s std::thread::Scope<'s, '_>,
+    conn: &UnixStream,
+    home: &Path,
+    east_asian: bool,
+) -> Option<u8> {
+    use crate::show::{self, Shown};
+    let mut display: Option<std::sync::mpsc::Sender<Shown>> = None;
+    let mut refused = false;
+    let pass = |display: &Option<std::sync::mpsc::Sender<Shown>>, shown: Shown| match (display, shown) {
+        (Some(tx), shown) => {
+            let _ = tx.send(shown);
+        }
+        (None, Shown::Out(bytes)) => {
+            let _ = io::stdout().write_all(&bytes);
+        }
+        (None, Shown::Err(bytes)) => {
+            let _ = io::stderr().write_all(&bytes);
+        }
+        (None, Shown::Progress(_)) => {}
+    };
+    loop {
+        match shards_ipc::recv(conn) {
+            Ok(Some(m)) if m.kind == kind::PROGRESS => {
+                let Some(event) = shards_ipc::Progress::decode(&m.payload) else {
+                    continue;
+                };
+                if display.is_none() && !refused {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let env = |k: &str| std::env::var(k).ok();
+                    let pull = show::Pull::new(
+                        shards_tui::tokens_truecolor(&env),
+                        east_asian,
+                        shards_tui::motion::reduced(env),
+                    );
+                    let started = std::thread::Builder::new()
+                        .name("shards-show".into())
+                        .spawn_scoped(scope, move || {
+                            show::run(rx, pull, || {
+                                let (rows, cols) = crate::terminal::size(1);
+                                (usize::from(rows), usize::from(cols))
+                            })
+                        });
+                    match started {
+                        Ok(_) => display = Some(tx),
+                        // No thread to show it on: the steps go unshown, the rest is printed.
+                        Err(_) => refused = true,
+                    }
+                }
+                pass(&display, Shown::Progress(event));
+            }
+            Ok(Some(m)) if m.kind == kind::OUT => pass(&display, Shown::Out(m.payload)),
+            Ok(Some(m)) if m.kind == kind::ERR => pass(&display, Shown::Err(m.payload)),
+            Ok(Some(m)) if m.kind == kind::END => {
+                // The display ends with the channel, and the scope waits for it.
+                drop(display);
+                return Some(m.payload.first().copied().unwrap_or(1));
+            }
+            Ok(Some(m)) if m.kind == kind::RESTART => return None,
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => {
+                drop(display);
+                let _ = writeln!(
+                    io::stderr(),
+                    "shards: the daemon hung up before it answered; see {}",
+                    log(home).display()
+                );
+                return Some(NOT_RUN);
+            }
+        }
+    }
 }
 
 /// How long `stop` waits for the daemon to hand over the runs in hand and exit.

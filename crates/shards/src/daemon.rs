@@ -43,6 +43,7 @@ mod load;
 mod logs;
 mod network;
 mod publish;
+mod pull;
 mod push;
 mod record;
 mod refill;

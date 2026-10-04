@@ -42,6 +42,10 @@ const RESOLVE_ACCEPT: &str = "application/vnd.docker.distribution.manifest.v2+js
 /// How much of a refusal's body containerd reads for what the registry says
 /// (`remotes/errors.NewUnexpectedStatusErr`).
 const MAX_ERROR_BODY: u64 = 64000;
+/// The most a page of a repository's tags may hold: a bound against a registry that
+/// never ends one, where distribution's client reads all it is sent. Docker Hub sent
+/// library/python's 3,974 tags in one page of 81,819 bytes (2026-10-04).
+const MAX_TAGS_PAGE: u64 = 4 << 20;
 /// A download that stops this many times in a row without progress fails, as
 /// containerd's `httpReadSeeker` gives up.
 const MAX_STALLS: usize = 3;
@@ -351,6 +355,54 @@ impl Registry {
             let _ = (&mut get).take(MAX_ERROR_BODY).read_to_end(&mut body);
         }
         refusal.error(method, &body)
+    }
+
+    /// The repository's tags, as distribution's client lists them for `pull -a`
+    /// (registry/client/repository.go, `tags.All`): `tags/list`, then each page its
+    /// `Link` names, resolved against the page before, until one names none. A page that
+    /// names one already read is refused: it would never end.
+    pub fn tags(&self) -> Result<Vec<String>, Error> {
+        #[derive(serde::Deserialize)]
+        struct Page {
+            #[serde(default)]
+            tags: Option<Vec<String>>,
+        }
+        let mut url = self.base.join("tags/list")?;
+        let mut read = std::collections::HashSet::new();
+        let mut tags = Vec::new();
+        loop {
+            if !read.insert(url.as_str().to_string()) {
+                return Err(Error::new(format!(
+                    "{url}: the tags' pages name one another in a loop"
+                )));
+            }
+            let (mut response, _) = self.request("GET", &url, &[("Accept", "application/json")])?;
+            if !(200..300).contains(&response.status) {
+                return Err(unexpected("GET", response));
+            }
+            let next = response.header("link").map(|link| {
+                link.split(';')
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .trim_start_matches('<')
+                    .trim_end_matches('>')
+                    .to_string()
+            });
+            let mut body = Vec::new();
+            (&mut response).take(MAX_TAGS_PAGE + 1).read_to_end(&mut body)?;
+            if body.len() as u64 > MAX_TAGS_PAGE {
+                return Err(Error::new(format!(
+                    "{url}: a page of tags past {MAX_TAGS_PAGE} bytes"
+                )));
+            }
+            let page: Page = serde_json::from_slice(&body).map_err(|e| Error::new(format!("{url}: {e}")))?;
+            tags.extend(page.tags.unwrap_or_default());
+            match next.filter(|n| !n.is_empty()) {
+                Some(next) => url = url.join(&next)?,
+                None => return Ok(tags),
+            }
+        }
     }
 
     /// Resolves `reference` to a descriptor, as containerd's `Resolve` does:

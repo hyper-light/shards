@@ -50,6 +50,7 @@ shards-cmdline = { path = "../cmdline" }
 shards-dockerfile = { path = "../dockerfile" }
 shards-image = { path = "../image" }
 shards-ipc = { path = "../ipc" }
+shards-tui = { path = "../tui" }
 shards-registry = { path = "../registry" }
 shards-vmm = { path = "../vmm" }
 sha2 = "0.11"

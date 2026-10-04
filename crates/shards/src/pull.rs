@@ -1,12 +1,11 @@
-//! `shards pull IMAGE`: pulls an image as `docker pull` does (docs/design/architecture.md
-//! D19–D22) into this user's image store, and says what it did as `docker pull` says it.
+//! Pulling an image as `docker pull` does (docs/design/architecture.md D19–D22) into this
+//! user's image store: for `shards pull` and `shards run` (the daemon's), and what both
+//! share of the store and its limits.
 
-use std::ffi::OsString;
 use std::io::Write;
 use std::path::Path;
-use std::process::ExitCode;
 
-use shards_image::platform;
+use shards_image::platform::Target;
 use shards_image::reference::Reference;
 use shards_image::store::{Limits, Store};
 
@@ -15,44 +14,6 @@ use shards_registry::proxy::Proxies;
 use shards_registry::pull::{self, Event, Pulled};
 use shards_registry::registry::{self, Registry};
 use shards_registry::{certs, credentials, tls};
-
-const USAGE: &str = "usage: shards pull [-q] IMAGE
-  Pulls IMAGE as `docker pull` does: with the credentials `docker login` left, the
-  manifest for this host's guests, and every layer checked against its digests.
-  -q, --quiet: print only the image's name.
-  SHARDS_HOME: where images are kept, instead of shards in this user's data directory.";
-
-pub fn pull(args: impl Iterator<Item = OsString>) -> ExitCode {
-    let mut quiet = false;
-    let mut image = None;
-    for arg in args {
-        match arg.to_str() {
-            Some("-q" | "--quiet") => quiet = true,
-            Some("-h" | "--help") => {
-                let _ = writeln!(std::io::stdout(), "{USAGE}");
-                return ExitCode::SUCCESS;
-            }
-            Some(a) if !a.starts_with('-') && image.is_none() => image = Some(a.to_string()),
-            _ => return usage(&format!("unexpected argument {arg:?}")),
-        }
-    }
-    let Some(image) = image else {
-        return usage("an image is required");
-    };
-    match run(&image, quiet) {
-        Ok(()) => ExitCode::SUCCESS,
-        // As `docker pull` says what failed: the daemon's words, as they are.
-        Err(e) => {
-            let _ = writeln!(std::io::stderr(), "{e}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn usage(message: &str) -> ExitCode {
-    let _ = writeln!(std::io::stderr(), "shards: {message}\n{USAGE}");
-    ExitCode::from(2)
-}
 
 /// What building an image's root filesystem may take (audit A10; D18). By default nothing
 /// but the machine bounds it, as nothing bounds containerd's unpacking or a BuildKit build
@@ -93,52 +54,6 @@ pub fn store(home: &Path) -> Result<Store, String> {
     Store::open(&root).map_err(|e| e.to_string())
 }
 
-/// Pulls `image`, printing `docker pull`'s lines unless `quiet`.
-pub fn run(image: &str, quiet: bool) -> Result<(), String> {
-    let reference = Reference::parse(image).map_err(|e| e.to_string())?;
-    let say = |line: &str| {
-        if !quiet {
-            let _ = writeln!(std::io::stdout(), "{line}");
-        }
-    };
-    // `docker pull` names a default tag when the image named neither a tag nor a digest.
-    let last = image.rsplit('/').next().unwrap_or_default();
-    if !last.contains(':') && !image.contains('@') {
-        say("Using default tag: latest");
-    }
-    let downloaded = std::sync::atomic::AtomicBool::new(false);
-    let home = shards_ipc::home()?;
-    let pulled = fetch(
-        &home,
-        &reference,
-        &|event| match event {
-            Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
-            Event::Layer(d) => {
-                downloaded.store(true, std::sync::atomic::Ordering::Relaxed);
-                say(&format!("{}: Download complete", short(&d.to_string())));
-            }
-            Event::Manifest(..) | Event::Progress(..) | Event::Building | Event::Pulling => {}
-        },
-        &|line| say(line),
-        None,
-        &|k| std::env::var(k).ok(),
-    )
-    .map_err(|e| format!("Error response from daemon: {e}"))?;
-    say(&format!("Digest: {}", pulled.0.resolved));
-    // Docker's: up to date when the tag already named this image, or when a digest's
-    // content was all here.
-    let up_to_date =
-        pulled.1 || (reference.digest.is_some() && !downloaded.load(std::sync::atomic::Ordering::Relaxed));
-    let status = if up_to_date {
-        "Image is up to date for"
-    } else {
-        "Downloaded newer image for"
-    };
-    say(&format!("Status: {status} {}", reference.familiar()));
-    let _ = writeln!(std::io::stdout(), "{reference}");
-    Ok(())
-}
-
 /// A registry to push `reference`'s repository to, with the credentials and TLS a pull
 /// of it would use, and pull access to `mount`, a repository of the same registry its
 /// blobs may be mounted from.
@@ -174,12 +89,49 @@ pub fn registry_for_push(
 pub fn fetch(
     home: &Path,
     reference: &Reference,
+    targets: &[Target],
     report: &(dyn Fn(Event<'_>) + Sync),
     say: &(dyn Fn(&str) + Sync),
     cancel: Option<&Cancel>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(Pulled, bool), String> {
     let store = store(home)?;
+    let registry = registry(reference, cancel, env)?;
+    // dockerd names a digest's pull by the whole reference, a tag's by the tag.
+    let object = match &reference.digest {
+        Some(_) => reference.to_string(),
+        None => reference.tag.clone().unwrap_or_else(|| "latest".into()),
+    };
+    // Said once the registry has answered for the reference, as dockerd says it.
+    let report = |event: Event<'_>| match event {
+        Event::Pulling => say(&format!("{object}: Pulling from {}", reference.path)),
+        event => report(event),
+    };
+    let before = store
+        .tagged(&reference.to_string())
+        .and_then(|d| d.map(|d| d.digest()).transpose())
+        .map_err(|e| e.to_string())?;
+    // Layers unpack without a cap, as Docker's do; each is checked against its DiffID.
+    let limits = limits()?;
+    let pulled =
+        pull::pull(&registry, &store, reference, targets, &limits, &report).map_err(|e| e.to_string())?;
+    let same = before.as_ref() == Some(&pulled.manifest);
+    // What the reference named before may be needed by nothing now: the daemon collects
+    // it (daemon.rs, `collect_garbage`).
+    if !same {
+        let due = collect_due(home);
+        std::fs::write(&due, b"").map_err(|e| format!("{}: {e}", due.display()))?;
+    }
+    Ok((pulled, same))
+}
+
+/// A registry to pull `reference`'s repository from, until `cancel`, if given, is
+/// cancelled, with the credentials, certificates and proxies `env` finds.
+pub fn registry(
+    reference: &Reference,
+    cancel: Option<&Cancel>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Registry, String> {
     let (credentials, warnings) = credentials::lookup(&reference.domain, env).map_err(|e| e.to_string())?;
     for warning in warnings {
         let _ = writeln!(std::io::stderr(), "WARNING: {warning}");
@@ -197,36 +149,12 @@ pub fn fetch(
         None => http,
     }
     .with_proxies(Proxies::from_env(env));
-    let registry = Registry::new(http, reference, credentials).map_err(|e| e.to_string())?;
-    let object = match &reference.digest {
-        Some(d) => d.to_string(),
-        None => reference.tag.clone().unwrap_or_else(|| "latest".into()),
-    };
-    // Said once the registry has answered for the reference, as dockerd says it.
-    let report = |event: Event<'_>| match event {
-        Event::Pulling => say(&format!("{object}: Pulling from {}", reference.path)),
-        event => report(event),
-    };
-    let before = store
-        .tagged(&reference.to_string())
-        .and_then(|d| d.map(|d| d.digest()).transpose())
-        .map_err(|e| e.to_string())?;
-    // Layers unpack without a cap, as Docker's do; each is checked against its DiffID.
-    let limits = limits()?;
-    let pulled = pull::pull(&registry, &store, reference, &platform::guest(), &limits, &report)
-        .map_err(|e| e.to_string())?;
-    let same = before.as_ref() == Some(&pulled.manifest);
-    // What the reference named before may be needed by nothing now: the daemon collects
-    // it (daemon.rs, `collect_garbage`).
-    if !same {
-        let due = collect_due(home);
-        std::fs::write(&due, b"").map_err(|e| format!("{}: {e}", due.display()))?;
-    }
-    Ok((pulled, same))
+    Registry::new(http, reference, credentials).map_err(|e| e.to_string())
 }
 
 /// Docker's short layer ID: the digest's first 12 hex digits.
-fn short(digest: &str) -> &str {
+#[cfg(unix)]
+pub(crate) fn short(digest: &str) -> &str {
     let hex = digest.split_once(':').map_or(digest, |(_, h)| h);
     hex.get(..12).unwrap_or(hex)
 }

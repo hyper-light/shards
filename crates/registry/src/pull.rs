@@ -36,8 +36,9 @@ pub struct Pulled {
     /// The manifest for our guests' platform.
     pub manifest: Digest,
     pub config: ImageConfig,
-    /// The image's EROFS root filesystem.
-    pub rootfs: PathBuf,
+    /// The image's EROFS root filesystem, built when our guests run its platform: an
+    /// image of another is stored for `push` and `save` alone.
+    pub rootfs: Option<PathBuf>,
 }
 
 /// What a pull reports as it goes.
@@ -196,7 +197,20 @@ fn pulled(
         let attesting = std::thread::Builder::new()
             .name("shards-attest".into())
             .spawn_scoped(scope, attest);
-        let built = build(registry, store, &manifest, &layers, limits, report);
+        let ours = platform::runs(
+            &oci::Platform {
+                os: config.os.clone(),
+                architecture: config.architecture.clone(),
+                variant: config.variant.clone(),
+                ..oci::Platform::default()
+            },
+            &platform::guest(),
+        );
+        let built = if ours {
+            build(registry, store, &manifest, &layers, limits, report).map(Some)
+        } else {
+            fetch_layers(registry, store, &manifest, limits, report).map(|()| None)
+        };
         let attested = match attesting {
             Ok(thread) => thread
                 .join()
@@ -365,7 +379,7 @@ pub fn unpack(
         resolved,
         manifest: manifest_digest,
         config,
-        rootfs,
+        rootfs: Some(rootfs),
     })
 }
 
@@ -851,7 +865,7 @@ mod tests {
             events.lock().unwrap().push(event);
         })
         .unwrap();
-        let image_bytes = std::fs::read(&pulled.rootfs).unwrap();
+        let image_bytes = std::fs::read(pulled.rootfs.as_ref().unwrap()).unwrap();
         assert_eq!(
             u32::from_le_bytes(image_bytes[1024..1028].try_into().unwrap()),
             0xE0F5_E1E2
@@ -1250,7 +1264,7 @@ mod tests {
         let middle = changed.len() / 2;
         changed[middle] ^= 0xff;
         std::fs::write(&layer_path, &changed).unwrap();
-        std::fs::remove_file(&pulled.rootfs).unwrap();
+        std::fs::remove_file(pulled.rootfs.as_ref().unwrap()).unwrap();
         let mended = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
         assert_eq!(mended.rootfs, pulled.rootfs);
         assert_eq!(std::fs::read(&layer_path).unwrap(), original, "the layer mended");

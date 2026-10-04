@@ -300,6 +300,85 @@
   },
   {
     "argv": [
+      "pull",
+      "--help"
+    ],
+    "stdout": "Usage:  shards pull [OPTIONS] NAME[:TAG|@DIGEST]\n\nDownload an image from a registry\n\nAliases:\n  shards image pull, shards pull\n\nOptions:\n  -a, --all-tags          Download all tagged images in the repository\n      --platform string   Set platform if server is multi-platform capable\n  -q, --quiet             Suppress verbose output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "pull"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards pull' requires 1 argument\n\nUsage:  shards pull [OPTIONS] NAME[:TAG|@DIGEST]\n\nRun 'shards pull --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "pull",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards pull' requires 1 argument\n\nUsage:  shards pull [OPTIONS] NAME[:TAG|@DIGEST]\n\nRun 'shards pull --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "image",
+      "pull",
+      "-a",
+      "-q",
+      "x"
+    ],
+    "stdout": "RUN --all-tags=true --quiet=true \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "pull",
+      "--platform",
+      "linux/arm64",
+      "x"
+    ],
+    "stdout": "RUN --platform=linux/arm64 \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "pull",
+      "--platform"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --platform\n\nUsage:  shards pull [OPTIONS] NAME[:TAG|@DIGEST]\n\nRun 'shards pull --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "pull",
+      "--disable-content-trust",
+      "x"
+    ],
+    "stdout": "Flag --disable-content-trust has been deprecated, support for docker content trust was removed\nRUN --disable-content-trust=true \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "pull",
+      "--help"
+    ],
+    "stdout": "Usage:  shards image pull [OPTIONS] NAME[:TAG|@DIGEST]\n\nDownload an image from a registry\n\nAliases:\n  shards image pull, shards pull\n\nOptions:\n  -a, --all-tags          Download all tagged images in the repository\n      --platform string   Set platform if server is multi-platform capable\n  -q, --quiet             Suppress verbose output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "push",
       "--help"
     ],
@@ -345,6 +424,16 @@
       "x"
     ],
     "stdout": "RUN --platform=linux/arm64 \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "push",
+      "--disable-content-trust=false",
+      "x"
+    ],
+    "stdout": "Flag --disable-content-trust has been deprecated, support for docker content trust was removed\nRUN --disable-content-trust=false \"x\"\n",
     "stderr": "",
     "status": 0
   },

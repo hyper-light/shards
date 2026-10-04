@@ -1,0 +1,11 @@
+[package]
+name = "shards-tui"
+version = "0.1.0"
+description = "shards on a terminal: hyperlight's colours, motion and the shards mark, drawn in place"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

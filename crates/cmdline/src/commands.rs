@@ -409,6 +409,47 @@ platform - l - -",
     error_prefix: "",
 };
 
+/// `shards pull`. Beyond docker/cli's flags, `--output-agentfile` writes the image's
+/// Agentfile (docs/architecture/AGENTFILE_ARCH.md §10).
+pub static PULL: Command = Command {
+    usage: "[OPTIONS] NAME[:TAG|@DIGEST]",
+    about: "Download an image from a registry",
+    aliases: "shards image pull, shards pull",
+    args: Args::Exactly(1),
+    flags: &[
+        Flag::bool(
+            "all-tags",
+            Some(b'a'),
+            "Download all tagged images in the repository",
+        ),
+        Flag::bool(
+            "disable-content-trust",
+            None,
+            "Skip image verification (deprecated)",
+        )
+        .defaulting("true")
+        .deprecated("support for docker content trust was removed"),
+        HELP,
+        Flag::string(
+            "output-agentfile",
+            None,
+            "",
+            "Write the image's Agentfile to this file, or into this directory",
+        )
+        .extension(),
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Set platform if server is multi-platform capable",
+        ),
+        Flag::bool("quiet", Some(b'q'), "Suppress verbose output"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards push`.
 pub static PUSH: Command = Command {
     usage: "[OPTIONS] NAME[:TAG]",
@@ -421,11 +462,17 @@ pub static PUSH: Command = Command {
             Some(b'a'),
             "Push all tags of an image to the repository",
         ),
+        Flag::bool(
+            "disable-content-trust",
+            None,
+            "Skip image verification (deprecated)",
+        )
+        .defaulting("true")
+        .deprecated("support for docker content trust was removed"),
         HELP,
         Flag::bool("quiet", Some(b'q'), "Suppress verbose output"),
     ],
     unserved: "\
-disable-content-trust - b true -\n\
 platform - s - -",
     interspersed: true,
     error_prefix: "",
@@ -737,6 +784,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["tag", ..] => (&TAG, "shards tag", 1),
         ["save", ..] => (&SAVE, "shards save", 1),
         ["load", ..] => (&LOAD, "shards load", 1),
+        ["pull", ..] => (&PULL, "shards pull", 1),
+        ["image", "pull", ..] => (&PULL, "shards image pull", 2),
         ["push", ..] => (&PUSH, "shards push", 1),
         ["image", "push", ..] => (&PUSH, "shards image push", 2),
         ["image", "load", ..] => (&LOAD, "shards image load", 2),

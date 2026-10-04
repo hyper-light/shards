@@ -150,6 +150,10 @@ pub mod kind {
     /// `ContainerCreate` returns (docker/cli cmd/docker/docker.go, notifyContext); from
     /// then on, the client passes signals on to the command.
     pub const CREATED: u8 = 28;
+    /// Daemon → client on a colour terminal: how a pull goes, one
+    /// [`Progress`](super::Progress) a message, for the client to show as it likes, where
+    /// a client that is not on a terminal gets `docker pull`'s lines.
+    pub const PROGRESS: u8 = 29;
 }
 
 /// An `EXEC_RUN` flag: the command reads the client's stdin (`-i`).
@@ -796,6 +800,56 @@ pub use unix::*;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    #[test]
+    fn progress_reads_as_it_was_written() {
+        let all = [
+            Progress::Pulling {
+                reference: "docker.io/library/alpine:3.22".into(),
+                repository: "library/alpine".into(),
+            },
+            Progress::Layers(vec![("sha256:aa".into(), 3), ("sha256:bb".into(), 0)]),
+            Progress::Layers(Vec::new()),
+            Progress::Have("sha256:aa".into()),
+            Progress::Bytes("sha256:aa".into(), u64::MAX),
+            Progress::Verified("sha256:bb".into()),
+            Progress::Building,
+            Progress::Done {
+                digest: "sha256:cc".into(),
+                unchanged: true,
+                bootable: false,
+            },
+        ];
+        for p in all {
+            assert_eq!(Progress::decode(&p.encode()), Some(p));
+        }
+        // What a newer daemon may say, and what no daemon says, are left alone.
+        for unknown in [&b"glimmer\tx"[..], b"bytes\tsha256:aa\tmany", b"\xff", b""] {
+            assert_eq!(Progress::decode(unknown), None);
+        }
+    }
+
+    #[test]
+    fn every_message_kind_has_its_own_number() {
+        let source = include_str!("lib.rs");
+        let kinds = source
+            .split("pub mod kind {")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .unwrap();
+        let mut seen = std::collections::HashMap::new();
+        for line in kinds.lines() {
+            if let Some((name, n)) = line
+                .trim()
+                .strip_prefix("pub const ")
+                .and_then(|l| l.split_once(": u8 = "))
+            {
+                let n: u8 = n.trim_end_matches(';').parse().unwrap();
+                assert_eq!(seen.insert(n, name.to_string()), None, "{name} shares {n}");
+            }
+        }
+        assert!(seen.len() > 20, "{} kinds", seen.len());
+    }
+
     use super::*;
 
     /// A daemon is ending its runs while the process its file names lives: this one is,
@@ -1003,5 +1057,100 @@ mod tests {
         put_str(&mut lying, "i");
         lying.extend_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(Run::decode(&lying), None);
+    }
+}
+
+/// How a pull goes, as the daemon tells a client on a terminal ([`kind::PROGRESS`]): a
+/// line of tab-separated fields, digests in full.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Progress {
+    /// The reference being pulled, and its repository's path.
+    Pulling { reference: String, repository: String },
+    /// The image's layers, by digest and compressed size, in order.
+    Layers(Vec<(String, u64)>),
+    /// A layer already here.
+    Have(String),
+    /// So many bytes of a layer have arrived, in all.
+    Bytes(String, u64),
+    /// A layer arrived whole and matches its digest.
+    Verified(String),
+    /// The image is being made into a microVM's root filesystem.
+    Building,
+    /// Pulled: what the reference resolved to, whether nothing was new, and whether the
+    /// image is ready to boot here (an image of another platform is only stored).
+    Done {
+        digest: String,
+        unchanged: bool,
+        bootable: bool,
+    },
+}
+
+impl Progress {
+    pub fn encode(&self) -> Vec<u8> {
+        let text = match self {
+            Progress::Pulling {
+                reference,
+                repository,
+            } => format!("pulling\t{reference}\t{repository}"),
+            Progress::Layers(layers) => {
+                let mut out = String::from("layers");
+                for (digest, size) in layers {
+                    out.push_str(&format!("\t{digest}={size}"));
+                }
+                out
+            }
+            Progress::Have(d) => format!("have\t{d}"),
+            Progress::Bytes(d, n) => format!("bytes\t{d}\t{n}"),
+            Progress::Verified(d) => format!("verified\t{d}"),
+            Progress::Building => "building".to_string(),
+            Progress::Done {
+                digest,
+                unchanged,
+                bootable,
+            } => {
+                format!(
+                    "done\t{digest}\t{}\t{}",
+                    u8::from(*unchanged),
+                    u8::from(*bootable)
+                )
+            }
+        };
+        text.into_bytes()
+    }
+
+    /// The event a message carries, or `None` for one this client does not know: a newer
+    /// daemon may say more.
+    pub fn decode(payload: &[u8]) -> Option<Progress> {
+        let text = std::str::from_utf8(payload).ok()?;
+        let mut fields = text.split('\t');
+        let word = fields.next()?;
+        let mut next = || fields.next().map(str::to_string);
+        Some(match word {
+            "pulling" => Progress::Pulling {
+                reference: next()?,
+                repository: next()?,
+            },
+            "layers" => {
+                let mut layers = Vec::new();
+                while let Some(field) = next() {
+                    let (digest, size) = field.rsplit_once('=')?;
+                    layers.push((digest.to_string(), size.parse().ok()?));
+                }
+                Progress::Layers(layers)
+            }
+            "have" => Progress::Have(next()?),
+            "bytes" => {
+                let digest = next()?;
+                Progress::Bytes(digest, next()?.parse().ok()?)
+            }
+            "verified" => Progress::Verified(next()?),
+            "building" => Progress::Building,
+            "done" => Progress::Done {
+                digest: next()?,
+                unchanged: next()? == "1",
+                bootable: next()? == "1",
+            },
+            _ => return None,
+        })
     }
 }

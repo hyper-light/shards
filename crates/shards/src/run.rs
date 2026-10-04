@@ -158,9 +158,15 @@ pub fn prepare(
                 Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
                 Event::Manifest(..) | Event::Progress(..) | Event::Building | Event::Pulling => {}
             };
-            let (pulled, _) = crate::pull::fetch(home, &reference, &report, &say, Some(cancel), &|k| {
-                shards_ipc::env_value(&asked.registry_env, k)
-            })?;
+            let (pulled, _) = crate::pull::fetch(
+                home,
+                &reference,
+                &platform::guest(),
+                &report,
+                &say,
+                Some(cancel),
+                &|k| shards_ipc::env_value(&asked.registry_env, k),
+            )?;
             say(&format!("Digest: {}", pulled.resolved));
             say(&format!(
                 "Status: Downloaded newer image for {}",
@@ -179,9 +185,15 @@ pub fn prepare(
     // The client gave `-e NAME` its value already: this process's environment is not
     // the user's.
     let spec = crate::spec::spec(&options, |_| None)?;
+    let rootfs = image.rootfs.ok_or_else(|| {
+        format!(
+            "{}: an image of a platform this host's microVMs do not run",
+            reference.familiar()
+        )
+    })?;
     Ok(Prepared {
         boot,
-        rootfs: image.rootfs,
+        rootfs,
         spec,
         interactive: options.interactive,
         lease: Some(lease),

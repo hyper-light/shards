@@ -846,6 +846,7 @@ dependencies = [
  "shards-netring",
  "shards-registry",
  "shards-testguest",
+ "shards-tui",
  "shards-user",
  "shards-vmm",
  "windows-sys 0.61.2",
@@ -961,6 +962,10 @@ dependencies = [
  "libc",
  "shards-abi",
 ]
+
+[[package]]
+name = "shards-tui"
+version = "0.1.0"
 
 [[package]]
 name = "shards-user"

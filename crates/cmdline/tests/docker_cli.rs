@@ -70,6 +70,26 @@ fn answer(argv: &[String]) -> (String, String, u8, bool) {
     }
 }
 
+/// What shards' `--help` adds after the CLI's text, by command: its own flags
+/// (`Flag::extension`), each a deliberate difference.
+const EXTENDED: &[(&str, &str)] = &[(
+    "pull",
+    "\nShards options:\n      --output-agentfile string   Write the image's Agentfile to this\n                                  file, or into this directory\n",
+)];
+
+/// `got`, with the section shards adds to `argv`'s help taken off: that section must be
+/// what [`EXTENDED`] says, and the rest is the CLI's.
+fn without_extensions<'a>(argv: &[String], got: &'a str) -> &'a str {
+    let Some(&(_, added)) = EXTENDED
+        .iter()
+        .find(|(command, _)| argv.iter().any(|a| a == command) && got.contains("\nShards options:\n"))
+    else {
+        return got;
+    };
+    got.strip_suffix(added)
+        .unwrap_or_else(|| panic!("{argv:?}: not {added:?} at the end: {got:?}"))
+}
+
 #[test]
 fn command_lines_are_answered_as_the_docker_cli_answers_them() {
     let golden: serde_json::Value = serde_json::from_str(include_str!("docker-cli.json")).unwrap();
@@ -100,7 +120,11 @@ fn command_lines_are_answered_as_the_docker_cli_answers_them() {
             continue;
         }
         assert_eq!(
-            (stdout.as_str(), stderr.as_str(), u64::from(status)),
+            (
+                without_extensions(&argv, &stdout),
+                stderr.as_str(),
+                u64::from(status)
+            ),
             want,
             "{argv:?}"
         );

@@ -19,6 +19,8 @@ mod request;
 #[cfg(unix)]
 mod save;
 #[cfg(unix)]
+mod show;
+#[cfg(unix)]
 mod terminal;
 
 /// `docker run`'s status when it could not run the command at all.
@@ -130,8 +132,10 @@ fn container(
                         // SAFETY: isatty(3) on this process's stdout.
                         terminal: unsafe { libc::isatty(1) } == 1,
                         width: terminal::size(1).1,
-                        // docker/cli's tui.NewOutput: any NO_COLOR but an empty one.
-                        color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
+                        // docker/cli's tui.NewOutput: any NO_COLOR but an empty one; and a
+                        // terminal that says it is dumb.
+                        color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+                            && std::env::var_os("TERM").is_none_or(|t| t != "dumb"),
                         daemon: identity,
                     },
                     &fds,

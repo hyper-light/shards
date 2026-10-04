@@ -12,7 +12,7 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 use shards_cmdline::commands::{
-    self, IMAGE_INSPECT, IMAGES, KILL, LOAD, LOGS, PORT, PS, PUSH, RM, RMI, SAVE, STOP, TAG, WAIT,
+    self, IMAGE_INSPECT, IMAGES, KILL, LOAD, LOGS, PORT, PS, PULL, PUSH, RM, RMI, SAVE, STOP, TAG, WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
@@ -48,6 +48,11 @@ pub(super) struct Reply<'a>(pub &'a UnixStream);
 impl Reply<'_> {
     pub(super) fn out(&self, line: &str) {
         let _ = self.bytes(LOG_STDOUT, format!("{line}\n").as_bytes());
+    }
+
+    /// A step of a pull, for a client on a colour terminal to show (`kind::PROGRESS`).
+    pub(super) fn progress(&self, event: &shards_ipc::Progress) {
+        let _ = shards_ipc::send(self.0, kind::PROGRESS, &event.encode(), &[]);
     }
 
     pub(super) fn err(&self, line: &str) {
@@ -306,7 +311,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         // What any client has seen of its run, an answer that reads containers includes:
         // `images` and `rmi` read which use an image too.
-        if ![&TAG, &IMAGE_INSPECT, &SAVE, &LOAD, &PUSH]
+        if ![&TAG, &IMAGE_INSPECT, &SAVE, &LOAD, &PULL, &PUSH]
             .iter()
             .any(|c| std::ptr::eq(command, *c))
         {
@@ -338,6 +343,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.save(&parsed.args, asker, reply)
         } else if std::ptr::eq(command, &LOAD) {
             self.load(asker, reply)
+        } else if std::ptr::eq(command, &PULL) {
+            self.pull(&parsed, asker, reply)
         } else if std::ptr::eq(command, &PUSH) {
             self.push(&parsed, asker, reply)
         } else {

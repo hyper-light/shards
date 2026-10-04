@@ -38,7 +38,6 @@ Commands:
   daemon      Serve `run` from warm microVMs (`run` starts it when needed)
   guest       Choose the kernel and shards-init that `run` boots
   build       Build an image from a Dockerfile
-  pull        Pull an image from a registry
   run         Run a command in a new microVM booted into an image
   vm run      Boot a kernel directly in a microVM
   vm restore  Resume a microVM from a snapshot
@@ -59,7 +58,6 @@ fn main() -> ExitCode {
         // `shards vm`'s broker: not for people to run.
         #[cfg(target_os = "macos")]
         Some("grants") => grant_answer::broker(),
-        Some("pull") => pull::pull(args),
         Some("build") => build::build(args),
         Some("run") => usage_error("run: the `shards` command runs commands, through the daemon"),
         Some("vm") => usage_error("vm: the `shards` command runs microVMs, through shards-vm"),

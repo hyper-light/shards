@@ -46,6 +46,9 @@ pub struct Flag {
     /// The flag whose value this one sets too: the CLI binds both to one variable
     /// (`stop --time` and `--timeout`).
     pub shares: Option<&'static str>,
+    /// One of shards' own, which `docker` does not have: `--help` lists it apart, after
+    /// `docker`'s, whose text stays the CLI's.
+    pub extension: bool,
 }
 
 impl Flag {
@@ -67,6 +70,7 @@ impl Flag {
             hidden: false,
             supported: true,
             shares: None,
+            extension: false,
         }
     }
 
@@ -121,6 +125,12 @@ impl Flag {
     /// The flag with its shorthand deprecated for `why`.
     pub const fn short_deprecated(mut self, why: &'static str) -> Flag {
         self.short_deprecated = Some(why);
+        self
+    }
+
+    /// The flag as one of shards' own (`Flag::extension`).
+    pub const fn extension(mut self) -> Flag {
+        self.extension = true;
         self
     }
 
@@ -709,19 +719,24 @@ pub fn help(command: &Command, path: &str, columns: u16) -> String {
     if !command.aliases.is_empty() {
         let _ = write!(text, "\n\nAliases:\n  {}", command.aliases);
     }
-    let options = options(command.flags, i64::from(columns) - 1);
-    let options = options.trim_end();
-    if !options.is_empty() {
-        let _ = write!(text, "\n\nOptions:\n{options}");
+    for (heading, extension) in [("Options", false), ("Shards options", true)] {
+        let options = options(command.flags, extension, i64::from(columns) - 1);
+        let options = options.trim_end();
+        if !options.is_empty() {
+            let _ = write!(text, "\n\n{heading}:\n{options}");
+        }
     }
     text.push('\n');
     text
 }
 
 /// pflag's FlagUsagesWrapped: a line per flag `--help` shows, in the order of their
-/// names, the usages aligned and wrapped at `columns`.
-fn options(flags: &[Flag], columns: i64) -> String {
-    let mut shown: Vec<&Flag> = flags.iter().filter(|f| !f.hidden).collect();
+/// names, the usages aligned and wrapped at `columns`: `docker`'s flags, or shards' own.
+fn options(flags: &[Flag], extension: bool, columns: i64) -> String {
+    let mut shown: Vec<&Flag> = flags
+        .iter()
+        .filter(|f| !f.hidden && f.extension == extension)
+        .collect();
     shown.sort_by_key(|f| f.name);
     let mut lines = Vec::new();
     let mut widest = 0;
