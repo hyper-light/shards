@@ -290,6 +290,21 @@ pub fn bridge() -> shards_net::bridge::Bridge {
     shards_net::bridge::elected_here(&mut |note| panic!("{note}")).expect("a subnet for the default bridge")
 }
 
+/// A TCP port free now at every IPv4 address, below every system's ephemeral range
+/// (Linux's from 32768, net.ipv4.ip_local_port_range; macOS's and Windows' from 49152, as
+/// RFC 6335 §6 has it): one no other test's connection is given meanwhile, as a port a
+/// daemon picked from that range may be the moment it is free. Tried from a place of the
+/// process's own, so that tests running beside each other seldom try the same.
+pub fn fixed_port() -> u16 {
+    const FIRST: u32 = 20_000;
+    const SPAN: u32 = 12_000;
+    let start = std::process::id() % SPAN;
+    (0..SPAN)
+        .filter_map(|i| u16::try_from(FIRST + (start + i) % SPAN).ok())
+        .find(|&port| std::net::TcpListener::bind(("0.0.0.0", port)).is_ok())
+        .expect("a free port below the ephemeral ranges")
+}
+
 /// The `shards-net` beside [`shards`]: each networked VM's network process.
 pub fn shards_net() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();

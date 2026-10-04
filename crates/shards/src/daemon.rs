@@ -900,6 +900,15 @@ fn serve(ready: Option<File>) -> Result<(), String> {
 }
 
 /// Whether this process could open another descriptor now: one duplicated and closed.
+/// Whether `why`, an error's text, says a process or the system was out of descriptors:
+/// std writes an OS error's code after its text, `(os error N)`, whatever the C library
+/// calls it, and the image store passes its errors on as text.
+fn short_of_descriptors(why: &str) -> bool {
+    [libc::EMFILE, libc::ENFILE]
+        .iter()
+        .any(|code| why.ends_with(&format!("(os error {code})")))
+}
+
 fn descriptor_free(any: &impl AsRawFd) -> bool {
     // SAFETY: fcntl(2) duplicating a descriptor we hold; the copy is closed at once.
     let copy = unsafe { libc::fcntl(any.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
@@ -2989,6 +2998,18 @@ impl<D: Disk> Daemon<D> {
             }
             if let Err(e) = self.collect_garbage() {
                 log(format!("collecting: {e}"));
+                // Short of descriptors, which the clients the listener takes as room comes
+                // may take back from it, it is due again: once there is room, and not before
+                // a RETRY on, lest it spin while there is none (CI 3a640ba: one begun as room
+                // came failed so, and none followed).
+                if short_of_descriptors(&e) {
+                    let due = lock(&c.due);
+                    let (mut due, _) = c
+                        .changed
+                        .wait_timeout(due, RETRY)
+                        .unwrap_or_else(PoisonError::into_inner);
+                    *due = true;
+                }
             }
         }
     }
@@ -4563,6 +4584,21 @@ mod tests {
         });
     }
 
+    /// An error's text says it was out of descriptors as std writes an OS error, whatever
+    /// the C library calls it; a path before it changes nothing, and other errors are not.
+    #[test]
+    fn errors_short_of_descriptors_are_known_by_their_code() {
+        for code in [libc::EMFILE, libc::ENFILE] {
+            let e = io::Error::from_raw_os_error(code);
+            assert!(short_of_descriptors(&e.to_string()), "{e}");
+            assert!(short_of_descriptors(&format!("/home/images: {e}")), "{e}");
+        }
+        assert!(!short_of_descriptors(
+            &io::Error::from_raw_os_error(libc::ENOENT).to_string()
+        ));
+        assert!(!short_of_descriptors("a store record that names no blob"));
+    }
+
     /// No collection starts while the listener is out of descriptors, which its files
     /// would take; the one due starts once the listener has room again.
     #[test]
@@ -5705,9 +5741,12 @@ mod tests {
                 let asked = scope.spawn(|| t.daemon.in_use(at, publish::TCP));
                 std::thread::sleep(Duration::from_millis(100));
                 assert!(!asked.is_finished(), "answered before the handoff was through");
-                say(&vm, kind::TAKEN, &[]);
-                say(&vm, kind::STARTED, &[]);
-                say(&vm, kind::DONE, &[0]);
+                // In one write, as the name's test says them: three writes let the asker
+                // take the run's messages between them, and find it running.
+                say_together(
+                    &vm,
+                    &[(kind::TAKEN, &[]), (kind::STARTED, &[]), (kind::DONE, &[0])],
+                );
                 t.until("the run did not end", |d| {
                     !matches!(lock(&d.runs).get(&id), Some(RunState::Tracked(_)))
                 });

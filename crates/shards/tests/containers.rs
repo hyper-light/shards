@@ -21,7 +21,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    Run, TempDir, bridge, cannot_run_vms, guest_init, kernel, registry, run_shards_env, served,
+    Run, TempDir, bridge, cannot_run_vms, fixed_port, guest_init, kernel, registry, run_shards_env, served,
     sha256_digest, shards, shards_net, shards_vm, shardsd, test_index,
 };
 
@@ -1596,30 +1596,32 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
     let gone = shards(&["port", "web"]);
     assert_eq!((gone.status, gone.stdout.as_str()), (Some(0), ""), "{gone}");
     // Each run's port is free as soon as `run` returns, as `docker run`'s is: the next
-    // program to bind it has it, every time.
+    // program to bind it has it, every time. A port below the ephemeral ranges, which no
+    // other test's connection can be given between the runs.
+    let p = fixed_port();
     for _ in 0..20 {
         let again = run_in(
             &home,
             &image,
-            &["--rm", "-p", &format!("{n}:7000")],
+            &["--rm", "-p", &format!("{p}:7000")],
             &["exit", "0"],
         );
         assert_eq!(again.status, Some(0), "{again}");
-        drop(std::net::TcpListener::bind(("0.0.0.0", n)).unwrap());
+        drop(std::net::TcpListener::bind(("0.0.0.0", p)).unwrap());
     }
     // And the daemon holds it no longer: taken by another program, it is refused at once,
     // not after the wait for a run's ports to come free.
-    let held = std::net::TcpListener::bind(("0.0.0.0", n)).unwrap();
+    let held = std::net::TcpListener::bind(("0.0.0.0", p)).unwrap();
     let began = Instant::now();
     let refused = run_in(
         &home,
         &image,
-        &["--rm", "-p", &format!("{n}:7000")],
+        &["--rm", "-p", &format!("{p}:7000")],
         &["exit", "0"],
     );
     assert!(
         refused.stderr.contains(&format!(
-            "): failed to bind host port 0.0.0.0:{n}/tcp: address already in use"
+            "): failed to bind host port 0.0.0.0:{p}/tcp: address already in use"
         )),
         "{refused}"
     );
