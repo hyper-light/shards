@@ -1723,11 +1723,16 @@ impl<D: Disk> Daemon<D> {
     /// Whose host address `at`, found in use, is: the host's; a running container's of
     /// this daemon, as dockerd's allocator knows its own; or a run's that ended, waited
     /// for until its network process has gone (its grace, `netproc::GRACE`, and as long
-    /// again).
+    /// again). A run's VM says DONE before it tells its client (warm.rs `finish`), whose
+    /// next program may bind the port at once: what the holder's run has sent is taken
+    /// first, as a name's holder's is (`create`), so that a run its client has seen end
+    /// holds the port no longer, as dockerd's has let go of it by the time `docker run`
+    /// returns.
     fn in_use(&self, at: std::net::SocketAddr, proto: u8) -> publish::InUse {
         let deadline = Instant::now() + crate::netproc::GRACE.saturating_mul(2);
         let mut held = lock(&self.ports_held);
         let mut waited = false;
+        let mut taken: Option<String> = None;
         loop {
             let Some(holder) = held
                 .iter()
@@ -1740,6 +1745,21 @@ impl<D: Disk> Daemon<D> {
                     publish::InUse::Host
                 };
             };
+            if taken.as_ref() != Some(&holder) {
+                let inbox = match lock(&self.runs).get(&holder) {
+                    Some(RunState::Tracked(t)) => Some(t.inbox.clone()),
+                    _ => None,
+                };
+                if let Some(inbox) = inbox {
+                    // Without the ports' lock: the followers' loop, which frees ports,
+                    // may be taking them too.
+                    drop(held);
+                    self.take_messages(&holder, &inbox);
+                    held = lock(&self.ports_held);
+                    taken = Some(holder);
+                    continue;
+                }
+            }
             // Running, or starting: dockerd's allocator holds a port from the container's
             // start, not from its command's.
             let running = lock(&self.containers)
@@ -5193,6 +5213,47 @@ mod tests {
                 lock(&d.state).pools.get(&dir).is_some_and(|p| p.ready.is_empty())
             });
             t.until("the VM was not reaped", |_| reaped(vm.id()));
+        });
+    }
+
+    /// A run's VM says DONE before it tells its client, whose next program may then bind
+    /// the run's port: found in use, the port is the run's no more once what the run sent
+    /// is taken, though nothing has taken it yet, and is free once the run's network
+    /// process has gone. A run whose command goes on holds its port.
+    #[test]
+    fn a_port_of_a_run_that_has_said_done_is_not_allocated() {
+        let t = Test::new("port-done");
+        t.run(|t| {
+            let id = t.create("ended");
+            let at = std::net::SocketAddr::from(([0, 0, 0, 0], 1));
+            lock(&t.daemon.ports_held).push(publish::Held {
+                container: id.clone(),
+                vm: None,
+                at: vec![(at, publish::TCP)],
+                listeners: Vec::new(),
+            });
+            let (ready, vm) = t.warm_vm(None);
+            // Followed by nothing: what it sends waits until it is taken.
+            let keep = Keep {
+                detached: None,
+                options: crate::spec::Options::default(),
+                health: None,
+                published: Vec::new(),
+            };
+            let _inbox = t.daemon.register(ready, &id, keep);
+            say(&vm, kind::STARTED, &[]);
+            assert_eq!(t.daemon.in_use(at, publish::TCP), publish::InUse::Allocated);
+            say(&vm, kind::DONE, &[0]);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    t.until("the run did not end", |d| {
+                        !matches!(lock(&d.runs).get(&id), Some(RunState::Tracked(_)))
+                    });
+                    t.daemon.free_ports(Some(&id), None);
+                });
+                assert_eq!(t.daemon.in_use(at, publish::TCP), publish::InUse::Freed);
+            });
+            assert_eq!(t.record(&id).unwrap().state, Life::Exited);
         });
     }
 
