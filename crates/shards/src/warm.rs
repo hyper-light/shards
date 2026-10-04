@@ -396,11 +396,9 @@ pub fn finish(
         let _ = shards_ipc::send(&link.daemon, kind::LOST, &ended.lost.to_be_bytes(), &[]);
     }
     if let Some((name, set)) = working_set {
-        for part in shards_ipc::working_set_parts(name, set) {
-            if shards_ipc::send(&link.daemon, kind::WORKING_SET, &part, &[]).is_err() {
-                break;
-            }
-        }
+        let _ = shards_ipc::working_set_parts(name, set, |part| {
+            shards_ipc::send(&link.daemon, kind::WORKING_SET, part, &[])
+        });
     }
     release_ports();
     let _ = shards_ipc::send(&link.daemon, kind::DONE, &done, &[]);

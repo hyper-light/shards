@@ -3573,6 +3573,16 @@ mod tests {
     }
 
     /// What thread `h` returned, once it has, within [`PATIENCE`].
+    /// The `kind::WORKING_SET` messages that carry `set`, each copied out.
+    fn working_set_parts(name: &str, set: &[u8]) -> Vec<Vec<u8>> {
+        let mut parts = Vec::new();
+        let _ = shards_ipc::working_set_parts::<()>(name, set, |p| {
+            parts.push(p.to_vec());
+            Ok(())
+        });
+        parts
+    }
+
     /// Whether thread `h` finishes within [`PATIENCE`]; it is not joined.
     fn finishes<T>(h: &impl Joinable<T>) -> bool {
         let deadline = Instant::now() + PATIENCE;
@@ -4365,7 +4375,7 @@ mod tests {
     #[test]
     fn working_sets_are_gathered_whole_and_bounded() {
         let set: Vec<u8> = (0..(shards_ipc::MAX_PAYLOAD * 2 + 5)).map(|i| i as u8).collect();
-        let parts = shards_ipc::working_set_parts("g-1", &set);
+        let parts = working_set_parts("g-1", &set);
         assert_eq!(parts.len(), 3);
         let mut gathering = WorkingSet::default();
         let limit = set.len() as u64;
@@ -4384,7 +4394,7 @@ mod tests {
         assert!(matches!(refused, Some(Gathered::Refused(_))), "{refused:?}");
         // Another generation's part in the middle.
         let mut mixed = WorkingSet::default();
-        let other = shards_ipc::working_set_parts("g-2", &set);
+        let other = working_set_parts("g-2", &set);
         assert_eq!(gather(&mut mixed, limit, &parts[0]), Gathered::More);
         assert!(matches!(
             gather(&mut mixed, limit, &other[1]),
@@ -6208,7 +6218,7 @@ mod tests {
             say(&vm, kind::LOG_SEGMENT, &5u64.to_be_bytes());
             // Twice: one set is taken of a run, the first.
             for _ in 0..2 {
-                for part in shards_ipc::working_set_parts("g-1", &[7; 64]) {
+                for part in working_set_parts("g-1", &[7; 64]) {
                     say(&vm, kind::WORKING_SET, &part);
                 }
             }

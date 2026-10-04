@@ -739,32 +739,36 @@ pub const MAX_PAYLOAD: usize = 1 << 20;
 /// `kind::WORKING_SET`'s flag on the last part.
 pub const WORKING_SET_LAST: u8 = 1;
 
-/// A working set recorded from generation `name`, as the `kind::WORKING_SET` messages
-/// that carry it, each within [`MAX_PAYLOAD`]; none for a name longer than 255 bytes, which
-/// no generation's is.
-pub fn working_set_parts(name: &str, set: &[u8]) -> Vec<Vec<u8>> {
+/// Passes `each`, in turn, the `kind::WORKING_SET` messages that carry the working set
+/// `set` recorded from generation `name`, each within [`MAX_PAYLOAD`] and built in the
+/// buffer of the last, so that a set is never copied whole; none for a name longer than
+/// 255 bytes, which no generation's is. Stops at `each`'s first error, which it returns.
+pub fn working_set_parts<E>(
+    name: &str,
+    set: &[u8],
+    mut each: impl FnMut(&[u8]) -> Result<(), E>,
+) -> Result<(), E> {
     let Ok(len) = u8::try_from(name.len()) else {
-        return Vec::new();
+        return Ok(());
     };
     let room = MAX_PAYLOAD - 2 - name.len();
-    let chunks: Vec<&[u8]> = if set.is_empty() {
-        vec![&[][..]]
-    } else {
-        set.chunks(room).collect()
-    };
-    let last = chunks.len() - 1;
-    chunks
-        .into_iter()
-        .enumerate()
-        .map(|(i, chunk)| {
-            let mut part = Vec::with_capacity(2 + name.len() + chunk.len());
-            part.push(if i == last { WORKING_SET_LAST } else { 0 });
-            part.push(len);
-            part.extend_from_slice(name.as_bytes());
-            part.extend_from_slice(chunk);
-            part
-        })
-        .collect()
+    let mut part = Vec::with_capacity(2 + name.len() + set.len().min(room));
+    let mut chunks = set.chunks(room).peekable();
+    // An empty set is one empty part, the last.
+    let mut chunk = chunks.next().unwrap_or_default();
+    loop {
+        let last = chunks.peek().is_none();
+        part.clear();
+        part.push(if last { WORKING_SET_LAST } else { 0 });
+        part.push(len);
+        part.extend_from_slice(name.as_bytes());
+        part.extend_from_slice(chunk);
+        each(&part)?;
+        match chunks.next() {
+            Some(next) => chunk = next,
+            None => return Ok(()),
+        }
+    }
 }
 
 /// One `kind::WORKING_SET` message's flags, generation name and part.
@@ -825,7 +829,7 @@ mod tests {
             3 * MAX_PAYLOAD + 7,
         ] {
             let set: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
-            let parts = working_set_parts(name, &set);
+            let parts = parts(name, &set);
             let mut back = Vec::new();
             for (i, part) in parts.iter().enumerate() {
                 assert!(part.len() <= MAX_PAYLOAD, "{len}: part {i}");
@@ -836,8 +840,25 @@ mod tests {
             }
             assert_eq!(back, set, "{len}");
         }
-        assert!(working_set_parts(&"g".repeat(256), b"x").is_empty());
+        assert!(parts(&"g".repeat(256), b"x").is_empty());
         assert!(working_set_part(&[0, 9, b'a']).is_none(), "a name past its end");
+        // The first refusal stops them, and is the answer.
+        let mut taken = 0;
+        let refused = working_set_parts(name, &[7; 3 * MAX_PAYLOAD], |_| {
+            taken += 1;
+            if taken == 2 { Err("refused") } else { Ok(()) }
+        });
+        assert_eq!((refused, taken), (Err("refused"), 2));
+    }
+
+    /// The parts of a working set, each copied out.
+    fn parts(name: &str, set: &[u8]) -> Vec<Vec<u8>> {
+        let mut parts = Vec::new();
+        let _ = working_set_parts::<()>(name, set, |p| {
+            parts.push(p.to_vec());
+            Ok(())
+        });
+        parts
     }
 
     #[test]
