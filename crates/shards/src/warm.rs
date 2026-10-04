@@ -121,7 +121,11 @@ pub struct Request {
 /// has taken it. Until then the daemon holds its own copies of the client's descriptors,
 /// and gives the request to another VM if this one fails. Then makes the client's stdio
 /// this process's, and starts passing the client's signals to the workload through `to`.
-pub fn receive(link: &Link, to: &'static ToGuest) -> Result<Request, String> {
+pub fn receive(
+    link: &Link,
+    to: &'static ToGuest,
+    may_take: &dyn Fn() -> Result<(), String>,
+) -> Result<Request, String> {
     let daemon = &link.daemon;
     shards_ipc::send(daemon, kind::READY, &[], &[]).map_err(|e| format!("telling the daemon: {e}"))?;
     let request = shards_ipc::recv(daemon)
@@ -191,6 +195,9 @@ pub fn receive(link: &Link, to: &'static ToGuest) -> Result<Request, String> {
     if fds.next().is_some() {
         return Err(format!("a request brings too many descriptors: {count}"));
     }
+    // What must hold for this VM to take a run, checked while the daemon may still give
+    // it to another.
+    may_take()?;
     // TAKEN before anything of the client's is touched or anything starts: a VM that ends
     // without it never started the run, which the daemon may then hand to another VM
     // (daemon.rs, hand_over). A daemon gone by now has no copies left to close, and hands
@@ -451,7 +458,7 @@ mod tests {
             let null = File::open("/dev/null").unwrap();
             let fds = vec![null.as_fd(); given];
             let refused = std::thread::scope(|s| {
-                let receiving = s.spawn(|| receive(&link, &TO_GUEST));
+                let receiving = s.spawn(|| receive(&link, &TO_GUEST, &|| Ok(())));
                 assert_eq!(shards_ipc::recv(&daemon).unwrap().unwrap().kind, kind::READY);
                 let mut payload = vec![shards_ipc::RUN_DETACHED | shards_ipc::RUN_LOG];
                 payload.extend(1u64.to_be_bytes());

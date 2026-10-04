@@ -1581,6 +1581,22 @@ audit's "Security and test coverage").
     a broker is up before its VM asks [PM M71].
   - It costs about 3.1 ms at launch (M67), before a warm VM's request, as the profile's
     compiling cost 3.7 ms (M53).
+- **A template's saver gives it up before its run** (review 8.2). A VM that saves a
+  template goes on to serve the run it was booted for, and every later run of the image
+  restores what it saved: a guest that took its process over could otherwise rewrite
+  them all. Once the template is committed, and before any run's command reaches the
+  guest, the template is out of the VM's reach, or the VM takes no run, and the daemon
+  gives the run to another, restored from the template.
+  - Linux: a second Landlock layer, with the first's rules but the template's directory
+    (layers only restrict further [Documentation/userspace-api/landlock.rst]), applied
+    before the VM says it is ready, and checked: a file made there must be refused.
+    Nothing of the template is open by then, and Landlock takes back nothing open.
+  - macOS: a grant cannot be given up, but names a path [PM M102]: the daemon moves the
+    template into place (`settle`) before it hands over the run, and the VM checks that it
+    is gone from the path it was granted before it takes one.
+  - A restore given its template's files (`--backing`) is confined to them before it
+    reads the template's state, which a VM process wrote: what that names past them is
+    refused, by a process that can reach nothing else.
 - **The run's own vsock ports are no socket files.** The run and signal ports are served
   by the VM process itself, so its device hands a guest's connection to one straight to
   the serving thread as one end of a `socketpair(2)` (`VsockHost::ports`). Before, the

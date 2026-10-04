@@ -127,14 +127,42 @@ impl Warm {
 
     /// [`spawn`](Warm::spawn), with `env` added to the VM's environment.
     fn spawn_env(template: &Path, env: &[(&str, &str)]) -> Warm {
+        let args = [
+            "restore".as_ref(),
+            template.as_os_str(),
+            "--warm".as_ref(),
+            "3".as_ref(),
+        ];
+        Warm::spawn_with(&args, env)
+    }
+
+    /// A warm VM booted into `image`, as the daemon boots one for a run when its image has
+    /// no template: it saves one to `save`, then takes the run.
+    fn saving(image: &Path, save: &Path) -> Warm {
+        let args = [
+            "run".as_ref(),
+            "--kernel".as_ref(),
+            kernel().as_os_str(),
+            "--init".as_ref(),
+            guest_init().as_os_str(),
+            "--rootfs".as_ref(),
+            image.as_os_str(),
+            "--snapshot-dir".as_ref(),
+            save.as_os_str(),
+            "--warm".as_ref(),
+            "3".as_ref(),
+        ];
+        Warm::spawn_with(&args, &[])
+    }
+
+    /// shards-vm with `args`, its daemon's socket at descriptor 3, and `env`.
+    fn spawn_with(args: &[&std::ffi::OsStr], env: &[(&str, &str)]) -> Warm {
         let (daemon, theirs) = UnixStream::pair().unwrap();
         let fd = theirs.as_raw_fd();
         // What the daemon runs.
         let mut command = Command::new(shards_vm());
         command
-            .args(["restore"])
-            .arg(template)
-            .args(["--warm", "3"])
+            .args(args)
             .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -194,6 +222,53 @@ impl Warm {
                 panic!("no READY ({other:?}); the warm VM said:\n{err}");
             }
         }
+    }
+
+    /// Hands `argv` to the warm VM, which must not take it: it ends without TAKEN, as a
+    /// VM that never started the run does (daemon.rs, `taken`). Returns what it said.
+    #[cfg(target_os = "macos")]
+    fn refused(mut self, argv: &[&str]) -> String {
+        let spec = Spec {
+            argv: argv.iter().map(|a| a.as_bytes().to_vec()).collect(),
+            env: vec![b"PATH=/bin".to_vec()],
+            cwd: b"/".to_vec(),
+            hostname: b"warm".to_vec(),
+            ..Spec::default()
+        };
+        let (_conn, theirs) = UnixStream::pair().unwrap();
+        let (stdin_r, _stdin_w) = pipe();
+        let (_stdout_r, stdout_w) = pipe();
+        let (_stderr_r, stderr_w) = pipe();
+        let mut payload = vec![0];
+        payload.extend((20u64 << 20).to_be_bytes());
+        payload.extend(5u64.to_be_bytes());
+        payload.extend(spec.encode());
+        shards_ipc::send(
+            &self.daemon,
+            kind::RUN,
+            &payload,
+            &[
+                theirs.as_fd(),
+                stdin_r.as_fd(),
+                stdout_w.as_fd(),
+                stderr_w.as_fd(),
+            ],
+        )
+        .unwrap();
+        assert!(
+            shards_ipc::recv(&self.daemon).unwrap().is_none(),
+            "the run was taken"
+        );
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let mut said = String::new();
+        self.child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut said)
+            .unwrap();
+        said
     }
 
     /// Hands `argv` to the warm VM for a new client, as the daemon does.
@@ -416,6 +491,45 @@ fn a_warm_vms_log_stays_out_of_its_clients_stderr() {
     let own = reading.join().unwrap();
     assert_eq!(err, "", "the VM's log in its client's stderr");
     assert!(own.contains("us INFO] guest marker"), "{own}");
+}
+
+/// A warm VM that saves a template takes its run only out of the template's reach (review
+/// 8.2): every later run of the image restores what it saved. On Linux it gives the
+/// template's directory up once the template is committed (a Landlock layer, checked); on
+/// macOS, whose grants cannot be given up and name paths (PM M102), its template must have
+/// been moved from where it was granted, as the daemon moves one into place before it
+/// hands over a run. One left there takes no run, which the daemon then gives to another
+/// VM, and says why.
+#[test]
+fn a_template_saver_takes_a_run_only_out_of_the_templates_reach() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let dir = TempDir::new("warm-saver");
+    let image = workload_image(&dir);
+    // Moved as the daemon moves it: taken, and served.
+    let fresh = dir.join("fresh");
+    let mut warm = Warm::saving(&image, &fresh);
+    warm.ready();
+    std::fs::rename(&fresh, dir.join("template")).unwrap();
+    let client = warm.run(&["/bin/testguest", "exit", "0"], false);
+    assert_eq!(client.exit(), 0);
+    warm.ends(0, None);
+    // Left where it was granted.
+    let left = dir.join("left");
+    let mut warm = Warm::saving(&image, &left);
+    warm.ready();
+    #[cfg(target_os = "macos")]
+    {
+        let said = warm.refused(&["/bin/testguest", "exit", "0"]);
+        assert!(said.contains("still where it was granted"), "{said}");
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let client = warm.run(&["/bin/testguest", "exit", "0"], false);
+        assert_eq!(client.exit(), 0);
+        warm.ends(0, None);
+    }
 }
 
 #[test]

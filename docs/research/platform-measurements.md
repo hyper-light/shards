@@ -3437,3 +3437,30 @@ revision before comparing a changed API/implementation.
 - **Consequence.** The daemon elects once as it starts, and a build as it starts its
   builder: tens of microseconds, once (architecture.md D31).
 
+### M102. What a VM in App Sandbox can give up of what it was granted
+
+- **Question.** A VM that saves a template goes on to serve a run (review 8.2), and every
+  later run of the image restores what it saved: before the run's command reaches its
+  guest, the VM must lose its way to the template. On Linux a second Landlock layer takes
+  the directory away (its rules hold inodes, so a rename alone does not). Can a process in
+  App Sandbox give up a directory granted by bookmark, and does the grant follow the
+  directory when its parent renames it?
+- **Method.** `docs/research/measurements/app-sandbox/run.sh`, which builds and signs the
+  probe as M70 did: `relinquish` resolves a directory bookmark, starts its scope, makes a
+  file, stops it (`CFURLStopAccessingSecurityScopedResource`), and makes and reads a file
+  again, under `$HOME` and under the per-user temporary directory, where a test's
+  `SHARDS_HOME` lives; `renamed.py` has the probe make a file in a granted directory, then
+  renames the directory from the unsandboxed parent and has the probe make and rewrite
+  files at the new path and remake the old. macOS 26.4.1, Apple M5 Max, 2026-10-04.
+- **Results.** After the stop, in both places: make ok, read ok. Nothing is given up. With
+  no grant, the temporary directory refuses a file (EPERM), as `$HOME` does. Renamed: a
+  file at the new path refused, a file there rewritten refused (EPERM); the old path made
+  again, ok. The grant names the path, not the directory.
+- **Consequence.** On macOS a VM's grants last its life, so the template must leave the
+  path it was granted before a run's command reaches the guest: the daemon moves each
+  template into place (run.rs, `settle`) before it hands over the run, and the VM checks
+  that it is gone from that path before it takes a run, or takes none and the daemon gives
+  the run to another VM (vm_run.rs, `moved`; tests/warm.rs,
+  `a_template_saver_takes_a_run_only_out_of_the_templates_reach`, mutation-checked). On
+  Linux the VM applies the layer and checks that a file made there is refused (vm_run.rs,
+  `seal`; confine.rs, `a_second_layer_seals_a_directory_and_keeps_the_rest`).

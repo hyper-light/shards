@@ -45,6 +45,25 @@ done
 printf 'read-only descriptor: '
 ./probe fdread 5 read /dev/fd/5 write /dev/fd/5 5<"$file" | grep -v '^HOME\|^main_us' | tr '\n' ' '
 echo
+# A directory bookmark relinquished (CFURLStopAccessingSecurityScopedResource): a file
+# made before the stop, and one after, under $HOME and under the per-user temporary
+# directory (confstr _CS_DARWIN_USER_TEMP_DIR, /var/folders/.../T), where a test's
+# SHARDS_HOME lives (PM M102).
+tmp=$(getconf DARWIN_USER_TEMP_DIR)shards-probe-$$
+for where in "$files/relinquished" "$tmp"; do
+    rm -rf "$where"
+    mkdir -p "$where"
+    mark=$(./bookmark "$where")
+    printf 'relinquished under %s:\n' "$where"
+    ./probe relinquish "$mark@$where" | grep -v '^HOME\|^main_us'
+done
+# A directory bookmark whose directory the parent renames once the probe has used it.
+python3 "$here/renamed.py" "$work"
+# With no grant at all: a file made in the per-user temporary directory.
+printf 'no grant, temporary directory: '
+./probe write "$tmp/ungranted" | grep -v '^HOME\|^main_us' | tr '\n' ' '
+echo
+rm -rf "$tmp"
 # With no grant at all: a file beside the probe, and one under $HOME.
 printf x >"$work/beside"
 printf 'no grant: '

@@ -166,7 +166,7 @@ pub fn confine() -> Result<(), String> {
 /// The files and sockets a VM process may use, for the grants its spawner gives it in App
 /// Sandbox on macOS (`grant`) and its Landlock rules on Linux (D30): all it is denied
 /// besides.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Paths {
     /// Files it reads.
     pub read: Vec<std::path::PathBuf>,
@@ -445,6 +445,100 @@ mod tests {
         }
         let _ = std::io::stdout().write_all(out.as_bytes());
         std::process::exit(0)
+    }
+
+    /// In a child process: confined with two directories to write in, then sealed, as a VM
+    /// that saved a snapshot seals it (vm_run.rs, `seal`): a second layer with the same
+    /// paths but the snapshot's. Prints each outcome after.
+    fn seal_child(dir: &str) -> ! {
+        use std::io::Write as _;
+        let dir = std::path::Path::new(dir);
+        let first = Paths {
+            read: vec![dir.join("granted")],
+            write_under: vec![dir.join("out"), dir.join("snap")],
+            ..Paths::default()
+        };
+        let mut kept = first.clone();
+        kept.write_under.retain(|d| d != &dir.join("snap"));
+        let mut out = format!(
+            "first: {:?}\nbefore: {}\n",
+            landlock(&first),
+            std::fs::write(dir.join("snap").join("before"), b"x").is_ok()
+        );
+        out.push_str(&format!("sealed: {:?}\n", landlock(&kept)));
+        let ok = |r: bool| if r { "ok" } else { "refused" };
+        for (what, r) in [
+            (
+                "write snap",
+                std::fs::write(dir.join("snap").join("after"), b"x").is_ok(),
+            ),
+            (
+                "make in snap",
+                std::fs::create_dir(dir.join("snap").join("d")).is_ok(),
+            ),
+            (
+                "remove from snap",
+                std::fs::remove_file(dir.join("snap").join("before")).is_ok(),
+            ),
+            (
+                "read snap",
+                std::fs::read(dir.join("snap").join("before")).is_ok(),
+            ),
+            (
+                "write out",
+                std::fs::write(dir.join("out").join("f"), b"x").is_ok(),
+            ),
+            ("read granted", std::fs::read(dir.join("granted")).is_ok()),
+        ] {
+            out.push_str(&format!("{what}: {}\n", ok(r)));
+        }
+        let _ = std::io::stdout().write_all(out.as_bytes());
+        std::process::exit(0)
+    }
+
+    /// A second layer takes a directory away, reads and writes, and leaves the rest, as Landlock's
+    /// layers each restrict the process further (Documentation/userspace-api/landlock.rst,
+    /// "Layers of file path access rights"): what a VM that saved a template gives up
+    /// before its run's workload starts (review 8.2).
+    #[test]
+    fn a_second_layer_seals_a_directory_and_keeps_the_rest() {
+        if let Ok(dir) = std::env::var("SEAL_CHILD") {
+            seal_child(&dir);
+        }
+        let dir = std::env::temp_dir().join(format!("shards-seal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for d in ["out", "snap"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        std::fs::write(dir.join("granted"), b"g").unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "confine::tests::a_second_layer_seals_a_directory_and_keeps_the_rest",
+                "--nocapture",
+            ])
+            .env("SEAL_CHILD", &dir)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).into_owned();
+        let _ = std::fs::remove_dir_all(&dir);
+        for line in [
+            "first: Ok(())",
+            "before: true",
+            "sealed: Ok(())",
+            "write snap: refused",
+            "make in snap: refused",
+            "remove from snap: refused",
+            "read snap: refused",
+            "write out: ok",
+            "read granted: ok",
+        ] {
+            assert!(
+                said.contains(line),
+                "{line}\n{said}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
     }
 
     /// A VM process confined by Landlock reads and writes its paths and nothing else, makes

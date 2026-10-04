@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <time.h>
@@ -48,6 +49,67 @@ static int bookmark(const char *hex, const char *path, int flags) {
     return ok;
 }
 
+// A directory bookmark, hex-encoded, resolved and its scope started; a file made in DIR;
+// the scope stopped (CFURLStopAccessingSecurityScopedResource); another file made in DIR.
+static void relinquish(const char *hex, const char *dir) {
+    size_t n = strlen(hex) / 2;
+    UInt8 *b = malloc(n);
+    for (size_t i = 0; i < n; i++) sscanf(hex + 2 * i, "%2hhx", &b[i]);
+    CFDataRef d = CFDataCreate(NULL, b, (CFIndex)n);
+    Boolean stale = false;
+    CFURLRef u = CFURLCreateByResolvingBookmarkData(NULL, d, 0, NULL, NULL, &stale, NULL);
+    if (!u) { errno = EPERM; said("relinquish resolve", 0); return; }
+    Boolean started = CFURLStartAccessingSecurityScopedResource(u);
+    char path[1200];
+    snprintf(path, sizeof path, "%s/before", dir);
+    int fd = open(path, O_WRONLY | O_CREAT, 0600);
+    printf("  (scope started %d)\n", started);
+    said("relinquish write before stop", fd >= 0);
+    if (fd >= 0) close(fd);
+    CFURLStopAccessingSecurityScopedResource(u);
+    snprintf(path, sizeof path, "%s/after", dir);
+    fd = open(path, O_WRONLY | O_CREAT, 0600);
+    said("relinquish write after stop", fd >= 0);
+    if (fd >= 0) close(fd);
+    snprintf(path, sizeof path, "%s/before", dir);
+    fd = open(path, O_RDONLY);
+    said("relinquish read after stop", fd >= 0);
+    if (fd >= 0) close(fd);
+}
+
+// A directory bookmark, hex-encoded, resolved and its scope started; then, once the
+// parent has renamed the directory to MOVED (it waits on stdin for this tool's word),
+// a file made at MOVED, and one made at DIR again.
+static void renamed(const char *hex, const char *dir, const char *moved) {
+    size_t n = strlen(hex) / 2;
+    UInt8 *b = malloc(n);
+    for (size_t i = 0; i < n; i++) sscanf(hex + 2 * i, "%2hhx", &b[i]);
+    CFDataRef d = CFDataCreate(NULL, b, (CFIndex)n);
+    Boolean stale = false;
+    CFURLRef u = CFURLCreateByResolvingBookmarkData(NULL, d, 0, NULL, NULL, &stale, NULL);
+    if (!u) { errno = EPERM; said("renamed resolve", 0); return; }
+    Boolean started = CFURLStartAccessingSecurityScopedResource(u);
+    char path[1200];
+    snprintf(path, sizeof path, "%s/before", dir);
+    int fd = open(path, O_WRONLY | O_CREAT, 0600);
+    printf("  (scope started %d)\n", started);
+    said("renamed write before the rename", fd >= 0);
+    if (fd >= 0) close(fd);
+    printf("ready\n");
+    fflush(stdout);
+    char c;
+    if (read(0, &c, 1) != 1) return;
+    snprintf(path, sizeof path, "%s/after", moved);
+    fd = open(path, O_WRONLY | O_CREAT, 0600);
+    said("renamed write at the new path", fd >= 0);
+    if (fd >= 0) close(fd);
+    snprintf(path, sizeof path, "%s/before", moved);
+    fd = open(path, O_WRONLY);
+    said("renamed rewrite of a file at the new path", fd >= 0);
+    if (fd >= 0) close(fd);
+    said("renamed mkdir at the old path", mkdir(dir, 0700) == 0);
+}
+
 int main(int argc, char **argv) {
     struct timespec t0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -77,6 +139,13 @@ int main(int argc, char **argv) {
             if (r == HV_SUCCESS) hv_vm_destroy();
             errno = r == HV_SUCCESS ? 0 : EPERM;
             printf("%s: %s (hv_return 0x%x)\n", what, r == HV_SUCCESS ? "ok" : "refused", r);
+        } else if (!strcmp(op, "renamed")) { // HEX@DIR@MOVED
+            char *hex = strdup(arg), *dir = strchr(hex, '@'); *dir++ = 0;
+            char *moved = strchr(dir, '@'); *moved++ = 0;
+            renamed(hex, dir, moved);
+        } else if (!strcmp(op, "relinquish")) { // HEX@DIR
+            char *hex = strdup(arg), *dir = strchr(hex, '@'); *dir++ = 0;
+            relinquish(hex, dir);
         } else if (!strcmp(op, "bookmark")) { // HEX@PATH@w|r
             char *hex = strdup(arg), *path = strchr(hex, '@'); *path++ = 0;
             char *mode = strrchr(path, '@'); *mode++ = 0;

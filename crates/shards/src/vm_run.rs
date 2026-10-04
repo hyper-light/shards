@@ -655,10 +655,16 @@ fn serve_workload(
                         hold,
                     } => {
                         // Held, the guest is connected and waiting: the request is a line
-                        // on stdin.
+                        // on stdin. A snapshot this VM saves is committed, and out of its
+                        // reach, before the command goes to the guest.
                         let gate = || {
-                            let _ = writeln!(std::io::stderr(), "shards-ready");
-                            let _ = std::io::stdin().read_line(&mut String::new());
+                            stopper.wait_for_snapshot();
+                            seal()?;
+                            moved()?;
+                            if hold {
+                                let _ = writeln!(std::io::stderr(), "shards-ready");
+                                let _ = std::io::stdin().read_line(&mut String::new());
+                            }
                             Ok(workload::Asked {
                                 spec: spec.clone(),
                                 interactive,
@@ -666,7 +672,7 @@ fn serve_workload(
                                 started: None,
                             })
                         };
-                        let request = if hold {
+                        let request = if hold || SEAL.get().is_some() {
                             Request::Later(&gate)
                         } else {
                             Request::Now {
@@ -688,8 +694,15 @@ fn serve_workload(
                         let ask = || {
                             // A template this VM saved is in place before the daemon hears the
                             // VM is ready, and settles it: its commit runs as the guest does.
+                            // Its directory is given up before the run comes.
+                            // Its directory is given up before the daemon hears it is ready,
+                            // and out of its reach before it takes the run. What fails is
+                            // said here, in its daemon's log, before its link closes.
                             stopper.wait_for_snapshot();
-                            let request = crate::warm::receive(&link, to_guest)?;
+                            seal().inspect_err(|e| report(e))?;
+                            let request = crate::warm::receive(&link, to_guest, &|| {
+                                moved().inspect_err(|e| report(e))
+                            })?;
                             timing
                                 .asked
                                 .store(request.timing, std::sync::atomic::Ordering::Relaxed);
@@ -918,6 +931,8 @@ fn start(cfg: &Config) -> Result<(Handle, Running), String> {
         cfg.snapshot.as_ref().map(|p| p.dir.as_path()),
         cfg.vsock.as_ref().and_then(|v| v.path.as_deref()),
     );
+    #[cfg(unix)]
+    sealing(&paths, cfg.snapshot.as_ref().map(|p| p.dir.as_path()));
     // A host that runs no VM says so, before its files are confined: the check reads no
     // input of the VM's.
     vm::check_host()?;
@@ -945,38 +960,52 @@ fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     granted_template(&cfg.dir)?;
     #[cfg(not(target_os = "macos"))]
     paths.read_under.push(cfg.dir.clone());
-    let backing = shards_vmm::snapshot::backing_files(&cfg.dir)?;
-    // A spawner that says which files the template restores against gives those alone:
-    // the template's state, which a VM process wrote, names what this one is confined to
-    // and granted, and may name anything.
-    if let Some(given) = BACKING.get() {
-        let unasked: Vec<String> = backing
-            .iter()
-            .filter(|b| !given.contains(b))
-            .map(|(path, read_only)| format!("{}{}", path.display(), if *read_only { ":ro" } else { "" }))
-            .collect();
-        if !unasked.is_empty() {
-            return Err(format!(
-                "{}: the template names files it was not given: {}",
-                cfg.dir.display(),
-                unasked.join(", ")
-            ));
-        }
-    }
-    for (path, read_only) in backing {
-        let list = if read_only {
-            &mut paths.read
-        } else {
-            &mut paths.write
-        };
-        list.push(path);
-    }
     written(
         &mut paths,
         cfg.snapshot.as_ref().map(|p| p.dir.as_path()),
         cfg.vsock.as_ref().and_then(|v| v.path.as_deref()),
     );
-    confine(&paths)?;
+    #[cfg(unix)]
+    sealing(&paths, cfg.snapshot.as_ref().map(|p| p.dir.as_path()));
+    let add = |paths: &mut crate::confine::Paths, files: &[(PathBuf, bool)]| {
+        for (path, read_only) in files {
+            let list = if *read_only {
+                &mut paths.read
+            } else {
+                &mut paths.write
+            };
+            list.push(path.clone());
+        }
+    };
+    // A spawner that says which files the template restores against gives those alone,
+    // and this process is confined to them before it reads the template's state, which a
+    // VM process wrote and may name anything: what it names past them is refused, and a
+    // state made to mislead its reader is read where nothing else can be reached. Without
+    // a spawner's word, the state names them, and is read first.
+    match BACKING.get() {
+        Some(given) => {
+            add(&mut paths, given);
+            confine(&paths)?;
+            let backing = shards_vmm::snapshot::backing_files(&cfg.dir)?;
+            let unasked: Vec<String> = backing
+                .iter()
+                .filter(|b| !given.contains(b))
+                .map(|(path, read_only)| format!("{}{}", path.display(), if *read_only { ":ro" } else { "" }))
+                .collect();
+            if !unasked.is_empty() {
+                return Err(format!(
+                    "{}: the template names files it was not given: {}",
+                    cfg.dir.display(),
+                    unasked.join(", ")
+                ));
+            }
+        }
+        None => {
+            let backing = shards_vmm::snapshot::backing_files(&cfg.dir)?;
+            add(&mut paths, &backing);
+            confine(&paths)?;
+        }
+    }
     vm::restore(cfg)
 }
 
@@ -995,6 +1024,98 @@ static BACKING: std::sync::OnceLock<Vec<(PathBuf, bool)>> = std::sync::OnceLock:
 /// The directory relative paths are of (`--cwd DIR`): `shards vm`'s own on macOS, where App
 /// Sandbox starts a VM process in its container instead.
 static CWD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// What a VM that saves a snapshot gives up once it is committed (review 8.2): the
+/// snapshot's directory, which only the save writes. A template's saver goes on to serve a
+/// run, and a guest that took its process over could otherwise rewrite what every later
+/// run of the image restores.
+#[cfg(unix)]
+struct Seal {
+    /// The directory given up.
+    dir: PathBuf,
+    /// All else the process keeps: on Linux, applied as a Landlock layer of its own, which
+    /// leaves the first's rules but the directory's.
+    #[cfg(target_os = "linux")]
+    kept: crate::confine::Paths,
+}
+
+#[cfg(unix)]
+static SEAL: std::sync::OnceLock<Seal> = std::sync::OnceLock::new();
+
+/// Records what [`seal`] gives up once a snapshot `paths` lets this VM save is committed.
+#[cfg(unix)]
+fn sealing(paths: &crate::confine::Paths, snapshot: Option<&Path>) {
+    let Some(dir) = snapshot else { return };
+    #[cfg(target_os = "linux")]
+    let kept = {
+        let mut kept = paths.clone();
+        kept.write_under.retain(|d| d != dir);
+        kept
+    };
+    #[cfg(not(target_os = "linux"))]
+    let _ = paths;
+    let _ = SEAL.set(Seal {
+        dir: dir.to_path_buf(),
+        #[cfg(target_os = "linux")]
+        kept,
+    });
+}
+
+/// Gives up the directory of the snapshot this VM saved, committed by now, before its
+/// spawner hears it is ready, and so before anything of a run's workload runs in its
+/// guest. On Linux, a Landlock layer without it, checked: making a file there must be
+/// refused. Nothing of the snapshot is open by then (vmm snapshot::Staged::commit closes
+/// its files), and Landlock takes back nothing open. On macOS nothing can be given up:
+/// App Sandbox's grants last the process's life (PM M102); [`moved`] holds instead. A VM
+/// that saved no snapshot has nothing to give up.
+#[cfg(unix)]
+fn seal() -> Result<(), String> {
+    let Some(seal) = SEAL.get() else {
+        return Ok(());
+    };
+    #[cfg(target_os = "linux")]
+    {
+        crate::confine::landlock(&seal.kept)?;
+        let probe = seal.dir.join(format!(".sealed-{}", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+        {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
+            Err(e) => return Err(format!("{}: checking it is given up: {e}", seal.dir.display())),
+            Ok(_) => {
+                let _ = std::fs::remove_file(&probe);
+                return Err(format!(
+                    "{}: still writable once its snapshot was committed",
+                    seal.dir.display()
+                ));
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = seal;
+    Ok(())
+}
+
+/// Checks, once a run has come and before this VM takes it, that the snapshot it saved is
+/// out of its reach: on macOS, where App Sandbox's grants name paths and cannot be given
+/// up (PM M102), by being no longer at the path it was granted, as the daemon moves a
+/// template into place before it hands over a run. A VM that would reach it takes no run,
+/// and its spawner gives the run to another (daemon.rs, `hand_over`).
+#[cfg(unix)]
+fn moved() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if let Some(seal) = SEAL.get()
+        && shards_vmm::snapshot::exists(&seal.dir)
+    {
+        return Err(format!(
+            "{}: the snapshot this VM saved is still where it was granted, and a run here would reach it",
+            seal.dir.display()
+        ));
+    }
+    Ok(())
+}
 
 /// The directory a VM writes in, the snapshot it saves, and the one holding the vsock
 /// socket path it was given, if any.

@@ -172,6 +172,9 @@ fn a_restore_given_its_files_refuses_a_snapshot_naming_others() {
         TIMEOUT,
     );
     assert!(given.stdout.contains("SHARDS-TEST PASS"), "{given}");
+    // Another file there is: the restore is confined to it before it reads the state,
+    // which then names one it was not given.
+    std::fs::copy(s.0.join("ro.img"), s.0.join("other.img")).unwrap();
     let other = format!("{}:ro", s.0.join("other.img").display());
     let refused = run_shards(
         &["vm", "restore"],
