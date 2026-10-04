@@ -839,9 +839,8 @@ fn spawn_env(
                 .saturating_add(1);
             let mut sources = Vec::with_capacity(fds.len());
             let mut moved = Vec::new();
-            for (i, (fd, target)) in fds.iter().enumerate() {
+            for (fd, _) in fds {
                 let src = fd.as_raw_fd();
-                let _ = (i, target);
                 if targets.contains(&src) {
                     check(libc::posix_spawn_file_actions_adddup2(&mut actions, src, spare))?;
                     sources.push(spare);
@@ -858,10 +857,9 @@ fn spawn_env(
                     *target,
                 ))?;
             }
+            // Above every number in play, none is a target.
             for m in moved {
-                if !targets.contains(&m) {
-                    check(libc::posix_spawn_file_actions_addclose(&mut actions, m))?;
-                }
+                check(libc::posix_spawn_file_actions_addclose(&mut actions, m))?;
             }
             let mut none: libc::sigset_t = std::mem::zeroed();
             libc::sigemptyset(&mut none);
