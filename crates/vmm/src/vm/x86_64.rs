@@ -4,7 +4,6 @@
 //! that makes each restored copy reseed its RNG.
 
 use std::fs::File;
-use std::io::Write;
 use std::sync::Arc;
 
 use super::{Config, Console};
@@ -14,7 +13,7 @@ use crate::devices::control::Control;
 use crate::devices::i8042::I8042;
 use crate::devices::power::Power;
 use crate::devices::serial::Serial;
-use crate::devices::virtio::{VirtioDevice, block::Block, mmio as virtio_mmio, pmem, vsock};
+use crate::devices::virtio::{mmio as virtio_mmio, pmem};
 use crate::devices::vmgenid::VmGenId;
 use crate::devices::{Interrupt, MmioBus};
 use crate::hv::{self, Io};
@@ -262,18 +261,9 @@ fn assemble(
         .memory_mib
         .checked_mul(MIB)
         .ok_or_else(|| format!("{} MiB of guest memory", config.memory_mib))?;
-    // Device memory (pmem regions) goes above 4 GiB, after any high RAM. Opened before
-    // the VM, so that on every early return they outlive it.
-    let mut regions = Vec::with_capacity(config.pmem.len());
-    let mut next = (layout::MMIO_GAP_END + ram.saturating_sub(layout::MMIO_GAP)).next_multiple_of(GIB);
-    for path in &config.pmem {
-        let region = Arc::new(pmem::Region::open(path)?);
-        let gpa = next;
-        next = gpa
-            .checked_add(region.len() as u64)
-            .ok_or("pmem regions overflow the address space")?;
-        regions.push((region, gpa));
-    }
+    // Device memory (pmem regions) goes above 4 GiB, after any high RAM.
+    let first = (layout::MMIO_GAP_END + ram.saturating_sub(layout::MMIO_GAP)).next_multiple_of(GIB);
+    let (regions, _) = super::pmem_regions(config, first)?;
     let vm = hv::Vm::new(hv::VmConfig { vcpus: config.vcpus }).map_err(|e| e.to_string())?;
     for (gpa, host, len) in memory.regions() {
         // SAFETY: `memory` outlives the VM: `Machine` and `Running` drop the VM first.
@@ -288,14 +278,7 @@ fn assemble(
     let irqs = vm.irqs();
     debug!("VM created and RAM mapped");
 
-    let slots =
-        config.disks.len() + regions.len() + usize::from(config.vsock) + usize::from(config.net.is_some());
-    if slots as u64 > layout::VIRTIO_MMIO_MAX {
-        return Err(format!(
-            "at most {} virtio devices are supported",
-            layout::VIRTIO_MMIO_MAX
-        ));
-    }
+    let devices = super::virtio_devices(config, &regions, hosts, layout::VIRTIO_MMIO_MAX)?;
     let mut bus = Bus {
         pmem: regions
             .iter()
@@ -303,10 +286,9 @@ fn assemble(
             .collect(),
         ..Bus::default()
     };
-    let mut virtio = Vec::with_capacity(slots);
+    let mut virtio = Vec::with_capacity(devices.len());
     // Each virtio device takes the next MMIO window and GSI, in the guest's probe order.
-    let mut add_virtio = |bus: &mut Bus, device: Box<dyn VirtioDevice>| -> Result<(), String> {
-        let i = virtio.len();
+    for (i, device) in devices.into_iter().enumerate() {
         let gsi = layout::GSI_VIRTIO + i as u32;
         let base = layout::VIRTIO_MMIO + i as u64 * layout::VIRTIO_MMIO_STRIDE;
         let line = Arc::new(EdgeLine {
@@ -320,47 +302,12 @@ fn assemble(
             size: virtio_mmio::WINDOW,
             gsi,
         });
-        Ok(())
-    };
-    for (i, (path, read_only)) in config.disks.iter().enumerate() {
-        let block = Block::open(path, *read_only, &format!("shards-disk{i}"))?;
-        add_virtio(&mut bus, Box::new(block))?;
-    }
-    // The devices share the regions: `regions`, made before the VM, holds them until
-    // after it on every early return, the hypervisor mapping them until its destroy.
-    for (region, gpa) in &regions {
-        add_virtio(&mut bus, Box::new(pmem::Pmem::new(region.clone(), *gpa)))?;
-    }
-    if config.vsock {
-        let host = hosts
-            .vsock
-            .ok_or("the machine has a vsock device but no host side for it")?;
-        add_virtio(
-            &mut bus,
-            Box::new(vsock::Vsock::new(host.clone(), vsock::GUEST_CID)?),
-        )?;
-    }
-    #[cfg(unix)]
-    if config.net.is_some() {
-        let host = hosts
-            .net
-            .ok_or("the machine has a network device but no network process for it")?;
-        let mut host = host.clone();
-        // The machine's own MAC, a snapshot's included: its guest was set up with it.
-        if let Some(mac) = config.net {
-            host.mac = mac;
-        }
-        add_virtio(&mut bus, Box::new(crate::devices::virtio::net::Net::new(host)?))?;
     }
     let control = Arc::new(Control::default());
     bus.mmio.insert(layout::CONTROL, 0x1000, control.clone())?;
 
-    let out: Box<dyn Write + Send> = match console {
-        Console::Stdout => Box::new(platform::stdout_file().map_err(|e| format!("console: {e}"))?),
-        Console::Discard => Box::new(std::io::sink()),
-    };
     let serial = Arc::new(Serial::new(
-        out,
+        super::console_out(console)?,
         Arc::new(LevelLine {
             irqs: irqs.clone(),
             gsi: layout::GSI_COM1,
@@ -468,16 +415,7 @@ pub fn restore(
     hosts: super::Hosts<'_>,
     working_set: Vec<hv::Touch>,
 ) -> Result<Machine, String> {
-    super::check_vsock(snap, hosts.vsock)?;
-    #[cfg(unix)]
-    if snap.config.net.is_some() != hosts.net.is_some() {
-        return Err(match snap.config.net {
-            Some(_) => {
-                "the snapshot has a network device: give the restored VM its own network process".into()
-            }
-            None => "the snapshot has no network device for a network process".into(),
-        });
-    }
+    super::check_hosts(snap, hosts)?;
     let (vm_state, vcpus) = decode_state(&snap.arch)?;
     if vcpus.len() != snap.config.vcpus as usize {
         return Err(format!(

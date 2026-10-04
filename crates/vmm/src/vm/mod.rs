@@ -2,6 +2,11 @@
 //! that runs it.
 
 use std::path::PathBuf;
+#[cfg(hv)]
+use std::sync::Arc;
+
+#[cfg(hv)]
+use crate::devices::virtio::{pmem, vsock};
 
 #[cfg(all(hv, target_arch = "aarch64"))]
 mod aarch64;
@@ -50,16 +55,109 @@ pub(crate) struct Hosts<'a> {
     pub net: Option<&'a crate::devices::virtio::net::NetHost>,
 }
 
-/// A snapshot's vsock device and the restore's socket path come together or not at all.
+/// A snapshot's vsock and network devices, and the restore's host sides for them, come
+/// together or not at all.
 #[cfg(hv)]
-fn check_vsock(snap: &crate::snapshot::Snapshot, host: Option<&VsockHost>) -> Result<(), String> {
-    match (snap.config.vsock, host) {
-        (true, None) => Err(
-            "the snapshot has a vsock device: give the restored VM its own socket with --vsock PATH".into(),
-        ),
-        (false, Some(_)) => Err("the snapshot has no vsock device for --vsock".into()),
-        _ => Ok(()),
+fn check_hosts(snap: &crate::snapshot::Snapshot, hosts: Hosts<'_>) -> Result<(), String> {
+    match (snap.config.vsock, hosts.vsock) {
+        (true, None) => {
+            return Err(
+                "the snapshot has a vsock device: give the restored VM its own socket with --vsock PATH"
+                    .into(),
+            );
+        }
+        (false, Some(_)) => return Err("the snapshot has no vsock device for --vsock".into()),
+        _ => {}
     }
+    #[cfg(unix)]
+    match (snap.config.net, hosts.net) {
+        (Some(_), None) => {
+            return Err(
+                "the snapshot has a network device: give the restored VM its own network process".into(),
+            );
+        }
+        (None, Some(_)) => return Err("the snapshot has no network device for a network process".into()),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// pmem regions, each with the guest address it maps at.
+#[cfg(hv)]
+type Regions = Vec<(Arc<pmem::Region>, u64)>;
+
+/// `config`'s pmem files, opened, each at the guest address it maps at: from `first`, in
+/// order, each right after the one before; and the address past the last. Opened before
+/// the VM, so that on every early return they outlive it.
+#[cfg(hv)]
+fn pmem_regions(config: &crate::snapshot::MachineConfig, first: u64) -> Result<(Regions, u64), String> {
+    let mut regions = Vec::with_capacity(config.pmem.len());
+    let mut next = first;
+    for path in &config.pmem {
+        let region = Arc::new(pmem::Region::open(path)?);
+        let gpa = next;
+        next = gpa
+            .checked_add(region.len() as u64)
+            .ok_or("pmem regions overflow the address space")?;
+        regions.push((region, gpa));
+    }
+    Ok((regions, next))
+}
+
+/// `config`'s virtio devices in the guest's probe order, which each machine gives the
+/// next of its MMIO windows and interrupt lines: its disks, its pmem `regions`, its vsock
+/// device, and its network device; at most `max` of them. The devices share the regions:
+/// `regions`, made before the VM, holds them until after it on every early return, the
+/// hypervisor mapping them until its destroy.
+#[cfg(hv)]
+fn virtio_devices(
+    config: &crate::snapshot::MachineConfig,
+    regions: &[(Arc<pmem::Region>, u64)],
+    hosts: Hosts<'_>,
+    max: u64,
+) -> Result<Vec<Box<dyn crate::devices::virtio::VirtioDevice>>, String> {
+    let slots =
+        config.disks.len() + regions.len() + usize::from(config.vsock) + usize::from(config.net.is_some());
+    if slots as u64 > max {
+        return Err(format!("at most {max} virtio devices are supported"));
+    }
+    let mut devices: Vec<Box<dyn crate::devices::virtio::VirtioDevice>> = Vec::with_capacity(slots);
+    for (i, (path, read_only)) in config.disks.iter().enumerate() {
+        devices.push(Box::new(crate::devices::virtio::block::Block::open(
+            path,
+            *read_only,
+            &format!("shards-disk{i}"),
+        )?));
+    }
+    for (region, gpa) in regions {
+        devices.push(Box::new(pmem::Pmem::new(region.clone(), *gpa)));
+    }
+    if config.vsock {
+        let host = hosts
+            .vsock
+            .ok_or("the machine has a vsock device but no host side for it")?;
+        devices.push(Box::new(vsock::Vsock::new(host.clone(), vsock::GUEST_CID)?));
+    }
+    #[cfg(unix)]
+    if let Some(mac) = config.net {
+        let mut host = hosts
+            .net
+            .ok_or("the machine has a network device but no network process for it")?
+            .clone();
+        // The machine's own MAC, a snapshot's included: its guest was set up with it.
+        host.mac = mac;
+        devices.push(Box::new(crate::devices::virtio::net::Net::new(host)?));
+    }
+    Ok(devices)
+}
+
+/// Where the serial console's output goes.
+#[cfg(hv)]
+fn console_out(console: Console) -> Result<Box<dyn std::io::Write + Send>, String> {
+    Ok(match console {
+        Console::Stdout => Box::new(crate::platform::stdout_file().map_err(|e| format!("console: {e}"))?),
+        Console::Discard => Box::new(std::io::sink()),
+    })
 }
 
 /// `cfg`'s machine, its backing files resolved once to absolute paths: a snapshot of it
@@ -329,6 +427,142 @@ fn initrd(cfg: &Config, room: u64) -> Result<Option<Vec<u8>>, String> {
 mod tests {
     use super::*;
     use crate::hv::Touch;
+    use crate::snapshot::{MachineConfig, Snapshot};
+
+    fn machine(vsock: bool, net: Option<[u8; 6]>) -> MachineConfig {
+        MachineConfig {
+            vcpus: 1,
+            memory_mib: 16,
+            disks: Vec::new(),
+            pmem: Vec::new(),
+            vsock,
+            net,
+        }
+    }
+
+    fn net_host() -> (crate::devices::virtio::net::NetHost, [std::os::fd::OwnedFd; 2]) {
+        let (net_waits, device_rings) = shards_netring::doorbell().unwrap();
+        let (device_waits, net_rings) = shards_netring::doorbell().unwrap();
+        let host = crate::devices::virtio::net::NetHost {
+            region: Arc::new(shards_netring::memory().unwrap()),
+            wake_me: Arc::new(device_waits),
+            wake_peer: Arc::new(device_rings),
+            mac: [2, 0, 0, 0, 0, 9],
+        };
+        (host, [net_waits, net_rings])
+    }
+
+    /// A restore's host sides match its snapshot's devices: a vsock device and a socket
+    /// for it, a network device and a network process for it, together or not at all.
+    #[test]
+    fn a_restores_hosts_match_its_snapshots_devices() {
+        let vsock = VsockHost::at(PathBuf::from("/nowhere"));
+        let (net, _ends) = net_host();
+        let snap = |vsock, net| Snapshot {
+            config: machine(vsock, net),
+            arch: Vec::new(),
+            devices: Vec::new(),
+        };
+        let hosts = |v: bool, n: bool| Hosts {
+            vsock: v.then_some(&vsock),
+            net: n.then_some(&net),
+        };
+        let mac = Some([2, 0, 0, 0, 0, 1]);
+        for (has_vsock, has_net) in [(false, false), (true, false), (false, true), (true, true)] {
+            for (give_vsock, give_net) in [(false, false), (true, false), (false, true), (true, true)] {
+                let checked = check_hosts(
+                    &snap(has_vsock, has_net.then_some(mac).flatten()),
+                    hosts(give_vsock, give_net),
+                );
+                let matched = has_vsock == give_vsock && has_net == give_net;
+                assert_eq!(
+                    checked.is_ok(),
+                    matched,
+                    "{has_vsock} {has_net} {give_vsock} {give_net}: {checked:?}"
+                );
+            }
+        }
+        let e = check_hosts(&snap(true, None), hosts(false, false)).unwrap_err();
+        assert!(e.contains("--vsock PATH"), "{e}");
+        let e = check_hosts(&snap(false, mac), hosts(false, false)).unwrap_err();
+        assert!(e.contains("its own network process"), "{e}");
+    }
+
+    /// pmem regions go from the first address, each right after the one before; none
+    /// leaves the first address their end; one past the address space is refused.
+    #[test]
+    fn pmem_regions_go_one_after_another() {
+        let dir = std::env::temp_dir().join(format!("shards-pmem-regions-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::write(&a, vec![0u8; 4096]).unwrap();
+        std::fs::write(&b, vec![0u8; 3 << 20]).unwrap();
+        let mut config = machine(false, None);
+        let (none, end) = pmem_regions(&config, 1 << 32).unwrap();
+        assert!(none.is_empty());
+        assert_eq!(end, 1 << 32);
+        config.pmem = vec![a, b];
+        let (regions, end) = pmem_regions(&config, 1 << 32).unwrap();
+        let at: Vec<(u64, u64)> = regions.iter().map(|(r, gpa)| (*gpa, r.len() as u64)).collect();
+        let (first, second) = (at[0], at[1]);
+        assert_eq!(first.0, 1 << 32);
+        assert_eq!(second.0, first.0 + first.1);
+        assert_eq!(end, second.0 + second.1);
+        assert!(first.1 >= 4096 && second.1 >= 3 << 20);
+        let e = pmem_regions(&config, u64::MAX - 4096).unwrap_err();
+        assert_eq!(e, "pmem regions overflow the address space");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A machine's virtio devices come in the guest's probe order, disks, pmem, vsock and
+    /// network, no more than the machine has room for; the network device takes the
+    /// machine's own MAC; a device without its host side is refused.
+    #[test]
+    fn virtio_devices_come_in_probe_order() {
+        let dir = std::env::temp_dir().join(format!("shards-virtio-devices-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let disk = dir.join("disk");
+        std::fs::write(&disk, vec![0u8; 8 * 512]).unwrap();
+        let image = dir.join("image");
+        std::fs::write(&image, vec![0u8; 4096]).unwrap();
+        let mut config = machine(true, Some([2, 0, 0, 0, 0, 1]));
+        config.disks = vec![(disk.clone(), true), (disk, false)];
+        config.pmem = vec![image];
+        let (regions, _) = pmem_regions(&config, 1 << 32).unwrap();
+        let vsock = VsockHost::at(dir.join("vsock"));
+        let (net, _ends) = net_host();
+        let hosts = Hosts {
+            vsock: Some(&vsock),
+            net: Some(&net),
+        };
+        let e = virtio_devices(&config, &regions, hosts, 4).err().unwrap();
+        assert_eq!(e, "at most 4 virtio devices are supported");
+        let devices = virtio_devices(&config, &regions, hosts, 5).unwrap();
+        let ids: Vec<u32> = devices.iter().map(|d| d.device_id()).collect();
+        assert_eq!(ids, [2, 2, 27, 19, 1]);
+        let mut mac = [0u8; 6];
+        devices[4].read_config(0, &mut mac);
+        assert_eq!(
+            mac,
+            [2, 0, 0, 0, 0, 1],
+            "the machine's MAC, not its network process's"
+        );
+        drop(devices);
+        let missing = Hosts {
+            vsock: None,
+            net: Some(&net),
+        };
+        let e = virtio_devices(&config, &regions, missing, 5).err().unwrap();
+        assert!(e.contains("no host side"), "{e}");
+        let missing = Hosts {
+            vsock: Some(&vsock),
+            net: None,
+        };
+        let e = virtio_devices(&config, &regions, missing, 5).err().unwrap();
+        assert!(e.contains("no network process"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Backing files are resolved when the machine is built, so a snapshot of it names
     /// them wherever it is restored from (audit A18). Tests run in their package's
