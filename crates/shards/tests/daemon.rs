@@ -114,9 +114,14 @@ fn wait(child: &mut Child) -> Option<i32> {
     }
 }
 
-/// The pids of the processes whose command line mentions `needle`: from /proc on Linux,
-/// whose `ps` may be busybox's, which takes no `-o args`; from `ps` elsewhere.
+/// The pids of the processes whose command line mentions `needle`.
 fn processes_with(needle: &str) -> Vec<u32> {
+    commands_with(needle).into_iter().map(|(pid, _)| pid).collect()
+}
+
+/// The processes whose command line mentions `needle`, and the command lines: from /proc
+/// on Linux, whose `ps` may be busybox's, which takes no `-o args`; from `ps` elsewhere.
+fn commands_with(needle: &str) -> Vec<(u32, String)> {
     if cfg!(target_os = "linux") {
         return std::fs::read_dir("/proc")
             .unwrap()
@@ -125,7 +130,7 @@ fn processes_with(needle: &str) -> Vec<u32> {
                 let pid: u32 = e.file_name().to_str()?.parse().ok()?;
                 let cmdline = std::fs::read(e.path().join("cmdline")).ok()?;
                 let args = String::from_utf8_lossy(&cmdline).replace('\0', " ");
-                args.contains(needle).then_some(pid)
+                args.contains(needle).then_some((pid, args))
             })
             .collect();
     }
@@ -133,7 +138,10 @@ fn processes_with(needle: &str) -> Vec<u32> {
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|l| l.contains(needle))
-        .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+        .filter_map(|l| {
+            let (pid, args) = l.trim_start().split_once(' ')?;
+            Some((pid.parse().ok()?, args.to_string()))
+        })
         .collect()
 }
 
@@ -1257,11 +1265,10 @@ fn warm_vms_are_given_their_templates_root_filesystem() {
     assert_eq!(run.status, Some(0), "{}", run.stderr);
     let templates = home.join("templates").to_string_lossy().into_owned();
     let warm = || -> Vec<String> {
-        let out = Command::new("ps").args(["-axo", "args="]).output().unwrap();
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter(|l| l.contains(&templates) && l.contains(" restore "))
-            .map(String::from)
+        commands_with(&templates)
+            .into_iter()
+            .map(|(_, args)| args)
+            .filter(|args| args.contains(" restore "))
             .collect()
     };
     eventually("the pool refilled", || !warm().is_empty());
