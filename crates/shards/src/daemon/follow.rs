@@ -89,6 +89,12 @@ impl Followers {
         let _ = (&self.wake.0).write(&[0]);
     }
 
+    /// Whether the loop is to return: a test's daemon's, as its scope ends.
+    #[cfg(test)]
+    pub(super) fn ending(&self) -> bool {
+        self.ended.load(Ordering::SeqCst)
+    }
+
     /// Ends the loop, once it has woken, and every process it follows: a test's daemon's,
     /// as its scope ends.
     #[cfg(test)]

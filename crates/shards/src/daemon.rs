@@ -1749,7 +1749,9 @@ impl<D: Disk> Daemon<D> {
     fn in_use(&self, at: std::net::SocketAddr, proto: u8) -> publish::InUse {
         let deadline = Instant::now() + crate::netproc::GRACE.saturating_mul(2);
         let mut held = lock(&self.ports_held);
-        let mut waited = false;
+        // A run of this daemon's held it: gone from every run, it was freed, while this
+        // waited or while it took the holder's messages without the lock.
+        let mut ours = false;
         let mut taken: Option<String> = None;
         loop {
             let Some(holder) = held
@@ -1757,26 +1759,24 @@ impl<D: Disk> Daemon<D> {
                 .find(|h| h.at.contains(&(at, proto)))
                 .map(|h| h.container.clone())
             else {
-                return if waited {
+                return if ours {
                     publish::InUse::Freed
                 } else {
                     publish::InUse::Host
                 };
             };
+            ours = true;
             if taken.as_ref() != Some(&holder) {
-                let inbox = match lock(&self.runs).get(&holder) {
-                    Some(RunState::Tracked(t)) => Some(t.inbox.clone()),
-                    _ => None,
-                };
-                if let Some(inbox) = inbox {
-                    // Without the ports' lock: the followers' loop, which frees ports,
-                    // may be taking them too.
-                    drop(held);
+                // Without the ports' lock: a handoff, seen through first, registers its
+                // run's ports under it, and the followers' loop, which frees ports, may be
+                // taking the holder's messages too.
+                drop(held);
+                if let Some(inbox) = self.inbox_of(&holder) {
                     self.take_messages(&holder, &inbox);
-                    held = lock(&self.ports_held);
-                    taken = Some(holder);
-                    continue;
                 }
+                held = lock(&self.ports_held);
+                taken = Some(holder);
+                continue;
             }
             // Running, or starting: dockerd's allocator holds a port from the container's
             // start, not from its command's.
@@ -1794,7 +1794,6 @@ impl<D: Disk> Daemon<D> {
                 .wait_timeout(held, left)
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
-            waited = true;
         }
     }
 
@@ -1852,11 +1851,7 @@ impl<D: Disk> Daemon<D> {
             let name = given.strip_prefix('/').unwrap_or(given);
             let holder = lock(&self.containers).name_taken(name).map(|c| c.id.clone());
             if let Some(holder) = holder {
-                let inbox = match lock(&self.runs).get(&holder) {
-                    Some(RunState::Tracked(t)) => Some(t.inbox.clone()),
-                    _ => None,
-                };
-                if let Some(inbox) = inbox {
+                if let Some(inbox) = self.inbox_of(&holder) {
                     self.take_messages(&holder, &inbox);
                 }
                 self.await_released(name);
@@ -2242,6 +2237,23 @@ impl<D: Disk> Daemon<D> {
         lock(&self.runs).insert(id.to_string(), RunState::Tracked(tracked));
         self.resolved.notify_all();
         inbox
+    }
+
+    /// The inbox of run `id` while it is followed; none where it is not. A run being
+    /// handed over is seen through first: its VM may have run its command, said DONE, and
+    /// told its client before the handoff registered the run, and the client's next
+    /// command may already be here. The caller holds none of the locks a handoff takes.
+    fn inbox_of(&self, id: &str) -> Option<Arc<Mutex<Inbox>>> {
+        let mut runs = lock(&self.runs);
+        loop {
+            match runs.get(id) {
+                Some(RunState::Tracked(t)) => return Some(t.inbox.clone()),
+                Some(RunState::Handing { .. }) => {
+                    runs = self.resolved.wait(runs).unwrap_or_else(PoisonError::into_inner);
+                }
+                _ => return None,
+            }
+        }
     }
 
     /// Takes the messages run `id` has sent and nobody has taken yet; whether it has
@@ -3866,6 +3878,9 @@ mod tests {
             let daemon = &self.test.daemon;
             daemon.recording.end();
             daemon.followers.end();
+            // A run's thread waiting for its end, which no follower takes now, returns.
+            drop(lock(&daemon.runs));
+            daemon.resolved.notify_all();
             daemon.completing.end();
             daemon.files.end();
             daemon.checks.end();
@@ -3881,13 +3896,23 @@ mod tests {
                 let _ = vm.kill(libc::SIGKILL);
             }
             if let Some(joining) = self.joining.take() {
+                // Named, as libtest names the test's thread: the test's own output, and
+                // its failure, are captured, and lost as the tests abort.
+                let test = std::thread::current().name().unwrap_or("a test").to_string();
+                let how = if std::thread::panicking() {
+                    "failed"
+                } else {
+                    "returned"
+                };
                 // Its own thread ends as the scope does: the sender goes once all are joined.
                 let _ = std::thread::Builder::new()
                     .name("watchdog".into())
                     .spawn(move || {
                         if let Err(mpsc::RecvTimeoutError::Timeout) = joining.recv_timeout(PATIENCE) {
-                            let _ =
-                                writeln!(io::stderr(), "a daemon thread outlived its test by {PATIENCE:?}");
+                            let _ = writeln!(
+                                io::stderr(),
+                                "a daemon thread outlived its test by {PATIENCE:?}: {test}, which {how}"
+                            );
                             std::process::abort();
                         }
                     });
@@ -3895,10 +3920,11 @@ mod tests {
         }
     }
 
-    /// Waits until run `id` is followed no more: it has ended.
+    /// Waits until run `id` is followed no more: it has ended, or its test is ending,
+    /// and no follower takes its end.
     fn until_ended<D: Disk>(daemon: &Daemon<D>, id: &str) {
         let mut runs = lock(&daemon.runs);
-        while matches!(runs.get(id), Some(RunState::Tracked(_))) {
+        while matches!(runs.get(id), Some(RunState::Tracked(_))) && !daemon.followers.ending() {
             runs = daemon.resolved.wait(runs).unwrap_or_else(PoisonError::into_inner);
         }
     }
@@ -5561,6 +5587,41 @@ mod tests {
         });
     }
 
+    /// A port whose run is being handed over is seen through the handoff, as a name is:
+    /// the run's client may have heard its end before the handoff registered it.
+    #[test]
+    fn a_port_of_a_run_being_handed_over_is_seen_through_its_handoff() {
+        let t = Test::new("port-handing");
+        t.run(|t| {
+            let id = t.create("handing");
+            let at = std::net::SocketAddr::from(([0, 0, 0, 0], 1));
+            lock(&t.daemon.ports_held).push(publish::Held {
+                container: id.clone(),
+                vm: None,
+                at: vec![(at, publish::TCP)],
+                listeners: Vec::new(),
+            });
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            std::thread::scope(|scope| {
+                let asked = scope.spawn(|| t.daemon.in_use(at, publish::TCP));
+                std::thread::sleep(Duration::from_millis(100));
+                assert!(!asked.is_finished(), "answered before the handoff was through");
+                say(&vm, kind::TAKEN, &[]);
+                say(&vm, kind::STARTED, &[]);
+                say(&vm, kind::DONE, &[0]);
+                t.until("the run did not end", |d| {
+                    !matches!(lock(&d.runs).get(&id), Some(RunState::Tracked(_)))
+                });
+                t.daemon.free_ports(Some(&id), None);
+                assert_eq!(asked.join().unwrap(), publish::InUse::Freed);
+            });
+            joined(starting.run).unwrap();
+        });
+    }
+
     /// A VM's network process is given its grace once the VM has ended, then ended, and
     /// the VM's ports are freed once both have gone, not before.
     #[test]
@@ -5950,6 +6011,34 @@ mod tests {
             say(&vm, kind::DONE, &[0]);
             let again = t.reserve("reused");
             assert_ne!(again, id);
+            joined(starting.run).unwrap();
+            assert!(t.record(&id).is_none());
+        });
+    }
+
+    /// A name whose `--rm` holder's run is being handed over is seen through the handoff:
+    /// its VM may run the command, say DONE and tell its client before the handoff has
+    /// registered the run, and the client's next run may want the name at once.
+    #[test]
+    fn a_name_held_by_a_run_being_handed_over_is_seen_through_its_handoff() {
+        let t = Test::new("rm-handing");
+        t.run(|t| {
+            t.t.daemon.start_completer(t.threads);
+            let id = t.reserve_with("handing", None, true);
+            t.t.daemon.await_arrival(&id);
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            std::thread::scope(|scope| {
+                let again = scope.spawn(|| t.reserve("handing"));
+                std::thread::sleep(Duration::from_millis(100));
+                assert!(!again.is_finished(), "answered before the handoff was through");
+                say(&vm, kind::TAKEN, &[]);
+                say(&vm, kind::STARTED, &[]);
+                say(&vm, kind::DONE, &[0]);
+                assert_ne!(again.join().unwrap(), id);
+            });
             joined(starting.run).unwrap();
             assert!(t.record(&id).is_none());
         });
