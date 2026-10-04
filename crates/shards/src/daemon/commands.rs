@@ -898,28 +898,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return 1;
             }
         };
-        // A line's window is decided at its first piece, and holds for the rest of it.
-        let mut admitted = [Admit::Pass, Admit::Pass];
-        let mut unsent: Option<io::Error> = None;
-        let mut each = |piece: Piece<'_>| -> io::Result<bool> {
-            let s = usize::from(piece.stream == LOG_STDERR);
-            let Some(decision) = admitted.get_mut(s) else {
-                return Ok(false);
-            };
-            if piece.first {
-                *decision = window.admit(piece.at);
-            }
-            match decision {
-                Admit::Skip => Ok(true),
-                Admit::Stop => Ok(false),
-                Admit::Pass => match send(reply, shown, &piece) {
-                    Ok(()) => Ok(true),
-                    Err(e) => {
-                        unsent = Some(e);
-                        Ok(false)
-                    }
-                },
-            }
+        let mut show = Show {
+            reply,
+            shown,
+            window,
+            admitted: [Admit::Pass, Admit::Pass],
+            stream: LOG_STDOUT,
+            gathered: Vec::new(),
+            unsent: None,
         };
         // Without -f, what is there is all there is: a line in progress too.
         let ended = !follow || !self.running(&id);
@@ -928,11 +914,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 Some(n) => Reader::from(logs::tail(&log, n as u64, ended)?),
                 None => Reader::new(),
             };
-            if !reader.read(&log, &mut each)? {
+            if !show.read(&mut reader, &log)? {
                 return Ok(());
             }
             if ended {
-                reader.finish(&mut each)?;
+                show.finish(&mut reader)?;
                 return Ok(());
             }
             // Followed as it grows: woken by an append to the segment it is read from, by
@@ -942,13 +928,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
             let mut watch = shards_vmm::platform::FileWatch::new(log.dir())?;
             let mut watched = None;
             let Some((number, end)) = self.wake_at_end(&id)? else {
-                reader.read(&log, &mut each)?;
-                reader.finish(&mut each)?;
+                if show.read(&mut reader, &log)? {
+                    show.finish(&mut reader)?;
+                }
                 return Ok(());
             };
             let followed = (|| -> io::Result<()> {
                 loop {
-                    if !reader.read(&log, &mut each)? {
+                    if !show.read(&mut reader, &log)? {
                         return Ok(());
                     }
                     if let Some(segment) = reader.segment()
@@ -961,8 +948,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     let ready = wait_readable(&[watch.fd(), end.as_fd(), reply.0.as_fd()])?;
                     // Once the container has ended, what is left of a line is all of it.
                     if ready[1] {
-                        if reader.read(&log, &mut each)? {
-                            reader.finish(&mut each)?;
+                        if show.read(&mut reader, &log)? {
+                            show.finish(&mut reader)?;
                         }
                         return Ok(());
                     }
@@ -976,7 +963,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.forget_waiter(&id, number);
             followed
         })();
-        if let Some(e) = unsent {
+        if let Some(e) = show.unsent {
             return undelivered(&e, reply);
         }
         if let Err(e) = read {
@@ -997,27 +984,150 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 }
 
-/// Sends `piece` of a line to the client, after the line's prefix if it is the first.
-fn send(reply: &Reply<'_>, shown: Shown, piece: &Piece<'_>) -> io::Result<()> {
-    if !piece.first || !shown.stamps && !shown.details {
-        return reply.bytes(piece.stream, piece.bytes);
+/// What `logs` shows its client: the lines in its window, each after its prefix, gathered
+/// into messages of one stream of up to [`logs::CHUNK`] bytes, sent as they fill, as the
+/// stream changes, and once what there is to read is read. A message a piece cost a send
+/// and the client a read for every line (review 7.10, PM M95).
+struct Show<'r, 'a> {
+    reply: &'r Reply<'a>,
+    shown: Shown,
+    window: Window,
+    /// A line's window is decided at its first piece, and holds for the rest of it.
+    admitted: [Admit; 2],
+    /// The stream of what is gathered.
+    stream: u8,
+    gathered: Vec<u8>,
+    /// Why the client was not sent what it was to be, if it was not.
+    unsent: Option<io::Error>,
+}
+
+impl Show<'_, '_> {
+    /// Reads what `reader` has of `log` and sends it: whether to go on.
+    fn read(&mut self, reader: &mut Reader, log: &LogFile) -> io::Result<bool> {
+        let go_on = reader.read(log, &mut |piece| self.piece(&piece))?;
+        Ok(self.send() && go_on)
     }
-    let mut line = Vec::with_capacity(piece.bytes.len() + 32);
-    if shown.stamps {
-        line.extend_from_slice(rfc3339_nano(piece.at).as_bytes());
-        line.push(b' ');
+
+    /// Takes what is left of each stream's unfinished line, and sends it.
+    fn finish(&mut self, reader: &mut Reader) -> io::Result<bool> {
+        let go_on = reader.finish(&mut |piece| self.piece(&piece))?;
+        Ok(self.send() && go_on)
     }
-    if shown.details {
-        line.push(b' ');
+
+    fn piece(&mut self, piece: &Piece<'_>) -> io::Result<bool> {
+        let s = usize::from(piece.stream == LOG_STDERR);
+        let Some(decision) = self.admitted.get_mut(s) else {
+            return Ok(false);
+        };
+        if piece.first {
+            *decision = self.window.admit(piece.at);
+        }
+        match decision {
+            Admit::Skip => Ok(true),
+            Admit::Stop => Ok(false),
+            Admit::Pass => {
+                if piece.stream != self.stream && !self.send() {
+                    return Ok(false);
+                }
+                self.stream = piece.stream;
+                if piece.first && self.shown.stamps {
+                    self.gathered.extend_from_slice(rfc3339_nano(piece.at).as_bytes());
+                    self.gathered.push(b' ');
+                }
+                if piece.first && self.shown.details {
+                    self.gathered.push(b' ');
+                }
+                self.gathered.extend_from_slice(piece.bytes);
+                Ok(self.gathered.len() < logs::CHUNK || self.send())
+            }
+        }
     }
-    line.extend_from_slice(piece.bytes);
-    reply.bytes(piece.stream, &line)
+
+    /// Sends what is gathered: whether it went.
+    fn send(&mut self) -> bool {
+        if self.gathered.is_empty() || self.unsent.is_some() {
+            return self.unsent.is_none();
+        }
+        let sent = self.reply.bytes(self.stream, &self.gathered);
+        self.gathered.clear();
+        match sent {
+            Ok(()) => true,
+            Err(e) => {
+                self.unsent = Some(e);
+                false
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// `logs` gathers output into messages of one stream, sent as one fills past a chunk
+    /// and as the stream changes: in order, where it sent a message a line (review 7.10).
+    #[test]
+    fn logs_output_is_gathered_by_stream_in_order() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        theirs.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        // Read as it is sent: more than a socket's buffer goes.
+        let reading = std::thread::spawn(move || {
+            let mut got = Vec::new();
+            let mut out = Vec::new();
+            while let Some(m) = shards_ipc::recv(&theirs).unwrap() {
+                got.push((m.kind, m.payload.len()));
+                if m.kind == kind::OUT {
+                    out.extend_from_slice(&m.payload);
+                }
+            }
+            (got, out)
+        });
+        let reply = Reply(&ours);
+        let mut show = Show {
+            reply: &reply,
+            shown: Shown {
+                stamps: false,
+                details: false,
+            },
+            window: Window::default(),
+            admitted: [Admit::Pass, Admit::Pass],
+            stream: LOG_STDOUT,
+            gathered: Vec::new(),
+            unsent: None,
+        };
+        fn piece(stream: u8, bytes: &[u8]) -> Piece<'_> {
+            Piece {
+                stream,
+                at: 0,
+                first: true,
+                bytes,
+            }
+        }
+        let mut sent = Vec::new();
+        for n in 0..10_000 {
+            let line = format!("{n:09}\n").into_bytes();
+            assert!(show.piece(&piece(LOG_STDOUT, &line)).unwrap());
+            sent.extend_from_slice(&line);
+        }
+        assert!(show.piece(&piece(LOG_STDERR, b"err\n")).unwrap());
+        assert!(show.piece(&piece(LOG_STDOUT, b"out\n")).unwrap());
+        assert!(show.send());
+        drop(show);
+        drop(ours);
+        let (got, out) = reading.join().unwrap();
+        assert_eq!(
+            got,
+            [
+                (kind::OUT, 65_540),
+                (kind::OUT, 34_460),
+                (kind::ERR, 4),
+                (kind::OUT, 4)
+            ]
+        );
+        sent.extend_from_slice(b"out\n");
+        assert_eq!(out, sent);
+    }
 
     #[test]
     fn times_print_as_docker_logs_prints_them() {

@@ -3190,3 +3190,23 @@ revision before comparing a changed API/implementation.
 - **Consequence.** Every client of a daemon waited for as long as a collection took,
   seconds for a store with that much to remove; on a thread of its own, a collection
   holds up no client.
+
+### M95. A log of short lines, read on
+
+- **Question.** `shards logs` read each record alone, its index entry, its head, a `stat`
+  of its log, then its output, and sent the client each line in a message of its own
+  (review 7.10). What did that cost a log of short lines, as a command writing a line at
+  a time leaves it?
+- **Method.** `docs/research/measurements/log-read/read.py alpine:3.22 1000000 6 OLD NEW`:
+  a container's log and index made of 1,000,000 records of one 15-byte line each, one in
+  ten on stderr, then `shards logs` six times in each arm, alternating, its output
+  drained and counted, and the daemon's CPU time around each. 6834269 against the change
+  (`Reader::read_segment` batched, `Show` in `commands.rs`), 2026-10-03, the host of M84,
+  load average 2.9 to 3.5.
+- **Result.** 6834269: p50 1,695.7 ms, max 1,705.1 ms; the daemon's CPU 1.68 s a read.
+  The change: p50 292.5 ms, max 317.4 ms; the daemon's CPU 0.21 s. A variant sending a
+  line whole in what is read from there, without holding it first, measured no
+  different in a second comparison (p50 316.1 ms, the daemon's CPU 0.21 s, against
+  1,710.9 ms and 1.70 s), and is not kept.
+- **Consequence.** A log of short lines is read 5.8 times faster, the daemon spending an
+  eighth of the CPU it did.

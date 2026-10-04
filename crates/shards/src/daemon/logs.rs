@@ -22,8 +22,8 @@ use crate::spec::{INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, L
 /// A log's first segment, and its index, in its container's directory.
 pub const LOG: &str = "log";
 pub const INDEX: &str = "log.idx";
-/// How much is read at once.
-const CHUNK: usize = 64 << 10;
+/// How much is read at once, and sent a client in one message.
+pub const CHUNK: usize = 64 << 10;
 /// How much of a line is held before it goes out in pieces: moby's copier's buffer.
 pub const PIECE: usize = 16 << 10;
 /// Past every record there will be.
@@ -180,20 +180,22 @@ impl Segment {
         Ok(u64::from_be_bytes(e))
     }
 
-    /// Record `no`, checked against its entry: a record that is not where its index says,
-    /// or not whole, is damage, not output.
+    /// Record `no`, checked against its entry ([`check`](Self::check)).
     fn record(&self, no: u64) -> io::Result<Record> {
         let entry = self.entry(no)?;
-        let at = entry & INDEX_START;
         let mut head = [0u8; LOG_HEAD as usize];
-        self.log.read_exact_at(&mut head, at)?;
+        self.log.read_exact_at(&mut head, entry & INDEX_START)?;
+        self.check(no, entry, head, self.log.metadata().map_or(0, |m| m.len()))
+    }
+
+    /// Record `no`, its entry `entry` and its head `head`, checked against the log, `len`
+    /// bytes long: a record that is not where its index says, or not whole, is damage,
+    /// not output.
+    fn check(&self, no: u64, entry: u64, head: [u8; LOG_HEAD as usize], len: u64) -> io::Result<Record> {
+        let at = entry & INDEX_START;
+        let log_len = len;
         let [stream, t @ .., l0, l1, l2, l3] = head;
-        let damaged = || {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("the log is damaged at record {no} of its segment {}", self.seq),
-            )
-        };
+        let damaged = || self.damaged(no);
         let expected = if entry & INDEX_STDERR != 0 {
             LOG_STDERR
         } else {
@@ -203,11 +205,8 @@ impl Segment {
             return Err(damaged());
         }
         let len = u64::from(u32::from_be_bytes([l0, l1, l2, l3]));
-        let start = at + LOG_HEAD;
-        if start
-            .checked_add(len)
-            .is_none_or(|end| end > self.log.metadata().map_or(0, |m| m.len()))
-        {
+        let start = at.checked_add(LOG_HEAD).ok_or_else(damaged)?;
+        if start.checked_add(len).is_none_or(|end| end > log_len) {
             return Err(damaged());
         }
         Ok(Record {
@@ -216,6 +215,14 @@ impl Segment {
             start,
             len,
         })
+    }
+
+    /// Record `no` is damage.
+    fn damaged(&self, no: u64) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("the log is damaged at record {no} of its segment {}", self.seq),
+        )
     }
 
     pub fn seq(&self) -> u64 {
@@ -465,6 +472,10 @@ pub struct Reader {
     segment: Option<Segment>,
     from: [Pos; 2],
     open: [Option<Open>; 2],
+    /// What its reads of the log go into, and of the index: made once, however often it
+    /// reads (review 7.10).
+    buf: Vec<u8>,
+    entries: Vec<u8>,
 }
 
 /// Whether a reader goes on after a piece.
@@ -485,6 +496,8 @@ impl Reader {
             segment: None,
             from,
             open: [None, None],
+            buf: vec![0u8; CHUNK],
+            entries: vec![0u8; CHUNK],
         }
     }
 
@@ -496,7 +509,20 @@ impl Reader {
     /// Reads the records whole so far, and gives each line's pieces to `each` as they
     /// are ready. Whether to go on: `each` may say no.
     pub fn read(&mut self, log: &LogFile, each: &mut dyn FnMut(Piece<'_>) -> Flow) -> Flow {
-        let mut buf = vec![0u8; CHUNK];
+        let mut buf = std::mem::take(&mut self.buf);
+        let mut entries = std::mem::take(&mut self.entries);
+        let read = self.read_with(log, &mut buf, &mut entries, each);
+        (self.buf, self.entries) = (buf, entries);
+        read
+    }
+
+    fn read_with(
+        &mut self,
+        log: &LogFile,
+        buf: &mut [u8],
+        entries: &mut [u8],
+        each: &mut dyn FnMut(Piece<'_>) -> Flow,
+    ) -> Flow {
         loop {
             if self.segment.as_ref().map(|s| s.seq) != Some(self.next.seq) {
                 let Some(segment) = log.first_from(self.next.seq)? else {
@@ -517,7 +543,7 @@ impl Reader {
             // gets after the count are only before a later segment's.
             let read = log
                 .has_after(segment.seq)
-                .and_then(|whole| Ok((whole, self.read_segment(&segment, &mut buf, each)?)));
+                .and_then(|whole| Ok((whole, self.read_segment(&segment, buf, entries, each)?)));
             let seq = segment.seq;
             self.segment = Some(segment);
             match read? {
@@ -532,33 +558,122 @@ impl Reader {
         }
     }
 
-    /// Reads `segment`'s records whole so far, from the next.
+    /// Reads `segment`'s records whole so far, from the next: their entries a chunk at a
+    /// time, and the records, from the first not taken, as much of the log as `buf` holds
+    /// at a time; each whose head and output lie in it is taken from it, and one larger
+    /// read in pieces. A record and an entry each read alone cost three reads and a
+    /// `stat` a record, of a log of short lines (review 7.10, PM M95).
     fn read_segment(
         &mut self,
         segment: &Segment,
         buf: &mut [u8],
+        entries: &mut [u8],
         each: &mut dyn FnMut(Piece<'_>) -> Flow,
     ) -> Flow {
         let count = segment.count()?;
+        // The records counted are whole in it: their writer writes a record, then its
+        // entry.
+        let log_len = segment.log.metadata()?.len();
+        // At least one, so that each pass takes one or fails.
+        let per = (entries.len() / 8).max(1) as u64;
         while self.next.no < count {
-            let no = self.next.no;
-            let record = segment.record(no)?;
-            let mut done = 0u64;
-            while done < record.len {
-                let take = usize::try_from((record.len - done).min(CHUNK as u64)).unwrap_or(CHUNK);
-                let chunk = buf.get_mut(..take).unwrap_or_default();
-                segment.log.read_exact_at(chunk, record.start + done)?;
-                let at = Pos {
-                    seq: segment.seq,
-                    no,
-                    byte: done,
-                };
-                if !self.take(&record, at, chunk, each)? {
-                    return Ok(false);
+            let n = (count - self.next.no).min(per);
+            let raw = entries
+                .get_mut(..usize::try_from(n * 8).unwrap_or(0))
+                .unwrap_or_default();
+            segment.index.read_exact_at(raw, self.next.no * 8)?;
+            let entry = |i: usize| {
+                raw.get(i * 8..i * 8 + 8)
+                    .and_then(|e| e.try_into().ok())
+                    .map(u64::from_be_bytes)
+                    .ok_or_else(|| io::Error::other("an index entry out of its chunk"))
+            };
+            let n = usize::try_from(n).unwrap_or(0);
+            let mut i = 0;
+            while i < n {
+                let first = entry(i)? & INDEX_START;
+                let span = usize::try_from(log_len.saturating_sub(first).min(buf.len() as u64)).unwrap_or(0);
+                let held = buf.get_mut(..span).unwrap_or_default();
+                segment.log.read_exact_at(held, first)?;
+                let mut taken = 0;
+                while i < n {
+                    let no = self.next.no;
+                    let e = entry(i)?;
+                    // Where in what is held it starts: none before, as entries go on.
+                    let Some(rel) = (e & INDEX_START)
+                        .checked_sub(first)
+                        .and_then(|r| usize::try_from(r).ok())
+                    else {
+                        break;
+                    };
+                    let Some(head) = held
+                        .get(rel..rel + LOG_HEAD as usize)
+                        .and_then(|h| <[u8; LOG_HEAD as usize]>::try_from(h).ok())
+                    else {
+                        if taken == 0 {
+                            // Not even its head in the rest of the log.
+                            return Err(segment.damaged(no));
+                        }
+                        break;
+                    };
+                    let record = segment.check(no, e, head, log_len)?;
+                    let out = rel + LOG_HEAD as usize;
+                    let at = Pos {
+                        seq: segment.seq,
+                        no,
+                        byte: 0,
+                    };
+                    let output = usize::try_from(record.len)
+                        .ok()
+                        .and_then(|len| out.checked_add(len))
+                        .and_then(|end| held.get(out..end));
+                    match output {
+                        Some(output) => {
+                            if !self.take(&record, at, output, each)? {
+                                return Ok(false);
+                            }
+                        }
+                        // Larger than the buffer: alone, in pieces.
+                        None if taken == 0 => {
+                            if !self.take_in_pieces(segment, &record, no, held, each)? {
+                                return Ok(false);
+                            }
+                        }
+                        // Read again, from it.
+                        None => break,
+                    }
+                    self.next.no += 1;
+                    i += 1;
+                    taken += 1;
                 }
-                done += take as u64;
             }
-            self.next.no += 1;
+        }
+        Ok(true)
+    }
+
+    /// Takes `record`, number `no`, larger than `buf`, a piece at a time.
+    fn take_in_pieces(
+        &mut self,
+        segment: &Segment,
+        record: &Record,
+        no: u64,
+        buf: &mut [u8],
+        each: &mut dyn FnMut(Piece<'_>) -> Flow,
+    ) -> Flow {
+        let mut done = 0u64;
+        while done < record.len {
+            let take = usize::try_from((record.len - done).min(buf.len() as u64)).unwrap_or(0);
+            let chunk = buf.get_mut(..take).unwrap_or_default();
+            segment.log.read_exact_at(chunk, record.start + done)?;
+            let at = Pos {
+                seq: segment.seq,
+                no,
+                byte: done,
+            };
+            if !self.take(record, at, chunk, each)? {
+                return Ok(false);
+            }
+            done += take as u64;
         }
         Ok(true)
     }
@@ -870,10 +985,12 @@ mod tests {
         let mut at = 1_000;
         for _ in 0..next(40) {
             let stream = if next(3) == 0 { LOG_STDERR } else { LOG_STDOUT };
-            let len = match next(4) {
-                0 => next(4) as usize,
-                1 => next(200) as usize,
-                2 => PIECE - 2 + next(5) as usize,
+            let len = match next(20) {
+                0..5 => next(4) as usize,
+                5..10 => next(200) as usize,
+                10..15 => PIECE - 2 + next(5) as usize,
+                // Now and then, larger than what a read holds at once.
+                15 => CHUNK + next(CHUNK as u64) as usize,
                 _ => next(3 * PIECE as u64) as usize,
             };
             let bytes: Vec<u8> = (0..len)
@@ -1171,6 +1288,18 @@ mod tests {
         let e = Reader::new().read(&log, &mut |_| Ok(true)).unwrap_err();
         assert!(
             e.to_string().contains("damaged at record 1 of its segment 0"),
+            "{e}"
+        );
+
+        // An entry past the log's end.
+        write(&dir, &[(LOG_STDOUT, 1, b"a\n".to_vec())], true);
+        let mut index = read_all(&dir.join(INDEX));
+        index[7] = 0x40;
+        std::fs::write(dir.join(INDEX), &index).unwrap();
+        let log = LogFile::open(&dir).unwrap();
+        let e = Reader::new().read(&log, &mut |_| Ok(true)).unwrap_err();
+        assert!(
+            e.to_string().contains("damaged at record 0 of its segment 0"),
             "{e}"
         );
 

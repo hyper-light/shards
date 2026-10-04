@@ -1233,6 +1233,12 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
     - A record is read in 64 KiB pieces, and a line held until it ends or reaches 16
       KiB, moby's copier's buffer; then it goes out in pieces, its prefix before the
       first, so the client's bytes are the whole line's.
+    - Reading on, it takes the index 8,192 entries at a time and the log 64 KiB at a
+      time, each record whose head and output lie in what is read taken from it, and
+      sends a stream's lines in messages of up to 64 KiB, sent as one fills, as the
+      stream changes, and once what is there is read: each record read alone and each
+      line sent alone cost a log of a million short lines 1.7 s of the daemon's CPU,
+      against 0.2 s, and its `logs` 1.70 s, against 0.29 s (review 7.10, PM M95).
     - `--tail` reads the index back from the end, and only the records of the lines it
       shows: on a 2 GiB log, 3 ms and 8 MiB of daemon, against 1.6 s and 8.2 GiB (PM
       M48).
