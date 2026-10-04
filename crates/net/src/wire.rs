@@ -15,6 +15,11 @@ pub const ETHERTYPE_IPV4: u16 = 0x0800;
 pub const ETHERTYPE_ARP: u16 = 0x0806;
 pub const IPV4: usize = 20;
 pub const PROTO_ICMP: u8 = 1;
+/// ICMP's destination unreachable (RFC 792).
+pub const ICMP_UNREACHABLE: u8 = 3;
+/// Destination unreachable's code for what a filter refuses: communication
+/// administratively prohibited (RFC 1812 §5.2.7.1).
+pub const ADMIN_PROHIBITED: u8 = 13;
 pub const PROTO_TCP: u8 = 6;
 pub const PROTO_UDP: u8 = 17;
 
@@ -83,6 +88,8 @@ pub struct Ip<'a> {
     pub dst: Ipv4Addr,
     pub proto: u8,
     pub ttl: u8,
+    /// The header as it came, options and all: what an ICMP error quotes.
+    pub header: &'a [u8],
     pub payload: &'a [u8],
 }
 
@@ -103,6 +110,7 @@ pub fn ipv4(b: &[u8]) -> Option<Ip<'_>> {
         dst: ip_at(b, 16)?,
         proto: *b.get(9)?,
         ttl: *b.get(8)?,
+        header: b.get(..ihl)?,
         payload: b.get(ihl..total)?,
     })
 }
@@ -267,6 +275,22 @@ impl Frames {
         }
     }
 
+    /// An ICMP destination unreachable of `code` (RFC 792) for datagram `ip`, quoting its
+    /// header and the first 8 bytes of its data, as RFC 792 has one quote them.
+    pub fn icmp_unreachable(&self, out: &mut Vec<u8>, src: Ipv4Addr, dst: Ipv4Addr, code: u8, ip: &Ip<'_>) {
+        let data = ip.payload.get(..ip.payload.len().min(8)).unwrap_or_default();
+        self.start(out, ETHERTYPE_IPV4, false);
+        self.ipv4(out, src, dst, PROTO_ICMP, 8 + ip.header.len() + data.len());
+        let at = out.len();
+        out.extend_from_slice(&[ICMP_UNREACHABLE, code, 0, 0, 0, 0, 0, 0]);
+        out.extend_from_slice(ip.header);
+        out.extend_from_slice(data);
+        let sum = checksum(out.get(at..).unwrap_or_default());
+        if let Some(s) = out.get_mut(at + 2..at + 4) {
+            s.copy_from_slice(&sum.to_be_bytes());
+        }
+    }
+
     /// A UDP datagram, its checksum left to the guest's trust in its device.
     pub fn udp(&self, out: &mut Vec<u8>, src: (Ipv4Addr, u16), dst: (Ipv4Addr, u16), payload: &[u8]) {
         self.start(out, ETHERTYPE_IPV4, true);
@@ -367,5 +391,33 @@ mod tests {
                 .and_then(|e| ipv4(e.payload))
                 .and_then(|i| tcp(i.payload));
         }
+    }
+
+    /// A destination unreachable quotes the datagram's header and the first 8 bytes of its
+    /// data, under a checksum that sums to zero (RFC 792).
+    #[test]
+    fn an_unreachable_quotes_the_datagram() {
+        let f = Frames {
+            gateway_mac: [2, 0, 0, 0, 0, 1],
+            guest_mac: [2, 0x42, 0xac, 0x11, 0, 2],
+        };
+        let (gateway, guest, far) = (
+            Ipv4Addr::new(172, 17, 0, 1),
+            Ipv4Addr::new(172, 17, 0, 2),
+            Ipv4Addr::new(8, 8, 8, 8),
+        );
+        let mut sent = Vec::new();
+        f.udp(&mut sent, (guest, 5353), (far, 53), b"a question longer than eight");
+        let sent_ip = ipv4(eth(&sent[VNET..]).unwrap().payload).unwrap();
+        let mut out = Vec::new();
+        f.icmp_unreachable(&mut out, gateway, guest, ADMIN_PROHIBITED, &sent_ip);
+        let e = eth(&out[VNET..]).unwrap();
+        let ip = ipv4(e.payload).unwrap();
+        assert_eq!((ip.src, ip.dst, ip.proto), (gateway, guest, PROTO_ICMP));
+        assert_eq!(checksum(ip.payload), 0);
+        assert_eq!(&ip.payload[..2], &[ICMP_UNREACHABLE, ADMIN_PROHIBITED]);
+        let quoted = &ip.payload[8..];
+        assert_eq!(&quoted[..IPV4], sent_ip.header);
+        assert_eq!(&quoted[IPV4..], &sent_ip.payload[..8]);
     }
 }

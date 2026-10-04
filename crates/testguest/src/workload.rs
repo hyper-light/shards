@@ -70,6 +70,7 @@ pub fn main() -> ! {
         "loopback" => loopback(),
         "fs" => fs(args.get(1..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
+        "udp" => udp(arg(1)),
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
         "udp-echo" => udp_echo(arg(1), arg(2).parse().unwrap_or(1)),
         "sleep" => {
@@ -341,6 +342,28 @@ fn tcp(addr: &str) -> i32 {
         }
         Err(e) => {
             let _ = writeln!(io::stdout(), "tcp error {e}");
+            1
+        }
+    }
+}
+
+/// Sends a datagram to `addr` from a connected socket, and waits up to 5 s for an answer:
+/// `udp N` its length, or `udp error E`, as an ICMP error or the wait ends it.
+fn udp(addr: &str) -> i32 {
+    let answered = std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| {
+        s.connect(addr)?;
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+        s.send(b"?")?;
+        let mut buf = [0u8; 512];
+        s.recv(&mut buf)
+    });
+    match answered {
+        Ok(n) => {
+            let _ = writeln!(io::stdout(), "udp {n}");
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "udp error {e}");
             1
         }
     }

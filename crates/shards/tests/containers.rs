@@ -1070,6 +1070,27 @@ fn a_run_is_on_a_network_as_docker_runs_it() {
     );
 }
 
+/// A datagram a run's policy refuses is answered at once with ICMP's "administratively
+/// prohibited" (RFC 1812 §5.2.7.1), which a connected socket hears as EHOSTUNREACH,
+/// where one dropped left a resolver to wait out its timeouts (review 2.27). The
+/// address is TEST-NET-1's (RFC 5737): no answer could come from it anyway.
+#[test]
+fn a_refused_datagram_is_said_refused_at_once() {
+    let Some((home, image)) = home("containers-udp-refused") else {
+        return;
+    };
+    let t0 = std::time::Instant::now();
+    let ran = run_in(&home, &image, &["--rm", "-u", "root"], &["udp", "192.0.2.1:53"]);
+    assert_eq!(ran.status, Some(1), "{ran}");
+    // EHOSTUNREACH, Linux's 113 on every architecture shards runs (asm-generic/errno.h).
+    assert!(
+        ran.stdout.starts_with("udp error ") && ran.stdout.contains("(os error 113)"),
+        "{ran}"
+    );
+    // The probe waits 5 s for an answer that never comes.
+    assert!(t0.elapsed() < Duration::from_secs(4), "{:?}", t0.elapsed());
+}
+
 /// `--network none`: a loopback alone, as dockerd's `none` gives a container. The run
 /// reaches nothing, and its own name is on the loopback, not a bridge's address; it still
 /// has the host's resolvers, as dockerd's does.

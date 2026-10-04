@@ -795,7 +795,14 @@ impl<'r> Stack<'r> {
             }
             return;
         }
+        // Refused, said at once (review 2.27): a connected socket's next call fails
+        // (Linux: EHOSTUNREACH, net/ipv4/icmp.c icmp_err_convert), where a datagram
+        // dropped would leave a resolver to wait out its timeouts.
         if !self.cfg.allows(ip.dst) {
+            let mut out = Vec::new();
+            self.frames
+                .icmp_unreachable(&mut out, self.cfg.gateway_ip, ip.src, wire::ADMIN_PROHIBITED, ip);
+            self.out().send(&out);
             return;
         }
         let key = (u.src_port, ip.dst, u.dst_port);
