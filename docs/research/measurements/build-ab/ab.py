@@ -10,6 +10,9 @@ comparing: both then restore the same snapshot.
 
 AB_DUMP names a file for every turn's samples, as JSON.
 
+AB_FLAGS adds `run` options, split at spaces, before the image: `AB_FLAGS=--rm` has each
+run's container removed as it ends.
+
 ENV_OLD and ENV_NEW add `K=V` pairs to one arm's environment, and so to the daemon its
 first run starts: one build can be compared with itself under a setting.
 
@@ -49,7 +52,7 @@ for name, d in (("old", old), ("new", new)):
 def run(shards, env):
     start = time.perf_counter()
     done = subprocess.run(
-        [shards, "run", "--pull", "never", image] + command,
+        [shards, "run", *os.environ.get("AB_FLAGS", "").split(), "--pull", "never", image] + command,
         env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,

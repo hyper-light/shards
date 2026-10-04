@@ -3211,6 +3211,52 @@ revision before comparing a changed API/implementation.
 - **Consequence.** A log of short lines is read 5.8 times faster, the daemon spending an
   eighth of the CPU it did.
 
+### M96. A run's end on the followers' loop, waiting on no write
+
+- **Question.** The followers' loop takes every run's messages (M90). At a run's end it
+  waited for the container's first record to be written, when the run ended first, and
+  renamed a `--rm` container's directory aside under the registry's lock. How long did a
+  run's end hold the loop, behind which every other run's messages wait, and what does
+  keeping the end in memory change, the removal set aside by the completer?
+- **Method.** First a probe (not kept) of the loop under
+  `published_ports_reach_the_guest_as_dockerd_publishes_them`, four at once, three
+  rounds, at 65e940a's code: each run's end, its wait for the record, and the rename,
+  2026-10-03, load average 6 to 7 from other work. Then 65e940a against the change
+  (c2f9b6a, at c104b6f), each built with a probe (not kept) timing each batch of a run's
+  messages the loop takes, `build-ab/ab.py` with `AB_FLAGS=--rm` and `AB_BURST=8`, 40
+  turns per arm, three passes, the old arm's `shards-vm` with a sandbox identity of its
+  own; the same day, the host of M84, load average 9 to 23.
+- **Results.** Under the E2E test, 65e940a's loop:
+
+| What | n | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|
+| A run's end | 176 | 270 µs | 80.9 ms | 121.3 ms | 126.4 ms |
+| Its wait for the record, where it waited | 48 | 59.3 ms | 83.0 ms | 112.5 ms | 112.5 ms |
+| The rename, under the registry's lock | 179 | 389 µs | 14.0 ms | 33.9 ms | 52.9 ms |
+
+  The A/B, a run's end on the loop, 352 a pass:
+
+| Pass | Build | p50 | p90 | p99 | max | total |
+|---|---|---|---|---|---|---|
+| 1 | 65e940a | 252 µs | 4.4 ms | 12.7 ms | 15.4 ms | 490 ms |
+| 1 | The change | 13 µs | 32 µs | 115 µs | 148 µs | 6.4 ms |
+| 2 | 65e940a | 255 µs | 2.6 ms | 5.6 ms | 9.0 ms | 237 ms |
+| 2 | The change | 12 µs | 22 µs | 55 µs | 175 µs | 5.1 ms |
+| 3 | 65e940a | 219 µs | 2.3 ms | 5.0 ms | 8.1 ms | 230 ms |
+| 3 | The change | 12 µs | 28 µs | 71 µs | 94 µs | 5.4 ms |
+
+  Other batches took the same in both (p50 5 to 6 µs). The runs' wall clock, 320 per arm
+  a pass, paired per burst: pass 1, each burst's median −0.1 ms (95% [−1.2, +0.5]), its
+  slowest −0.6 ms ([−3.9, +1.2]); pass 2, −1.1 ms ([−1.6, +0.2]) and −1.3 ms ([−3.1,
+  −0.5]); pass 3, −1.2 ms ([−2.0, −0.2]) and −1.1 ms ([−2.8, +0.4]). The change's p99 and
+  max in pass 1, 78.6 and 89.5 ms against 37.9 and 42.2, are one burst whose runs took 77
+  to 90 ms together, turn 27 of 40; no run of either arm took over 45 ms in the 80 turns
+  of passes 2 and 3, the change's p99 30.6 and 28.1 ms against 30.8 and 29.7.
+- **Consequence.** A run's end holds the loop tens of microseconds at p90, where it held
+  it milliseconds (2.3 to 4.4 ms in the A/B, 81 ms under the E2E test), and every other
+  run's messages with it. A burst's median run finished 1.1 to 1.2 ms sooner in two
+  passes of three, and no later in the third.
+
 ### M97. A run's resolvers, read as it starts
 
 - **Question.** Each run reads the host's `/etc/resolv.conf` and makes it over for the
