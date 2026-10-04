@@ -3559,3 +3559,33 @@ revision before comparing a changed API/implementation.
   at two thirds of M83's rate. The spin would buy 6 µs a round trip with a core's time
   each time a ring empties, in every VM, idle or not; production keeps none. D31 says
   so.
+
+### M106. A round trip beside the connections a network process holds
+
+- **Question.** The network process rebuilt its whole set of descriptors to poll, and
+  went through every connection for its timer and to find those a full ring held back,
+  on every pass of its loop (review 2.14). What does a connection's round trip cost as
+  the connections beside it grow, and what is left of it when only what is ready costs?
+- **Method.** `docs/research/measurements/net-throughput/idle.py`: a container whose
+  `hold` workload (crates/testguest) holds every connection it is given, on epoll, so
+  that those it holds cost the guest nothing an event; N connections through its
+  published port, each through to the guest and then idle, beside one that sends 64
+  bytes and waits for them back, 2,000 times. 1adde7d against the change; then
+  `ab.py`, 32 MiB each way, n = 200 each, for what bulk transfer costs. Apple M5 Max,
+  macOS 26.4.1, load average 1.9–2.4, 2026-10-04.
+- **Results.** Round trip, µs:
+
+  | N idle | 1adde7d p50 / p90 / p99 / max | the change p50 / p90 / p99 / max |
+  |---|---|---|
+  | 0 | 57 / 87 / 113 / 969 | 54 / 86 / 99 / 633 |
+  | 250 | 98 / 118 / 206 / 567 | 53 / 61 / 71 / 176 |
+  | 1,000 | 181 / 197 / 380 / 540 | 53 / 60 / 70 / 317 |
+  | 3,500 | 802 / 916 / 1,418 / 2,396 | 54 / 62 / 70 / 877 |
+
+  32 MiB each way: p50 9.9 against 10.0 ms, p99 14.5 against 14.1; paired median +0.1
+  ms [−0.2, +0.2].
+- **Consequence.** Each descriptor is registered once with the kernel's own event queue
+  (epoll on Linux, kqueue on macOS), its interest changed only when what it waits for
+  does; timers wait in a heap, a connection's armed once for its deadline; the
+  connections a full ring held back wait in a queue of their own. A round trip costs
+  the same beside 3,500 idle connections as beside none, and bulk transfer what it did.

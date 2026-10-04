@@ -1706,6 +1706,10 @@ stack inside the VMM, is superseded by it.
     `recover`, and each hole a partial acknowledgement shows; sends again, as the window
     opens, what a window that shrank had the guest drop; sends a timeout's segment alone
     (RFC 6298 §5.4); and probes a window closed on bytes waiting (RFC 9293 §3.8.6.1).
+    Its loop costs what is ready, not what it holds: each descriptor registered once with
+    epoll or kqueue, timers in a heap, the connections a full ring held back in a queue
+    of their own; a round trip beside 3,500 idle connections costs what it does beside
+    none (PM M106).
 - **Open, measured before it is built** (networking.md §4):
   - *The data path between the two processes* (E2), **decided (PM M83):** a ring of frame
     slots in memory the two processes share, not the datagram socket Apple's model uses

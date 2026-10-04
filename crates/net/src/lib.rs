@@ -11,11 +11,13 @@
 
 pub mod bridge;
 pub mod pktinfo;
+mod poll;
 mod siphash;
 pub mod tcp;
 pub mod wire;
 
-use std::collections::{HashMap, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::io;
 use std::net::{Ipv4Addr, UdpSocket};
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -234,6 +236,117 @@ struct UdpFlow {
     life: Lifetime,
 }
 
+/// The guest's ends of a UDP flow: its port, and the remote address and port.
+type UdpKey = (u16, Ipv4Addr, u16);
+
+/// What a poller's token or a timer names (review 2.14): its kind in the top byte, then
+/// the generation of the slot it names, then the slot, so that what an earlier holder of
+/// a slot left is never taken for its next's.
+mod token {
+    pub const DOORBELL: u64 = 0;
+    pub const CONTROL: u64 = 1;
+    pub const LISTENER: u64 = 2;
+    pub const TCP: u64 = 3;
+    pub const UDP: u64 = 4;
+    pub const INBOUND: u64 = 5;
+
+    pub fn of(kind: u64, generation: u32, index: u32) -> u64 {
+        kind << 56 | (u64::from(generation) & 0xff_ffff) << 32 | u64::from(index)
+    }
+
+    pub fn kind(token: u64) -> u64 {
+        token >> 56
+    }
+
+    pub fn generation(token: u64) -> u32 {
+        ((token >> 32) & 0xff_ffff) as u32
+    }
+
+    pub fn index(token: u64) -> u32 {
+        token as u32
+    }
+}
+
+/// The guest's TCP connections, each in a slot of its own, found by its ends.
+#[derive(Default)]
+struct Tcp {
+    slots: Vec<TcpSlot>,
+    free: Vec<u32>,
+    by_key: HashMap<Key, u32>,
+}
+
+/// A connection's slot: the connection, out of it while it is being served; what the
+/// poller waits for on its socket; when its timer is armed; whether it waits among the
+/// blocked.
+#[derive(Default)]
+struct TcpSlot {
+    generation: u32,
+    conn: Option<Conn>,
+    key: Option<Key>,
+    interest: poll::Interest,
+    armed: Option<Instant>,
+    blocked: bool,
+}
+
+impl Tcp {
+    /// A slot for the connection of `key`, empty until it is settled into it.
+    fn reserve(&mut self, key: Key) -> u32 {
+        let i = match self.free.pop() {
+            Some(i) => i,
+            None => {
+                self.slots.push(TcpSlot::default());
+                u32::try_from(self.slots.len() - 1).unwrap_or(u32::MAX)
+            }
+        };
+        if let Some(slot) = self.slots.get_mut(i as usize) {
+            *slot = TcpSlot {
+                generation: slot.generation.wrapping_add(1),
+                key: Some(key),
+                ..TcpSlot::default()
+            };
+        }
+        self.by_key.insert(key, i);
+        i
+    }
+
+    fn slot(&mut self, i: u32) -> Option<&mut TcpSlot> {
+        self.slots.get_mut(i as usize)
+    }
+
+    /// The slot `token` names, if its connection is still that one.
+    fn slot_of(&self, token: u64) -> Option<u32> {
+        let i = token::index(token);
+        self.slots
+            .get(i as usize)
+            .filter(|s| s.key.is_some() && s.generation & 0xff_ffff == token::generation(token))
+            .map(|_| i)
+    }
+
+    fn token(&self, i: u32) -> u64 {
+        let generation = self.slots.get(i as usize).map_or(0, |s| s.generation);
+        token::of(token::TCP, generation, i)
+    }
+
+    /// Takes slot `i`'s connection out, to serve it.
+    fn take(&mut self, i: u32) -> Option<Conn> {
+        self.slot(i).and_then(|s| s.conn.take())
+    }
+
+    /// Empties slot `i`, its connection gone.
+    fn release(&mut self, i: u32) {
+        if let Some(slot) = self.slots.get_mut(i as usize) {
+            if let Some(key) = slot.key.take() {
+                self.by_key.remove(&key);
+            }
+            *slot = TcpSlot {
+                generation: slot.generation,
+                ..TcpSlot::default()
+            };
+            self.free.push(i);
+        }
+    }
+}
+
 /// The stack's state: its frame ring, connections and flows.
 struct Stack<'r> {
     cfg: Config,
@@ -241,8 +354,16 @@ struct Stack<'r> {
     to_guest: Producer<'r>,
     /// Frames for the guest the ring had no room for yet.
     backlog: VecDeque<Vec<u8>>,
-    tcp: HashMap<Key, Conn>,
-    udp: HashMap<(u16, Ipv4Addr, u16), UdpFlow>,
+    tcp: Tcp,
+    udp: HashMap<UdpKey, UdpFlow>,
+    /// UDP flows by their numbers, and the next number.
+    udp_ids: HashMap<u32, UdpKey>,
+    next_udp: u32,
+    /// What waits for the host's sockets, the timers due, earliest first, and the
+    /// connections a full ring kept from the guest, in turn (review 2.14).
+    poller: poll::Poller,
+    timers: BinaryHeap<Reverse<(Instant, u64)>>,
+    blocked: VecDeque<u64>,
     buf: Vec<u8>,
     /// Where segments to the guest are made.
     scratch: Vec<u8>,
@@ -380,9 +501,10 @@ pub fn serve(
     cfg: Config,
     controls: Vec<(Control, std::os::unix::net::UnixStream)>,
 ) -> io::Result<()> {
-    let mut controls: Vec<(Control, std::os::unix::net::UnixStream, shards_ipc::Incoming)> = controls
+    // Each control socket keeps its place, a token's index, until it hangs up.
+    let mut controls: Vec<Option<(Control, std::os::unix::net::UnixStream, shards_ipc::Incoming)>> = controls
         .into_iter()
-        .map(|(role, sock)| (role, sock, shards_ipc::Incoming::default()))
+        .map(|(role, sock)| Some((role, sock, shards_ipc::Incoming::default())))
         .collect();
     let region = Region::map(region)?;
     // The device's frames come on 0, this side's go on 1.
@@ -396,8 +518,13 @@ pub fn serve(
         cfg,
         to_guest,
         backlog: VecDeque::new(),
-        tcp: HashMap::new(),
+        tcp: Tcp::default(),
         udp: HashMap::new(),
+        udp_ids: HashMap::new(),
+        next_udp: 0,
+        poller: poll::Poller::new()?,
+        timers: BinaryHeap::new(),
+        blocked: VecDeque::new(),
         buf: vec![0u8; shards_netring::MAX_FRAME],
         scratch: Vec::new(),
         isn_key: {
@@ -411,9 +538,24 @@ pub fn serve(
         inbound_ports: HashMap::new(),
         next_port: *EPHEMERAL.start(),
     };
+    let doorbell = from_guest.waits_on();
+    stack.poller.set(
+        doorbell,
+        token::of(token::DOORBELL, 0, 0),
+        poll::Interest::NONE,
+        poll::Interest::READ,
+    )?;
+    for (i, (_, sock, _)) in controls.iter().flatten().enumerate() {
+        let named = token::of(token::CONTROL, 0, u32::try_from(i).unwrap_or(u32::MAX));
+        stack.poller.set(
+            sock.as_raw_fd(),
+            named,
+            poll::Interest::NONE,
+            poll::Interest::READ,
+        )?;
+    }
     let mut frame = vec![0u8; shards_netring::MAX_FRAME];
-    let mut fds: Vec<libc::pollfd> = Vec::new();
-    let mut keys: Vec<Option<Key>> = Vec::new();
+    let mut events: Vec<poll::Event> = Vec::new();
     loop {
         // The guest's frames, a batch at a time.
         for _ in 0..256 {
@@ -432,154 +574,87 @@ pub fn serve(
         if stack.backlog.is_empty() {
             stack.unblock();
         }
-        // Host sockets, and the ring.
-        fds.clear();
-        keys.clear();
-        fds.push(libc::pollfd {
-            fd: from_guest.waits_on(),
-            events: libc::POLLIN,
-            revents: 0,
-        });
-        keys.push(None);
-        for (k, c) in &stack.tcp {
-            let mut events = 0;
-            if c.wants_read() && stack.backlog.is_empty() {
-                events |= libc::POLLIN;
-            }
-            if c.wants_write() {
-                events |= libc::POLLOUT;
-            }
-            if events != 0 {
-                fds.push(libc::pollfd {
-                    fd: c.fd(),
-                    events,
-                    revents: 0,
-                });
-                keys.push(Some(*k));
-            }
-        }
-        let control_at = fds.len();
-        for (_, c, _) in &controls {
-            fds.push(libc::pollfd {
-                fd: c.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            });
-        }
-        let (listeners_at, listening) = (fds.len(), stack.published.len());
-        for (l, _) in &stack.published {
-            fds.push(libc::pollfd {
-                fd: l.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            });
-        }
-        let udp_base = fds.len();
-        let udp_keys: Vec<(u16, Ipv4Addr, u16)> = stack.udp.keys().copied().collect();
-        for k in &udp_keys {
-            if let Some(f) = stack.udp.get(k) {
-                fds.push(libc::pollfd {
-                    fd: f.sock.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                });
-            }
-        }
-        let now = Instant::now();
-        let next = stack
-            .tcp
-            .values()
-            .filter_map(Conn::deadline)
-            .chain(stack.udp.values().map(|f| f.life.until))
-            .chain(stack.inbound.values().map(|f| f.life.until))
-            .min();
+        stack.timers(Instant::now());
         // Frames for the guest left in the backlog wait for room without a spin: the ring
         // that had none asked to be rung once the guest's side makes some.
         let busy = from_guest.ready().map_err(|e| io::Error::other(e.to_string()))?;
         // Asked to be rung for the guest's next frame: one that came before the ask rang
-        // nothing, so the poll does not wait for it.
+        // nothing, so the wait does not wait for it.
         let timeout = if busy || from_guest.arm().map_err(|e| io::Error::other(e.to_string()))? {
-            0
+            Some(Duration::ZERO)
         } else {
-            next.map_or(-1, |t| {
-                i32::try_from(t.saturating_duration_since(now).as_millis())
-                    .unwrap_or(i32::MAX)
-                    .max(1)
-            })
+            stack
+                .next_timer()
+                .map(|t| t.saturating_duration_since(Instant::now()))
         };
-        // SAFETY: an array of pollfds of the length given.
-        let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
-        if n < 0 {
-            let e = io::Error::last_os_error();
-            if e.kind() != io::ErrorKind::Interrupted {
-                return Err(e);
-            }
-            continue;
-        }
-        // The guest's device closed the ring's doorbell: the VM is gone.
-        if fds
-            .first()
-            .is_some_and(|p| p.revents & (libc::POLLHUP | libc::POLLERR) != 0)
-        {
-            return Ok(());
-        }
-        drain(from_guest.waits_on());
-        for (p, k) in fds.iter().zip(&keys).skip(1) {
-            let Some(k) = k else { continue };
-            if p.revents == 0 {
-                continue;
-            }
-            stack.on_socket(k, p.revents);
-        }
-        // Those that hung up are gone; what is published stays, as the VM runs on.
-        let mut i = 0;
-        controls.retain_mut(|(role, c, incoming)| {
-            let ready = fds.get(control_at + i).is_some_and(|p| p.revents != 0);
-            i += 1;
-            if !ready {
-                return true;
-            }
-            loop {
-                let m = match incoming.take(c) {
-                    Ok(shards_ipc::Took::Message(m)) => m,
-                    Ok(shards_ipc::Took::Partial) => return true,
-                    Ok(shards_ipc::Took::Ended) | Err(_) => return false,
-                };
-                // What is not this socket's to say ends it.
-                if !role.says(m.kind) {
-                    return false;
+        stack.poller.wait(&mut events, timeout)?;
+        for e in &events {
+            let index = token::index(e.token);
+            match token::kind(e.token) {
+                token::DOORBELL => {
+                    // The guest's device closed the ring's doorbell: the VM is gone.
+                    if e.ended {
+                        return Ok(());
+                    }
+                    drain(doorbell);
                 }
-                // Said back once taken: the sender's copies may close.
-                let answered = if m.kind == shards_ipc::kind::PUBLISH {
-                    stack.publish(&m.payload, m.fds);
-                    shards_ipc::send(c, shards_ipc::kind::PUBLISH, &[], &[])
-                } else {
-                    // Flows left answer nobody: their sockets are gone.
-                    stack.published.clear();
-                    shards_ipc::send(c, shards_ipc::kind::UNPUBLISH, &[], &[])
-                };
-                if answered.is_err() {
-                    return false;
+                token::CONTROL => {
+                    let Some(entry) = controls.get_mut(index as usize) else {
+                        continue;
+                    };
+                    let keep = entry
+                        .as_mut()
+                        .is_some_and(|(role, sock, incoming)| control(&mut stack, *role, sock, incoming));
+                    // Hung up, or said what was not its: closed, and forgotten. What is
+                    // published stays, as the VM runs on.
+                    if !keep {
+                        *entry = None;
+                    }
                 }
-            }
-        });
-        // Those polled: a PUBLISH just read adds more, an UNPUBLISH leaves none.
-        let accepting: Vec<usize> = (0..listening.min(stack.published.len()))
-            .filter(|i| fds.get(listeners_at + i).is_some_and(|p| p.revents != 0))
-            .collect();
-        for i in accepting {
-            match stack.published.get(i) {
-                Some((Listener::Tcp(_), _)) => stack.accept(i),
-                Some((Listener::Udp(_), _)) => stack.receive(i),
-                None => {}
-            }
-        }
-        for (i, k) in udp_keys.iter().enumerate() {
-            if fds.get(udp_base + i).is_some_and(|p| p.revents != 0) {
-                stack.on_udp(k);
+                token::LISTENER => match stack.published.get(index as usize) {
+                    Some((Listener::Tcp(_), _)) => stack.accept(index as usize),
+                    Some((Listener::Udp(_), _)) => stack.receive(index as usize),
+                    None => {}
+                },
+                token::TCP => stack.on_socket(e),
+                token::UDP => stack.on_udp(index),
+                _ => {}
             }
         }
         stack.timers(Instant::now());
+    }
+}
+
+/// Takes what control socket `sock` holds, `role` saying what it may say: published ports
+/// come and go as each message comes whole, and each is answered once taken, so that its
+/// sender's copies may close. False once it has hung up, or said what is not its to say.
+fn control(
+    stack: &mut Stack<'_>,
+    role: Control,
+    sock: &std::os::unix::net::UnixStream,
+    incoming: &mut shards_ipc::Incoming,
+) -> bool {
+    loop {
+        let m = match incoming.take(sock) {
+            Ok(shards_ipc::Took::Message(m)) => m,
+            Ok(shards_ipc::Took::Partial) => return true,
+            Ok(shards_ipc::Took::Ended) | Err(_) => return false,
+        };
+        if !role.says(m.kind) {
+            return false;
+        }
+        let answered = if m.kind == shards_ipc::kind::PUBLISH {
+            stack.publish(&m.payload, m.fds);
+            shards_ipc::send(sock, shards_ipc::kind::PUBLISH, &[], &[])
+        } else {
+            // Flows left answer nobody: their sockets are gone, and the poller forgets
+            // them.
+            stack.published.clear();
+            shards_ipc::send(sock, shards_ipc::kind::UNPUBLISH, &[], &[])
+        };
+        if answered.is_err() {
+            return false;
+        }
     }
 }
 
@@ -641,7 +716,22 @@ impl<'r> Stack<'r> {
                 Listener::Tcp(l) => l.set_nonblocking(true),
                 Listener::Udp(u) => u.set_nonblocking(true),
             };
-            if nonblocking.is_ok() {
+            let named = token::of(
+                token::LISTENER,
+                0,
+                u32::try_from(self.published.len()).unwrap_or(u32::MAX),
+            );
+            if nonblocking.is_ok()
+                && self
+                    .poller
+                    .set(
+                        listener.as_raw_fd(),
+                        named,
+                        poll::Interest::NONE,
+                        poll::Interest::READ,
+                    )
+                    .is_ok()
+            {
                 self.published.push((listener, u16::from_be_bytes([hi, lo])));
             }
         }
@@ -677,13 +767,18 @@ impl<'r> Stack<'r> {
                     f.life.datagram(now, false);
                 }
                 std::collections::hash_map::Entry::Vacant(v) => {
+                    let life = Lifetime::new(now);
                     v.insert(Inbound {
                         published: i,
                         peer,
                         asked,
                         guest_port,
-                        life: Lifetime::new(now),
+                        life,
                     });
+                    self.timers.push(Reverse((
+                        life.until,
+                        token::of(token::INBOUND, 0, u32::from(port)),
+                    )));
                 }
             }
             let mut o = Out {
@@ -732,7 +827,8 @@ impl<'r> Stack<'r> {
                 let mut o = self.out();
                 Conn::accept(key, sock, isn, &mut o)
             };
-            self.tcp.insert(key, c);
+            let slot = self.tcp.reserve(key);
+            self.settle(slot, c);
         }
     }
 
@@ -749,7 +845,7 @@ impl<'r> Stack<'r> {
                 guest_port,
                 remote: (self.cfg.gateway_ip, port),
             };
-            if !self.tcp.contains_key(&key) {
+            if !self.tcp.by_key.contains_key(&key) {
                 return Some(port);
             }
         }
@@ -852,18 +948,38 @@ impl<'r> Stack<'r> {
                 if sock.connect((ip.dst, u.dst_port)).is_err() || sock.set_nonblocking(true).is_err() {
                     return;
                 }
-                v.insert(UdpFlow {
-                    sock,
-                    life: Lifetime::new(Instant::now()),
-                })
+                // Its answers waited for from now on, and its end timed.
+                let id = self.next_udp;
+                let named = token::of(token::UDP, 0, id);
+                if self
+                    .poller
+                    .set(
+                        sock.as_raw_fd(),
+                        named,
+                        poll::Interest::NONE,
+                        poll::Interest::READ,
+                    )
+                    .is_err()
+                {
+                    return;
+                }
+                self.next_udp = id.wrapping_add(1);
+                self.udp_ids.insert(id, key);
+                let life = Lifetime::new(Instant::now());
+                self.timers.push(Reverse((life.until, named)));
+                v.insert(UdpFlow { sock, life })
             }
         };
         let _ = f.sock.send(u.payload);
         f.life.datagram(Instant::now(), false);
     }
 
-    fn on_udp(&mut self, key: &(u16, Ipv4Addr, u16)) {
-        let Some(f) = self.udp.get_mut(key) else { return };
+    /// What UDP flow `id`'s host socket holds, to the guest.
+    fn on_udp(&mut self, id: u32) {
+        let Some(key) = self.udp_ids.get(&id).copied() else {
+            return;
+        };
+        let Some(f) = self.udp.get_mut(&key) else { return };
         let mut o = Out {
             frames: &self.frames,
             to_guest: &mut self.to_guest,
@@ -886,8 +1002,11 @@ impl<'r> Stack<'r> {
             guest_port: seg.src_port,
             remote: (ip.dst, seg.dst_port),
         };
-        let mut conn = self.tcp.remove(&key);
-        if conn.is_none() {
+        let existing = self.tcp.by_key.get(&key).copied();
+        let (slot, mut c) = if let Some(slot) = existing {
+            let Some(c) = self.tcp.take(slot) else { return };
+            (slot, c)
+        } else {
             if seg.flags & wire::SYN == 0 || seg.flags & wire::ACK != 0 {
                 // Not a connection's start, and no connection: a reset, as a host with no
                 // such connection answers (RFC 9293 §3.10.7.1).
@@ -921,7 +1040,7 @@ impl<'r> Stack<'r> {
                 return;
             }
             match Conn::open(key, &seg, self.isn(&key)) {
-                Ok(c) => conn = Some(c),
+                Ok(c) => (self.tcp.reserve(key), c),
                 Err(_) => {
                     let mut o = self.out();
                     o.segment(
@@ -936,42 +1055,91 @@ impl<'r> Stack<'r> {
                     return;
                 }
             }
+        };
+        {
+            let mut o = self.out();
+            c.on_segment(&seg, &mut o);
         }
-        if let Some(mut c) = conn {
-            {
-                let mut o = self.out();
-                c.on_segment(&seg, &mut o);
-            }
-            if !c.closed {
-                self.tcp.insert(key, c);
-            }
-        }
+        self.settle(slot, c);
     }
 
-    /// Connections a full ring held back, sent again.
+    /// Puts connection `c` back in `slot` once it has been served: its socket waited on
+    /// for what it now wants, its timer armed for its deadline unless an earlier one is,
+    /// and its turn kept if a full ring held it back; or its slot emptied if it has
+    /// closed, its socket with it, which the poller forgets (review 2.14).
+    fn settle(&mut self, slot: u32, mut c: Conn) {
+        if c.closed {
+            self.tcp.release(slot);
+            return;
+        }
+        let named = self.tcp.token(slot);
+        let wants = poll::Interest {
+            read: c.wants_read(),
+            write: c.wants_write(),
+        };
+        let (deadline, blocked, fd) = (c.deadline(), c.blocked(), c.fd());
+        let Some(had) = self.tcp.slot(slot).map(|s| s.interest) else {
+            return;
+        };
+        if self.poller.set(fd, named, had, wants).is_err() {
+            // A socket that cannot be waited on would never be served: the guest hears
+            // a reset, as from a peer gone.
+            let mut o = self.out();
+            c.reset(&mut o);
+            self.tcp.release(slot);
+            return;
+        }
+        let Some(s) = self.tcp.slot(slot) else { return };
+        s.interest = wants;
+        if let Some(due) = deadline
+            && s.armed.is_none_or(|armed| due < armed)
+        {
+            s.armed = Some(due);
+            self.timers.push(Reverse((due, named)));
+        }
+        if blocked && !s.blocked {
+            s.blocked = true;
+            self.blocked.push_back(named);
+        }
+        s.conn = Some(c);
+    }
+
+    /// Connections a full ring held back, sent again in the order they were held, until
+    /// the ring is full again: the rest keep their turn.
     fn unblock(&mut self) {
-        let blocked: Vec<Key> = self
-            .tcp
-            .iter()
-            .filter(|(_, c)| c.blocked())
-            .map(|(k, _)| *k)
-            .collect();
-        for key in blocked {
-            let Some(mut c) = self.tcp.remove(&key) else {
+        while let Some(named) = self.blocked.pop_front() {
+            let Some(slot) = self.tcp.slot_of(named) else {
+                continue;
+            };
+            if let Some(s) = self.tcp.slot(slot) {
+                s.blocked = false;
+            }
+            let Some(mut c) = self.tcp.take(slot) else {
                 continue;
             };
             {
                 let mut o = self.out();
                 c.unblock(&mut o);
             }
-            if !c.closed {
-                self.tcp.insert(key, c);
+            let again = !c.closed && c.blocked();
+            self.settle(slot, c);
+            if again {
+                // Its turn first next time: it went to the back as it settled.
+                if self.blocked.back() == Some(&named) {
+                    self.blocked.pop_back();
+                    self.blocked.push_front(named);
+                }
+                return;
             }
         }
     }
 
-    fn on_socket(&mut self, key: &Key, revents: i16) {
-        let Some(mut c) = self.tcp.remove(key) else { return };
+    /// A connection's host socket ready, as the poller says it.
+    fn on_socket(&mut self, e: &poll::Event) {
+        let Some(slot) = self.tcp.slot_of(e.token) else {
+            return;
+        };
+        let Some(mut c) = self.tcp.take(slot) else { return };
         let mut buf = std::mem::take(&mut self.buf);
         {
             let mut o = Out {
@@ -981,40 +1149,84 @@ impl<'r> Stack<'r> {
                 guest_ip: self.cfg.guest_ip,
                 scratch: &mut self.scratch,
             };
-            if revents & (libc::POLLOUT | libc::POLLERR | libc::POLLHUP) != 0 {
+            if e.write {
                 c.on_writable(&mut o);
             }
-            if !c.closed && revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+            if !c.closed && e.read {
                 c.on_readable(&mut o, &mut buf);
             }
         }
         self.buf = buf;
-        if !c.closed {
-            self.tcp.insert(*key, c);
+        self.settle(slot, c);
+    }
+
+    /// Runs the timers due by `now`, earliest first: a connection's retransmission or
+    /// probe, a UDP flow's end. One a later timer took the place of, or whose flow lives
+    /// on, does nothing, or is armed again for when it ends (review 2.14).
+    fn timers(&mut self, now: Instant) {
+        while let Some(&Reverse((at, named))) = self.timers.peek() {
+            if at > now {
+                break;
+            }
+            self.timers.pop();
+            match token::kind(named) {
+                token::TCP => {
+                    let Some(slot) = self.tcp.slot_of(named) else {
+                        continue;
+                    };
+                    match self.tcp.slot(slot) {
+                        Some(s) if s.armed == Some(at) => s.armed = None,
+                        _ => continue,
+                    }
+                    let Some(mut c) = self.tcp.take(slot) else {
+                        continue;
+                    };
+                    {
+                        let mut o = self.out();
+                        c.on_timer(now, &mut o);
+                    }
+                    self.settle(slot, c);
+                }
+                token::UDP => {
+                    let id = token::index(named);
+                    let Some(key) = self.udp_ids.get(&id).copied() else {
+                        continue;
+                    };
+                    match self.udp.get(&key) {
+                        Some(f) if now < f.life.until => {
+                            self.timers.push(Reverse((f.life.until, named)));
+                        }
+                        _ => {
+                            // Its socket closes with it, and the poller forgets it.
+                            self.udp.remove(&key);
+                            self.udp_ids.remove(&id);
+                        }
+                    }
+                }
+                token::INBOUND => {
+                    let Ok(port) = u16::try_from(token::index(named)) else {
+                        continue;
+                    };
+                    match self.inbound.get(&port) {
+                        Some(f) if now < f.life.until => {
+                            self.timers.push(Reverse((f.life.until, named)));
+                        }
+                        Some(_) => {
+                            if let Some(f) = self.inbound.remove(&port) {
+                                self.inbound_ports.remove(&(f.published, f.peer));
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
-    fn timers(&mut self, now: Instant) {
-        let keys: Vec<Key> = self.tcp.keys().copied().collect();
-        for k in keys {
-            let Some(mut c) = self.tcp.remove(&k) else {
-                continue;
-            };
-            {
-                let mut o = self.out();
-                c.on_timer(now, &mut o);
-            }
-            if !c.closed {
-                self.tcp.insert(k, c);
-            }
-        }
-        self.udp.retain(|_, f| now < f.life.until);
-        let before = self.inbound.len();
-        self.inbound.retain(|_, f| now < f.life.until);
-        if self.inbound.len() != before {
-            let inbound = &self.inbound;
-            self.inbound_ports.retain(|_, port| inbound.contains_key(port));
-        }
+    /// The earliest timer's time.
+    fn next_timer(&self) -> Option<Instant> {
+        self.timers.peek().map(|Reverse((at, _))| *at)
     }
 }
 
@@ -1022,6 +1234,96 @@ impl<'r> Stack<'r> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A slot's token names its connection alone: once the slot is emptied, and taken by
+    /// another, what was waited on or timed for the first reaches nothing (review 2.14).
+    #[test]
+    fn a_slots_token_is_its_connections_alone() {
+        let mut tcp = Tcp::default();
+        let key = |port| Key {
+            guest_port: port,
+            remote: (Ipv4Addr::LOCALHOST, 1),
+        };
+        let a = tcp.reserve(key(1));
+        let first = tcp.token(a);
+        assert_eq!(tcp.slot_of(first), Some(a));
+        assert_eq!(token::kind(first), token::TCP);
+        tcp.release(a);
+        assert_eq!(tcp.slot_of(first), None);
+        assert!(!tcp.by_key.contains_key(&key(1)));
+        let b = tcp.reserve(key(2));
+        assert_eq!(b, a, "the slot is taken again");
+        assert_eq!(
+            tcp.slot_of(first),
+            None,
+            "the first's events are not the second's"
+        );
+        assert_eq!(tcp.slot_of(tcp.token(b)), Some(b));
+        for (kind, generation, index) in [(token::UDP, 0, u32::MAX), (token::INBOUND, 0xff_ffff, 7)] {
+            let named = token::of(kind, generation, index);
+            assert_eq!(
+                (token::kind(named), token::generation(named), token::index(named)),
+                (kind, generation, index)
+            );
+        }
+    }
+
+    /// A connection's timer is armed once for its deadline, however often it settles,
+    /// and armed again when it fires: the timers hold a connection once, not once a
+    /// change (review 2.14).
+    #[test]
+    fn a_connections_timer_is_armed_once() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, rings) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let mut stack = Stack {
+            frames: Frames {
+                gateway_mac: cfg.gateway_mac,
+                guest_mac: cfg.guest_mac,
+            },
+            cfg,
+            to_guest: region.producer(1, rings),
+            backlog: VecDeque::new(),
+            tcp: Tcp::default(),
+            udp: HashMap::new(),
+            udp_ids: HashMap::new(),
+            next_udp: 0,
+            poller: poll::Poller::new().unwrap(),
+            timers: BinaryHeap::new(),
+            blocked: VecDeque::new(),
+            buf: vec![0u8; 2048],
+            scratch: Vec::new(),
+            isn_key: [0; 16],
+            began: Instant::now(),
+            published: Vec::new(),
+            inbound: HashMap::new(),
+            inbound_ports: HashMap::new(),
+            next_port: *EPHEMERAL.start(),
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (sock, _) = listener.accept().unwrap();
+        sock.set_nonblocking(true).unwrap();
+        let key = Key {
+            guest_port: 80,
+            remote: (stack.cfg.gateway_ip, 49152),
+        };
+        // Opened to the guest: its SYN sent, a retransmission due.
+        let c = Conn::accept(key, sock, 1000, &mut stack.out());
+        let slot = stack.tcp.reserve(key);
+        stack.settle(slot, c);
+        assert_eq!(stack.timers.len(), 1);
+        for _ in 0..3 {
+            let c = stack.tcp.take(slot).unwrap();
+            stack.settle(slot, c);
+        }
+        assert_eq!(stack.timers.len(), 1, "armed once");
+        let due = stack.next_timer().unwrap();
+        stack.timers(due);
+        assert_eq!(stack.timers.len(), 1, "fired, and armed again");
+        assert!(stack.next_timer().unwrap() > due);
+    }
 
     /// A segment's headers and its bytes, from both halves of a queue that wraps, reach the
     /// ring as one frame, as does a datagram; while frames wait in the backlog, a segment

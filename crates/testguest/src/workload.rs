@@ -72,6 +72,7 @@ pub fn main() -> ! {
         "tcp" => tcp(arg(1)),
         "udp" => udp(arg(1)),
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
+        "hold" => hold(arg(1)),
         "udp-echo" => udp_echo(arg(1), arg(2).parse().unwrap_or(1)),
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
@@ -394,6 +395,86 @@ fn serve(port: &str, connections: usize) -> i32 {
         }
     }
     0
+}
+
+/// Listens on TCP `port` at every address, says `ready`, then holds every connection it
+/// is given, echoing what each sends, until it is killed: many idle connections beside
+/// the few that talk. On epoll(7), so that the connections held cost it nothing an
+/// event; its descriptor limit raised to the hard one first.
+fn hold(port: &str) -> i32 {
+    use std::collections::HashMap;
+    use std::os::fd::AsRawFd as _;
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) and setrlimit(2) of our own limit, through a local.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) == 0 {
+            lim.rlim_cur = lim.rlim_max;
+            libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+        }
+    }
+    let listener = match std::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+        .and_then(|l| l.set_nonblocking(true).map(|()| l))
+    {
+        Ok(l) => l,
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "hold error {e}");
+            return 1;
+        }
+    };
+    // SAFETY: epoll_create1(2) with a flag.
+    let ep = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+    let watch = |fd: i32, token: u64| {
+        let mut e = libc::epoll_event {
+            events: libc::EPOLLIN as u32,
+            u64: token,
+        };
+        // SAFETY: epoll_ctl(2) adding a descriptor we hold.
+        unsafe { libc::epoll_ctl(ep, libc::EPOLL_CTL_ADD, fd, &mut e) == 0 }
+    };
+    if ep < 0 || !watch(listener.as_raw_fd(), u64::MAX) {
+        let _ = writeln!(io::stdout(), "hold error {}", io::Error::last_os_error());
+        return 1;
+    }
+    let _ = writeln!(io::stdout(), "ready");
+    let mut held: HashMap<u64, std::net::TcpStream> = HashMap::new();
+    let mut next = 0u64;
+    let mut buf = vec![0u8; 64 * 1024];
+    // SAFETY: epoll_event is plain data, for which all zeroes is a value.
+    let mut events: [libc::epoll_event; 64] = unsafe { std::mem::zeroed() };
+    loop {
+        // SAFETY: epoll_wait(2) into a buffer of 64 events.
+        let n = unsafe { libc::epoll_wait(ep, events.as_mut_ptr(), 64, -1) };
+        for e in events.iter().take(usize::try_from(n).unwrap_or(0)) {
+            let token = e.u64;
+            if token == u64::MAX {
+                while let Ok((c, _)) = listener.accept() {
+                    if c.set_nonblocking(true).is_ok() && watch(c.as_raw_fd(), next) {
+                        held.insert(next, c);
+                        next += 1;
+                    }
+                }
+                continue;
+            }
+            let Some(c) = held.get_mut(&token) else { continue };
+            loop {
+                match c.read(&mut buf) {
+                    Ok(0) => {
+                        held.remove(&token);
+                        break;
+                    }
+                    Ok(got) => {
+                        let _ = c.set_nonblocking(false);
+                        let _ = c.write_all(buf.get(..got).unwrap_or_default());
+                        let _ = c.set_nonblocking(true);
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+    }
 }
 
 /// Binds UDP `port` at every address, says `ready`, then answers `datagrams` datagrams
