@@ -29,3 +29,5 @@ jobs:
       - run: docs/research/measurements/seccomp-search/run.sh 200 "${GITHUB_SHA::7}"
       - name: An install, by kernel function
         run: sudo docs/research/measurements/seccomp-search/trace.sh docs/research/measurements/seccomp-search/target/release/seccomp-search 5
+      - name: What a slow install waits on
+        run: sudo docs/research/measurements/seccomp-search/outliers.sh docs/research/measurements/seccomp-search/target/release/seccomp-search 400 5000
