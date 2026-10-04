@@ -5687,7 +5687,8 @@ mod tests {
             let (ready, _theirs) = t.warm_vm(None);
             t.t.daemon.follow_vm(t.threads, ready.vm.clone(), None, None);
             std::thread::sleep(Duration::from_millis(100));
-            let vm = Arc::new(shards_ipc::spawn(Path::new("/usr/bin/true"), &[], &[], false).unwrap());
+            let vm =
+                Arc::new(shards_ipc::spawn(Path::new("/bin/sleep"), &["0".as_ref()], &[], false).unwrap());
             vm.ended().unwrap();
             let net = shards_ipc::spawn(Path::new("/bin/sleep"), &["600".as_ref()], &[], false).unwrap();
             let net_pid = net.id();

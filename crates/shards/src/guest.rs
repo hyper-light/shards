@@ -465,12 +465,12 @@ mod tests {
         let (kernel, init) = (home.join("vmlinuz"), home.join("init"));
         fs::write(&kernel, b"a kernel").unwrap();
         fs::write(&init, b"an init").unwrap();
-        // The default guest's kernel stored already: only its init is written.
-        let pinned = pinned(&home).unwrap();
-        fs::write(&pinned.kernel, b"the pinned kernel").unwrap();
+        // The default guest's kernel stored already: only its init is written. There is a
+        // default guest only where guests run, with this build's init (`init_bytes`).
+        #[cfg(unix)]
+        fs::write(pinned(&home).unwrap().kernel, b"the pinned kernel").unwrap();
         let recorded = || record(&home, &kernel, &init);
         let stored = || default(&home, &|_| {}, None, &|_| None);
-        // A default guest is stored only where guests run (`init_bytes`).
         let writers: &[&(dyn Fn() -> Result<Guest, String> + Sync)] = if cfg!(unix) {
             &[&recorded, &stored]
         } else {
