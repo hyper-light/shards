@@ -3709,3 +3709,38 @@ revision before comparing a changed API/implementation.
   snapshots where it held 342. Two snapshots compare only the chunks they do not share
   (`Tree::unshared_nodes`), as a step's layer is checked against the nodes it changed in
   place (stack.rs). Counting links stays a pass over the tree.
+
+### M109. Building a root filesystem: layers decompressed together
+
+- **Question.** Building an image's root filesystem (`Store::rootfs`) decompressed
+  and hashed its layers one at a time with flate2's default backend (miniz_oxide), and
+  a probe of golang:1.26's layers put decompressing and SHA-256 at 1.86 s of the work
+  (review 9.1). A layer's decompression and hash do not depend on another's; only
+  stacking them does, in order. What does unpacking them on the host's cores, and
+  zlib-rs's inflate, save end to end?
+- **Method.** `docs/research/measurements/rootfs-build` (`ab.sh OLD_REV ROUNDS
+  LAYOUT...`): golang:1.26 and python:3.13 for linux/arm64 as `docker save` gives them,
+  their layers the registry's gzip blobs, put in a store; then each image's root
+  filesystem built by `Store::rootfs` (decompressed, checked against its DiffIDs,
+  stacked, and the EROFS image written), the built one removed between rounds. 655212b
+  (before) against the change (after), in turn, one build of each image a round, after
+  a warm-up round each, 15 rounds. golang's layers: 146, 60, 196, 274 and 240 MB
+  decompressed (two empty); python's: 146, 60, 196, 653, 19 and 74 MB. Apple M5 Max (6
+  performance and 12 efficiency cores), macOS 26.4.1, 2026-10-04.
+- **Results.** Milliseconds a build:
+
+  | image | build | n | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|---|
+  | golang:1.26 | before | 15 | 2263 | 2671 | 2990 | 2990 |
+  | golang:1.26 | after | 15 | 771 | 861 | 917 | 917 |
+  | python:3.13 | before | 15 | 2797 | 3075 | 3118 | 3118 |
+  | python:3.13 | after | 15 | 1480 | 1672 | 1680 | 1680 |
+
+  The probe, decompressing and hashing golang's layers alone: 1.86 s one at a time with
+  miniz_oxide, 1.39 s with zlib-rs, 0.58 s and 0.45 s at once.
+- **Consequence.** Layers are unpacked on as many threads as the host has cores, up to
+  one a layer, and stacked in order as each and those before it are done
+  (`Store::unpack_in_order`); flate2 inflates with zlib-rs. An error is the one a
+  sequential unpack meets first. python's build is now bounded by its 653 MB layer, one
+  gzip stream decompressed on one core; decompressing one stream in parallel
+  (rapidgzip, Knespel and Brunst, HPDC 2023) is the next step for such layers.

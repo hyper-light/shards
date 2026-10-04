@@ -414,8 +414,9 @@ The store keeps what a pull fetches and what guests boot from. The code is
   - **Sniffing** reads the first 8 bytes, as `DetectCompression` does
     (`pkg/archive/compression/compression.go`): gzip, a zstd frame, a zstd skippable
     frame with its whole header, or none.
-  - **gzip** streams may have many members (flate2). flate2 refuses reserved header
-    flags, as RFC 1952 §2.3.1.2 requires. Go's reader ignores them.
+  - **gzip** streams may have many members (flate2, inflating with zlib-rs). flate2
+    refuses reserved header flags, as RFC 1952 §2.3.1.2 requires. Go's reader ignores
+    them.
   - **zstd** streams may have many frames, and skippable ones (ruzstd). Checksums are
     verified, and windows are capped at 512 MiB, as klauspost/compress v1.20.0 decodes
     for containerd.
@@ -428,6 +429,10 @@ The store keeps what a pull fetches and what guests boot from. The code is
   ChainID, so images with the same layer stack share one. One build at a time goes on in
   a store, under its lock, whichever process asks, and a second build of an image finds
   the first's (audit A10).
+  - Its layers decompress and hash on the host's cores at once, and stack in order as
+    each and those before it are done: a third of the time for golang:1.26 (PM M109).
+    containerd and BuildKit apply them one after another. An error is the one a
+    sequential unpack would meet first.
 - **Limits** (audit A10). By default nothing but the machine bounds a build, as nothing
   bounds containerd's unpacking or a BuildKit build: containerd v2.3.6 applies a layer
   with no cap on its decompressed bytes or entries (`core/diff/apply`, `pkg/archive`), and

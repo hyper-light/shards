@@ -249,7 +249,7 @@ pub type Peeked<R> = BufReader<io::Chain<io::Cursor<Vec<u8>>, R>>;
 pub enum Decoder<R: BufRead> {
     None(R),
     Bzip2(bzip2::bufread::MultiBzDecoder<R>),
-    Gzip(flate2::bufread::MultiGzDecoder<R>),
+    Gzip(Box<flate2::bufread::MultiGzDecoder<R>>),
     Xz(Box<lzma_rust2::XzReader<Full<R>>>),
     Zstd(Box<shards_image::store::Zstd<R>>),
 }
@@ -324,7 +324,7 @@ pub fn decompressed<R: Read>(mut input: R, capacity: usize) -> io::Result<Decode
     Ok(match compression {
         Compression::None => Decoder::None(input),
         Compression::Bzip2 => Decoder::Bzip2(bzip2::bufread::MultiBzDecoder::new(input)),
-        Compression::Gzip => Decoder::Gzip(flate2::bufread::MultiGzDecoder::new(input)),
+        Compression::Gzip => Decoder::Gzip(Box::new(flate2::bufread::MultiGzDecoder::new(input))),
         Compression::Xz => Decoder::Xz(Box::new(lzma_rust2::XzReader::new(
             Full {
                 inner: input,

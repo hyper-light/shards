@@ -1,0 +1,14 @@
+# How long building an image's root filesystem takes (beat-Docker 9.1, PM M109): each
+# layer decompressed, hashed against its DiffID, stacked, and the EROFS image written.
+# Not a workspace member: `ab.sh` builds it at two revisions and interleaves them.
+[package]
+name = "rootfs-build"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+shards-image = { path = "../../../../crates/image" }
+serde_json = "1"

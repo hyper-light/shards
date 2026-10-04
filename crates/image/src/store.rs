@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError, mpsc};
 
 use sha2::{Digest as _, Sha256, Sha384, Sha512};
 
@@ -1454,7 +1455,13 @@ impl Store {
     /// whole decompressed stream, bytes after the tar's end included, must match the
     /// DiffID, as containerd's applier checks it (`core/diff/apply/apply.go`), and must
     /// not pass `max` bytes.
-    fn unpack(&self, layer: &Layer, bytes: &mut u64, limits: &Limits, room: &mut Room) -> Result<Tar, Error> {
+    fn unpack(
+        &self,
+        layer: &Layer,
+        bytes: &AtomicU64,
+        limits: &Limits,
+        room: &Mutex<Room>,
+    ) -> Result<Tar, Error> {
         let how = oci::layer_compression(&layer.media_type)?;
         let blob = self.blob_path(&layer.blob);
         let mut file = File::open(&blob)?;
@@ -1534,12 +1541,98 @@ impl Store {
     /// `layers`' archives, each decompressed and checked, together taking no more than
     /// `limits` allow, as [`Store::rootfs`] takes them.
     pub fn unpack_layers(&self, layers: &[Layer], limits: &Limits) -> Result<Vec<Unpacked>, Error> {
-        let mut room = Room::new(&self.root.join("ingest"), limits)?;
-        let mut bytes = 0u64;
-        layers
-            .iter()
-            .map(|l| Ok(Unpacked(self.unpack(l, &mut bytes, limits, &mut room)?)))
-            .collect()
+        let room = Mutex::new(Room::new(&self.root.join("ingest"), limits)?);
+        let mut out = Vec::with_capacity(layers.len());
+        self.unpack_in_order(layers, limits, &room, |_, tar| {
+            out.push(Unpacked(tar));
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// Unpacks `layers` ([`Store::unpack`]) on as many threads as the host has cores, up
+    /// to one a layer, and gives each to `each` in the layers' order as soon as it and
+    /// those before it are unpacked: decompressing and hashing are most of what building
+    /// a root filesystem costs, and a layer's do not wait on another's (PM M109). A layer
+    /// unpacked ahead of its turn waits on disk, as its temporary archive. An error stops
+    /// the layers not yet begun, and the one returned is the one a sequential unpack
+    /// would meet first. The image's byte limit is shared, so it may trip on another
+    /// layer than sequentially, but it trips only when the image does pass it.
+    fn unpack_in_order(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        room: &Mutex<Room>,
+        mut each: impl FnMut(usize, Tar) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let workers = std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min(layers.len())
+            .max(1);
+        let bytes = AtomicU64::new(0);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let stop = AtomicBool::new(false);
+        let (done, finished) = mpsc::channel::<(usize, Result<Tar, Error>)>();
+        std::thread::scope(|scope| -> Result<(), Error> {
+            for _ in 0..workers {
+                let done = done.clone();
+                let (bytes, next, stop) = (&bytes, &next, &stop);
+                std::thread::Builder::new()
+                    .name("unpack".into())
+                    .spawn_scoped(scope, move || {
+                        while !stop.load(Ordering::Acquire) {
+                            let i = next.fetch_add(1, Ordering::AcqRel);
+                            let Some(layer) = layers.get(i) else { break };
+                            let r = self.unpack(layer, bytes, limits, room);
+                            if r.is_err() {
+                                stop.store(true, Ordering::Release);
+                            }
+                            if done.send((i, r)).is_err() {
+                                break;
+                            }
+                        }
+                    })
+                    .map_err(|e| Error(format!("starting to unpack: {e}")))?;
+            }
+            drop(done);
+            let mut waiting: Vec<Option<Tar>> = layers.iter().map(|_| None).collect();
+            let mut turn = 0;
+            // The failure a sequential unpack would meet first: the lowest layer's, or
+            // `each`'s on a layer below it. Every layer below a failed one was begun
+            // (`next` only grows), so it ends and is applied.
+            let mut failed: Option<(usize, Error)> = None;
+            for (i, r) in finished {
+                match r {
+                    Ok(tar) => {
+                        if let Some(slot) = waiting.get_mut(i) {
+                            *slot = Some(tar);
+                        }
+                    }
+                    Err(e) => {
+                        stop.store(true, Ordering::Release);
+                        if failed.as_ref().is_none_or(|(at, _)| i < *at) {
+                            failed = Some((i, e));
+                        }
+                    }
+                }
+                while failed.as_ref().is_none_or(|(at, _)| turn < *at) {
+                    let Some(tar) = waiting.get_mut(turn).and_then(Option::take) else {
+                        break;
+                    };
+                    if let Err(e) = each(turn, tar) {
+                        stop.store(true, Ordering::Release);
+                        failed = Some((turn, e));
+                        break;
+                    }
+                    turn += 1;
+                }
+            }
+            match failed {
+                Some((_, e)) => Err(e),
+                None if turn == layers.len() => Ok(()),
+                None => Err(Error("a layer was never unpacked".into())),
+            }
+        })
     }
 
     /// The EROFS root filesystem of `layers`, built on first use: each layer is unpacked
@@ -1556,11 +1649,10 @@ impl Store {
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
                 _ => {}
             }
-            let (mut bytes, mut entries, mut metadata) = (0u64, 0u64, 0u64);
+            let (mut entries, mut metadata) = (0u64, 0u64);
             let mut tree = layer::root();
             let mut tars = Vec::with_capacity(layers.len());
-            for (i, l) in layers.iter().enumerate() {
-                let tar = self.unpack(l, &mut bytes, limits, room)?;
+            self.unpack_in_order(layers, limits, room, |i, tar| {
                 let source = u32::try_from(i).map_err(|_| Error("too many layers".into()))?;
                 let file = File::open(tar.path())?;
                 let mut count = |e: &crate::tar::Entry| {
@@ -1592,7 +1684,8 @@ impl Store {
                 // the tree holds the image, not its history (audit D11).
                 tree.compact();
                 tars.push(tar);
-            }
+                Ok(())
+            })?;
             let files = tars
                 .iter()
                 .map(|t| File::open(t.path()))
@@ -1648,7 +1741,7 @@ impl Store {
         &self,
         layers: &[Layer],
         limits: &Limits,
-        make: impl FnOnce(&mut Room, &Path) -> Result<Partial, Error>,
+        make: impl FnOnce(&Mutex<Room>, &Path) -> Result<Partial, Error>,
     ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let path = self.rootfs_path(&diff_ids)?;
@@ -1665,8 +1758,8 @@ impl Store {
             return Ok(path);
         }
         let ingest = self.root.join("ingest");
-        let mut room = Room::new(&ingest, limits)?;
-        let partial = make(&mut room, &ingest)?;
+        let room = Mutex::new(Room::new(&ingest, limits)?);
+        let partial = make(&room, &ingest)?;
         partial.commit(&path)?;
         drop(building);
         Ok(path)
@@ -1760,12 +1853,16 @@ impl Room {
 /// A file being written, within the room its build has.
 struct Checked<'a> {
     out: &'a mut Partial,
-    room: &'a mut Room,
+    /// Shared by the layers unpacked at once.
+    room: &'a Mutex<Room>,
 }
 
 impl Write for Checked<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.room.wrote(buf.len())?;
+        self.room
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .wrote(buf.len())?;
         self.out.write(buf)
     }
 
@@ -1779,14 +1876,16 @@ impl Write for Checked<'_> {
 struct Sink<'a> {
     hasher: Hasher,
     out: Option<Checked<'a>>,
-    written: &'a mut u64,
+    /// The image's bytes so far, its layers' together.
+    written: &'a AtomicU64,
     max: u64,
 }
 
 impl Write for Sink<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        *self.written = self.written.saturating_add(buf.len() as u64);
-        if *self.written > self.max {
+        let n = buf.len() as u64;
+        let written = self.written.fetch_add(n, Ordering::AcqRel).saturating_add(n);
+        if written > self.max {
             return Err(io::Error::other(format!(
                 "the image decompresses to more than {} bytes (SHARDS_MAX_IMAGE_BYTES)",
                 self.max
@@ -2729,14 +2828,112 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// Layers of uneven sizes, so that they finish unpacking out of order: layer `i`
+    /// holds one file of `(n - i) * 64 KiB`.
+    fn uneven_layers(store: &Store, n: usize) -> (Vec<Vec<u8>>, Vec<Layer>) {
+        let tars: Vec<Vec<u8>> = (0..n)
+            .map(|i| {
+                let name = format!("layer-{i}");
+                let data: Vec<u8> = (0..(n - i) << 16).map(|b| (b * 31 + i) as u8).collect();
+                Writer::default()
+                    .member(Member {
+                        name: name.as_bytes(),
+                        data: &data,
+                        ..Member::default()
+                    })
+                    .finish()
+            })
+            .collect();
+        let layers = tars.iter().map(|t| stored_layer(store, t)).collect();
+        (tars, layers)
+    }
+
+    #[test]
+    fn layers_unpacked_together_are_applied_in_order_and_fail_as_one_by_one() {
+        let root = temp("in-order");
+        let store = Store::open(&root).unwrap();
+        let (tars, layers) = uneven_layers(&store, 12);
+        let limits = Limits::none();
+        let room = Mutex::new(Room::new(&root.join("ingest"), &limits).unwrap());
+        // Each layer reaches `each` once, in order, whole.
+        let mut seen = Vec::new();
+        store
+            .unpack_in_order(&layers, &limits, &room, |i, tar| {
+                assert_eq!(fs::read(tar.path()).unwrap(), tars[i]);
+                seen.push(i);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(seen, (0..12).collect::<Vec<_>>());
+
+        // Two layers that do not match their DiffIDs: the error is the lower one's, as one
+        // by one, and every layer below it is still applied.
+        let mut bad = layers.clone();
+        for i in [3, 9] {
+            bad[i].diff_id = sha256(format!("not {i}").as_bytes());
+        }
+        let mut seen = Vec::new();
+        let e = store
+            .unpack_in_order(&bad, &limits, &room, |i, _| {
+                seen.push(i);
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(e.0.contains(&bad[3].blob.to_string()), "{e}");
+        assert_eq!(seen, [0, 1, 2]);
+
+        // `each` failing stops the rest, and is the error, ahead of a later layer's.
+        let mut seen = Vec::new();
+        let e = store
+            .unpack_in_order(&bad, &limits, &room, |i, _| {
+                seen.push(i);
+                if i == 1 {
+                    Err(Error("stop at 1".into()))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+        assert_eq!(e.0, "stop at 1");
+        assert_eq!(seen, [0, 1]);
+
+        // The byte limit is the image's, across layers unpacked at once: room for any
+        // one layer, not for all of them.
+        let total: u64 = tars.iter().map(|t| t.len() as u64).sum();
+        let largest = tars.iter().map(Vec::len).max().unwrap() as u64;
+        let tight = Limits {
+            bytes: total - 1,
+            ..Limits::none()
+        };
+        assert!(largest < tight.bytes);
+        let e = store
+            .unpack_in_order(&layers, &tight, &room, |_, _| Ok(()))
+            .unwrap_err();
+        assert!(e.0.contains("SHARDS_MAX_IMAGE_BYTES"), "{e}");
+        let exact = Limits {
+            bytes: total,
+            ..Limits::none()
+        };
+        store
+            .unpack_in_order(&layers, &exact, &room, |_, _| Ok(()))
+            .unwrap();
+
+        assert_eq!(
+            fs::read_dir(root.join("ingest")).unwrap().count(),
+            0,
+            "unpacked tars are gone"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// Unpacks `layer` alone, within `max` bytes.
     fn unpack_within(store: &Store, layer: &Layer, max: u64) -> Result<Tar, Error> {
         let limits = Limits {
             bytes: max,
             ..Limits::none()
         };
-        let mut room = Room::new(&store.root.join("ingest"), &limits)?;
-        store.unpack(layer, &mut 0, &limits, &mut room)
+        let room = Mutex::new(Room::new(&store.root.join("ingest"), &limits)?);
+        store.unpack(layer, &AtomicU64::new(0), &limits, &room)
     }
 
     /// Stores `tar`, gzipped, as a layer.
