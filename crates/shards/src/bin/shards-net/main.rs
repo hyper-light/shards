@@ -3,7 +3,7 @@
 //! the VM goes, which its doorbell's hang-up says.
 //!
 //!     shards-net --ring REGION,WAKE_ME,WAKE_PEER --policy allow|deny --mac MAC
-//!         --bridge SUBNET/BITS [--control FD]
+//!         --bridge SUBNET/BITS [--control FD] [--release FD]
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -22,7 +22,7 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     use std::os::fd::{FromRawFd, OwnedFd};
     // The daemon's socket, on which published ports come, and the VM's, on which they go.
-    let mut controls: Vec<String> = Vec::new();
+    let mut controls: Vec<(shards_net::Control, String)> = Vec::new();
     let mut ring = None;
     let mut mac = None;
     // No default: a spawner that forgot to say gets an error, not open access.
@@ -38,7 +38,11 @@ fn run() -> Result<(), String> {
         };
         match a.to_str() {
             Some("--ring") => ring = Some(value(&mut args, "--ring")?),
-            Some("--control") => controls.push(value(&mut args, "--control")?),
+            // The daemon's, which publishes ports, and the VM's, which lets them go.
+            Some("--control") => controls.push((shards_net::Control::Daemon, value(&mut args, "--control")?)),
+            Some("--release") => {
+                controls.push((shards_net::Control::Release, value(&mut args, "--release")?))
+            }
             Some("--mac") => {
                 let v = value(&mut args, "--mac")?;
                 let octets: Vec<u8> = v
@@ -95,11 +99,11 @@ fn run() -> Result<(), String> {
     let (region, me, peer) = (adopt(*region)?, adopt(*me)?, adopt(*peer)?);
     let controls = controls
         .iter()
-        .map(|fd| {
+        .map(|(role, fd)| {
             let fd = fd
                 .parse()
-                .map_err(|_| format!("--control: {fd:?} is not a descriptor"))?;
-            Ok(std::os::unix::net::UnixStream::from(adopt(fd)?))
+                .map_err(|_| format!("{role:?} control: {fd:?} is not a descriptor"))?;
+            Ok((*role, std::os::unix::net::UnixStream::from(adopt(fd)?)))
         })
         .collect::<Result<_, String>>()?;
     shards_net::serve(

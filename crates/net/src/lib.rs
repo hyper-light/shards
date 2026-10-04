@@ -303,18 +303,40 @@ impl ToGuest for Out<'_, '_> {
     }
 }
 
+/// Whose a control socket is, and so what it may say (review 2.19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Control {
+    /// The daemon's: published ports come on it ([`shards_ipc::kind::PUBLISH`]).
+    Daemon,
+    /// The VM's: published ports go on it as its run ends
+    /// ([`shards_ipc::kind::UNPUBLISH`]). A VM gives nothing to publish.
+    Release,
+}
+
+impl Control {
+    /// Whether a message of `kind` is this socket's to send.
+    fn says(self, kind: u8) -> bool {
+        match self {
+            Control::Daemon => kind == shards_ipc::kind::PUBLISH,
+            Control::Release => kind == shards_ipc::kind::UNPUBLISH,
+        }
+    }
+}
+
 /// Serves the guest on `region`'s rings until the VM goes, ringing `wake_peer` and sleeping
-/// on `wake_me`.
-/// Published ports come on a socket of `controls`, from the daemon
-/// ([`shards_ipc::kind::PUBLISH`]), and go on one, from the VM as its run ends
-/// ([`shards_ipc::kind::UNPUBLISH`]).
+/// on `wake_me`. Published ports come and go on `controls`, each of whom [`Control`] says;
+/// their messages are taken as each comes whole, so that one cut short holds up nothing.
 pub fn serve(
     region: OwnedFd,
     wake_me: OwnedFd,
     wake_peer: OwnedFd,
     cfg: Config,
-    mut controls: Vec<std::os::unix::net::UnixStream>,
+    controls: Vec<(Control, std::os::unix::net::UnixStream)>,
 ) -> io::Result<()> {
+    let mut controls: Vec<(Control, std::os::unix::net::UnixStream, shards_ipc::Incoming)> = controls
+        .into_iter()
+        .map(|(role, sock)| (role, sock, shards_ipc::Incoming::default()))
+        .collect();
     let region = Region::map(region)?;
     // The device's frames come on 0, this side's go on 1.
     let mut from_guest: Consumer<'_> = region.consumer(0, wake_peer.try_clone()?, wake_me);
@@ -390,7 +412,7 @@ pub fn serve(
             }
         }
         let control_at = fds.len();
-        for c in &controls {
+        for (_, c, _) in &controls {
             fds.push(libc::pollfd {
                 fd: c.as_raw_fd(),
                 events: libc::POLLIN,
@@ -464,25 +486,34 @@ pub fn serve(
         }
         // Those that hung up are gone; what is published stays, as the VM runs on.
         let mut i = 0;
-        controls.retain(|c| {
+        controls.retain_mut(|(role, c, incoming)| {
             let ready = fds.get(control_at + i).is_some_and(|p| p.revents != 0);
             i += 1;
             if !ready {
                 return true;
             }
-            match shards_ipc::recv(c) {
-                // Said back once taken: the sender's copies may close.
-                Ok(Some(m)) if m.kind == shards_ipc::kind::PUBLISH => {
-                    stack.publish(&m.payload, m.fds);
-                    shards_ipc::send(c, shards_ipc::kind::PUBLISH, &[], &[]).is_ok()
+            loop {
+                let m = match incoming.take(c) {
+                    Ok(shards_ipc::Took::Message(m)) => m,
+                    Ok(shards_ipc::Took::Partial) => return true,
+                    Ok(shards_ipc::Took::Ended) | Err(_) => return false,
+                };
+                // What is not this socket's to say ends it.
+                if !role.says(m.kind) {
+                    return false;
                 }
-                Ok(Some(m)) if m.kind == shards_ipc::kind::UNPUBLISH => {
+                // Said back once taken: the sender's copies may close.
+                let answered = if m.kind == shards_ipc::kind::PUBLISH {
+                    stack.publish(&m.payload, m.fds);
+                    shards_ipc::send(c, shards_ipc::kind::PUBLISH, &[], &[])
+                } else {
                     // Flows left answer nobody: their sockets are gone.
                     stack.published.clear();
-                    shards_ipc::send(c, shards_ipc::kind::UNPUBLISH, &[], &[]).is_ok()
+                    shards_ipc::send(c, shards_ipc::kind::UNPUBLISH, &[], &[])
+                };
+                if answered.is_err() {
+                    return false;
                 }
-                Ok(Some(_)) => true,
-                _ => false,
             }
         });
         // Those polled: a PUBLISH just read adds more, an UNPUBLISH leaves none.
@@ -984,6 +1015,15 @@ mod tests {
         }
         let deny = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
         assert!(!deny.allows(Ipv4Addr::new(8, 8, 8, 8)));
+    }
+
+    /// The daemon's control socket publishes and the VM's lets go, and neither says the
+    /// other's: a VM gives the network process nothing to serve (review 2.19).
+    #[test]
+    fn each_control_socket_says_only_its_own() {
+        use shards_ipc::kind::{PUBLISH, UNPUBLISH};
+        assert!(Control::Daemon.says(PUBLISH) && !Control::Daemon.says(UNPUBLISH));
+        assert!(Control::Release.says(UNPUBLISH) && !Control::Release.says(PUBLISH));
     }
 
     /// An initial sequence number is its connection's and its secret's alone, plus its

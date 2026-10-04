@@ -95,7 +95,7 @@ pub fn start(
             bridge.as_ref(),
             "--control".as_ref(),
             "6".as_ref(),
-            "--control".as_ref(),
+            "--release".as_ref(),
             "7".as_ref(),
         ],
         &[
