@@ -10,7 +10,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::time::{Duration, Instant};
 
-use shards_abi::run::{self, Size, Spec, kind};
+use shards_abi::run::{self, BUFFERED, CHUNK, Size, Spec, kind};
 use shards_abi::{control, marker};
 
 use crate::defaults::{self, CAPS, DEVICES, LINKS, MASKED, READONLY};
@@ -22,10 +22,6 @@ use shards_user::{self as user, ExecUser};
 /// `docker run`'s status for a command that never ran, when nothing says more
 /// (docker/cli cli/command/container/run.go, toStatusError).
 const NOT_RUN: u32 = 125;
-/// Bytes buffered in each direction before init stops reading more, so backpressure
-/// reaches the writer.
-const BUFFERED: usize = 256 * 1024;
-const CHUNK: usize = 64 * 1024;
 /// How long a template waits for the kernel's crypto self-tests. One snapshotted while
 /// they run is still correct, only slower to restore.
 const SELFTESTS_WAIT: Duration = Duration::from_secs(2);

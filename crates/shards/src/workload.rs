@@ -329,6 +329,9 @@ fn relay(
     // D08).
     let mut frame = Vec::new();
     let mut not_run = None;
+    // As much as the guest sends at once, in one read, whatever the frames it holds
+    // (review 8.20).
+    let mut conn = io::BufReader::with_capacity(run::BUFFERED, &*conn);
     loop {
         let mut h = [0u8; run::HEADER];
         conn.read_exact(&mut h)
@@ -343,17 +346,15 @@ fn relay(
             .map_err(|e| format!("the guest stopped mid-frame: {e}"))?;
         let payload = &*payload;
         match which {
+            // A closed stdout drops output, as a closed pipe does for `docker run`.
             kind::STDOUT => {
-                let mut out = io::stdout().lock();
-                // A closed stdout drops output, as a closed pipe does for `docker run`.
-                let _ = out.write_all(payload).and_then(|()| out.flush());
+                let _ = write_fd(1, payload);
                 if let Some(log) = log.as_deref_mut() {
                     log.keep(LOG_STDOUT, payload);
                 }
             }
             kind::STDERR => {
-                let mut err = io::stderr().lock();
-                let _ = err.write_all(payload).and_then(|()| err.flush());
+                let _ = write_fd(2, payload);
                 if let Some(log) = log.as_deref_mut() {
                     log.keep(LOG_STDERR, payload);
                 }
@@ -377,6 +378,29 @@ fn relay(
             _ => return Err(format!("the guest sent an unknown frame kind {which}")),
         }
     }
+}
+
+/// Writes all of `bytes` to this process's descriptor `fd` as it is now: standard output
+/// or error, which a warm VM takes from its client once it starts. A frame is one write
+/// where the descriptor takes it all, where std's line-buffered stdout made one of each
+/// line's end and another of the rest (review 8.20).
+#[cfg(unix)]
+fn write_fd(fd: libc::c_int, mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        // SAFETY: write(2) of a live buffer, of its length.
+        let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        match usize::try_from(n) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = bytes.get(n..).unwrap_or_default(),
+            Err(_) => {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The head of a log record for `bytes` on `stream`, stamped now: its bytes follow it.
@@ -703,6 +727,7 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<Option<u8
     }
     let mut frame = Vec::new();
     let mut not_started: Option<(u8, String)> = None;
+    let mut conn = io::BufReader::with_capacity(run::BUFFERED, &conn);
     loop {
         let mut h = [0u8; run::HEADER];
         conn.read_exact(&mut h)

@@ -3464,3 +3464,21 @@ revision before comparing a changed API/implementation.
   `a_template_saver_takes_a_run_only_out_of_the_templates_reach`, mutation-checked). On
   Linux the VM applies the layer and checks that a file made there is refused (vm_run.rs,
   `seal`; confine.rs, `a_second_layer_seals_a_directory_and_keeps_the_rest`).
+
+### M103. A run's output, one read and one write a frame
+
+- **Question.** The host read each frame of a run's output with two reads, its header
+  and its payload, and wrote each to stdout through std's line buffering, which made one
+  write of a frame's lines and another of the rest (review 8.20). What do one buffered
+  read of all the guest sends at once, and one write a frame, buy?
+- **Method.** `docs/research/measurements/build-ab/ab.py`, 0ada525 against the change,
+  each arm on a template of its own: `shards run --pull never alpine head -c 1048576
+  /dev/zero`, n = 300 pairs. Apple M5 Max, macOS 26.4.1, load average 2.2–2.5,
+  2026-10-04.
+- **Results.** The paired median of new − old with its 95% interval: wall −309 µs [−414,
+  −220]; in the guest −322 µs [−411, −219]; the rest −23 µs [−87, +40]. Both arms'
+  1 MiB runs had a long tail: in the guest p50 5.9–6.4 ms, p90 27–35 ms, p99 455–462 ms,
+  max 664–696 ms.
+- **Consequence.** The host reads up to what the guest sends at once (`run::BUFFERED`,
+  shared with the guest) and writes each frame whole. The tail is the same in both arms,
+  and is the next question.

@@ -23,6 +23,13 @@ pub const TOKEN: usize = 16;
 pub const HEADER: usize = 8;
 /// The largest payload either side accepts.
 pub const MAX_PAYLOAD: u32 = 1 << 20;
+/// What the guest reads of a stream at once, and so the most one of its output frames
+/// carries.
+pub const CHUNK: usize = 64 * 1024;
+/// What either side keeps waiting for the other in each direction before it stops
+/// reading more, so that backpressure reaches the writer: at most what one write of the
+/// guest's sends, and what the host reads at once.
+pub const BUFFERED: usize = 256 * 1024;
 
 /// Frame kinds. The first four are stdcopy's streams.
 pub mod kind {
