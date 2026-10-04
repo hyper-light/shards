@@ -97,22 +97,27 @@ fn serve(home: &Path, daemon: &Path, request: &Attached, detach_keys: &[u8]) -> 
     // which lives as long as the process, shares it as a `static`.
     static CURRENT: Mutex<Option<UnixStream>> = Mutex::new(None);
     let current = &CURRENT;
-    if let Err(e) = forward_signals(current, reads_terminal, resizes, request.proxies_signals) {
-        return failed(&e);
-    }
+    // Signals are taken now, before any thread starts, as each inherits what this one
+    // blocks; the threads that forward them and fill the command's stdin start once the
+    // request is on its way, while the daemon and the VM work on it (review 8.12).
+    let signals = match take_signals(reads_terminal, resizes, request.proxies_signals) {
+        Ok(signals) => signals,
+        Err(e) => return failed(&e),
+    };
     // Only an attached stdin, and only on a terminal, goes raw, unless NORAW is set; the
     // detach keys are looked for only then (docker/cli hijack.go, streams/in.go).
     let raw =
         request.tty && attached && in_terminal && std::env::var_os("NORAW").is_none_or(|v| v.is_empty());
     let proxy = (request.tty && attached).then(|| EscapeProxy::new(detach_keys));
     // A detached run's command reads nothing: no client stays to give it input.
-    let stdin = match command_stdin(attached, proxy) {
+    let (stdin, filler) = match command_stdin(attached) {
         Ok(stdin) => stdin,
         Err(e) => return failed(&e),
     };
     if raw && let Err(e) = terminal::make_raw() {
         return failed(&format!("the terminal's raw mode: {e}"));
     }
+    let mut threads = Some((signals, filler, proxy));
     // A daemon from another build answers RESTART once it has stepped aside.
     for _ in 0..2 {
         let conn = match connect(home, daemon, &mut started) {
@@ -126,6 +131,16 @@ fn serve(home: &Path, daemon: &Path, request: &Attached, detach_keys: &[u8]) -> 
         let stdio = [stdin.as_fd(), out, err];
         if let Err(e) = shards_ipc::send(&conn, request.kind, &request.payload, &stdio) {
             return failed(&format!("asking the daemon: {e}"));
+        }
+        if let Some((signals, filler, proxy)) = threads.take() {
+            if let Err(e) = forward(signals, current) {
+                return failed(&e);
+            }
+            if let Some(filler) = filler
+                && let Err(e) = fill_stdin(filler, proxy)
+            {
+                return failed(&e);
+            }
         }
         // Signals go to the command, and its terminal follows ours, once it is there: a
         // run's once the daemon has made its container, an exec's at once.
@@ -393,17 +408,23 @@ fn start(daemon: &Path, home: &Path) -> Result<(), String> {
     }
 }
 
-/// The command's stdin: /dev/null, or with `interactive` a pipe a thread fills from this
-/// process's stdin, closing it when that ends or this process exits. With a `proxy`, the
-/// detach keys end the client instead, with status 0 and the terminal restored, and the
-/// command runs on, as a container outlives the `docker run` that detached from it.
-fn command_stdin(interactive: bool, mut proxy: Option<EscapeProxy>) -> Result<OwnedFd, String> {
+/// The command's stdin: /dev/null, or with `interactive` a pipe [`fill_stdin`] fills from
+/// this process's stdin, whose writing end is returned for it.
+fn command_stdin(interactive: bool) -> Result<(OwnedFd, Option<io::PipeWriter>), String> {
     if !interactive {
         return File::open("/dev/null")
-            .map(OwnedFd::from)
+            .map(|f| (OwnedFd::from(f), None))
             .map_err(|e| format!("/dev/null: {e}"));
     }
-    let (reader, mut writer) = io::pipe().map_err(|e| format!("a pipe for stdin: {e}"))?;
+    let (reader, writer) = io::pipe().map_err(|e| format!("a pipe for stdin: {e}"))?;
+    Ok((OwnedFd::from(reader), Some(writer)))
+}
+
+/// Fills `writer`, the command's stdin, from this process's stdin on a thread of its own,
+/// closing it when that ends or this process exits. With a `proxy`, the detach keys end
+/// the client instead, with status 0 and the terminal restored, and the command runs on,
+/// as a container outlives the `docker run` that detached from it.
+fn fill_stdin(mut writer: io::PipeWriter, mut proxy: Option<EscapeProxy>) -> Result<(), String> {
     std::thread::Builder::new()
         .name("stdin".into())
         .spawn(move || {
@@ -436,8 +457,8 @@ fn command_stdin(interactive: bool, mut proxy: Option<EscapeProxy>) -> Result<Ow
                 }
             }
         })
-        .map_err(|e| format!("stdin thread: {e}"))?;
-    Ok(OwnedFd::from(reader))
+        .map(drop)
+        .map_err(|e| format!("stdin thread: {e}"))
 }
 
 /// Sends the size of this process's stdout as the command's terminal's.
@@ -450,30 +471,23 @@ fn resize(conn: &UnixStream) {
     }
 }
 
-/// Sends the signals `docker run` forwards to the command, over the current connection,
-/// even those this process was started ignoring, as the Docker CLI does
-/// (shards_ipc::take_forwarded). They are blocked in the calling thread, which every
+/// Takes the signals `docker run` forwards to the command, for [`forward`] to send over the
+/// current connection, even those this process was started ignoring, as the Docker CLI
+/// does (shards_ipc::take_forwarded). They are blocked in the calling thread, which every
 /// thread started later inherits, so only the forwarder's `sigwait` receives them. One that
 /// would end the client, arriving with no connection to send it on, ends the client,
 /// unless it was ignored, with the terminal restored first: SIGINT and SIGTERM as they
 /// end the Docker CLI before its container is made, with 128 and their number and
 /// nothing said (docker/cli cmd/docker/docker.go, notifyContext); SIGHUP and SIGQUIT as
-/// they would have. With
-/// `reads_terminal`, the terminal's job control applies to the client
-/// (shards_ipc::forwarded). With `resizes`, SIGWINCH first resizes the command's terminal,
-/// then goes to the command too, as both reach a Docker container's (docker/cli tty.go,
-/// signals.go).
-/// Without `proxies`, only SIGWINCH is taken, to resize the command's terminal with
-/// `resizes`, and the rest act on the client as they would.
-fn forward_signals(
-    current: &'static Mutex<Option<UnixStream>>,
-    reads_terminal: bool,
-    resizes: bool,
-    proxies: bool,
-) -> Result<(), String> {
+/// they would have. With `reads_terminal`, the terminal's job control applies to the
+/// client (shards_ipc::forwarded). With `resizes`, SIGWINCH first resizes the command's
+/// terminal, then goes to the command too, as both reach a Docker container's (docker/cli
+/// tty.go, signals.go). Without `proxies`, only SIGWINCH is taken, to resize the command's
+/// terminal with `resizes`, and the rest act on the client as they would.
+fn take_signals(reads_terminal: bool, resizes: bool, proxies: bool) -> Result<Option<Signals>, String> {
     if !proxies {
         if !resizes {
-            return Ok(());
+            return Ok(None);
         }
         // SAFETY: plain sigset operations on a local set, then blocking it in this thread,
         // which threads started later inherit.
@@ -484,6 +498,48 @@ fn forward_signals(
             libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
             set
         };
+        return Ok(Some(Signals {
+            set,
+            ignored: Vec::new(),
+            resizes,
+            proxies,
+        }));
+    }
+    let (mut set, ignored) =
+        shards_ipc::take_forwarded(reads_terminal).map_err(|e| format!("taking signals: {e}"))?;
+    // And the rest Docker forwards: Linux's real-time signals, and the signals a fault
+    // raises, those another process sent (review 8.17).
+    shards_ipc::take_rest(&mut set).map_err(|e| format!("taking signals: {e}"))?;
+    Ok(Some(Signals {
+        set,
+        ignored,
+        resizes,
+        proxies,
+    }))
+}
+
+/// The signals [`take_signals`] took, for [`forward`]: the set blocked, those that were
+/// ignored, and what is done with them.
+struct Signals {
+    set: libc::sigset_t,
+    ignored: Vec<libc::c_int>,
+    resizes: bool,
+    proxies: bool,
+}
+
+/// Starts the thread that receives `signals`, as [`take_signals`] says, on the run's
+/// connection in `current` once there is one.
+fn forward(signals: Option<Signals>, current: &'static Mutex<Option<UnixStream>>) -> Result<(), String> {
+    let Some(Signals {
+        set,
+        ignored,
+        resizes,
+        proxies,
+    }) = signals
+    else {
+        return Ok(());
+    };
+    if !proxies {
         std::thread::Builder::new()
             .name("resizes".into())
             .spawn(move || {
@@ -498,11 +554,6 @@ fn forward_signals(
             .map_err(|e| format!("resize thread: {e}"))?;
         return Ok(());
     }
-    let (mut set, ignored) =
-        shards_ipc::take_forwarded(reads_terminal).map_err(|e| format!("taking signals: {e}"))?;
-    // And the rest Docker forwards: Linux's real-time signals, and the signals a fault
-    // raises, those another process sent (review 8.17).
-    shards_ipc::take_rest(&mut set).map_err(|e| format!("taking signals: {e}"))?;
     std::thread::Builder::new()
         .name("signals".into())
         .spawn(move || {

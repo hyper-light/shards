@@ -127,6 +127,10 @@ pub fn receive(
     may_take: &dyn Fn() -> Result<(), String>,
 ) -> Result<Request, String> {
     let daemon = &link.daemon;
+    // The relays' threads start while the VM is idle, so that none starts on a request's
+    // way to the guest (review 8.13).
+    let daemon_relay = Relay::start("daemon-signals", to)?;
+    let client_relay = Relay::start("client-signals", to)?;
     shards_ipc::send(daemon, kind::READY, &[], &[]).map_err(|e| format!("telling the daemon: {e}"))?;
     let request = shards_ipc::recv(daemon)
         .map_err(|e| format!("waiting for a request: {e}"))?
@@ -235,18 +239,13 @@ pub fn receive(
     let from_daemon = daemon
         .try_clone()
         .map_err(|e| format!("the daemon's connection: {e}"))?;
-    let mut relays = vec![("daemon-signals", from_daemon, From::Daemon(segments))];
+    daemon_relay.relay(from_daemon, From::Daemon(segments));
+    // A detached run's client has no relay: its thread ends as its handle goes.
     if let Some(client) = &client {
         let signals = client
             .try_clone()
             .map_err(|e| format!("the client's connection: {e}"))?;
-        relays.push(("client-signals", signals, From::Client));
-    }
-    for (name, conn, from) in relays {
-        std::thread::Builder::new()
-            .name(name.into())
-            .spawn(move || relay_signals(&conn, to, from))
-            .map_err(|e| format!("{name} thread: {e}"))?;
+        client_relay.relay(signals, From::Client);
     }
     Ok(Request {
         client,
@@ -281,6 +280,30 @@ fn segments_from(daemon: UnixStream, answers: mpsc::Receiver<Segment>) -> worklo
 
 /// The daemon's answer to a `LOG_SEGMENT`: the segment's number, and its log and index.
 type Segment = (u64, Vec<OwnedFd>);
+
+/// A relay's thread, waiting for the connection it is to read: started ahead of the
+/// request that brings it.
+struct Relay(mpsc::Sender<(UnixStream, From)>);
+
+impl Relay {
+    fn start(name: &'static str, to: &'static ToGuest) -> Result<Relay, String> {
+        let (relay, told) = mpsc::channel::<(UnixStream, From)>();
+        std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                if let Ok((conn, from)) = told.recv() {
+                    relay_signals(&conn, to, from);
+                }
+            })
+            .map_err(|e| format!("{name} thread: {e}"))?;
+        Ok(Relay(relay))
+    }
+
+    /// Has its thread pass the signals that arrive on `conn`, which `from` says whose it is.
+    fn relay(self, conn: UnixStream, from: From) {
+        let _ = self.0.send((conn, from));
+    }
+}
 
 /// Whose connection a relay reads.
 enum From {
