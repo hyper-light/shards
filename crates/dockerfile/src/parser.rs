@@ -67,7 +67,23 @@ pub struct Parsed {
     pub instructions: Vec<Node>,
     pub escape: u8,
     pub warnings: Vec<Warning>,
+    pub dialect: Dialect,
 }
+
+/// What a file is read as: a Dockerfile, as BuildKit reads it, or an Agentfile, a
+/// Dockerfile with shards' directives for agents (docs/architecture/AGENTFILE_ARCH.md §4,
+/// architecture.md D35). A Dockerfile's `AGENT` is an unknown instruction, as BuildKit's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Dialect {
+    #[default]
+    Dockerfile,
+    Agentfile,
+}
+
+/// The directives an Agentfile adds, lowercase.
+pub const AGENTFILE_DIRECTIVES: [&[u8]; 7] = [
+    b"agent", b"attach", b"connect", b"harness", b"mcp", b"network", b"skill",
+];
 
 /// A warning BuildKit gives: an empty line inside a continued instruction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -403,6 +419,7 @@ fn split_ws(s: &[u8], limit: Option<usize>) -> Vec<&[u8]> {
 struct Parser {
     escape: u8,
     depth: usize,
+    dialect: Dialect,
 }
 
 impl Parser {
@@ -547,6 +564,13 @@ impl Parser {
                 false,
             )),
             b"onbuild" => self.sub_command(rest),
+            // An Agentfile's: `SKILL` as `ADD`, the rest as `EXPOSE`, words.
+            b"skill" if self.dialect == Dialect::Agentfile => maybe_json_to_list(rest),
+            b"agent" | b"attach" | b"connect" | b"harness" | b"mcp" | b"network"
+                if self.dialect == Dialect::Agentfile =>
+            {
+                Ok((strings_ws(rest), false))
+            }
             // An instruction BuildKit's parser does not know keeps its name, and nothing
             // of its arguments; instructions refuse it later.
             _ => Ok((vec![Node::default()], false)),
@@ -812,15 +836,18 @@ fn heredocs(line: &[u8]) -> Result<Vec<Heredoc>, Vec<u8>> {
 }
 
 /// Whether `node` may take heredocs: `ADD`, `COPY` and `RUN`, also under `ONBUILD`, not in
-/// JSON form.
-fn takes_heredocs(node: &Node) -> bool {
+/// JSON form; and an Agentfile's `SKILL`, as `ADD`.
+fn takes_heredocs(node: &Node, dialect: Dialect) -> bool {
     let mut n = node;
     if go::to_lower(&n.value) == b"onbuild"
         && let Some(child) = n.next.first().and_then(|a| a.children.first())
     {
         n = child;
     }
-    matches!(go::to_lower(&n.value).as_slice(), b"add" | b"copy" | b"run") && !n.json
+    let name = go::to_lower(&n.value);
+    let takes = matches!(name.as_slice(), b"add" | b"copy" | b"run")
+        || (dialect == Dialect::Agentfile && name == b"skill");
+    takes && !n.json
 }
 
 /// Lines with their endings, as BuildKit's scanner splits them.
@@ -877,6 +904,11 @@ const EMPTY_CONTINUATION: &str = "https://docs.docker.com/go/dockerfile/rule/no-
 
 /// Parses a Dockerfile: `parser.Parse`.
 pub fn parse(text: &[u8]) -> Result<Parsed, Error> {
+    parse_as(text, Dialect::Dockerfile)
+}
+
+/// Parses a file as `dialect`.
+pub fn parse_as(text: &[u8], dialect: Dialect) -> Result<Parsed, Error> {
     let mut d = Directives {
         done: false,
         seen: Vec::new(),
@@ -885,6 +917,7 @@ pub fn parse(text: &[u8]) -> Result<Parsed, Error> {
     let mut p = Parser {
         escape: b'\\',
         depth: 0,
+        dialect,
     };
     let mut it = Scanner::new(text);
     let mut current = 0usize;
@@ -945,7 +978,7 @@ pub fn parse(text: &[u8]) -> Result<Parsed, Error> {
         let mut child = p
             .node(&buf, std::mem::take(&mut comments))
             .map_err(|m| located(m, start, current))?;
-        if takes_heredocs(&child) && buf.windows(2).any(|w| w == b"<<") {
+        if takes_heredocs(&child, dialect) && buf.windows(2).any(|w| w == b"<<") {
             let docs = heredocs(&buf).map_err(|m| located(m, start, current))?;
             for mut doc in docs {
                 let mut terminated = false;
@@ -989,6 +1022,7 @@ pub fn parse(text: &[u8]) -> Result<Parsed, Error> {
         instructions,
         escape: d.escape,
         warnings,
+        dialect,
     })
 }
 

@@ -51,6 +51,8 @@ pub struct Options {
     /// The `.dockerignore` patterns the context is sent without (`local.excludepatterns`,
     /// as dockerui's MainContext sets them).
     pub excludes: Vec<Vec<u8>>,
+    /// What the file is read as: a Dockerfile, or an Agentfile (D35).
+    pub dialect: parser::Dialect,
 }
 
 /// A base image as resolved: its reference, digest and config.
@@ -206,6 +208,8 @@ struct Ds {
     entrypoint: Tracker,
     cmd: Tracker,
     healthcheck: Tracker,
+    /// An Agentfile's directives in its lineage, in order (D35).
+    agentfile: Vec<crate::agentfile::Directive>,
 }
 
 impl Ds {
@@ -235,6 +239,7 @@ impl Ds {
             entrypoint: Tracker::default(),
             cmd: Tracker::default(),
             healthcheck: Tracker::default(),
+            agentfile: Vec::new(),
         }
     }
 }
@@ -412,7 +417,7 @@ fn plan_with(
             b" is not one",
         ])));
     }
-    let parsed = parser::parse(text).map_err(|e| Fail(e.message, e.location))?;
+    let parsed = parser::parse_as(text, opts.dialect).map_err(|e| Fail(e.message, e.location))?;
     for w in &parsed.warnings {
         if w.url == lint::NO_EMPTY_CONTINUATION.url {
             linter.run(
@@ -423,6 +428,9 @@ fn plan_with(
         }
     }
     let ins = instructions::parse(&parsed, linter).map_err(|e| Fail(e.message, e.location))?;
+    if opts.dialect == parser::Dialect::Agentfile {
+        crate::agentfile::check(&ins).map_err(|e| Fail(e.message, e.location))?;
+    }
     if ins.stages.is_empty() {
         return Err(Fail::new(b"dockerfile contains no stages to build".to_vec()));
     }
@@ -1333,6 +1341,7 @@ impl Planner<'_> {
         let (state, platform, mut image) = (base.state.clone(), base.platform.clone(), base.image.clone());
         image.config.on_build.clear();
         let (paths, workdir_set, build_args) = (base.paths, base.workdir_set, base.build_args.clone());
+        let agentfile = base.agentfile.clone();
         if let Some(d) = self.states.get_mut(i) {
             d.state = state;
             d.platform = platform;
@@ -1340,6 +1349,7 @@ impl Planner<'_> {
             d.paths = paths;
             d.workdir_set = workdir_set;
             d.build_args.extend(build_args);
+            d.agentfile = agentfile;
         }
     }
 
@@ -1795,6 +1805,13 @@ impl Planner<'_> {
                     *p = ex(p)?;
                 }
             }
+            Kind::Agentfile(crate::agentfile::Directive::Volume(v)) => {
+                for p in v.paths.iter_mut() {
+                    *p = ex(p)?;
+                }
+                v.chown = ex(&v.chown)?;
+                v.chmod = ex(&v.chmod)?;
+            }
             Kind::Run(r) => {
                 let mut mounts = Vec::new();
                 for spec in &r.mount_specs {
@@ -1907,6 +1924,38 @@ impl Planner<'_> {
                 commit(ds, msg, false, false);
             }
             Kind::Expose(ports) => self.dispatch_expose(d, &ports, &loc, &lint)?,
+            // What a Dockerfile's engine sees of an Agentfile's ports and volumes: the ports
+            // it listens on, egress ones not (§12.6), and the mount points. Their direction,
+            // networks, names and grants go in the normalized Agentfile (§8).
+            Kind::Agentfile(crate::agentfile::Directive::Expose(e)) => {
+                if e.direction != crate::agentfile::Direction::Egress {
+                    self.dispatch_expose(d, &e.ports, &loc, &lint)?;
+                }
+                self.ds(d)?.agentfile.push(crate::agentfile::Directive::Expose(e));
+            }
+            Kind::Agentfile(crate::agentfile::Directive::Volume(v)) => {
+                let ds = self.ds(d)?;
+                for p in &v.paths {
+                    if p.is_empty() {
+                        return Err(Fail::new(b"VOLUME specified can not be an empty string".to_vec()));
+                    }
+                    ds.image.config.volumes.insert(p.clone(), ());
+                }
+                commit(ds, errb(&[b"VOLUME ", &go_list(&v.paths)]), false, false);
+                ds.agentfile.push(crate::agentfile::Directive::Volume(v));
+            }
+            // What declares and grants alone: the normalized Agentfile carries it.
+            Kind::Agentfile(
+                directive @ (crate::agentfile::Directive::Network(_)
+                | crate::agentfile::Directive::Connect(_)
+                | crate::agentfile::Directive::Attach(_)),
+            ) => self.ds(d)?.agentfile.push(directive),
+            Kind::Agentfile(_) => {
+                return Err(Fail::new(errb(&[
+                    &name,
+                    b" is an Agentfile directive shards does not build yet",
+                ])));
+            }
             Kind::User(u) => self.dispatch_user(d, &u, true),
             Kind::Volume(v) => {
                 let ds = self.ds(d)?;
@@ -2815,6 +2864,35 @@ impl Planner<'_> {
             image.platform.os_features = platform.os_features.clone();
         }
         image.platform = platform::normalize(&image.platform);
+        // An Agentfile's directives travel in a layer of their own, the normalized
+        // Agentfile, and its digest in a label (§8, D35).
+        if !t.agentfile.is_empty() {
+            let spec = crate::agentfile::spec(&t.agentfile);
+            image.config.labels.insert(
+                crate::agentfile::DIGEST_LABEL.to_vec(),
+                crate::agentfile::digest(&spec),
+            );
+            let created = t.epoch.map(|(s, _)| s);
+            let made = self.graph.file(
+                &t.state,
+                vec![Action::Mkfile {
+                    path: crate::agentfile::SPEC_PATH.to_vec(),
+                    mode: 0o444,
+                    data: spec,
+                    chown: None,
+                    created,
+                }],
+                custom_name(b"[agentfile] the normalized Agentfile".to_vec()),
+            );
+            t.state = made;
+            image.history.push(History {
+                created: ds_epoch(t),
+                created_by: errb(&[b"AGENTFILE ", crate::agentfile::SPEC_PATH]),
+                author: Vec::new(),
+                comment: HISTORY_COMMENT.to_vec(),
+                empty_layer: false,
+            });
+        }
         Ok(Plan {
             state: std::mem::take(&mut t.state),
             graph: self.graph,

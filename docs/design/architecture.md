@@ -1919,6 +1919,47 @@ microVM rather than a container on the build host's kernel.
   MiB and 4 ms per GiB of guest memory, and takes half the host's, as Docker Desktop's VM
   has). Each is an item of AGENTFILE_ARCH.md §11.
 
+### Agentfiles: a Dockerfile and shards' directives (D35)
+
+An Agentfile is a Dockerfile with the directives docs/architecture/AGENTFILE_ARCH.md
+specifies (§4, with the review's answers of §12): `AGENT`, `HARNESS`, `SKILL`, `MCP`,
+`NETWORK`, `CONNECT`, `ATTACH`, and `EXPOSE … AS/FOR` and `VOLUME` with options, a name
+and `FOR`.
+
+- **Read as one or the other.** `shards build` reads a file as an Agentfile where it is
+  named as one, as Docker names a Dockerfile (`Agentfile`, `*.Agentfile`, `Agentfile.*`),
+  and without `-f` finds the context's `Agentfile` before its `Dockerfile`. A Dockerfile is
+  read as BuildKit reads it, byte for byte (`tests/oracle.rs`): its `AGENT` is an unknown
+  instruction, its `VOLUME --chown` an unknown flag. The parser knows the dialect
+  (`parser::parse_as`), since BuildKit keeps no arguments of an instruction it does not
+  know; `SKILL` takes heredocs as `ADD` does. The build names the file it reads in its
+  progress, as BuildKit names `-f`'s (`load build definition from Agentfile`). A
+  `# syntax=` line will name the frontend (§8 Q16) once it exists.
+- **Names.** Agents, harnesses, MCP servers and networks are named as stages are
+  (`^[a-z][a-z0-9-_.]*$`, read lowercase). Stages, agents and harnesses share one
+  namespace (§7 Q19.2): a name declared twice is an error naming the first declaration;
+  MCP servers and networks are each declared once. Every name a grant uses (`FOR`,
+  `CONNECT`, `ATTACH`, `EXPOSE … FOR`) is checked against the declarations of its stage's
+  lineage, a stage seeing those of the stages it is built `FROM` (§7 Q19.5), of the kind
+  `--target-kind` says; a `CONNECT` joins one kind, on networks whose `FOR` allows each
+  name (§12.10, §12.11). `ONBUILD` takes none of the directives: a trigger runs in another
+  file's build, a Dockerfile's maybe, and what an Agentfile grants is its own.
+- **What Docker sees.** `EXPOSE … AS ingress` and `AS` both ways expose their ports in the
+  image config, as `EXPOSE` does; `AS egress` exposes none, the container listening on none
+  of them (§12.6). `VOLUME` lists its mount points in the config, its name and grant aside
+  (§12.8).
+- **Where the directives travel** (§8, docs/research/oci-artifacts.md §4). The target
+  stage's lineage's directives, in order, defaults resolved (`/agents/<name>`,
+  `/harness/<name>`), are written as JSON to `/.agentfile.json`, mode 0444, in a layer of
+  its own, the build's last: the normalized Agentfile, which shards' runtime reads, and
+  which survives every store and copy. Its first field is its schema's version
+  (`schemaVersion`: 1), which a reader refuses past what it knows. The config label
+  `vnd.osi.agentfile.digest` carries its digest (`vnd.osi` as the OSI's media types,
+  `application/vnd.osi.agent.v1`, which no IANA registration holds).
+- **Built so far.** The directives that declare and grant (`NETWORK`, `CONNECT`, `ATTACH`,
+  `EXPOSE`, `VOLUME`) build. `AGENT`, `HARNESS`, `SKILL` and `MCP`, whose content a build
+  fetches, refuse to build until it does, by name.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

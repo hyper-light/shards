@@ -23,6 +23,7 @@ use shards_dockerfile::export::{self, Layer};
 use shards_dockerfile::go::Time;
 use shards_dockerfile::image::Image;
 use shards_dockerfile::llb::OpKind;
+use shards_dockerfile::parser::Dialect;
 use shards_dockerfile::plan::{self, EpochSource, Options, Resolved, Resolver};
 use shards_dockerfile::platform::{self, Platform};
 use shards_image::oci::{self, Descriptor, Document};
@@ -697,25 +698,53 @@ fn read_if_present(path: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
 /// A Dockerfile's name, its text, and the ignore file beside it.
 type Dockerfile = (String, Vec<u8>, Option<Vec<u8>>);
 
-/// The Dockerfile, found as the frontend finds it (dockerui's Client.ReadEntrypoint):
-/// `-f`'s file, stdin's, or PATH's `Dockerfile`, then `dockerfile` for the default name.
-/// Its name, text, and the `<name>.dockerignore` beside it, which overrides the
-/// context's `.dockerignore`.
-fn dockerfile(parsed: &Parsed, context: &Path) -> Result<Dockerfile, String> {
-    let file = parsed.string("file");
-    let read_failed = |e: String| format!("failed to read dockerfile: {e}");
-    if file == "-" {
-        let text = read_capped(std::io::stdin(), "Dockerfile").map_err(read_failed)?;
-        return Ok(("Dockerfile".into(), text, None));
-    }
-    let path = if file.is_empty() {
-        context.join("Dockerfile")
+/// What a file named `name` is read as: an Agentfile where it is named as one, as Docker's
+/// names a Dockerfile (`Agentfile`, `*.Agentfile`, `Agentfile.*`), else a Dockerfile (D35).
+fn dialect_of(name: &str) -> Dialect {
+    let lower = name.to_ascii_lowercase();
+    if lower == "agentfile" || lower.ends_with(".agentfile") || lower.starts_with("agentfile.") {
+        Dialect::Agentfile
     } else {
+        Dialect::Dockerfile
+    }
+}
+
+/// The file a build reads: `-f`'s path, or none for stdin's; without `-f`, the context's
+/// `Agentfile` where there is one, else its `Dockerfile` (D35). Its name as the build's
+/// progress shows it.
+fn definition(parsed: &Parsed, context: &Path) -> (Option<PathBuf>, String) {
+    let file = parsed.string("file");
+    if file == "-" {
+        return (None, "Dockerfile".into());
+    }
+    let path = if !file.is_empty() {
         PathBuf::from(file)
+    } else if let Some(agentfile) = ["Agentfile", "agentfile"]
+        .iter()
+        .map(|n| context.join(n))
+        .find(|p| p.is_file())
+    {
+        agentfile
+    } else {
+        context.join("Dockerfile")
     };
     let name = path
         .file_name()
         .map_or_else(|| "Dockerfile".into(), |n| n.to_string_lossy().into_owned());
+    (Some(path), name)
+}
+
+/// The Dockerfile, found as the frontend finds it (dockerui's Client.ReadEntrypoint):
+/// `-f`'s file, stdin's, or PATH's `Dockerfile`, then `dockerfile` for the default name.
+/// Its name, text, and the `<name>.dockerignore` beside it, which overrides the
+/// context's `.dockerignore`. An Agentfile is found before them (`definition`).
+fn dockerfile(parsed: &Parsed, context: &Path) -> Result<Dockerfile, String> {
+    let read_failed = |e: String| format!("failed to read dockerfile: {e}");
+    let (path, name) = definition(parsed, context);
+    let Some(path) = path else {
+        let text = read_capped(std::io::stdin(), "Dockerfile").map_err(read_failed)?;
+        return Ok(("Dockerfile".into(), text, None));
+    };
     let dir = path.parent().unwrap_or(Path::new("."));
     // One too large is no reason to look for `dockerfile` instead.
     let mut text = read_if_present(&path, &name).map_err(read_failed)?;
@@ -807,9 +836,10 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         .say("#0 building with \"shards\" instance using shards driver\n");
 
     let (name, text, beside) = {
+        let shown = definition(parsed, &context).1;
         let v = progress
             .borrow_mut()
-            .start("[internal] load build definition from Dockerfile");
+            .start(&format!("[internal] load build definition from {shown}"));
         match dockerfile(parsed, &context) {
             Ok((name, text, ignore)) => {
                 let p = progress.borrow();
@@ -869,6 +899,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         multi_platform: false,
         context_id: format!("shards-{}", std::process::id()).into_bytes(),
         excludes,
+        dialect: dialect_of(&name),
     };
     let plan = match plan::plan(&text, &opts, &bases) {
         Ok(p) => p,

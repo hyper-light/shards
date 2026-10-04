@@ -1683,3 +1683,111 @@ fn bases_whose_names_share_a_start_are_each_their_own() {
         ran.stderr
     );
 }
+
+/// An Agentfile is read before a Dockerfile beside it, and built as Docker sees it: the
+/// ports it listens on exposed, egress ones not, its volumes' mount points listed (D35,
+/// AGENTFILE_ARCH.md §12.6, §12.8); an error shows its own lines.
+#[test]
+fn an_agentfile_is_found_first_and_built_as_docker_sees_it() {
+    let (image, _) = served();
+    let home = TempDir::new("build-agentfile-home");
+    let ctx = context(
+        "build-agentfile-ctx",
+        &format!("FROM {image}\nLABEL from=dockerfile\n"),
+    );
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nNETWORK world\nEXPOSE 7000 AS ingress\nEXPOSE 443 AS egress FOR world\nVOLUME data /data\n"),
+    )
+    .unwrap();
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let built = shards(&[
+        "build",
+        "--progress=plain",
+        "-t",
+        "agentfile:1",
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    assert!(
+        built
+            .stderr
+            .contains("[internal] load build definition from Agentfile"),
+        "{}",
+        built.stderr
+    );
+    let inspected = shards(&["image", "inspect", "agentfile:1"]);
+    assert_eq!(inspected.status, Some(0), "{}", inspected.stderr);
+    let v: serde_json::Value = serde_json::from_str(&inspected.stdout).unwrap();
+    let config = &v[0]["Config"];
+    let exposed: Vec<&String> = config["ExposedPorts"].as_object().unwrap().keys().collect();
+    assert_eq!(exposed, ["7000/tcp"], "{}", inspected.stdout);
+    let volumes: Vec<&String> = config["Volumes"].as_object().unwrap().keys().collect();
+    assert_eq!(volumes, ["/data"], "{}", inspected.stdout);
+    assert!(config["Labels"].get("from").is_none(), "{}", inspected.stdout);
+    // The normalized Agentfile, a layer of its own, its digest the label's.
+    let text = std::fs::read(ctx.join("Agentfile")).unwrap();
+    let parsed =
+        shards_dockerfile::parser::parse_as(&text, shards_dockerfile::parser::Dialect::Agentfile).unwrap();
+    let ins =
+        shards_dockerfile::instructions::parse(&parsed, &shards_dockerfile::lint::Linter::default()).unwrap();
+    let directives: Vec<_> = ins.stages[0]
+        .commands
+        .iter()
+        .filter_map(|c| match &c.kind {
+            shards_dockerfile::instructions::Kind::Agentfile(d) => Some(d.clone()),
+            _ => None,
+        })
+        .collect();
+    let want = shards_dockerfile::agentfile::digest(&shards_dockerfile::agentfile::spec(&directives));
+    assert_eq!(
+        config["Labels"]["vnd.osi.agentfile.digest"]
+            .as_str()
+            .map(str::as_bytes),
+        Some(want.as_slice()),
+        "{}",
+        inspected.stdout
+    );
+    let store = shards_image::store::Store::open(&home.join("images")).unwrap();
+    let name = shards_image::reference::Reference::parse("agentfile:1")
+        .unwrap()
+        .to_string();
+    let desc = store.tagged(&name).unwrap().unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&store.content(&desc, 1 << 20).unwrap().unwrap()).unwrap();
+    let config_desc: shards_image::oci::Descriptor =
+        serde_json::from_value(manifest["config"].clone()).unwrap();
+    let stored: serde_json::Value =
+        serde_json::from_slice(&store.content(&config_desc, 1 << 20).unwrap().unwrap()).unwrap();
+    // One layer more than the base's, the spec's, which its history names (the test
+    // image keeps no history, so the exporter adds one for the base's layer as BuildKit's).
+    let history = stored["history"].as_array().unwrap();
+    assert!(
+        history
+            .iter()
+            .any(|h| h["created_by"] == "AGENTFILE /.agentfile.json" && h.get("empty_layer").is_none()),
+        "{stored}"
+    );
+    assert_eq!(
+        stored["rootfs"]["diff_ids"].as_array().unwrap().len(),
+        2,
+        "{stored}"
+    );
+
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nSKILL ./review.md FOR ghost\n"),
+    )
+    .unwrap();
+    let refused = shards(&["build", ctx.to_str().unwrap()]);
+    assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("Agentfile:2\n--------------------\n")
+            && refused.stderr.contains(
+                "dockerfile parse error on line 2: SKILL ... FOR names \"ghost\", which no AGENT or HARNESS of this stage's lineage declares"
+            ),
+        "{}",
+        refused.stderr
+    );
+}

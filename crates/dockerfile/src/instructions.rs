@@ -12,7 +12,7 @@
 
 use crate::go;
 use crate::lint::{self, Linter, LinterView};
-use crate::parser::{Heredoc, Node, Parsed};
+use crate::parser::{Dialect, Heredoc, Node, Parsed};
 
 /// The lines a node spans, one range each: BuildKit's `Location`.
 pub type Location = Vec<(usize, usize)>;
@@ -166,6 +166,8 @@ pub enum Kind {
     StopSignal(Vec<u8>),
     Arg(Vec<ArgDef>),
     Shell(Vec<Vec<u8>>),
+    /// An Agentfile's: its own directives, and `EXPOSE` and `VOLUME` with what it adds.
+    Agentfile(crate::agentfile::Directive),
 }
 
 /// An instruction within a stage, or an `ARG` before the first.
@@ -209,7 +211,7 @@ enum Parsed1 {
     Command(Command),
 }
 
-fn errf(parts: &[&[u8]]) -> Vec<u8> {
+pub(crate) fn errf(parts: &[&[u8]]) -> Vec<u8> {
     parts.concat()
 }
 
@@ -264,7 +266,7 @@ pub(crate) fn with_suggestion(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FlagType {
+pub(crate) enum FlagType {
     Bool,
     String,
     Strings,
@@ -279,7 +281,7 @@ struct Flag {
 }
 
 /// An instruction's flags: `BFlags`.
-struct Flags {
+pub(crate) struct Flags {
     args: Vec<Vec<u8>>,
     defined: Vec<Flag>,
 }
@@ -292,7 +294,7 @@ impl Flags {
         }
     }
 
-    fn add(&mut self, name: &'static str, kind: FlagType, default: &[u8]) {
+    pub(crate) fn add(&mut self, name: &'static str, kind: FlagType, default: &[u8]) {
         let value = match kind {
             FlagType::Bool if default == b"true" => b"true".to_vec(),
             FlagType::Bool => b"false".to_vec(),
@@ -311,24 +313,24 @@ impl Flags {
         self.defined.iter().find(|f| f.name == name)
     }
 
-    fn value(&self, name: &str) -> Vec<u8> {
+    pub(crate) fn value(&self, name: &str) -> Vec<u8> {
         self.get(name).map(|f| f.value.clone()).unwrap_or_default()
     }
 
-    fn is_true(&self, name: &str) -> bool {
+    pub(crate) fn is_true(&self, name: &str) -> bool {
         self.get(name).is_some_and(|f| f.value == b"true")
     }
 
-    fn used(&self, name: &str) -> bool {
+    pub(crate) fn used(&self, name: &str) -> bool {
         self.get(name).is_some_and(|f| f.used)
     }
 
-    fn values(&self, name: &str) -> Vec<Vec<u8>> {
+    pub(crate) fn values(&self, name: &str) -> Vec<Vec<u8>> {
         self.get(name).map(|f| f.values.clone()).unwrap_or_default()
     }
 
     /// `BFlags.Parse`.
-    fn parse(&mut self) -> Result<(), Vec<u8>> {
+    pub(crate) fn parse(&mut self) -> Result<(), Vec<u8>> {
         let args = std::mem::take(&mut self.args);
         for a in &args {
             if a == b"--" {
@@ -407,15 +409,20 @@ fn node_args(node: &Node) -> Vec<Vec<u8>> {
     out
 }
 
-struct Req<'a> {
-    node: &'a Node,
-    command: Vec<u8>,
-    args: Vec<Vec<u8>>,
-    flags: Flags,
-    location: Location,
+pub(crate) struct Req<'a> {
+    pub(crate) node: &'a Node,
+    pub(crate) command: Vec<u8>,
+    pub(crate) args: Vec<Vec<u8>>,
+    pub(crate) flags: Flags,
+    pub(crate) location: Location,
 }
 
 impl Req<'_> {
+    /// Whether the line was written with any flag.
+    pub(crate) fn flags_given(&self) -> bool {
+        !self.node.flags.is_empty()
+    }
+
     fn command(&self, kind: Kind) -> Command {
         Command {
             name: self.command.clone(),
@@ -469,7 +476,7 @@ fn kvps(args: &[Vec<u8>], cmd: &str) -> Result<Vec<KeyValue>, Vec<u8>> {
 }
 
 /// `parseSourcesAndDest`.
-fn sources(req: &Req<'_>, cmd: &str) -> Result<Sources, Vec<u8>> {
+pub(crate) fn sources(req: &Req<'_>, cmd: &str) -> Result<Sources, Vec<u8>> {
     let Some((dest, srcs)) = req.args.split_last() else {
         return Err(no_destination(cmd));
     };
@@ -550,7 +557,7 @@ fn json_args(args: &[Vec<u8>], json: bool) -> Vec<Vec<u8>> {
 const STAGE_NAME_CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789-_.";
 
 /// `^[a-z][a-z0-9-_.]*$`.
-fn valid_stage_name(n: &[u8]) -> bool {
+pub(crate) fn valid_stage_name(n: &[u8]) -> bool {
     n.first().is_some_and(u8::is_ascii_lowercase) && n.iter().all(|b| STAGE_NAME_CHARS.contains(b))
 }
 
@@ -1093,8 +1100,9 @@ const INSTRUCTIONS: [&[u8]; 18] = [
     b"WORKDIR",
 ];
 
-/// One node: `ParseInstructionWithLinter`.
-fn instruction(node: &Node, lint: &Linter) -> Result<Parsed1, Vec<u8>> {
+/// One node: `ParseInstructionWithLinter`, in a file of `dialect`.
+fn instruction(node: &Node, lint: &Linter, dialect: Dialect) -> Result<Parsed1, Vec<u8>> {
+    let agentfile = dialect == Dialect::Agentfile;
     let lint = lint.with_comments(&node.prev_comment);
     let location: Location = (node.start_line..=node.end_line.max(node.start_line))
         .map(|l| (l, l))
@@ -1216,6 +1224,13 @@ fn instruction(node: &Node, lint: &Linter) -> Result<Parsed1, Vec<u8>> {
                 b"MAINTAINER" | b"FROM" => {
                     return Err(errf(&[&trigger, b" isn't allowed as an ONBUILD trigger"]));
                 }
+                // A trigger runs in another file's build, a Dockerfile's maybe: what an
+                // Agentfile grants is its own (D35).
+                t if agentfile
+                    && crate::parser::AGENTFILE_DIRECTIVES.contains(&go::to_lower(t).as_slice()) =>
+                {
+                    return Err(errf(&[&trigger, b" isn't allowed as an ONBUILD trigger"]));
+                }
                 _ => {}
             }
             let mut expr = strip_onbuild(&node.original);
@@ -1249,9 +1264,18 @@ fn instruction(node: &Node, lint: &Linter) -> Result<Parsed1, Vec<u8>> {
                 return Err(at_least_one("EXPOSE"));
             }
             req.flags.parse()?;
-            let mut ports = req.args.clone();
-            ports.sort();
-            Kind::Expose(ports)
+            match agentfile
+                .then(|| crate::agentfile::exposure(&req.args))
+                .transpose()?
+                .flatten()
+            {
+                Some(e) => Kind::Agentfile(crate::agentfile::Directive::Expose(e)),
+                None => {
+                    let mut ports = req.args.clone();
+                    ports.sort();
+                    Kind::Expose(ports)
+                }
+            }
         }
         b"user" => {
             let [u] = req.args.as_slice() else {
@@ -1265,7 +1289,17 @@ fn instruction(node: &Node, lint: &Linter) -> Result<Parsed1, Vec<u8>> {
             if req.args.is_empty() {
                 return Err(at_least_one("VOLUME"));
             }
+            if agentfile {
+                req.flags.add("chown", FlagType::String, b"");
+                req.flags.add("chmod", FlagType::String, b"");
+                req.flags.add("target-kind", FlagType::String, b"");
+            }
             req.flags.parse()?;
+            if agentfile && let Some(v) = crate::agentfile::volume(&mut req)? {
+                return Ok(Parsed1::Command(
+                    req.command(Kind::Agentfile(crate::agentfile::Directive::Volume(v))),
+                ));
+            }
             let mut vols = Vec::with_capacity(req.args.len());
             for v in &req.args {
                 let v = go::trim_space(v);
@@ -1319,10 +1353,16 @@ fn instruction(node: &Node, lint: &Linter) -> Result<Parsed1, Vec<u8>> {
             }
             Kind::Shell(words)
         }
-        _ => {
-            let e = errf(&[b"unknown instruction: ", &node.value]);
-            return Err(with_suggestion(e, &node.value, &INSTRUCTIONS, false));
-        }
+        other => match agentfile
+            .then(|| crate::agentfile::directive(other, &mut req))
+            .flatten()
+        {
+            Some(d) => Kind::Agentfile(d?),
+            None => {
+                let e = errf(&[b"unknown instruction: ", &node.value]);
+                return Err(with_suggestion(e, &node.value, &INSTRUCTIONS, false));
+            }
+        },
     };
     Ok(Parsed1::Command(req.command(kind)))
 }
@@ -1382,7 +1422,7 @@ pub fn parse_command(node: &crate::parser::Node) -> Result<Command, Error> {
         message,
         location: vec![location.clone()],
     };
-    match instruction(node, &Linter::default()).map_err(fail)? {
+    match instruction(node, &Linter::default(), Dialect::Dockerfile).map_err(fail)? {
         Parsed1::Command(c) => Ok(c),
         Parsed1::Stage(_) => Err(fail(b"*instructions.Stage is not a command type".to_vec())),
     }
@@ -1395,7 +1435,7 @@ pub fn parse(parsed: &Parsed, lint: &Linter) -> Result<Instructions, Error> {
         let location: Location = (node.start_line..=node.end_line.max(node.start_line))
             .map(|l| (l, l))
             .collect();
-        let one = instruction(node, lint).map_err(|m| {
+        let one = instruction(node, lint, parsed.dialect).map_err(|m| {
             let mut message = format!("dockerfile parse error on line {}: ", node.start_line).into_bytes();
             message.extend_from_slice(&m);
             Error {

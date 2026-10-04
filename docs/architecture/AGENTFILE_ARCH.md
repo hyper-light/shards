@@ -810,7 +810,7 @@ of 2026-10-02:
 | `CMD`, `ENTRYPOINT` (both forms) | done | done |
 | `COPY` (`--from`, `--chmod`, `--chown`, `--link`, `--parents`, `--exclude`, heredocs) | done (BuildKit's actions, byte for byte) | n/a |
 | `ADD` of local files and archives (`--chmod`, `--chown`, `--link`, `--exclude`, `--unpack`) | done | n/a |
-| `ADD` of URLs (`--checksum`, `--unpack`) and git (`--keep-git-dir`, `--checksum`) | **missing** | n/a |
+| `ADD` of URLs (`--checksum`, `--unpack`) and git (`--keep-git-dir`, `--checksum`) | URLs done (`add_fetches_urls_as_buildkit_does`, `add_checks_a_checksum_by_its_own_algorithm`); git **missing** | n/a |
 | `RUN` (shell, exec, heredocs) | done, in one builder microVM per build (D34): every form the reference documents builds layer for layer as BuildKit builds it (`scripts/build/realworld/cases/run-forms`); a command that cannot start is said as BuildKit says runc's failure (its output, then exit code 1) | n/a |
 | `RUN --mount` `bind`, `cache`, `tmpfs`, `secret`, `ssh` | `bind` (context, stage, image, `rw`), `tmpfs`, and `cache` within one build done (`run-forms`, E2E); the context's sources checksummed first as BuildKit's are; `secret` has no source until `--secret` is served; `ssh` **missing** | n/a |
 | A step's paths resolved in its root (working directory, mount targets and sources, stubs), as runc and BuildKit resolve them, never through a planted symlink into the builder (`cases/in-root`, E2E, mutation-checked) | done | n/a |
@@ -828,11 +828,14 @@ of 2026-10-02:
 | `ONBUILD` | triggers planned (oracle); run when their steps are | n/a |
 | Build cache by step and whole image; `--cache-from/--cache-to`, `--no-cache` | **missing** | n/a |
 | buildx flags not served (`--secret`, `--ssh`, `--build-context`, `--output`, `--push`, `--platform` lists, attestations) | **missing** | n/a |
-| Extensions `EXPOSE … AS/FOR`, `AGENT`, `SKILL`, `MCP`, `VOLUME … FOR`, `NETWORK`, `CONNECT`, `HARNESS`, `ATTACH`, each expanding `ARG` and `ENV` as the instructions Docker expands them in do | **missing** | **missing** |
-| Names (§4.10): `--target-kind`, one namespace of stages, agents and harnesses (Q19.2), the ambiguity error with both rewrites | **missing** | n/a |
+| The Agentfile dialect: an `Agentfile` read before a `Dockerfile`, each directive parsed with its errors, a Dockerfile still read as BuildKit reads it (D35) | done (`tests/agentfile.rs`, the oracle, E2E) | n/a |
+| Extensions `EXPOSE … AS/FOR`, `VOLUME` with options, a name and `FOR`, `NETWORK`, `CONNECT`, `ATTACH` | done: their Docker effects in the config, the rest in the normalized Agentfile (D35) | **missing** |
+| Extensions `AGENT`, `HARNESS`, `SKILL`, `MCP`: their content fetched and laid out | **missing**: refused by name | **missing** |
+| `ARG` and `ENV` expanded in the extensions as Docker expands them in its instructions | `EXPOSE`'s and `VOLUME`'s done; the others' **missing** | n/a |
+| Names (§4.10): `--target-kind`, one namespace of stages, agents and harnesses (Q19.2), each grant's names declared in its stage's lineage, `CONNECT` on networks whose `FOR` allows it | done (D35) | n/a |
 | `COPY --from=<agent or harness>`, writes into a domain refused, `AGENT`/`HARNESS` layers as `COPY --link`, directives per stage (Q19) | **missing** | n/a |
 | Agent and harness artifacts: OSI `artifactType`, config, content layers, index, pull and push (§8 Q1) | **missing** | **missing** |
-| The normalized Agentfile as a layer of its own, its label and manifest annotations (§8) | **missing** | read by the runtime: **missing** |
+| The normalized Agentfile as a layer of its own, its label and manifest annotations (§8) | done: `/.agentfile.json`, schema 1, label `vnd.osi.agentfile.digest` (D35); manifest annotations **missing** | read by the runtime: **missing** |
 | A BuildKit frontend, so `docker buildx build` builds an Agentfile (`# syntax=`, §8 Q16) | **missing** | n/a |
 | OCI objects (§1): `push`, `tag`, `inspect`, `images`, `rmi`, `save`, `load`, OCI layouts and `docker save` tars taken in (§10) | `pull` done | **missing** |
 | An Agentfile made from any image (§10) | **missing** | n/a |

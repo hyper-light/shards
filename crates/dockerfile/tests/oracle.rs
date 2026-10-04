@@ -334,6 +334,7 @@ fn command_v(c: &shards_dockerfile::instructions::Command) -> Value {
         Kind::User(u) => ("UserCommand", serde_json::json!({ "user": qv(u) })),
         Kind::Volume(v) => ("VolumeCommand", serde_json::json!({ "volumes": qvs(v) })),
         Kind::StopSignal(s) => ("StopSignalCommand", serde_json::json!({ "signal": qv(s) })),
+        Kind::Agentfile(d) => panic!("BuildKit's cases are Dockerfiles, without {d:?}"),
         Kind::Arg(a) => (
             "ArgCommand",
             serde_json::json!({ "args": a.iter().map(|d| serde_json::json!([qv(&d.key), opt(&d.value), qv(&d.doc_comment)])).collect::<Vec<_>>() }),
@@ -966,6 +967,7 @@ fn plans_are_buildkits() {
             multi_platform: false,
             context_id: b"*".to_vec(),
             excludes: Vec::new(),
+            dialect: shards_dockerfile::parser::Dialect::Dockerfile,
         };
         let mut got = serde_json::Map::new();
         got.insert("file".into(), file.into());
