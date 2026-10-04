@@ -178,6 +178,46 @@ pub fn failure(args: &[Vec<u8>], why: &str) -> String {
 mod tests {
     use super::*;
 
+    /// What a run's resolvers cost it, the host's read and made over as each run starts
+    /// (review 7.22), against what a look at whether they changed would cost instead, a
+    /// `stat`. Measured, not run with the tests:
+    /// `cargo test --release -p shards --bin shardsd -- resolvers_cost --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn resolvers_cost() {
+        let timed = |f: &dyn Fn()| {
+            let mut ns: Vec<u128> = (0..10_000)
+                .map(|_| {
+                    let t0 = std::time::Instant::now();
+                    f();
+                    t0.elapsed().as_nanos()
+                })
+                .collect();
+            ns.sort_unstable();
+            let q = |p: f64| ns[((ns.len() as f64 * p) as usize).min(ns.len() - 1)];
+            format!(
+                "n {} p50 {} p90 {} p99 {} max {} ns",
+                ns.len(),
+                q(0.5),
+                q(0.9),
+                q(0.99),
+                ns[ns.len() - 1]
+            )
+        };
+        println!(
+            "read and made over: {}",
+            timed(&|| {
+                std::hint::black_box(resolv(&host_resolv(), false));
+            })
+        );
+        println!(
+            "stat: {}",
+            timed(&|| {
+                std::hint::black_box(std::fs::metadata("/etc/resolv.conf").ok());
+            })
+        );
+    }
+
     /// systemd-resolved's stub, alone, sends the reader to the servers it forwards to;
     /// any other list, the stub among others included, is read as it is.
     #[test]

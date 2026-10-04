@@ -3210,3 +3210,27 @@ revision before comparing a changed API/implementation.
   1,710.9 ms and 1.70 s), and is not kept.
 - **Consequence.** A log of short lines is read 5.8 times faster, the daemon spending an
   eighth of the CPU it did.
+
+### M97. A run's resolvers, read as it starts
+
+- **Question.** Each run reads the host's `/etc/resolv.conf` and makes it over for the
+  container (`build::step::resolv`), as dockerd does at every start (review 7.22). Would
+  keeping what was made, and only looking at whether the file changed, be worth it?
+- **Method.** `build/step.rs` `resolvers_cost` (ignored with the tests): 10,000 reads and
+  makings over, against 10,000 `stat`s of the file, three times. 6834269 plus the review
+  fixes in progress, 2026-10-03, the host of M84, load average 20 to 25 from other work.
+- **Results.**
+
+| Each | n | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|
+| Read and made over | 3 × 10,000 | 11.4 to 17.0 µs | 14.6 to 22.8 µs | 31.4 to 52.8 µs | 0.17 to 1.23 ms |
+| `stat` | 3 × 10,000 | 1.5 to 1.9 µs | 1.8 to 2.3 µs | 3.0 to 3.5 µs | 20 to 109 µs |
+
+- **Consequence.** Kept as it is. A cache would save about 11 µs at the median, 0.04% of
+  a pooled run's 26.3 ms (M91), and looking at the file's times could miss a change: Linux stamps a ctime
+  from its coarse clock, a tick of 1 to 10 ms by `CONFIG_HZ` (fs/inode.c,
+  `inode_set_ctime_current`), so two writes of the same size within one tick look like
+  none. Since 6.13 (4e40eff0b573, multigrain timestamps) ext4, btrfs and xfs stamp a
+  finer one once the ctime has been looked at, but other filesystems and older kernels
+  do not. Missing none would take watching the file and those it names,
+  systemd-resolved's included.
