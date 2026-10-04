@@ -688,10 +688,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-netring"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "shards-registry"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "flate2",
  "form_urlencoded",
  "httparse",
  "iri-string",
@@ -711,6 +719,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "shards-abi",
+ "shards-netring",
  "windows-sys 0.61.2",
 ]
 

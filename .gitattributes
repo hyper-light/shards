@@ -1,2 +1,4 @@
 # Byte-exact test archives.
 *.tar binary
+# Test data, byte for byte on every host: never a line ending converted.
+crates/*/testdata/** -text

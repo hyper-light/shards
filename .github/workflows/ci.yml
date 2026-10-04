@@ -131,14 +131,15 @@ jobs:
         if: runner.os == 'Linux'
         run: if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
       # Where the runner offers its backend's hypervisor, every VM test must run: one that
-      # cannot fails rather than skips (tests/common, SHARDS_REQUIRE_VMS).
+      # cannot fails rather than skips (tests/common, SHARDS_REQUIRE_VMS). Every test binary
+      # runs, whatever fails before it: a failing one hides none after it.
       - name: Tests
         if: matrix.test
         timeout-minutes: 30
         shell: bash
         run: |
           if [ "${{ matrix.target }}" = x86_64-unknown-linux-gnu ]; then export SHARDS_REQUIRE_VMS=1; fi
-          cargo test --locked --workspace --release --target ${{ matrix.target }}
+          cargo test --locked --workspace --release --no-fail-fast --target ${{ matrix.target }}
 
   # shards against Firecracker on one KVM host: the same kernel, initrd and command line,
   # interleaved (crates/shards/benches/firecracker.rs). Hosted arm64 runners have no /dev/kvm.
@@ -223,7 +224,7 @@ jobs:
               apk add --no-cache build-base curl
               rustup component add clippy
               cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
-              cargo test --locked --workspace --release --target "$TARGET"
+              cargo test --locked --workspace --release --no-fail-fast --target "$TARGET"
               cargo build --locked --release -p shards --target "$TARGET"
             '
           sudo chown -R "$(id -u):$(id -g)" target

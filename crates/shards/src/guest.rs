@@ -468,11 +468,15 @@ mod tests {
         // The default guest's kernel stored already: only its init is written.
         let pinned = pinned(&home).unwrap();
         fs::write(&pinned.kernel, b"the pinned kernel").unwrap();
-        let writers: [Box<dyn Fn() -> Result<Guest, String> + Sync>; 2] = [
-            Box::new(|| record(&home, &kernel, &init)),
-            Box::new(|| default(&home, &|_| {}, None, &|_| None)),
-        ];
-        for write in &writers {
+        let recorded = || record(&home, &kernel, &init);
+        let stored = || default(&home, &|_| {}, None, &|_| None);
+        // A default guest is stored only where guests run (`init_bytes`).
+        let writers: &[&(dyn Fn() -> Result<Guest, String> + Sync)] = if cfg!(unix) {
+            &[&recorded, &stored]
+        } else {
+            &[&recorded]
+        };
+        for write in writers {
             let held = hold(&dir).unwrap();
             let (wrote, waited) = mpsc::channel();
             std::thread::scope(|s| {

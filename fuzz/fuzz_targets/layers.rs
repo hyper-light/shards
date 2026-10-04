@@ -9,7 +9,7 @@ use shards_image::{erofs, layer};
 fuzz_target!(|data: &[u8]| {
     let mut tree = layer::root();
     let mut counted = 0u64;
-    let applied = layer::apply(&mut tree, 0, data, &mut |_| {
+    let applied = layer::apply(&mut tree, 0, std::io::Cursor::new(data), &mut |_| {
         counted += 1;
         Ok(())
     });

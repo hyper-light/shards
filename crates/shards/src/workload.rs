@@ -798,11 +798,13 @@ mod tests {
         let refused = hello(&wrong);
         let short = hello(&token[..run::TOKEN - 1]);
         for mut closed in [refused, short] {
-            assert_eq!(
-                closed.read(&mut [0u8; 1]).unwrap(),
-                0,
-                "a connection naming no exec stays open"
-            );
+            // Closed with bytes it never read, as the short one is, Linux resets it rather
+            // than ending it (af_unix.c, unix_release_sock).
+            match closed.read(&mut [0u8; 1]) {
+                Ok(0) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+                other => panic!("a connection naming no exec stays open: {other:?}"),
+            }
         }
         assert!(
             arrived.try_recv().is_err(),
