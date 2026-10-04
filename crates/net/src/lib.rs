@@ -7,6 +7,7 @@
 
 #![cfg(unix)]
 
+pub mod bridge;
 pub mod pktinfo;
 pub mod tcp;
 pub mod wire;
@@ -91,17 +92,6 @@ pub struct Config {
     pub policy: Policy,
 }
 
-/// Docker's default bridge as a container on it sees it: the first address after the
-/// gateway's in 172.17.0.0/16.
-const DOCKER_GUEST_IP: Ipv4Addr = Ipv4Addr::new(172, 17, 0, 2);
-const DOCKER_GATEWAY_IP: Ipv4Addr = Ipv4Addr::new(172, 17, 0, 1);
-
-/// What a guest on Docker's default bridge has on its kernel command line:
-/// `shards_net=ADDR/PREFIX,GATEWAY`.
-pub fn docker_cmdline() -> String {
-    format!("shards_net={DOCKER_GUEST_IP}/16,{DOCKER_GATEWAY_IP}")
-}
-
 /// A fresh guest MAC, random, locally administered and unicast, as current Docker gives
 /// each container (measured under Docker Desktop, 2026-10-02).
 pub fn random_mac() -> io::Result<[u8; 6]> {
@@ -144,13 +134,16 @@ fn entropy(buf: &mut [u8]) -> io::Result<()> {
 }
 
 impl Config {
-    /// Docker's default bridge as the guest whose MAC is `guest_mac` sees it.
-    pub fn docker_default(policy: Policy, guest_mac: [u8; 6]) -> Config {
+    /// Docker's default bridge, `bridge`, as the guest whose MAC is `guest_mac` sees it:
+    /// the gateway's MAC made of its address, as Docker made its own (02:42 and the
+    /// address's four bytes).
+    pub fn on_bridge(policy: Policy, guest_mac: [u8; 6], bridge: &bridge::Bridge) -> Config {
+        let [a, b, c, d] = bridge.gateway().octets();
         Config {
             guest_mac,
-            guest_ip: DOCKER_GUEST_IP,
-            gateway_mac: [0x02, 0x42, 172, 17, 0, 1],
-            gateway_ip: DOCKER_GATEWAY_IP,
+            guest_ip: bridge.guest(),
+            gateway_mac: [0x02, 0x42, a, b, c, d],
+            gateway_ip: bridge.gateway(),
             policy,
         }
     }
@@ -940,6 +933,7 @@ impl<'r> Stack<'r> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -948,7 +942,8 @@ mod tests {
     /// nothing.
     #[test]
     fn policies_reach_what_they_say() {
-        let allow = Config::docker_default(Policy::AllowAll, [2, 0, 0, 0, 0, 1]);
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let allow = Config::on_bridge(Policy::AllowAll, [2, 0, 0, 0, 0, 1], &bridge);
         for to in [[8, 8, 8, 8], [192, 168, 1, 10], [10, 0, 0, 1], [172, 17, 0, 3]] {
             assert!(allow.allows(Ipv4Addr::from(to)), "{to:?}");
         }
@@ -964,7 +959,7 @@ mod tests {
         ] {
             assert!(!allow.allows(Ipv4Addr::from(to)), "{to:?}");
         }
-        let deny = Config::docker_default(Policy::DenyAll, [2, 0, 0, 0, 0, 1]);
+        let deny = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
         assert!(!deny.allows(Ipv4Addr::new(8, 8, 8, 8)));
     }
 

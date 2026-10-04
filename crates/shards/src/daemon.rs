@@ -478,6 +478,11 @@ enum Claim {
 
 struct Daemon<D: Disk = Real> {
     home: PathBuf,
+    /// Docker's default bridge, on which runs' guests are, elected as the daemon started;
+    /// none if no subnet was free. Every template it saves on the bridge is named by its
+    /// subnet, on the guest's command line (run.rs, `template`), so its pools' VMs are all
+    /// on this one.
+    bridge: Option<shards_net::bridge::Bridge>,
     /// shards-vm, beside this binary: each VM runs in a process of its own.
     vm: PathBuf,
     identity: Identity,
@@ -730,6 +735,8 @@ struct Settings {
     logs: LogRetention,
     /// Clients in hand at once: `SHARDS_MAX_CLIENTS`, at most [`most_clients`].
     max_clients: usize,
+    /// Docker's default bridge, as [`elect_bridge`] found it: none if no subnet is free.
+    bridge: Option<shards_net::bridge::Bridge>,
 }
 
 /// The daemon's settings, checked before it serves: a malformed or excessive one stops it
@@ -779,7 +786,19 @@ fn settings() -> Result<Settings, String> {
         keep,
         logs,
         max_clients,
+        bridge: elect_bridge(),
     })
+}
+
+/// Docker's default bridge, elected as the daemon starts and kept for its life, as dockerd
+/// keeps the one it makes as it starts (shards_net::bridge::elected_here); what it is, in the log.
+fn elect_bridge() -> Option<shards_net::bridge::Bridge> {
+    let bridge = shards_net::bridge::elected_here(&mut |note| log(note));
+    match &bridge {
+        Some(b) => log(format!("the default bridge is {b}")),
+        None => log(shards_net::bridge::NO_SUBNET),
+    }
+    bridge
 }
 
 fn serve() -> Result<(), String> {
@@ -949,6 +968,7 @@ impl<D: Disk> Daemon<D> {
     ) -> io::Result<Daemon<D>> {
         Ok(Daemon {
             home,
+            bridge: settings.bridge,
             vm,
             identity,
             socket: Path::new(shards_ipc::SOCKET),
@@ -1473,7 +1493,7 @@ impl<D: Disk> Daemon<D> {
         }
         // Its networks as dockerd checks them before it makes the container; what fails
         // as it starts fails once the container is made.
-        let mut start = match network::check(&run, |name| self.resolve(name).is_ok()) {
+        let mut start = match network::check(&run, self.bridge, |name| self.resolve(name).is_ok()) {
             Ok(start) => start,
             Err(e) => {
                 refuse(&e);
@@ -2720,10 +2740,14 @@ impl<D: Disk> Daemon<D> {
             network::Start::Attach(net) => *net,
             network::Start::Fails(why) => return Err(why.clone()),
         };
+        let bridge = match net {
+            network::Net::Bridge => Some(self.bridge.ok_or(shards_net::bridge::NO_SUBNET)?),
+            network::Net::None => None,
+        };
         let on_network = |cfg: &mut Config| {
-            if net == network::Net::Bridge {
+            if let Some(bridge) = &bridge {
                 cfg.cmdline.push(' ');
-                cfg.cmdline.push_str(&shards_net::docker_cmdline());
+                cfg.cmdline.push_str(&bridge.cmdline());
             }
         };
         let guest = match &prepared.boot {
@@ -3121,7 +3145,15 @@ impl<D: Disk> Daemon<D> {
         // until a grant opens it (AGENTFILE_ARCH.md §3, default deny); its published
         // ports' connections come in all the same.
         let network = match &net {
-            Some(mac) => Some(crate::netproc::start(&self.vm, shards_net::Policy::DenyAll, mac)?),
+            Some(mac) => {
+                let bridge = self.bridge.as_ref().ok_or(shards_net::bridge::NO_SUBNET)?;
+                Some(crate::netproc::start(
+                    &self.vm,
+                    shards_net::Policy::DenyAll,
+                    mac,
+                    bridge,
+                )?)
+            }
             None => None,
         };
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a VM's socket: {e}"))?;
@@ -3664,6 +3696,7 @@ mod tests {
                     keep: DEFAULT_KEEP,
                     logs: DEFAULT_LOGS,
                     max_clients: most_clients(),
+                    bridge: shards_net::bridge::Bridge::elect(&[]),
                 },
                 containers,
                 disk,

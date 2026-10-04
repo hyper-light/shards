@@ -457,20 +457,20 @@ fn signaled(image: &Path, command: &[&str], signal: libc::c_int) -> Output {
 }
 
 /// [`signaled`], with shards started ignoring SIGINT and SIGQUIT if `ignoring`, as a
-/// non-interactive shell starts `cmd &` (POSIX.1-2024, XCU 2.9.3.1).
+/// non-interactive shell starts `cmd &` (POSIX.1-2024, XCU 2.9.3.1); else with their
+/// default actions, whatever this test was started with.
 fn signaled_ignoring(image: &Path, command: &[&str], signal: libc::c_int, ignoring: bool) -> Output {
     use std::io::BufRead;
     use std::os::unix::process::CommandExt;
     let mut run = Command::new(shards());
-    if ignoring {
-        // SAFETY: signal(2) only, between fork and exec.
-        unsafe {
-            run.pre_exec(|| {
-                libc::signal(libc::SIGINT, libc::SIG_IGN);
-                libc::signal(libc::SIGQUIT, libc::SIG_IGN);
-                Ok(())
-            });
-        }
+    let action = if ignoring { libc::SIG_IGN } else { libc::SIG_DFL };
+    // SAFETY: signal(2) only, between fork and exec.
+    unsafe {
+        run.pre_exec(move || {
+            libc::signal(libc::SIGINT, action);
+            libc::signal(libc::SIGQUIT, action);
+            Ok(())
+        });
     }
     let mut child = run
         .args(["vm", "run", "--kernel"])

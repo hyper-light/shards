@@ -3415,3 +3415,25 @@ revision before comparing a changed API/implementation.
   which takes one version; the write count is not kept, as it saw nothing the times did
   not on the stage's paths. Writes through a shared mapping are not seen where no lease is
   granted.
+
+### M101. Electing the default bridge's subnet
+
+- **Question.** A guest on Docker's default bridge had 172.17.0.2/16 behind 172.17.0.1.
+  A host on that network, as a CI job in a container on Docker's own bridge is (its address
+  172.17.0.2), could not be reached from its guests: the guest dialled itself
+  (`run_steps_reach_the_network_unless_it_is_none` failed on the x86_64 musl runner).
+  dockerd elects its bridge's subnet as it starts; what does that cost here?
+- **Method.** `crates/net/src/bridge.rs`, `an_election_costs` (n = 1000): the host's
+  resolvers read as dockerd reads them, its on-link IPv4 routes dumped (rtnetlink on
+  Linux, XNU's `NET_RT_DUMP` sysctl on macOS), and a subnet elected; and
+  `this_hosts_on_link_routes_are_read`, which prints what it read and elected. macOS on
+  the host of M100; Linux in Docker Desktop's VM on it (kernel 6.12.76), in a container on
+  the default bridge. Revision 05efda6 with the change, 2026-10-04.
+- **Results.** macOS: p50 17.5, p90 18.8, p99 23.1, max 67.8 µs; this host's on-link
+  routes left 172.17.0.0/16 free, and it was elected. Linux: p50 6.4, p90 7.5, p99 12.2,
+  max 39.5 µs; the container read one on-link route, 172.17.0.0/16 (its eth0's; the
+  default, via a gateway, is not one), and 172.18.0.0/16 was elected, as dockerd in such a
+  container elects it.
+- **Consequence.** The daemon elects once as it starts, and a build as it starts its
+  builder: tens of microseconds, once (architecture.md D31).
+

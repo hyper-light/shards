@@ -54,8 +54,8 @@ impl VmSide {
     }
 }
 
-/// Starts the network process of one VM whose guest has `mac`, its binary beside
-/// `vm_binary`, under `policy`.
+/// Starts the network process of one VM whose guest has `mac` on `bridge`, its binary
+/// beside `vm_binary`, under `policy`.
 /// Its side of the ring goes to it; the VM's comes back. Once the VM process holds its
 /// side and the caller drops this one, the VM's end alone keeps the network process's
 /// doorbell open, so the network process goes with the VM.
@@ -63,6 +63,7 @@ pub fn start(
     vm_binary: &Path,
     policy: shards_net::Policy,
     mac: &[u8; 6],
+    bridge: &shards_net::bridge::Bridge,
 ) -> Result<(shards_ipc::Child, VmSide), String> {
     let at = |e: std::io::Error| format!("a VM's network: {e}");
     let region = shards_netring::memory().map_err(at)?;
@@ -79,6 +80,7 @@ pub fn start(
     let err = std::io::stderr();
     let mac: Vec<String> = mac.iter().map(|b| format!("{b:02x}")).collect();
     let mac = mac.join(":");
+    let bridge = bridge.to_string();
     let env = child_env();
     let child = shards_ipc::spawn_in(
         &binary,
@@ -89,6 +91,8 @@ pub fn start(
             policy.as_ref(),
             "--mac".as_ref(),
             mac.as_ref(),
+            "--bridge".as_ref(),
+            bridge.as_ref(),
             "--control".as_ref(),
             "6".as_ref(),
             "--control".as_ref(),

@@ -13,11 +13,12 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use shards_cmdline::network::{Addr, is_user_defined, parse_addr};
 use shards_ipc::{Endpoint, Run};
+use shards_net::bridge::Bridge;
 
 /// What a run's guest is attached to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Net {
-    /// Docker's default bridge, 172.17.0.0/16 behind 172.17.0.1.
+    /// Docker's default bridge, on the subnet the daemon elected (shards_net::bridge).
     Bridge,
     /// A loopback alone.
     None,
@@ -34,20 +35,20 @@ pub enum Start {
 /// The driver option whose value sets the endpoint's interface sysctls.
 const SYSCTLS: &str = "com.docker.network.endpoint.sysctls";
 
-/// The IPv4 subnets of dockerd's predefined networks, or `None` for a network it does not
-/// have; none has IPv6.
-fn subnets(network: &str) -> Option<&'static [(Ipv4Addr, u8)]> {
-    const BRIDGE: [(Ipv4Addr, u8); 1] = [(Ipv4Addr::new(172, 17, 0, 0), 16)];
+/// The IPv4 subnets of dockerd's predefined networks, the default bridge's `bridge`, or
+/// `None` for a network it does not have; none has IPv6.
+fn subnets(network: &str, bridge: Option<Bridge>) -> Option<Vec<(Ipv4Addr, u8)>> {
     match network {
-        "bridge" => Some(&BRIDGE),
-        "none" | "host" => Some(&[]),
+        "bridge" => Some(bridge.iter().map(Bridge::subnet).collect()),
+        "none" | "host" => Some(Vec::new()),
         _ => None,
     }
 }
 
-/// What run `run` will find as it starts, or why its container is not created. `exists`
-/// says whether a container is named so (for `container:NAME`).
-pub fn check(run: &Run, exists: impl Fn(&str) -> bool) -> Result<Start, String> {
+/// What run `run` will find as it starts, or why its container is not created. `bridge`
+/// is the default bridge the daemon elected, none if every subnet it may take is in use
+/// on the host; `exists` says whether a container is named so (for `container:NAME`).
+pub fn check(run: &Run, bridge: Option<Bridge>, exists: impl Fn(&str) -> bool) -> Result<Start, String> {
     // dockerd takes the default network mode as its bridge, and the endpoint named for it
     // as the bridge's.
     let mode = match run.network.as_str() {
@@ -74,7 +75,7 @@ pub fn check(run: &Run, exists: impl Fn(&str) -> bool) -> Result<Start, String> 
     let invalid: Vec<String> = endpoints
         .iter()
         .filter_map(|e| {
-            endpoint_settings(e)
+            endpoint_settings(e, bridge)
                 .err()
                 .map(|why| format!("invalid config for network {}: {why}", e.network))
         })
@@ -106,6 +107,8 @@ pub fn check(run: &Run, exists: impl Fn(&str) -> bool) -> Result<Start, String> 
     // As it starts: the mode's network, then the rest.
     let fails = |why: String| Ok(Start::Fails(why));
     let net = match mode {
+        // dockerd, which makes its bridge as it starts, does not start without one.
+        "bridge" if bridge.is_none() => return Err(shards_net::bridge::NO_SUBNET.into()),
         "bridge" => Net::Bridge,
         "none" => Net::None,
         _ => {
@@ -132,7 +135,7 @@ pub fn check(run: &Run, exists: impl Fn(&str) -> bool) -> Result<Start, String> 
 }
 
 /// validateEndpointSettings: Ok, or the errors joined under "invalid endpoint settings:".
-fn endpoint_settings(e: &Endpoint) -> Result<(), String> {
+fn endpoint_settings(e: &Endpoint, bridge: Option<Bridge>) -> Result<(), String> {
     let addr = |s: &str| (!s.is_empty()).then(|| parse_addr(s)).transpose();
     let ipv4 = addr(&e.ipv4)?;
     let ipv6 = addr(&e.ipv6)?;
@@ -167,7 +170,7 @@ fn endpoint_settings(e: &Endpoint) -> Result<(), String> {
         }
     }
     // validateIPAMConfigIsInRange, for the networks dockerd has.
-    if let Some(v4) = subnets(&e.network) {
+    if let Some(v4) = subnets(&e.network, bridge) {
         let within = |a: &Addr| match a.ip {
             IpAddr::V4(ip) => v4.iter().any(|(net, bits)| {
                 let mask = u32::MAX.checked_shl(32 - u32::from(*bits)).unwrap_or(0);
@@ -250,7 +253,9 @@ mod tests {
     #[test]
     fn networks_are_taken_as_dockerd_takes_them() {
         let none = |_: &str| false;
-        let check = |networks: &[&str]| check(&run(networks), none);
+        // Docker Desktop's bridge, where these were measured.
+        let docker: Option<Bridge> = "172.17.0.0/16".parse().ok();
+        let check = |networks: &[&str]| check(&run(networks), docker, none);
         let attach = |net| Ok(Start::Attach(net));
         let fails = |why: &str| Ok(Start::Fails(why.to_string()));
         let invalid = |net: &str, why: &str| {
@@ -391,25 +396,32 @@ mod tests {
     }
 
     fn check_with(run: &Run) -> Result<Start, String> {
-        check(run, |_| false)
+        check(run, "172.17.0.0/16".parse().ok(), |_| false)
     }
 
     /// What shards does not do yet is refused before a container is made, where dockerd
     /// would have made one.
     #[test]
     fn what_shards_does_not_do_yet_is_refused_up_front() {
+        let docker: Option<Bridge> = "172.17.0.0/16".parse().ok();
         let unsupported = |what: &str| Err(format!("\"--network {what}\" is not supported by shards yet"));
-        assert_eq!(check(&run(&["host"]), |_| false), unsupported("host"));
+        assert_eq!(check(&run(&["host"]), docker, |_| false), unsupported("host"));
         assert_eq!(
-            check(&run(&["container:web"]), |n| n == "web"),
+            check(&run(&["container:web"]), docker, |n| n == "web"),
             unsupported("container:NAME")
         );
         assert_eq!(
-            check(&run(&["name=bridge,mac-address=02:11:22:33:44:55"]), |_| false),
+            check(
+                &run(&["name=bridge,mac-address=02:11:22:33:44:55"]),
+                docker,
+                |_| false
+            ),
             unsupported("mac-address")
         );
         assert_eq!(
-            check(&run(&["name=bridge,link-local-ip=169.254.1.1"]), |_| false),
+            check(&run(&["name=bridge,link-local-ip=169.254.1.1"]), docker, |_| {
+                false
+            }),
             unsupported("link-local-ip")
         );
         assert_eq!(
@@ -417,14 +429,41 @@ mod tests {
                 &run(&[
                     "name=bridge,driver-opt=com.docker.network.endpoint.sysctls=net.ipv4.conf.IFNAME.log_martians=1"
                 ]),
+                docker,
                 |_| false
             ),
             unsupported("driver-opt")
         );
         // dockerd runs `none` then `bridge`; it refuses `bridge` then `none`, and so are both.
         assert_eq!(
-            check(&run(&["none", "bridge"]), |_| false),
+            check(&run(&["none", "bridge"]), docker, |_| false),
             Ok(Start::Fails("failed to set up container networking: container cannot be connected to multiple networks with one of the networks in private (none) mode".into()))
+        );
+    }
+
+    /// The bridge is the one the daemon elected: an address is checked against its subnet,
+    /// and without one, which no subnet left to elect means, a run on it is refused as
+    /// dockerd, which would not have started, cannot run one; a run on `none` still is.
+    #[test]
+    fn the_bridge_is_the_one_elected() {
+        let elected: Option<Bridge> = "172.18.0.0/16".parse().ok();
+        let within = check(&run(&["name=bridge,ip=172.18.0.9"]), elected, |_| false);
+        assert_eq!(
+            within,
+            Err("invalid config for network bridge: invalid endpoint settings:\nuser-specified IP address is supported on user-defined networks only".into())
+        );
+        let outside = check(&run(&["name=bridge,ip=172.17.0.9"]), elected, |_| false);
+        assert_eq!(
+            outside,
+            Err("invalid config for network bridge: invalid endpoint settings:\n* user-specified IP address is supported on user-defined networks only\n* no configured subnet contains IP address 172.17.0.9".into())
+        );
+        assert_eq!(
+            check(&run(&[]), None, |_| false),
+            Err(shards_net::bridge::NO_SUBNET.into())
+        );
+        assert_eq!(
+            check(&run(&["none"]), None, |_| false),
+            Ok(Start::Attach(Net::None))
         );
     }
 }

@@ -10,7 +10,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
+use common::{TempDir, bridge, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
 const TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -1060,7 +1060,7 @@ fn an_images_exposed_ports_publish_with_publish_all() {
         assert!(std::time::Instant::now() < deadline, "{read:?}");
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    assert_eq!(greeting, "from 172.17.0.1\n");
+    assert_eq!(greeting, format!("from {}\n", bridge().gateway()));
     let waited = shards(&["wait", "all"]);
     assert_eq!(waited.stdout, "0\n", "{}", waited.stderr);
 }

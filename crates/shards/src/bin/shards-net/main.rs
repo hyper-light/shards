@@ -2,7 +2,8 @@
 //! spawner hands it the VM's frame ring and doorbells; it serves the guest's flows until
 //! the VM goes, which its doorbell's hang-up says.
 //!
-//!     shards-net --ring REGION,WAKE_ME,WAKE_PEER --policy allow|deny --mac MAC [--control FD]
+//!     shards-net --ring REGION,WAKE_ME,WAKE_PEER --policy allow|deny --mac MAC
+//!         --bridge SUBNET/BITS [--control FD]
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -26,6 +27,8 @@ fn run() -> Result<(), String> {
     let mut mac = None;
     // No default: a spawner that forgot to say gets an error, not open access.
     let mut policy = None;
+    // Nor a subnet of its own: the guest's is its spawner's to elect.
+    let mut bridge: Option<shards_net::bridge::Bridge> = None;
     let mut args = std::env::args_os().skip(1);
     while let Some(a) = args.next() {
         let value = |args: &mut dyn Iterator<Item = std::ffi::OsString>, name: &str| {
@@ -45,6 +48,13 @@ fn run() -> Result<(), String> {
                     .map_err(|_| format!("--mac {v:?} is not a MAC"))?;
                 mac = Some(<[u8; 6]>::try_from(octets).map_err(|_| format!("--mac {v:?} is not a MAC"))?);
             }
+            Some("--bridge") => {
+                bridge = Some(
+                    value(&mut args, "--bridge")?
+                        .parse()
+                        .map_err(|e| format!("--bridge: {e}"))?,
+                )
+            }
             Some("--policy") => {
                 policy = Some(match value(&mut args, "--policy")?.as_str() {
                     "allow" => shards_net::Policy::AllowAll,
@@ -57,6 +67,7 @@ fn run() -> Result<(), String> {
     }
     let ring = ring.ok_or("--ring is required")?;
     let policy = policy.ok_or("--policy is required")?;
+    let bridge = bridge.ok_or("--bridge is required")?;
     // The guest's MAC, which the VM's device has: frames from any other are not its.
     let mac = mac.ok_or("--mac is required")?;
     let fds: Vec<i32> = ring
@@ -95,7 +106,7 @@ fn run() -> Result<(), String> {
         region,
         me,
         peer,
-        shards_net::Config::docker_default(policy, mac),
+        shards_net::Config::on_bridge(policy, mac, &bridge),
         controls,
     )
     .map_err(|e| e.to_string())

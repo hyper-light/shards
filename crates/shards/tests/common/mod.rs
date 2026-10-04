@@ -265,6 +265,31 @@ pub fn shards_vm() -> &'static Path {
     V.get_or_init(|| binaries().join(format!("shards-vm{}", std::env::consts::EXE_SUFFIX)))
 }
 
+/// Waits until no daemon listens in `home`: a daemon killed accepts connections until
+/// its listening socket closes, which may be after a client sees its own connection
+/// close, as the kernel closes the dead process's descriptors one by one. A client that
+/// connects meanwhile hears the daemon hang up.
+#[cfg(unix)]
+pub fn until_unserved(home: &Path) {
+    let socket = home.join("daemon.sock");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} is still served",
+            socket.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// Docker's default bridge as the daemon and the builder elect it on this host
+/// (shards_net::bridge): its gateway and guest addresses are what a run sees.
+#[cfg(unix)]
+pub fn bridge() -> shards_net::bridge::Bridge {
+    shards_net::bridge::elected_here(&mut |note| panic!("{note}")).expect("a subnet for the default bridge")
+}
+
 /// The `shards-net` beside [`shards`]: each networked VM's network process.
 pub fn shards_net() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();

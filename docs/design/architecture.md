@@ -1642,10 +1642,24 @@ stack inside the VMM, is superseded by it.
   template is saved, with a static address and no DHCP or duplicate-address detection, so
   restores do no network work (networking.md R3; [RFC 2131 §4.4.1; RFC 4862 §5.4]). A VM
   with no network gets no device (networking.md R7: absent device, no attack surface).
-- **Built so far.** Builds' `RUN` steps and `shards run` are on Docker's default bridge:
-  the guest is 172.17.0.2/16 behind 172.17.0.1, with a random, locally administered MAC
-  as Docker gives a container, which a template keeps and its restores reuse; the daemon
-  starts each VM's network process beside it and hands the VM its side of the ring.
+- **Built so far.** Builds' `RUN` steps and `shards run` are on Docker's default bridge,
+  on the subnet dockerd would make it on this host (moby docker-v29.9.0
+  daemon_unix.go initBridgeDriver): the first of dockerd's default pools (libnetwork
+  ipamutils: 172.17.0.0/16, 172.18 and 172.19, the /16s of 172.20/14, 172.24/14 and
+  172.28/14, then 192.168.0.0/16 in /20s) that overlaps nothing the host seems to use
+  (netutils.InferReservedNetworks: its resolvers, and its on-link IPv4 routes, by
+  rtnetlink on Linux as vishvananda/netlink lists them, and by XNU's route dump on
+  macOS, its routes without a gateway that were not cloned). A host on 172.17.0.0/16, as
+  a CI job in a container on Docker's own bridge is, gets 172.18.0.0/16, as dockerd in
+  it does; with every pool in use, runs on the bridge are refused in dockerd's words,
+  which would not start, and runs on `none` go on. The daemon elects it as it starts and
+  keeps it for its life, as dockerd keeps its bridge; a build elects it as it starts its
+  builder (PM M101 for its cost). The guest is the subnet's second address behind its
+  first, with a random, locally administered MAC as Docker gives a container, which a
+  template keeps and its restores reuse; the subnet is on the guest's command line, by
+  which templates are named, so a template is restored only on the subnet it was saved
+  on. The daemon starts each VM's network process beside it, on that bridge, and hands
+  the VM its side of the ring.
   - *Default deny (AGENTFILE_ARCH.md §3).* A run's network process denies every flow the
     guest opens: the guest is on the bridge, and reaches nothing through it until a
     grant opens it. Builds' `RUN` steps keep BuildKit's access, as their parity needs.

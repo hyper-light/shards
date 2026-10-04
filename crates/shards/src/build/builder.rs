@@ -207,8 +207,15 @@ impl Builder {
         // The builder's network: BuildKit's steps reach what their host does, so the
         // network process allows every flow but to the host itself (D31).
         let mac = shards_net::random_mac().map_err(|e| format!("the builder's MAC: {e}"))?;
-        let (net, side) =
-            crate::netproc::start(&shards_ipc::vm_binary(&exe), shards_net::Policy::AllowAll, &mac)?;
+        // On the default bridge, as dockerd's builder runs its steps, elected as the
+        // daemon elects it: a host on 172.17.0.0/16 keeps its own network reachable.
+        let bridge = shards_net::bridge::elected_here(&mut |_| {}).ok_or(shards_net::bridge::NO_SUBNET)?;
+        let (net, side) = crate::netproc::start(
+            &shards_ipc::vm_binary(&exe),
+            shards_net::Policy::AllowAll,
+            &mac,
+            &bridge,
+        )?;
         let mut args: Vec<OsString> = vec![
             "run".into(),
             "--kernel".into(),
@@ -218,7 +225,7 @@ impl Builder {
             "--cmdline".into(),
             format!(
                 "console=ttyS0 earlycon panic=-1 shards_build=1 {}",
-                shards_net::docker_cmdline()
+                bridge.cmdline()
             )
             .into(),
             "--cpus".into(),

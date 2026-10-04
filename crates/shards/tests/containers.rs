@@ -21,8 +21,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    Run, TempDir, cannot_run_vms, guest_init, kernel, registry, run_shards_env, served, sha256_digest,
-    shards, shards_net, shards_vm, shardsd, test_index,
+    Run, TempDir, bridge, cannot_run_vms, guest_init, kernel, registry, run_shards_env, served,
+    sha256_digest, shards, shards_net, shards_vm, shardsd, test_index,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -137,7 +137,7 @@ fn many_published_ports_all_reach_the_guest() {
         c.shutdown(std::net::Shutdown::Write).unwrap();
         let mut got = String::new();
         c.read_to_string(&mut got).unwrap();
-        assert_eq!(got, "from 172.17.0.1\nhello", "port {port}");
+        assert_eq!(got, format!("from {}\nhello", bridge().gateway()), "port {port}");
     }
     assert_eq!(exit(&mut run), Some(0));
 }
@@ -747,6 +747,8 @@ fn a_container_outlives_a_daemon_that_dies() {
     assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
     let run = run.finish();
     assert_ne!(run.status, Some(0), "{run}");
+    // The next command finds the daemon gone, as one a person types later does.
+    common::until_unserved(&home);
     gated.open();
     let listed = gated.shards(&home, &["ps", "-a", "--no-trunc"]);
     let line = listed.stdout.lines().nth(1).unwrap_or_default().to_string();
@@ -1051,7 +1053,10 @@ fn a_run_is_on_a_network_as_docker_runs_it() {
         &["stat", "/etc/hosts", "/etc/resolv.conf"],
     );
     assert_eq!(files.status, Some(0), "{files}");
-    assert!(files.stdout.contains("172.17.0.2\tbox\\n"), "{files}");
+    assert!(
+        files.stdout.contains(&format!("{}\tbox\\n", bridge().guest())),
+        "{files}"
+    );
     let resolv = files.stdout.split("/etc/resolv.conf").nth(1).unwrap_or_default();
     assert!(resolv.contains("nameserver "), "{files}");
     assert!(!resolv.contains("nameserver 127."), "{files}");
@@ -1100,7 +1105,10 @@ fn a_run_on_network_none_reaches_nothing() {
     );
     assert_eq!(files.status, Some(0), "{files}");
     assert!(files.stdout.contains("127.0.1.1\tbox\\n"), "{files}");
-    assert!(!files.stdout.contains("172.17."), "{files}");
+    let on_bridge = bridge();
+    for ip in [on_bridge.guest(), on_bridge.gateway()] {
+        assert!(!files.stdout.contains(&ip.to_string()), "{files}");
+    }
     assert!(files.stdout.contains("nameserver "), "{files}");
 }
 
@@ -1143,13 +1151,18 @@ fn a_run_on_a_network_it_cannot_have_says_why_as_dockerd_does() {
             .contains("one of the networks in private (none) mode"),
         "{removed}"
     );
+    // An address on the bridge the daemon elected, which only a user-defined network takes.
+    let on_bridge = format!(
+        "name=bridge,ip={}",
+        std::net::Ipv4Addr::from(u32::from(bridge().subnet().0) + 9)
+    );
     for (options, said) in [
         (
             &["--network", "host"][..],
             "shards: Error response from daemon: \"--network host\" is not supported by shards yet",
         ),
         (
-            &["--network", "name=bridge,ip=172.17.0.9"][..],
+            &["--network", on_bridge.as_str()][..],
             "shards: Error response from daemon: invalid config for network bridge: invalid endpoint settings:\nuser-specified IP address is supported on user-defined networks only",
         ),
         (
@@ -1476,13 +1489,16 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
     let big: Vec<u8> = (0u32..8 << 20).map(|i| (i.wrapping_mul(7) % 251) as u8).collect();
     for _ in 0..10 {
         let (from, echoed) = exchange(SocketAddr::from(([127, 0, 0, 1], n)), big.clone());
-        assert_eq!(from, "from 172.17.0.1\n");
+        assert_eq!(from, format!("from {}\n", bridge().gateway()));
         assert!(echoed == big, "{} bytes came back of {}", echoed.len(), big.len());
     }
     let (from, echoed) = exchange(format!("[::1]:{n}").parse().unwrap(), b"over IPv6".to_vec());
     assert_eq!(
         (from.as_str(), echoed.as_slice()),
-        ("from 172.17.0.1\n", &b"over IPv6"[..])
+        (
+            format!("from {}\n", bridge().gateway()).as_str(),
+            &b"over IPv6"[..]
+        )
     );
     // Taken by a running container: dockerd's allocator's words, the container left
     // created.
@@ -1536,7 +1552,7 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
     let (from, echoed) = exchange(SocketAddr::from(([127, 0, 0, 1], n)), b"last".to_vec());
     assert_eq!(
         (from.as_str(), echoed.as_slice()),
-        ("from 172.17.0.1\n", &b"last"[..])
+        (format!("from {}\n", bridge().gateway()).as_str(), &b"last"[..])
     );
     assert_eq!(exit(&mut run), Some(0));
     // Ended, it lists none, and its port is free at once.
@@ -1624,7 +1640,7 @@ fn published_udp_ports_carry_datagrams_both_ways() {
     // Each peer comes from the gateway, on a port of its own.
     let gateway_port = |answer: &str, payload: &str| -> u16 {
         let rest = answer
-            .strip_prefix("from 172.17.0.1:")
+            .strip_prefix(&format!("from {}:", bridge().gateway()))
             .unwrap_or_else(|| panic!("{answer}"));
         let (port, said) = rest.split_once(' ').unwrap();
         assert_eq!(said, payload);
@@ -2868,9 +2884,13 @@ fn a_push_ends_with_its_client_and_the_daemon() {
 
 /// A run interrupted as it pulls ends as `docker run` does, measured on Docker 29.3.1:
 /// at once, with 130 and nothing more said; its pull let go, and neither a container nor
-/// the image left.
+/// the image left. The client starts with SIGINT's default action, as a terminal's
+/// session gives it: a test run under `cmd &` would otherwise start it ignoring SIGINT
+/// (POSIX.1-2024, XCU 2.9.3.1), and an ignored SIGINT ends no client, as it ends no
+/// Docker CLI.
 #[test]
 fn a_run_interrupted_as_it_pulls_ends_as_docker_runs_do() {
+    use std::os::unix::process::CommandExt as _;
     use std::sync::atomic::Ordering;
     if cannot_run_vms() {
         return;
@@ -2879,7 +2899,15 @@ fn a_run_interrupted_as_it_pulls_ends_as_docker_runs_do() {
     let (port, begun, ended) = common::registry_stalling_blobs(index, blobs);
     let image = format!("127.0.0.1:{port}/test/image:v1");
     let home = TempDir::new("containers-run-interrupted");
-    let client = Command::new(shards())
+    let mut client = Command::new(shards());
+    // SAFETY: signal(2), async-signal-safe, between fork and exec.
+    unsafe {
+        client.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+    let client = client
         .args(["run", &image, "true"])
         .env("SHARDS_HOME", &*home)
         .env("SHARDS_KERNEL", kernel())
