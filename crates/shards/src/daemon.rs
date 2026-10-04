@@ -6524,6 +6524,11 @@ mod tests {
             t.until("the files' thread was not started", |d| d.files.started());
             let (free, held) = mpsc::channel();
             t.daemon.make_soon(files::Job::Hold(held));
+            // Taken, so that what is queued after is the run's alone: a thread a loaded host
+            // had yet to run left it queued, and counted (CI, 77cefa9's aarch64 glibc run).
+            t.until("the files' thread did not take its hold", |d| {
+                d.files.queued() == 0
+            });
             say(&vm, kind::LOG_SEGMENT, &1u64.to_be_bytes());
             say(&vm, kind::LOG_SEGMENT, &5u64.to_be_bytes());
             // Twice: one set is taken of a run, the first.
