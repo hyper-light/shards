@@ -1789,9 +1789,14 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
     URLs, the parser's and the lexer's test tables. Deliberate differences are listed in
     `testdata/deviations.json` and the modules' documentation. Examples: no Go map order,
     Linux targets only, and no network I/O while planning.
+  - Where BuildKit's limits come from its machinery, not from Dockerfiles, shards takes
+    more: lines of any length in a Dockerfile or a .dockerignore (BuildKit's
+    `bufio.Scanner` refuses one past 64 KiB), and either file of any size (BuildKit's
+    frontend refuses one past 16 MiB, the largest message its gRPC takes from the client;
+    shards reads them where they are). Everything BuildKit takes reads alike.
 - **Only RUN runs in a VM**, one per step, over its parent state read-only with a fresh
   upper (image-build §3.3). BuildKit runs COPY, ADD, WORKDIR's mkdir and the export in its
-  own process (§2.1), and shards does them in `shardsd`. File operations apply to an
+  own process (§2.1), and shards does them in its daemon. File operations apply to an
   in-memory tree, never the host's filesystem: case-insensitive APFS, owners, devices and
   xattrs rule that out (§3.6).
 - **Layers are written as BuildKit writes them**, containerd's `ChangeWriter`: explicit

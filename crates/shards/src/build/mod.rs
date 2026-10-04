@@ -673,30 +673,24 @@ fn build_args(list: &[String], from_env: bool) -> BTreeMap<Vec<u8>, Vec<u8>> {
     out
 }
 
-/// The most of a file the frontend reads into memory: containerd's DefaultMaxRecvMsgSize,
-/// the largest message BuildKit's gRPC takes (dockerfile/1.27.1 frontend/dockerui/readfile.go).
-const MAX_FILE: u64 = 16 << 20;
-
-/// dockerui's ReadFile: what `reader` holds, refused under `name` past MAX_FILE, no more
-/// than one byte past it ever read.
-fn read_capped(reader: impl Read, name: &str) -> Result<Vec<u8>, String> {
+/// dockerui's ReadFile: what `reader` holds, all of it. BuildKit's frontend refuses a
+/// Dockerfile or ignore file past 16 MiB, containerd's DefaultMaxRecvMsgSize, the largest
+/// message its gRPC takes from the client (dockerfile/1.27.1 frontend/dockerui/readfile.go):
+/// a limit of its transport, which shards, reading the file where it is, does not have.
+fn read_whole(mut reader: impl Read, name: &str) -> Result<Vec<u8>, String> {
     let mut text = Vec::new();
     reader
-        .take(MAX_FILE + 1)
         .read_to_end(&mut text)
         .map_err(|e| format!("{name}: {e}"))?;
-    if text.len() as u64 > MAX_FILE {
-        return Err(format!("{name} exceeds maximum allowed size of {MAX_FILE} bytes"));
-    }
     Ok(text)
 }
 
-/// A file's bytes, or none if it is not there, read as [`read_capped`] reads, `name`
+/// A file's bytes, or none if it is not there, read as [`read_whole`] reads, `name`
 /// being what its errors call it. Unlike BuildKit, which has the client send the
 /// Dockerfile and ignore files over a session, shards reads them where they are.
 fn read_if_present(path: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
     match std::fs::File::open(path) {
-        Ok(file) => read_capped(file, name).map(Some),
+        Ok(file) => read_whole(file, name).map(Some),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
@@ -749,7 +743,7 @@ fn dockerfile(parsed: &Parsed, context: &Path) -> Result<Dockerfile, String> {
     let read_failed = |e: String| format!("failed to read dockerfile: {e}");
     let (path, name) = definition(parsed, context);
     let Some(path) = path else {
-        let text = read_capped(std::io::stdin(), "Dockerfile").map_err(read_failed)?;
+        let text = read_whole(std::io::stdin(), "Dockerfile").map_err(read_failed)?;
         return Ok(("Dockerfile".into(), text, None));
     };
     let dir = path.parent().unwrap_or(Path::new("."));
@@ -889,20 +883,13 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             })?,
         ),
     };
-    let (ignore_name, ignore_text) = match (&beside, &context_ignore) {
-        (Some(t), _) => (format!("{name}.dockerignore"), Some(t.clone())),
-        (None, Some(t)) => (".dockerignore".to_string(), t.clone()),
-        (None, None) => (String::new(), None),
-    };
-    let excludes = match ignore_text {
-        Some(t) if !t.is_empty() => shards_dockerfile::ignore::read_all(&t).map_err(|e| {
-            format!(
-                "failed to build: failed to solve: failed to read dockerignore patterns: failed parsing {ignore_name}: {}",
-                show(&e)
-            )
-        })?,
-        _ => Vec::new(),
-    };
+    // `<Dockerfile>.dockerignore` beside the Dockerfile, else the context's.
+    let ignore_text = beside
+        .as_ref()
+        .or(context_ignore.as_ref().and_then(Option::as_ref));
+    let excludes = ignore_text
+        .map(|t| shards_dockerfile::ignore::read_all(t))
+        .unwrap_or_default();
 
     let home = shards_ipc::home()?;
     let store = crate::pull::store(&home)?;

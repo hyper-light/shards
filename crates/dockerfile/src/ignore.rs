@@ -1,15 +1,14 @@
 //! `.dockerignore` files as moby/patternmatcher's ignorefile.ReadAll reads them for
 //! BuildKit's frontend: one pattern a line, a UTF-8 byte order mark dropped from the first,
 //! `#` comments and blank lines skipped, each pattern trimmed and cleaned, and a leading
-//! `/` made relative, `!` kept in front.
+//! `/` made relative, `!` kept in front. Lines of any length: BuildKit reads the file
+//! through a bufio.Scanner at Go's default buffer and refuses a line of 64 KiB or more, a
+//! limit of its reader alone (testdata/deviations.json).
 
 use crate::go;
 
-/// bufio.Scanner's longest line.
-const MAX_LINE: usize = 64 * 1024;
-
-/// `ignorefile.ReadAll`: the patterns, or bufio's error.
-pub fn read_all(text: &[u8]) -> Result<Vec<Vec<u8>>, Vec<u8>> {
+/// `ignorefile.ReadAll`: the patterns.
+pub fn read_all(text: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut rest = text;
     let mut first = true;
@@ -18,9 +17,6 @@ pub fn read_all(text: &[u8]) -> Result<Vec<Vec<u8>>, Vec<u8>> {
             Some(i) => (go::head(rest, i), go::tail(rest, i + 1)),
             None => (rest, &[][..]),
         };
-        if line.len() >= MAX_LINE {
-            return Err(b"bufio.Scanner: token too long".to_vec());
-        }
         rest = next;
         let mut line = line.strip_suffix(b"\r").unwrap_or(line);
         if first {
@@ -50,5 +46,5 @@ pub fn read_all(text: &[u8]) -> Result<Vec<Vec<u8>>, Vec<u8>> {
         }
         out.push(p);
     }
-    Ok(out)
+    out
 }

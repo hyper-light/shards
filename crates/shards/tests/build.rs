@@ -1437,12 +1437,13 @@ fn source_date_epoch_is_taken_from_a_source_stage() {
     }
 }
 
-/// The Dockerfile and ignore files are read to at most 16 MiB, as BuildKit's frontend
-/// reads them (dockerui ReadFile, containerd's DefaultMaxRecvMsgSize): a Dockerfile of
-/// exactly that builds, one byte more is refused in BuildKit's words, and so is an ignore
-/// file past it.
+/// The Dockerfile and ignore files are read whole: BuildKit's frontend refuses either past
+/// 16 MiB (dockerui ReadFile, containerd's DefaultMaxRecvMsgSize), its gRPC transport's
+/// limit, and a .dockerignore line of 64 KiB (bufio.Scanner), which shards has neither of:
+/// a Dockerfile of exactly 16 MiB builds, as it does there, and so do one larger and an
+/// ignore file past both.
 #[test]
-fn files_the_frontend_reads_are_bounded_as_buildkits_are() {
+fn files_the_frontend_reads_are_read_whole() {
     if cannot_run_vms() {
         return;
     }
@@ -1465,28 +1466,21 @@ fn files_the_frontend_reads_are_bounded_as_buildkits_are() {
     std::fs::write(ctx.join("Dockerfile"), &exact).unwrap();
     let built = shards(&["build", "-q", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
+    // Past BuildKit's 16 MiB, which its gRPC transport sets and shards has not: built
+    // too, where BuildKit refuses it (deviations recorded in architecture.md D33).
     exact.push(b'#');
+    exact.push(b'\n');
     std::fs::write(ctx.join("Dockerfile"), &exact).unwrap();
-    let refused = shards(&["build", "-q", ctx.to_str().unwrap()]);
-    assert_ne!(refused.status, Some(0));
-    assert!(
-        refused.stderr.contains(
-            "failed to solve: failed to read dockerfile: Dockerfile exceeds maximum allowed size of 16777216 bytes"
-        ),
-        "{}",
-        refused.stderr
-    );
+    let built = shards(&["build", "-q", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
     std::fs::write(ctx.join("Dockerfile"), "FROM scratch\n").unwrap();
-    std::fs::write(ctx.join(".dockerignore"), vec![b'#'; MAX + 1]).unwrap();
-    let refused = shards(&["build", "-q", ctx.to_str().unwrap()]);
-    assert_ne!(refused.status, Some(0));
-    assert!(
-        refused.stderr.contains(
-            "failed to solve: failed to read dockerignore patterns: .dockerignore exceeds maximum allowed size of 16777216 bytes"
-        ),
-        "{}",
-        refused.stderr
-    );
+    // A .dockerignore past it, and of one line past bufio.Scanner's 64 KiB.
+    let mut ignore = vec![b'#'; MAX + 1];
+    ignore.push(b'\n');
+    ignore.extend(std::iter::repeat_n(b'a', 70_000));
+    std::fs::write(ctx.join(".dockerignore"), &ignore).unwrap();
+    let built = shards(&["build", "-q", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
 }
 
 /// A RUN step's output is clipped as buildkitd clips each stream: past its limit, the
