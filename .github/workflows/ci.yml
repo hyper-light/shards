@@ -140,6 +140,11 @@ jobs:
         run: |
           if [ "${{ matrix.target }}" = x86_64-unknown-linux-gnu ]; then export SHARDS_REQUIRE_VMS=1; fi
           cargo test --locked --workspace --release --no-fail-fast --target ${{ matrix.target }}
+      # A process the seccomp filter ended with its SIGSYS blocked says nothing; the kernel
+      # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG).
+      - name: What the kernel logged of seccomp refusals
+        if: failure() && runner.os == 'Linux'
+        run: sudo dmesg | grep -iE 'seccomp|type=1326' | tail -40 || true
 
   # shards against Firecracker on one KVM host: the same kernel, initrd and command line,
   # interleaved (crates/shards/benches/firecracker.rs). Hosted arm64 runners have no /dev/kvm.
@@ -211,23 +216,17 @@ jobs:
       - name: Lint, test and build on the native architecture, in Alpine
         timeout-minutes: 45
         run: |
-          # VM tests need the host's /dev/kvm inside the container, where they run as root.
+          # VM tests need the host's /dev/kvm inside the container, which runs them as the
+          # runner's user (scripts/musl-ci): the node there takes this one's mode.
           kvm=""
-          if [ -e /dev/kvm ]; then kvm="--device /dev/kvm"; fi
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; kvm="--device /dev/kvm"; fi
           # x86_64 runners offer /dev/kvm: every VM test must run there.
           require=0
           if [ "$TARGET" = x86_64-unknown-linux-musl ]; then require=1; fi
           docker run --rm $kvm -v "$PWD:/work" -w /work -e TARGET -e SHARDS_REQUIRE_VMS=$require \
             -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc \
-            "$MUSL_IMAGE" sh -eu -c '
-              apk add --no-cache build-base curl
-              rustup component add clippy
-              cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
-              cargo test --locked --workspace --release --no-fail-fast --target "$TARGET"
-              cargo build --locked --release -p shards --target "$TARGET"
-            '
-          sudo chown -R "$(id -u):$(id -g)" target
+            "$MUSL_IMAGE" scripts/musl-ci
       # A process the seccomp filter ended with its SIGSYS blocked says nothing; the kernel
       # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG).
       - name: What the kernel logged of seccomp refusals

@@ -799,10 +799,8 @@ fn a_daemon_raises_its_descriptor_limit() {
         .unwrap_or_else(|| panic!("no descriptor limit in the daemon's log:\n{log}"));
     assert!(limit > 256, "the daemon kept a limit of {limit} descriptors");
     let env = [("SHARDS_HOME", home.as_os_str())];
-    assert_eq!(
-        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
-        Some(0)
-    );
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
 /// A client that connects and says nothing holds up no shutdown: the daemon ends it as it
@@ -876,10 +874,8 @@ fn clients_past_the_cap_wait_their_turn() {
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
     drop(silent);
     let env = [("SHARDS_HOME", home.as_os_str())];
-    assert_eq!(
-        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
-        Some(0)
-    );
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
 /// A home removed once, as `rm -rf` or a test's directory removes it, goes with its daemon
@@ -1031,10 +1027,8 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
     let listed = run_shards_env(&["ps"], &[] as &[&str], &env, TIMEOUT);
     assert_eq!(listed.status, Some(0), "{listed}");
     eventually("not collected once the daemon had room", || !left.exists());
-    assert_eq!(
-        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
-        Some(0)
-    );
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
 /// A daemon told to stop cancels what its runs are downloading: here a pull from a
@@ -1120,10 +1114,8 @@ fn a_pool_of_none_serves_every_run() {
         }
     }
     eventually("a VM was kept warm", || processes_with(&templates).is_empty());
-    assert_eq!(
-        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
-        Some(0)
-    );
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
 /// Settings a daemon cannot keep stop it before it serves, and its client says which at
@@ -1242,10 +1234,8 @@ fn warm_vms_are_bounded_across_templates() {
     run(&first);
     std::thread::sleep(Duration::from_millis(500));
     assert!(warm(&templates) <= 1, "{} warm VMs", warm(&templates));
-    assert_eq!(
-        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
-        Some(0)
-    );
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
 /// A pool keeps what its runs need while they come (audit A13): runs well apart keep one
@@ -1359,10 +1349,8 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     settled("past the keep-alive", &|n| n == 0);
     run();
     settled("after the keep-alive", &|n| n >= 1);
-    assert_eq!(
-        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
-        Some(0)
-    );
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
 /// A collection another process leaves due, as `shards build`'s pull of a base image
@@ -1490,10 +1478,8 @@ fn what_a_moved_tag_named_is_collected() {
         listed(&rootfs_dir()) == now_rootfs,
         "the new image's root filesystem kept"
     );
-    assert_eq!(
-        run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT).status,
-        Some(0)
-    );
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
 /// A daemon whose home is removed ends its runs, whose containers went with the home, and

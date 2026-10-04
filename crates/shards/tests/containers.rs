@@ -55,6 +55,10 @@ fn run_in(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Run {
 
 /// A run left going: its client, with the command's first line read.
 fn start(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Child {
+    // Kept in the home, which a failing test shows (common::TempDir).
+    static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let stderr = std::fs::File::create(home.join(format!("run-{n}.stderr"))).unwrap();
     let mut child = Command::new(shards())
         .args(run_args(image, options, command))
         .env("SHARDS_HOME", home)
@@ -62,7 +66,7 @@ fn start(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Child 
         .env("SHARDS_INIT", guest_init())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(stderr)
         .spawn()
         .unwrap();
     let mut line = String::new();
@@ -834,7 +838,8 @@ fn a_log_keeps_its_newest_output_within_its_retention() {
         return;
     };
     // The daemon the next command starts has the retention.
-    assert_eq!(without_vms(&home, &["daemon", "stop"]).status, Some(0));
+    let stopped = without_vms(&home, &["daemon", "stop"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
     let wrote = retained_output(
         &home,
         &[
@@ -961,7 +966,8 @@ fn a_log_keeps_its_newest_output_within_its_retention() {
         followed.len(),
         sent.len()
     );
-    assert_eq!(without_vms(&home, &["daemon", "stop"]).status, Some(0));
+    let stopped = without_vms(&home, &["daemon", "stop"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
 /// A container's log line past the largest message the daemon may send reaches the
@@ -1010,7 +1016,8 @@ fn logs_carry_lines_longer_than_a_message() {
         out.stdout.len(),
         want.len()
     );
-    assert_eq!(without_vms(&home, &["daemon", "stop"]).status, Some(0));
+    let stopped = without_vms(&home, &["daemon", "stop"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
 /// A run is on Docker's default bridge, as `docker run` puts a container (D31), and

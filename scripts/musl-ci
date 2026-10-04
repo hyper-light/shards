@@ -1,0 +1,25 @@
+#!/bin/sh
+# CI's musl job, inside its pinned rust:alpine image on the runner's own architecture
+# (.github/workflows/ci.yml, `musl`): lints, tests and builds $TARGET. Packages are added
+# as root; everything else runs as the user that owns the checkout, as shards runs: never
+# as root, which permission bits and much else do not stop.
+#
+#   docker run ... -v "$PWD:/work" -w /work -e TARGET ... IMAGE scripts/musl-ci
+set -eu
+
+apk add --no-cache build-base curl
+rustup component add clippy
+uid=$(stat -c %u /work)
+if [ "$uid" = 0 ]; then
+	echo "musl-ci: /work is root's; the tests run as its owner, never as root" >&2
+	exit 1
+fi
+adduser -D -u "$uid" -h /home/shards shards
+# The image's toolchain stays where it is, read; cargo's own cache is the user's.
+exec su -m shards -s /bin/sh -c '
+	set -eu
+	export HOME=/home/shards CARGO_HOME=/home/shards/.cargo
+	cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
+	cargo test --locked --workspace --release --no-fail-fast --target "$TARGET"
+	cargo build --locked --release -p shards --target "$TARGET"
+'

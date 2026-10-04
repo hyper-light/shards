@@ -614,7 +614,39 @@ impl std::ops::Deref for TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
+        // A failing test's daemon and clients said why in files that go with the
+        // directory: shown first, straight to stderr, which libtest does not capture.
+        if std::thread::panicking() {
+            show_why(&self.0);
+        }
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// What a home's runs wrote to stderr (`*.stderr`), and its daemon's log's last lines.
+fn show_why(home: &Path) {
+    let mut err = std::io::stderr().lock();
+    let mut said: Vec<PathBuf> = std::fs::read_dir(home)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "stderr"))
+        .collect();
+    said.sort();
+    for path in said {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let _ = writeln!(err, "--- {}\n{text}", path.display());
+    }
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    let tail: Vec<&str> = log.lines().rev().take(100).collect();
+    let _ = writeln!(
+        err,
+        "--- {}, its last {} lines",
+        home.join("daemon.log").display(),
+        tail.len()
+    );
+    for line in tail.iter().rev() {
+        let _ = writeln!(err, "{line}");
     }
 }
 
