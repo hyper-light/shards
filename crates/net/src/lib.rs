@@ -3,12 +3,15 @@
 //! per flow, opened only if the VM's policy allows them; the host's answers become frames.
 //! The guest's link reaches nothing else: no host loopback, no other VM, no host network
 //! namespace. One such process serves one VM, so that its stack, which parses what the
-//! guest and the Internet send, reaches no other VM if it is compromised.
+//! guest and the Internet send, shares no memory with another VM's; the confinement that
+//! would keep a compromised one from the rest of the host (seccomp, Landlock, App
+//! Sandbox) is still to be built (architecture.md D31).
 
 #![cfg(unix)]
 
 pub mod bridge;
 pub mod pktinfo;
+mod siphash;
 pub mod tcp;
 pub mod wire;
 
@@ -210,7 +213,10 @@ struct Stack<'r> {
     buf: Vec<u8>,
     /// Where segments to the guest are made.
     scratch: Vec<u8>,
-    isn: u32,
+    /// The key of this process's initial sequence numbers, and when it began: their
+    /// clock's origin ([`Stack::isn`]).
+    isn_key: [u8; 16],
+    began: Instant,
     /// Published ports' host sockets, each with the guest port it reaches.
     published: Vec<(Listener, u16)>,
     /// Published UDP ports' flows, by their gateway ports, and those ports by their
@@ -325,7 +331,12 @@ pub fn serve(
         udp: HashMap::new(),
         buf: vec![0u8; shards_netring::MAX_FRAME],
         scratch: Vec::new(),
-        isn: seed()?,
+        isn_key: {
+            let mut key = [0u8; 16];
+            entropy(&mut key)?;
+            key
+        },
+        began: Instant::now(),
         published: Vec::new(),
         inbound: HashMap::new(),
         inbound_ports: HashMap::new(),
@@ -516,14 +527,28 @@ fn free_udp_port(next: &mut u16, inbound: &HashMap<u16, Inbound>) -> Option<u16>
     None
 }
 
-/// A starting point for initial sequence numbers no guest can predict from the last.
-fn seed() -> io::Result<u32> {
-    let mut b = [0u8; 4];
-    entropy(&mut b)?;
-    Ok(u32::from_ne_bytes(b))
+/// [`Stack::isn`] of connection `conn` of `guest`, under `secret`, `ticks` 64 ns ticks on.
+fn initial_seq(secret: &[u8; 16], ticks: u64, guest: Ipv4Addr, conn: &Key) -> u32 {
+    let [a, b, c, d] = guest.octets();
+    let [e, f, g, h] = conn.remote.0.octets();
+    let [i, j] = conn.guest_port.to_be_bytes();
+    let [k, l] = conn.remote.1.to_be_bytes();
+    let hash = siphash::siphash24(secret, &[a, b, c, d, e, f, g, h, i, j, k, l]);
+    (hash as u32).wrapping_add(ticks as u32)
 }
 
 impl<'r> Stack<'r> {
+    /// The initial sequence number of the connection `key` names, as RFC 6528 makes one
+    /// and Linux does (net/core/secure_seq.c, `secure_tcp_seq` and `seq_scale`): SipHash-2-4
+    /// of its addresses and ports, keyed by this process's secret, plus a clock of 64 ns
+    /// ticks. No one who sees one connection's can predict another's (review 2.31): a
+    /// workload with raw sockets could otherwise put its own segments into the connections
+    /// of the other processes of its guest.
+    fn isn(&self, key: &Key) -> u32 {
+        let ticks = u64::try_from(self.began.elapsed().as_nanos() >> 6).unwrap_or(u64::MAX);
+        initial_seq(&self.isn_key, ticks, self.cfg.guest_ip, key)
+    }
+
     /// Takes published ports' host sockets, each for the guest port and protocol its
     /// payload's next three bytes name (a big-endian u16, then the IP protocol number);
     /// what does not pair up, or names another protocol, is closed.
@@ -628,8 +653,7 @@ impl<'r> Stack<'r> {
                 guest_port,
                 remote: (self.cfg.gateway_ip, port),
             };
-            self.isn = self.isn.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let isn = self.isn;
+            let isn = self.isn(&key);
             let c = {
                 let mut o = self.out();
                 Conn::accept(key, sock, isn, &mut o)
@@ -833,8 +857,7 @@ impl<'r> Stack<'r> {
                 );
                 return;
             }
-            self.isn = self.isn.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            match Conn::open(key, &seg, self.isn) {
+            match Conn::open(key, &seg, self.isn(&key)) {
                 Ok(c) => conn = Some(c),
                 Err(_) => {
                     let mut o = self.out();
@@ -961,6 +984,24 @@ mod tests {
         }
         let deny = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
         assert!(!deny.allows(Ipv4Addr::new(8, 8, 8, 8)));
+    }
+
+    /// An initial sequence number is its connection's and its secret's alone, plus its
+    /// clock: another connection, or another process's secret, gives another, and the
+    /// clock adds to it (RFC 6528 §3, review 2.31).
+    #[test]
+    fn initial_sequence_numbers_are_the_connections_and_the_secrets() {
+        let guest = Ipv4Addr::new(172, 17, 0, 2);
+        let conn = |port| Key {
+            guest_port: port,
+            remote: (Ipv4Addr::new(93, 184, 215, 14), 443),
+        };
+        let (one, two) = ([1u8; 16], [2u8; 16]);
+        let isn = initial_seq(&one, 0, guest, &conn(40_000));
+        assert_eq!(isn, initial_seq(&one, 0, guest, &conn(40_000)));
+        assert_ne!(isn, initial_seq(&one, 0, guest, &conn(40_001)));
+        assert_ne!(isn, initial_seq(&two, 0, guest, &conn(40_000)));
+        assert_eq!(initial_seq(&one, 5, guest, &conn(40_000)), isn.wrapping_add(5));
     }
 
     /// UDP flows live as conntrack keeps them: 30 s from a datagram, until a reply has
