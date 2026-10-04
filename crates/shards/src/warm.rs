@@ -200,6 +200,11 @@ pub fn receive(link: &Link, to: &'static ToGuest) -> Result<Request, String> {
     {
         return Err(format!("telling the daemon the request is taken: {e}"));
     }
+    // The VM's own log stays where it was, its daemon's: the client's stderr carries the
+    // command's alone, as a container's does (review 8.10).
+    if let Ok(log) = std::os::fd::AsFd::as_fd(&io::stderr()).try_clone_to_owned() {
+        shards_vmm::log::to(File::from(log));
+    }
     for (fd, target) in [
         (stdin.as_raw_fd(), 0),
         (stdout.as_raw_fd(), 1),

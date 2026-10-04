@@ -1,4 +1,5 @@
-//! Minimal leveled logging to stderr, filtered by `SHARDS_LOG` (error|warn|info|debug).
+//! Minimal leveled logging to stderr, or where [`to`] sends it, filtered by `SHARDS_LOG`
+//! (error|warn|info|debug).
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -15,6 +16,15 @@ pub enum Level {
 
 static LEVEL: AtomicU8 = AtomicU8::new(0);
 static START: OnceLock<Instant> = OnceLock::new();
+/// Where lines go in stderr's place, once [`to`] has said.
+static SINK: OnceLock<std::fs::File> = OnceLock::new();
+
+/// Sends what is logged from now on to `file`, not stderr: a warm VM's, which takes its
+/// client's stdio for its own, keeps its daemon's log (review 8.10). Once; later calls
+/// change nothing.
+pub fn to(file: std::fs::File) {
+    let _ = SINK.set(file);
+}
 
 /// Reads `SHARDS_LOG` once; later calls are no-ops.
 pub fn init() {
@@ -47,7 +57,17 @@ pub fn write(level: Level, args: std::fmt::Arguments<'_>) {
     };
     use std::io::Write;
     // Logging never fails the caller, even with stderr closed.
-    let _ = writeln!(std::io::stderr().lock(), "[{:>10}us {tag}] {args}", uptime_us());
+    match SINK.get() {
+        // A line a write, so that other processes' lines on the same file do not split
+        // it.
+        Some(file) => {
+            let line = format!("[{:>10}us {tag}] {args}\n", uptime_us());
+            let _ = (&*file).write_all(line.as_bytes());
+        }
+        None => {
+            let _ = writeln!(std::io::stderr().lock(), "[{:>10}us {tag}] {args}", uptime_us());
+        }
+    }
 }
 
 #[macro_export]

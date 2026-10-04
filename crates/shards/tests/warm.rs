@@ -122,6 +122,11 @@ struct Client {
 
 impl Warm {
     fn spawn(template: &Path) -> Warm {
+        Warm::spawn_env(template, &[])
+    }
+
+    /// [`spawn`](Warm::spawn), with `env` added to the VM's environment.
+    fn spawn_env(template: &Path, env: &[(&str, &str)]) -> Warm {
         let (daemon, theirs) = UnixStream::pair().unwrap();
         let fd = theirs.as_raw_fd();
         // What the daemon runs.
@@ -130,6 +135,7 @@ impl Warm {
             .args(["restore"])
             .arg(template)
             .args(["--warm", "3"])
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
@@ -382,6 +388,34 @@ fn warm_vms_serve_one_request_on_the_clients_stdio() {
     assert_eq!(client.exit(), 0);
     assert_eq!(client.stdout(), "through the warm VM\n");
     warm.ends(0, None);
+}
+
+/// What the VM logs as it serves its run goes to its own stderr, its daemon's log, not
+/// to its client's, which carries the command's alone, as a container's does (review
+/// 8.10).
+#[test]
+fn a_warm_vms_log_stays_out_of_its_clients_stderr() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let dir = TempDir::new("warm-log");
+    let template = template(&dir);
+    let mut warm = Warm::spawn_env(&template, &[("SHARDS_LOG", "info")]);
+    let mut own = warm.child.stderr.take().unwrap();
+    let reading = std::thread::spawn(move || {
+        let mut said = String::new();
+        own.read_to_string(&mut said).unwrap();
+        said
+    });
+    warm.ready();
+    let mut client = warm.run(&["/bin/testguest", "exit", "0"], false);
+    assert_eq!(client.exit(), 0);
+    let mut err = String::new();
+    client.stderr.read_to_string(&mut err).unwrap();
+    warm.ends(0, None);
+    let own = reading.join().unwrap();
+    assert_eq!(err, "", "the VM's log in its client's stderr");
+    assert!(own.contains("us INFO] guest marker"), "{own}");
 }
 
 #[test]
