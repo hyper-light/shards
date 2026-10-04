@@ -3991,6 +3991,18 @@ mod tests {
         shards_ipc::send(vm, what, payload, &[]).unwrap();
     }
 
+    /// [`say`] of each message, in one write: the daemon finds them all there as soon as
+    /// it finds the first.
+    fn say_together(vm: &UnixStream, messages: &[(u8, &[u8])]) {
+        let mut bytes = Vec::new();
+        for (what, payload) in messages {
+            bytes.push(*what);
+            bytes.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes());
+            bytes.extend_from_slice(payload);
+        }
+        (&mut &*vm).write_all(&bytes).unwrap();
+    }
+
     fn signal(n: u32) -> (u8, Vec<u8>) {
         (kind::SIGNAL, n.to_be_bytes().to_vec())
     }
@@ -6019,7 +6031,10 @@ mod tests {
 
     /// A name whose `--rm` holder's run is being handed over is seen through the handoff:
     /// its VM may run the command, say DONE and tell its client before the handoff has
-    /// registered the run, and the client's next run may want the name at once.
+    /// registered the run, and the client's next run may want the name at once. Said in
+    /// one write, as the client's next run comes after DONE: the VM says it before it
+    /// tells its client (warm.rs). Written apart, the run could be registered between
+    /// TAKEN and DONE, when its name is rightly still held.
     #[test]
     fn a_name_held_by_a_run_being_handed_over_is_seen_through_its_handoff() {
         let t = Test::new("rm-handing");
@@ -6035,9 +6050,10 @@ mod tests {
                 let again = scope.spawn(|| t.reserve("handing"));
                 std::thread::sleep(Duration::from_millis(100));
                 assert!(!again.is_finished(), "answered before the handoff was through");
-                say(&vm, kind::TAKEN, &[]);
-                say(&vm, kind::STARTED, &[]);
-                say(&vm, kind::DONE, &[0]);
+                say_together(
+                    &vm,
+                    &[(kind::TAKEN, &[]), (kind::STARTED, &[]), (kind::DONE, &[0])],
+                );
                 assert_ne!(again.join().unwrap(), id);
             });
             joined(starting.run).unwrap();
