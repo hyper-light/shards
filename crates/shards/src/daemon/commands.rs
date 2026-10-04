@@ -4,12 +4,13 @@
 //! (shards_cmdline); the daemon reads it again by the same rules, and does what dockerd
 //! would, in the order and with the words the Docker CLI and dockerd use.
 
+use std::io::Read as _;
 use std::io::{self, Write as _};
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::sync::MutexGuard;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use shards_cmdline::commands::{
     self, IMAGE_INSPECT, IMAGES, KILL, LOAD, LOGS, PORT, PS, PULL, PUSH, RM, RMI, SAVE, STOP, TAG, WAIT,
@@ -38,9 +39,21 @@ fn grace_of(seconds: i64) -> Option<Duration> {
         Duration::from_nanos(u64::try_from(ns).unwrap_or(0))
     })
 }
-/// How many containers `stop`, `kill` and `rm` act on at once (docker/cli
-/// cli/command/container/utils.go, parallelOperation).
-const AT_ONCE: usize = 50;
+/// What `stop`, `kill` and `rm` make of one argument before any container is ended: an
+/// answer now, or a container to end, with its signal and grace, and what to answer once
+/// it has ended (`true`) or would not (`false`).
+pub(super) enum Step<'a> {
+    Now(Result<bool, String>),
+    End {
+        id: String,
+        linux: u32,
+        grace: Option<Duration>,
+        then: Then<'a>,
+    },
+}
+
+/// What a step answers once its container has ended, or would not.
+pub(super) type Then<'a> = Box<dyn FnOnce(bool) -> Result<bool, String> + 'a>;
 
 /// The client's end: what a command prints goes there.
 pub(super) struct Reply<'a>(pub &'a UnixStream);
@@ -472,99 +485,193 @@ impl<D: crate::containers::Disk> Daemon<D> {
         socket.send(kind::SIGNAL, &linux.to_be_bytes(), &[]).is_ok()
     }
 
-    /// Ends the command of the running container with `id` as dockerd does (moby
-    /// daemon/stop.go containerStop, daemon/kill.go kill): signal `linux`, then wait up to
-    /// `grace` (for ever if `None`, 2 s if the signal could not be sent), then SIGKILL and
-    /// up to 10 s more, then the VM itself and 2 s more. Whether the command ended. Its
-    /// client hanging up changes nothing: "Cancelling the request should not cancel the
-    /// stop" (moby daemon/stop.go, containerStop).
-    fn end(&self, id: &str, linux: u32, grace: Option<Duration>) -> bool {
-        if linux != 9 {
-            let grace = if self.signal(id, linux) {
-                grace
-            } else {
-                Some(UNSENT_WAIT)
-            };
-            if self.await_exit(id, grace, None).is_some() {
-                return true;
-            }
-        }
-        self.signal(id, 9);
-        if self.await_exit(id, Some(KILL_WAIT), None).is_some() {
-            return true;
-        }
-        if let Some(RunState::Tracked(t)) = lock(&self.runs).get(id) {
-            let _ = t.vm.kill(libc::SIGKILL);
-        }
-        self.await_exit(id, Some(LAST_WAIT), None).is_some()
-    }
-
-    /// Runs `op` for each of `args`, up to 50 at once and in their order, and answers as
-    /// the Docker CLI does (cli/command/container/utils.go parallelOperation; stop.go,
-    /// kill.go, rm.go): each success prints its argument as given, once it and those
-    /// before it are done, unless `op` says it has nothing to say; the errors follow,
-    /// one per line, and make the status 1.
-    fn each(
-        &self,
-        args: &[String],
-        op: &(dyn Fn(&str) -> Result<bool, String> + Sync),
-        reply: &Reply<'_>,
-    ) -> u8 {
-        let done: Mutex<Vec<Option<Result<bool, String>>>> = Mutex::new(vec![None; args.len()]);
-        let changed = Condvar::new();
-        let next = AtomicUsize::new(0);
-        let work = || {
-            loop {
-                let i = next.fetch_add(1, Ordering::SeqCst);
-                let Some(arg) = args.get(i) else {
-                    return;
-                };
-                let result = op(arg);
-                if let Some(slot) = lock(&done).get_mut(i) {
-                    *slot = Some(result);
+    /// Runs `op` for each of `args`, in their order, then ends every container the steps
+    /// name at once ([`end_all`](Self::end_all)): docker/cli acts on 50 at a time
+    /// (cli/command/container/utils.go, parallelOperation), so that stopping 200 took four
+    /// graces; here it takes the longest one, with no thread for each. Answers as the CLI
+    /// does (stop.go, kill.go, rm.go): each success prints its argument as given, once it
+    /// and those before it are done, unless it has nothing to say; the errors follow, one
+    /// per line, and make the status 1.
+    fn each<'a>(&'a self, args: &[String], op: &dyn Fn(&str) -> Step<'a>, reply: &Reply<'_>) -> u8 {
+        let mut results: Vec<Option<Result<bool, String>>> = Vec::with_capacity(args.len());
+        let mut thens: Vec<Option<Then<'a>>> = Vec::with_capacity(args.len());
+        let mut ending = Vec::new();
+        for (i, arg) in args.iter().enumerate() {
+            match op(arg) {
+                Step::Now(result) => {
+                    results.push(Some(result));
+                    thens.push(None);
                 }
-                changed.notify_all();
+                Step::End {
+                    id,
+                    linux,
+                    grace,
+                    then,
+                } => {
+                    results.push(None);
+                    thens.push(Some(then));
+                    ending.push((i, id, linux, grace));
+                }
             }
-        };
+        }
         let mut errors = Vec::new();
-        std::thread::scope(|scope| {
-            let workers = (0..args.len().min(AT_ONCE))
-                .filter(|_| {
-                    std::thread::Builder::new()
-                        .name("container".into())
-                        .spawn_scoped(scope, work)
-                        .is_ok()
-                })
-                .count();
-            // With no thread to be had, one at a time, here.
-            if workers == 0 {
-                work();
-            }
-            for (i, arg) in args.iter().enumerate() {
-                let mut all = lock(&done);
-                let result = loop {
-                    match all.get_mut(i).map(Option::take) {
-                        Some(Some(result)) => break result,
-                        Some(None) => {
-                            all = changed
-                                .wait(all)
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        }
-                        None => break Ok(false),
-                    }
-                };
-                drop(all);
+        let mut said = 0;
+        // Each success, once it and those before it are done.
+        let mut say = |results: &mut [Option<Result<bool, String>>], errors: &mut Vec<String>| {
+            while let Some(Some(result)) = results.get_mut(said).map(Option::take) {
                 match result {
-                    Ok(true) => reply.out(arg),
+                    Ok(true) => reply.out(args.get(said).map(String::as_str).unwrap_or_default()),
                     Ok(false) => {}
                     Err(e) => errors.push(e),
                 }
+                said += 1;
             }
+        };
+        say(&mut results, &mut errors);
+        self.end_all(ending, &mut |i, ended| {
+            let result = match thens.get_mut(i).and_then(Option::take) {
+                Some(then) => then(ended),
+                None => Ok(ended),
+            };
+            if let Some(slot) = results.get_mut(i) {
+                *slot = Some(result);
+            }
+            say(&mut results, &mut errors);
         });
         for e in &errors {
             reply.err(e);
         }
         u8::from(!errors.is_empty())
+    }
+
+    /// Ends every container of `targets` (its index, ID, signal and grace) at once, from
+    /// one loop, as dockerd ends one (moby daemon/stop.go, containerStop): the signal, then SIGKILL once its grace
+    /// is up (2 s if it could not be sent), then its VM after 10 s more, then giving up
+    /// after 2 s. Each end is heard on a socket of its own, registered before anything is
+    /// sent, so none is missed; `done` hears each container's index once, with whether it
+    /// ended, as it does.
+    fn end_all(
+        &self,
+        targets: Vec<(usize, String, u32, Option<Duration>)>,
+        done: &mut dyn FnMut(usize, bool),
+    ) {
+        enum Phase {
+            Signalled,
+            Killed,
+            VmKilled,
+        }
+        struct Ending {
+            index: usize,
+            id: String,
+            waiter: u64,
+            told: UnixStream,
+            phase: Phase,
+            deadline: Option<Instant>,
+        }
+        let after = |d: Duration| Instant::now().checked_add(d);
+        let mut going = Vec::with_capacity(targets.len());
+        for (index, id, linux, grace) in targets {
+            let (waiter, told) = match self.wake_at_end(&id) {
+                Ok(Some(w)) => w,
+                // Not running: ended already.
+                Ok(None) => {
+                    done(index, true);
+                    continue;
+                }
+                Err(e) => {
+                    super::log(format!("container {id}: waiting for its end: {e}"));
+                    done(index, false);
+                    continue;
+                }
+            };
+            let (phase, deadline) = if linux == 9 {
+                self.signal(&id, 9);
+                (Phase::Killed, after(KILL_WAIT))
+            } else if self.signal(&id, linux) {
+                (Phase::Signalled, grace.and_then(after))
+            } else {
+                (Phase::Signalled, after(UNSENT_WAIT))
+            };
+            going.push(Ending {
+                index,
+                id,
+                waiter,
+                told,
+                phase,
+                deadline,
+            });
+        }
+        let mut polled: Vec<libc::pollfd> = Vec::with_capacity(going.len());
+        while !going.is_empty() {
+            // Escalate whatever is due.
+            let now = Instant::now();
+            let mut i = 0;
+            while let Some(e) = going.get_mut(i) {
+                if e.deadline.is_some_and(|d| d <= now) {
+                    match e.phase {
+                        Phase::Signalled => {
+                            self.signal(&e.id, 9);
+                            e.phase = Phase::Killed;
+                            e.deadline = after(KILL_WAIT);
+                        }
+                        Phase::Killed => {
+                            if let Some(RunState::Tracked(t)) = lock(&self.runs).get(&e.id) {
+                                let _ = t.vm.kill(libc::SIGKILL);
+                            }
+                            e.phase = Phase::VmKilled;
+                            e.deadline = after(LAST_WAIT);
+                        }
+                        Phase::VmKilled => {
+                            let gone = going.swap_remove(i);
+                            self.forget_waiter(&gone.id, gone.waiter);
+                            // Its end may have come as it was given up.
+                            let _ = gone.told.set_nonblocking(true);
+                            let mut byte = [0u8; 1];
+                            done(gone.index, matches!((&gone.told).read(&mut byte), Ok(1)));
+                            continue;
+                        }
+                    }
+                }
+                i += 1;
+            }
+            if going.is_empty() {
+                break;
+            }
+            let wait = going.iter().filter_map(|e| e.deadline).min().map_or(-1, |d| {
+                let left = d.saturating_duration_since(Instant::now());
+                libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
+            });
+            polled.clear();
+            polled.extend(going.iter().map(|e| libc::pollfd {
+                fd: e.told.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            }));
+            let n = libc::nfds_t::try_from(polled.len()).unwrap_or(libc::nfds_t::MAX);
+            // SAFETY: poll(2) on pollfds of sockets `going` holds open.
+            if unsafe { libc::poll(polled.as_mut_ptr(), n, wait) } < 0
+                && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
+            {
+                // Nothing to wait on: what is left is given up, as its time would be.
+                for gone in going.drain(..) {
+                    self.forget_waiter(&gone.id, gone.waiter);
+                    done(gone.index, false);
+                }
+                break;
+            }
+            // Those whose end came, from the back, so the indices stay good.
+            for k in (0..polled.len()).rev() {
+                if polled.get(k).is_some_and(|p| p.revents != 0) {
+                    let gone = going.swap_remove(k);
+                    let mut byte = [0u8; 1];
+                    let ended = matches!((&gone.told).read(&mut byte), Ok(1));
+                    if !ended {
+                        self.forget_waiter(&gone.id, gone.waiter);
+                    }
+                    done(gone.index, ended);
+                }
+            }
+        }
     }
 
     /// `shards wait`: for each container in turn, its exit code once it stops. Found and
@@ -611,60 +718,80 @@ impl<D: crate::containers::Disk> Daemon<D> {
             &|given| {
                 let reference = given.trim_matches('/');
                 if reference.is_empty() {
-                    return Err("container name cannot be empty".into());
+                    return Step::Now(Err("container name cannot be empty".into()));
                 }
                 // Then as the CLI's client sends it (`resolve`), dockerd's words name it.
-                let reference = reference.trim();
-                let id = match self.resolve(reference) {
+                let reference = reference.trim().to_string();
+                let id = match self.resolve(&reference) {
                     Ok(id) => id,
-                    Err(_) if force => return Ok(false),
-                    Err(e) => return Err(e),
+                    Err(_) if force => return Step::Now(Ok(false)),
+                    Err(e) => return Step::Now(Err(e)),
                 };
-                let cannot = |why: &str| {
+                let cannot = move |reference: &str, why: &str| {
                     format!("Error response from daemon: cannot remove container \"{reference}\": {why}")
                 };
                 if !lock(&self.removing).insert(id.clone()) {
-                    return Err(format!(
+                    return Step::Now(Err(format!(
                         "Error response from daemon: removal of container {reference} is already in progress"
-                    ));
+                    )));
                 }
-                // Out of sight, then durable: an `rm` answered is never undone by a crash.
-                let complete = |removal: Removal| {
-                    self.complete(&removal).map(|()| true).map_err(|e| {
-                        format!(
-                            "Error response from daemon: container \"{reference}\" is removed, but its removal may not outlast a crash: {e}"
-                        )
-                    })
+                // Taken out of sight, set aside out of the registry's lock, which every
+                // run's end takes, then made durable: an `rm` answered is never undone by
+                // a crash. Ends its removal's being in progress, whatever the answer.
+                let finish = {
+                    let (id, reference) = (id.clone(), reference.clone());
+                    move |removal: Option<Removal>| {
+                        let answer = match removal {
+                            None => Ok(true),
+                            Some(removal) => self
+                                .set_aside(&removal)
+                                .map_err(|e| cannot(&reference, &e.to_string()))
+                                .and_then(|()| {
+                                    self.complete(&removal).map(|()| true).map_err(|e| {
+                                        format!(
+                                            "Error response from daemon: container \"{reference}\" is removed, but its removal may not outlast a crash: {e}"
+                                        )
+                                    })
+                                }),
+                        };
+                        lock(&self.removing).remove(&id);
+                        answer
+                    }
                 };
-                // Set aside out of the registry's lock, which every run's end takes.
-                let set_aside = |removal: Removal| {
-                    self.set_aside(&removal).map_err(|e| cannot(&e.to_string()))?;
-                    complete(removal)
-                };
-                let removed = (|| {
-                    if let Some(removal) = self.cancel_start(&id) {
-                        return set_aside(removal);
+                if let Some(removal) = self.cancel_start(&id) {
+                    return Step::Now(finish(Some(removal)));
+                }
+                if lock(&self.containers).get(&id).is_none() {
+                    return Step::Now(finish(None));
+                }
+                if self.running(&id) {
+                    if !force {
+                        lock(&self.removing).remove(&id);
+                        return Step::Now(Err(cannot(
+                            &reference,
+                            "container is running: stop the container before removing or force remove",
+                        )));
                     }
-                    if lock(&self.containers).get(&id).is_none() {
-                        return Ok(true);
-                    }
-                    if self.running(&id) {
-                        if !force {
-                            return Err(cannot(
-                                "container is running: stop the container before removing or force remove",
-                            ));
-                        }
-                        if !self.end(&id, 9, None) {
-                            return Err(cannot(
-                                "could not kill container: tried to kill container, but did not receive an exit event",
-                            ));
-                        }
-                    }
-                    let removal = lock(&self.containers).take_out(&id);
-                    removal.map_or(Ok(true), set_aside)
-                })();
-                lock(&self.removing).remove(&id);
-                removed
+                    let taken = id.clone();
+                    return Step::End {
+                        id: id.clone(),
+                        linux: 9,
+                        grace: None,
+                        then: Box::new(move |ended| {
+                            if !ended {
+                                lock(&self.removing).remove(&taken);
+                                return Err(cannot(
+                                    &reference,
+                                    "could not kill container: tried to kill container, but did not receive an exit event",
+                                ));
+                            }
+                            let removal = lock(&self.containers).take_out(&taken);
+                            finish(removal)
+                        }),
+                    };
+                }
+                let removal = lock(&self.containers).take_out(&id);
+                Step::Now(finish(removal))
             },
             reply,
         )
@@ -687,10 +814,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
             &|reference| {
                 // As the Docker CLI's client sends it (`resolve`), dockerd's words name it.
                 let reference = reference.trim();
-                let id = self.resolve(reference)?;
+                let id = match self.resolve(reference) {
+                    Ok(id) => id,
+                    Err(e) => return Step::Now(Err(e)),
+                };
                 self.await_start(&id);
                 if !self.running(&id) {
-                    return Ok(true);
+                    return Step::Now(Ok(true));
                 }
                 let cannot = |why: &str| {
                     format!("Error response from daemon: cannot stop container: {reference}: {why}")
@@ -702,15 +832,19 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     own_signal
                 } else {
                     // A number Linux has no signal for cannot be sent.
-                    let n = parse_signal(signal).map_err(|e| cannot(&e))?;
-                    u32::try_from(n).ok().filter(|n| (1..=64).contains(n))
+                    match parse_signal(signal) {
+                        Ok(n) => u32::try_from(n).ok().filter(|n| (1..=64).contains(n)),
+                        Err(e) => return Step::Now(Err(cannot(&e))),
+                    }
                 };
-                match linux {
-                    Some(linux) if self.end(&id, linux, grace) => Ok(true),
-                    None if self.end(&id, 9, Some(UNSENT_WAIT)) => Ok(true),
-                    _ => Err(cannot(
-                        "tried to kill container, but did not receive an exit event",
-                    )),
+                // No signal Linux has: killed, after 2 s.
+                let (linux, grace) = linux.map_or((9, Some(UNSENT_WAIT)), |l| (l, grace));
+                let unheard = cannot("tried to kill container, but did not receive an exit event");
+                Step::End {
+                    id,
+                    linux,
+                    grace,
+                    then: Box::new(move |ended| if ended { Ok(true) } else { Err(unheard) }),
                 }
             },
             reply,
@@ -751,32 +885,48 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 let linux = if signal.is_empty() {
                     9
                 } else {
-                    let n = parse_signal(signal).map_err(|e| cannot(&e))?;
-                    linux_signal(n)
-                        .ok_or_else(|| cannot(&format!("the linux daemon does not support signal {n}")))?
+                    let n = match parse_signal(signal) {
+                        Ok(n) => n,
+                        Err(e) => return Step::Now(Err(cannot(&e))),
+                    };
+                    match linux_signal(n) {
+                        Some(l) => l,
+                        None => {
+                            return Step::Now(Err(cannot(&format!(
+                                "the linux daemon does not support signal {n}"
+                            ))));
+                        }
+                    }
                 };
                 // dockerd's refusals in its own words for a kill; the client's as they are.
-                let id = self.resolve(reference).map_err(|e| {
-                    match e.strip_prefix("Error response from daemon: ") {
-                        Some(said) => cannot(said),
-                        None => e,
+                let id = match self.resolve(reference) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return Step::Now(Err(match e.strip_prefix("Error response from daemon: ") {
+                            Some(said) => cannot(said),
+                            None => e,
+                        }));
                     }
-                })?;
-                let not_running = || cannot(&format!("container {id} is not running"));
+                };
+                let not_running = cannot(&format!("container {id} is not running"));
                 self.await_start(&id);
                 if !self.running(&id) {
-                    return Err(not_running());
+                    return Step::Now(Err(not_running));
                 }
                 if linux == 9 {
-                    if !self.end(&id, 9, None) {
-                        return Err(cannot(
-                            "tried to kill container, but did not receive an exit event",
-                        ));
-                    }
-                } else if !self.signal(&id, linux) {
-                    return Err(not_running());
+                    let unheard = cannot("tried to kill container, but did not receive an exit event");
+                    return Step::End {
+                        id,
+                        linux: 9,
+                        grace: None,
+                        then: Box::new(move |ended| if ended { Ok(true) } else { Err(unheard) }),
+                    };
                 }
-                Ok(true)
+                Step::Now(if self.signal(&id, linux) {
+                    Ok(true)
+                } else {
+                    Err(not_running)
+                })
             },
             reply,
         )

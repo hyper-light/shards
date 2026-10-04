@@ -22,20 +22,39 @@ for side in old new; do
     cargo build -q --release --manifest-path "$dir/Cargo.toml" --target-dir "$work/target-$side"
 done
 for side in old new; do "$work/target-$side/release/rootfs-build" 1 "$work/store-$side" "$@" >/dev/null; done
-n=0
-while [ "$n" -lt "${BUSY:-0}" ]; do
-    yes >/dev/null &
-    spinners="$spinners $!"
-    n=$((n + 1))
-done
-n=0
-while [ "$n" -lt "${IOBUSY:-0}" ]; do
-    sh -c 'while :; do dd if=/dev/zero of="$1" bs=1m count=1024 2>/dev/null; rm -f "$1"; done' sh "$work/io-$n" &
-    spinners="$spinners $!"
-    n=$((n + 1))
-done
+# The load: BUSY spinners and IOBUSY writers, each kept by its slot. Before every round
+# a slot whose process has gone (another process may kill it) gets a new one, and the loss
+# is logged with its time beside the results: a run says whether its load held.
+spinner() { yes >/dev/null & }
+writer() { sh -c 'while :; do dd if=/dev/zero of="$1" bs=1m count=1024 2>/dev/null; rm -f "$1"; done' sh "$work/io-$1" & }
+ensure_load() {
+    n=0
+    while [ "$n" -lt "${BUSY:-0}" ]; do
+        eval "pid=\${busy_$n:-}"
+        if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+            [ -n "$pid" ] && echo "$(date +%s) spinner $n was gone; restarted" >>"$work/load.log"
+            spinner
+            eval "busy_$n=$!"
+            spinners="$spinners $!"
+        fi
+        n=$((n + 1))
+    done
+    n=0
+    while [ "$n" -lt "${IOBUSY:-0}" ]; do
+        eval "pid=\${io_$n:-}"
+        if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+            [ -n "$pid" ] && echo "$(date +%s) writer $n was gone; restarted" >>"$work/load.log"
+            writer "$n"
+            eval "io_$n=$!"
+            spinners="$spinners $!"
+        fi
+        n=$((n + 1))
+    done
+}
+: >"$work/load.log"
 i=0
 while [ "$i" -lt "$rounds" ]; do
+    ensure_load
     for side in old new; do
         "$work/target-$side/release/rootfs-build" 1 "$work/store-$side" "$@" | sed "s/^/$side /"
     done
@@ -53,3 +72,4 @@ for (image, side), v in sorted(runs.items()):
     c = sorted(c for _, c in v)
     print(f"| {image} | {side} | {len(s)} | {q(s,.5):.0f} | {q(s,.9):.0f} | {q(s,.99):.0f} | {s[-1]:.0f} | {q(c,.5):.0f} | {q(c,.9):.0f} |")
 '
+if [ -s "$work/load.log" ]; then echo "The load was lost and restored:"; cat "$work/load.log"; else echo "The load held throughout."; fi

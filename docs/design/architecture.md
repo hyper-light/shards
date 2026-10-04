@@ -1232,6 +1232,13 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   - `stop` and `kill` of a container still starting act once it runs: `shards run -d`
     prints the ID before the start, where `docker run -d` prints it after, so a script
     that stops what `run -d` printed stops a running command in both.
+  - `stop`, `kill` and `rm -f` end every container they name at once, from one loop over
+    the containers' end sockets, each escalating on its own clock (signal, SIGKILL at
+    its grace, its VM 10 s on). docker/cli sends 50 requests at a time
+    (cli/command/container/utils.go, parallelOperation), so stopping 60 containers that
+    ignore SIGTERM takes two graces; here one, with no thread a container
+    (`stop_ends_every_container_at_once`). Answers come as the CLI's do: in the order
+    asked, each once it and those before it are done.
   - A daemon told to stop commits no pending run: `ending` is set under the runs' lock,
     so a run either committed before and is signalled once it runs, or sees it and is
     refused.

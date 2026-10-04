@@ -430,7 +430,7 @@ fn gather(set: &mut WorkingSet, limit: u64, payload: &[u8]) -> Gathered {
     Gathered::Whole(taken.name.unwrap_or_default(), taken.bytes)
 }
 
-/// One waiting for a container to end ([`Daemon::await_exit`]), by its number.
+/// One waiting for a container to end ([`Daemon::await_exit_held`]), by its number.
 struct Waiter {
     number: u64,
     /// Written the exit code: its other end, which the waiter waits on in poll(2) beside
@@ -2553,15 +2553,10 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Waits up to `limit` (for ever if `None`, or if it is too long to count) for the
-    /// container with `id` to stop running, and returns its exit code: 0 if it never ran.
-    /// `None` if it still runs, or if `client`, the connection of the command that waits,
-    /// has hung up. A waiter that stops waiting is forgotten (audit A07).
-    fn await_exit(&self, id: &str, limit: Option<Duration>, client: Option<&UnixStream>) -> Option<u8> {
-        self.await_exit_held(lock(&self.containers), id, limit, client)
-    }
-
-    /// [`await_exit`](Self::await_exit), from `registry`, held since container `id` was
-    /// found in it.
+    /// container with `id`, found in `registry`, held since, to stop running, and returns
+    /// its exit code: 0 if it never ran. `None` if it still runs, or if `client`, the
+    /// connection of the command that waits, has hung up. A waiter that stops waiting is
+    /// forgotten (audit A07).
     pub(super) fn await_exit_held(
         &self,
         registry: MutexGuard<'_, Registry>,
@@ -4313,6 +4308,46 @@ mod tests {
         }
     }
 
+    /// `stop` ends every container it names at once, from one loop: 60 that ignore their
+    /// SIGTERM all hear it before any hears SIGKILL, and all are stopped one grace after,
+    /// where docker/cli's 50 at a time would take two; the answers in the order asked.
+    #[test]
+    fn stop_ends_every_container_at_once() {
+        const N: usize = 60;
+        let t = Test::new("stop-all");
+        t.run(|t| {
+            let names: Vec<String> = (0..N).map(|i| format!("c{i}")).collect();
+            let vms: Vec<_> = names.iter().map(|n| running(t, n)).collect();
+            let mut args = vec!["stop", "-t", "1"];
+            args.extend(names.iter().map(String::as_str));
+            let t0 = std::time::Instant::now();
+            let asked = t.asking(&args);
+            for (_, _, vm) in &vms {
+                assert_eq!(heard(vm), signal(15));
+            }
+            let terms = t0.elapsed();
+            for (_, _, vm) in &vms {
+                assert_eq!(heard(vm), signal(9));
+                say(vm, kind::DONE, &[137]);
+            }
+            let (status, out, err) = joined(asked);
+            let took = t0.elapsed();
+            assert_eq!((status, err.as_str()), (0, ""));
+            assert_eq!(out, names.iter().map(|n| format!("{n}\n")).collect::<String>());
+            assert!(
+                terms < Duration::from_millis(900),
+                "SIGTERM to all took {terms:?}"
+            );
+            assert!(
+                took >= Duration::from_secs(1) && took < Duration::from_millis(1900),
+                "one grace, not two: {took:?}"
+            );
+            for (_, starting, _) in vms {
+                let _ = joined(starting.run);
+            }
+        });
+    }
+
     /// A daemon told to stop starts no run still pending: its warm VM hears nothing, its
     /// container keeps the code of a start that failed, and those waiting for it hear
     /// that code.
@@ -4853,7 +4888,12 @@ mod tests {
         t.run(|t| {
             let (id, starting, vm) = running(t, "racer");
             assert_eq!(
-                t.daemon.await_exit(&id, Some(Duration::from_millis(20)), None),
+                t.daemon.await_exit_held(
+                    lock(&t.daemon.containers),
+                    &id,
+                    Some(Duration::from_millis(20)),
+                    None
+                ),
                 None
             );
             assert!(!lock(&t.daemon.waiters).contains_key(&id));
