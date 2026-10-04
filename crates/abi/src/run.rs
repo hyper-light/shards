@@ -103,6 +103,10 @@ pub struct Spec {
     /// The bytes of the run's `/etc/resolv.conf`, for a run on a network: the host's
     /// resolvers as Docker gives a container on its bridge.
     pub resolv: Option<Vec<u8>>,
+    /// Docker's `-i`: the workload reads the client's stdin, through a pipe. Without it,
+    /// and without a terminal, its stdin is `/dev/null`, as Docker gives a container's
+    /// and an exec's (measured: Docker 29.3.1, `readlink /proc/self/fd/0`).
+    pub stdin: bool,
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as
@@ -131,8 +135,9 @@ impl Size {
 
 impl Spec {
     /// Lists are a big-endian u32 count, then their strings; each string is a big-endian
-    /// u32 length, then its bytes. A terminal follows as a 1 and its size; without one,
-    /// nothing follows, so an init from before terminals still reads the spec.
+    /// u32 length, then its bytes. Then the optional sections, each a tag and what it
+    /// holds, in order: a terminal, 1 and its size; resolv.conf, 2 and its bytes; stdin
+    /// read, 3 alone.
     ///
     /// Callers see [`encoded_len`](Spec::encoded_len) within [`MAX_PAYLOAD`] first: past
     /// it, a length would not fit its u32.
@@ -163,6 +168,9 @@ impl Spec {
             out.push(2);
             put_bytes(out, r);
         }
+        if self.stdin {
+            out.push(3);
+        }
     }
 
     /// The bytes [`encode`](Spec::encode) writes, or `None` past `usize`: measured without
@@ -177,7 +185,8 @@ impl Spec {
             n = n.checked_add(4)?.checked_add(s.len())?;
         }
         n.checked_add(if self.tty.is_some() { 5 } else { 0 })?
-            .checked_add(self.resolv.as_ref().map_or(0, |r| 5 + r.len()))
+            .checked_add(self.resolv.as_ref().map_or(0, |r| 5 + r.len()))?
+            .checked_add(usize::from(self.stdin))
     }
 
     /// The spec in `bytes`, or `None` unless they hold exactly one.
@@ -191,9 +200,10 @@ impl Spec {
             hostname: r.bytes()?,
             tty: None,
             resolv: None,
+            stdin: false,
         };
         let mut spec = spec;
-        // Optional sections, each once, in order: 1 a terminal, 2 resolv.conf.
+        // Optional sections, each once, in order: 1 a terminal, 2 resolv.conf, 3 stdin.
         let mut last = 0u8;
         while let Some(tag) = r.take(1).and_then(|t| t.first().copied()) {
             if tag <= last {
@@ -203,6 +213,7 @@ impl Spec {
             match tag {
                 1 => spec.tty = Some(Size::decode(r.take(4)?)?),
                 2 => spec.resolv = Some(r.bytes()?),
+                3 => spec.stdin = true,
                 _ => return None,
             }
         }
@@ -270,29 +281,45 @@ mod tests {
             hostname: b"box".to_vec(),
             tty: Some(Size { rows: 24, cols: 300 }),
             resolv: Some(b"nameserver 192.168.1.1\n".to_vec()),
+            stdin: true,
         };
         let bytes = spec.encode();
+        assert_eq!(bytes.len(), spec.encoded_len().unwrap());
         assert_eq!(Spec::decode(&bytes), Some(spec.clone()));
         let piped = Spec {
             tty: None,
             resolv: None,
+            stdin: false,
             ..spec.clone()
         };
         let without = piped.encode();
         assert_eq!(Spec::decode(&without), Some(piped.clone()));
         let tty_only = Spec {
             resolv: None,
+            stdin: false,
             ..spec.clone()
         };
         let with_tty = tty_only.encode();
+        let closed = Spec {
+            stdin: false,
+            ..spec.clone()
+        };
+        let without_stdin = closed.encode();
         assert_eq!(Spec::decode(&Spec::default().encode()), Some(Spec::default()));
+        let reading = Spec {
+            stdin: true,
+            ..Spec::default()
+        };
+        assert_eq!(Spec::decode(&reading.encode()), Some(reading));
         // Frames carry their length, so only a spec cut where a section ends reads as one:
-        // without its optional sections, or with its terminal alone.
+        // without its optional sections, with its terminal alone, or without stdin.
         for cut in 0..bytes.len() {
             let expected = if cut == without.len() {
                 Some(piped.clone())
             } else if cut == with_tty.len() {
                 Some(tty_only.clone())
+            } else if cut == without_stdin.len() {
+                Some(closed.clone())
             } else {
                 None
             };
@@ -305,6 +332,9 @@ mod tests {
         let mut bad_tty = Spec::default().encode();
         bad_tty.push(2);
         assert_eq!(Spec::decode(&bad_tty), None, "not a terminal");
+        let mut disordered = Spec::default().encode();
+        disordered.extend([3, 1, 0, 24, 1, 44]);
+        assert_eq!(Spec::decode(&disordered), None, "stdin before a terminal");
     }
 
     #[test]

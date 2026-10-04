@@ -17,6 +17,9 @@ pub struct Orders {
     pub env: Vec<Vec<u8>>,
     /// The terminal the workload opens as its stdio, or empty for the standby's pipes.
     pub tty: Vec<u8>,
+    /// Its stdin is `/dev/null`, not the standby's pipe: a command without `-i` or a
+    /// terminal (`Spec::stdin`).
+    pub null_stdin: bool,
 }
 
 impl Orders {
@@ -41,7 +44,7 @@ impl Orders {
             .chain(singles)
             .map(len)
             .fold(
-                13usize.saturating_add(self.groups.len().saturating_mul(4)),
+                14usize.saturating_add(self.groups.len().saturating_mul(4)),
                 usize::saturating_add,
             );
         let mut w = Vec::with_capacity(total);
@@ -53,6 +56,7 @@ impl Orders {
         }
         list(&mut w, std::slice::from_ref(&self.cwd));
         w.push(u8::from(self.explicit));
+        w.push(u8::from(self.null_stdin));
         list(&mut w, &self.candidates);
         list(&mut w, &self.argv);
         list(&mut w, &self.env);
@@ -97,6 +101,7 @@ impl Orders {
         }
         let cwd = list(&mut r)?.pop()?;
         let (&explicit, rest) = r.split_first()?;
+        let (&null_stdin, rest) = rest.split_first()?;
         r = rest;
         let orders = Orders {
             uid,
@@ -108,6 +113,7 @@ impl Orders {
             argv: list(&mut r)?,
             env: list(&mut r)?,
             tty: list(&mut r)?.pop()?,
+            null_stdin: null_stdin != 0,
         };
         r.is_empty().then_some(orders)
     }
@@ -148,6 +154,7 @@ mod tests {
                 .map(|i| format!("VARIABLE_{i:02}={}", "v".repeat(40)).into_bytes())
                 .collect(),
             tty: b"/dev/pts/0".to_vec(),
+            null_stdin: true,
         }
     }
 
@@ -160,8 +167,15 @@ mod tests {
         assert_eq!(bytes.capacity(), bytes.len());
         let back = Orders::decode(&bytes).unwrap();
         assert_eq!(
-            (back.uid, back.gid, &back.groups, &back.cwd, back.explicit),
-            (1000, 1000, &vec![1000, 27], &b"/work".to_vec(), false)
+            (
+                back.uid,
+                back.gid,
+                &back.groups,
+                &back.cwd,
+                back.explicit,
+                back.null_stdin
+            ),
+            (1000, 1000, &vec![1000, 27], &b"/work".to_vec(), false, true)
         );
         assert_eq!(
             (&back.candidates, &back.argv, &back.env, &back.tty),

@@ -89,6 +89,7 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
         tty: o.tty,
         // A run on a network gets its resolvers from the daemon as it is handed over.
         resolv: None,
+        stdin: o.interactive,
     };
     if spec.encoded_len().is_none_or(|n| n > run::MAX_PAYLOAD as usize) {
         return Err("the command and its environment are too large".into());

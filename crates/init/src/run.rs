@@ -793,6 +793,8 @@ impl Standby {
             }
         };
         let tried = candidates.clone();
+        // Without `-i` or a terminal, its stdin is /dev/null, as Docker's is.
+        let null_stdin = pty.is_none() && !spec.stdin;
         let orders = Orders {
             uid,
             gid,
@@ -803,6 +805,7 @@ impl Standby {
             argv: spec.argv.clone(),
             env,
             tty: pty.as_ref().map(|p| p.peer.clone()).unwrap_or_default(),
+            null_stdin,
         }
         .encode();
         let Standby {
@@ -838,7 +841,7 @@ impl Standby {
         let Some(Pty { master, .. }) = pty else {
             return Ok(Workload {
                 pid,
-                stdin: Some(stdin),
+                stdin: (!null_stdin).then_some(stdin),
                 stdout: Some(stdout),
                 stderr: Some(stderr),
                 sigchld,
@@ -898,13 +901,18 @@ fn standby(ends: Ends) -> ! {
     };
     let (argv_ptrs, envp_ptrs) = (pointers(&argv), pointers(&envp));
     let [stdin, stdout, stderr] = &stdio;
+    // Opened here, in this single-threaded fork of init: a workload without `-i` or a
+    // terminal reads /dev/null, as Docker's does; the pipe, at its end already, where
+    // that cannot be opened.
+    let null = o.null_stdin.then(|| File::open("/dev/null").ok()).flatten();
+    let stdin = null.as_ref().map_or(stdin.as_raw_fd(), AsRawFd::as_raw_fd);
     // Read now, in this single-threaded fork of init, and not in `child`.
     let last_cap = defaults::last_cap();
     // SAFETY: this process is the child of a fork of single-threaded init, and `child`
     // runs on data built above.
     unsafe {
         child(&Child {
-            stdio: [stdin.as_raw_fd(), stdout.as_raw_fd(), stderr.as_raw_fd()],
+            stdio: [stdin, stdout.as_raw_fd(), stderr.as_raw_fd()],
             tty: tty.as_ref(),
             err: err.as_raw_fd(),
             cwd: &cwd,

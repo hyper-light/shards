@@ -227,6 +227,20 @@ fn report() -> i32 {
     let host = unsafe { std::ffi::CStr::from_ptr(uts.nodename.as_ptr()) }.to_string_lossy();
     out.push_str(&format!("hostname {host}\n"));
     out.push_str(&format!("pid {}\n", std::process::id()));
+    // What its stdin is: Docker gives /dev/null without `-i` or a terminal.
+    let stdin = std::fs::read_link("/proc/self/fd/0")
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let stdin = if stdin == "/dev/null" {
+        "null"
+    } else if stdin.starts_with("pipe:") {
+        "pipe"
+    } else if stdin.starts_with("/dev/pts/") {
+        "tty"
+    } else {
+        "other"
+    };
+    out.push_str(&format!("stdin {stdin}\n"));
     // The kernel's own account of the process: umask, capabilities, seccomp.
     for line in std::fs::read_to_string("/proc/self/status")
         .unwrap_or_default()

@@ -320,6 +320,10 @@ fn logs_keep_what_a_container_wrote() {
     };
     let reported = run_in(&home, &image, &["--name", "reporter"], &["report"]);
     assert_eq!(reported.status, Some(0), "{}", reported.stderr);
+    // Its stdin, without `-i`, is /dev/null, as Docker's is; with it, a pipe.
+    assert!(reported.stdout.contains("stdin null\n"), "{reported}");
+    let piped = run_in(&home, &image, &["-i", "--rm"], &["report"]);
+    assert!(piped.stdout.contains("stdin pipe\n"), "{piped}");
     let logs = shards_in(&home, &["logs", "reporter"]);
     assert_eq!(logs.status, Some(0), "{}", logs.stderr);
     assert_eq!(logs.stdout, reported.stdout);
@@ -1251,9 +1255,12 @@ fn exec_runs_commands_in_a_running_container_as_docker_exec_does() {
         "hostname box\n",
         "env FROMRUN=1\n",
         "env HOSTNAME=box\n",
+        "stdin null\n",
     ] {
         assert!(report.stdout.contains(line), "{line:?}\n{report}");
     }
+    let interactive = exec(&["-i", "ex", "/bin/testguest", "report"]);
+    assert!(interactive.stdout.contains("stdin pipe\n"), "{interactive}");
     let changed = exec(&[
         "-e",
         "X=2",

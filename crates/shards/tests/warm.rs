@@ -200,6 +200,7 @@ impl Warm {
             hostname: b"warm".to_vec(),
             tty: None,
             resolv: None,
+            stdin: interactive,
         };
         let (conn, theirs) = UnixStream::pair().unwrap();
         let (stdin_r, stdin_w) = pipe();

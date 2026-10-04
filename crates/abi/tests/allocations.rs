@@ -66,6 +66,7 @@ fn launch() -> Spec {
         hostname: b"0123456789ab".to_vec(),
         tty: Some(Size { rows: 24, cols: 80 }),
         resolv: None,
+        stdin: true,
     }
 }
 
