@@ -3280,3 +3280,56 @@ revision before comparing a changed API/implementation.
   finer one once the ctime has been looked at, but other filesystems and older kernels
   do not. Missing none would take watching the file and those it names,
   systemd-resolved's included.
+
+### M98. A run's files, made off the followers' loop
+
+- **Question.** The followers' loop made each log segment a run's VM asked for (two files
+  made, the oldest two removed) and wrote a template's working set (the template read for
+  the set's bound at its first part, the set written and synced at its last). How long
+  did each hold the loop, behind which every other run's messages wait, and what does
+  making them on a thread of their own change (7460e93, ca4caa0)?
+- **Method.** A probe (not kept) timing each `LOG_SEGMENT` and `WORKING_SET` part the loop
+  took, and each batch of a run's messages. First 48d6358 alone: 10 rounds of four
+  `shards run --rm alpine:3.22 sh -c 'head -c 104857600 /dev/zero'` at once, 100 MiB of
+  output each, five 20 MiB segments; load average about 25 from other work. Then 48d6358
+  against the change, both probed: `build-ab/ab.py` with `AB_FLAGS=--rm` and
+  `AB_BURST=4`, 20 turns per arm of that command, load average 17 to 31; and
+  `run-files/working_sets.py alpine:3.22 10`, a template saved anew each turn, its
+  daemon stopped before the next, four passes, the first at load average 80, the
+  others 20 to 24. Last, the change's daemon under M89's `daemon-idle/run.py` (0, 10
+  and 100 containers, 30 s), its threads named by `sample` with 3 running.
+  2026-10-03, the host of M84.
+- **Results.** 48d6358 alone, a segment on the loop: n = 200, p50 238 µs, p90 10.9 ms, p99
+  24.3 ms, max 25.0 ms; 520 ms of the loop in 7 s of runs. The A/B:
+
+| What, on the loop | Build | n | p50 | p90 | p99 | max | total |
+|---|---|---|---|---|---|---|---|
+| A segment | 48d6358 | 480 | 214 µs | 843 µs | 6.2 ms | 13.8 ms | 281 ms |
+| A segment | The change | 480 | 2 µs | 4 µs | 15 µs | 39 µs | 1.4 ms |
+| A working set, pass 2 | 48d6358 | 10 | 9.4 ms | 25.0 ms | | 25.0 ms | 111 ms |
+| A working set, pass 2 | The change | 10 | 9 µs | 22 µs | | 22 µs | 0.1 ms |
+
+  The change's batches holding a segment took p50 16 µs and p90 45 µs, but 24 of 480
+  took 2.9 to 30 ms: the probe's own write of the segment's time, inside the batch, to a
+  file on a disk taking 400 MB of logs a turn; batches without one took p99 18 µs
+  (48d6358) and 69 µs (the change). The chatty runs' wall clock: p50 398.6 ms against
+  398.0, p90 1,559.9 ms against 579.1, max 3,009.7 against 913.0, from three slow turns
+  of 48d6358's and one of the change's, the last turn slow in both; paired, each burst's
+  median −4.5 ms (95% [−10.1, +11.5]), its slowest −6.0 ms ([−21.0, +10.4]).
+  Working sets, pass 1, at load 80: 9.6 ms at the median, 32.9 ms the most, on 48d6358's
+  loop, against 10 and 23 µs; but the change, before ca4caa0, wrote 7 sets of 10: three
+  were queued on the files' thread as `daemon stop` came, and lost. With ca4caa0, 10 of
+  10 in each pass. The runs that saved them: pass 2, p50 225 ms against 195 ms, max 508
+  against 1,120 ms, one run; passes 3 and 4, p50 173 and 173 ms against 174 and 170, max
+  230 and 192 against 184 and 185.
+  The change's daemon idle: no containers, 4 threads, 8.1 MiB; 10, 8 threads, 19.7 MiB,
+  VMs (12 processes) 263 MiB; 100, 8 threads, 20.6 MiB, VMs (102) 1,992 MiB; no CPU and
+  no idle wakeups in either window. `sample` names them: the main thread (the
+  listener), the completer, the recorder, the collector, the followers, the refiller,
+  the files' thread, and the system's dispatch worker (M92).
+- **Consequence.** A run's files hold the loop microseconds, where a segment held it 10.9
+  ms at a loaded host's p90 and a working set 25 to 33 ms, and every other run's
+  messages with it; the runs themselves are no slower. The daemon waits for its files as
+  it exits, so a template's working set is not lost to a stop; and it keeps 8 threads
+  with runs, M92's 6 and the collector's (7.14) and the files'. The client cap counts
+  all but the clients', the dispatch worker among them: 8,187 of 16,384.

@@ -108,8 +108,9 @@ const RETRY: Duration = Duration::from_millis(250);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// The threads the daemon keeps besides its clients': its listener, and the followers',
 /// the completer's, the files', the recorder's, the collector's, the refiller's and the
-/// health checks' (PM M92, M98).
-const OWN_THREADS: u64 = 8;
+/// health checks'; and the system's, the dispatch worker a framework it calls keeps, one
+/// with runs and without (PM M92, M98).
+const OWN_THREADS: u64 = 9;
 /// The threads a client in hand may hold: its own, and the watcher of a VM started for
 /// its run, until that VM is ready.
 const CLIENT_THREADS: u64 = 2;
@@ -4444,12 +4445,12 @@ mod tests {
     }
 
     /// The clients in hand at once are what the threads a process may have hold, past the
-    /// daemon's own, two a client: 8,188 of macOS's 16,384, 28 of POSIX's least, 64; and
+    /// daemon's own, two a client: 8,187 of macOS's 16,384, 27 of POSIX's least, 64; and
     /// one at the least.
     #[test]
     fn clients_are_what_the_threads_hold() {
-        assert_eq!(clients_for(16_384), 8_188);
-        assert_eq!(clients_for(POSIX_THREADS), 28);
+        assert_eq!(clients_for(16_384), 8_187);
+        assert_eq!(clients_for(POSIX_THREADS), 27);
         assert_eq!(clients_for(0), 1);
     }
 

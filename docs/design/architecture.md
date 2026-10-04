@@ -841,8 +841,9 @@ for the exit status.
     - It holds as many clients at once as the threads it may have hold (review 7.9),
       each a thread, the watcher of a VM started for its run, and up to six
       descriptors; past that, connections wait in the listener's backlog. The threads
-      are the system's to say: `kern.num_taskthreads` on macOS (16,384 here, so 8,188
-      clients past the daemon's own eight threads), and on Linux the least of
+      are the system's to say: `kern.num_taskthreads` on macOS (16,384 here, so 8,187
+      clients past the daemon's own eight threads and the dispatch worker a framework
+      it calls keeps [PM M98]), and on Linux the least of
       `RLIMIT_NPROC`, `threads-max` and the `pids.max` of its control groups, up to the
       root its namespace sees, where a container's limit is (Linux
       Documentation/admin-guide/cgroup-v2.rst). Where none is said, POSIX's
@@ -985,7 +986,8 @@ for the exit status.
       watcher thread lives until its VM is ready, where it waited out the VM's life, the
       one thread an idle run still cost [PM M90]: now the daemon's threads stay 6 at 10
       running containers and at 100, and an idle run costs it about 10 KiB [PM M92];
-      7 since the files' thread [PM M98]. macOS watches only ends to come, and
+      8 since the collector's and the files' threads [PM M98]. macOS watches only ends
+      to come, and
       refuses a child that has ended already (`ESRCH`, measured), which is then reaped at
       once; a process whose end cannot be watched is waited for on a thread of its own.
     - One thread schedules the health checks of the containers that have one, from a
