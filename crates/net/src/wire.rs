@@ -407,7 +407,12 @@ mod tests {
             Ipv4Addr::new(8, 8, 8, 8),
         );
         let mut sent = Vec::new();
-        f.udp(&mut sent, (guest, 5353), (far, 53), b"a question longer than eight");
+        f.udp(
+            &mut sent,
+            (guest, 5353),
+            (far, 53),
+            b"a question longer than eight",
+        );
         let sent_ip = ipv4(eth(&sent[VNET..]).unwrap().payload).unwrap();
         let mut out = Vec::new();
         f.icmp_unreachable(&mut out, gateway, guest, ADMIN_PROHIBITED, &sent_ip);
