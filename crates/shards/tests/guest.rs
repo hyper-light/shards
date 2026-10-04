@@ -107,6 +107,8 @@ fn a_download_that_is_not_the_pinned_kernel_is_kept_nowhere() {
         let kept: Vec<String> = std::fs::read_dir(home.join("guest"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            // The store's lock is no file of it.
+            .filter(|name| name != ".lock")
             .filter(|name| !name.starts_with("sha256-") || name.ends_with(kernel_artifact().sha256))
             .collect();
         assert!(kept.is_empty(), "{case}: {kept:?}");

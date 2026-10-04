@@ -12,7 +12,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::OnceLock;
 
 use sha2::{Digest as _, Sha256};
 use shards_registry::http::Cancel;
@@ -121,20 +121,9 @@ pub fn default(
     if guest.kernel.is_file() && guest.init.is_file() {
         return Ok(guest);
     }
-    // One daemon serves a home, and it stores one file at a time: a run that waited finds
-    // the kernel stored, and a temporary file here is one a process that ended left.
-    static STORING: Mutex<()> = Mutex::new(());
-    let _one = STORING.lock().unwrap_or_else(PoisonError::into_inner);
     shards_vmm::platform::create_private_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with("kernel.") || name.starts_with("storing.") {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
-    }
+    // A run that waited, here or in another process, finds the kernel stored.
+    let _held = hold(&dir)?;
     if !guest.init.is_file() {
         store(&dir, &guest.init, init_bytes()?)?;
     }
@@ -163,6 +152,30 @@ fn init_digest() -> Result<&'static str, String> {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The names the store's files are written under until they are whole ([`store`],
+/// [`download`], [`keep`], [`record`]).
+const UNFINISHED: [&str; 4] = ["storing.", "kernel.", "incoming.", "current."];
+
+/// Holds the guest store in `dir` until what is returned is dropped, against other
+/// processes and threads alike (an exclusive `flock(2)` of `.lock`, as `File::lock` takes
+/// it, which every opening of the file takes apart: review 8.5), then removes what is
+/// unfinished there. Every write of the store is made under it, so what is unfinished
+/// under it is what a process that ended left; before, a daemon storing its default
+/// guest removed what a `shards build` or a `guest use` was writing.
+fn hold(dir: &Path) -> Result<File, String> {
+    let at = |e: io::Error| format!("{}: {e}", dir.join(".lock").display());
+    let lock = File::create(dir.join(".lock")).map_err(at)?;
+    lock.lock().map_err(at)?;
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if UNFINISHED.iter().any(|u| name.starts_with(u)) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    Ok(lock)
 }
 
 /// Writes `bytes` to `path` in `dir` whole: into a temporary file, synced, then renamed.
@@ -331,6 +344,7 @@ pub fn current(home: &Path) -> Result<Option<Guest>, String> {
 pub fn record(home: &Path, kernel: &Path, init: &Path) -> Result<Guest, String> {
     let dir = home.join("guest");
     shards_vmm::platform::create_private_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let _held = hold(&dir)?;
     let kernel_digest = keep(&dir, kernel)?;
     let init_digest = keep(&dir, init)?;
     // What the record names outlasts a power loss before the record does, and the record
@@ -386,4 +400,90 @@ fn keep(dir: &Path, source: &Path) -> Result<String, String> {
         let _ = fs::remove_file(&temp);
     }
     result.map_err(named)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// The store is held across processes and threads alike while it is written: what is
+    /// unfinished there is removed as it is taken, a process that ended having left it,
+    /// and left alone while another holds it, which may be writing it (review 8.5).
+    #[test]
+    fn unfinished_files_go_only_when_none_may_be_writing_them() {
+        let dir = std::env::temp_dir().join(format!("shards-guest-hold-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let files = [
+            "storing.1",
+            "kernel.2",
+            "incoming.3",
+            "current.4",
+            "sha256-abc",
+            "current",
+        ];
+        for name in files {
+            fs::write(dir.join(name), b"x").unwrap();
+        }
+        let held = hold(&dir).unwrap();
+        let mut left: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, [".lock", "current", "sha256-abc"]);
+        // Being written under the hold.
+        fs::write(dir.join("storing.9"), b"x").unwrap();
+        let (taken, waited) = mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let again = hold(&dir).unwrap();
+                taken.send(dir.join("storing.9").exists()).unwrap();
+                drop(again);
+            });
+            let early = waited.recv_timeout(Duration::from_millis(200));
+            let kept = dir.join("storing.9").exists();
+            drop(held);
+            assert!(early.is_err(), "taken while held");
+            assert!(kept, "removed while held");
+            assert_eq!(waited.recv_timeout(Duration::from_secs(10)), Ok(false));
+        });
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Recording a guest (`guest use`) and storing the default one wait while another
+    /// holds the store, then write it under their own hold.
+    #[test]
+    fn guests_are_written_under_the_stores_hold() {
+        let home = std::env::temp_dir().join(format!("shards-guest-writers-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let dir = home.join("guest");
+        fs::create_dir_all(&dir).unwrap();
+        let (kernel, init) = (home.join("vmlinuz"), home.join("init"));
+        fs::write(&kernel, b"a kernel").unwrap();
+        fs::write(&init, b"an init").unwrap();
+        // The default guest's kernel stored already: only its init is written.
+        let pinned = pinned(&home).unwrap();
+        fs::write(&pinned.kernel, b"the pinned kernel").unwrap();
+        let writers: [Box<dyn Fn() -> Result<Guest, String> + Sync>; 2] = [
+            Box::new(|| record(&home, &kernel, &init)),
+            Box::new(|| default(&home, &|_| {}, None, &|_| None)),
+        ];
+        for write in &writers {
+            let held = hold(&dir).unwrap();
+            let (wrote, waited) = mpsc::channel();
+            std::thread::scope(|s| {
+                s.spawn(|| wrote.send(write().map(|g| g.init)).unwrap());
+                let early = waited.recv_timeout(Duration::from_millis(200));
+                drop(held);
+                assert!(early.is_err(), "written while held: {early:?}");
+                let init = waited.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+                assert!(init.is_file());
+            });
+        }
+        fs::remove_dir_all(&home).unwrap();
+    }
 }
