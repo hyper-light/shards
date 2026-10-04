@@ -128,15 +128,25 @@ impl Pmem {
         }
     }
 
+    /// Starts the worker on `queue`; if it cannot, the queue waits paused, as a snapshot's
+    /// pause leaves it, for a resume or a reset.
     fn start(&mut self, queue: Queue) -> Result<(), String> {
-        let (memory, interrupt) = self
-            .context
-            .clone()
-            .ok_or("virtio-pmem started before activation")?;
+        let Some((memory, interrupt)) = self.context.clone() else {
+            self.paused = Some(queue);
+            return Err("virtio-pmem started before activation".into());
+        };
         let mem = memory.clone();
         let answering = move |chain: &Chain| mem.access().map_or(0, |a| answer(chain, &a));
-        self.worker = Some(Worker::start("virtio-pmem", queue, memory, interrupt, answering)?);
-        Ok(())
+        match Worker::start("virtio-pmem", queue, memory, interrupt, answering) {
+            Ok(worker) => {
+                self.worker = Some(worker);
+                Ok(())
+            }
+            Err((e, queue)) => {
+                self.paused = Some(queue);
+                Err(e)
+            }
+        }
     }
 
     /// Stops the worker after the request it is answering; returns its queue.
@@ -185,7 +195,8 @@ impl VirtioDevice for Pmem {
         } = activation;
         let queue = queues.pop().ok_or("virtio-pmem activated without a queue")?;
         self.context = Some((memory, interrupt));
-        self.start(queue)
+        // An activation that fails leaves its queue: the driver sets the device up anew.
+        self.start(queue).inspect_err(|_| self.paused = None)
     }
 
     /// Flushes are answered on the device's worker, never on the notifying vCPU's thread,

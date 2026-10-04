@@ -95,15 +95,25 @@ impl Block {
         })
     }
 
+    /// Starts the worker on `queue`; if it cannot, the queue waits paused, as a snapshot's
+    /// pause leaves it, for a resume or a reset.
     fn start(&mut self, queue: Queue) -> Result<(), String> {
-        let (memory, interrupt) = self
-            .context
-            .clone()
-            .ok_or("virtio-blk started before activation")?;
+        let Some((memory, interrupt)) = self.context.clone() else {
+            self.paused = Some(queue);
+            return Err("virtio-blk started before activation".into());
+        };
         let (backend, mem) = (self.backend.clone(), memory.clone());
         let answer = move |chain: &Chain| handle(chain, &mem, &backend);
-        self.worker = Some(Worker::start("virtio-blk", queue, memory, interrupt, answer)?);
-        Ok(())
+        match Worker::start("virtio-blk", queue, memory, interrupt, answer) {
+            Ok(worker) => {
+                self.worker = Some(worker);
+                Ok(())
+            }
+            Err((e, queue)) => {
+                self.paused = Some(queue);
+                Err(e)
+            }
+        }
     }
 
     /// Stops the worker after the request it is executing; returns its queue.
@@ -160,7 +170,8 @@ impl VirtioDevice for Block {
         } = activation;
         let queue = queues.pop().ok_or("virtio-blk activated without a queue")?;
         self.context = Some((memory, interrupt));
-        self.start(queue)
+        // An activation that fails leaves its queue: the driver sets the device up anew.
+        self.start(queue).inspect_err(|_| self.paused = None)
     }
 
     fn notify(&self, _queue: u16) {
@@ -346,7 +357,60 @@ fn transfer(
 #[cfg(test)]
 #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
+    use super::super::queue::QueueConfig;
+    use super::super::worker;
     use super::*;
+
+    struct Line;
+    impl crate::devices::Interrupt for Line {
+        fn set_level(&self, _: bool) {}
+    }
+
+    /// An activation, and a resume after a snapshot's pause, whose worker the system
+    /// refuses fail alone: the paused queue stays, and the next activation or resume runs
+    /// (review 1.14). Block's and pmem's workers are one.
+    #[test]
+    fn a_refused_worker_leaves_the_queue_paused() {
+        let path = std::env::temp_dir().join(format!("shards-blk-refused-{}", std::process::id()));
+        std::fs::write(&path, vec![0u8; 8 * 512]).unwrap();
+        let mut b = Block::open(&path, true, "disk0").unwrap();
+        const BASE: u64 = 0x8000_0000;
+        let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 1 << 16)]).unwrap());
+        let irq = Arc::new(DeviceInterrupt::new(Arc::new(Line)));
+        let activation = || {
+            let cfg = QueueConfig {
+                size: 8,
+                desc: BASE,
+                avail: BASE + 0x1000,
+                used: BASE + 0x2000,
+                ready: true,
+            };
+            Activation {
+                memory: mem.clone(),
+                queues: vec![Queue::new(cfg, 8, &mem, feature::VERSION_1).unwrap()],
+                interrupt: irq.clone(),
+                features: feature::VERSION_1,
+                restored: false,
+            }
+        };
+        worker::REFUSE.set(true);
+        let refused = b.activate(activation());
+        worker::REFUSE.set(false);
+        assert!(refused.unwrap_err().starts_with("spawning the virtio-blk worker"));
+        // Its queue gone with it.
+        assert!(b.worker.is_none() && b.paused.is_none());
+        b.activate(activation()).unwrap();
+        assert_eq!(b.pause().len(), 1);
+        worker::REFUSE.set(true);
+        assert!(b.resume().is_err());
+        worker::REFUSE.set(false);
+        assert!(b.worker.is_none());
+        assert_eq!(b.pause().len(), 1, "paused still");
+        b.resume().unwrap();
+        assert!(b.worker.is_some() && b.paused.is_none());
+        drop(b);
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn config_space_reports_capacity_segments_and_block_size() {

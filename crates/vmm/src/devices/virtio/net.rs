@@ -13,7 +13,7 @@ use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle};
+use std::thread::JoinHandle;
 
 use shards_netring::{Consumer, Producer, Region};
 
@@ -109,7 +109,7 @@ impl Session {
 }
 
 struct Worker {
-    thread: JoinHandle<Session>,
+    thread: JoinHandle<Option<Session>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -144,30 +144,44 @@ impl Net {
         })
     }
 
+    /// Starts the worker on `session`; if it cannot, the session waits paused, as a
+    /// snapshot's pause leaves it, for a resume or a reset.
     fn start(&mut self, session: Session) -> Result<(), String> {
-        let (memory, interrupt) = self
-            .context
-            .clone()
-            .ok_or("virtio-net started before activation")?;
+        let Some((memory, interrupt)) = self.context.clone() else {
+            self.paused = Some(session);
+            return Err("virtio-net started before activation".into());
+        };
         let stop = Arc::new(AtomicBool::new(false));
         let (flag, waker, region) = (stop.clone(), self.waker.clone(), self.region.clone());
-        let fds = |e: io::Error| format!("virtio-net: {e}");
-        let ends = (
-            dup(&self.host.wake_peer).map_err(fds)?,
-            dup(&self.host.wake_peer).map_err(fds)?,
-            dup(&self.host.wake_me).map_err(fds)?,
-        );
-        let thread = thread::Builder::new()
-            .name("virtio-net".into())
-            .spawn(move || {
-                // The device's frames go one way, the network process's come the other.
-                let producer = region.producer(0, ends.0);
-                let consumer = region.consumer(1, ends.1, ends.2);
-                run(session, producer, consumer, &memory, &interrupt, &waker, &flag)
-            })
-            .map_err(|e| format!("spawning the virtio-net worker: {e}"))?;
-        self.worker = Some(Worker { thread, stop });
-        Ok(())
+        let ends = match (
+            dup(&self.host.wake_peer),
+            dup(&self.host.wake_peer),
+            dup(&self.host.wake_me),
+        ) {
+            (Ok(a), Ok(b), Ok(c)) => (a, b, c),
+            (Err(e), ..) | (_, Err(e), _) | (.., Err(e)) => {
+                self.paused = Some(session);
+                return Err(format!("virtio-net: {e}"));
+            }
+        };
+        let spawned = super::worker::spawn("virtio-net", session, move |session| {
+            // The device's frames go one way, the network process's come the other.
+            let producer = region.producer(0, ends.0);
+            let consumer = region.consumer(1, ends.1, ends.2);
+            Some(run(
+                session, producer, consumer, &memory, &interrupt, &waker, &flag,
+            ))
+        });
+        match spawned {
+            Ok(thread) => {
+                self.worker = Some(Worker { thread, stop });
+                Ok(())
+            }
+            Err((e, session)) => {
+                self.paused = Some(session);
+                Err(e)
+            }
+        }
     }
 
     fn stop(&mut self) -> Option<Session> {
@@ -175,7 +189,7 @@ impl Net {
         w.stop.store(true, Ordering::Release);
         self.waker.wake();
         match w.thread.join() {
-            Ok(s) => Some(s),
+            Ok(s) => s,
             Err(_) => {
                 warn!("the virtio-net worker ended abnormally");
                 None
@@ -229,7 +243,9 @@ impl VirtioDevice for Net {
     fn activate(&mut self, a: Activation) -> Result<(), String> {
         self.stop();
         self.context = Some((a.memory, a.interrupt));
+        // An activation that fails leaves its queues: the driver sets the device up anew.
         self.start(Session::new(a.queues))
+            .inspect_err(|_| self.paused = None)
     }
 
     fn notify(&self, _queue: u16) {
@@ -247,20 +263,21 @@ impl VirtioDevice for Net {
     /// larger than they are, which a restore takes again from the driver's rings; a
     /// session resumed here goes on with them (review 2.20).
     fn pause(&mut self) -> Vec<super::queue::QueueState> {
-        let Some(s) = self.stop() else {
+        if let Some(s) = self.stop() {
+            self.paused = Some(s);
+        }
+        // Paused already, as after a resume that failed: the same states.
+        let Some(s) = &self.paused else {
             return Vec::new();
         };
         let mut held = [0u16; 2];
         held[RX] = u16::try_from(s.rx_held).unwrap_or(u16::MAX);
         held[TX] = u16::from(s.tx_held);
-        let states = s
-            .queues
+        s.queues
             .iter()
             .enumerate()
             .map(|(i, q)| q.state_before(held.get(i).copied().unwrap_or(0)))
-            .collect();
-        self.paused = Some(s);
-        states
+            .collect()
     }
 
     fn resume(&mut self) -> Result<(), String> {
@@ -574,6 +591,62 @@ mod tests {
 
     impl Interrupt for Line {
         fn set_level(&self, _: bool) {}
+    }
+
+    /// An activation, and a resume after a snapshot's pause, whose worker the system
+    /// refuses fail alone: the paused session, with the chains it holds, stays, and the
+    /// next activation or resume runs (review 1.14).
+    #[test]
+    fn a_refused_worker_leaves_the_session_paused() {
+        let (_net_waits, device_rings) = shards_netring::doorbell().unwrap();
+        let (device_waits, _net_rings) = shards_netring::doorbell().unwrap();
+        let host = NetHost {
+            region: Arc::new(shards_netring::memory().unwrap()),
+            wake_me: Arc::new(device_waits),
+            wake_peer: Arc::new(device_rings),
+            mac: [2, 0, 0, 0, 0, 1],
+        };
+        let mut net = Net::new(host).unwrap();
+        let page = crate::platform::page_size().unwrap();
+        let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 16 * page)]).unwrap());
+        let irq = Arc::new(DeviceInterrupt::new(Arc::new(Line)));
+        let activation = || {
+            let queue = |desc, avail, used| {
+                let cfg = QueueConfig {
+                    size: SIZE,
+                    desc,
+                    avail,
+                    used,
+                    ready: true,
+                };
+                Queue::new(cfg, SIZE, &mem, feature::VERSION_1).unwrap()
+            };
+            Activation {
+                memory: mem.clone(),
+                queues: vec![
+                    queue(RX_DESC, RX_AVAIL, RX_USED),
+                    queue(TX_DESC, TX_AVAIL, TX_USED),
+                ],
+                interrupt: irq.clone(),
+                features: feature::VERSION_1,
+                restored: false,
+            }
+        };
+        super::super::worker::REFUSE.set(true);
+        let refused = net.activate(activation());
+        super::super::worker::REFUSE.set(false);
+        assert!(refused.unwrap_err().starts_with("spawning the virtio-net worker"));
+        // Its queues gone with it.
+        assert!(net.worker.is_none() && net.paused.is_none());
+        net.activate(activation()).unwrap();
+        assert_eq!(net.pause().len(), 2);
+        super::super::worker::REFUSE.set(true);
+        assert!(net.resume().is_err());
+        super::super::worker::REFUSE.set(false);
+        assert!(net.worker.is_none());
+        assert_eq!(net.pause().len(), 2, "paused still");
+        net.resume().unwrap();
+        assert!(net.worker.is_some() && net.paused.is_none());
     }
 
     /// A device's session on guest memory, and the network process's ends of its frame

@@ -170,7 +170,7 @@ struct Session {
 }
 
 struct Worker {
-    thread: JoinHandle<Session>,
+    thread: JoinHandle<Option<Session>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -211,19 +211,34 @@ impl Vsock {
         })
     }
 
+    /// Starts the worker on `session`; if it cannot, the session waits paused, as a
+    /// snapshot's pause leaves it, for a resume or a reset.
     fn start(&mut self, session: Session) -> Result<(), String> {
-        let (memory, interrupt) = self
-            .context
-            .clone()
-            .ok_or("virtio-vsock started before activation")?;
+        let Some((memory, interrupt)) = self.context.clone() else {
+            self.park(session);
+            return Err("virtio-vsock started before activation".into());
+        };
         let stop = Arc::new(AtomicBool::new(false));
         let (flag, waker) = (stop.clone(), self.waker.clone());
-        let thread = thread::Builder::new()
-            .name("virtio-vsock".into())
-            .spawn(move || run(session, &memory, &interrupt, &waker, &flag))
-            .map_err(|e| format!("spawning virtio-vsock worker: {e}"))?;
-        self.worker = Some(Worker { thread, stop });
-        Ok(())
+        let spawned = super::worker::spawn("virtio-vsock", session, move |session| {
+            Some(run(session, &memory, &interrupt, &waker, &flag))
+        });
+        match spawned {
+            Ok(thread) => {
+                self.worker = Some(Worker { thread, stop });
+                Ok(())
+            }
+            Err((e, session)) => {
+                self.park(session);
+                Err(e)
+            }
+        }
+    }
+
+    /// Keeps a session no worker runs: its queues as paused, its sockets here.
+    fn park(&mut self, session: Session) {
+        self.paused = Some(session.queues);
+        self.muxer = Some(session.muxer);
     }
 
     /// Stops the worker at a boundary between packets and takes back its session.
@@ -232,7 +247,7 @@ impl Vsock {
         w.stop.store(true, Ordering::Release);
         self.waker.wake();
         match w.thread.join() {
-            Ok(s) => Some(s),
+            Ok(s) => s,
             Err(_) => {
                 warn!("virtio-vsock worker ended abnormally");
                 None
@@ -287,7 +302,10 @@ impl VirtioDevice for Vsock {
             muxer.restore(self.saved.take().unwrap_or_default());
         }
         self.context = Some((memory, interrupt));
+        // An activation that fails leaves its queues, which the driver sets up anew, and
+        // keeps the sockets, for the activation after.
         self.start(Session { queues, muxer })
+            .inspect_err(|_| self.paused = None)
     }
 
     fn notify(&self, _queue: u16) {
@@ -673,6 +691,63 @@ mod tests {
             muxer: Muxer::new(crate::vm::VsockHost::at(dir.clone()), 3).unwrap(),
         };
         (mem, session, dir)
+    }
+
+    /// An activation, and a resume after a snapshot's pause, whose worker the system
+    /// refuses fail alone: the device keeps its sockets, which still take connections, and
+    /// its paused queues, and the next activation or resume runs (review 1.14). Before,
+    /// the sockets closed with the refused thread, and the device was "activated twice"
+    /// from then on.
+    #[test]
+    fn a_refused_worker_leaves_the_device_whole() {
+        let dir = std::env::temp_dir().join(format!("shards-vsock-refused-{}", std::process::id()));
+        let _ = std::fs::remove_file(&dir);
+        let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 1 << 20)]).unwrap());
+        let irq = Arc::new(DeviceInterrupt::new(Arc::new(Line)));
+        let activation = || Activation {
+            memory: mem.clone(),
+            queues: [RX, TX, 2]
+                .map(|q| {
+                    let cfg = QueueConfig {
+                        size: SIZE,
+                        desc: desc(q),
+                        avail: avail(q),
+                        used: used(q),
+                        ready: true,
+                    };
+                    Queue::new(cfg, SIZE, &mem, feature::VERSION_1).unwrap()
+                })
+                .into(),
+            interrupt: irq.clone(),
+            features: feature::VERSION_1,
+            restored: false,
+        };
+        let mut vsock = Vsock::new(crate::vm::VsockHost::at(dir.clone()), 3).unwrap();
+        super::super::worker::REFUSE.set(true);
+        let refused = vsock.activate(activation());
+        super::super::worker::REFUSE.set(false);
+        assert!(
+            refused
+                .unwrap_err()
+                .starts_with("spawning the virtio-vsock worker")
+        );
+        // Its queues gone with it, and its sockets kept.
+        assert!(vsock.worker.is_none() && vsock.paused.is_none());
+        std::os::unix::net::UnixStream::connect(&dir).unwrap();
+        vsock.activate(activation()).unwrap();
+        assert!(vsock.worker.is_some());
+        let states = vsock.pause();
+        assert_eq!(states.len(), 3);
+        super::super::worker::REFUSE.set(true);
+        assert!(vsock.resume().is_err());
+        super::super::worker::REFUSE.set(false);
+        assert!(vsock.worker.is_none() && vsock.paused.is_some() && vsock.muxer.is_some());
+        std::os::unix::net::UnixStream::connect(&dir).unwrap();
+        assert_eq!(vsock.pause().len(), 3, "paused still");
+        vsock.resume().unwrap();
+        assert!(vsock.worker.is_some() && vsock.paused.is_none());
+        drop(vsock);
+        let _ = std::fs::remove_file(&dir);
     }
 
     /// A driver that puts every buffer of queues `qs` the device uses straight back, until
