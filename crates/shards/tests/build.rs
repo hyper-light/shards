@@ -185,6 +185,9 @@ fn step_reports(stderr: &str) -> Vec<std::collections::BTreeMap<String, String>>
 /// whiteout, as the image then boots.
 #[test]
 fn run_steps_run_in_a_builder_as_buildkit_runs_them() {
+    if cannot_run_vms() {
+        return;
+    }
     let (image, _) = served();
     let home = TempDir::new("build-run-home");
     let ctx = context(
