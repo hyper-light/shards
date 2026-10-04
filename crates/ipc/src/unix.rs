@@ -50,14 +50,182 @@ pub const FORWARDED: [(libc::c_int, u32); 18] = [
     (libc::SIGIO, 29),
 ];
 
-/// The signals to forward: all of [`FORWARDED`], but SIGTTIN when this process reads its
-/// terminal. Left unblocked, SIGTTIN stops a reader in the background, as the terminal's
-/// job control stops any; blocked, the read would fail with EIO instead (POSIX.1-2024,
-/// 11.1.4 Terminal Access Control).
+/// The signals to forward by waiting for them: all of [`FORWARDED`], and on Linux SIGSTKFLT
+/// and SIGPWR, which Docker names there too (moby/sys signal_linux.go); but SIGTTIN when
+/// this process reads its terminal. Left unblocked, SIGTTIN stops a reader in the
+/// background, as the terminal's job control stops any; blocked, the read would fail with
+/// EIO instead (POSIX.1-2024, 11.1.4 Terminal Access Control).
 pub fn forwarded(reads_terminal: bool) -> impl Iterator<Item = (libc::c_int, u32)> {
     FORWARDED
         .into_iter()
+        .chain(linux_only())
         .filter(move |&(sig, _)| !(reads_terminal && sig == libc::SIGTTIN))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn linux_only() -> impl Iterator<Item = (libc::c_int, u32)> {
+    [(libc::SIGSTKFLT, 16), (libc::SIGPWR, 30)].into_iter()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn linux_only() -> impl Iterator<Item = (libc::c_int, u32)> {
+    std::iter::empty()
+}
+
+/// Linux's real-time signals Docker names, RTMIN, 34, to RTMAX (moby/sys
+/// signal_linux.go), less those below the C library's own SIGRTMIN, which it keeps; each
+/// its own number. The client's alone ([`take_rest`]): a VM's process kicks its vCPUs
+/// with SIGRTMIN (vmm hv/kvm).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn realtime() -> impl Iterator<Item = (libc::c_int, u32)> {
+    (libc::SIGRTMIN().max(34)..=libc::SIGRTMAX())
+        .filter_map(|sig| u32::try_from(sig).ok().map(|linux| (sig, linux)))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn realtime() -> impl Iterator<Item = (libc::c_int, u32)> {
+    std::iter::empty()
+}
+
+/// The signals a fault raises as well as another process may send, each with its Linux
+/// number. On Linux those another process sent are forwarded, as Go's `os/signal` delivers
+/// them to the Docker CLI (runtime sigFromUser), and one a fault of the process's own raised
+/// ends it as it would have. So they are caught ([`take_rest`]), not blocked: blocked, a
+/// fault's signal is delivered with the default action, past the one the process had, such
+/// as Rust's report of a stack overflow (kernel/signal.c force_sig_info_to_task). Not on
+/// macOS, where nothing tells them apart: XNU gives a SIGSEGV, SIGBUS or SIGILL the codes
+/// of a fault whoever sent it (bsd/dev/arm/unix_signal.c sendsig: SEGV_ACCERR, BUS_ADRALN,
+/// ILL_ILLTRP), and never `SI_USER`, which is what Go asks of a signal sent, so the Docker
+/// CLI there takes them as faults.
+pub const FAULTS: [(libc::c_int, u32); 6] = [
+    (libc::SIGILL, 4),
+    (libc::SIGTRAP, 5),
+    (libc::SIGBUS, 7),
+    (libc::SIGFPE, 8),
+    (libc::SIGSEGV, 11),
+    (libc::SIGSYS, 31),
+];
+
+/// What wakes the thread that waits for forwarded signals when one of [`FAULTS`] was sent:
+/// SIGURG, which nothing forwards, as Docker leaves it to the Go runtime
+/// (cli/command/container/signals.go, isRuntimeSig).
+pub const CARRIER: libc::c_int = libc::SIGURG;
+
+/// [`FAULTS`] sent and not yet taken, a bit each.
+static SENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// The thread that waits for the carrier, once it has said so; 0 until then.
+static WAITER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The actions [`FAULTS`] had before they were caught, which a fault gets back.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+static PREVIOUS: std::sync::OnceLock<[libc::sigaction; FAULTS.len()]> = std::sync::OnceLock::new();
+
+/// [`take_rest`]'s handler: a signal another process sent (`si_code` not above 0:
+/// include/uapi/asm-generic/siginfo.h, SI_FROMUSER) is marked and its waiter woken; a
+/// fault's gets back the action it had before, and the fault, raised again as its
+/// instruction runs again, is handled as it would have been (Rust's report of a stack
+/// overflow, or the default). Async-signal-safe: atomics, kill(2), pthread_kill(3),
+/// sigaction(2).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+extern "C" fn sent_or_fault(sig: libc::c_int, info: *mut libc::siginfo_t, _: *mut libc::c_void) {
+    let Some(i) = FAULTS.iter().position(|&(s, _)| s == sig) else {
+        return;
+    };
+    // SAFETY: the kernel passes an SA_SIGINFO handler the signal's siginfo.
+    let code = unsafe { info.as_ref() }.map_or(1, |info| info.si_code);
+    if code <= 0 {
+        SENT.fetch_or(1 << i, std::sync::atomic::Ordering::SeqCst);
+        let waiter = WAITER.load(std::sync::atomic::Ordering::SeqCst);
+        // SAFETY: kill(2) and pthread_kill(3) are async-signal-safe; the waiter, once
+        // set, is a thread that lives as long as the process.
+        unsafe {
+            if waiter == 0 || libc::pthread_kill(waiter as libc::pthread_t, CARRIER) != 0 {
+                libc::kill(libc::getpid(), CARRIER);
+            }
+        }
+        return;
+    }
+    if let Some(previous) = PREVIOUS.get().and_then(|p| p.get(i)) {
+        // SAFETY: sigaction(2) is async-signal-safe; `previous` is what it gave before.
+        unsafe { libc::sigaction(sig, previous, std::ptr::null_mut()) };
+    }
+}
+
+/// The rest of what `docker run` forwards, for the client to forward too, after
+/// [`take_forwarded`], on Linux: [`FAULTS`], caught, to forward those another process
+/// sends ([`sent_faults`]); and in `set`, blocked in the calling thread, whose later
+/// threads inherit the mask, the real-time signals Docker names and [`CARRIER`]. The thread
+/// that waits on `set` says so first ([`wait_here`]). Not for a VM's process: its vCPUs'
+/// kick is SIGRTMIN, and seccomp catches its SIGSYS. On macOS, nothing ([`FAULTS`]).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn take_rest(set: &mut libc::sigset_t) -> io::Result<()> {
+    // SAFETY: sigaction(2) reads and writes of dispositions, and sigset operations, on
+    // valid structures.
+    unsafe {
+        let mut previous: [libc::sigaction; FAULTS.len()] = std::mem::zeroed();
+        for (&(sig, _), was) in FAULTS.iter().zip(previous.iter_mut()) {
+            if libc::sigaction(sig, std::ptr::null(), was) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        let _ = PREVIOUS.set(previous);
+        let mut caught: libc::sigaction = std::mem::zeroed();
+        caught.sa_sigaction = sent_or_fault
+            as extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void)
+            as libc::sighandler_t;
+        // On the thread's alternate stack, as a stack overflow's SIGSEGV needs one.
+        caught.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK | libc::SA_RESTART;
+        for (sig, _) in FAULTS {
+            if libc::sigaction(sig, &caught, std::ptr::null_mut()) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        let mut more: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut more);
+        libc::sigaddset(&mut more, CARRIER);
+        libc::sigaddset(set, CARRIER);
+        for (sig, _) in realtime() {
+            libc::sigaddset(&mut more, sig);
+            libc::sigaddset(set, sig);
+        }
+        if libc::pthread_sigmask(libc::SIG_BLOCK, &more, std::ptr::null_mut()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// [`take_rest`] on macOS: nothing ([`FAULTS`]).
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub fn take_rest(_set: &mut libc::sigset_t) -> io::Result<()> {
+    Ok(())
+}
+
+/// Says the calling thread is the one that waits for [`CARRIER`], so that a fault signal
+/// sent wakes it, whatever other threads block.
+pub fn wait_here() {
+    // SAFETY: pthread_self(3) has no preconditions.
+    let me = unsafe { libc::pthread_self() } as usize;
+    WAITER.store(me, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The Linux numbers of the [`FAULTS`] another process sent since last asked.
+pub fn sent_faults() -> impl Iterator<Item = u32> {
+    let sent = SENT.swap(0, std::sync::atomic::Ordering::SeqCst);
+    FAULTS
+        .into_iter()
+        .enumerate()
+        .filter(move |(i, _)| sent & (1 << i) != 0)
+        .map(|(_, (_, linux))| linux)
+}
+
+/// The Linux number of `sig`, which a process forwards.
+pub fn linux_signal(sig: libc::c_int) -> Option<u32> {
+    let faults = cfg!(any(target_os = "linux", target_os = "android")).then_some(FAULTS);
+    forwarded(false)
+        .chain(realtime())
+        .chain(faults.into_iter().flatten())
+        .find(|&(s, _)| s == sig)
+        .map(|(_, linux)| linux)
 }
 
 /// The handler that keeps a blocked signal pending for sigwait(3) on XNU; it never runs.
@@ -909,6 +1077,145 @@ mod tests {
     use std::os::fd::AsFd;
 
     use super::*;
+
+    /// What [`take_rest`] does to a process, done in a child of its own, this binary run
+    /// for [`signal_child`] alone, `case` naming what it does: this process keeps its
+    /// signals as they were. Its status, and what it printed, once it ends or is ended
+    /// past 30 s.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn signal_case(case: &str) -> (std::process::ExitStatus, String) {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unix::tests::signal_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("SHARDS_SIGNAL_CHILD", case)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                break child.wait().unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let mut out = String::new();
+        child.stdout.take().unwrap().read_to_string(&mut out).unwrap();
+        (status, out)
+    }
+
+    /// [`signal_case`]'s child, which does nothing in a run of the tests. `sent`: a SIGSEGV
+    /// another process sends wakes the thread waiting on the set, which takes it as Linux's
+    /// 11. `fault`: one a fault of its own raises ends it, as it would have.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn signal_child() {
+        let Ok(case) = std::env::var("SHARDS_SIGNAL_CHILD") else {
+            return;
+        };
+        // SAFETY: an all-zero sigset_t, emptied: plain sigset operations on a local set.
+        let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        unsafe { libc::sigemptyset(&mut set) };
+        take_rest(&mut set).unwrap();
+        match case.as_str() {
+            "sent" => {
+                let (ready, waiting) = std::sync::mpsc::channel();
+                let waiter = std::thread::spawn(move || {
+                    wait_here();
+                    ready.send(()).unwrap();
+                    let mut sig = 0;
+                    // SAFETY: sigwait(3) on a valid set.
+                    assert_eq!(unsafe { libc::sigwait(&set, &mut sig) }, 0);
+                    (sig, sent_faults().collect::<Vec<u32>>())
+                });
+                waiting.recv().unwrap();
+                // SAFETY: kill(2) of this process, as another would send it.
+                unsafe { libc::kill(libc::getpid(), libc::SIGSEGV) };
+                let (sig, sent) = waiter.join().unwrap();
+                println!("woken {} sent {sent:?}", sig == CARRIER);
+            }
+            "fault" => {
+                // SAFETY: an anonymous page made unreadable, then read: a fault of this
+                // process's own.
+                unsafe {
+                    let page = libc::mmap(
+                        std::ptr::null_mut(),
+                        1 << 14,
+                        libc::PROT_NONE,
+                        libc::MAP_PRIVATE | libc::MAP_ANON,
+                        -1,
+                        0,
+                    );
+                    assert_ne!(page, libc::MAP_FAILED);
+                    std::ptr::read_volatile(page.cast::<u8>());
+                }
+                println!("read an unreadable page");
+            }
+            _ => {}
+        }
+    }
+
+    /// On Linux, a signal a fault raises, sent by another process, is forwarded as Docker
+    /// forwards it, and one a fault of the process's own raises ends it, not looping on the
+    /// fault as it would with the signal blocked (review 8.17).
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn fault_signals_sent_are_forwarded_and_faults_end_the_process() {
+        use std::os::unix::process::ExitStatusExt as _;
+        let (status, out) = signal_case("sent");
+        assert!(status.success(), "{status:?} {out}");
+        assert!(out.contains("woken true sent [11]"), "{out}");
+        let (status, out) = signal_case("fault");
+        assert!(
+            matches!(status.signal(), Some(libc::SIGSEGV | libc::SIGBUS)),
+            "{status:?} {out}"
+        );
+        assert_eq!(linux_signal(libc::SIGSYS), Some(31));
+        assert_eq!(linux_signal(libc::SIGURG), None, "the carrier is forwarded");
+    }
+
+    /// On macOS, where a fault's signal sent cannot be told from a fault's own, those
+    /// signals keep their actions, and none is forwarded (review 8.17).
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn fault_signals_keep_their_actions_on_macos() {
+        let action = |sig| {
+            // SAFETY: sigaction(2) reading a disposition into a zeroed struct.
+            let mut was: libc::sigaction = unsafe { std::mem::zeroed() };
+            // SAFETY: as above.
+            assert_eq!(unsafe { libc::sigaction(sig, std::ptr::null(), &mut was) }, 0);
+            (was.sa_sigaction, was.sa_flags)
+        };
+        let before: Vec<_> = FAULTS.iter().map(|&(sig, _)| action(sig)).collect();
+        // SAFETY: an all-zero sigset_t: a local set.
+        let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+        take_rest(&mut set).unwrap();
+        let after: Vec<_> = FAULTS.iter().map(|&(sig, _)| action(sig)).collect();
+        assert_eq!(before, after);
+        assert_eq!(linux_signal(libc::SIGSEGV), None);
+        assert_eq!(linux_signal(libc::SIGTERM), Some(15));
+    }
+
+    /// Linux's real-time signals Docker names are forwarded as their own numbers, and none
+    /// below 34, which the C library keeps; SIGPWR and SIGSTKFLT too.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn linux_names_its_own_signals_as_docker_does() {
+        let top = libc::SIGRTMAX();
+        assert_eq!(linux_signal(top), u32::try_from(top).ok());
+        assert_eq!(linux_signal(33), None);
+        assert_eq!(linux_signal(libc::SIGPWR), Some(30));
+        assert_eq!(linux_signal(libc::SIGSTKFLT), Some(16));
+    }
 
     /// A pipe whose ends are close-on-exec, as every descriptor shards holds is: on Linux
     /// `spawn` relies on that to give a child nothing it was not given.

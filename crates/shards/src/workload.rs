@@ -658,7 +658,7 @@ pub fn forward_signals(to: &'static ToGuest, reads_terminal: bool) -> Result<(),
                 if unsafe { libc::sigwait(&set, &mut sig) } != 0 {
                     return;
                 }
-                let Some(&(_, linux)) = shards_ipc::FORWARDED.iter().find(|(s, _)| *s == sig) else {
+                let Some(linux) = shards_ipc::linux_signal(sig) else {
                     continue;
                 };
                 let forwarded = signal_guest(to, linux);

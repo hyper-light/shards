@@ -483,18 +483,30 @@ fn forward_signals(
             .map_err(|e| format!("resize thread: {e}"))?;
         return Ok(());
     }
-    let (set, ignored) =
+    let (mut set, ignored) =
         shards_ipc::take_forwarded(reads_terminal).map_err(|e| format!("taking signals: {e}"))?;
+    // And the rest Docker forwards: Linux's real-time signals, and the signals a fault
+    // raises, those another process sent (review 8.17).
+    shards_ipc::take_rest(&mut set).map_err(|e| format!("taking signals: {e}"))?;
     std::thread::Builder::new()
         .name("signals".into())
         .spawn(move || {
+            shards_ipc::wait_here();
             loop {
                 let mut sig = 0;
                 // SAFETY: sigwait(3) on a valid set.
                 if unsafe { libc::sigwait(&set, &mut sig) } != 0 {
                     return;
                 }
-                let Some(&(_, linux)) = shards_ipc::FORWARDED.iter().find(|(s, _)| *s == sig) else {
+                if sig == shards_ipc::CARRIER {
+                    if let Some(conn) = current.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+                        for linux in shards_ipc::sent_faults() {
+                            let _ = shards_ipc::send(conn, kind::SIGNAL, &linux.to_be_bytes(), &[]);
+                        }
+                    }
+                    continue;
+                }
+                let Some(linux) = shards_ipc::linux_signal(sig) else {
                     continue;
                 };
                 let sent = current
