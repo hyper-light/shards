@@ -24,8 +24,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-#[cfg(target_os = "macos")]
-use common::shardsd;
 use common::{
     TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, shards, shards_vm, workload_image,
 };
@@ -86,7 +84,7 @@ impl Broker {
     fn spawn() -> (Broker, UnixStream) {
         let (vm, theirs) = UnixStream::pair().unwrap();
         let fd = theirs.as_raw_fd();
-        let mut command = Command::new(shardsd());
+        let mut command = Command::new(shards());
         command.arg("grants").stdin(Stdio::null()).stdout(Stdio::null());
         // SAFETY: runs in the child between fork and exec, calling only dup2(2) and
         // fcntl(2), which are async-signal-safe.

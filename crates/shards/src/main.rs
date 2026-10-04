@@ -1,7 +1,8 @@
-//! shardsd: the daemon, pulls and the guest. The `shards` command runs it for every
-//! command but `run` and the container commands, which it serves through the daemon, and
-//! `vm`, which is shards-vm's (src/bin/shards-vm): the daemon starts shards-vm for each
-//! microVM too.
+//! `shards`: one binary for every command. The command line (cli/) reads `run`, the
+//! container and image commands as the Docker CLI reads them and asks the daemon for
+//! them; everything else is this file's [`shardsd`]: the daemon itself (which this binary
+//! becomes when it starts one), builds, the guest. Each microVM runs in a VM process of
+//! its own (src/bin/shards-vm), which the daemon starts.
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -9,6 +10,7 @@ use std::process::ExitCode;
 #[cfg(all(feature = "alloc-count", unix))]
 mod alloc_count;
 mod build;
+mod cli;
 #[cfg(unix)]
 mod containers;
 #[cfg(unix)]
@@ -21,6 +23,7 @@ mod grant_answer;
 #[cfg(all(test, target_os = "macos"))]
 mod grant_ask;
 mod guest;
+mod helpers;
 mod kernel;
 #[cfg(unix)]
 mod names;
@@ -44,8 +47,13 @@ Commands:
   version     Print version information";
 
 fn main() -> ExitCode {
+    cli::main()
+}
+
+/// The daemon side's commands, `args` after `shards`: the daemon, builds, the guest.
+pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
     shards_vmm::log::init();
-    let mut args = std::env::args_os().skip(1);
+    let mut args = args.into_iter();
     let command = args.next();
     match command.as_ref().and_then(|c| c.to_str()) {
         #[cfg(unix)]

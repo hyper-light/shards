@@ -3,7 +3,6 @@
 //! VM's side ready for `shards-vm --net`.
 
 use std::os::fd::{AsFd, OwnedFd};
-use std::path::Path;
 
 /// What a VM or network process is given of its spawner's environment: the variables it
 /// reads, and nothing else. A daemon's environment is that of the client that started
@@ -54,12 +53,11 @@ impl VmSide {
 }
 
 /// Starts the network process of one VM whose guest has `mac` on `bridge`, its binary
-/// beside `vm_binary`, under `policy`.
+/// (helpers.rs), under `policy`.
 /// Its side of the ring goes to it; the VM's comes back. Once the VM process holds its
 /// side and the caller drops this one, the VM's end alone keeps the network process's
 /// doorbell open, so the network process goes with the VM.
 pub fn start(
-    vm_binary: &Path,
     policy: shards_net::Policy,
     mac: &[u8; 6],
     bridge: &shards_net::bridge::Bridge,
@@ -68,7 +66,7 @@ pub fn start(
     let region = shards_netring::memory().map_err(at)?;
     let (vm_sleeps, net_rings) = shards_netring::doorbell().map_err(at)?;
     let (net_sleeps, vm_rings) = shards_netring::doorbell().map_err(at)?;
-    let binary = vm_binary.with_file_name(format!("shards-net{}", std::env::consts::EXE_SUFFIX));
+    let binary = crate::helpers::net()?;
     let policy = match policy {
         shards_net::Policy::AllowAll => "allow",
         shards_net::Policy::DenyAll => "deny",

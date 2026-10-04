@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use common::{
     Run, TempDir, bridge, cannot_run_vms, fixed_port, guest_init, kernel, registry, run_shards_env, served,
-    sha256_digest, shards, shards_net, shards_vm, shardsd, test_index,
+    sha256_digest, shards, shards_vm, test_index,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -574,10 +574,10 @@ fn usage_mistakes_are_answered_without_a_daemon() {
     );
 }
 
-/// This build's `shards` and `shardsd` in a directory of their own, beside a `shards-vm`
-/// that waits for a gate to open before it becomes this build's. Every VM their daemon
-/// starts waits there, so a run stays pending, its container created, for as long as the
-/// test keeps the gate shut (audit A06).
+/// This build's `shards` in a directory of its own, with a VM process binary
+/// (`SHARDS_VM_BINARY`) that waits for a gate to open before it becomes this build's.
+/// Every VM its daemon starts waits there, so a run stays pending, its container created,
+/// for as long as the test keeps the gate shut (audit A06).
 struct Gated {
     dir: TempDir,
 }
@@ -586,11 +586,7 @@ impl Gated {
     fn new(name: &str) -> Gated {
         use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new(name);
-        for (from, to) in [
-            (shards(), "shards"),
-            (shardsd(), "shardsd"),
-            (shards_net(), "shards-net"),
-        ] {
+        for (from, to) in [(shards(), "shards")] {
             // A link where there can be one: macOS assesses a copy as a new binary.
             if std::fs::hard_link(from, dir.join(to)).is_err() {
                 std::fs::copy(from, dir.join(to)).unwrap();
@@ -621,6 +617,7 @@ impl Gated {
             .env("SHARDS_HOME", home)
             .env("SHARDS_KERNEL", kernel())
             .env("SHARDS_INIT", guest_init())
+            .env("SHARDS_VM_BINARY", self.dir.join("shards-vm"))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -2254,14 +2251,17 @@ fn an_interrupted_save_leaves_nothing_behind() {
         assert_eq!(status.signal(), Some(sig), "{status}");
         assert_eq!(left(), Vec::<std::ffi::OsString>::new(), "after signal {sig}");
     }
-    // A client with no daemon to ask fails, and leaves nothing either.
-    let lone = TempDir::new("containers-save-lone");
-    std::fs::copy(shards(), lone.join("shards")).unwrap();
-    let failed = Command::new(lone.join("shards"))
+    // A client that can reach no daemon fails, and leaves nothing either: its home is a
+    // file, where no daemon can be.
+    let nowhere = out.join("not-a-home");
+    std::fs::write(&nowhere, b"").unwrap();
+    let failed = Command::new(shards())
         .args(["save", "-o", dest.to_str().unwrap(), "any:1"])
-        .env("SHARDS_HOME", &*home)
+        .env("SHARDS_HOME", &nowhere)
+        .stdin(Stdio::null())
         .output()
         .unwrap();
+    std::fs::remove_file(&nowhere).unwrap();
     assert_ne!(failed.status.code(), Some(0));
     assert_eq!(left(), Vec::<std::ffi::OsString>::new());
 }

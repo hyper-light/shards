@@ -1,0 +1,31 @@
+[package]
+name = "shards-vm-process"
+version = "0.1.0"
+description = "shards' VM process: one microVM per process, booted or restored. Embedded in `shards`, which writes it out and starts it."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+autobins = false
+
+# Its own binary, linking the VMM and what a VM process runs and nothing else: every VM
+# maps the binary it runs (PM M34), and on macOS it alone runs in App Sandbox (D30).
+[[bin]]
+name = "shards-vm"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+shards-abi = { path = "../abi" }
+shards-cmdline = { path = "../cmdline" }
+shards-ipc = { path = "../ipc" }
+shards-net = { path = "../net" }
+shards-vmm = { path = "../vmm" }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }

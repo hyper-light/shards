@@ -1,0 +1,14 @@
+[package]
+name = "shards-apple"
+version = "0.1.0"
+description = "Apple's frameworks, bound when first used, so that a process that never needs them never loads them"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true }

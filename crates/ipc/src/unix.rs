@@ -286,17 +286,18 @@ pub fn take_forwarded(reads_terminal: bool) -> io::Result<(libc::sigset_t, Vec<l
     }
 }
 
-/// The binary that runs each microVM, beside the daemon's (`shards-vm`).
-pub fn vm_binary(daemon: &Path) -> PathBuf {
-    daemon.with_file_name(format!("shards-vm{}", std::env::consts::EXE_SUFFIX))
-}
-
 impl Identity {
     /// The build a daemon binary belongs to, as clients and the daemon tell builds apart:
-    /// its file's identity folded with that of the VM binary beside it, which runs the
-    /// daemon's VMs, so that either rebuilt is another build.
+    /// its file's identity, folded with that of the VM binary `SHARDS_VM_BINARY` names in
+    /// its place, if it names one. The binaries it starts are otherwise carried inside it
+    /// (shards' helpers.rs), so any of them rebuilt is this file changed; a daemon given
+    /// another VM binary is another build, which a client with its own replaces.
     pub fn of_build(daemon: &Path) -> io::Result<Identity> {
-        let (d, v) = (Identity::of(daemon)?, Identity::of(&vm_binary(daemon))?);
+        let d = Identity::of(daemon)?;
+        let Some(vm) = std::env::var_os("SHARDS_VM_BINARY").filter(|v| !v.is_empty()) else {
+            return Ok(d);
+        };
+        let v = Identity::of(Path::new(&vm))?;
         Ok(Identity {
             dev: d.dev ^ v.dev.rotate_left(17),
             ino: d.ino ^ v.ino.rotate_left(29),

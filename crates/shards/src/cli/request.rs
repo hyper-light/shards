@@ -20,15 +20,15 @@ use shards_cmdline::flags::{Flag, Parsed};
 use shards_cmdline::network;
 use shards_cmdline::term;
 
-use crate::NOT_RUN;
+use crate::cli::NOT_RUN;
 
 /// Runs the command line `args`, the words after `path` (`shards run`).
 pub fn run(path: &str, args: &[OsString]) -> ExitCode {
-    let argv = match crate::utf8(args) {
+    let argv = match crate::cli::utf8(args) {
         Ok(argv) => argv,
-        Err(e) => return crate::failed(&e),
+        Err(e) => return crate::cli::failed(&e),
     };
-    let parsed = match crate::read(&RUN, path, &argv, &validate) {
+    let parsed = match crate::cli::read(&RUN, path, &argv, &validate) {
         Ok(parsed) => parsed,
         Err(answered) => return answered,
     };
@@ -60,11 +60,11 @@ pub fn run(path: &str, args: &[OsString]) -> ExitCode {
     };
     match resolve(&mut request) {
         #[cfg(unix)]
-        Ok((home, daemon)) => crate::client::run(&home, &daemon, &request, &detach_keys),
+        Ok((home, daemon)) => crate::cli::client::run(&home, &daemon, &request, &detach_keys),
         #[cfg(not(unix))]
         Ok(_) => {
             let _ = detach_keys;
-            crate::failed(
+            crate::cli::failed(
                 "running a command needs the daemon, which needs Unix sockets, which shards does not support on this platform yet",
             )
         }
@@ -79,17 +79,17 @@ pub fn run(path: &str, args: &[OsString]) -> ExitCode {
 /// runs it: in a running container, attached unless `-d` (docker/cli
 /// cli/command/container/exec.go).
 pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
-    let argv = match crate::utf8(args) {
+    let argv = match crate::cli::utf8(args) {
         Ok(argv) => argv,
-        Err(e) => return crate::failed(&e),
+        Err(e) => return crate::cli::failed(&e),
     };
-    let parsed = match crate::read(&shards_cmdline::commands::EXEC, path, &argv, &validate) {
+    let parsed = match crate::cli::read(&shards_cmdline::commands::EXEC, path, &argv, &validate) {
         Ok(parsed) => parsed,
         Err(answered) => return answered,
     };
     let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
     let Some((container, cmd)) = parsed.args.split_first() else {
-        return crate::failed("a container is required");
+        return crate::cli::failed("a container is required");
     };
     let request = shards_ipc::Exec {
         container: container.clone(),
@@ -118,24 +118,24 @@ pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
     };
     #[cfg(unix)]
     {
-        let daemon = match crate::shardsd() {
+        let daemon = match crate::cli::shardsd() {
             Ok(daemon) => daemon,
-            Err(e) => return crate::failed(&e),
+            Err(e) => return crate::cli::failed(&e),
         };
         let mut request = request;
         request.daemon = match Identity::of_build(&daemon) {
             Ok(identity) => identity,
-            Err(e) => return crate::failed(&format!("{}: {e}", daemon.display())),
+            Err(e) => return crate::cli::failed(&format!("{}: {e}", daemon.display())),
         };
         match shards_ipc::home() {
-            Ok(home) => crate::client::exec(&home, &daemon, &request, &detach_keys),
-            Err(e) => crate::failed(&e),
+            Ok(home) => crate::cli::client::exec(&home, &daemon, &request, &detach_keys),
+            Err(e) => crate::cli::failed(&e),
         }
     }
     #[cfg(not(unix))]
     {
         let _ = (request, detach_keys);
-        crate::failed(
+        crate::cli::failed(
             "running a command needs the daemon, which needs Unix sockets, which shards does not support on this platform yet",
         )
     }
@@ -299,7 +299,7 @@ fn health(parsed: &Parsed) -> Result<Option<shards_ipc::Health>, String> {
 /// Rows and columns of this process's stdout, or 0×0 if it is not a terminal.
 fn stdout_size() -> (u16, u16) {
     #[cfg(unix)]
-    return crate::terminal::size(1);
+    return crate::cli::terminal::size(1);
     #[cfg(not(unix))]
     (0, 0)
 }
@@ -328,7 +328,7 @@ fn resolve(request: &mut Run) -> Result<(PathBuf, PathBuf), String> {
         return Err("SHARDS_KERNEL and SHARDS_INIT go together".into());
     }
     request.timing = std::env::var_os("SHARDS_TIMING").is_some();
-    let daemon = crate::shardsd()?;
+    let daemon = crate::cli::shardsd()?;
     // Only Unix has the daemon, so far.
     #[cfg(unix)]
     {

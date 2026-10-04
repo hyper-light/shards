@@ -3869,3 +3869,37 @@ revision before comparing a changed API/implementation.
   handshake whose socket times out reports its deadline. A 429 is waited out, up to
   five times, by a random share of 50 to 800 ms or a `Retry-After` that fits, unless
   a quota is spent. `shards pull` is to read `docker pull`'s flags.
+
+### M113. What a launch costs, and what loads at it
+
+- **Question.** The command had been a binary apart from the daemon so that it started
+  fast (M23). One binary for every command is to start as fast. What does a launch of
+  each cost, and why?
+- **Method.** Each binary run 300–400 times, in turn, through Python's `subprocess.run`
+  (whose own cost is in every number alike), on a command each answers by itself:
+  `shards push --help` (the command, 0.8 MB), `shardsd help` (the daemon, 8.7 MB),
+  `shards-vm --help` (1.2 MB), `shards-net` (0.5 MB); and an empty C program built
+  three ways, linking nothing, Security and CoreFoundation, and those and
+  Hypervisor.framework. Load commands by `otool -L`, fixups by `dyld_info -fixups`.
+  Apple M5 Max, macOS 26.4.1, 2026-10-04.
+- **Results.** Milliseconds, p50 / p99:
+
+  | launch | links at launch | p50 | p99 |
+  |---|---|---|---|
+  | empty C | libSystem | 2.10 | 2.68 |
+  | empty C | + Security, CoreFoundation | 3.20 | 3.89 |
+  | empty C | + those and Hypervisor | 3.21 | 4.05 |
+  | `shards` command | libSystem | 2.31 | 3.08 |
+  | `shards-net` | libSystem | 2.19 | 3.18 |
+  | `shards-vm` | Hypervisor | 3.39 | 4.72 |
+  | `shardsd` | Hypervisor, Security, CoreFoundation | 3.52–3.80 | 4.59–4.94 |
+  | `shardsd`, Security and CoreFoundation bound when used | Hypervisor | 3.68 | 6.53 |
+  | `shardsd`, every framework bound when used | libSystem | **2.50** | **2.94** |
+
+  beside the command's 2.32 / 2.73 in the same run. `shardsd` has 15,119 fixups, the
+  command 1,218. Hypervisor.framework alone costs as much as Security and CoreFoundation
+  together: it loads what they would.
+- **Consequence.** A framework linked is loaded by dyld at every launch, used or not:
+  1.1 ms of one. The binary's size costs 0.18 ms. `shards` links none: Apple's
+  frameworks are looked up with `dlsym` when first called (D36), and the command and the
+  daemon are one binary, 0.18 ms slower to launch than the command alone was.

@@ -5,9 +5,12 @@
 
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
+use crate::apple::Verifier;
 pub use rustls::ClientConfig;
 use rustls::crypto::aws_lc_rs;
 use rustls::pki_types::CertificateDer;
+#[cfg(not(target_os = "macos"))]
 use rustls_platform_verifier::Verifier;
 
 use crate::Error;

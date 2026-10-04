@@ -837,6 +837,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shards-abi",
+ "shards-apple",
  "shards-build",
  "shards-cmdline",
  "shards-dockerfile",
@@ -855,6 +856,13 @@ dependencies = [
 [[package]]
 name = "shards-abi"
 version = "0.1.0"
+
+[[package]]
+name = "shards-apple"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "shards-build"
@@ -927,6 +935,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-net-process"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "shards-net",
+]
+
+[[package]]
 name = "shards-netring"
 version = "0.1.0"
 dependencies = [
@@ -950,6 +966,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shards-apple",
  "shards-image",
  "time",
  "windows-sys 0.61.2",
@@ -970,6 +987,19 @@ version = "0.1.0"
 [[package]]
 name = "shards-user"
 version = "0.1.0"
+
+[[package]]
+name = "shards-vm-process"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "shards-abi",
+ "shards-cmdline",
+ "shards-ipc",
+ "shards-net",
+ "shards-vmm",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "shards-vmm"

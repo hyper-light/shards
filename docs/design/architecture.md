@@ -2002,6 +2002,39 @@ microVM rather than a container on the build host's kernel.
   MiB and 4 ms per GiB of guest memory, and takes half the host's, as Docker Desktop's VM
   has). Each is an item of AGENTFILE_ARCH.md §11.
 
+### One binary (D36)
+
+shards is one file to install and run, `shards`: every command, the daemon included,
+one CLI.
+
+- **The command and the daemon are one executable.** `src/main.rs` is its root: the
+  command line (`src/cli/`) answers what it reads itself and asks the daemon for the
+  rest, and every other command, the daemon among them, runs in its process. They had
+  been two binaries so that the command started fast: the daemon's binary took 3.5 ms to
+  launch where the command's took 2.3 [PM M113]. Size cost 0.18 ms of that; loading
+  frameworks the rest. So the one binary links none that loads at launch: Security and
+  CoreFoundation are bound when first called (`crates/apple`, a verifier that trusts and
+  refuses as rustls-platform-verifier did, held to it case by case), and so is
+  Hypervisor.framework (`vmm` `hv::hvf::ffi`), which neither the command nor the daemon
+  calls. One binary launches in 2.50 ms where the command alone did in 2.32.
+- **The VM process and the network process stay processes of their own, carried inside
+  it.** Every VM maps the binary it runs: one running all of `shards` would hold 1.2 MiB
+  more than one running its own [PM M34]. And on macOS the VM process runs in App
+  Sandbox, granted by entitlements that are its binary's code signature, which the
+  command and the daemon must not share (D30); `sandbox_init`, the one way to enter a
+  sandbox without them, is deprecated. So `crates/shards/build.rs` builds both (crates
+  `vm-process`, `net-process`) with a nested cargo, signs the VM process with its
+  entitlements on macOS, and embeds them with their digests; `src/helpers.rs` writes
+  them out the first time a build needs them, into this user's cache under a directory
+  named by their digests, whole (each synced, the directory renamed into place), and
+  every later process of the build finds them with a `stat` each. They are no
+  deliverables: nothing but `shards` is installed.
+- A daemon's build is its binary's identity, which includes what it carries; one given
+  another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
+- **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);
+  E2E runs the one binary placed alone, its VMs from what it carries; `apple::tests`,
+  the verifier against rustls-platform-verifier over eleven chains.
+
 ### Agentfiles: a Dockerfile and shards' directives (D35)
 
 An Agentfile is a Dockerfile with the directives docs/architecture/AGENTFILE_ARCH.md

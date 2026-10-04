@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use common::{
     TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, registry_of, rootfs_dir, run_shards_env,
-    run_shards_env_in, served, served_variant, shards, shards_vm, shardsd, test_image, test_image_with,
+    run_shards_env_in, served, served_variant, shards, test_image, test_image_with,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -438,9 +438,6 @@ fn a_rebuilt_binary_replaces_the_daemon() {
     let bin = TempDir::new("daemon-rebuilt-bin");
     let other = bin.join("shards");
     std::fs::copy(shards(), &other).unwrap();
-    std::fs::copy(shardsd(), bin.join("shardsd")).unwrap();
-    std::fs::copy(shards_vm(), bin.join("shards-vm")).unwrap();
-    std::fs::copy(common::shards_net(), bin.join("shards-net")).unwrap();
     let out = Command::new(&other)
         .args(["run", "--pull", "never", &image, "exit", "0"])
         .env("SHARDS_HOME", &*home)

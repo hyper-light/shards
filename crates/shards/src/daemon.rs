@@ -874,7 +874,7 @@ fn serve(ready: Option<File>) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", home.join(socket).display()))?;
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     let identity = Identity::of_build(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
-    let vm = shards_ipc::vm_binary(&exe);
+    let vm = crate::helpers::vm()?;
     let containers = Registry::open(&home, &mut |note| log(note))
         .map_err(|e| format!("{}: {e}", home.join("containers").display()))?;
     let daemon = Daemon::new(home, vm, identity, settings, containers, Real, home_lock)
@@ -3230,12 +3230,7 @@ impl<D: Disk> Daemon<D> {
         let network = match &net {
             Some(mac) => {
                 let bridge = self.bridge.as_ref().ok_or(shards_net::bridge::NO_SUBNET)?;
-                Some(crate::netproc::start(
-                    &self.vm,
-                    shards_net::Policy::DenyAll,
-                    mac,
-                    bridge,
-                )?)
+                Some(crate::netproc::start(shards_net::Policy::DenyAll, mac, bridge)?)
             }
             None => None,
         };

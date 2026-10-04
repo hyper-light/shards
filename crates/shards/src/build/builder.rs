@@ -203,19 +203,13 @@ impl Builder {
         listener
             .set_nonblocking(true)
             .map_err(|e| format!("the builder's port: {e}"))?;
-        let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         // The builder's network: BuildKit's steps reach what their host does, so the
         // network process allows every flow but to the host itself (D31).
         let mac = shards_net::random_mac().map_err(|e| format!("the builder's MAC: {e}"))?;
         // On the default bridge, as dockerd's builder runs its steps, elected as the
         // daemon elects it: a host on 172.17.0.0/16 keeps its own network reachable.
         let bridge = shards_net::bridge::elected_here(&mut |_| {}).ok_or(shards_net::bridge::NO_SUBNET)?;
-        let (net, side) = crate::netproc::start(
-            &shards_ipc::vm_binary(&exe),
-            shards_net::Policy::AllowAll,
-            &mac,
-            &bridge,
-        )?;
+        let (net, side) = crate::netproc::start(shards_net::Policy::AllowAll, &mac, &bridge)?;
         let mut args: Vec<OsString> = vec![
             "run".into(),
             "--kernel".into(),
@@ -273,13 +267,9 @@ impl Builder {
             .map(OsString::as_os_str)
             .collect();
         let env = crate::netproc::child_env();
-        let vm = match shards_ipc::spawn_in(
-            &shards_ipc::vm_binary(&exe),
-            &argv,
-            &fds,
-            false,
-            &crate::netproc::env_pairs(&env),
-        ) {
+        let vm_binary = crate::helpers::vm()?;
+        let vm = match shards_ipc::spawn_in(&vm_binary, &argv, &fds, false, &crate::netproc::env_pairs(&env))
+        {
             Ok(vm) => vm,
             Err(e) => {
                 let _ = net.kill(libc::SIGKILL);

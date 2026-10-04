@@ -7,7 +7,7 @@ each side stamped its own build's wall clock (a directory a step made, say).
 
     compare.py BIN VERIFY CONTEXT DOCKERFILE NAME [-- CMD...]
 
-BIN is the directory of a release build's `shards`, `shardsd` and `shards-vm`, which are
+BIN is the directory of a release build's `shards`, `shards-vm` and `shards-net`, which are
 copied side by side and, on macOS, ad-hoc signed as scripts/hvf-run signs them, so that
 `shards-vm` may start VMs; VERIFY is scripts/build/realworld/verify's binary, built
 against the revision under test. Prints one JSON line of the result.
@@ -23,7 +23,7 @@ tag = f"shards-real-{name}:1"
 resources = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "resources")
 bins = os.path.join(work, "bin")
 os.makedirs(bins)
-for b in ("shards", "shardsd", "shards-vm", "shards-net"):
+for b in ("shards", "shards-vm", "shards-net"):
     shutil.copy2(os.path.join(bindir, b), os.path.join(bins, b))
     if sys.platform == "darwin":
         sign = ["--entitlements", os.path.join(resources, "vm.entitlements"), "-o", "runtime"] if b == "shards-vm" \

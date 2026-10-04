@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use shards_cmdline::term::{EscapeProxy, Read as Typed};
 use shards_ipc::{Command, Run, SOCKET, kind, log};
 
-use crate::{NOT_RUN, terminal};
+use crate::cli::{NOT_RUN, terminal};
 
 /// How long a started daemon may take to listen, once the one it replaces has ended its
 /// runs (shards_ipc::exiting), which takes as long as their stop timeouts make it.
@@ -240,7 +240,7 @@ fn answer<'s>(
     home: &Path,
     east_asian: bool,
 ) -> Option<u8> {
-    use crate::show::{self, Shown};
+    use crate::cli::show::{self, Shown};
     let mut display: Option<std::sync::mpsc::Sender<Shown>> = None;
     let mut refused = false;
     let pass = |display: &Option<std::sync::mpsc::Sender<Shown>>, shown: Shown| match (display, shown) {
@@ -273,7 +273,7 @@ fn answer<'s>(
                         .name("shards-show".into())
                         .spawn_scoped(scope, move || {
                             show::run(rx, pull, || {
-                                let (rows, cols) = crate::terminal::size(1);
+                                let (rows, cols) = crate::cli::terminal::size(1);
                                 (usize::from(rows), usize::from(cols))
                             })
                         });

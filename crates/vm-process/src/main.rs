@@ -8,28 +8,28 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-#[path = "../../confine.rs"]
+#[path = "../../shards/src/confine.rs"]
 mod confine;
 #[cfg(target_os = "macos")]
-#[path = "../../grant.rs"]
+#[path = "../../shards/src/grant.rs"]
 mod grant;
 #[cfg(target_os = "macos")]
-#[path = "../../grant_ask.rs"]
+#[path = "../../shards/src/grant_ask.rs"]
 mod grant_ask;
 // Made by the daemon alone; the logger's tests make them as it does.
 #[cfg(all(test, unix))]
-#[path = "../../segments.rs"]
+#[path = "../../shards/src/segments.rs"]
 mod segments;
-#[path = "../../spec.rs"]
+#[path = "../../shards/src/spec.rs"]
 mod spec;
-#[path = "../../terminal.rs"]
+#[path = "../../shards/src/terminal.rs"]
 mod terminal;
-#[path = "../../vm_run.rs"]
+#[path = "../../shards/src/vm_run.rs"]
 mod vm_run;
 #[cfg(unix)]
-#[path = "../../warm.rs"]
+#[path = "../../shards/src/warm.rs"]
 mod warm;
-#[path = "../../workload.rs"]
+#[path = "../../shards/src/workload.rs"]
 mod workload;
 
 fn main() -> ExitCode {

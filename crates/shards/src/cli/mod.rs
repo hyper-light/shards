@@ -1,10 +1,9 @@
-//! `shards`, the command. It reads `run` and the container commands (`ps`, `wait`, `logs`,
-//! `rm`, `stop`, `kill`, and each under `container`) as the Docker CLI reads them, answers
-//! their `--help` and usage mistakes itself, and asks the daemon for the rest; `shards
-//! daemon stop` stops the daemon; `shards vm` is shards-vm's, and every other command
-//! shardsd's, each of which runs in this process's place. This binary links only the standard library, `shards_ipc` and
-//! `shards_cmdline`, so it starts in a fraction of the time `shardsd` needs, whose
-//! frameworks load at every launch (docs/research/platform-measurements.md M23).
+//! The command line: `run` and the container and image commands read as the Docker CLI
+//! reads them, their `--help` and usage mistakes answered here, the rest asked of the
+//! daemon; `shards daemon stop` stops it; `shards vm` becomes the VM process; every other
+//! command is the daemon side's (main.rs, `shardsd`), in this process. One binary does it
+//! all and starts as fast as the command alone did: it links no framework that loads at
+//! launch, binding Apple's when first needed (shards_apple, the VMM's hvf::ffi; PM M113).
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -26,7 +25,7 @@ mod terminal;
 /// `docker run`'s status when it could not run the command at all.
 const NOT_RUN: u8 = 125;
 
-fn main() -> ExitCode {
+pub fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let words: Vec<&str> = args.iter().map_while(|a| a.to_str()).take(2).collect();
     match words.as_slice() {
@@ -46,11 +45,11 @@ fn main() -> ExitCode {
         _ if let Some(named) = shards_cmdline::commands::build(&words) => {
             let mut rest = vec![OsString::from("build")];
             rest.extend(args.get(named..).unwrap_or_default().iter().cloned());
-            instead(SHARDSD, &rest)
+            crate::shardsd(rest)
         }
         _ => match shards_cmdline::commands::find(&words) {
             Some((command, path, named)) => container(command, path, &words, named, &args),
-            None => instead(SHARDSD, &args),
+            None => crate::shardsd(args.clone()),
         },
     }
 }
@@ -154,7 +153,25 @@ fn container(
     }
     #[cfg(not(unix))]
     {
-        let _ = (words, parsed);
+        let _ = words;
+        // No daemon here yet: a pull runs in this process, said as `docker pull` says it.
+        if std::ptr::eq(command, &shards_cmdline::commands::PULL) {
+            let home = match shards_ipc::home() {
+                Ok(home) => home,
+                Err(e) => return failed(&e),
+            };
+            let out = crate::pull::Out {
+                out: &|line| {
+                    let _ = writeln!(std::io::stdout(), "{line}");
+                },
+                err: &|line| {
+                    let _ = writeln!(std::io::stderr(), "{line}");
+                },
+                progress: None,
+            };
+            let env = |k: &str| std::env::var(k).ok();
+            return ExitCode::from(crate::pull::command(&parsed, &home, &env, &out, None));
+        }
         failed(
             "container commands need the daemon, which needs Unix sockets, which shards does not support on this platform yet",
         )
@@ -240,26 +257,22 @@ fn utf8(args: &[OsString]) -> Result<Vec<String>, String> {
         .collect()
 }
 
-const SHARDSD: &str = "shardsd";
-const SHARDS_VM: &str = "shards-vm";
-
-/// The binary `name` beside this one.
-fn beside(name: &str) -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
-    Ok(exe.with_file_name(format!("{name}{}", std::env::consts::EXE_SUFFIX)))
+/// The VM process's binary, which `shards` carries and writes out (helpers.rs).
+fn vm_binary() -> Result<PathBuf, String> {
+    crate::helpers::vm()
 }
 
-/// `shardsd`, beside this binary.
+/// The daemon's binary: this one.
 fn shardsd() -> Result<PathBuf, String> {
-    beside(SHARDSD)
+    std::env::current_exe().map_err(|e| format!("this binary: {e}"))
 }
 
-/// Runs the binary `name` beside this one with `args`, in this process's place: the same
-/// pid, stdio and signals.
+/// Runs the VM process's binary with `args`, in this process's place: the same pid,
+/// stdio and signals.
 #[cfg(unix)]
-fn instead(name: &str, args: &[OsString]) -> ExitCode {
+fn instead(args: &[OsString]) -> ExitCode {
     use std::os::unix::process::CommandExt;
-    let bin = match beside(name) {
+    let bin = match vm_binary() {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
     };
@@ -267,11 +280,10 @@ fn instead(name: &str, args: &[OsString]) -> ExitCode {
     failed(&format!("{}: {e}", bin.display()))
 }
 
-/// Runs the binary `name` beside this one with `args`, and exits as it does: Windows has
-/// no exec.
+/// Runs the VM process's binary with `args`, and exits as it does: Windows has no exec.
 #[cfg(not(unix))]
-fn instead(name: &str, args: &[OsString]) -> ExitCode {
-    let bin = match beside(name) {
+fn instead(args: &[OsString]) -> ExitCode {
+    let bin = match vm_binary() {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
     };
@@ -291,9 +303,9 @@ fn instead(name: &str, args: &[OsString]) -> ExitCode {
 fn vm(args: &[OsString]) -> ExitCode {
     use std::os::fd::{AsFd as _, IntoRawFd as _};
     if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
-        return instead(SHARDS_VM, args);
+        return instead(args);
     }
-    let broker = match beside(SHARDSD) {
+    let broker = match shardsd() {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
     };
@@ -335,13 +347,13 @@ fn vm(args: &[OsString]) -> ExitCode {
     with.push("--cwd".into());
     with.push(cwd.into());
     with.extend(args.iter().skip(1).cloned());
-    instead(SHARDS_VM, &with)
+    instead(&with)
 }
 
 /// `shards vm`: becomes shards-vm.
 #[cfg(not(target_os = "macos"))]
 fn vm(args: &[OsString]) -> ExitCode {
-    instead(SHARDS_VM, args)
+    instead(args)
 }
 
 fn failed(message: &str) -> ExitCode {

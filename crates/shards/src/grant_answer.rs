@@ -49,83 +49,10 @@ fn access(code: u8) -> Option<Access> {
     }
 }
 
-mod cf {
-    use std::ffi::c_void;
-
-    pub type CFTypeRef = *const c_void;
-    pub type CFAllocatorRef = *const c_void;
-    pub type CFURLRef = *const c_void;
-    pub type CFDataRef = *const c_void;
-    pub type CFErrorRef = *const c_void;
-    pub type CFArrayRef = *const c_void;
-    pub type CFIndex = isize;
-    pub type Boolean = u8;
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    unsafe extern "C" {
-        pub fn CFURLCreateFromFileSystemRepresentation(
-            allocator: CFAllocatorRef,
-            buffer: *const u8,
-            len: CFIndex,
-            is_directory: Boolean,
-        ) -> CFURLRef;
-        pub fn CFURLCreateBookmarkData(
-            allocator: CFAllocatorRef,
-            url: CFURLRef,
-            options: usize,
-            properties: CFArrayRef,
-            relative_to: CFURLRef,
-            error: *mut CFErrorRef,
-        ) -> CFDataRef;
-        pub fn CFDataGetBytePtr(data: CFDataRef) -> *const u8;
-        pub fn CFDataGetLength(data: CFDataRef) -> CFIndex;
-        pub fn CFRelease(cf: CFTypeRef);
-    }
-}
-
-/// A read-write bookmark for directory `path`, for another process to resolve (options 0
-/// grant "access to the resource to a process that resolves the bookmark").
+/// A read-write bookmark for directory `path`, for another process to resolve: made by
+/// CoreFoundation, bound when first needed (shards_apple).
 pub fn bookmark(path: &Path) -> Result<Vec<u8>, String> {
-    use std::os::unix::ffi::OsStrExt;
-    let bytes = path.as_os_str().as_bytes();
-    let at = |what: &str| format!("{}: {what}", path.display());
-    let len = isize::try_from(bytes.len()).map_err(|_| at("a path too long"))?;
-    // SAFETY: a buffer of `len` bytes; the URL is released below.
-    let url =
-        unsafe { cf::CFURLCreateFromFileSystemRepresentation(std::ptr::null(), bytes.as_ptr(), len, 1) };
-    if url.is_null() {
-        return Err(at("no URL for it"));
-    }
-    let mut error: cf::CFErrorRef = std::ptr::null();
-    // SAFETY: a URL we own; the data, if made, is released below.
-    let data = unsafe {
-        cf::CFURLCreateBookmarkData(
-            std::ptr::null(),
-            url,
-            0,
-            std::ptr::null(),
-            std::ptr::null(),
-            &mut error,
-        )
-    };
-    // SAFETY: each reference is ours to release, once.
-    unsafe {
-        cf::CFRelease(url);
-        if !error.is_null() {
-            cf::CFRelease(error);
-        }
-    }
-    if data.is_null() {
-        return Err(at("no bookmark for it"));
-    }
-    // SAFETY: CFData's bytes, valid while `data` is, copied before it is released.
-    let out = unsafe {
-        let n = usize::try_from(cf::CFDataGetLength(data)).unwrap_or(0);
-        let b = std::slice::from_raw_parts(cf::CFDataGetBytePtr(data), n).to_vec();
-        cf::CFRelease(data);
-        b
-    };
-    Ok(out)
+    shards_apple::bookmark::bookmark(path)
 }
 
 /// What is granted for `path` as `access`: a file opened for it, a directory's bookmark,

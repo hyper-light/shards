@@ -242,10 +242,10 @@ pub fn test_guest() -> &'static Path {
     T.get_or_init(|| guest_binary("shards-testguest"))
 }
 
-/// The `shards` command, beside the `shardsd` it runs (src/bin/shards). Copies of this
-/// build's two binaries share a directory named by their SHA-256, so the test processes of
-/// one build share them; on macOS `shardsd` is signed with the hypervisor entitlement,
-/// without which Hypervisor.framework refuses the process. macOS assesses each new signed
+/// `shards`, the one binary: every command, the daemon included. Copies of this build's
+/// binaries share a directory named by their SHA-256, so the test processes of one build
+/// share them; on macOS `shards` is signed with the hypervisor entitlement, as releases
+/// are. macOS assesses each new signed
 /// binary when it first runs, which would otherwise delay every process's first VM and
 /// load the host while tests and benchmarks run.
 pub fn shards() -> &'static Path {
@@ -253,16 +253,16 @@ pub fn shards() -> &'static Path {
     V.get_or_init(|| binaries().join(format!("shards{}", std::env::consts::EXE_SUFFIX)))
 }
 
-/// The `shardsd` beside [`shards`]: the daemon, pulls and the guest.
-pub fn shardsd() -> &'static Path {
-    static V: OnceLock<PathBuf> = OnceLock::new();
-    V.get_or_init(|| binaries().join(format!("shardsd{}", std::env::consts::EXE_SUFFIX)))
-}
-
-/// The `shards-vm` beside [`shards`], for what runs microVMs without the command in front.
+/// The VM process, for what runs microVMs without the command in front.
 pub fn shards_vm() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
-    V.get_or_init(|| binaries().join(format!("shards-vm{}", std::env::consts::EXE_SUFFIX)))
+    V.get_or_init(|| carried().join(format!("shards-vm{}", std::env::consts::EXE_SUFFIX)))
+}
+
+/// The VM and network processes `shards` carries, as build.rs signed and embedded them:
+/// for what starts one without `shards` in front.
+fn carried() -> PathBuf {
+    PathBuf::from(env!("SHARDS_HELPERS_CARRIED"))
 }
 
 /// Waits until no daemon listens in `home`: a daemon killed accepts connections until
@@ -305,22 +305,17 @@ pub fn fixed_port() -> u16 {
         .expect("a free port below the ephemeral ranges")
 }
 
-/// The `shards-net` beside [`shards`]: each networked VM's network process.
+/// The network process: each networked VM's.
 pub fn shards_net() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
-    V.get_or_init(|| binaries().join(format!("shards-net{}", std::env::consts::EXE_SUFFIX)))
+    V.get_or_init(|| carried().join(format!("shards-net{}", std::env::consts::EXE_SUFFIX)))
 }
 
-/// The directory holding this build's `shards`, `shardsd`, `shards-vm` and `shards-net`.
+/// The directory holding this build's `shards`.
 fn binaries() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
     V.get_or_init(|| {
-        let built = [
-            ("shards", Path::new(env!("CARGO_BIN_EXE_shards"))),
-            ("shardsd", Path::new(env!("CARGO_BIN_EXE_shardsd"))),
-            ("shards-vm", Path::new(env!("CARGO_BIN_EXE_shards-vm"))),
-            ("shards-net", Path::new(env!("CARGO_BIN_EXE_shards-net"))),
-        ];
+        let built = [("shards", Path::new(env!("CARGO_BIN_EXE_shards")))];
         let digest: String = {
             use sha2::Digest;
             let mut hash = sha2::Sha256::new();
@@ -346,7 +341,8 @@ fn binaries() -> &'static Path {
     })
 }
 
-/// Copies `built` into `root`, as `name`, signed as a release is.
+/// Copies `built` into `root`, as `name`: `shards`, which carries the rest, the VM process
+/// signed inside it as a release signs it (build.rs).
 fn place(root: &Path, name: &str, built: &[(&str, &Path)]) {
     let dir = root.join(name);
     let temp = root.join(format!("{name}.{}.tmp", std::process::id()));
@@ -355,18 +351,6 @@ fn place(root: &Path, name: &str, built: &[(&str, &Path)]) {
     for &(bin, path) in built {
         let copy = temp.join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
         std::fs::copy(path, &copy).unwrap();
-        if cfg!(target_os = "macos") && bin == "shards-vm" {
-            // In App Sandbox, as releases sign it (resources/vm.entitlements).
-            let st = Command::new("codesign")
-                .arg("--entitlements")
-                .arg(workspace().join("resources/vm.entitlements"))
-                .args(["-o", "runtime", "--force", "-s", "-"])
-                .arg(&copy)
-                .stderr(Stdio::null())
-                .status()
-                .unwrap();
-            assert!(st.success(), "codesign");
-        }
     }
     // Another process may have placed the same build meanwhile: either copy serves.
     if std::fs::rename(&temp, &dir).is_err() {

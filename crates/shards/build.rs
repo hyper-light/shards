@@ -1,6 +1,15 @@
-//! Builds shards-init, the guest's PID 1, for this target's architecture, so that
-//! `shardsd` carries the init its guests run and the two always match
-//! (docs/design/architecture.md D28). `SHARDS_INIT_BINARY` names a prebuilt one instead.
+//! Builds what `shards` carries inside it, so that one binary is all there is to install
+//! (docs/design/architecture.md D36):
+//! - shards-init, the guest's PID 1, for this target's architecture, so that `shards`
+//!   carries the init its guests run and the two always match (D28).
+//!   `SHARDS_INIT_BINARY` names a prebuilt one instead.
+//! - The VM process (`shards-vm`) and the network process (`shards-net`), which `shards`
+//!   writes out once per build and starts (src/helpers.rs). Built by a nested cargo for
+//!   this target and profile into `target/helpers`, kept between builds; on macOS the VM
+//!   process signed with its App Sandbox entitlements first, so that its signature travels
+//!   inside `shards`. `SHARDS_HELPERS_DIR` names prebuilt ones; `SHARDS_HELPERS=skip`
+//!   carries none, for check builds of other targets (scripts/lint), and such a `shards`
+//!   refuses what needs them.
 //!
 //! The init is built by a nested cargo, for `<arch>-unknown-linux-musl` with the `guest`
 //! profile, into a target directory of its own under `OUT_DIR`. It names its linker,
@@ -26,29 +35,9 @@ fn main() {
 }
 
 fn build() -> Result<(), String> {
+    helpers()?;
     let mut out = io::stdout().lock();
     let _ = writeln!(out, "cargo::rerun-if-env-changed=SHARDS_INIT_BINARY");
-    // shards-vm runs in App Sandbox on macOS, which takes a tool's identity from an
-    // Info.plist in its __TEXT,__info_plist section: without one, it is killed at launch
-    // (docs/research/macos-confinement.md §2).
-    if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos") {
-        let manifest =
-            PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is not set")?);
-        let plist = manifest
-            .join("..")
-            .join("..")
-            .join("resources")
-            .join("vm-Info.plist");
-        let plist = plist
-            .canonicalize()
-            .map_err(|e| format!("{}: {e}", plist.display()))?;
-        let _ = writeln!(out, "cargo::rerun-if-changed={}", plist.display());
-        let _ = writeln!(
-            out,
-            "cargo::rustc-link-arg-bin=shards-vm=-Wl,-sectcreate,__TEXT,__info_plist,{}",
-            plist.display()
-        );
-    }
     // Only Unix hosts run VMs from `shardsd` yet.
     if env::var("CARGO_CFG_TARGET_FAMILY").is_ok_and(|f| !f.split(',').any(|f| f == "unix")) {
         return Ok(());
@@ -157,4 +146,183 @@ fn compile(root: &Path, arch: &str, target_dir: &Path, cargo: OsString) -> Resul
         return Err(format!("building shards-init made no {}", binary.display()));
     }
     Ok(binary)
+}
+
+/// The helpers `shards` carries, in `OUT_DIR/helpers.rs`: each one's bytes and SHA-256.
+fn helpers() -> Result<(), String> {
+    let mut out = io::stdout().lock();
+    for name in ["SHARDS_HELPERS", "SHARDS_HELPERS_DIR"] {
+        let _ = writeln!(out, "cargo::rerun-if-env-changed={name}");
+    }
+    let var = |name: &str| env::var_os(name).ok_or_else(|| format!("{name} is not set"));
+    let out_dir = PathBuf::from(var("OUT_DIR")?);
+    let exe = if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    let names = ["shards-vm", "shards-net"];
+    let skip = env::var("SHARDS_HELPERS").is_ok_and(|v| v == "skip");
+    let built: Option<PathBuf> = if skip {
+        None
+    } else if let Some(dir) = env::var_os("SHARDS_HELPERS_DIR").filter(|d| !d.is_empty()) {
+        let dir = PathBuf::from(dir);
+        if !dir.is_absolute() {
+            return Err(format!(
+                "SHARDS_HELPERS_DIR: {} is not an absolute path",
+                dir.display()
+            ));
+        }
+        for name in names {
+            let _ = writeln!(
+                out,
+                "cargo::rerun-if-changed={}",
+                dir.join(format!("{name}{exe}")).display()
+            );
+        }
+        Some(dir)
+    } else {
+        Some(compile_helpers(&mut out)?)
+    };
+    let dir = out_dir.join("helpers");
+    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut code = String::from("// What `shards` carries: written by build.rs.\n");
+    code.push_str(&format!("pub const PRESENT: bool = {};\n", built.is_some()));
+    for name in names {
+        let to = dir.join(format!("{name}{exe}"));
+        match &built {
+            Some(from) => {
+                let from = from.join(format!("{name}{exe}"));
+                fs::copy(&from, &to).map_err(|e| format!("copying {}: {e}", from.display()))?;
+                sign(name, &to)?;
+            }
+            None => fs::write(&to, b"").map_err(|e| format!("{}: {e}", to.display()))?,
+        }
+        let bytes = fs::read(&to).map_err(|e| format!("{}: {e}", to.display()))?;
+        let digest: String = {
+            use sha2::Digest as _;
+            sha2::Sha256::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        let ident = name.replace('-', "_").to_ascii_uppercase();
+        code.push_str(&format!(
+            "pub const {ident}: &[u8] = include_bytes!({:?});\npub const {ident}_SHA256: &str = {digest:?};\n",
+            to.display().to_string()
+        ));
+    }
+    fs::write(out_dir.join("helpers.rs"), code).map_err(|e| format!("helpers.rs: {e}"))?;
+    // For the package's tests and benchmarks: the copies carried, signed as they are.
+    let _ = writeln!(out, "cargo::rustc-env=SHARDS_HELPERS_CARRIED={}", dir.display());
+    Ok(())
+}
+
+/// Builds the helpers with a nested cargo, for this target and profile, into
+/// `target/helpers`; returns the directory holding them.
+fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
+    let var = |name: &str| env::var(name).map_err(|e| format!("{name}: {e}"));
+    let root = Path::new(&var("CARGO_MANIFEST_DIR")?).join("..").join("..");
+    for input in [
+        "crates/vm-process",
+        "crates/net-process",
+        "crates/vmm",
+        "crates/net",
+        "crates/netring",
+        "crates/ipc",
+        "crates/abi",
+        "crates/cmdline",
+        "crates/shards/src/confine.rs",
+        "crates/shards/src/grant.rs",
+        "crates/shards/src/grant_ask.rs",
+        "crates/shards/src/segments.rs",
+        "crates/shards/src/spec.rs",
+        "crates/shards/src/terminal.rs",
+        "crates/shards/src/vm_run.rs",
+        "crates/shards/src/warm.rs",
+        "crates/shards/src/workload.rs",
+        "resources/vm-Info.plist",
+        "resources/vm.entitlements",
+        "Cargo.toml",
+        "Cargo.lock",
+    ] {
+        let _ = writeln!(out, "cargo::rerun-if-changed={}", root.join(input).display());
+    }
+    let target = var("TARGET")?;
+    // Cargo names the dev profile `debug` here; any other is its own name.
+    let profile = match var("PROFILE")?.as_str() {
+        "debug" => "dev".to_string(),
+        other => other.to_string(),
+    };
+    let dir_name = if profile == "dev" {
+        "debug"
+    } else {
+        profile.as_str()
+    };
+    let target_dir = env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("target"))
+        .join("helpers");
+    let mut command = Command::new(var("CARGO")?);
+    command
+        .current_dir(&root)
+        .args([
+            "build",
+            "--locked",
+            "-p",
+            "shards-vm-process",
+            "-p",
+            "shards-net-process",
+            "--profile",
+        ])
+        .arg(&profile)
+        .args(["--target", &target, "--target-dir"])
+        .arg(&target_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let output = command
+        .output()
+        .map_err(|e| format!("building the VM and network processes: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let tail: Vec<&str> = stderr.lines().rev().take(20).collect();
+        let mut message = format!("building the VM and network processes for {target} failed");
+        message.push_str("\nor name prebuilt ones with SHARDS_HELPERS_DIR");
+        for line in tail.iter().rev() {
+            message.push('\n');
+            message.push_str(line);
+        }
+        return Err(message);
+    }
+    Ok(target_dir.join(&target).join(dir_name))
+}
+
+/// On macOS, signs a helper as releases are: the VM process in App Sandbox, with the
+/// hypervisor entitlement and Hardened Runtime (resources/vm.entitlements); the network
+/// process with none.
+fn sign(name: &str, path: &Path) -> Result<(), String> {
+    if !env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos") || !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    let resources =
+        Path::new(&env::var("CARGO_MANIFEST_DIR").map_err(|e| e.to_string())?).join("../../resources");
+    let mut command = Command::new("codesign");
+    if name == "shards-vm" {
+        command
+            .arg("--entitlements")
+            .arg(resources.join("vm.entitlements"))
+            .args(["-o", "runtime"]);
+    }
+    let status = command
+        .args(["--force", "-s", "-"])
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("codesign {}: {e}", path.display()))?;
+    if !status.success() {
+        return Err(format!("codesign {} failed", path.display()));
+    }
+    Ok(())
 }

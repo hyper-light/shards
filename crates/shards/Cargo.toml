@@ -8,29 +8,11 @@ repository.workspace = true
 rust-version.workspace = true
 autobins = false
 
-# The command, which links only the standard library, shards-ipc and shards-cmdline, so it
-# starts fast.
+# The one binary: every command, the daemon included. It links no framework that loads
+# at launch, so it starts as fast as a command alone would (PM M113).
 [[bin]]
 name = "shards"
-path = "src/bin/shards/main.rs"
-
-# The daemon, pulls and the guest: every command but `run`, the container commands and
-# `vm`.
-[[bin]]
-name = "shardsd"
 path = "src/main.rs"
-
-# One microVM per process, booted or restored: `shards vm`, and the daemon's VMs. It
-# links the VMM and what a VM process runs, and nothing of shardsd's.
-[[bin]]
-name = "shards-vm"
-path = "src/bin/shards-vm/main.rs"
-
-# One microVM's network process (D31): its guest's flows to the host's sockets, apart from
-# the VM process, which stays without TCP.
-[[bin]]
-name = "shards-net"
-path = "src/bin/shards-net/main.rs"
 
 [lints]
 workspace = true
@@ -60,8 +42,15 @@ serde_json = "1"
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+shards-apple = { path = "../apple" }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
+
+[build-dependencies]
+# The helpers' digests (build.rs).
+sha2 = "0.11"
 
 [dev-dependencies]
 shards-testguest = { path = "../testguest" }
