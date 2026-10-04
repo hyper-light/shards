@@ -1827,7 +1827,7 @@ impl<D: Disk> Daemon<D> {
         loop {
             let Some(holder) = held
                 .iter()
-                .find(|h| h.at.contains(&(at, proto)))
+                .find(|h| h.at.iter().any(|&(a, p)| p == proto && publish::overlaps(a, at)))
                 .map(|h| h.container.clone())
             else {
                 return if ours {

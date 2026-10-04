@@ -1546,6 +1546,22 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
         )),
         "{late}"
     );
+    // And at one address of the family a running container holds the port at every
+    // address of: refused as dockerd's allocator refuses it, where BSD's SO_REUSEADDR
+    // would have let the bind in (review 2.7).
+    let narrow = run_in(
+        &home,
+        &image,
+        &["--name", "narrow", "-p", &format!("127.0.0.1:{n}:7000")],
+        &["exit", "0"],
+    );
+    assert_eq!(narrow.status, Some(125), "{narrow}");
+    assert!(
+        narrow.stderr.contains(&format!(
+            "Bind for 127.0.0.1:{n} failed: port is already allocated"
+        )),
+        "{narrow}"
+    );
     let all = shards(&["ps", "-a"]);
     assert!(
         all.stdout

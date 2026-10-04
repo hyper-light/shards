@@ -49,6 +49,15 @@ pub(super) struct Held {
     pub listeners: Vec<OwnedFd>,
 }
 
+/// Whether bindings at `a` and `b` would take one another's connections, as dockerd's
+/// allocator counts them (moby daemon/libnetwork/portallocator, RequestPortsInRange): one
+/// port, one family, and either address the family's every one, or both the same.
+pub(super) fn overlaps(a: SocketAddr, b: SocketAddr) -> bool {
+    a.port() == b.port()
+        && a.is_ipv4() == b.is_ipv4()
+        && (a.ip().is_unspecified() || b.ip().is_unspecified() || a.ip() == b.ip())
+}
+
 /// Whose a host address found in use is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum InUse {
@@ -224,6 +233,16 @@ fn bind_all(
         let mut chosen = port;
         let mut failed = None;
         for ip in ips {
+            // A port this daemon's container holds at the address, or at every address of
+            // its family, is refused before any bind, as dockerd's allocator refuses it,
+            // whether or not the kernel would: BSD's SO_REUSEADDR lets a specific address
+            // in over a listener at the family's every address (review 2.7). One freed as
+            // its run ended is bound.
+            if chosen != 0 && in_use(SocketAddr::new(*ip, chosen)) == InUse::Allocated {
+                return Err(format!(
+                    "Bind for {ip}:{chosen} failed: port is already allocated"
+                ));
+            }
             match listen(SocketAddr::new(*ip, chosen)) {
                 Ok((fd, at)) => {
                     chosen = at;
@@ -465,6 +484,46 @@ mod tests {
         .unwrap();
         assert!(next > port && next <= port.saturating_add(50), "{next}");
         drop(blocker);
+    }
+
+    /// A port held at an address overlaps it at the family's every address, and that at
+    /// every one of its addresses, as dockerd's allocator counts them; families apart, and
+    /// ports apart, do not.
+    #[test]
+    fn bindings_overlap_as_dockerds_allocator_counts_them() {
+        let at = |s: &str| s.parse::<SocketAddr>().unwrap();
+        assert!(overlaps(at("0.0.0.0:8080"), at("127.0.0.1:8080")));
+        assert!(overlaps(at("127.0.0.1:8080"), at("0.0.0.0:8080")));
+        assert!(overlaps(at("127.0.0.1:8080"), at("127.0.0.1:8080")));
+        assert!(overlaps(at("[::]:8080"), at("[::1]:8080")));
+        assert!(!overlaps(at("127.0.0.1:8080"), at("10.0.0.1:8080")));
+        assert!(!overlaps(at("0.0.0.0:8080"), at("[::]:8080")));
+        assert!(!overlaps(at("0.0.0.0:8080"), at("0.0.0.0:8081")));
+    }
+
+    /// A container's port is refused before any bind, at an address another overlaps,
+    /// whatever the kernel would allow (review 2.7): nothing is bound for it.
+    #[test]
+    fn a_containers_port_is_refused_before_any_bind() {
+        let held = "0.0.0.0:41234".parse::<SocketAddr>().unwrap();
+        let in_use = |at: SocketAddr| {
+            if overlaps(at, held) {
+                InUse::Allocated
+            } else {
+                InUse::Host
+            }
+        };
+        let bound = std::cell::Cell::new(0);
+        let listening = |at: SocketAddr| {
+            bound.set(bound.get() + 1);
+            listen(at, TCP)
+        };
+        let loopback = [IpAddr::V4(Ipv4Addr::LOCALHOST)];
+        assert_eq!(
+            bind_all(&loopback, 41234, TCP, &in_use, &listening).unwrap_err(),
+            "Bind for 127.0.0.1:41234 failed: port is already allocated"
+        );
+        assert_eq!(bound.get(), 0, "bound before it was refused");
     }
 
     /// A port the kernel picks at IPv4 that IPv6 has taken is picked afresh, up to
