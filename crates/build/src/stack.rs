@@ -270,8 +270,13 @@ impl Stack {
         }
         // Nodes the step changed in place and the layer leaves: the differ judged them
         // the same, or never saw them. Those already kept are looked at again: what a
-        // step changes unseen in one, the layers do not have either.
-        for id in 1..old {
+        // step changes unseen in one, the layers do not have either. Only where the trees
+        // do not share their nodes can one differ.
+        let ids = lower
+            .tree()
+            .unshared_nodes(upper.tree(), old)
+            .flat_map(|run| run.start.max(1)..run.end);
+        for id in ids {
             if links(id) == 0 || rec.written.get(id) {
                 continue;
             }

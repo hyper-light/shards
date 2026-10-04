@@ -3674,3 +3674,38 @@ revision before comparing a changed API/implementation.
 - **Consequence (x86_64).** Comparisons jump to a pool of their targets (f0a6419): a VM
   process confines itself 35 µs sooner than with 7a0d8a0's search, and 173 µs sooner
   than with the linear layout, its filter as cheap to its syscalls.
+
+### M108. What a build's snapshots hold, step by step
+
+- **Question.** A build keeps every step's snapshot until its export, and each step
+  began with a whole copy of the tree before it (review 4.2): every node, entry, name
+  and index slot. What does that cost a step, on images as they are?
+- **Method.** `docs/research/measurements/build-steps` (`cargo run --release -- STEPS
+  LAYER.tar...`): an image's layers applied as a base image's are, then STEPS steps as
+  the build executor takes them (crates/shards/src/build/exec.rs): the input snapshot
+  cloned, a file put in the clone, a step begun, and the links counted (`Fs::links`, as
+  `write_layer` and COPY count them), every snapshot kept; each clone's and count's µs,
+  and the heap the steps' snapshots hold, by a counting allocator. golang:1.26 (36,576
+  entries) and python:3.13 (33,833), their layers as `docker save` gives them,
+  decompressed. And `build-memory`'s apply and write of golang:1.26, the tree before
+  and after, interleaved, 9 runs each. Apple M5 Max, macOS 26.4.1, 2026-10-04.
+- **Results.**
+
+  | | the base snapshot | a step's clone | a step's snapshot holds | 50 steps hold |
+  |---|---|---|---|---|
+  | golang:1.26, the tree copied | 5.8 MB | 190–223 µs at p50 | 6.84 MB | 341.9 MB |
+  | golang:1.26, chunks shared | 3.7 MB | 0–2 µs | 0.22 MB | 10.9 MB |
+  | python:3.13, the tree copied | 5.9 MB | 188–223 µs | 6.34 MB | 317.2 MB |
+  | python:3.13, chunks shared | 3.4 MB | 0–6 µs | 0.17 MB | 8.5 MB |
+
+  Counting links, a pass over the whole tree, 228–316 µs a step at p50, either way.
+  Applying golang:1.26's layers took 128.4 ms at p50 before and 129.7 after; writing
+  its image 61.2 and 61.1 ms.
+- **Consequence.** A tree's nodes, entries and index slots are kept in chunks of 1,024,
+  and its names in chunks of 64 KiB a name never straddles, each chunk shared by the
+  trees cloned from one another until one changes it, which copies that chunk alone
+  (erofs.rs, `Arena`, `Names`). A clone copies the chunks' handles, a step's snapshot
+  holds what the step changed, and a build of 50 steps over golang holds 11 MB of
+  snapshots where it held 342. Two snapshots compare only the chunks they do not share
+  (`Tree::unshared_nodes`), as a step's layer is checked against the nodes it changed in
+  place (stack.rs). Counting links stays a pass over the tree.

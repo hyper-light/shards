@@ -17,6 +17,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use crate::{Error, bad as err};
 
@@ -208,20 +209,15 @@ pub struct Node {
 /// No node, no entry: ids are `u32`, and this one is never given.
 const NONE: u32 = u32::MAX;
 
-/// The name at `at` in a tree's names: one length byte, then the name.
-fn name_at(names: &[u8], at: u32) -> &[u8] {
-    let at = at as usize;
-    let len = names.get(at).copied().map_or(0, usize::from);
-    names.get(at + 1..at + 1 + len).unwrap_or_default()
-}
-
-/// Items by id, in chunks of at most [`Arena::CHUNK`]: growing moves only the last
-/// chunk's items, where doubling one vector would move them all, holding both copies at
-/// once, and only the last chunk has room to spare (platform-measurements.md M78). A chunk
-/// grows as a vector does, so a small tree holds a small one.
+/// Items by id, in chunks of [`Arena::CHUNK`], each shared by the trees cloned from one
+/// another until one of them changes it (review 4.2): a clone copies the chunks' handles
+/// alone, and a change copies the one chunk it lands in, so a build's snapshots, each a
+/// step's clone of the one before, hold what their steps changed and share the rest
+/// (platform-measurements.md M108). Growing moves only the last chunk's items, and a
+/// chunk grows as a vector does, so a small tree holds a small one (M78).
 #[derive(Debug, Clone)]
 struct Arena<T> {
-    chunks: Vec<Vec<T>>,
+    chunks: Vec<Arc<Vec<T>>>,
     len: usize,
 }
 
@@ -234,9 +230,17 @@ impl<T> Default for Arena<T> {
     }
 }
 
-impl<T> Arena<T> {
-    const CHUNK_BITS: u32 = 16;
+impl<T: Clone> Arena<T> {
+    const CHUNK_BITS: u32 = 10;
     const CHUNK: usize = 1 << Self::CHUNK_BITS;
+
+    /// `len` copies of `item`.
+    fn filled(len: usize, item: T) -> Arena<T> {
+        let chunks = (0..len.div_ceil(Self::CHUNK))
+            .map(|c| Arc::new(vec![item.clone(); (len - c * Self::CHUNK).min(Self::CHUNK)]))
+            .collect();
+        Arena { chunks, len }
+    }
 
     fn len(&self) -> usize {
         self.len
@@ -248,10 +252,9 @@ impl<T> Arena<T> {
             .get(id & (Self::CHUNK - 1))
     }
 
+    /// The item to change: its chunk this tree's own first, copied if another shares it.
     fn get_mut(&mut self, id: usize) -> Option<&mut T> {
-        self.chunks
-            .get_mut(id >> Self::CHUNK_BITS)?
-            .get_mut(id & (Self::CHUNK - 1))
+        Arc::make_mut(self.chunks.get_mut(id >> Self::CHUNK_BITS)?).get_mut(id & (Self::CHUNK - 1))
     }
 
     /// Adds `item`, returning its id, which fits a `u32` short of [`NONE`].
@@ -263,12 +266,58 @@ impl<T> Arena<T> {
         match self.chunks.last_mut() {
             Some(chunk) if chunk.len() < Self::CHUNK => {
                 // Doubling from a power of two stops at CHUNK, never past it.
-                chunk.push(item);
+                Arc::make_mut(chunk).push(item);
             }
-            _ => self.chunks.push(vec![item]),
+            _ => self.chunks.push(Arc::new(vec![item])),
         }
         self.len += 1;
         Ok(id)
+    }
+}
+
+/// A tree's names, each where it was added, one length byte and then the name, in
+/// chunks of [`Names::CHUNK`] bytes a name never straddles, shared as an [`Arena`]'s
+/// chunks are: a name's place is its chunk's number, and its offset in the chunk.
+#[derive(Debug, Clone, Default)]
+struct Names {
+    chunks: Vec<Arc<Vec<u8>>>,
+}
+
+impl Names {
+    const CHUNK_BITS: u32 = 16;
+    const CHUNK: usize = 1 << Self::CHUNK_BITS;
+
+    /// The name at `at`.
+    fn get(&self, at: u32) -> &[u8] {
+        let off = at as usize & (Self::CHUNK - 1);
+        self.chunks
+            .get((at >> Self::CHUNK_BITS) as usize)
+            .and_then(|chunk| {
+                let len = usize::from(*chunk.get(off)?);
+                chunk.get(off + 1..off + 1 + len)
+            })
+            .unwrap_or_default()
+    }
+
+    /// Adds `name`, of at most [`NAME_MAX`] bytes, returning where it is.
+    fn push(&mut self, name: &[u8]) -> Result<u32, Error> {
+        let len = u8::try_from(name.len()).map_err(|_| Error("a name past NAME_MAX".into()))?;
+        if self
+            .chunks
+            .last()
+            .is_none_or(|chunk| chunk.len() + 1 + name.len() > Self::CHUNK)
+        {
+            self.chunks.push(Arc::new(Vec::new()));
+        }
+        let number = u32::try_from(self.chunks.len() - 1)
+            .ok()
+            .filter(|&n| n >> (32 - Self::CHUNK_BITS) == 0)
+            .ok_or_else(|| Error("too many names for one tree".into()))?;
+        let chunk = Arc::make_mut(self.chunks.last_mut().ok_or_else(|| Error("no names".into()))?);
+        let at = (number << Self::CHUNK_BITS) | chunk.len() as u32;
+        chunk.push(len);
+        chunk.extend_from_slice(name);
+        Ok(at)
     }
 }
 
@@ -297,7 +346,7 @@ struct Link {
 /// it names, and its name when the directory agrees.
 #[derive(Debug, Clone, Default)]
 struct Index {
-    slots: Vec<u32>,
+    slots: Arena<u32>,
     used: usize,
     keys: std::hash::RandomState,
 }
@@ -326,7 +375,7 @@ impl Index {
 pub struct Tree {
     nodes: Arena<Node>,
     links: Arena<Link>,
-    names: Vec<u8>,
+    names: Names,
     index: Index,
     /// Entries replaced or removed since the last compaction: what may have left nodes
     /// unreachable.
@@ -389,7 +438,7 @@ impl Tree {
         let mut t = Tree {
             nodes: Arena::default(),
             links: Arena::default(),
-            names: Vec::new(),
+            names: Names::default(),
             index: Index::default(),
             dropped: 0,
             step: 0,
@@ -407,6 +456,26 @@ impl Tree {
     /// How many nodes the arena holds, reachable or not.
     pub fn len(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// The ids below `end` of the nodes this tree and `other` may hold differently, in
+    /// runs: all of them but those in chunks both still share, which neither has changed
+    /// since one was cloned from the other, and so hold alike (review 4.3). A step's
+    /// snapshot, compared with the one it began from, differs in the chunks it changed.
+    pub fn unshared_nodes<'t>(
+        &'t self,
+        other: &'t Tree,
+        end: usize,
+    ) -> impl Iterator<Item = std::ops::Range<usize>> + 't {
+        let chunk = Arena::<Node>::CHUNK;
+        (0..end.div_ceil(chunk))
+            .filter(
+                move |&c| match (self.nodes.chunks.get(c), other.nodes.chunks.get(c)) {
+                    (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+                    _ => true,
+                },
+            )
+            .map(move |c| c * chunk..((c + 1) * chunk).min(end))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -436,7 +505,7 @@ impl Tree {
     }
 
     fn name_of(&self, link: &Link) -> &[u8] {
-        name_at(&self.names, link.name)
+        self.names.get(link.name)
     }
 
     /// The live entries of `dir` into `out`, by id, sorted by name.
@@ -508,8 +577,7 @@ impl Tree {
     /// The index again, `slots` long, of the live entries only.
     fn rebuild_index(&mut self, slots: usize) -> Result<(), Error> {
         let slots = slots.next_power_of_two();
-        self.index.slots = Vec::new();
-        self.index.slots.resize(slots, EMPTY);
+        self.index.slots = Arena::filled(slots, EMPTY);
         self.index.used = 0;
         for id in 0..self.links.len() {
             if self.links.get(id).is_some_and(|l| l.child != NONE) {
@@ -521,11 +589,8 @@ impl Tree {
 
     /// A new entry `name` in `dir`, naming `child`, at the head of the directory's list.
     fn add_link(&mut self, dir: u32, name: &[u8], child: u32) -> Result<(), Error> {
-        let at = u32::try_from(self.names.len()).map_err(|_| Error("too many names for one tree".into()))?;
-        let head = self.dir_mut(dir as usize)?;
-        let next = head.first;
-        self.names.push(name.len() as u8);
-        self.names.extend_from_slice(name);
+        let next = self.dir_mut(dir as usize)?.first;
+        let at = self.names.push(name)?;
         let id = self.links.push(Link {
             dir,
             child,
@@ -735,7 +800,7 @@ impl Tree {
     /// [`write`] lists it: after its nodes, entries and names, the index is the tree's
     /// largest part. Looking a name up finds nothing afterwards.
     pub fn drop_index(&mut self) {
-        self.index.slots = Vec::new();
+        self.index.slots = Arena::default();
         self.index.used = 0;
     }
 
@@ -788,7 +853,7 @@ impl Tree {
                     continue;
                 };
                 let child = &(l.child as NodeId);
-                let name = name_at(&self.names, l.name);
+                let name = self.names.get(l.name);
                 let moved = match new_id.get(*child).copied() {
                     Some(id) if id != NONE => id,
                     _ => {
@@ -1593,6 +1658,46 @@ mod tests {
 
     /// A tree is compacted once what was dropped comes to half its nodes, not before: its
     /// version, which compaction makes fresh, tells.
+    /// A clone shares every chunk of nodes with its tree until one changes a node, which
+    /// copies that node's chunk alone: only its run is unshared after. Trees made apart
+    /// share nothing (review 4.2, 4.3).
+    #[test]
+    fn a_clone_shares_what_it_has_not_changed() {
+        let chunk = Arena::<Node>::CHUNK;
+        let mut tree = Tree::new(meta(0o755));
+        for i in 0..3 * chunk {
+            tree.insert(
+                Tree::ROOT,
+                format!("f{i}").as_bytes(),
+                Node {
+                    kind: Kind::Fifo,
+                    meta: meta(0o644),
+                },
+            )
+            .unwrap();
+        }
+        let len = tree.len();
+        let mut copy = tree.clone();
+        assert_eq!(copy.unshared_nodes(&tree, len).count(), 0);
+        let changed = chunk + 7;
+        copy.node_mut(changed).unwrap().meta.mode = 0o600;
+        let runs: Vec<_> = copy.unshared_nodes(&tree, len).collect();
+        assert_eq!(runs.len(), 1);
+        assert_eq!((runs[0].start, runs[0].end), (chunk, 2 * chunk));
+        assert_eq!(
+            tree.node(changed).unwrap().meta.mode,
+            0o644,
+            "the tree keeps its own"
+        );
+        let apart = Tree::new(meta(0o755));
+        assert_eq!(apart.unshared_nodes(&tree, len).count(), len.div_ceil(chunk));
+        assert_eq!(
+            copy.unshared_nodes(&tree, 10).count(),
+            0,
+            "the changed chunk lies past the first 10"
+        );
+    }
+
     #[test]
     fn compaction_waits_for_half_the_tree_to_be_dropped() {
         let mut tree = Tree::new(meta(0o755));
