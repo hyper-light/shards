@@ -159,6 +159,44 @@ pub fn parse_int(s: &str) -> Result<i64, NumError> {
     })
 }
 
+/// `s` read as `strconv.ParseInt(s, 10, 64)` reads it: an optional sign, then decimal
+/// digits alone, no base prefix or `_`, as go-units reads a ulimit's limits.
+pub fn parse_int10(s: &str) -> Result<i64, NumError> {
+    let fail = |range| NumError {
+        func: "ParseInt",
+        text: s.to_string(),
+        range,
+    };
+    let (negative, digits) = match s.as_bytes().first() {
+        None => return Err(fail(false)),
+        Some(b'+') => (false, s.get(1..).unwrap_or_default()),
+        Some(b'-') => (true, s.get(1..).unwrap_or_default()),
+        Some(_) => (false, s),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(fail(false));
+    }
+    let mut magnitude: u64 = 0;
+    for b in digits.bytes() {
+        magnitude = match magnitude
+            .checked_mul(10)
+            .and_then(|m| m.checked_add(u64::from(b - b'0')))
+        {
+            Some(m) => m,
+            None => return Err(fail(true)),
+        };
+    }
+    const CUTOFF: u64 = 1 << 63;
+    if !negative && magnitude >= CUTOFF || negative && magnitude > CUTOFF {
+        return Err(fail(true));
+    }
+    Ok(if negative {
+        0i64.wrapping_sub_unsigned(magnitude)
+    } else {
+        i64::try_from(magnitude).map_err(|_| fail(true))?
+    })
+}
+
 /// Go's `ParseUint(s, 0, 64)`: the number, or whether it failed by overflow (`true`)
 /// rather than syntax.
 fn parse_uint(s: &str) -> Result<u64, bool> {
@@ -248,6 +286,94 @@ pub fn parse_bool(s: &str) -> Result<bool, NumError> {
             range: false,
         }),
     }
+}
+
+/// One CSV record's fields, as tonistiigi/go-csvvalue reads them (Go's `encoding/csv`
+/// rules for one line), with `csv.ParseError`'s text on error.
+pub fn csv_fields(line: &[u8]) -> Result<Vec<Vec<u8>>, Vec<u8>> {
+    let err =
+        |pos: usize, what: &str| format!("parse error on line 1, column {}: {what}", pos + 1).into_bytes();
+    let mut line = line;
+    if line.last() == Some(&b'\n') {
+        line = if line.len() > 1 && line.get(line.len() - 2) == Some(&b'\r') {
+            head(line, line.len() - 2)
+        } else {
+            head(line, line.len() - 1)
+        };
+    }
+    if line.is_empty() {
+        return Err(b"EOF".to_vec());
+    }
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut pos = 0usize;
+    loop {
+        if line.first() != Some(&b'"') {
+            let i = line.iter().position(|&b| b == b',');
+            let field = match i {
+                Some(i) => head(line, i),
+                None => line,
+            };
+            if let Some(j) = field.iter().position(|&b| b == b'"') {
+                return Err(err(pos + j, "bare \" in non-quoted-field"));
+            }
+            out.push(field.to_vec());
+            match i {
+                Some(i) => {
+                    line = tail(line, i + 1);
+                    pos += i + 1;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        line = tail(line, 1);
+        pos += 1;
+        // After a doubled quote, the next piece continues the same field.
+        let mut half_open = false;
+        loop {
+            let Some(i) = line.iter().position(|&b| b == b'"') else {
+                return Err(err(pos, "extraneous or missing \" in quoted-field"));
+            };
+            let piece = head(line, i).to_vec();
+            if half_open {
+                if let Some(last) = out.last_mut() {
+                    last.extend_from_slice(&piece);
+                }
+            } else {
+                out.push(piece);
+            }
+            line = tail(line, i + 1);
+            pos += i + 1;
+            match line.first() {
+                Some(b'"') => {
+                    if let Some(last) = out.last_mut() {
+                        last.push(b'"');
+                    }
+                    line = tail(line, 1);
+                    pos += 1;
+                    half_open = true;
+                }
+                Some(b',') => {
+                    line = tail(line, 1);
+                    pos += 1;
+                    break;
+                }
+                None => return Ok(out),
+                Some(_) => return Err(err(pos - 1, "extraneous or missing \" in quoted-field")),
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The first `n` bytes of `b`, or all of it.
+fn head(b: &[u8], n: usize) -> &[u8] {
+    b.get(..n).unwrap_or(b)
+}
+
+/// `b` from byte `n` on, or nothing.
+fn tail(b: &[u8], n: usize) -> &[u8] {
+    b.get(n..).unwrap_or_default()
 }
 
 #[cfg(test)]

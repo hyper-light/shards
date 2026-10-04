@@ -1,5 +1,7 @@
 //! Command lines as the Docker CLI reads them, and the text it answers with, so that
 //! shards' commands read and answer as `docker`'s do (docs/design/architecture.md D27):
+//! - `buildflags`: what `build`'s `--secret`, `--allow` and `--ulimit` mean, as buildx
+//!   and BuildKit read them;
 //! - `flags`: spf13/pflag's parsing, cobra's order of checks, and docker/cli's usage,
 //!   help and error texts;
 //! - `commands`: the commands, with docker/cli's flags and words;
@@ -15,6 +17,7 @@
 //! Go 1.26.1, which builds it; moby/term v0.5.2, which it vendors too. `tables` is
 //! generated from them by scripts/docker-cli.
 
+pub mod buildflags;
 pub mod commands;
 pub mod flags;
 pub mod go;

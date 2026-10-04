@@ -349,6 +349,16 @@ impl Parsed {
                     Some(Value::Many(v)) if matches!(f.kind, Kind::Many("stringArray" | "strings")) => {
                         format!("[{}]", csv_record(v))
                     }
+                    // UlimitOpt keeps the last of each resource, and prints them sorted.
+                    Some(Value::Many(v)) if matches!(f.kind, Kind::Many("ulimit")) => {
+                        let mut by_name = std::collections::BTreeMap::new();
+                        for u in v {
+                            by_name.insert(u.split_once('=').map_or(u.as_str(), |(n, _)| n), u.as_str());
+                        }
+                        let mut shown: Vec<&str> = by_name.into_values().collect();
+                        shown.sort_unstable();
+                        format!("[{}]", shown.join(" "))
+                    }
                     Some(Value::Many(v)) => format!("[{}]", v.join(" ")),
                     None => String::new(),
                 };

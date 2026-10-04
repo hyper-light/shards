@@ -1,21 +1,85 @@
 //! shards-cmdline answers `build` command lines as buildx does: every answer buildx gave in
-//! buildx.json (scripts/buildx/oracle_test.go), shards gives byte for byte. Where buildx
-//! ran its build, shards names the same flags and arguments, or refuses the flags it does
-//! not serve.
+//! buildx.json (scripts/buildx/oracle_test.go), shards gives byte for byte, but those
+//! [`BETTER`] lists. Where buildx ran its build, shards names the same flags and arguments,
+//! and what the build would be given: its secrets, entitlements and ulimits; or it refuses
+//! the flags it does not serve.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
+use shards_cmdline::buildflags;
 use shards_cmdline::commands::BUILD;
-use shards_cmdline::flags::{self, Flag, Outcome};
+use shards_cmdline::flags::{self, Outcome};
 
-fn accept(_: &Flag, value: &str) -> Result<String, String> {
-    Ok(value.to_string())
+/// What a build step carries at most, the run protocol's frame (shards-abi `MAX_PAYLOAD`).
+const STEP: u64 = 1 << 20;
+
+/// Where shards answers better than buildx, each for its reason (buildflags.rs): the
+/// command line, and shards' stdout, stderr and status.
+const BETTER: &[(&[&str], &str, &str, u8)] = &[
+    // A secret as large as a step carries, not BuildKit's gRPC session's 500 KiB.
+    (
+        &["--secret", "id=big,src=big.txt", "."],
+        "RUN --secret=[\"id=big,src=big.txt\"] \".\"\nSECRET big: 512001 bytes, \"ssssssssssssssss\"\n",
+        "",
+        0,
+    ),
+    // `as`, which go-units leaves out for the way Docker starts a container.
+    (
+        &["--ulimit", "as=1", "."],
+        "RUN --ulimit=[as=1:1] \".\"\nULIMIT as=1:1\n",
+        "",
+        0,
+    ),
+];
+
+/// What buildx's build is given, as oracle_test.go's `built` says it, from shards'
+/// reading of the same flags: stdout's lines, or the error.
+fn built(parsed: &flags::Parsed, out: &mut String) -> Result<(), String> {
+    let env = |name: &str| (name == "SHARDS_ORACLE_SECRET").then(|| "from the environment".to_string());
+    let secrets = buildflags::parse_secrets(parsed.many("secret"))?;
+    for (id, value) in buildflags::store(secrets, &env, STEP)? {
+        let b = value.bytes();
+        let head = String::from_utf8_lossy(b.get(..16).unwrap_or(b));
+        out.push_str(&format!(
+            "SECRET {id}: {} bytes, {}\n",
+            b.len(),
+            shards_cmdline::go::quote(&head)
+        ));
+    }
+    let allowed = buildflags::parse_entitlements(parsed.many("allow"))?;
+    if !allowed.granted.is_empty() || allowed.local_delete {
+        let granted: Vec<String> = allowed
+            .granted
+            .iter()
+            .map(|g| shards_cmdline::go::quote(g))
+            .collect();
+        out.push_str(&format!(
+            "ALLOW [{}] local.delete={}\n",
+            granted.join(" "),
+            allowed.local_delete
+        ));
+    }
+    if !parsed.many("ulimit").is_empty() {
+        let list: Vec<String> = buildflags::ulimits(parsed.many("ulimit"))?
+            .iter()
+            .map(|u| u.to_string())
+            .collect();
+        out.push_str(&format!("ULIMIT {}\n", list.join(",")));
+    }
+    Ok(())
 }
 
 #[test]
 fn build_answers_as_buildx() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/buildx.json");
     let answers: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    // The oracle's directory of secrets (oracle_test.go, TestShardsOracle).
+    let dir = std::env::temp_dir().join(format!("shards-buildx-oracle-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("small.txt"), "a small secret\n").unwrap();
+    std::fs::write(dir.join("edge.txt"), vec![b's'; 500 * 1024]).unwrap();
+    std::fs::write(dir.join("big.txt"), vec![b's'; 500 * 1024 + 1]).unwrap();
+    std::env::set_current_dir(&dir).unwrap();
     let mut failures = Vec::new();
     for a in answers.as_array().unwrap() {
         let argv: Vec<String> = a["argv"]
@@ -24,13 +88,16 @@ fn build_answers_as_buildx() {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
-        let (stdout, stderr, status) = (
+        let (mut stdout, mut stderr, mut status) = (
             a["stdout"].as_str().unwrap(),
             a["stderr"].as_str().unwrap(),
             a["status"].as_u64().unwrap() as u8,
         );
+        if let Some(&(_, out, err, code)) = BETTER.iter().find(|(line, ..)| *line == argv.as_slice()) {
+            (stdout, stderr, status) = (out, err, code);
+        }
         let (got_out, got_err, got_status, refused) =
-            match flags::parse(&BUILD, "shards buildx build", &argv, &accept) {
+            match flags::parse(&BUILD, "shards buildx build", &argv, &buildflags::validate) {
                 Outcome::Run(parsed) => {
                     let mut line = String::from("RUN");
                     for (name, value) in parsed.given() {
@@ -40,7 +107,11 @@ fn build_answers_as_buildx() {
                         line.push(' ');
                         line.push_str(&shards_cmdline::go::quote(arg));
                     }
-                    (format!("{}{line}\n", parsed.notices), String::new(), 0, false)
+                    let mut out = format!("{}{line}\n", parsed.notices);
+                    match built(&parsed, &mut out) {
+                        Ok(()) => (out, String::new(), 0, false),
+                        Err(e) => (out, format!("ERROR: {e}\n"), 1, false),
+                    }
                 }
                 Outcome::Help { notices } => (
                     format!("{notices}{}", flags::help(&BUILD, "shards buildx build", 80)),

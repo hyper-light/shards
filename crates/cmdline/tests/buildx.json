@@ -9,7 +9,7 @@
     "argv": [
       "--help"
     ],
-    "stdout": "Usage:  shards buildx build [OPTIONS] PATH | URL | -\n\nStart a build\n\nAliases:\n  shards build, shards builder build, shards image build, shards buildx b\n\nOptions:\n      --build-arg stringArray   Set build-time variables\n  -f, --file string             Name of the Dockerfile (default:\n                                \"PATH/Dockerfile\")\n      --iidfile string          Write the image ID to a file\n      --label stringArray       Set metadata for an image\n      --load                    Shorthand for \"--output=type=docker\"\n      --no-cache                Do not use cache when building the image\n      --platform stringArray    Set target platform for build\n      --progress string         Set type of progress output (\"auto\",\n                                \"none\",  \"plain\", \"quiet\", \"rawjson\",\n                                \"tty\"). Use plain to show container\n                                output (default \"auto\")\n      --pull                    Always attempt to pull all referenced images\n  -q, --quiet                   Suppress the build output and print image\n                                ID on success\n  -t, --tag stringArray         Image identifier (format:\n                                \"[registry/]repository[:tag]\")\n      --target string           Set the target build stage to build\n",
+    "stdout": "Usage:  shards buildx build [OPTIONS] PATH | URL | -\n\nStart a build\n\nAliases:\n  shards build, shards builder build, shards image build, shards buildx b\n\nOptions:\n      --allow stringArray       Allow extra privileged entitlement (e.g.,\n                                \"network.host\", \"security.insecure\",\n                                \"device\", \"buildx.local.delete\")\n      --build-arg stringArray   Set build-time variables\n  -f, --file string             Name of the Dockerfile (default:\n                                \"PATH/Dockerfile\")\n      --iidfile string          Write the image ID to a file\n      --label stringArray       Set metadata for an image\n      --load                    Shorthand for \"--output=type=docker\"\n      --no-cache                Do not use cache when building the image\n      --platform stringArray    Set target platform for build\n      --progress string         Set type of progress output (\"auto\",\n                                \"none\",  \"plain\", \"quiet\", \"rawjson\",\n                                \"tty\"). Use plain to show container\n                                output (default \"auto\")\n      --pull                    Always attempt to pull all referenced images\n  -q, --quiet                   Suppress the build output and print image\n                                ID on success\n      --secret stringArray      Secret to expose to the build (format:\n                                \"id=mysecret[,src=/local/secret]\")\n  -t, --tag stringArray         Image identifier (format:\n                                \"[registry/]repository[:tag]\")\n      --target string           Set the target build stage to build\n      --ulimit ulimit           Ulimit options (default [])\n",
     "stderr": "",
     "status": 0
   },
@@ -17,7 +17,7 @@
     "argv": [
       "-h"
     ],
-    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nStart a build\n\nAliases:\n  shards build, shards builder build, shards image build, shards buildx b\n\nOptions:\n      --build-arg stringArray   Set build-time variables\n  -f, --file string             Name of the Dockerfile (default:\n                                \"PATH/Dockerfile\")\n      --iidfile string          Write the image ID to a file\n      --label stringArray       Set metadata for an image\n      --load                    Shorthand for \"--output=type=docker\"\n      --no-cache                Do not use cache when building the image\n      --platform stringArray    Set target platform for build\n      --progress string         Set type of progress output (\"auto\",\n                                \"none\",  \"plain\", \"quiet\", \"rawjson\",\n                                \"tty\"). Use plain to show container\n                                output (default \"auto\")\n      --pull                    Always attempt to pull all referenced images\n  -q, --quiet                   Suppress the build output and print image\n                                ID on success\n  -t, --tag stringArray         Image identifier (format:\n                                \"[registry/]repository[:tag]\")\n      --target string           Set the target build stage to build\n",
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nStart a build\n\nAliases:\n  shards build, shards builder build, shards image build, shards buildx b\n\nOptions:\n      --allow stringArray       Allow extra privileged entitlement (e.g.,\n                                \"network.host\", \"security.insecure\",\n                                \"device\", \"buildx.local.delete\")\n      --build-arg stringArray   Set build-time variables\n  -f, --file string             Name of the Dockerfile (default:\n                                \"PATH/Dockerfile\")\n      --iidfile string          Write the image ID to a file\n      --label stringArray       Set metadata for an image\n      --load                    Shorthand for \"--output=type=docker\"\n      --no-cache                Do not use cache when building the image\n      --platform stringArray    Set target platform for build\n      --progress string         Set type of progress output (\"auto\",\n                                \"none\",  \"plain\", \"quiet\", \"rawjson\",\n                                \"tty\"). Use plain to show container\n                                output (default \"auto\")\n      --pull                    Always attempt to pull all referenced images\n  -q, --quiet                   Suppress the build output and print image\n                                ID on success\n      --secret stringArray      Secret to expose to the build (format:\n                                \"id=mysecret[,src=/local/secret]\")\n  -t, --tag stringArray         Image identifier (format:\n                                \"[registry/]repository[:tag]\")\n      --target string           Set the target build stage to build\n      --ulimit ulimit           Ulimit options (default [])\n",
     "stderr": "",
     "status": 0
   },
@@ -211,8 +211,8 @@
       "."
     ],
     "stdout": "RUN --secret=[id=a] \".\"\n",
-    "stderr": "",
-    "status": 0
+    "stderr": "ERROR: failed to stat a: stat a: no such file or directory\n",
+    "status": 1
   },
   {
     "argv": [
@@ -335,6 +335,517 @@
       "."
     ],
     "stdout": "RUN --call=check \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "id=small,src=small.txt",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"id=small,src=small.txt\"] \".\"\nSECRET small: 15 bytes, \"a small secret\\n\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "id=small,source=small.txt",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"id=small,source=small.txt\"] \".\"\nSECRET small: 15 bytes, \"a small secret\\n\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "ID=small,SRC=small.txt",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"ID=small,SRC=small.txt\"] \".\"\nSECRET small: 15 bytes, \"a small secret\\n\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "type=file,id=small,src=small.txt",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"type=file,id=small,src=small.txt\"] \".\"\nSECRET small: 15 bytes, \"a small secret\\n\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "id=fromenv,env=SHARDS_ORACLE_SECRET",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"id=fromenv,env=SHARDS_ORACLE_SECRET\"] \".\"\nSECRET fromenv: 20 bytes, \"from the environ\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "type=env,id=fromenv,src=SHARDS_ORACLE_SECRET",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"type=env,id=fromenv,src=SHARDS_ORACLE_SECRET\"] \".\"\nSECRET fromenv: 20 bytes, \"from the environ\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "type=env,id=SHARDS_ORACLE_SECRET",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"type=env,id=SHARDS_ORACLE_SECRET\"] \".\"\nSECRET SHARDS_ORACLE_SECRET: 20 bytes, \"from the environ\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "id=SHARDS_ORACLE_SECRET",
+      "."
+    ],
+    "stdout": "RUN --secret=[id=SHARDS_ORACLE_SECRET] \".\"\nSECRET SHARDS_ORACLE_SECRET: 20 bytes, \"from the environ\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "id=small.txt",
+      "."
+    ],
+    "stdout": "RUN --secret=[id=small.txt] \".\"\nSECRET small.txt: 15 bytes, \"a small secret\\n\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "id=edge,src=edge.txt",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"id=edge,src=edge.txt\"] \".\"\nSECRET edge: 512000 bytes, \"ssssssssssssssss\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "id=big,src=big.txt",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"id=big,src=big.txt\"] \".\"\n",
+    "stderr": "ERROR: secret big too big. max size 500KiB\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--secret",
+      "id=gone,src=gone.txt",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"id=gone,src=gone.txt\"] \".\"\n",
+    "stderr": "ERROR: failed to stat gone.txt: stat gone.txt: no such file or directory\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--secret",
+      "src=small.txt",
+      "."
+    ],
+    "stdout": "RUN --secret=[src=small.txt] \".\"\n",
+    "stderr": "ERROR: secret missing ID\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--secret",
+      "type=ssh,id=a",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"type=ssh,id=a\"] \".\"\n",
+    "stderr": "ERROR: unsupported secret type \"ssh\"\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--secret",
+      "id",
+      "."
+    ],
+    "stdout": "RUN --secret=[id] \".\"\n",
+    "stderr": "ERROR: invalid field 'id' must be a key=value pair\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--secret",
+      "id=a,what=b",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"id=a,what=b\"] \".\"\n",
+    "stderr": "ERROR: unexpected key 'what' in 'what=b'\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--secret",
+      "\"id=a",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"\"\"id=a\"] \".\"\n",
+    "stderr": "ERROR: failed to parse csv secret: parse error on line 1, column 2: extraneous or missing \" in quoted-field\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--secret",
+      "id=\"a,b\",src=small.txt",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"id=\"\"a,b\"\",src=small.txt\"] \".\"\n",
+    "stderr": "ERROR: failed to parse csv secret: parse error on line 1, column 4: bare \" in non-quoted-field\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--secret",
+      "",
+      "."
+    ],
+    "stdout": "RUN --secret=[] \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "id=x,src=small.txt",
+      "--secret",
+      "id=x,src=edge.txt",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"id=x,src=small.txt\",\"id=x,src=edge.txt\"] \".\"\nSECRET x: 512000 bytes, \"ssssssssssssssss\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret",
+      "id=x,src=small.txt",
+      "--secret",
+      "id=y,env=SHARDS_ORACLE_SECRET",
+      "."
+    ],
+    "stdout": "RUN --secret=[\"id=x,src=small.txt\",\"id=y,env=SHARDS_ORACLE_SECRET\"] \".\"\nSECRET x: 15 bytes, \"a small secret\\n\"\nSECRET y: 20 bytes, \"from the environ\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--secret=id=small,src=small.txt",
+      "--allow",
+      "nope",
+      "."
+    ],
+    "stdout": "RUN --allow=[nope] --secret=[\"id=small,src=small.txt\"] \".\"\nSECRET small: 15 bytes, \"a small secret\\n\"\n",
+    "stderr": "ERROR: unknown entitlement nope\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile=1024",
+      "."
+    ],
+    "stdout": "RUN --ulimit=[nofile=1024:1024] \".\"\nULIMIT nofile=1024:1024\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile=1024:2048",
+      "--ulimit",
+      "core=0",
+      "."
+    ],
+    "stdout": "RUN --ulimit=[core=0:0 nofile=1024:2048] \".\"\nULIMIT core=0:0,nofile=1024:2048\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile=1",
+      "--ulimit",
+      "nofile=2:3",
+      "."
+    ],
+    "stdout": "RUN --ulimit=[nofile=2:3] \".\"\nULIMIT nofile=2:3\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile=2048:1024",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nofile=2048:1024\" for \"--ulimit\" flag: ulimit soft limit must be less than or equal to hard limit: 2048 \u003e 1024\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile=-1:1024",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nofile=-1:1024\" for \"--ulimit\" flag: ulimit soft limit must be less than or equal to hard limit: soft: -1 (unlimited), hard: 1024\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile=-1",
+      "."
+    ],
+    "stdout": "RUN --ulimit=[nofile=-1:-1] \".\"\nULIMIT nofile=-1:-1\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile=5:-1",
+      "."
+    ],
+    "stdout": "RUN --ulimit=[nofile=5:-1] \".\"\nULIMIT nofile=5:-1\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "as=1",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"as=1\" for \"--ulimit\" flag: invalid ulimit type: as\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nofile\" for \"--ulimit\" flag: invalid ulimit argument: nofile\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile=1:2:3",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nofile=1:2:3\" for \"--ulimit\" flag: too many limit value arguments - 1:2:3, can only have up to two, `soft[:hard]`\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile=0x10",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nofile=0x10\" for \"--ulimit\" flag: strconv.ParseInt: parsing \"0x10\": invalid syntax\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile=010",
+      "."
+    ],
+    "stdout": "RUN --ulimit=[nofile=10:10] \".\"\nULIMIT nofile=10:10\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile=1_0",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nofile=1_0\" for \"--ulimit\" flag: strconv.ParseInt: parsing \"1_0\": invalid syntax\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile=+5",
+      "."
+    ],
+    "stdout": "RUN --ulimit=[nofile=5:5] \".\"\nULIMIT nofile=5:5\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nofile=",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nofile=\" for \"--ulimit\" flag: strconv.ParseInt: parsing \"\": invalid syntax\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "nproc=99999999999999999999",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nproc=99999999999999999999\" for \"--ulimit\" flag: strconv.ParseInt: parsing \"99999999999999999999\": value out of range\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "--ulimit",
+      "=1",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"=1\" for \"--ulimit\" flag: invalid ulimit type: \n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "--allow",
+      "security.insecure",
+      "."
+    ],
+    "stdout": "RUN --allow=[security.insecure] \".\"\nALLOW [\"security.insecure\"] local.delete=false\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--allow",
+      "network.host",
+      "--allow",
+      "security.insecure",
+      "."
+    ],
+    "stdout": "RUN --allow=[network.host,security.insecure] \".\"\nALLOW [\"network.host\" \"security.insecure\"] local.delete=false\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--allow",
+      "buildx.local.delete",
+      "."
+    ],
+    "stdout": "RUN --allow=[buildx.local.delete] \".\"\nALLOW [] local.delete=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--allow",
+      "buildx.local.delete=1",
+      "."
+    ],
+    "stdout": "RUN --allow=[buildx.local.delete=1] \".\"\n",
+    "stderr": "ERROR: buildx.local.delete does not accept a value\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--allow",
+      "device",
+      "."
+    ],
+    "stdout": "RUN --allow=[device] \".\"\nALLOW [\"device\"] local.delete=false\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--allow",
+      "device=nvidia.com/gpu=all,alias=gpu",
+      "."
+    ],
+    "stdout": "RUN --allow=[\"device=nvidia.com/gpu=all,alias=gpu\"] \".\"\nALLOW [\"device=nvidia.com/gpu=all,alias=gpu\"] local.delete=false\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--allow",
+      "device=a,bad",
+      "."
+    ],
+    "stdout": "RUN --allow=[\"device=a,bad\"] \".\"\n",
+    "stderr": "ERROR: invalid device config \"bad\"\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--allow",
+      "device=a,what=b",
+      "."
+    ],
+    "stdout": "RUN --allow=[\"device=a,what=b\"] \".\"\n",
+    "stderr": "ERROR: unknown device config key \"what\"\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--allow",
+      "network.host=1",
+      "."
+    ],
+    "stdout": "RUN --allow=[network.host=1] \".\"\n",
+    "stderr": "ERROR: unknown entitlement network.host=1\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--allow",
+      "nope",
+      "."
+    ],
+    "stdout": "RUN --allow=[nope] \".\"\n",
+    "stderr": "ERROR: unknown entitlement nope\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--allow",
+      "",
+      "."
+    ],
+    "stdout": "RUN --allow=[] \".\"\n",
     "stderr": "",
     "status": 0
   },

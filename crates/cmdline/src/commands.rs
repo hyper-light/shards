@@ -625,6 +625,12 @@ pub static BUILD: Command = Command {
     aliases: "shards build, shards builder build, shards image build, shards buildx b",
     args: Args::Exactly(1),
     flags: &[
+        Flag::many(
+            "allow",
+            None,
+            "stringArray",
+            "Allow extra privileged entitlement (e.g., \"network.host\", \"security.insecure\", \"device\", \"buildx.local.delete\")",
+        ),
         Flag::many("build-arg", None, "stringArray", "Set build-time variables"),
         Flag::string(
             "file",
@@ -656,11 +662,17 @@ pub static BUILD: Command = Command {
             "stringArray",
             "Image identifier (format: \"[registry/]repository[:tag]\")",
         ),
+        Flag::many(
+            "secret",
+            None,
+            "stringArray",
+            "Secret to expose to the build (format: \"id=mysecret[,src=/local/secret]\")",
+        ),
         Flag::string("target", None, "", "Set the target build stage to build"),
+        Flag::many("ulimit", None, "ulimit", "Ulimit options").defaulting("[]"),
     ],
     unserved: "\
 add-host - m - -\n\
-allow - m - -\n\
 annotation - m - -\n\
 attest - m - -\n\
 build-context - m - -\n\
@@ -692,12 +704,10 @@ push - b false -\n\
 resource - m - -\n\
 rm - b true -\n\
 sbom - s - -\n\
-secret - m - -\n\
 security-opt - m - -\n\
 shm-size - s 0 -\n\
 squash - b false -\n\
-ssh - m - -\n\
-ulimit - m - -",
+ssh - m - -",
     interspersed: true,
     error_prefix: "ERROR: ",
 };

@@ -700,7 +700,8 @@ pub type Expand<'a> = &'a mut dyn FnMut(&[u8]) -> Result<Vec<u8>, Vec<u8>>;
 /// `parseMount`: a `--mount` value, each value expanded by `expand` as the step runs.
 /// Without `expand`, as parsing reads it: only `from`, which may not use variables.
 pub fn parse_mount(val: &[u8], mut expand: Option<Expand<'_>>) -> Result<Mount, Vec<u8>> {
-    let fields = csv_fields(val).map_err(|e| errf(&[b"failed to parse csv mounts: ", &e]))?;
+    let fields =
+        shards_cmdline::go::csv_fields(val).map_err(|e| errf(&[b"failed to parse csv mounts: ", &e]))?;
     let mut m = Mount {
         kind: b"bind".to_vec(),
         from: Vec::new(),
@@ -905,7 +906,8 @@ fn parse_uint32(s: &[u8], base: u32) -> Option<u64> {
 
 /// `ParseDevice`.
 fn parse_device(val: &[u8]) -> Result<Device, Vec<u8>> {
-    let fields = csv_fields(val).map_err(|e| errf(&[b"failed to parse csv devices: ", &e]))?;
+    let fields =
+        shards_cmdline::go::csv_fields(val).map_err(|e| errf(&[b"failed to parse csv devices: ", &e]))?;
     let mut d = Device {
         name: Vec::new(),
         required: false,
@@ -947,84 +949,6 @@ fn parse_device(val: &[u8]) -> Result<Device, Vec<u8>> {
         }
     }
     Ok(d)
-}
-
-/// One CSV record's fields, as tonistiigi/go-csvvalue reads them (Go's `encoding/csv`
-/// rules for one line), with `csv.ParseError`'s text on error.
-pub(crate) fn csv_fields(line: &[u8]) -> Result<Vec<Vec<u8>>, Vec<u8>> {
-    let err =
-        |pos: usize, what: &str| format!("parse error on line 1, column {}: {what}", pos + 1).into_bytes();
-    let mut line = line;
-    if line.last() == Some(&b'\n') {
-        line = if line.len() > 1 && line.get(line.len() - 2) == Some(&b'\r') {
-            go::head(line, line.len() - 2)
-        } else {
-            go::head(line, line.len() - 1)
-        };
-    }
-    if line.is_empty() {
-        return Err(b"EOF".to_vec());
-    }
-    let mut out: Vec<Vec<u8>> = Vec::new();
-    let mut pos = 0usize;
-    loop {
-        if line.first() != Some(&b'"') {
-            let i = line.iter().position(|&b| b == b',');
-            let field = match i {
-                Some(i) => go::head(line, i),
-                None => line,
-            };
-            if let Some(j) = field.iter().position(|&b| b == b'"') {
-                return Err(err(pos + j, "bare \" in non-quoted-field"));
-            }
-            out.push(field.to_vec());
-            match i {
-                Some(i) => {
-                    line = go::tail(line, i + 1);
-                    pos += i + 1;
-                    continue;
-                }
-                None => break,
-            }
-        }
-        line = go::tail(line, 1);
-        pos += 1;
-        // After a doubled quote, the next piece continues the same field.
-        let mut half_open = false;
-        loop {
-            let Some(i) = line.iter().position(|&b| b == b'"') else {
-                return Err(err(pos, "extraneous or missing \" in quoted-field"));
-            };
-            let piece = go::head(line, i).to_vec();
-            if half_open {
-                if let Some(last) = out.last_mut() {
-                    last.extend_from_slice(&piece);
-                }
-            } else {
-                out.push(piece);
-            }
-            line = go::tail(line, i + 1);
-            pos += i + 1;
-            match line.first() {
-                Some(b'"') => {
-                    if let Some(last) = out.last_mut() {
-                        last.push(b'"');
-                    }
-                    line = go::tail(line, 1);
-                    pos += 1;
-                    half_open = true;
-                }
-                Some(b',') => {
-                    line = go::tail(line, 1);
-                    pos += 1;
-                    break;
-                }
-                None => return Ok(out),
-                Some(_) => return Err(err(pos - 1, "extraneous or missing \" in quoted-field")),
-            }
-        }
-    }
-    Ok(out)
 }
 
 fn parse_run(req: &mut Req<'_>) -> Result<Run, Vec<u8>> {
@@ -1486,23 +1410,29 @@ mod tests {
     #[test]
     fn csv_reads_as_go_reads() {
         assert_eq!(
-            csv_fields(b"a,\"b,c\",d").unwrap(),
+            shards_cmdline::go::csv_fields(b"a,\"b,c\",d").unwrap(),
             vec![b"a".to_vec(), b"b,c".to_vec(), b"d".to_vec()]
         );
-        assert_eq!(csv_fields(b"\"a\"\"b\"").unwrap(), vec![b"a\"b".to_vec()]);
-        assert_eq!(csv_fields(b"a,").unwrap(), vec![b"a".to_vec(), b"".to_vec()]);
         assert_eq!(
-            csv_fields(b"a\"b").unwrap_err(),
+            shards_cmdline::go::csv_fields(b"\"a\"\"b\"").unwrap(),
+            vec![b"a\"b".to_vec()]
+        );
+        assert_eq!(
+            shards_cmdline::go::csv_fields(b"a,").unwrap(),
+            vec![b"a".to_vec(), b"".to_vec()]
+        );
+        assert_eq!(
+            shards_cmdline::go::csv_fields(b"a\"b").unwrap_err(),
             b"parse error on line 1, column 2: bare \" in non-quoted-field".to_vec()
         );
         assert_eq!(
-            csv_fields(b"\"ab").unwrap_err(),
+            shards_cmdline::go::csv_fields(b"\"ab").unwrap_err(),
             b"parse error on line 1, column 2: extraneous or missing \" in quoted-field".to_vec()
         );
         assert_eq!(
-            csv_fields(b"\"a\"b").unwrap_err(),
+            shards_cmdline::go::csv_fields(b"\"a\"b").unwrap_err(),
             b"parse error on line 1, column 3: extraneous or missing \" in quoted-field".to_vec()
         );
-        assert_eq!(csv_fields(b"").unwrap_err(), b"EOF".to_vec());
+        assert_eq!(shards_cmdline::go::csv_fields(b"").unwrap_err(), b"EOF".to_vec());
     }
 }
