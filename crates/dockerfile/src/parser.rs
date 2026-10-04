@@ -850,37 +850,21 @@ fn takes_heredocs(node: &Node, dialect: Dialect) -> bool {
     takes && !n.json
 }
 
-/// Lines with their endings, as BuildKit's scanner splits them.
-/// The longest line BuildKit's parser reads: bufio.Scanner's longest token, less one.
-const MAX_LINE: usize = 65_535;
-
-/// BuildKit's bufio.Scanner over a file's lines, each with its newline (`scanLines`): as
-/// far as one longer than MAX_LINE, whose scan fails (ErrTooLong). The scan after that is
-/// given what the full buffer holds as if at the file's end, and so hands over the line's
-/// first MAX_LINE + 1 bytes; any scan after that, nothing. BuildKit's outer loop scans
-/// again only when a continuation's or a heredoc's scan failed.
+/// A file's lines, each with its newline, however long: BuildKit's bufio.Scanner refuses
+/// a line past 65,535 bytes ("dockerfile line greater than max allowed size of 65535"),
+/// its buffer's size; shards reads every file BuildKit reads alike, and builds the ones
+/// it refuses for that alone (deviations.json).
 struct Scanner<'a> {
     text: &'a [u8],
     at: usize,
-    /// The first bytes of a line too long, until handed over.
-    held: Option<&'a [u8]>,
-    failed: bool,
 }
 
 impl<'a> Scanner<'a> {
     fn new(text: &'a [u8]) -> Scanner<'a> {
-        Scanner {
-            text,
-            at: 0,
-            held: None,
-            failed: false,
-        }
+        Scanner { text, at: 0 }
     }
 
     fn scan(&mut self) -> Option<&'a [u8]> {
-        if self.failed {
-            return self.held.take();
-        }
         let rest = go::tail(self.text, self.at);
         if rest.is_empty() {
             return None;
@@ -889,14 +873,8 @@ impl<'a> Scanner<'a> {
             .iter()
             .position(|&b| b == b'\n')
             .map_or(rest.len(), |e| e + 1);
-        let line = go::head(rest, len);
-        if line.strip_suffix(b"\n").unwrap_or(line).len() > MAX_LINE {
-            self.failed = true;
-            self.held = Some(go::head(rest, MAX_LINE + 1));
-            return None;
-        }
         self.at += len;
-        Some(line)
+        Some(go::head(rest, len))
     }
 }
 
@@ -1009,14 +987,6 @@ pub fn parse_as(text: &[u8], dialect: Dialect) -> Result<Parsed, Error> {
     }
     if instructions.is_empty() {
         return Err(located(err("file with no instructions"), current, 0));
-    }
-    // handleScannerError: a scan failed at a line too long.
-    if it.failed {
-        return Err(located(
-            format!("dockerfile line greater than max allowed size of {MAX_LINE}").into_bytes(),
-            current,
-            0,
-        ));
     }
     Ok(Parsed {
         instructions,
