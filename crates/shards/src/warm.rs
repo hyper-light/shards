@@ -153,7 +153,7 @@ pub fn receive(link: &Link, to: &'static ToGuest) -> Result<Request, String> {
     let mut fds = request.fds.into_iter();
     let mut next = || {
         fds.next()
-            .ok_or(format!("a request brings more than {count} descriptors"))
+            .ok_or(format!("a request brings too few descriptors: {count}"))
     };
     let client = if detached {
         None
@@ -185,7 +185,7 @@ pub fn receive(link: &Link, to: &'static ToGuest) -> Result<Request, String> {
         None
     };
     if fds.next().is_some() {
-        return Err(format!("a request brings {count} descriptors, too many"));
+        return Err(format!("a request brings too many descriptors: {count}"));
     }
     // TAKEN before anything of the client's is touched or anything starts: a VM that ends
     // without it never started the run, which the daemon may then hand to another VM
@@ -415,5 +415,46 @@ fn let_go(null: &File) {
         // SAFETY: dup2(2) onto this process's own standard descriptors. Should it fail,
         // the descriptor stays the client's until this process exits.
         unsafe { libc::dup2(null.as_raw_fd(), target) };
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::os::fd::AsFd as _;
+
+    /// A request that brings fewer descriptors than it needs, or more, is refused, in words
+    /// that say which, before the VM takes it.
+    #[test]
+    fn a_request_with_the_wrong_descriptors_is_refused() {
+        static TO_GUEST: ToGuest = ToGuest::new(workload::Signals::new());
+        // A detached run's: its stdin, its log and its index.
+        for (given, said) in [
+            (1, "a request brings too few descriptors: 1"),
+            (4, "a request brings too many descriptors: 4"),
+        ] {
+            let (ours, daemon) = UnixStream::pair().unwrap();
+            let link = Link {
+                daemon: ours,
+                null: File::open("/dev/null").unwrap(),
+            };
+            let null = File::open("/dev/null").unwrap();
+            let fds = vec![null.as_fd(); given];
+            let refused = std::thread::scope(|s| {
+                let receiving = s.spawn(|| receive(&link, &TO_GUEST));
+                assert_eq!(shards_ipc::recv(&daemon).unwrap().unwrap().kind, kind::READY);
+                let mut payload = vec![shards_ipc::RUN_DETACHED | shards_ipc::RUN_LOG];
+                payload.extend(1u64.to_be_bytes());
+                payload.extend(1u64.to_be_bytes());
+                Spec::default().encode_into(&mut payload);
+                shards_ipc::send(&daemon, kind::RUN, &payload, &fds).unwrap();
+                receiving.join().unwrap().err()
+            });
+            assert_eq!(refused.as_deref(), Some(said));
+            // Nothing taken.
+            daemon.set_nonblocking(true).unwrap();
+            assert!(shards_ipc::recv(&daemon).is_err_and(|e| e.kind() == io::ErrorKind::WouldBlock));
+        }
     }
 }
