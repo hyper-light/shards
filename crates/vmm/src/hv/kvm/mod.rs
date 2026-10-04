@@ -86,7 +86,50 @@ fn open() -> std::result::Result<sys::Kvm, String> {
             return Err(format!("this host's KVM lacks {name}"));
         }
     }
+    permit_amx();
     Ok(kvm)
+}
+
+/// arch/x86/include/uapi/asm/prctl.h.
+const ARCH_GET_XCOMP_SUPP: libc::c_int = 0x1021;
+const ARCH_REQ_XCOMP_GUEST_PERM: libc::c_int = 0x1025;
+const ARCH_XCOMP_TILEDATA: u64 = 18;
+
+/// What `arch_prctl(code, &features)` says, or `None` where Linux knows no such request:
+/// before 5.16 for what the host supports, before 5.17 for what guests are permitted.
+fn xcomp(code: libc::c_int) -> Option<u64> {
+    let mut features: u64 = 0;
+    // SAFETY: arch_prctl(2) writing a feature mask into a u64 of ours.
+    let r = unsafe { libc::syscall(libc::SYS_arch_prctl, code, &raw mut features) };
+    (r == 0).then_some(features)
+}
+
+/// Asks that this process's guests may have AMX's tile data, where the host has it, before
+/// KVM is asked what guests may have: KVM_GET_SUPPORTED_CPUID offers a dynamic XSAVE
+/// feature only to a process permitted it (research doc §1.8 row 3), as Firecracker asks
+/// (src/vmm/src/arch/x86_64/xstate.rs, request_dynamic_xstate_features; review 1.10). A
+/// refusal costs guests AMX alone: where Linux before 6.4 then offers the tile
+/// configuration without its data, the CPUID template goes without it too
+/// ([`cpuid::without_lone_tile_config`]), where Firecracker fails the VM.
+fn permit_amx() {
+    let tiles = 1 << ARCH_XCOMP_TILEDATA;
+    if xcomp(ARCH_GET_XCOMP_SUPP).is_none_or(|supported| supported & tiles == 0) {
+        return;
+    }
+    // SAFETY: arch_prctl(2) with integer arguments.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_arch_prctl,
+            ARCH_REQ_XCOMP_GUEST_PERM,
+            ARCH_XCOMP_TILEDATA,
+        )
+    };
+    if r != 0 {
+        crate::warn!(
+            "guests go without AMX: arch_prctl(ARCH_REQ_XCOMP_GUEST_PERM): {}",
+            io::Error::last_os_error()
+        );
+    }
 }
 
 /// /dev/kvm, opened and checked once a process (review 1.8): a start asked whether the
@@ -184,7 +227,7 @@ impl Vm {
         fd.set_identity_map_addr(layout::IDENTITY_MAP)
             .map_err(call("KVM_SET_IDENTITY_MAP_ADDR"))?;
         fd.create_irqchip().map_err(call("KVM_CREATE_IRQCHIP"))?;
-        let cpuid = kvm
+        let mut cpuid: Vec<cpuid::Leaf> = kvm
             .supported_cpuid()
             .map_err(call("KVM_GET_SUPPORTED_CPUID"))?
             .into_iter()
@@ -198,6 +241,7 @@ impl Vm {
                 edx: e.edx,
             })
             .collect();
+        cpuid::without_lone_tile_config(&mut cpuid);
         let tsc_deadline = kvm
             .check_extension(sys::CAP_TSC_DEADLINE_TIMER)
             .map_err(call("KVM_CHECK_EXTENSION"))?
@@ -792,6 +836,22 @@ impl Kicker {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// Guests are permitted AMX's tile data exactly where the host has it, once the
+    /// process asks (review 1.10); where Linux knows no such request, nothing is asked.
+    #[test]
+    fn guests_are_permitted_amx_where_the_host_has_it() {
+        const ARCH_GET_XCOMP_GUEST_PERM: libc::c_int = 0x1024;
+        permit_amx();
+        let tiles = 1 << ARCH_XCOMP_TILEDATA;
+        match (xcomp(ARCH_GET_XCOMP_SUPP), xcomp(ARCH_GET_XCOMP_GUEST_PERM)) {
+            (Some(supported), Some(permitted)) => assert_eq!(supported & tiles, permitted & tiles),
+            (supported, permitted) => assert!(
+                supported.is_none_or(|s| s & tiles == 0),
+                "AMX supported, guest permission unknown: {supported:?} {permitted:?}"
+            ),
+        }
+    }
 
     /// /dev/kvm is opened and checked once a process: the next start takes the same handle
     /// (review 1.8).

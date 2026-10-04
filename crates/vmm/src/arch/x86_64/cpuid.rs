@@ -30,6 +30,24 @@ const TSC_DEADLINE: u32 = 1 << 24;
 const LEVEL_SMT: u32 = 1;
 const LEVEL_CORE: u32 = 2;
 
+/// XCR0's AMX tile configuration (17) and tile data (18): XSETBV takes them together or
+/// not at all (Linux arch/x86/kvm/x86.h, `kvm_get_filtered_xcr0`).
+const XTILE_CFG: u32 = 1 << 17;
+const XTILE_DATA: u32 = 1 << 18;
+
+/// Takes the tile configuration out of the XCR0 bits leaf 0xD offers where the tile data
+/// is not among them (review 1.10). Linux 5.17 to 6.3 offered it so to a process not
+/// permitted the data, and a guest that enables what it is offered takes #GP at XSETBV;
+/// Linux 6.4 offers neither then (55cd57b596e8, "KVM: x86: Filter out XTILE_CFG if
+/// XTILE_DATA isn't permitted").
+pub fn without_lone_tile_config(template: &mut [Leaf]) {
+    for l in template.iter_mut().filter(|l| l.function == 0xd && l.index == 0) {
+        if l.eax & XTILE_DATA == 0 {
+            l.eax &= !XTILE_CFG;
+        }
+    }
+}
+
 /// The CPUID vCPU `index` of `count` sees.
 pub fn for_vcpu(template: &[Leaf], index: u32, count: u32, tsc_deadline: bool) -> Vec<Leaf> {
     let apic = index;
@@ -117,6 +135,44 @@ mod tests {
             ebx,
             ecx,
             edx,
+        }
+    }
+
+    /// The tile configuration goes where the tile data is not offered, and stays where it
+    /// is; nothing else changes (review 1.10).
+    #[test]
+    fn a_lone_tile_configuration_is_not_offered() {
+        let xcr0 = |eax| Leaf {
+            function: 0xd,
+            index: 0,
+            flags: SIGNIFICANT_INDEX,
+            eax,
+            ebx: 0x2b00,
+            ecx: 0x2b00,
+            edx: 0,
+        };
+        let x87_sse_avx = 0x7;
+        // Leaf 0xD's other subleaves hold other things in EAX, bit 17 among them maybe.
+        let mut leaves = [
+            xcr0(x87_sse_avx | XTILE_CFG),
+            Leaf {
+                index: 1,
+                ..xcr0(XTILE_CFG | 0xf)
+            },
+            Leaf {
+                index: 17,
+                ..xcr0(64)
+            },
+            leaf(7, 0, 0, 0, 1 << 24),
+        ];
+        let before = leaves;
+        without_lone_tile_config(&mut leaves);
+        assert_eq!(leaves[0], xcr0(x87_sse_avx));
+        assert_eq!(leaves[1..], before[1..]);
+        for whole in [x87_sse_avx | XTILE_CFG | XTILE_DATA, x87_sse_avx] {
+            let mut leaves = [xcr0(whole)];
+            without_lone_tile_config(&mut leaves);
+            assert_eq!(leaves, [xcr0(whole)]);
         }
     }
 
