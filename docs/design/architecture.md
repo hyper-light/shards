@@ -858,7 +858,11 @@ for the exit status.
       for want of one leaves the client queued on Linux (net/socket.c,
       `__sys_accept4_file`) but drops it on macOS ("Don't put this back on the socket
       like we used to, that just causes the client to spin. Drop the socket.",
-      xnu-11417.101.15 bsd/kern/uipc_syscalls.c).
+      xnu-11417.101.15 bsd/kern/uipc_syscalls.c). On macOS it looks for a free
+      descriptor before every accept, a `dup` and a `close`, 250 ns [PM M99], and drops
+      no client; looking only once starved, it dropped two, the one whose accept found
+      none and, once room came, the one after the first it took, which had taken the
+      last.
     - It raises its soft limit on descriptors to its hard one, capped at
       `kern.maxfilesperproc` on macOS, as Go's runtime raises its own (go1.25.0
       src/syscall/rlimit.go, after go.dev/issue/46279): macOS starts a process with 256.

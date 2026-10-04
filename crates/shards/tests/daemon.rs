@@ -1002,7 +1002,8 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
         "the daemon spun: {spent:?} of CPU in 1 s"
     );
     // Held by the daemon, or waiting in its backlog, a connection has nothing to read; one
-    // dropped reads its end. macOS drops the one whose accept found no descriptor.
+    // dropped reads its end. None is: where an accept that finds no descriptor drops its
+    // client (macOS), none is tried without one.
     let dropped = silent
         .iter()
         .filter(|conn| {
@@ -1015,7 +1016,7 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
             unsafe { libc::poll(&mut pfd, 1, 0) > 0 }
         })
         .count();
-    assert!(dropped <= 1, "{dropped} waiting clients were dropped");
+    assert_eq!(dropped, 0, "waiting clients were dropped");
     // A collection due meanwhile waits: its files would take what clients wait for.
     let left = home.join("images").join("ingest").join("left");
     std::fs::create_dir_all(left.parent().unwrap()).unwrap();

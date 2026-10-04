@@ -1064,11 +1064,19 @@ impl<D: Disk> Daemon<D> {
             }
             let mut starved = false;
             while self.busy.load(Ordering::SeqCst) < self.max_clients {
-                // Once starved, it accepts only when a descriptor is free: an accept that
-                // fails for want of one leaves the client queued on Linux (net/socket.c,
-                // __sys_accept4_file) but drops it on macOS (xnu-11417.101.15
-                // bsd/kern/uipc_syscalls.c, accept_nocancel).
-                if starved_since.is_some() && !descriptor_free(&listener) {
+                // An accept that fails for want of a descriptor drops its client on macOS
+                // (xnu-11417.101.15 bsd/kern/uipc_syscalls.c, accept_nocancel), and leaves
+                // it queued on Linux (net/socket.c, __sys_accept4_file): on macOS it
+                // accepts only when a descriptor is free, each time, and on Linux once it
+                // has found none, until it has room again. Looking once starved alone
+                // dropped a second client on macOS: the first accepted after room came
+                // took the last descriptor, and the next found none.
+                if (cfg!(target_vendor = "apple") || starved_since.is_some()) && !descriptor_free(&listener) {
+                    if starved_since.is_none() {
+                        log("accepting: no descriptor is free; clients wait until the daemon has room");
+                        starved_since = Some(Instant::now());
+                        self.starving.store(true, Ordering::SeqCst);
+                    }
                     starved = true;
                     break;
                 }

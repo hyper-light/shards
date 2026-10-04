@@ -3333,3 +3333,20 @@ revision before comparing a changed API/implementation.
   it exits, so a template's working set is not lost to a stop; and it keeps 8 threads
   with runs, M92's 6 and the collector's (7.14) and the files'. The client cap counts
   all but the clients', the dispatch worker among them: 8,187 of 16,384.
+
+### M99. Looking for a free descriptor before an accept
+
+- **Question.** On macOS an accept that finds no descriptor drops its client (XNU
+  `accept_nocancel`). The daemon looked for a free one (`fcntl(F_DUPFD_CLOEXEC)`, then
+  `close` of the copy) only once starved, and its first accept after room came took the
+  last descriptor, so the next dropped a second client: `a_daemon_out_of_descriptors_
+  waits_for_room` failed 1 run in 5 and once in a full suite. What does looking before
+  every accept cost?
+- **Method.** `descriptor-check/dupcost.c`: the look, on a Unix socket, 100,000 times,
+  each timed with `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)`, three runs. 2026-10-03, the
+  host of M84, load average 5 to 9.
+- **Result.** p50 250 ns, p90 250 ns, p99 250 to 292 ns, max 2.6 to 15.5 µs (the thread
+  preempted).
+- **Consequence.** Looked for before every accept on macOS: 250 ns a client, 0.005% of a
+  5 ms run, and no client is dropped (the test, which allowed one, now allows none:
+  15 runs of 15). Linux, which leaves the client queued, looks only once starved.
