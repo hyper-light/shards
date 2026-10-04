@@ -26,8 +26,11 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install "$TOOLCHAIN" --profile minimal
       - run: uname -a && nproc && grep -m1 'model name' /proc/cpuinfo && uptime
+      # Built first, then traced while the runner is fresh: each run's one slow install
+      # (140-177 ms, review 1.23) came in its first minutes, none in the later traced run.
+      - run: cargo build --release --manifest-path docs/research/measurements/seccomp-search/Cargo.toml
+      - name: What a slow install waits on
+        run: sudo docs/research/measurements/seccomp-search/outliers.sh docs/research/measurements/seccomp-search/target/release/seccomp-search 300 5000
       - run: docs/research/measurements/seccomp-search/run.sh 200 "${GITHUB_SHA::7}"
       - name: An install, by kernel function
         run: sudo docs/research/measurements/seccomp-search/trace.sh docs/research/measurements/seccomp-search/target/release/seccomp-search 5
-      - name: What a slow install waits on
-        run: sudo docs/research/measurements/seccomp-search/outliers.sh docs/research/measurements/seccomp-search/target/release/seccomp-search 400 5000
