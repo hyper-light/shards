@@ -368,13 +368,16 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Makes `removal` durable, with any others pending, on the completer's thread; on
-    /// this one where that thread does not run. Never under the records' lock: the
-    /// completer's waiters take it under the queue's ([`await_released`]).
+    /// Sets `removal` aside and makes it durable, with any others pending, on the
+    /// completer's thread; on this one where that thread does not run. Never under the
+    /// records' lock: the completer's waiters take it under the queue's
+    /// ([`await_released`]).
     pub(super) fn complete_soon(&self, removal: Removal) {
         let c = &self.completing;
         if !c.started.load(Ordering::SeqCst) {
-            let _ = self.complete(&removal);
+            if self.set_aside(&removal).is_ok() {
+                let _ = self.complete(&removal);
+            }
             return;
         }
         lock(&c.pending).push(removal);

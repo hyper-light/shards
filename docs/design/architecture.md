@@ -969,7 +969,11 @@ for the exit status.
     - One thread follows every run: a readiness poller over all their VMs' sockets
       (`platform::Poller`: kqueue(2) on macOS, epoll(7) on Linux, level-triggered) takes
       each run's messages as they come in whole. A socket the poller cannot take has its
-      run followed on a thread of its own.
+      run followed on a thread of its own. It waits on no write: a run's end is kept in
+      memory, in its reservation if its record is not yet written, its record written by
+      the recorder and a `--rm` container's removal set aside by the completer. Waiting
+      there for the record, or for the removal's rename, held up every other run's
+      messages by 81 ms at a loaded host's p90 [PM M96].
     - The same thread follows every VM process to its end, and its network process to its
       own (`Poller::add_exit`: kqueue's `EVFILT_PROC` on macOS, a pidfd on Linux 5.3 and
       later), reaping each as it ends: a network process still running its grace after
@@ -1344,12 +1348,17 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
     its start once it is recorded, and the daemon exits once its records are written; a
     record that cannot be written is behind, logged, told to a detached client as a
     warning, and written again before any command is answered.
-  - **A removal changes nothing until the container's directory is set aside**
-    (`.ID.removing`), so one that fails leaves the container seen, and removable again.
-    It is then synced before its name is let go and `rm` answers: an answered `rm` never
-    comes back, and no power loss brings back a container beside one that took its
-    name. The sync, 4.3 ms at the median on macOS (PM M46), is out of the registry's
-    lock.
+  - **A removal takes the container out of sight at once, and sets its directory aside
+    after** (`.ID.removing`), outside the registry's lock: set aside under it, a removal
+    held up every run's end and every command for as long as the rename took, 34 ms at a
+    loaded host's p99 [PM M96]. Until it is set aside, a crash would bring back a
+    container `rm` removed, so commands wait for it, as `rm` does to answer; a `--rm`
+    container's removal makes no one wait, since the next start removes every one that
+    no longer runs. One that cannot be set aside is put back as it was, its record
+    written again, and `rm` says why. It is then synced before its name is let go and
+    `rm` answers: an answered `rm` never comes back, and no power loss brings back a
+    container beside one that took its name. The sync, 4.3 ms at the median on macOS
+    (PM M46), is out of the registry's lock.
   - **Records are written and renamed, not synced.** Syncing one costs 8.5 ms at the
     median on macOS (PM M46), 2.5 times a pooled run. A power loss ends every run
     anyway; what it leaves of their records, the next start reconciles: a record missing

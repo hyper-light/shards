@@ -533,7 +533,8 @@ struct Daemon<D: Disk = Real> {
     /// of the registry's writes, and each record or removal finished outside its lock,
     /// borrows it.
     disk: D,
-    /// A reserved container was let be seen.
+    /// A reserved container was let be seen, or taken out; or a container taken out was
+    /// set aside, or put back.
     arrived: Condvar,
     /// The containers' records to write, and the thread that writes them (record.rs).
     recording: record::Recording,
@@ -1961,7 +1962,6 @@ impl<D: Disk> Daemon<D> {
     /// start it. Those waiting for the container hear its code. Returns what the client is
     /// told.
     fn not_started(&self, id: &str, why: &str) -> String {
-        self.await_arrival(id);
         let mut registry = lock(&self.containers);
         let cancelled = matches!(
             lock(&self.runs).get(id),
@@ -1981,47 +1981,66 @@ impl<D: Disk> Daemon<D> {
             waiter.hear(code);
         }
         drop(registry);
-        if let Some(removal) = removal {
+        if let Some(removal) = removal
+            && self.set_aside(&removal).is_ok()
+        {
             let _ = self.complete(&removal);
         }
         said
     }
 
-    /// The end of container `id`'s run, as `end` records it: a `--rm` container is taken
-    /// out of sight, for [`complete`](Self::complete) to remove, and one whose removal
-    /// fails, or any other, is recorded. Failures go to the log.
+    /// The end of container `id`'s run, as `end` records it, kept at once: in sight, or
+    /// in its reservation, whose record then holds it. A `--rm` container is taken out of
+    /// sight, for [`set_aside`](Self::set_aside) and [`complete`](Self::complete) to
+    /// remove; any other's record is written on the recorder's thread. Waits on no write:
+    /// the followers' loop ends every run, and one waiting there holds up every other
+    /// run's messages, by 81 ms at a loaded host's p90 (PM M96). Failures go to the log.
     fn end_container(
         &self,
         registry: &mut Registry,
         id: &str,
         end: impl FnOnce(&mut Container),
     ) -> Option<Removal> {
-        // Its record is written first ([`await_arrival`](Self::await_arrival)): a
-        // container still arriving is not yet in sight, and its end would be lost.
-        if registry.is_arriving(id) {
-            log(format!(
-                "container {id}: ended before its record was written; the end is lost"
-            ));
+        if let Err(e) = registry.change(id, end) {
+            log(format!("container {id}: its end is lost: {e}"));
             return None;
         }
-        if registry.get(id)?.auto_remove {
-            match registry.remove(&self.disk, id) {
-                Ok(removal) => return removal,
-                Err(e) => log(format!("container {id}: removing it: {e}")),
-            }
+        if registry.made(id).is_some_and(|c| c.auto_remove) {
+            let removal = registry.take_out(id);
+            // One still arriving is so no more.
+            self.arrived.notify_all();
+            return removal;
         }
-        // Its record is written on the recorder's thread, outside this lock.
-        match registry.change(id, end) {
-            Ok(()) => self.record_soon(id, Vec::new()),
-            Err(e) => log(format!("container {id}: its end is lost: {e}")),
-        }
+        self.record_soon(id, Vec::new());
         None
     }
 
-    /// Makes `removal` durable out of the registry's lock, then lets its name go and
-    /// deletes what it set aside. Until it is durable the name stays held, since a crash
-    /// could bring the container back. Failures go to the log, and whether it is durable
-    /// is returned.
+    /// Sets aside the directory of the container `removal` took out of sight, out of the
+    /// registry's lock: once it is, no crash of the daemon brings the container back. One
+    /// that cannot be set aside is put back in sight as it was, its record written again,
+    /// and the error is returned. Commands waiting for it to be set aside look again.
+    pub(super) fn set_aside(&self, removal: &Removal) -> io::Result<()> {
+        let id = &removal.container.id;
+        let set = removal.set_aside(&self.disk);
+        {
+            let mut registry = lock(&self.containers);
+            match &set {
+                Ok(()) => registry.aside(id),
+                Err(_) => registry.bring_back(id),
+            }
+        }
+        self.arrived.notify_all();
+        if let Err(e) = &set {
+            log(format!("container {id}: removing it: {e}"));
+            self.record_soon(id, Vec::new());
+        }
+        set
+    }
+
+    /// Makes `removal`, set aside, durable out of the registry's lock, then lets its name
+    /// go and deletes what it set aside. Until it is durable the name stays held, since a
+    /// power loss could bring the container back. Failures go to the log, and whether it
+    /// is durable is returned.
     pub(super) fn complete(&self, removal: &Removal) -> io::Result<()> {
         let id = &removal.container.id;
         let synced = removal.sync(&self.disk);
@@ -2039,14 +2058,15 @@ impl<D: Disk> Daemon<D> {
         synced
     }
 
-    /// [`complete`](Self::complete) of a batch: one sync of their directory makes every
-    /// removal set aside before it durable.
+    /// [`set_aside`](Self::set_aside), then [`complete`](Self::complete), of a batch: one
+    /// sync of their directory makes every removal set aside before it durable.
     fn complete_batch(&self, batch: &[Removal]) {
-        let Some(first) = batch.first() else {
+        let aside: Vec<&Removal> = batch.iter().filter(|r| self.set_aside(r).is_ok()).collect();
+        let Some(first) = aside.first() else {
             return;
         };
         let synced = first.sync(&self.disk);
-        for removal in batch {
+        for removal in aside {
             let id = &removal.container.id;
             match &synced {
                 Ok(()) => lock(&self.containers).release(id),
@@ -2130,10 +2150,10 @@ impl<D: Disk> Daemon<D> {
 
     /// For `rm`: takes container `id` out of sight with its run if no VM has been
     /// committed to the run, which then never starts; those waiting for the container hear
-    /// 0, the code of one that never ran. The removal, for [`complete`](Self::complete), if
-    /// it did. A run being handed over is seen through first, so that `rm` acts on whether
-    /// it started.
-    pub(super) fn cancel_start(&self, id: &str) -> io::Result<Option<Removal>> {
+    /// 0, the code of one that never ran. The removal, for [`set_aside`](Self::set_aside)
+    /// and [`complete`](Self::complete), if it did. A run being handed over is seen through
+    /// first, so that `rm` acts on whether it started.
+    pub(super) fn cancel_start(&self, id: &str) -> Option<Removal> {
         loop {
             let mut registry = lock(&self.containers);
             let mut runs = lock(&self.runs);
@@ -2143,7 +2163,7 @@ impl<D: Disk> Daemon<D> {
                     false
                 }
                 Some(RunState::Handing { .. }) => true,
-                Some(RunState::Tracked(_)) | None => return Ok(None),
+                Some(RunState::Tracked(_)) | None => return None,
             };
             if handing {
                 drop(registry);
@@ -2154,7 +2174,7 @@ impl<D: Disk> Daemon<D> {
             for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
                 waiter.hear(0);
             }
-            return registry.remove(&self.disk, id);
+            return registry.take_out(id);
         }
     }
 
@@ -2278,11 +2298,12 @@ impl<D: Disk> Daemon<D> {
     pub(super) fn settle(&self) {
         // A container is seen once its record is written, on the recorder's thread, while
         // its run goes on: a short run's client can have its status first. The answer
-        // waits for every record being written, each a local write away.
+        // waits for every record being written, each a local write away, and for every
+        // removal a crash would undo to be set aside.
         let mut registry = lock(&self.containers);
         // Records behind are written again, on the recorder's thread.
         let behind: Vec<String> = registry.behind().cloned().collect();
-        while registry.any_arriving() {
+        while registry.any_arriving() || registry.any_setting_aside() {
             registry = self
                 .arrived
                 .wait(registry)
@@ -2380,9 +2401,8 @@ impl<D: Disk> Daemon<D> {
                 (code, Some(said))
             }
         };
-        // A run may end before its container's record is written: it is ended once the
-        // record is, as one that never started is (`not_started`).
-        self.await_arrival(id);
+        // A run may end before its container's record is written: its end waits in its
+        // reservation, for the record (`end_container`).
         let removal = {
             let mut registry = lock(&self.containers);
             let removal = self.end_container(&mut registry, id, |c| {
@@ -3531,6 +3551,15 @@ mod tests {
     }
 
     /// What thread `h` returned, once it has, within [`PATIENCE`].
+    /// Whether thread `h` finishes within [`PATIENCE`]; it is not joined.
+    fn finishes<T>(h: &impl Joinable<T>) -> bool {
+        let deadline = Instant::now() + PATIENCE;
+        while !h.finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        h.finished()
+    }
+
     fn joined<T>(h: impl Joinable<T>) -> T {
         let deadline = Instant::now() + PATIENCE;
         while !h.finished() {
@@ -4966,10 +4995,12 @@ mod tests {
         });
     }
 
-    /// A run that ends before its container's record is written keeps its end: the record
-    /// says how it exited, and `wait` hears its code. Before, the end was dropped, the
-    /// container stayed running in sight, and `wait` said 0 (seen 2026-10-02 under
-    /// parallel E2E runs, which slow the record's write).
+    /// A run that ends before its container's record is written ends at once, holding up
+    /// no other run's messages on the followers' loop (PM M96), and keeps its end: the
+    /// record says how it exited, and `wait` hears its code. Before, the end was dropped,
+    /// the container stayed running in sight, and `wait` said 0 (seen 2026-10-02 under
+    /// parallel E2E runs, which slow the record's write); then the loop waited for the
+    /// write.
     #[test]
     fn a_run_that_ends_before_its_record_is_written_keeps_its_end() {
         let t = Test::on("end-arriving", Held::default());
@@ -4984,12 +5015,229 @@ mod tests {
             t.until("the record's write is held", |d| {
                 d.disk.writing.load(Ordering::SeqCst)
             });
-            std::thread::sleep(Duration::from_millis(50));
+            let ended = finishes(&starting.run);
+            let arriving = lock(&t.daemon.containers).is_arriving(&id);
             held.let_through();
+            assert!(ended, "its run ended only once its record was written");
             joined(starting.run).unwrap();
+            assert!(arriving, "its record was written before its run ended");
+            t.daemon.await_arrival(&id);
             let record = t.record(&id).unwrap();
             assert_eq!((record.state, record.exit_code), (Life::Exited, Some(3)));
             assert_eq!(t.ask(&["wait", "racer"]), (0, "3\n".into(), String::new()));
+        });
+    }
+
+    /// A `--rm` run that ends before its container's record is written ends at once too:
+    /// its container is out of sight, its name held, and removed once the record's write
+    /// is done, never seen; that write, which finds the directory set aside, fails for
+    /// nothing, and is neither logged nor kept as a record behind.
+    #[test]
+    fn a_rm_run_that_ends_before_its_record_is_written_is_removed() {
+        let t = Test::on("rm-arriving", Held::default());
+        t.run(|t| {
+            t.t.daemon.start_completer(t.threads);
+            let held = &t.daemon.disk;
+            held.holding_writes.store(true, Ordering::SeqCst);
+            let id = t.reserve_with("racer", None, true);
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            // Its command never starts: nothing asks for its record after the first.
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::DONE, &[127]);
+            t.until("the record's write is held", |d| {
+                d.disk.writing.load(Ordering::SeqCst)
+            });
+            let ended = finishes(&starting.run);
+            // Set aside before the record's write goes on, which then finds no directory.
+            let dir = t.home.join("containers").join(&id);
+            let deadline = Instant::now() + PATIENCE;
+            while dir.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let set_aside = !dir.exists();
+            let (arriving, seen, holder) = {
+                let registry = lock(&t.daemon.containers);
+                (
+                    registry.is_arriving(&id),
+                    registry.get(&id).is_some(),
+                    registry.name_taken("racer").map(|c| c.id.clone()),
+                )
+            };
+            held.let_through();
+            assert!(ended, "its run ended only once its record was written");
+            joined(starting.run).unwrap();
+            assert!(
+                set_aside,
+                "its directory was set aside only once its record was written"
+            );
+            assert_eq!((arriving, seen), (false, false), "in sight, or arriving");
+            assert_eq!(holder, Some(id.clone()), "its name let go before its removal");
+            t.until("its name was never let go", |d| {
+                lock(&d.containers).name_taken("racer").is_none()
+            });
+            assert!(t.record(&id).is_none());
+            assert!(!t.home.join("containers").join(&id).exists());
+            let aside = t.home.join("containers").join(format!(".{id}.removing"));
+            t.until("what was set aside was not deleted", |_| !aside.exists());
+            // Its record's write, which found its directory set aside, failed for nothing.
+            t.daemon.await_recorded();
+            assert_eq!(
+                t.daemon.recording.failed(),
+                0,
+                "a failure kept for a container gone"
+            );
+        });
+    }
+
+    /// A `--rm` container whose directory cannot be set aside as its run ends is back in
+    /// sight, as it ended, its record written as such with no command asking, its name
+    /// its own.
+    #[test]
+    fn a_rm_container_that_cannot_be_set_aside_is_back_as_it_ended() {
+        let t = Test::on("rm-refused", Held::default());
+        t.run(|t| {
+            t.t.daemon.start_completer(t.threads);
+            let held = &t.daemon.disk;
+            held.let_through();
+            let id = t.reserve_with("racer", None, true);
+            t.t.daemon.await_arrival(&id);
+            held.failing_set_asides.store(true, Ordering::SeqCst);
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            serve(&vm, 5);
+            joined(starting.run).unwrap();
+            let on_disk = || {
+                let bytes = std::fs::read(t.home.join("containers").join(&id).join("config.json")).ok()?;
+                serde_json::from_slice::<Container>(&bytes).ok()
+            };
+            t.until("its end was not recorded", |_| {
+                on_disk().is_some_and(|c| c.state == Life::Exited && c.exit_code == Some(5))
+            });
+            assert_eq!(
+                t.record(&id).map(|c| (c.state, c.exit_code)),
+                Some((Life::Exited, Some(5)))
+            );
+            assert_eq!(
+                lock(&t.daemon.containers).named("racer").map(|c| c.id.clone()),
+                Some(id.clone())
+            );
+        });
+    }
+
+    /// Where the completer's thread does not run, a `--rm` container's removal is
+    /// completed where its run ends.
+    #[test]
+    fn a_removal_completes_where_no_completer_runs() {
+        let t = Test::new("rm-alone");
+        t.run(|t| {
+            let id = t.reserve_with("racer", None, true);
+            t.t.daemon.await_arrival(&id);
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            serve(&vm, 0);
+            joined(starting.run).unwrap();
+            t.until("its name was never let go", |d| {
+                lock(&d.containers).name_taken("racer").is_none()
+            });
+            assert!(!t.home.join("containers").join(&id).exists());
+            let aside = t.home.join("containers").join(format!(".{id}.removing"));
+            t.until("what was set aside was not deleted", |_| !aside.exists());
+        });
+    }
+
+    /// A command waiting for a container's record to be written sees the container taken
+    /// out once its `--rm` run ends first, and answers once what was asked before it is
+    /// written: nothing else says the container has arrived until its removal is set
+    /// aside, which may wait on the filesystem.
+    #[test]
+    fn a_command_waiting_for_an_arrival_sees_it_taken_out() {
+        let t = Test::on("taken-out-arriving", Held::default());
+        t.run(|t| {
+            t.t.daemon.start_completer(t.threads);
+            let held = &t.daemon.disk;
+            let other = t.create("other");
+            held.holding_writes.store(true, Ordering::SeqCst);
+            held.holding_set_asides.store(true, Ordering::SeqCst);
+            // The recorder, held on another's record: the arrival waits its turn.
+            lock(&t.daemon.containers)
+                .change(&other, |c| c.exit_code = Some(1))
+                .unwrap();
+            t.daemon.record_soon(&other, Vec::new());
+            t.until("the other's record is not held", |d| {
+                d.disk.writing.load(Ordering::SeqCst)
+            });
+            let id = t.reserve_with("racer", None, true);
+            let starting = t.start(&id);
+            let (answered, settled) = mpsc::channel();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    t.daemon.settle();
+                    answered.send(()).unwrap();
+                });
+                let (ready, vm) = t.warm_vm(None);
+                starting.warm.send(ready).unwrap();
+                serve(&vm, 0);
+                let ended = finishes(&starting.run);
+                held.let_writes_through();
+                let early = settled.recv_timeout(Duration::from_secs(2));
+                held.let_through();
+                assert!(ended, "its run ended only once its record was written");
+                assert!(early.is_ok(), "answered only once its removal was set aside");
+            });
+            joined(starting.run).unwrap();
+        });
+    }
+
+    /// `rm` sets its container's directory aside out of the registry's lock, which every
+    /// run's end takes: while the rename waits on the filesystem, the lock is free, and a
+    /// command, which could say the container is gone, waits until it is set aside, since
+    /// a crash before then would bring it back (audit A15). One that cannot be set aside is
+    /// back as it was, and `rm` says why.
+    #[test]
+    fn rm_sets_aside_out_of_the_registrys_lock() {
+        let t = Test::on("rm-aside", Held::default());
+        t.run(|t| {
+            let going = t.create("going");
+            let held = &t.daemon.disk;
+            held.holding_set_asides.store(true, Ordering::SeqCst);
+            let removing = t.asking(&["rm", "going"]);
+            t.until("the set-aside is not held", |d| {
+                d.disk.setting_aside.load(Ordering::SeqCst)
+            });
+            let free = t.daemon.containers.try_lock().is_ok();
+            let listing = t.asking(&["ps", "-a"]);
+            std::thread::sleep(Duration::from_millis(100));
+            let early = listing.is_finished();
+            held.let_through();
+            assert!(free, "the registry's lock held through the rename");
+            assert!(!early, "answered before the removal was set aside");
+            assert_eq!(joined(removing), (0, "going\n".into(), String::new()));
+            let (code, out, err) = joined(listing);
+            assert_eq!(code, 0, "{err}");
+            assert!(!out.contains("going"), "{out}");
+            assert!(!t.home.join("containers").join(&going).exists());
+
+            t.create("staying");
+            held.failing.store(true, Ordering::SeqCst);
+            let refused = t.ask(&["rm", "staying"]);
+            held.failing.store(false, Ordering::SeqCst);
+            assert_eq!(
+                refused,
+                (
+                    1,
+                    String::new(),
+                    "Error response from daemon: cannot remove container \"staying\": a failing disk\n"
+                        .into()
+                )
+            );
+            let (_, out, _) = t.ask(&["ps", "-a"]);
+            assert!(out.contains("staying"), "{out}");
+            assert!(lock(&t.daemon.containers).name_taken("staying").is_some());
         });
     }
 
@@ -5551,10 +5799,26 @@ mod tests {
         /// Its writes too wait until let through, while this is set.
         holding_writes: AtomicBool,
         writing: AtomicBool,
+        /// Its renames that set a removed container's directory aside (`.ID.removing`)
+        /// too wait until let through, while this is set: on a gate of their own, which
+        /// [`let_writes_through`](Self::let_writes_through) leaves shut.
+        holding_set_asides: AtomicBool,
+        setting_aside: AtomicBool,
+        /// Its set-asides fail, while this is set.
+        failing_set_asides: AtomicBool,
+        set_asides_through: Mutex<bool>,
+        set_asides_turn: std::sync::Condvar,
     }
 
     impl Held {
         fn let_through(&self) {
+            *lock(&self.set_asides_through) = true;
+            self.set_asides_turn.notify_all();
+            self.let_writes_through();
+        }
+
+        /// Lets its writes and syncs through, not its renames.
+        fn let_writes_through(&self) {
             *lock(&self.through) = true;
             self.turn.notify_all();
         }
@@ -5581,6 +5845,17 @@ mod tests {
         fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
             if self.failing.load(Ordering::SeqCst) {
                 return Err(io::Error::other("a failing disk"));
+            }
+            let aside = to
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().ends_with(".removing"));
+            if aside && self.failing_set_asides.load(Ordering::SeqCst) {
+                return Err(io::Error::other("a failing set-aside"));
+            }
+            if aside && self.holding_set_asides.load(Ordering::SeqCst) {
+                self.setting_aside.store(true, Ordering::SeqCst);
+                let through = lock(&self.set_asides_through);
+                drop(self.set_asides_turn.wait_while(through, |t| !*t).unwrap());
             }
             Real.rename(from, to)
         }
@@ -5688,10 +5963,8 @@ mod tests {
         t.run(|t| {
             let held = &t.daemon.disk;
             let id = t.create("racer");
-            let removal = lock(&t.daemon.containers)
-                .remove(&t.daemon.disk, &id)
-                .unwrap()
-                .unwrap();
+            let removal = lock(&t.daemon.containers).take_out(&id).unwrap();
+            t.daemon.set_aside(&removal).unwrap();
             std::thread::scope(|scope| {
                 let completing = scope.spawn(|| t.daemon.complete(&removal));
                 let deadline = Instant::now() + PATIENCE;

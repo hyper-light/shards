@@ -623,9 +623,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
                         )
                     })
                 };
+                // Set aside out of the registry's lock, which every run's end takes.
+                let set_aside = |removal: Removal| {
+                    self.set_aside(&removal).map_err(|e| cannot(&e.to_string()))?;
+                    complete(removal)
+                };
                 let removed = (|| {
-                    if let Some(removal) = self.cancel_start(&id).map_err(|e| cannot(&e.to_string()))? {
-                        return complete(removal);
+                    if let Some(removal) = self.cancel_start(&id) {
+                        return set_aside(removal);
                     }
                     if lock(&self.containers).get(&id).is_none() {
                         return Ok(true);
@@ -642,10 +647,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             ));
                         }
                     }
-                    let removal = lock(&self.containers)
-                        .remove(&self.disk, &id)
-                        .map_err(|e| cannot(&e.to_string()))?;
-                    removal.map_or(Ok(true), complete)
+                    let removal = lock(&self.containers).take_out(&id);
+                    removal.map_or(Ok(true), set_aside)
                 })();
                 lock(&self.removing).remove(&id);
                 removed

@@ -49,6 +49,12 @@ struct Queue {
 }
 
 impl Recording {
+    /// How many containers' records could not be written, and are not yet.
+    #[cfg(test)]
+    pub(super) fn failed(&self) -> usize {
+        lock(&self.queue).failed.len()
+    }
+
     /// Ends the recorder's thread once nothing is queued: a test's daemon's.
     #[cfg(test)]
     pub(super) fn end(&self) {
@@ -148,17 +154,24 @@ impl<D: Disk> Daemon<D> {
 
     /// Writes container `id`'s record: its first, which makes it seen, or that of its
     /// changes as it now stands. One that changes as it is written stays behind, for the
-    /// write its change asked for; one gone has nothing to write.
+    /// write its change asked for; one gone has nothing to write, and one taken out of
+    /// sight as it was written nothing to keep: what was written went with its directory,
+    /// set aside, or found none (`Removal::set_aside`).
     fn record(&self, id: &str) -> io::Result<()> {
-        if lock(&self.containers).is_arriving(id) {
-            return self.arrive(id);
-        }
-        let Some((recorder, c)) = lock(&self.containers).snapshot(id) else {
-            return Ok(());
+        let written = if lock(&self.containers).is_arriving(id) {
+            self.arrive(id)
+        } else {
+            let Some((recorder, c)) = lock(&self.containers).snapshot(id) else {
+                return Ok(());
+            };
+            recorder
+                .write(&self.disk, &c)
+                .map(|()| lock(&self.containers).written(id, &c))
         };
-        recorder.write(&self.disk, &c)?;
-        lock(&self.containers).written(id, &c);
-        Ok(())
+        match written {
+            Err(_) if lock(&self.containers).made(id).is_none() => Ok(()),
+            written => written,
+        }
     }
 
     /// Waits until every record asked for so far is written, or behind, the registry's

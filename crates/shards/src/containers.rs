@@ -175,12 +175,17 @@ impl Disk for Real {
 
 /// The daemon's containers, by ID, each kept in its directory under `containers` in the
 /// home (docs/design/architecture.md D27, "Durability"):
-/// - A container is seen once its record is written, and a removal changes what is seen
-///   only once the container's directory is set aside, so what a command sees or is told
+/// - A container is seen once its record is written, so what a command sees or is told
 ///   outlives a crash of the daemon. A container is reserved first, its name held, and its
 ///   record written beside the run's start, which never waits for it: a write waits on
 ///   whatever else the filesystem is doing, milliseconds at a busy host's p90 (PM M46).
 ///   What happens to a reserved container waits in its reservation, for the record.
+/// - A removal takes a container out of sight at once, its name held, and its directory
+///   is set aside after, outside the lock ([`take_out`](Self::take_out),
+///   [`Removal::set_aside`]). Until then a crash brings it back, unless it is a `--rm`
+///   one, which the next start removes: a command answers once no other is being set
+///   aside ([`any_setting_aside`](Self::any_setting_aside)). One that cannot be set aside
+///   is put back as it was ([`bring_back`](Self::bring_back)).
 /// - What happened to a container's run is kept at once, since it happened
 ///   ([`change`](Self::change)), and its record is written after, outside the lock the
 ///   registry is kept under ([`snapshot`](Self::snapshot), [`written`](Self::written)); a
@@ -198,9 +203,12 @@ pub struct Registry {
     by_name: HashMap<String, String>,
     /// The containers whose records are behind.
     behind: BTreeSet<String>,
-    /// Containers being removed, by ID: set aside, their names held until the removal is
-    /// durable.
+    /// Containers being removed, by ID: out of sight, their names held until the removal
+    /// is durable.
     leaving: BTreeMap<String, Container>,
+    /// Those of `leaving` whose directories are not yet set aside, which a crash would
+    /// bring back: all but `--rm` ones.
+    setting_aside: BTreeSet<String>,
     /// Containers reserved, by ID, whose records are being written: their names held,
     /// and not yet seen.
     arriving: BTreeMap<String, Container>,
@@ -233,6 +241,7 @@ impl Registry {
             by_name: HashMap::new(),
             behind: BTreeSet::new(),
             leaving: BTreeMap::new(),
+            setting_aside: BTreeSet::new(),
             arriving: BTreeMap::new(),
         };
         let mut removed = false;
@@ -477,31 +486,51 @@ impl Registry {
         self.behind.iter()
     }
 
-    /// Takes the container with `id` out of sight: its directory is set aside first, so
-    /// that a failure leaves it as it was. Its name stays held until the removal is
-    /// durable ([`Removal::sync`], then [`release`](Self::release)).
-    pub fn remove(&mut self, disk: &dyn Disk, id: &str) -> io::Result<Option<Removal>> {
-        if !self.by_id.contains_key(id) {
-            return Ok(None);
-        }
-        let aside = self.root.join(format!(".{id}.removing"));
-        match disk.rename(&self.root.join(id), &aside) {
-            Ok(()) => {}
-            // Its directory went by other hands: nothing to set aside.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
-        let Some(c) = self.by_id.remove(id) else {
-            return Ok(None);
+    /// Takes the container with `id` out of sight, or out of its reservation, at once:
+    /// its name stays held until its removal is durable ([`Removal::sync`], then
+    /// [`release`](Self::release)). Its directory is set aside after, outside the lock
+    /// ([`Removal::set_aside`], then [`aside`](Self::aside), or
+    /// [`bring_back`](Self::bring_back) where that fails).
+    pub fn take_out(&mut self, id: &str) -> Option<Removal> {
+        let c = match self.by_id.remove(id) {
+            Some(c) => {
+                self.by_name.remove(&c.name);
+                c
+            }
+            None => self.arriving.remove(id)?,
         };
-        self.by_name.remove(&c.name);
         self.behind.remove(id);
+        if !c.auto_remove {
+            self.setting_aside.insert(id.to_string());
+        }
         self.leaving.insert(id.to_string(), c.clone());
-        Ok(Some(Removal {
-            container: c,
+        Some(Removal {
+            aside: self.root.join(format!(".{id}.removing")),
             root: self.root.clone(),
-            aside,
-        }))
+            container: c,
+        })
+    }
+
+    /// The directory of the container with `id`, taken out, is set aside: no crash of the
+    /// daemon brings it back.
+    pub fn aside(&mut self, id: &str) {
+        self.setting_aside.remove(id);
+    }
+
+    /// Puts the container with `id`, taken out, back in sight, its directory not set
+    /// aside: its removal failed, and it stands as it was, its record behind.
+    pub fn bring_back(&mut self, id: &str) {
+        self.setting_aside.remove(id);
+        if let Some(c) = self.leaving.remove(id) {
+            self.behind.insert(c.id.clone());
+            self.see(c);
+        }
+    }
+
+    /// Whether a container taken out is being set aside that a crash would bring back: a
+    /// command that says it is gone waits until it is not (audit A15).
+    pub fn any_setting_aside(&self) -> bool {
+        !self.setting_aside.is_empty()
     }
 
     /// Lets the name of a container whose removal is durable go.
@@ -557,7 +586,7 @@ fn write(disk: &dyn Disk, root: &Path, c: &Container) -> io::Result<()> {
     disk.rename(&dir.join(NEW_RECORD), &dir.join(RECORD))
 }
 
-/// A container taken out of sight, its directory set aside ([`Registry::remove`]).
+/// A container taken out of sight ([`Registry::take_out`]), its directory to set aside.
 #[derive(Debug)]
 pub struct Removal {
     pub container: Container,
@@ -566,6 +595,17 @@ pub struct Removal {
 }
 
 impl Removal {
+    /// Sets the container's directory aside, under the name the next start deletes
+    /// (`.ID.removing`): no crash of the daemon brings it back. One gone already has
+    /// nothing to set aside. A write of its record meanwhile lands in what is set aside, or
+    /// fails: none makes the directory again.
+    pub fn set_aside(&self, disk: &dyn Disk) -> io::Result<()> {
+        match disk.rename(&self.root.join(&self.container.id), &self.aside) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
     /// Makes the removal durable: the containers' directory is synced, so that no crash
     /// brings the container back. Slow (PM M46), so done outside the registry's lock.
     pub fn sync(&self, disk: &dyn Disk) -> io::Result<()> {
@@ -650,6 +690,24 @@ mod tests {
             Ok(()) => Err(io::Error::other("changed as it was written")),
             Err(e) => {
                 r.admit_behind(&id);
+                Err(e)
+            }
+        }
+    }
+
+    /// Removes the container with `id` as the daemon does: out of sight, then its
+    /// directory set aside, or back in sight if that fails.
+    fn remove(r: &mut Registry, disk: &dyn Disk, id: &str) -> io::Result<Option<Removal>> {
+        let Some(removal) = r.take_out(id) else {
+            return Ok(None);
+        };
+        match removal.set_aside(disk) {
+            Ok(()) => {
+                r.aside(id);
+                Ok(Some(removal))
+            }
+            Err(e) => {
+                r.bring_back(id);
                 Err(e)
             }
         }
@@ -808,7 +866,7 @@ mod tests {
         r.reserve(container("ef78", "queue", State::Created));
         assert!(r.named("queue").is_none());
         assert_eq!(r.name_taken("queue").map(|c| c.id.as_str()), Some("ef78"));
-        let removal = r.remove(&Real, "ab34").unwrap().unwrap();
+        let removal = remove(&mut r, &Real, "ab34").unwrap().unwrap();
         assert!(r.named("db").is_none());
         assert_eq!(r.by_name.len(), 2, "a name kept for a container out of sight");
         assert_eq!(ids(&r, "ab"), ["ab12"]);
@@ -878,7 +936,7 @@ mod tests {
         );
         assert!(again.name_taken("one").is_some());
         let mut again = again;
-        let removal = again.remove(&Real, "aa").unwrap().unwrap();
+        let removal = remove(&mut again, &Real, "aa").unwrap().unwrap();
         removal.sync(&Real).unwrap();
         again.release("aa");
         removal.delete(&Real).unwrap();
@@ -982,18 +1040,69 @@ mod tests {
         drop(r);
         let disk = Faulty::at(4, false);
         let mut r = faulty(&home, &disk);
-        let e = r.remove(&disk, "aa").unwrap_err();
+        let e = remove(&mut r, &disk, "aa").unwrap_err();
         assert!(e.to_string().contains("injected at rename"), "{e}");
         assert!(r.get("aa").is_some());
         assert!(r.name_taken("one").is_some());
         assert!(open(&home).get("aa").is_some());
-        let removal = r.remove(&disk, "aa").unwrap().unwrap();
+        let removal = remove(&mut r, &disk, "aa").unwrap().unwrap();
         assert!(r.get("aa").is_none());
         removal.sync(&disk).unwrap();
         r.release("aa");
         removal.delete(&disk).unwrap();
         assert!(open(&home).get("aa").is_none());
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A container taken out is out of sight at once, its name held; one a crash would
+    /// bring back is said to be setting aside until its directory is, and a `--rm` one,
+    /// which the next start removes, is not. One taken out of its reservation is never
+    /// seen, though its record is written after; one whose directory cannot be set aside
+    /// is back in sight, its record behind.
+    #[test]
+    fn a_container_taken_out_is_gone_at_once_and_set_aside_after() {
+        let home = temp_home("take-out");
+        let mut r = open(&home);
+        made(&mut r, container("aa", "one", State::Exited));
+        let removal = r.take_out("aa").unwrap();
+        assert!(r.get("aa").is_none() && r.named("one").is_none());
+        assert_eq!(r.name_taken("one").map(|c| c.id.as_str()), Some("aa"));
+        assert!(r.any_setting_aside());
+        removal.set_aside(&Real).unwrap();
+        r.aside("aa");
+        assert!(!r.any_setting_aside());
+        assert!(home.join("containers/.aa.removing").is_dir());
+        removal.set_aside(&Real).unwrap();
+
+        made(
+            &mut r,
+            Container {
+                auto_remove: true,
+                ..container("bb", "two", State::Exited)
+            },
+        );
+        let _removal = r.take_out("bb").unwrap();
+        assert!(!r.any_setting_aside(), "a --rm one");
+
+        std::fs::create_dir_all(r.dir("cc")).unwrap();
+        r.reserve(container("cc", "three", State::Created));
+        let (recorder, c) = r.arrival("cc").unwrap();
+        let taken = r.take_out("cc").unwrap();
+        assert!(!r.is_arriving("cc"));
+        assert_eq!(r.name_taken("three").map(|c| c.id.as_str()), Some("cc"));
+        recorder.write(&Real, &c).unwrap();
+        assert!(r.admit("cc", &c));
+        assert!(r.get("cc").is_none(), "seen, though taken out");
+        taken.set_aside(&Real).unwrap();
+        r.aside("cc");
+        assert!(home.join("containers/.cc.removing").join(RECORD).is_file());
+
+        made(&mut r, container("dd", "four", State::Exited));
+        let _removal = r.take_out("dd").unwrap();
+        r.bring_back("dd");
+        assert_eq!(r.named("four").map(|c| c.id.as_str()), Some("dd"));
+        assert!(r.behind().any(|id| id == "dd"));
+        assert!(!r.any_setting_aside());
     }
 
     /// A container's name is held until its removal is durable: a power loss before then
@@ -1003,7 +1112,7 @@ mod tests {
         let home = temp_home("leaving");
         let mut r = open(&home);
         made(&mut r, container("aa", "one", State::Exited));
-        let removal = r.remove(&Real, "aa").unwrap().unwrap();
+        let removal = remove(&mut r, &Real, "aa").unwrap().unwrap();
         assert!(r.get("aa").is_none(), "out of sight at once");
         assert!(r.named("one").is_none(), "and by its name");
         assert_eq!(r.name_taken("one").map(|c| c.id.as_str()), Some("aa"));
@@ -1102,13 +1211,13 @@ mod tests {
             }
             let _ = r.update(disk, "life", |c| c.state = State::Running);
             let removal = if auto_remove {
-                r.remove(disk, "life")
+                remove(r, disk, "life")
             } else {
                 let _ = r.update(disk, "life", |c| {
                     c.state = State::Exited;
                     c.exit_code = Some(3);
                 });
-                r.remove(disk, "life")
+                remove(r, disk, "life")
             };
             if let Ok(Some(removal)) = removal
                 && removal.sync(disk).is_ok()
@@ -1435,7 +1544,7 @@ mod tests {
         })
         .unwrap();
         keep(&r, "one");
-        let removal = r.remove(&disk, "one").unwrap().unwrap();
+        let removal = remove(&mut r, &disk, "one").unwrap().unwrap();
         removal.sync(&disk).unwrap();
         let durable = disk.model.lock().unwrap().ops.len();
         r.release("one");
