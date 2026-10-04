@@ -227,11 +227,23 @@ impl VirtioDevice for Net {
         self.context = None;
     }
 
+    /// The queues' states as a restore resumes them: before the chains the session holds
+    /// unused, a TX frame waiting for room in the ring and RX buffers gathered for a frame
+    /// larger than they are, which a restore takes again from the driver's rings; a
+    /// session resumed here goes on with them (review 2.20).
     fn pause(&mut self) -> Vec<super::queue::QueueState> {
         let Some(s) = self.stop() else {
             return Vec::new();
         };
-        let states = s.queues.iter().map(Queue::state).collect();
+        let mut held = [0u16; 2];
+        held[RX] = u16::try_from(s.pending_rx.len()).unwrap_or(u16::MAX);
+        held[TX] = u16::from(s.pending_tx.is_some());
+        let states = s
+            .queues
+            .iter()
+            .enumerate()
+            .map(|(i, q)| q.state_before(held.get(i).copied().unwrap_or(0)))
+            .collect();
         self.paused = Some(s);
         states
     }
@@ -393,7 +405,16 @@ fn step(
             let Some(chain) = with(mem, |a| rxq.pop(a))? else {
                 break;
             };
-            room += writable(&chain);
+            // A chain with no room for any of a frame goes back at once, empty (review
+            // 2.23): held, it would count among the frame's buffers, and first among them
+            // leave its header's `num_buffers` unwritten.
+            let cap = writable(&chain);
+            if cap == 0 {
+                with(mem, |a| rxq.add_used(a, chain.head, 0))?;
+                used[RX] = true;
+                continue;
+            }
+            room += cap;
             s.pending_rx.push(chain);
         }
         if room < n {
@@ -489,7 +510,8 @@ fn deliver(rx: &mut Consumer<'_>, chains: &[Chain], mem: &GuestMemory) -> Result
         // num_buffers, the header's last field (§5.1.6): how many chains hold the frame.
         if let Some(first) = chains.first().and_then(|c| c.writable().next())
             && first.len as usize >= HEADER
-            && let Ok(p) = mem.host_ptr(first.addr + 10, 2)
+            && let Some(at) = first.addr.checked_add(10)
+            && let Ok(p) = mem.host_ptr(at, 2)
         {
             let count = u16::try_from(used).unwrap_or(u16::MAX).to_le_bytes();
             // SAFETY: two bytes of guest memory checked by host_ptr.
@@ -499,4 +521,163 @@ fn deliver(rx: &mut Consumer<'_>, chains: &[Chain], mem: &GuestMemory) -> Result
     .map_err(|b| b.to_string())?;
     // Chains that held none of the frame still go back, empty.
     Ok(lens)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::super::queue::QueueConfig;
+    use super::*;
+    use crate::devices::Interrupt;
+
+    const BASE: u64 = 0x8000_0000;
+    const SIZE: u16 = 8;
+    const RX_DESC: u64 = BASE;
+    const RX_AVAIL: u64 = BASE + 0x1000;
+    const RX_USED: u64 = BASE + 0x2000;
+    const TX_DESC: u64 = BASE + 0x3000;
+    const TX_AVAIL: u64 = BASE + 0x4000;
+    const TX_USED: u64 = BASE + 0x5000;
+    const DATA: u64 = BASE + 0x8000;
+    /// VIRTQ_DESC_F_WRITE (virtio 1.2 §2.7.5): a buffer the device writes.
+    const DESC_WRITE: u16 = 2;
+
+    struct Line;
+
+    impl Interrupt for Line {
+        fn set_level(&self, _: bool) {}
+    }
+
+    /// A device's session on guest memory, and the network process's ends of its frame
+    /// ring: what `step` runs against, without a worker.
+    struct Rig {
+        mem: GuestMemory,
+        session: Session,
+        region: Region,
+        rx_published: u16,
+        irq: DeviceInterrupt,
+    }
+
+    impl Rig {
+        fn new() -> Rig {
+            let page = crate::platform::page_size().unwrap();
+            let mem = GuestMemory::anonymous(&[(BASE, 16 * page)]).unwrap();
+            let queue = |desc, avail, used| {
+                let cfg = QueueConfig {
+                    size: SIZE,
+                    desc,
+                    avail,
+                    used,
+                    ready: true,
+                };
+                Queue::new(cfg, SIZE, &mem, feature::VERSION_1).unwrap()
+            };
+            let queues = vec![
+                queue(RX_DESC, RX_AVAIL, RX_USED),
+                queue(TX_DESC, TX_AVAIL, TX_USED),
+            ];
+            Rig {
+                session: Session {
+                    queues,
+                    pending_tx: None,
+                    pending_rx: Vec::new(),
+                },
+                mem,
+                region: Region::map(shards_netring::memory().unwrap()).unwrap(),
+                rx_published: 0,
+                irq: DeviceInterrupt::new(Arc::new(Line)),
+            }
+        }
+
+        /// Gives the driver's RX descriptor `i`, one buffer, as a chain of its own.
+        fn rx_buffer(&mut self, i: u16, addr: u64, len: u32, flags: u16) {
+            let a = self.mem.access().unwrap();
+            let d = RX_DESC + 16 * u64::from(i);
+            a.write_obj(d, addr).unwrap();
+            a.write_obj(d + 8, len).unwrap();
+            a.write_obj(d + 12, flags).unwrap();
+            a.write_obj(d + 14, 0u16).unwrap();
+            a.write_obj(RX_AVAIL + 4 + 2 * u64::from(self.rx_published % SIZE), i)
+                .unwrap();
+            self.rx_published = self.rx_published.wrapping_add(1);
+            a.write_obj(RX_AVAIL + 2, self.rx_published).unwrap();
+        }
+
+        /// One round, with `frames` waiting from the network process.
+        fn step(&mut self, frames: &[&[u8]]) -> Step {
+            // Each doorbell's other end, kept for the round: ringing one closed fails.
+            let (_net_waits, device_rings) = shards_netring::doorbell().unwrap();
+            let (device_waits, net_rings) = shards_netring::doorbell().unwrap();
+            let (_tx_waits, tx_ring) = shards_netring::doorbell().unwrap();
+            let mut from_net = self.region.producer(1, net_rings);
+            for f in frames {
+                assert_eq!(
+                    from_net.try_push_with(f.len(), |dst| {
+                        // SAFETY: `dst` has room for the frame.
+                        unsafe { std::ptr::copy_nonoverlapping(f.as_ptr(), dst, f.len()) }
+                    }),
+                    Ok(Some(true))
+                );
+            }
+            let mut tx = self.region.producer(0, tx_ring);
+            let mut rx = self.region.consumer(1, device_rings, device_waits);
+            step(&mut self.session, &mut tx, &mut rx, &self.mem, &self.irq, false).unwrap()
+        }
+
+        /// The used ring's entries so far: each chain's head and the bytes written.
+        fn rx_used(&self) -> Vec<(u32, u32)> {
+            let a = self.mem.access().unwrap();
+            let n = a.read_obj::<u16>(RX_USED + 2).unwrap();
+            (0..n)
+                .map(|k| {
+                    let e = RX_USED + 4 + 8 * u64::from(k % SIZE);
+                    (a.read_obj::<u32>(e).unwrap(), a.read_obj::<u32>(e + 4).unwrap())
+                })
+                .collect()
+        }
+    }
+
+    /// A frame of `len` bytes, its virtio header zeroed.
+    fn frame(len: usize) -> Vec<u8> {
+        (0..len).map(|i| if i < HEADER { 0 } else { i as u8 }).collect()
+    }
+
+    /// A chain with no room for the frame goes back at once, empty, and the frame goes to
+    /// the next, whose header says it is the one buffer the frame takes (review 2.23).
+    #[test]
+    fn a_chain_with_no_room_goes_back_empty() {
+        let mut r = Rig::new();
+        r.rx_buffer(0, DATA, 64, 0);
+        r.rx_buffer(1, DATA + 0x100, 256, DESC_WRITE);
+        let f = frame(40);
+        r.step(&[&f]);
+        assert_eq!(r.rx_used(), [(0, 0), (1, 40)]);
+        assert!(r.session.pending_rx.is_empty());
+        let a = r.mem.access().unwrap();
+        assert_eq!(a.read_obj::<u16>(DATA + 0x100 + 10).unwrap(), 1, "num_buffers");
+        assert_eq!(a.read_obj::<u8>(DATA + 0x100 + 39).unwrap(), 39);
+    }
+
+    /// A buffer whose address is at the top of the guest's address space is no frame's,
+    /// and its header is not written past it (review 2.23).
+    #[test]
+    fn a_buffer_at_the_top_of_the_address_space_takes_nothing() {
+        let mut r = Rig::new();
+        r.rx_buffer(0, u64::MAX - 7, 64, DESC_WRITE);
+        r.step(&[&frame(HEADER)]);
+        assert_eq!(r.rx_used(), [(0, 0)]);
+    }
+
+    /// A frame larger than the buffers given so far holds them until more come: those are
+    /// what a pause saves as not yet taken (review 2.20).
+    #[test]
+    fn buffers_held_for_a_larger_frame_are_saved_as_not_taken() {
+        let mut r = Rig::new();
+        r.rx_buffer(0, DATA, 64, DESC_WRITE);
+        assert!(matches!(r.step(&[&frame(100)]), Step::Starved));
+        assert_eq!(r.session.pending_rx.len(), 1);
+        let held = u16::try_from(r.session.pending_rx.len()).unwrap();
+        assert_eq!(r.session.queues[RX].state_before(held).next_avail, 0);
+        assert_eq!(r.session.queues[RX].state().next_avail, 1);
+    }
 }

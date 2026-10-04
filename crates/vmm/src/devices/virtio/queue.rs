@@ -344,6 +344,17 @@ impl Queue {
         }
     }
 
+    /// [`state`](Self::state) as it was before the last `taken` chains were popped, which
+    /// the device holds and has not used: saved so, a restore takes them again from the
+    /// driver's ring, where they still are, rather than leave them never used (review
+    /// 2.20).
+    pub fn state_before(&self, taken: u16) -> QueueState {
+        QueueState {
+            next_avail: (self.next_avail - Wrapping(taken)).0,
+            ..self.state()
+        }
+    }
+
     /// Continues from where a snapshot of this queue left off.
     pub fn set_state(&mut self, st: QueueState) {
         self.next_avail = Wrapping(st.next_avail);
@@ -538,6 +549,36 @@ mod tests {
         assert_eq!(d.mem.access().unwrap().read_obj::<u16>(USED + 2).unwrap(), 1);
         assert_eq!(d.mem.access().unwrap().read_obj::<u32>(USED + 4).unwrap(), 0);
         assert_eq!(d.mem.access().unwrap().read_obj::<u32>(USED + 8).unwrap(), 513);
+    }
+
+    /// A queue saved before chains it holds unused, and restored, takes them again: the
+    /// same heads, in order, then the next.
+    #[test]
+    fn a_state_before_held_chains_takes_them_again() {
+        let mut d = Driver::new(8);
+        let mut q = d.queue(feature::VERSION_1);
+        for i in 0..3u16 {
+            d.set_desc(i, DATA + 64 * u64::from(i), 64, DESC_F_WRITE, 0);
+            d.publish(i);
+        }
+        let first = q.pop(&d.mem.access().unwrap()).unwrap().unwrap();
+        q.add_used(&d.mem.access().unwrap(), first.head, 0).unwrap();
+        let held: Vec<u16> = (0..2)
+            .map(|_| q.pop(&d.mem.access().unwrap()).unwrap().unwrap().head)
+            .collect();
+        assert_eq!(held, [1, 2]);
+        let saved = q.state_before(2);
+        assert_eq!(saved.next_used, q.state().next_used);
+        let mut restored = d.queue(feature::VERSION_1);
+        restored.set_state(saved);
+        let again: Vec<u16> = (0..2)
+            .map(|_| restored.pop(&d.mem.access().unwrap()).unwrap().unwrap().head)
+            .collect();
+        assert_eq!(again, held);
+        assert!(restored.pop(&d.mem.access().unwrap()).unwrap().is_none());
+        d.set_desc(3, DATA + 192, 64, DESC_F_WRITE, 0);
+        d.publish(3);
+        assert_eq!(restored.pop(&d.mem.access().unwrap()).unwrap().unwrap().head, 3);
     }
 
     #[test]
