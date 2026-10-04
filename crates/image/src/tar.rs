@@ -89,6 +89,25 @@ pub struct Reader<R> {
     /// The last entry's data, skipped when the next is asked for, as Go's Reader skips
     /// it: an entry's header is read without its data being reached.
     owed: Option<u64>,
+    /// For an archive that can seek: its length from where reading began, and how to
+    /// move past data without reading it.
+    seek: Option<(u64, Skip<R>)>,
+}
+
+/// Moves a reader forward by so many bytes.
+type Skip<R> = fn(&mut R, i64) -> io::Result<()>;
+
+impl<R: Read + io::Seek> Reader<R> {
+    /// A reader of an archive that can seek, from where it stands: entries' data, and
+    /// their padding, are passed over without being read.
+    pub fn seekable(mut inner: R) -> Result<Reader<R>, Error> {
+        let start = inner.stream_position()?;
+        let end = inner.seek(io::SeekFrom::End(0))?;
+        inner.seek(io::SeekFrom::Start(start))?;
+        let mut r = Reader::new(inner);
+        r.seek = Some((end.saturating_sub(start), |r, n| r.seek_relative(n)));
+        Ok(r)
+    }
 }
 
 impl<R: Read> Reader<R> {
@@ -99,6 +118,7 @@ impl<R: Read> Reader<R> {
             done: false,
             raw: false,
             owed: None,
+            seek: None,
         }
     }
 
@@ -399,9 +419,7 @@ impl<R: Read> Reader<R> {
     }
 
     fn skip(&mut self, n: u64) -> Result<(), Error> {
-        let skipped = io::copy(&mut (&mut self.inner).take(n), &mut io::sink())?;
-        self.pos += skipped;
-        if skipped != n {
+        if self.pass(n)? != n {
             return bad("archive ends inside a member");
         }
         Ok(())
@@ -411,12 +429,26 @@ impl<R: Read> Reader<R> {
     /// as a complete archive.
     fn pad(&mut self, size: u64) -> Result<(), Error> {
         let n = (BLOCK as u64 - size % BLOCK as u64) % BLOCK as u64;
-        let skipped = io::copy(&mut (&mut self.inner).take(n), &mut io::sink())?;
-        self.pos += skipped;
-        if skipped != n {
+        if self.pass(n)? != n {
             self.done = true;
         }
         Ok(())
+    }
+
+    /// Passes over up to `n` bytes, by seeking where the archive can, and says how many
+    /// there were before its end.
+    fn pass(&mut self, n: u64) -> Result<u64, Error> {
+        let passed = match self.seek {
+            Some((len, skip)) => {
+                let k = n.min(len.saturating_sub(self.pos));
+                let by = i64::try_from(k).map_err(|_| Error(format!("{k}-byte member")))?;
+                skip(&mut self.inner, by)?;
+                k
+            }
+            None => io::copy(&mut (&mut self.inner).take(n), &mut io::sink())?,
+        };
+        self.pos += passed;
+        Ok(passed)
     }
 }
 
@@ -781,13 +813,66 @@ pub(crate) mod tests {
         }
     }
 
+    /// `archive`'s entries, read as a stream; a reader that seeks over their data must
+    /// read the same, or fail alike.
+    #[allow(clippy::panic_in_result_fn)]
     fn entries(archive: &[u8]) -> Result<Vec<Entry>, Error> {
-        let mut r = Reader::new(archive);
+        let streamed = all(Reader::new(archive));
+        let sought = Reader::seekable(io::Cursor::new(archive)).and_then(all);
+        match (&streamed, &sought) {
+            (Ok(a), Ok(b)) => assert_eq!(a, b),
+            (Err(a), Err(b)) => assert_eq!(a.0, b.0),
+            _ => panic!("streamed {streamed:?}, sought {sought:?}"),
+        }
+        streamed
+    }
+
+    fn all<R: Read>(mut r: Reader<R>) -> Result<Vec<Entry>, Error> {
         let mut out = Vec::new();
         while let Some(e) = r.next_entry()? {
             out.push(e);
         }
         Ok(out)
+    }
+
+    #[test]
+    fn a_seeking_reader_reads_what_a_streaming_one_does() {
+        let archive = Writer::default()
+            .member(Member {
+                name: b"a",
+                data: &[7; 1000],
+                ..Member::default()
+            })
+            .member(Member {
+                name: b"b",
+                data: b"",
+                ..Member::default()
+            })
+            .member(Member {
+                name: b"c",
+                data: &[9; 513],
+                ..Member::default()
+            })
+            .finish();
+        // Cut anywhere: inside a header, a member's data, or its padding.
+        for end in 0..=archive.len() {
+            let _ = entries(&archive[..end]);
+        }
+        // From where a file already stands, as a layer is applied from its position.
+        let mut file = vec![1u8; 300];
+        file.extend_from_slice(&archive);
+        let mut at = io::Cursor::new(&file[..]);
+        at.set_position(300);
+        assert_eq!(
+            all(Reader::seekable(at).unwrap()).unwrap(),
+            entries(&archive).unwrap()
+        );
+        // Through a buffer smaller than a member, as layers are read.
+        let buffered = io::BufReader::with_capacity(600, io::Cursor::new(&archive[..]));
+        assert_eq!(
+            all(Reader::seekable(buffered).unwrap()).unwrap(),
+            entries(&archive).unwrap()
+        );
     }
 
     fn fnv(bytes: &[u8]) -> u64 {

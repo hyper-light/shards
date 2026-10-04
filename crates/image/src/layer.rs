@@ -46,9 +46,10 @@ pub fn root() -> Tree {
 /// [`DataRef`], to be read back from the archive by it. `each` sees every entry as it is
 /// read, before it is kept, and may refuse it.
 ///
-/// The archive is read twice, its whiteouts applied in the first pass and everything
-/// else in the second, so that no list of its entries is held: holding one took a build
-/// that ADDs a million entries 138 MB higher (platform-measurements.md M78).
+/// The archive's headers are read twice, its whiteouts applied in the first pass and
+/// everything else in the second, so that no list of its entries is held: holding one
+/// took a build that ADDs a million entries 138 MB higher (platform-measurements.md M78).
+/// Entries' data is passed over by seeking, never read (PM M110).
 pub fn apply(
     tree: &mut Tree,
     source: u32,
@@ -66,7 +67,7 @@ pub fn apply(
     // Whiteouts, all found in the lower layers before any is applied.
     let mut hidden: Vec<(NodeId, Option<Vec<u8>>)> = Vec::new();
     {
-        let mut reader = tar::Reader::new(&mut archive);
+        let mut reader = tar::Reader::seekable(&mut archive)?;
         while let Some(entry) = reader.next_entry()? {
             each(&entry)?;
             let Some((parent, name)) = split(&entry.path)? else {
@@ -92,7 +93,7 @@ pub fn apply(
     }
 
     archive.seek(SeekFrom::Start(start))?;
-    let mut reader = tar::Reader::new(&mut archive);
+    let mut reader = tar::Reader::seekable(&mut archive)?;
     while let Some(entry) = reader.next_entry()? {
         if let Some((parent, name)) = split(&entry.path)?
             && !name.starts_with(WHITEOUT)

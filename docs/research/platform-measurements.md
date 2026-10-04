@@ -3744,3 +3744,44 @@ revision before comparing a changed API/implementation.
   sequential unpack meets first. python's build is now bounded by its 653 MB layer, one
   gzip stream decompressed on one core; decompressing one stream in parallel
   (rapidgzip, Knespel and Brunst, HPDC 2023) is the next step for such layers.
+
+### M110. Applying a layer: data passed over by seeking
+
+- **Question.** `layer::apply` reads a layer's archive twice, whiteouts first, and each
+  pass skipped entries' data by reading it into `io::sink`: every byte of a layer went
+  through memory twice more after it was unpacked, though the archive is a file it can
+  seek in (review 9.1). What does seeking past the data instead save, idle and busy?
+- **Method.** `build-memory`'s `apply-ab.py` (interleaved, 9 runs each): golang:1.26's
+  seven layers decompressed and applied in order, and M78's archive of a million empty
+  files, alone and over itself; 08c4078 (before) against the change (after). And
+  `rootfs-build`'s `ab.sh` (M109) of the same pair with `BUSY=18`: 18 `yes` processes
+  spinning on the 18 cores throughout, 11 rounds. Apple M5 Max, macOS 26.4.1,
+  2026-10-04; another session's process held one core at 100% throughout.
+- **Results.** Apply, ms, p50 / p90 / max:
+
+  | workload | before | after |
+  |---|---|---|
+  | golang:1.26's layers | 129.7 / 132.4 / 134.5 | 72.0 / 74.3 / 77.5 |
+  | a million empty files | 618.0 / 626.3 / 628.2 | 617.2 / 625.4 / 628.0 |
+  | a million over a million | 1317.1 / 1372.3 / 1375.9 | 1332.7 / 1374.2 / 1390.1 |
+
+  Allocations were the same either way (80,498 for golang's). A whole root filesystem
+  built with every core busy, ms:
+
+  | image | build | n | p50 | p90 | max |
+  |---|---|---|---|---|---|
+  | golang:1.26 | before | 11 | 1120 | 1252 | 1354 |
+  | golang:1.26 | after | 11 | 998 | 1128 | 1668 |
+  | python:3.13 | before | 11 | 2170 | 2742 | 2912 |
+  | python:3.13 | after | 11 | 1965 | 2230 | 2386 |
+
+  Busy, the parallel unpack of M109 against 655212b's sequential one, in a separate
+  run of 11 rounds: golang 5301 ms at p50 (p90 7791) before and 2656 (4580) after;
+  python 6709 (9062) and 4356 (7945). The two runs' absolute numbers differ by more
+  than 2x for the same code, as the host's other load changed between them; only each
+  run's interleaved pairs compare.
+- **Consequence.** A reader made over a seekable archive (`tar::Reader::seekable`)
+  takes its length once and passes over data and padding with `seek_relative`, within
+  its buffer where it can; `layer::apply` reads its archives so. An archive cut short is
+  found as reading finds it, and the tar tests read every case both ways. On a busy
+  host a build's time follows the CPU work it does, so work cut counts there most.
