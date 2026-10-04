@@ -11,6 +11,8 @@ use std::fs;
 #[cfg(unix)]
 use std::io::{self, Read, Write};
 #[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 #[cfg(unix)]
 use std::sync::{Mutex, PoisonError};
@@ -362,6 +364,7 @@ fn relay(
                 }
             }
             kind::SYSTEM_ERR => not_run = Some(String::from_utf8_lossy(payload).into_owned()),
+            kind::EXEC_FAILED => exec_failed(payload),
             kind::EXIT => {
                 let _ = timing.answered_us.set(shards_vmm::log::uptime_us());
                 let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;
@@ -407,52 +410,179 @@ fn send(conn: &mut UnixStream, which: u8, payload: &[u8]) -> io::Result<()> {
     conn.write_all(payload)
 }
 
-/// Execs waiting for the guest's connection: each one's token and where its connection
-/// goes. Emptied when the workload ends, which tells each still waiting that it never
-/// started.
+/// An exec waiting for the guest's connection: its token, its id, and where its
+/// connection goes, or why there is none ([`kind::EXEC_FAILED`]).
 #[cfg(unix)]
-type Pending = Mutex<Vec<([u8; run::TOKEN], std::sync::mpsc::Sender<UnixStream>)>>;
+struct Waiting {
+    token: [u8; run::TOKEN],
+    id: u32,
+    to: std::sync::mpsc::Sender<Result<UnixStream, String>>,
+}
+
+/// The execs waiting for their connections. Emptied when the workload ends, which tells
+/// each still waiting that it never started.
 #[cfg(unix)]
-static PENDING: Pending = Mutex::new(Vec::new());
+static PENDING: Mutex<Vec<Waiting>> = Mutex::new(Vec::new());
 #[cfg(unix)]
 static NEXT_EXEC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
 #[cfg(unix)]
-fn pending() -> std::sync::MutexGuard<'static, Vec<([u8; run::TOKEN], std::sync::mpsc::Sender<UnixStream>)>> {
+fn pending() -> std::sync::MutexGuard<'static, Vec<Waiting>> {
     PENDING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Exec `id` will have no connection, for `why`, as the guest said: it fails with it.
+#[cfg(unix)]
+fn exec_failed(payload: &[u8]) {
+    let Some((id, why)) = payload.split_first_chunk::<4>() else {
+        return;
+    };
+    let id = u32::from_be_bytes(*id);
+    let waiting = {
+        let mut waiting = pending();
+        waiting
+            .iter()
+            .position(|w| w.id == id)
+            .map(|i| waiting.swap_remove(i))
+    };
+    if let Some(w) = waiting {
+        let _ = w.to.send(Err(String::from_utf8_lossy(why).into_owned()));
+    }
 }
 
 /// Takes every guest connection to the exec port ([`run::EXEC_PORT`]): one whose
 /// [`kind::HELLO`] names a pending exec's token becomes that exec's; any other is closed.
-/// Each is read on a thread of its own, so that one that says nothing holds up no other;
-/// the muxer bounds how many there are.
+/// Connections not yet heard from are read by one thread, polling them all (review 8.8):
+/// one that says nothing costs a descriptor, not a thread, and holds up no other; the
+/// muxer bounds how many there are. They go when the workload's process does.
 #[cfg(unix)]
 pub fn accept_execs(port: Port) {
-    for mut conn in port {
-        let _ = std::thread::Builder::new()
-            .name("exec-hello".into())
-            .spawn(move || {
-                let mut h = [0u8; run::HEADER];
-                let mut token = [0u8; run::TOKEN];
-                let hello = conn.read_exact(&mut h).ok().and_then(|()| run::parse_header(h));
-                if hello != Some((kind::HELLO, run::TOKEN as u32)) || conn.read_exact(&mut token).is_err() {
-                    return;
+    let Ok((wake, woken)) = UnixStream::pair() else {
+        return;
+    };
+    let (arrived, arrivals) = std::sync::mpsc::channel::<UnixStream>();
+    if std::thread::Builder::new()
+        .name("exec-hellos".into())
+        .spawn(move || hellos(&arrivals, &woken))
+        .is_err()
+    {
+        return;
+    }
+    for conn in port {
+        if arrived.send(conn).is_err() {
+            return;
+        }
+        let _ = (&wake).write(&[0]);
+    }
+}
+
+/// A connection to the exec port, and as much of its hello as has come.
+#[cfg(unix)]
+struct Unheard {
+    conn: UnixStream,
+    hello: [u8; run::HEADER + run::TOKEN],
+    got: usize,
+}
+
+/// Reads the hellos of the connections that `arrivals` brings, each told of on `woken`,
+/// until the acceptor goes: whole, each goes to its exec, or is closed.
+#[cfg(unix)]
+fn hellos(arrivals: &std::sync::mpsc::Receiver<UnixStream>, woken: &UnixStream) {
+    let mut unheard: Vec<Unheard> = Vec::new();
+    let mut byte = [0u8; 64];
+    loop {
+        let mut polled: Vec<libc::pollfd> = std::iter::once(woken.as_raw_fd())
+            .chain(unheard.iter().map(|u| u.conn.as_raw_fd()))
+            .map(|fd| libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect();
+        let count = libc::nfds_t::try_from(polled.len()).unwrap_or(libc::nfds_t::MAX);
+        // SAFETY: poll(2) on pollfds of descriptors this thread holds open.
+        if unsafe { libc::poll(polled.as_mut_ptr(), count, -1) } < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return;
+        }
+        let Some((wake, rest)) = polled.split_first() else {
+            return;
+        };
+        if wake.revents != 0 {
+            match (&*woken).read(&mut byte) {
+                // The acceptor is gone, and the workload with it.
+                Ok(0) => return,
+                Ok(_) => {}
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {}
+                Err(_) => return,
+            }
+            while let Ok(conn) = arrivals.try_recv() {
+                if conn.set_nonblocking(true).is_ok() {
+                    unheard.push(Unheard {
+                        conn,
+                        hello: [0; run::HEADER + run::TOKEN],
+                        got: 0,
+                    });
                 }
-                // Compared whole, in constant time: a workload that dials the port learns
-                // nothing of a token from how fast it is refused.
-                let same =
-                    |t: &[u8; run::TOKEN]| t.iter().zip(&token).fold(0u8, |d, (a, b)| d | (a ^ b)) == 0;
-                let to = {
-                    let mut waiting = pending();
-                    waiting
-                        .iter()
-                        .position(|(t, _)| same(t))
-                        .map(|i| waiting.swap_remove(i).1)
-                };
-                if let Some(to) = to {
-                    let _ = to.send(conn);
+            }
+        }
+        // From the last, so that each removal leaves the indices before it as they were.
+        let ready: Vec<usize> = rest
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.revents != 0)
+            .map(|(i, _)| i)
+            .collect();
+        for i in ready.into_iter().rev() {
+            let Some(u) = unheard.get_mut(i) else { continue };
+            let Some(room) = u.hello.get_mut(u.got..) else {
+                continue;
+            };
+            match (&u.conn).read(room) {
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {
+                    continue;
                 }
-            });
+                Ok(n @ 1..) => u.got += n,
+                // Ended, or failed, before its hello: closed.
+                _ => {
+                    unheard.swap_remove(i);
+                    continue;
+                }
+            }
+            // A header that is no hello's is closed as soon as it has come.
+            let head = u.hello.first_chunk::<{ run::HEADER }>().copied();
+            let hello = head.and_then(run::parse_header) == Some((kind::HELLO, run::TOKEN as u32));
+            if u.got >= run::HEADER && !hello {
+                unheard.swap_remove(i);
+            } else if u.got == u.hello.len() {
+                let u = unheard.swap_remove(i);
+                heard(u.conn, &u.hello);
+            }
+        }
+    }
+}
+
+/// A connection whose `hello`, its header checked, has come whole: to the exec its token
+/// names, or closed.
+#[cfg(unix)]
+fn heard(conn: UnixStream, hello: &[u8; run::HEADER + run::TOKEN]) {
+    let token = hello.get(run::HEADER..).unwrap_or_default();
+    // Compared whole, in constant time: a workload that dials the port learns nothing of
+    // a token from how fast it is refused.
+    let same = |t: &[u8; run::TOKEN]| t.iter().zip(token).fold(0u8, |d, (a, b)| d | (a ^ b)) == 0;
+    let to = {
+        let mut waiting = pending();
+        waiting
+            .iter()
+            .position(|w| same(&w.token))
+            .map(|i| waiting.swap_remove(i).to)
+    };
+    if let Some(to) = to
+        && conn.set_nonblocking(false).is_ok()
+    {
+        let _ = to.send(Ok(conn));
     }
 }
 
@@ -494,6 +624,23 @@ pub fn exec(to: &'static ToGuest, req: ExecRequest) -> Result<(), String> {
         .map_err(|e| format!("an exec's thread: {e}"))
 }
 
+/// The [`kind::EXEC`] frame's payload for exec `id`: its token, its id and its spec, within
+/// what a frame may carry (review 8.9). The guest reads no longer frame, and drops the
+/// connection one came on, which carries every signal and exec of the workload.
+#[cfg(unix)]
+fn exec_frame(token: &[u8; run::TOKEN], id: u32, spec: &Spec) -> Result<Vec<u8>, String> {
+    let len = spec
+        .encoded_len()
+        .and_then(|n| n.checked_add(run::TOKEN + 4))
+        .filter(|&n| n <= run::MAX_PAYLOAD as usize)
+        .ok_or("the command and its environment are too large")?;
+    let mut payload = Vec::with_capacity(len);
+    payload.extend_from_slice(token);
+    payload.extend_from_slice(&id.to_be_bytes());
+    spec.encode_into(&mut payload);
+    Ok(payload)
+}
+
 /// One exec, from asking the guest for it to its status. `None` once a detached exec's
 /// client has been told it started; what never started is said on `req.stderr`.
 #[cfg(unix)]
@@ -501,19 +648,16 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<Option<u8
     let mut token = [0u8; run::TOKEN];
     shards_vmm::platform::fill_random(&mut token).map_err(|e| format!("an exec's token: {e}"))?;
     let id = NEXT_EXEC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let payload = exec_frame(&token, id, &req.spec)?;
     let (tx, rx) = std::sync::mpsc::channel();
-    pending().push((token, tx));
-    let mut payload = Vec::with_capacity(run::TOKEN + 4 + req.spec.encoded_len().unwrap_or(0));
-    payload.extend_from_slice(&token);
-    payload.extend_from_slice(&id.to_be_bytes());
-    req.spec.encode_into(&mut payload);
+    pending().push(Waiting { token, id, to: tx });
     if !to_guest(to, kind::EXEC, &payload) {
-        pending().retain(|(t, _)| *t != token);
+        pending().retain(|w| w.token != token);
         return Err("the container is not running".into());
     }
     let mut conn = rx
         .recv()
-        .map_err(|_| "the container's process ended before the command started".to_string())?;
+        .map_err(|_| "the container's process ended before the command started".to_string())??;
     if req.interactive {
         let mut input = conn.try_clone().map_err(|e| e.to_string())?;
         let mut stdin = req.stdin.try_clone().map_err(|e| e.to_string())?;
@@ -780,7 +924,10 @@ mod tests {
         std::thread::spawn(move || accept_execs(conns));
         let token = [7u8; run::TOKEN];
         let (to, arrived) = std::sync::mpsc::channel();
-        pending().push((token, to));
+        pending().push(Waiting { token, id: 1, to });
+        // One that never says anything holds up none of the others.
+        let (_idle, idle) = UnixStream::pair().unwrap();
+        port.send(idle).unwrap();
         let hello = |token: &[u8]| {
             let (mut guest, host) = UnixStream::pair().unwrap();
             guest
@@ -811,8 +958,68 @@ mod tests {
             "an exec took a connection not its own"
         );
         let _ours = hello(&token);
-        assert!(arrived.recv_timeout(std::time::Duration::from_secs(5)).is_ok());
+        assert!(matches!(
+            arrived.recv_timeout(std::time::Duration::from_secs(5)),
+            Ok(Ok(_))
+        ));
         assert!(pending().is_empty());
+    }
+
+    /// An exec's frame carries its token and id beside its spec, and is refused past what
+    /// a frame may carry, where the guest would drop the signal connection (review 8.9).
+    #[test]
+    fn an_exec_frame_stays_within_what_a_frame_carries() {
+        let token = [5u8; run::TOKEN];
+        let base = Spec {
+            argv: vec![b"x".to_vec()],
+            ..Spec::default()
+        };
+        let room = run::MAX_PAYLOAD as usize - run::TOKEN - 4 - base.encoded_len().unwrap();
+        let mut fits = base.clone();
+        fits.argv[0] = vec![b'x'; 1 + room];
+        let frame = exec_frame(&token, 9, &fits).unwrap();
+        assert_eq!(frame.len(), run::MAX_PAYLOAD as usize);
+        assert_eq!(&frame[..run::TOKEN], &token);
+        assert_eq!(&frame[run::TOKEN..run::TOKEN + 4], &9u32.to_be_bytes());
+        assert!(run::parse_header(run::header(kind::EXEC, frame.len() as u32)).is_some());
+        let mut over = fits;
+        over.argv[0].push(b'x');
+        assert_eq!(
+            exec_frame(&token, 9, &over).unwrap_err(),
+            "the command and its environment are too large"
+        );
+    }
+
+    /// An exec the guest could make no connection for fails with what the guest said,
+    /// rather than wait for one (review 8.8); another exec waits on.
+    #[test]
+    fn an_exec_the_guest_cannot_connect_fails_with_why() {
+        let (to, failed) = std::sync::mpsc::channel();
+        let (other, waits) = std::sync::mpsc::channel();
+        pending().push(Waiting {
+            token: [3; run::TOKEN],
+            id: 41,
+            to,
+        });
+        pending().push(Waiting {
+            token: [4; run::TOKEN],
+            id: 42,
+            to: other,
+        });
+        exec_failed(
+            &[
+                &41u32.to_be_bytes()[..],
+                b"connecting to the host for the command: refused",
+            ]
+            .concat(),
+        );
+        assert_eq!(
+            failed.try_recv().unwrap().unwrap_err(),
+            "connecting to the host for the command: refused"
+        );
+        assert!(waits.try_recv().is_err(), "another exec failed with it");
+        exec_failed(&[0, 0]);
+        pending().retain(|w| w.id != 42);
     }
 
     /// A logger keeps each record whole and indexes it, with its stream and whether it

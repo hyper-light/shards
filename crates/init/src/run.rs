@@ -953,14 +953,16 @@ struct Exec {
 
 impl Exec {
     /// Starts the command a host's [`kind::EXEC`] frame asks for, unless the workload
-    /// has ended (`running`), and dials its connection. `None` if the frame is malformed
-    /// or the host cannot be dialed: then nothing could tell it, and it gives up waiting.
-    fn start(payload: &[u8], running: bool) -> Option<Exec> {
-        let (token, rest) = payload.split_at_checked(run::TOKEN)?;
-        let (id, spec) = rest.split_at_checked(4)?;
-        let id = u32::from_be_bytes(id.try_into().ok()?);
-        let spec = Spec::decode(spec)?;
-        let conn = dial(run::EXEC_PORT, false).ok()?;
+    /// has ended (`running`), and dials its connection. Without a connection, the exec's
+    /// id and why, for the host to hear on the workload's ([`kind::EXEC_FAILED`]); none if
+    /// the frame does not say which exec it is.
+    fn start(payload: &[u8], running: bool) -> Result<Exec, Option<(u32, String)>> {
+        let (token, rest) = payload.split_at_checked(run::TOKEN).ok_or(None)?;
+        let (id, spec) = rest.split_at_checked(4).ok_or(None)?;
+        let id = u32::from_be_bytes(id.try_into().map_err(|_| None)?);
+        let spec = Spec::decode(spec).ok_or_else(|| Some((id, "a malformed command".to_string())))?;
+        let conn = dial(run::EXEC_PORT, false)
+            .map_err(|e| Some((id, format!("connecting to the host for the command: {e}"))))?;
         let mut exec = Exec {
             id,
             conn: Some(conn),
@@ -1009,7 +1011,7 @@ impl Exec {
                 exec.status = Some(f.status);
             }
         }
-        Some(exec)
+        Ok(exec)
     }
 
     /// Whether everything of it is said: its status known, its output drained, its EXIT
@@ -1281,11 +1283,20 @@ impl Workload {
                                                 unsafe { libc::kill(pid, sig as libc::c_int) };
                                             }
                                         }
-                                        kind::EXEC => {
-                                            if let Some(e) = Exec::start(payload, running) {
-                                                execs.push(e);
+                                        kind::EXEC => match Exec::start(payload, running) {
+                                            Ok(e) => execs.push(e),
+                                            // Said where the host hears it, which otherwise
+                                            // waits for the exec's connection (review 8.8).
+                                            Err(Some((id, why))) => {
+                                                let len = u32::try_from(4 + why.len()).unwrap_or(u32::MAX);
+                                                to_host.extend(&[
+                                                    &run::header(kind::EXEC_FAILED, len),
+                                                    &id.to_be_bytes(),
+                                                    why.as_bytes(),
+                                                ]);
                                             }
-                                        }
+                                            Err(None) => {}
+                                        },
                                         kind::EXEC_SIGNAL => {
                                             if let Some((id, rest)) = id_and(payload)
                                                 && let Some(sig) = sig(&rest)

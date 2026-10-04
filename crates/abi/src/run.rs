@@ -63,6 +63,11 @@ pub mod kind {
     pub const EXEC_RESIZE: u8 = 23;
     /// Guest to host, first on an exec's connection: its token.
     pub const HELLO: u8 = 24;
+    /// Guest to host, on the workload's connection: an exec it was asked for has no
+    /// connection to tell the host on: its id (a big-endian u32), then why, in words. The
+    /// host fails that exec with them, rather than wait for a connection that will not
+    /// come.
+    pub const EXEC_FAILED: u8 = 25;
 }
 
 /// Why an exec did not start, as its [`kind::SYSTEM_ERR`] says first: the runtime could
