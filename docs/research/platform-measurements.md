@@ -3631,6 +3631,46 @@ revision before comparing a changed API/implementation.
 - **Consequence.** Filters find a syscall's rule, and an argument's value, by a binary
   search (7a0d8a0). Under shards-vm's rules a vCPU's run pays the filter about half what
   it did, and a VM process's install 53 µs less at p50, its layout's share 17.5 µs where
-  it was 70. Most of the install is what any filter's costs here, 138.5 µs at p50 for one
-  instruction, on the start of every VM process that confines itself; what it is made
-  of is not yet measured.
+  it was 70. Most of the install is what any filter's costs on this host, 138.5 µs at
+  p50 for one instruction; x86_64, below, is another matter.
+- **x86_64, what an install is made of (review 1.22).** The harness grew variants
+  (cbfef16): `allow-bare`, one instruction without the LOG and TSYNC flags;
+  `allow-again`, one installed a second time in one process; no_new_privs timed apart
+  from seccomp(2); and `trace.sh`, ftrace's function_graph over seccomp(2), as root. A
+  CI workflow runs it (`.github/workflows/seccomp-search.yml`), 200 rounds, on GitHub's
+  ubuntu-24.04 runners: Linux 6.17.0-1022-azure, 4 CPUs, `bpf_jit_enable` 1, all 88 of
+  shards-vm's rules. At cbfef16, an Intel Xeon Platinum 8370C, load 0.2:
+  - KVM_RUN's ioctl ran 179 instructions under `linear` (343 in all), 16 under
+    `search` (405); a call, ns at p50, none 145.0, `allow` 163.4, `linear` 228.4,
+    `search` 192.2. Any filter costs a syscall about 18–23 ns, `getpid` too (115.0
+    against 137.5–137.7).
+  - The install at p50: `allow` 21.3 µs, `allow-bare` 18.0, `allow-again` 9.4,
+    no_new_privs 0.9; `linear` 274.1, `search` 107.3. What any install costs here is
+    small, and what a program costs is its own.
+  - By function (ftrace, a run of each): `bpf_prepare_filter`, the classic program's
+    check, conversion to eBPF and JIT, 13.7–17.2 µs for one instruction, 99 for
+    `linear`'s 343, 127–129 for `search`'s 405: about 14 µs and a quarter of a
+    microsecond an instruction. `seccomp_cache_prepare_bitmap`, which runs every
+    syscall's number through the filter, 199 µs under `linear`, 16.3–16.5 under
+    `search`. `bpf_prog_alloc` 10–14 µs under each.
+- **x86_64, comparisons pooled (f0a6419).** Each comparison now jumps straight to its
+  target in a pool after the comparisons, one instruction a syscall where it took two
+  (seccomp.rs). The harness keeps 7a0d8a0's layout frozen as `searched`, and times each
+  compile as its process's first, as a VM process's own is. An AMD EPYC 7763, load 1.3,
+  200 rounds:
+
+  | | `linear` | `searched` (7a0d8a0) | `search` (pooled) |
+  |---|---|---|---|
+  | instructions; KVM_RUN's path; the longest | 343; 179; 214 | 405; 16; 18 | 224; 16; 18 |
+  | ioctl(KVM_RUN), ns, p50 / p99 | 390.4 / 576.4 | 350.0 / 521.8 | 349.6 / 520.5 |
+  | compile, a process's first, µs, p50 / p99 | 16.1 / 24.5 | 17.4 / 50.4 | 25.9 / 60.3 |
+  | install, µs, p50 / p90 / p99 / max | 293.5 / 318.8 / 352.9 / 357.6 | 154.1 / 177.3 / 214.5 / 221.6 | 110.3 / 130.9 / 165.7 / 186.2 |
+
+  No filter: ioctl 262.7 ns, `allow` 312.8; `getpid` 255.5–255.6 under each filter,
+  210.4 under none. A compile and its install, the start's part, 171.5 µs at p50 under
+  `searched` and 136.2 under `search`. One install of `allow` took 140.6 ms, its
+  seccomp(2) all of it, among 1,400 installs in a run on a runner up under a minute:
+  not yet explained.
+- **Consequence (x86_64).** Comparisons jump to a pool of their targets (f0a6419): a VM
+  process confines itself 35 µs sooner than with 7a0d8a0's search, and 173 µs sooner
+  than with the linear layout, its filter as cheap to its syscalls.

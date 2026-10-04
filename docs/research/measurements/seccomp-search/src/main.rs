@@ -642,6 +642,8 @@ fn main() {
     let mut ioctl: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
     let mut getpid: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
     let mut cold: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
+    // Each variant's slowest install, and the round it came in.
+    let mut slowest: Vec<(f64, usize)> = vec![(0.0, 0); variants.len()];
     let exe = std::env::current_exe().expect("this program");
     for round in 0..rounds {
         let mut order: Vec<usize> = (0..variants.len()).collect();
@@ -663,7 +665,12 @@ fn main() {
                 let (what, x) = line.split_once(' ').expect("a sample");
                 let x: f64 = x.parse().expect("a number");
                 match what {
-                    "install" => install[v].push(x),
+                    "install" => {
+                        install[v].push(x);
+                        if x > slowest[v].0 {
+                            slowest[v] = (x, round);
+                        }
+                    }
                     "nnp" => nnp[v].push(x),
                     "filter" => filter[v].push(x),
                     "cold" => cold[v].push(x),
@@ -685,6 +692,13 @@ fn main() {
     }
     for v in 1..variants.len() {
         report("install", "µs", variants[v], &mut install[v]);
+    }
+    for v in 1..variants.len() {
+        let (us, round) = slowest[v];
+        println!(
+            "slowest install, {}: {us:.1} µs, in round {round} of {rounds}",
+            variants[v]
+        );
     }
     for v in 1..variants.len() {
         if !nnp[v].is_empty() {

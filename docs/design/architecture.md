@@ -1531,12 +1531,15 @@ audit's "Security and test coverage").
     no network.
   - Compiled to classic BPF: the architecture first, then a binary search over the
     syscalls' numbers, and over an argument's values, as libseccomp's binary tree does
-    [man: seccomp_attr_set(3), `SCMP_FLTATR_CTL_OPTIMIZE`]. KVM_RUN's ioctl runs 16
-    instructions where comparing each rule in turn ran 157, which halves what the
-    filter costs a vCPU's run, and the install, which runs every number through the
-    filter for the kernel's cache of syscalls allowed whatever their arguments
-    [kernel/seccomp.c, `seccomp_cache_prepare_bitmap`], costs 53 µs less [PM M107].
-    Only the instructions that cache follows (`seccomp_is_const_allow`). Arguments are
+    [man: seccomp_attr_set(3), `SCMP_FLTATR_CTL_OPTIMIZE`], each comparison jumping
+    straight to its target in a pool after the comparisons. KVM_RUN's ioctl runs 16
+    instructions where comparing each rule in turn ran 179 (x86_64), which halves what
+    the filter costs a vCPU's run. The install, which converts and JITs the program at
+    about a quarter of a microsecond an instruction and runs every number through it for
+    the kernel's cache of syscalls allowed whatever their arguments [kernel/seccomp.c,
+    `bpf_prepare_filter`, `seccomp_cache_prepare_bitmap`], takes 110 µs at p50 where it
+    took 294 (EPYC 7763; the program 224 instructions, not 343) [PM M107]. Only the
+    instructions that cache follows (`seccomp_is_const_allow`). Arguments are
     compared in their low 32 bits (the ones filtered are `int`s to the kernel, and musl
     passes ioctl's request sign-extended). A refused syscall traps; a SIGSYS handler
     names it and the thread, and the process exits 159.
