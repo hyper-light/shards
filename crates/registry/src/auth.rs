@@ -185,6 +185,10 @@ impl Credentials {
 /// alone, and every other host is answered anonymously.
 pub struct Authorizer {
     registry: Url,
+    /// Whether the registry is also reached in plain HTTP at its host and port: a
+    /// loopback registry that answered HTTPS so (registry.rs). Its credentials go there
+    /// too, as containerd keys them by host alone (`dockerAuthorizer`).
+    plain_too: bool,
     credentials: Credentials,
     /// How each host asked to be answered, and the tokens fetched for it.
     hosts: Mutex<Hosts>,
@@ -256,6 +260,7 @@ impl Authorizer {
     pub fn new(registry: &Url, credentials: Credentials) -> Authorizer {
         Authorizer {
             registry: registry.clone(),
+            plain_too: false,
             credentials,
             hosts: Mutex::default(),
             fetched: Condvar::new(),
@@ -266,8 +271,20 @@ impl Authorizer {
         self.hosts.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The same, also answering for the registry at its host and port in plain HTTP.
+    pub(crate) fn plain_too(self) -> Authorizer {
+        Authorizer {
+            plain_too: true,
+            ..self
+        }
+    }
+
     fn is_registry(&self, url: &Url) -> bool {
         url.same_origin(&self.registry)
+            || (self.plain_too
+                && url.scheme() == crate::url::Scheme::Http
+                && url.host() == self.registry.host()
+                && url.port() == self.registry.port())
     }
 
     /// The `Authorization` value for a request to `url` that needs `scopes`, fetching a
@@ -628,7 +645,7 @@ mod tests {
 
     fn plain() -> Client {
         Client::new(
-            Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
             "shards-test",
         )
     }

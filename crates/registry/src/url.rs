@@ -148,6 +148,11 @@ impl Url {
         format!("{scheme}://{}:{}", self.host, self.port)
     }
 
+    /// The same URL in plain HTTP, its port kept.
+    pub fn plain(&self) -> Result<Url, Error> {
+        Url::parse(&format!("http://{}:{}{}", self.host, self.port, self.target))
+    }
+
     /// Whether `other` is the same origin: scheme, host and port (RFC 6454 §4).
     pub fn same_origin(&self, other: &Url) -> bool {
         self.scheme == other.scheme && self.host == other.host && self.port == other.port

@@ -514,6 +514,7 @@ impl Client {
         let name = ServerName::try_from(host.to_string()).map_err(|e| Error::new(format!("{url}: {e}")))?;
         let mut tls = ClientConnection::new(config, name)?;
         let deadline = Instant::now() + HANDSHAKE;
+        let mut heard = Heard::default();
         while tls.is_handshaking() {
             let left = deadline
                 .checked_duration_since(Instant::now())
@@ -523,13 +524,75 @@ impl Client {
                         ErrorKind::Transient,
                         format!("{url}: the TLS handshake timed out"),
                     )
+                    .not_tls()
                 })?;
             io.tcp().set_read_timeout(Some(left))?;
             io.tcp().set_write_timeout(Some(left))?;
-            tls.complete_io(&mut io)
-                .map_err(|e| Error::from(e).context(format!("{url}: TLS handshake")))?;
+            tls.complete_io(&mut Hearing {
+                io: &mut io,
+                heard: &mut heard,
+            })
+            .map_err(|e| match heard.first() {
+                // What Go's TLS client finds as a RecordHeaderError, and says so.
+                b"HTTP/" => {
+                    Error::new(format!("{url}: http: server gave HTTP response to HTTPS client")).not_tls()
+                }
+                // The socket's timeout is the deadline's: the handshake ran out of time.
+                _ if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => Error::of(
+                    ErrorKind::Transient,
+                    format!("{url}: the TLS handshake timed out"),
+                )
+                .not_tls(),
+                _ => Error::from(e).context(format!("{url}: TLS handshake")),
+            })?;
         }
         Ok(Tls { conn: tls, sock: io })
+    }
+}
+
+/// The first bytes a handshake heard, which say whether a plain HTTP server answered.
+#[derive(Default)]
+struct Heard {
+    first: [u8; 5],
+    len: usize,
+}
+
+impl Heard {
+    fn first(&self) -> &[u8] {
+        self.first.get(..self.len).unwrap_or_default()
+    }
+}
+
+/// A stream whose first bytes read are kept in a [`Heard`].
+struct Hearing<'a, T> {
+    io: &'a mut T,
+    heard: &'a mut Heard,
+}
+
+impl<T: Read> Read for Hearing<'_, T> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.io.read(buf)?;
+        let h = &mut *self.heard;
+        for &b in buf.get(..n).unwrap_or_default() {
+            match h.first.get_mut(h.len) {
+                Some(slot) => {
+                    *slot = b;
+                    h.len += 1;
+                }
+                None => break,
+            }
+        }
+        Ok(n)
+    }
+}
+
+impl<T: Write> Write for Hearing<'_, T> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.io.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.io.flush()
     }
 }
 
@@ -1536,7 +1599,7 @@ mod tests {
 
     fn plain() -> Client {
         Client::new(
-            Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
             "shards-test",
         )
     }

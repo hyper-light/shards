@@ -7,6 +7,7 @@
 
 use std::fmt;
 use std::io::{self, Read};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use sha2::{Digest as _, Sha256};
@@ -16,13 +17,24 @@ use shards_image::store::{Download, Held, Limits, Store};
 
 use crate::auth::{Authorizer, Credentials, loopback};
 use crate::http::{Client, Redirects, Request, Response};
-use crate::url::Url;
+use crate::url::{Scheme, Url};
 use crate::{Error, ErrorKind, Said, printable};
 
 /// containerd's `maxAttempts`.
 const ATTEMPTS: usize = 5;
 /// containerd's pause before trying a transient transport error again.
 const PAUSE: Duration = Duration::from_millis(50);
+/// The longest of the waits before asking a throttling registry again: up to 50 ms,
+/// then 100, 200, 400 and 800, each a random share of it. ECR Public throttles
+/// anonymous requests at random, at 1 a second already, and less the slower they come
+/// (PM M112): containerd asks again at once, five times, and a pull's burst still fails.
+const THROTTLED: [Duration; 5] = [
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+    Duration::from_millis(400),
+    Duration::from_millis(800),
+];
 /// What resolving accepts, in containerd's order (resolver.go:170-178).
 const RESOLVE_ACCEPT: &str = "application/vnd.docker.distribution.manifest.v2+json, \
      application/vnd.docker.distribution.manifest.list.v2+json, \
@@ -43,6 +55,9 @@ pub struct Registry {
     auth: Authorizer,
     /// `scheme://host/v2/<repository>/`
     base: Url,
+    /// For a loopback host on a port that names no scheme: whether it answered HTTPS in
+    /// plain HTTP, and is now asked in plain HTTP (`None` for every other host).
+    plain: Option<AtomicBool>,
     /// containerd's `RepositoryScope`: pull access to the repository.
     scopes: Vec<String>,
 }
@@ -191,13 +206,24 @@ impl Registry {
     pub fn new(http: Client, reference: &Reference, credentials: Credentials) -> Result<Registry, Error> {
         let host = host(reference);
         let mut base = Url::parse(&format!("https://{host}/v2/{}/", reference.path))?;
-        if loopback(&base) {
-            base = Url::parse(&format!("http://{host}/v2/{}/", reference.path))?;
+        // containerd v2.4.1's defaults for a loopback host (core/remotes/docker/config/
+        // hosts.go): HTTPS alone on 443 or no port, plain HTTP on 80, and on any other
+        // port HTTPS first, then plain HTTP once the server answers it so (NewHTTPFallback).
+        // containerd skips verifying a loopback host's certificate; shards verifies it,
+        // against certs.d and the system's roots.
+        let mut plain = None;
+        if loopback(&base) && base.authority() != base.host() {
+            match base.port() {
+                80 => base = base.plain()?,
+                _ => plain = Some(AtomicBool::new(false)),
+            }
         }
+        let auth = Authorizer::new(&base, credentials);
         Ok(Registry {
-            auth: Authorizer::new(&base, credentials),
+            auth: if plain.is_some() { auth.plain_too() } else { auth },
             http,
             base,
+            plain,
             scopes: vec![format!("repository:{}:pull", reference.path)],
         })
     }
@@ -208,8 +234,9 @@ impl Registry {
     /// - a HEAD of a manifest refused with 405 becomes a GET;
     /// - 408 is tried again, and 500, 503 or 504 once, unless it repeats.
     ///
-    /// A 429 is not tried again, where containerd would at once: Docker Hub counts pulls
-    /// over hours (§3.2). Returns the response and the method that got it.
+    /// A 429 is tried again, as containerd tries it, but after a wait ([`throttle`]), and
+    /// never for a quota spent: Docker Hub counts pulls over hours (§3.2). Returns the
+    /// response and the method that got it.
     fn request<'a>(
         &self,
         method: &'a str,
@@ -231,12 +258,24 @@ impl Registry {
         let mut method = method;
         let mut last: Option<u16> = None;
         let mut attempt = 0;
+        let mut throttled = 0;
         loop {
             attempt += 1;
+            // The registry's own host, once it answered HTTPS in plain HTTP, is asked so.
+            let ours = |plain: &AtomicBool| {
+                url.scheme() == Scheme::Https
+                    && url.host() == self.base.host()
+                    && url.port() == self.base.port()
+                    && plain.load(Ordering::Acquire)
+            };
+            let fallen = match &self.plain {
+                Some(plain) if ours(plain) => Some(url.plain()?),
+                _ => None,
+            };
             let sent = self.http.follow(
                 &Request {
                     method,
-                    url,
+                    url: fallen.as_ref().unwrap_or(url),
                     headers,
                     body,
                     file,
@@ -246,6 +285,18 @@ impl Registry {
             );
             let mut response = match sent {
                 Ok(response) => response,
+                Err(e)
+                    if e.is_not_tls()
+                        && fallen.is_none()
+                        && url.host() == self.base.host()
+                        && url.port() == self.base.port()
+                        && let Some(plain) = &self.plain =>
+                {
+                    // Asked again at once, as the fallback's round trip does: not an attempt.
+                    plain.store(true, Ordering::Release);
+                    attempt -= 1;
+                    continue;
+                }
                 Err(e) if e.kind() == ErrorKind::Transient && attempt < ATTEMPTS => {
                     std::thread::sleep(PAUSE);
                     continue;
@@ -261,6 +312,17 @@ impl Registry {
                     true
                 }
                 408 => true,
+                429 => match throttle(&response, throttled) {
+                    Some(wait) => {
+                        // Not an attempt: the registry asked for patience, not a repair.
+                        throttled += 1;
+                        attempt -= 1;
+                        let _ = io::copy(&mut (&mut response).take(2 << 10), &mut io::sink());
+                        std::thread::sleep(wait);
+                        continue;
+                    }
+                    None => false,
+                },
                 500 | 503 | 504 => !repeated,
                 _ => false,
             };
@@ -775,6 +837,41 @@ fn dockerd(status: u16, body: &[u8]) -> Said {
 /// Docker Hub's rate-limit fields, as its documentation names them: `ratelimit-limit`
 /// and `ratelimit-remaining` (`<count>;w=<seconds>`), `docker-ratelimit-source`, and
 /// `Retry-After`. None where it gave none of them.
+/// How long to wait before asking again after the `n`th 429 in a row, or `None` to give
+/// up: a quota spent (Docker Hub's `ratelimit-remaining` at 0, its window hours long) is
+/// never waited out, nor a `Retry-After` longer than the waits left; a throttle is.
+fn throttle(response: &Response, n: usize) -> Option<Duration> {
+    let most = *THROTTLED.get(n)?;
+    let spent = response
+        .header("ratelimit-remaining")
+        .and_then(|v| v.split(';').next())
+        .is_some_and(|left| left.trim() == "0");
+    if spent {
+        return None;
+    }
+    let left: Duration = THROTTLED.iter().skip(n).sum();
+    match response.header("retry-after").map(|v| v.trim().parse::<u64>()) {
+        Some(Ok(secs)) => Some(Duration::from_secs(secs)).filter(|d| *d <= left),
+        // An HTTP date, or nothing readable: what the registry wants is not known here.
+        Some(Err(_)) => None,
+        // Full jitter: a share of the most, at random, so a pull's requests do not come
+        // back together.
+        None => Some(most.mul_f64(jitter())),
+    }
+}
+
+/// A number in [0, 1), from the process's random hash keys and the time.
+fn jitter() -> f64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::hash::RandomState::new().build_hasher();
+    h.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos()),
+    );
+    (h.finish() >> 11) as f64 / (1u64 << 53) as f64
+}
+
 fn rate_limits(response: &Response) -> Option<String> {
     let window = |v: &str| match v.split_once(";w=") {
         Some((count, seconds)) => format!("{} per {} s", count.trim(), seconds.trim()),
@@ -804,6 +901,8 @@ fn rate_limits(response: &Response) -> Option<String> {
 mod tests {
     use super::*;
     use crate::testing::{After, Seen, route};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
 
     fn http(status: &str, fields: &[(&str, &str)]) -> Vec<u8> {
         let mut out = format!("HTTP/1.1 {status}\r\n");
@@ -831,7 +930,7 @@ mod tests {
         let server = route(None, move |seen| Some((answer(seen), After::Keep)));
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
         let http = Client::new(
-            Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
             "shards-test",
         );
         let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
@@ -854,6 +953,63 @@ mod tests {
 
     /// containerd's existence checks: by a tag, only the same digest counts; a 404 is
     /// absence; a refusal whose challenge says why is no answer; anything else fails.
+    /// A loopback registry on a port that names no scheme is asked in HTTPS first, then
+    /// in plain HTTP once it answers the handshake in plain HTTP or never finishes it, as
+    /// containerd's fallback finds (`isTLSError`); then in plain HTTP alone.
+    #[test]
+    fn a_loopback_registry_is_asked_in_https_then_plain_http() {
+        use std::io::Write as _;
+        for silent in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let hellos = Arc::new(AtomicUsize::new(0));
+            let seen = hellos.clone();
+            std::thread::spawn(move || {
+                for tcp in listener.incoming() {
+                    let Ok(mut tcp) = tcp else { return };
+                    let seen = seen.clone();
+                    std::thread::spawn(move || {
+                        let mut first = [0u8; 1];
+                        if tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
+                            seen.fetch_add(1, Ordering::SeqCst);
+                            if silent {
+                                // Reads the hello and never answers it.
+                                let mut sink = [0u8; 4096];
+                                while matches!(tcp.read(&mut sink), Ok(n) if n > 0) {}
+                            } else {
+                                let _ = tcp.write_all(crate::testing::GO_BAD_REQUEST);
+                            }
+                            return;
+                        }
+                        let mut head = Vec::new();
+                        let mut byte = [0u8; 1];
+                        while !head.ends_with(b"\r\n\r\n") && matches!(tcp.read(&mut byte), Ok(1)) {
+                            head.push(byte[0]);
+                        }
+                        let _ = tcp.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+                    });
+                }
+            });
+            let reference = Reference::parse(&format!("127.0.0.1:{port}/test/image:v1")).unwrap();
+            let http = Client::new(
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+                "shards-test",
+            );
+            let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+            let url = registry.base.join("manifests/v1").unwrap();
+            for _ in 0..2 {
+                let (response, _) = registry.request("GET", &url, &[]).unwrap();
+                assert_eq!(response.status, 404, "silent {silent}");
+                assert!(response.url().as_str().starts_with("http://"), "silent {silent}");
+            }
+            assert_eq!(
+                hellos.load(Ordering::SeqCst),
+                1,
+                "asked in HTTPS once, silent {silent}"
+            );
+        }
+    }
+
     #[test]
     fn existence_is_asked_as_containerd_asks_it() {
         use std::sync::Arc;
@@ -883,7 +1039,7 @@ mod tests {
             port.store(server.port, Ordering::SeqCst);
             let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
             let http = Client::new(
-                Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
                 "shards-test",
             );
             let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
@@ -960,7 +1116,7 @@ mod tests {
             let store = Store::open(&dir).unwrap();
             let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
             let http = Client::new(
-                Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
                 "shards-test",
             );
             let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
@@ -1191,7 +1347,7 @@ mod tests {
             let server = route(None, move |_| Some((answer.to_vec(), After::Keep)));
             let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
             let http = Client::new(
-                Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
                 "shards-test",
             );
             let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
@@ -1217,7 +1373,9 @@ mod tests {
         assert_eq!(
             e.to_string(),
             format!(
-                "content at http://127.0.0.1:{}/v2/test/image/blobs/{digest} not found: not found",
+                // containerd names the request by its host's scheme, HTTPS before the
+                // fallback rewrote it (resolver.go, request.String).
+                "content at https://127.0.0.1:{}/v2/test/image/blobs/{digest} not found: not found",
                 server.port
             )
         );

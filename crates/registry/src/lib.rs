@@ -24,6 +24,10 @@ pub struct Error {
     kind: ErrorKind,
     /// What dockerd says in its place, where a registry refused a request.
     said: Option<Said>,
+    /// Whether the server did not speak TLS: it answered the handshake in plain HTTP, or
+    /// never finished it, as containerd's `isTLSError` finds. A loopback registry on a
+    /// port that names no scheme is then asked in plain HTTP (registry.rs).
+    not_tls: bool,
 }
 
 /// What dockerd says of a registry's refusal in place of containerd's words
@@ -66,7 +70,20 @@ impl Error {
             message: message.into(),
             kind,
             said: None,
+            not_tls: false,
         }
+    }
+
+    /// The same error, from a server that did not speak TLS.
+    pub(crate) fn not_tls(self) -> Error {
+        Error {
+            not_tls: true,
+            ..self
+        }
+    }
+
+    pub(crate) fn is_not_tls(&self) -> bool {
+        self.not_tls
     }
 
     /// The same error, with what dockerd says of it.
@@ -98,6 +115,7 @@ impl Error {
             message: format!("{context}: {}", self.message),
             kind: self.kind,
             said: self.said,
+            not_tls: self.not_tls,
         }
     }
 }

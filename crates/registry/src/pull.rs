@@ -677,6 +677,18 @@ mod tests {
     }
 
     fn fake(image: Image, cut: Option<String>) -> Fake {
+        fake_throttling(image, cut, 0, None)
+    }
+
+    /// [`fake`], whose registry first answers `throttles` of its `/v2/` requests with a
+    /// 429, and `retry_after` if there is one.
+    fn fake_throttling(
+        image: Image,
+        cut: Option<String>,
+        throttles: usize,
+        retry_after: Option<&'static str>,
+    ) -> Fake {
+        let throttled = AtomicUsize::new(0);
         let blobs = image.blobs.clone();
         let cut_done = AtomicBool::new(false);
         let cdn = route(None, move |req: &Seen| {
@@ -709,6 +721,13 @@ mod tests {
         let own = port.clone();
         let registry = route(None, move |req: &Seen| {
             let path = req.target.split('?').next().unwrap_or_default();
+            if path.starts_with("/v2/") && throttled.fetch_add(1, Ordering::SeqCst) < throttles {
+                let fields: Vec<(&str, String)> = retry_after
+                    .map(|a| ("Retry-After", a.to_string()))
+                    .into_iter()
+                    .collect();
+                return Some((http("429 Too Many Requests", &fields, b""), After::Keep));
+            }
             if path == "/token" {
                 let token = format!(r#"{{"token":"{TOKEN}","expires_in":300}}"#);
                 return Some((http("200 OK", &[], token.as_bytes()), After::Keep));
@@ -797,7 +816,7 @@ mod tests {
 
     fn client() -> Client {
         Client::new(
-            Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
             "shards-test",
         )
     }
@@ -1115,6 +1134,24 @@ mod tests {
         );
         assert_eq!(server.requests().len(), 1);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A throttle is waited out, as ECR Public's is (PM M112); a `Retry-After` past the
+    /// waits left is not.
+    #[test]
+    fn throttles_are_waited_out_and_long_waits_are_not() {
+        for (retry_after, pulled) in [(None, true), (Some("1"), true), (Some("3600"), false)] {
+            let image = image("arm64", &[("a", b"a")], true);
+            let fake = fake_throttling(image, None, 2, retry_after);
+            let reference =
+                Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
+            let root = temp("throttled");
+            let store = Store::open(&root).unwrap();
+            let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
+            let got = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {});
+            assert_eq!(got.is_ok(), pulled, "{retry_after:?}: {got:?}");
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 
     #[test]

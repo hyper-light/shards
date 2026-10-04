@@ -2841,6 +2841,11 @@ fn stalling_registry() -> (
             let Ok(mut tcp) = tcp else { return };
             let (b, e) = (b.clone(), e.clone());
             std::thread::spawn(move || {
+                let mut first = [0u8; 1];
+                if tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
+                    let _ = tcp.write_all(common::GO_BAD_REQUEST);
+                    return;
+                }
                 loop {
                     let mut head = Vec::new();
                     let mut byte = [0u8; 1];

@@ -3816,3 +3816,56 @@ revision before comparing a changed API/implementation.
   reach the next 64 MiB looks at the free space, so writers never wait on one another;
   with nothing to keep free it counts nothing. The write tails are the unpacked layers'
   temporary archives, which the next step takes away.
+
+### M112. Pulling from real registries
+
+- **Question.** shards' pulls had been checked against the E2E tests' loopback
+  registry and Docker Hub. What do real registries make of them, next to Docker's?
+- **Method.** `docs/research/measurements/registries/`:
+  - `sweep.sh`: one cold pull with shards and one with Docker Desktop 29.3.1 (its
+    containerd image store) of each of 13 images from 9 registries, for linux/arm64,
+    and whether `images --digests` agrees.
+  - `throttle.py` and `rates.py`: ECR Public's answers to anonymous manifest HEADs over
+    one kept-alive connection: at 1 to 16 a second, 8 s each; and asked again 0 to
+    250 ms after a 429.
+  - `ab-pull.sh`: 20 rounds of cold pulls from ECR Public by 9d9d1de and by the change,
+    in turn.
+  - The CNCF distribution registry v3.0.0 on this host, over TLS (its CA in
+    `~/.docker/certs.d`) and over plain HTTP, serving one image.
+  Apple M5 Max, macOS 26.4.1, home broadband, 2026-10-04.
+- **Results.**
+  - Every image pulled by both resolved to the same digest. shards' cold pulls took
+    2.1 to 24.0 s where Docker Desktop's took 3.4 to 53.8 s; gcr.io was as slow for
+    either (shards 4.3 to 8.2 s over 5 pulls of distroless/static, Docker 3.7 to 9.7 s
+    over 3), at about 0.45 s a request to it.
+  - `shards pull --platform` was refused as an unknown flag: `docker pull`'s flags were
+    not read.
+  - ECR Public refused one of shards' pulls with `TOOMANYREQUESTS: Rate exceeded`,
+    which Docker pulled. It throttles anonymous requests at random, more the faster
+    they come, and never sends `Retry-After`:
+
+    | asked a second | sent a second | throttled |
+    |---|---|---|
+    | 1 | 1.1 | 2 of 9 |
+    | 2 | 2.1 | 2 of 17 |
+    | 4 | 4.1 | 12 of 33 |
+    | 8 | 8.1 | 34 of 65 |
+    | 16 | 16.0 | 87 of 129 |
+
+    Asked again after a 429, it answered 200 1 time in 6 at once, and 2 to 4 times in 6
+    after 10 to 250 ms.
+  - redis:7.4 from ECR Public, 20 pulls each: 12 failed with 9d9d1de, which never
+    retried a 429; none with the change, at 2.43 s p50, 6.52 s p90 and 6.67 s max.
+  - shards could not pull from the distribution registry on `localhost:5055` over TLS:
+    it asked loopback hosts in plain HTTP only. With the change it pulls over TLS there,
+    and over plain HTTP on `localhost:5056` and `127.0.0.1:5056`, after its HTTPS
+    hello is answered in plain HTTP.
+  - A loopback server that read the TLS hello and never answered cost 5 attempts of
+    10 s each, reported as `Resource temporarily unavailable`: the handshake's socket
+    timeout was not taken for its deadline.
+- **Consequence.** A loopback registry on a port but 80 and 443 is asked in HTTPS first,
+  and in plain HTTP from the first handshake answered in plain HTTP or timed out, as
+  containerd v2.4.1 does; its certificate is verified, where containerd skips it. A
+  handshake whose socket times out reports its deadline. A 429 is waited out, up to
+  five times, by a random share of 50 to 800 ms or a `Retry-After` that fits, unless
+  a quota is spent. `shards pull` is to read `docker pull`'s flags.

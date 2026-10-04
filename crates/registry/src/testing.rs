@@ -224,6 +224,13 @@ pub(crate) fn route(
                 }
                 let _closes = Closes(closer);
                 let _ = tcp.set_read_timeout(Some(Duration::from_secs(10)));
+                // A plain server asked for TLS answers as Go's net/http answers a request
+                // it cannot read, as a registry does (server.go, publicErr).
+                let mut first = [0u8; 1];
+                if tls.is_none() && tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
+                    let _ = (&tcp).write_all(GO_BAD_REQUEST);
+                    return;
+                }
                 let mut io: Box<dyn Io> = match &tls {
                     Some(config) => Box::new(StreamOwned::new(
                         ServerConnection::new(config.clone()).unwrap(),
@@ -255,6 +262,10 @@ pub(crate) fn route(
         acceptor: Some(acceptor),
     }
 }
+
+/// What Go's net/http writes to a connection whose request it cannot read.
+pub(crate) const GO_BAD_REQUEST: &[u8] =
+    b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request";
 
 fn parse(text: &str) -> Seen {
     let head = text.split("\r\n\r\n").next().unwrap_or_default();

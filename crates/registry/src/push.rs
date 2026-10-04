@@ -254,7 +254,7 @@ mod tests {
         });
         let reference = Reference::parse(&format!("127.0.0.1:{}/team/app:v1", server.port)).unwrap();
         let http = Client::new(
-            Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
             "shards-test",
         );
         let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
@@ -298,7 +298,7 @@ mod tests {
         });
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
         let http = Client::new(
-            Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
             "shards-test",
         );
         let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
@@ -370,7 +370,7 @@ mod tests {
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
         let pushed = |credentials, from| {
             let http = Client::new(
-                Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
                 "shards-test",
             );
             let registry = Registry::new(http, &reference, credentials).unwrap();

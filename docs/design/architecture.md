@@ -617,15 +617,25 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
 ([registry-pull](../research/registry-pull.md) R1, R6, R8). The code is
 `crates/registry/src/registry.rs` and `pull.rs`.
 
-- **Hosts** are reached as containerd's defaults reach them: Docker Hub at
-  `registry-1.docker.io`, loopback hosts over plain HTTP, all others over https.
+- **Hosts** are reached as containerd's defaults reach them
+  (`core/remotes/docker/config/hosts.go`): Docker Hub at `registry-1.docker.io`, all
+  others over https, but a loopback host on port 80 over plain HTTP, and on any port
+  but 80 and 443 over https first, then plain HTTP from the first handshake answered
+  in plain HTTP or timed out (`NewHTTPFallback`, `isTLSError`) [PM M112].
+  - Unlike containerd, a loopback host's certificate is verified, against `certs.d` and
+    the system's roots: containerd skips the check there.
 - **Requests** retry as `doWithRetries` does, at most 5 times:
   - a timeout or cut connection is tried again after 50 ms;
   - a 401 is answered (D21), then the request is sent again;
   - a manifest HEAD refused with 405 becomes a GET;
   - 408 is tried again, and a 500, 503 or 504 once.
-  - Unlike containerd, a 429 is never retried. Docker Hub counts pulls over hours, so
-    the error reports its `ratelimit-*` fields and `Retry-After`.
+  - A 429 is tried again, as containerd tries it, but after a wait: `Retry-After`
+    when it fits in the waits left, else up to 50, 100, 200, 400 and 800 ms, a random
+    share of each. containerd asks again at once, and ECR Public, which throttles
+    anonymous requests at random even at 1 a second, failed 12 of 20 pulls of shards
+    that never retried and none that waits [PM M112]. A quota spent
+    (`ratelimit-remaining` at 0: Docker Hub counts pulls over hours) is never retried,
+    and the error reports its `ratelimit-*` fields and `Retry-After`.
 - **Resolve** follows containerd's `Resolve`:
   - a HEAD of the tag or digest with its `Accept` list;
   - the digest comes from the reference, else from `Docker-Content-Digest` with a

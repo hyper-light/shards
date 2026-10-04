@@ -879,6 +879,10 @@ pub fn registry_stalling_blobs(
 }
 
 /// [`registry_of`], holding each blob's GET unanswered, counted, with `stalls`.
+/// What Go's net/http writes to a connection whose request it cannot read.
+pub const GO_BAD_REQUEST: &[u8] =
+    b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request";
+
 fn registry_serving(
     image: Served,
     stalls: Option<(Arc<AtomicUsize>, Arc<AtomicUsize>)>,
@@ -893,6 +897,13 @@ fn registry_serving(
             let Ok(stream) = stream else { return };
             let (image, count, stalls) = (serving.clone(), count.clone(), stalls.clone());
             std::thread::spawn(move || {
+                // Asked for TLS, it answers as Go's net/http, and so a registry, answers a
+                // request it cannot read (server.go, publicErr).
+                let mut first = [0u8; 1];
+                if stream.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
+                    let _ = (&stream).write_all(GO_BAD_REQUEST);
+                    return;
+                }
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut out = stream;
                 loop {
@@ -983,6 +994,13 @@ pub fn serve_file(body: Vec<u8>) -> (String, Arc<AtomicUsize>) {
             let Ok(stream) = stream else { return };
             let (body, count) = (body.clone(), count.clone());
             std::thread::spawn(move || {
+                // Asked for TLS, it answers as Go's net/http, and so a registry, answers a
+                // request it cannot read (server.go, publicErr).
+                let mut first = [0u8; 1];
+                if stream.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
+                    let _ = (&stream).write_all(GO_BAD_REQUEST);
+                    return;
+                }
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut out = stream;
                 loop {
@@ -1318,6 +1336,13 @@ pub fn writable_registry_requiring(authorization: Option<String>) -> (u16, Arc<s
             let repos = held.clone();
             let wanted = authorization.clone();
             std::thread::spawn(move || {
+                // Asked for TLS, it answers as Go's net/http, and so a registry, answers a
+                // request it cannot read (server.go, publicErr).
+                let mut first = [0u8; 1];
+                if stream.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
+                    let _ = (&stream).write_all(GO_BAD_REQUEST);
+                    return;
+                }
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut out = stream;
                 loop {
