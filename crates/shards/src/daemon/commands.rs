@@ -211,6 +211,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Ok(id) => id,
             Err(e) => return refuse(&e),
         };
+        // As the CLI refuses it once its inspect has found the container, before the exec
+        // is made, and not with -d, which attaches nothing (docker/cli exec.go RunExec,
+        // streams/in.go CheckTty).
+        if exec.tty.is_some() && exec.interactive && !exec.detach && !exec.stdin_terminal {
+            return refuse("cannot attach stdin to a TTY-enabled container because stdin is not a terminal");
+        }
         // One being started is seen through, as `docker exec` finds it started or not.
         self.await_start(&id);
         // What the exec needs of the run, taken out of `runs` before its inbox is locked:

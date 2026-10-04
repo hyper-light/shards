@@ -174,6 +174,9 @@ pub struct Exec {
     pub interactive: bool,
     pub detach: bool,
     pub tty: Option<(u16, u16)>,
+    /// The client's stdin is a terminal, as `-it` needs: the daemon refuses one that is
+    /// not once it has found the container, where the CLI refuses it after its inspect.
+    pub stdin_terminal: bool,
     pub daemon: Identity,
 }
 
@@ -195,6 +198,7 @@ impl Exec {
             }
             None => w.push(0),
         }
+        w.push(u8::from(self.stdin_terminal));
         put_identity(&mut w, &self.daemon);
         w
     }
@@ -216,6 +220,7 @@ impl Exec {
             } else {
                 None
             },
+            stdin_terminal: r.flag()?,
             daemon: r.identity()?,
         };
         r.0.is_empty().then_some(exec)
@@ -874,6 +879,7 @@ mod tests {
             interactive: true,
             detach: false,
             tty: Some((24, 80)),
+            stdin_terminal: true,
             daemon: Identity {
                 dev: 1,
                 ino: 2,

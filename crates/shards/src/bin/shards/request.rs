@@ -100,12 +100,13 @@ pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
         interactive: parsed.bool("interactive"),
         detach: parsed.bool("detach"),
         tty: parsed.bool("tty").then(stdout_size),
+        // `-it` without a terminal is refused by the daemon, once it has found the
+        // container: the CLI inspects it first, so that "No such container" comes first
+        // (docker/cli exec.go RunExec).
+        stdin_terminal: std::io::stdin().is_terminal(),
         ..shards_ipc::Exec::default()
     };
-    // Checked before the daemon is asked, as the CLI checks (streams/in.go, CheckTty).
-    if request.tty.is_some() && request.interactive && !std::io::stdin().is_terminal() {
-        return refuse("the input device is not a TTY");
-    }
+    // Before the container is looked for, as the CLI checks them (exec.go parseExec).
     let keys = parsed.string("detach-keys");
     let detach_keys = if keys.is_empty() {
         term::DETACH_KEYS.to_vec()

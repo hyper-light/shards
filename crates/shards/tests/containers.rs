@@ -1359,6 +1359,28 @@ fn exec_runs_commands_in_a_running_container_as_docker_exec_does() {
             .starts_with("Error response from daemon: unable to find user nobodyhere"),
         "{unknown}"
     );
+    // -it with a stdin that is no terminal: refused once the container is found, and not
+    // with -d; the detach keys are checked before it is looked for (docker/cli exec.go).
+    let untty = "cannot attach stdin to a TTY-enabled container because stdin is not a terminal\n";
+    refused(&["-it", "ex", "/bin/testguest", "report"], 1, untty);
+    refused(
+        &["-it", "nope", "/bin/testguest", "report"],
+        1,
+        "Error response from daemon: No such container: nope\n",
+    );
+    assert_eq!(exec(&["-dit", "ex", "/bin/testguest", "sleep"]).status, Some(0));
+    refused(
+        &[
+            "-it",
+            "--detach-keys",
+            "ctrl-P",
+            "nope",
+            "/bin/testguest",
+            "report",
+        ],
+        1,
+        "invalid detach keys (ctrl-P): Unknown character: 'ctrl-P'\n",
+    );
     let stopped = shards_in(&home, &["stop", "ex"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
     let _ = exit(&mut run);
@@ -1371,6 +1393,8 @@ fn exec_runs_commands_in_a_running_container_as_docker_exec_does() {
         1,
         &format!("Error response from daemon: container {id} is not running\n"),
     );
+    // Before the exec is made: before whether the container runs is asked.
+    refused(&["-it", "ex", "/bin/testguest", "report"], 1, untty);
 }
 
 /// `-p`: a container's ports published on the host as dockerd publishes them. Each
