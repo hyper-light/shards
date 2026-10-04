@@ -140,8 +140,13 @@ pub fn daemon(args: impl Iterator<Item = OsString>) -> ExitCode {
     let args: Vec<OsString> = args.collect();
     let arg = |i: usize| args.get(i).and_then(|a| a.to_str());
     let result = match (args.len(), arg(0)) {
-        (0, _) => serve(),
+        (0, _) => serve(None),
         (1, Some("--detached")) => detach(),
+        // Its starter's (`detach`): the descriptor on which it says it serves.
+        (2, Some("--ready")) => match arg(1).and_then(|fd| fd.parse::<i32>().ok()) {
+            Some(fd) => ready_link(fd).and_then(|link| serve(Some(link))),
+            None => Err(format!("--ready: {:?} is not a descriptor", args.get(1))),
+        },
         (1, Some("-h" | "--help")) => {
             let _ = writeln!(io::stdout(), "{USAGE}");
             return ExitCode::SUCCESS;
@@ -608,11 +613,28 @@ impl<D: Disk> Drop for Busy<'_, D> {
     }
 }
 
-/// Starts the daemon in the background: in a session of its own, writing to the log in
-/// its home, and orphaned as this process exits, so that init adopts it (or the nearest
-/// subreaper) and reaps it when it exits. A daemon left the child of the `shards run` that
-/// started it would stay a zombie after it exits, for as long as that client lives
-/// (APUE 13.3; XNU proc_exit reparents orphans to launchd).
+/// Takes the descriptor `fd` its starter left this process to say on that it serves.
+fn ready_link(fd: i32) -> Result<File, String> {
+    use std::os::fd::FromRawFd;
+    // SAFETY: fcntl(2) asks whether the descriptor is open.
+    if fd < 3 || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+        return Err(format!("--ready: {fd} is not a descriptor of its own"));
+    }
+    // SAFETY: an open descriptor its starter left this process alone, owned from here
+    // on, and closed on exec.
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    // SAFETY: as above.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+/// Starts the daemon in the background, and returns once it serves: in a session of its
+/// own, writing to the log in its home, and orphaned as this process exits, so that init
+/// adopts it (or the nearest subreaper) and reaps it when it exits. A daemon left the
+/// child of the `shards run` that started it would stay a zombie after it exits, for as
+/// long as that client lives (APUE 13.3; XNU proc_exit reparents orphans to launchd). One
+/// that ends before it serves has found another daemon serving its home, or failed,
+/// which this says with its log's path, rather than leave its client to wait for it
+/// (review 8.14).
 fn detach() -> Result<(), String> {
     use std::os::fd::AsFd;
     use std::os::unix::fs::OpenOptionsExt;
@@ -629,14 +651,39 @@ fn detach() -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))?;
     let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
-    shards_ipc::spawn(
+    let (mut ready, says) = io::pipe().map_err(|e| format!("a pipe for the daemon's start: {e}"))?;
+    let daemon = shards_ipc::spawn(
         &exe,
-        &["daemon".as_ref()],
-        &[(null.as_fd(), 0), (log.as_fd(), 1), (log.as_fd(), 2)],
+        &["daemon".as_ref(), "--ready".as_ref(), "3".as_ref()],
+        &[
+            (null.as_fd(), 0),
+            (log.as_fd(), 1),
+            (log.as_fd(), 2),
+            (says.as_fd(), 3),
+        ],
         true,
     )
-    .map(drop)
-    .map_err(|e| format!("starting the daemon {}: {e}", exe.display()))
+    .map_err(|e| format!("starting the daemon {}: {e}", exe.display()))?;
+    drop(says);
+    let mut byte = [0u8; 1];
+    let read = loop {
+        match ready.read(&mut byte) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            read => break read,
+        }
+    };
+    if matches!(read, Ok(1)) {
+        return Ok(());
+    }
+    // It ended without serving: its status says whether it found another daemon serving.
+    match daemon.wait() {
+        Ok(0) => Ok(()),
+        Ok(status) => Err(format!(
+            "the daemon exited with status {status} before it served; see {}",
+            path.display()
+        )),
+        Err(e) => Err(format!("the daemon: {e}; see {}", path.display())),
+    }
 }
 
 /// Raises this process's soft limit on open descriptors to its hard limit, as Go's runtime
@@ -801,7 +848,7 @@ fn elect_bridge() -> Option<shards_net::bridge::Bridge> {
     bridge
 }
 
-fn serve() -> Result<(), String> {
+fn serve(ready: Option<File>) -> Result<(), String> {
     let settings = settings()?;
     let descriptors = raise_descriptor_limit();
     let home = shards_ipc::home()?;
@@ -838,6 +885,10 @@ fn serve() -> Result<(), String> {
         daemon.home.join(daemon.socket).display(),
         descriptors.map_or_else(|| "an unknown number of".to_string(), |n| n.to_string())
     ));
+    // Its starter returns once it hears this: clients connect now.
+    if let Some(mut ready) = ready {
+        let _ = ready.write_all(&[1]);
+    }
     // The daemon exits from within, so its threads are never waited for here.
     std::thread::scope(|threads| {
         daemon.start_completer(threads);

@@ -1190,6 +1190,25 @@ fn a_daemon_refuses_settings_it_cannot_keep() {
     }
 }
 
+/// A daemon that ends before it serves is said at once, with where its log is, rather
+/// than waited for (review 8.14): here one that cannot open its home's lock, which a
+/// directory holds the name of.
+#[test]
+fn a_daemon_that_cannot_serve_is_said_at_once() {
+    let home = TempDir::new("daemon-cannot-serve");
+    std::fs::create_dir(home.join("daemon.lock")).unwrap();
+    let t0 = Instant::now();
+    let ps = run_shards_env::<&str>(&["ps"], &[], &[("SHARDS_HOME", home.as_os_str())], TIMEOUT);
+    assert_ne!(ps.status, Some(0), "{}", ps.stderr);
+    assert!(
+        ps.stderr
+            .contains("the daemon exited with status 1 before it served; see"),
+        "{}",
+        ps.stderr
+    );
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+}
+
 /// Warm VMs kept ahead of runs are bounded all pools together (audit A13): with room
 /// for one, a second template's pool takes the first's, least recently claimed from, and
 /// the first is still served, on demand.

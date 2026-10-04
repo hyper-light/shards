@@ -365,9 +365,24 @@ fn start(daemon: &Path, home: &Path) -> Result<(), String> {
     )
     .map_err(starting)?;
     drop(speaks);
+    // What it says, read to its end before it is waited for: a starter whose words filled
+    // the pipe would otherwise wait on this as this waits on it (review 8.14). The first
+    // 64 KiB are kept.
+    let mut kept = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match said.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                let room = (64 * 1024usize).saturating_sub(kept.len());
+                kept.extend_from_slice(chunk.get(..n.min(room)).unwrap_or_default());
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    let text = String::from_utf8_lossy(&kept).into_owned();
     let status = starter.wait().map_err(starting)?;
-    let mut text = String::new();
-    let _ = (&mut said).take(64 * 1024).read_to_string(&mut text);
     match status {
         0 => Ok(()),
         status if text.trim().is_empty() => Err(format!(
