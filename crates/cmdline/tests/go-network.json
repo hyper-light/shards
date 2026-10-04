@@ -1703,6 +1703,33 @@
       "err": "invalid proto: xyz",
       "exposed": null,
       "bindings": null
+    },
+    {
+      "publish": [
+        "80:80/bogus",
+        "published=1,x"
+      ],
+      "err": "invalid publish opts format (should be name=value but got 'x')",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "x",
+        "published=1,=2"
+      ],
+      "err": "invalid publish opts format (should be name=value but got '=2')",
+      "exposed": null,
+      "bindings": null
+    },
+    {
+      "publish": [
+        "published=1,x",
+        "80/xyz"
+      ],
+      "err": "invalid publish opts format (should be name=value but got 'x')",
+      "exposed": null,
+      "bindings": null
     }
   ],
   "port_args": [

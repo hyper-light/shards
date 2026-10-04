@@ -28,12 +28,15 @@ pub struct Binding {
 }
 
 /// What `-p`'s `values` publish: the ports they expose, sorted, each once, and their
-/// bindings in the order given.
+/// bindings in the order given. Every value is put in standard notation before any is
+/// parsed, as the CLI's parse does (review 2.29): one whose notation fails is said before
+/// a port before it that would not parse.
 pub fn publish(values: &[String]) -> Result<(Vec<Port>, Vec<Binding>), String> {
+    let standard: Vec<String> = values.iter().map(|v| standard(v)).collect::<Result<_, _>>()?;
     let mut exposed: Vec<Port> = Vec::new();
     let mut bindings = Vec::new();
-    for value in values {
-        for b in parse_spec(&standard(value)?)? {
+    for value in &standard {
+        for b in parse_spec(value)? {
             if !exposed.contains(&b.port) {
                 exposed.push(b.port.clone());
             }

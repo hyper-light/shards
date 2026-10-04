@@ -656,6 +656,84 @@ mod tests {
         );
     }
 
+    /// A measurement: a 64-byte frame's round trip, and frames' throughput one way, each
+    /// side sleeping on its own doorbell whenever its ring is empty, as the VM's device
+    /// and the network process do: no spin (review 2.17, PM M105). Threads stand for the
+    /// two processes; the wake is the same pipe either way.
+    ///
+    ///     cargo test -p shards-netring --release -- --ignored --nocapture frames_cost
+    #[test]
+    #[ignore = "a measurement"]
+    fn frames_cost() {
+        let region = region();
+        // Each side's own doorbell: the read end it sleeps on, the write end its peer rings.
+        let (a_sleeps, rings_a) = doorbell().unwrap();
+        let (b_sleeps, rings_b) = doorbell().unwrap();
+        let mut a_out = region.producer(0, rings_b.try_clone().unwrap());
+        let mut a_in = region.consumer(1, rings_b, a_sleeps);
+        let mut b_out = region.producer(1, rings_a.try_clone().unwrap());
+        let mut b_in = region.consumer(0, rings_a, b_sleeps);
+        // The production wait: take a frame, else ask to be rung and sleep.
+        let next = |c: &mut Consumer<'_>| loop {
+            if let Some(f) = take(c) {
+                return f;
+            }
+            if !c.arm().unwrap() {
+                sleep(c.waits_on());
+            }
+        };
+        let send = |p: &mut Producer<'_>, f: &[u8]| loop {
+            match p.try_push(&[f]).unwrap() {
+                Some(true) => return,
+                Some(false) => panic!("a frame past the largest"),
+                None => std::thread::yield_now(),
+            }
+        };
+        let n = 20_000;
+        let mut rtt = Vec::with_capacity(n);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                for _ in 0..n {
+                    let f = next(&mut b_in);
+                    send(&mut b_out, &f);
+                }
+            });
+            let f = [7u8; 64];
+            for _ in 0..n {
+                let t = std::time::Instant::now();
+                send(&mut a_out, &f);
+                let _ = next(&mut a_in);
+                rtt.push(t.elapsed().as_nanos() as f64 / 1e3);
+            }
+        });
+        rtt.sort_by(f64::total_cmp);
+        let at = |q: f64| rtt[((rtt.len() - 1) as f64 * q) as usize];
+        println!(
+            "64-byte round trip, n={n}: p50 {:.1} us p90 {:.1} p99 {:.1} max {:.1}",
+            at(0.5),
+            at(0.9),
+            at(0.99),
+            rtt[rtt.len() - 1]
+        );
+        for size in [1514usize, 9014, MAX_FRAME] {
+            let frames = (1usize << 30) / size;
+            let f = vec![1u8; size];
+            let t = std::time::Instant::now();
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    for _ in 0..frames {
+                        let _ = next(&mut b_in);
+                    }
+                });
+                for _ in 0..frames {
+                    send(&mut a_out, &f);
+                }
+            });
+            let gbit = (frames * size) as f64 * 8.0 / t.elapsed().as_secs_f64() / 1e9;
+            println!("{size}-byte frames one way, 1 GiB: {gbit:.1} Gbit/s");
+        }
+    }
+
     /// A region handed over by its descriptor is the same memory.
     #[test]
     fn a_region_mapped_from_its_descriptor_is_shared() {

@@ -1171,14 +1171,10 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
     let region = adopt("REGION", region)?;
     let wake_me = adopt("WAKE_ME", me)?;
     let wake_peer = adopt("WAKE_PEER", peer)?;
-    let octets: Vec<u8> = mac
-        .split(':')
-        .map(|h| u8::from_str_radix(h, 16))
-        .collect::<Result<_, _>>()
-        .map_err(|_| format!("--net: {mac:?} is not a MAC"))?;
-    let mac: [u8; 6] = octets
-        .try_into()
-        .map_err(|_| format!("--net: {mac:?} is not a MAC"))?;
+    let mac = mac
+        .parse::<shards_net::Mac>()
+        .map_err(|e| format!("--net: {e}"))?
+        .0;
     Ok(shards_vmm::devices::virtio::net::NetHost {
         region,
         wake_me,

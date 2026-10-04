@@ -130,11 +130,14 @@ fn proto(name: &str) -> Option<u8> {
     }
 }
 
-/// Binds `bindings`, and lists them with the ports exposed `alone`. Whose an address in
-/// use is, `in_use` says, waiting for one a run of this daemon has just let go of.
+/// Binds `bindings`, and lists them with the ports exposed `alone`; a binding with no
+/// address at IPv4's every one, and IPv6's too where `v6`, IPv6 can listen
+/// ([`v6_listenable`]). Whose an address in use is, `in_use` says, waiting for one a run
+/// of this daemon has just let go of.
 pub(super) fn bind(
     bindings: &[Publish],
     alone: &[(u16, String)],
+    v6: bool,
     in_use: impl Fn(SocketAddr, u8) -> InUse,
 ) -> Result<Bound, String> {
     let mut bound = Bound::default();
@@ -143,7 +146,7 @@ pub(super) fn bind(
         // No address is every one: IPv4's, and IPv6's on one port where IPv6 can listen.
         let ips: Vec<IpAddr> = if b.host_ip.is_empty() {
             let mut every = vec![IpAddr::V4(Ipv4Addr::UNSPECIFIED)];
-            if v6_listenable() {
+            if v6 {
                 every.push(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
             }
             every
@@ -313,7 +316,7 @@ fn go_error(e: &std::io::Error) -> String {
 /// daemon/libnetwork/netutils/utils.go IsV6Listenable): a TCP listener at [::1]:0. A
 /// kernel booted with ipv6.disable=1 has none, and a binding with no address is then
 /// IPv4's alone, where binding `::` too would fail every one.
-fn v6_listenable() -> bool {
+pub(super) fn v6_listenable() -> bool {
     static LISTENABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *LISTENABLE.get_or_init(|| std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_ok())
 }
@@ -572,6 +575,7 @@ mod tests {
                 host_port: String::new(),
             }],
             &[],
+            v6_listenable(),
             |_, _| InUse::Host,
         )
         .unwrap();
@@ -582,6 +586,35 @@ mod tests {
             Some(IpAddr::V4(Ipv4Addr::LOCALHOST))
         );
         assert!(std::net::TcpStream::connect(at).is_ok());
+    }
+
+    /// A port published at no address is IPv4's every address alone where IPv6 cannot
+    /// listen (a kernel booted with ipv6.disable=1), as dockerd binds it, and IPv6's too
+    /// where it can (review 2.18).
+    #[test]
+    fn a_host_without_ipv6_publishes_at_ipv4_alone() {
+        let any = Publish {
+            port: 7000,
+            proto: "tcp".into(),
+            host_ip: String::new(),
+            host_port: String::new(),
+        };
+        let v4 = bind(std::slice::from_ref(&any), &[], false, |_, _| InUse::Host).unwrap();
+        let at: Vec<IpAddr> = v4.listeners.iter().map(|l| l.at.ip()).collect();
+        assert_eq!(at, [IpAddr::V4(Ipv4Addr::UNSPECIFIED)]);
+        let recorded: Vec<Option<IpAddr>> = v4.ports.iter().map(|p| p.ip).collect();
+        assert_eq!(recorded, [Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED))]);
+        if v6_listenable() {
+            let both = bind(std::slice::from_ref(&any), &[], true, |_, _| InUse::Host).unwrap();
+            let at: Vec<IpAddr> = both.listeners.iter().map(|l| l.at.ip()).collect();
+            assert_eq!(
+                at,
+                [
+                    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+                ]
+            );
+        }
     }
 
     /// A listener is close-on-exec and nonblocking from its making: no VM spawned on

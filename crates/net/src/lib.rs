@@ -95,6 +95,39 @@ pub struct Config {
     pub policy: Policy,
 }
 
+/// A MAC address as shards' processes pass it to one another (review 2.32): its six
+/// bytes in hex, two digits each, between colons, as Linux and Docker write one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mac(pub [u8; 6]);
+
+impl std::fmt::Display for Mac {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let [a, b, c, d, e, g] = self.0;
+        write!(f, "{a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{g:02x}")
+    }
+}
+
+impl std::str::FromStr for Mac {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Mac, String> {
+        let not = || format!("{s:?} is not a MAC");
+        let mut octets = s.split(':');
+        let mut mac = [0u8; 6];
+        for byte in &mut mac {
+            let hex = octets
+                .next()
+                .filter(|h| h.len() == 2 && h.bytes().all(|c| c.is_ascii_hexdigit()))
+                .ok_or_else(not)?;
+            *byte = u8::from_str_radix(hex, 16).map_err(|_| not())?;
+        }
+        match octets.next() {
+            Some(_) => Err(not()),
+            None => Ok(Mac(mac)),
+        }
+    }
+}
+
 /// A fresh guest MAC, random, locally administered and unicast, as current Docker gives
 /// each container (measured under Docker Desktop, 2026-10-02).
 pub fn random_mac() -> io::Result<[u8; 6]> {
@@ -1042,6 +1075,28 @@ mod tests {
         let u = wire::udp(ip.payload).unwrap();
         assert_eq!((u.src_port, u.dst_port, u.payload), (53, 5353, &b"an answer"[..]));
         assert_eq!(take(), None);
+    }
+
+    /// A MAC goes as text and comes back the same; what is not six two-digit hex bytes
+    /// between colons is no MAC.
+    #[test]
+    fn macs_read_back_as_written() {
+        let mac = Mac([0x02, 0x42, 0xac, 0x11, 0x00, 0xff]);
+        assert_eq!(mac.to_string(), "02:42:ac:11:00:ff");
+        assert_eq!("02:42:ac:11:00:ff".parse(), Ok(mac));
+        assert_eq!("02:42:AC:11:00:FF".parse(), Ok(mac));
+        for not in [
+            "",
+            "02:42:ac:11:00",
+            "02:42:ac:11:00:ff:01",
+            "2:42:ac:11:00:ff",
+            "+2:42:ac:11:00:ff",
+            "02:42:ac:11:00:fg",
+            "02-42-ac-11-00-ff",
+            "02:42:ac:11:00:ff:",
+        ] {
+            assert!(not.parse::<Mac>().is_err(), "{not:?}");
+        }
     }
 
     /// What a build's steps reach: the Internet and the host's networks, not the host

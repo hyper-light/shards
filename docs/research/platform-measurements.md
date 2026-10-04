@@ -3539,3 +3539,23 @@ revision before comparing a changed API/implementation.
   sent, would show both at once. The guest drops more for want of memory the faster it is
   sent to, which is the guest's to prune and collapse: what that costs it is the next
   question.
+
+### M105. The frame ring as production waits on it
+
+- **Question.** M83's ring made a round trip in 0.8 µs with a receiver that spins 2,000
+  times before it sleeps; the device and the network process never spin, but ask to be
+  rung and sleep on their doorbell as soon as their ring is empty (review 2.17). What do
+  they get?
+- **Method.** `shards_netring`'s own `frames_cost` (an ignored test): two threads for the
+  two processes, each with the producer and consumer the device or the network process
+  makes, sleeping on its own doorbell as they do (`arm`, then poll(2) on the pipe).
+  20,000 round trips of a 64-byte frame, then 1 GiB one way in frames of 1514, 9014 and
+  65,561 bytes. Three runs. Apple M5 Max, macOS 26.4.1, load average 2.0–2.4,
+  2026-10-04.
+- **Results.** Round trip p50 6.6 µs, p90 8.1–8.8, p99 11.2–12.5, max 52.5–61.0;
+  one way 123.5–124.2, 194.9–223.2 and 246.3–250.5 Gbit/s.
+- **Consequence.** Without the spin a round trip costs a doorbell's wake each way: 6.6
+  µs, not M83's 0.8, still a third of the datagram socket's 22 µs, and large frames move
+  at two thirds of M83's rate. The spin would buy 6 µs a round trip with a core's time
+  each time a ring empties, in every VM, idle or not; production keeps none. D31 says
+  so.

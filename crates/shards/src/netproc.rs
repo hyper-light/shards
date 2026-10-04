@@ -49,8 +49,7 @@ impl VmSide {
     /// `--net`'s value for a VM given this side at [`VM_FDS`] with `mac`.
     pub fn arg(mac: &[u8; 6]) -> String {
         let [r, s, w] = VM_FDS;
-        let mac: Vec<String> = mac.iter().map(|b| format!("{b:02x}")).collect();
-        format!("{r},{s},{w},{}", mac.join(":"))
+        format!("{r},{s},{w},{}", shards_net::Mac(*mac))
     }
 }
 
@@ -78,8 +77,7 @@ pub fn start(
     let (control, theirs) = pair()?;
     let (release, released) = pair()?;
     let err = std::io::stderr();
-    let mac: Vec<String> = mac.iter().map(|b| format!("{b:02x}")).collect();
-    let mac = mac.join(":");
+    let mac = shards_net::Mac(*mac).to_string();
     let bridge = bridge.to_string();
     let env = child_env();
     let child = shards_ipc::spawn_in(

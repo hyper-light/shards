@@ -1614,7 +1614,9 @@ impl<D: Disk> Daemon<D> {
                     self.make_spare();
                     return None;
                 }
-                publish::bind(&bindings, &alone, |at, proto| self.in_use(at, proto))
+                publish::bind(&bindings, &alone, publish::v6_listenable(), |at, proto| {
+                    self.in_use(at, proto)
+                })
             }
             _ => Ok(publish::Bound::default()),
         };
@@ -5716,6 +5718,36 @@ mod tests {
                 assert_eq!(t.daemon.in_use(at, publish::TCP), publish::InUse::Freed);
             });
             assert_eq!(t.record(&id).unwrap().state, Life::Exited);
+        });
+    }
+
+    /// A run that publishes nothing, as one on `--network none` never does, holds nothing:
+    /// a record of no addresses, one a run, would only grow (review 2.11, 2.18).
+    #[test]
+    fn a_run_that_publishes_nothing_holds_nothing() {
+        let t = Test::new("hold-nothing");
+        t.run(|t| {
+            let id = t.create("quiet");
+            t.daemon.hold_ports(&id, &[]);
+            assert!(lock(&t.daemon.ports_held).is_empty());
+            let (fd, port) = {
+                let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let port = l.local_addr().unwrap().port();
+                (OwnedFd::from(l), port)
+            };
+            let at = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            t.daemon.hold_ports(
+                &id,
+                &[publish::Listener {
+                    fd,
+                    at,
+                    guest_port: 80,
+                    proto: publish::TCP,
+                }],
+            );
+            assert_eq!(t.daemon.in_use(at, publish::TCP), publish::InUse::Allocated);
+            t.daemon.free_ports(Some(&id), None);
+            assert!(lock(&t.daemon.ports_held).is_empty());
         });
     }
 

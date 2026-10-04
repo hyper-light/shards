@@ -45,12 +45,7 @@ fn run() -> Result<(), String> {
             }
             Some("--mac") => {
                 let v = value(&mut args, "--mac")?;
-                let octets: Vec<u8> = v
-                    .split(':')
-                    .map(|h| u8::from_str_radix(h, 16))
-                    .collect::<Result<_, _>>()
-                    .map_err(|_| format!("--mac {v:?} is not a MAC"))?;
-                mac = Some(<[u8; 6]>::try_from(octets).map_err(|_| format!("--mac {v:?} is not a MAC"))?);
+                mac = Some(v.parse::<shards_net::Mac>().map_err(|e| format!("--mac {e}"))?.0);
             }
             Some("--bridge") => {
                 bridge = Some(

@@ -185,6 +185,9 @@ func TestShardsNetwork(t *testing.T) {
 		{":80"}, {"8080:"}, {"/udp"}, {"82-80"}, {"8080-8000:80"}, {"-1"}, {"080"}, {"+80"},
 		{"80:80:80:80"}, {"published=8080"}, {"published"}, {"=8080,target=80"}, {"0"}, {"0:0"},
 		{"1.2.3.4:80-81:90-91"}, {"[1.2.3.4]:80:80"}, {"::1:8080:80"}, {"65535"}, {"65536"}, {"X:80"}, {"80/XYZ"},
+		// Every value is put in standard notation before any is parsed (convertToStandardNotation,
+		// then nat.ParsePortSpecs): the second's notation fails before the first's port.
+		{"80:80/bogus", "published=1,x"}, {"x", "published=1,=2"}, {"published=1,x", "80/xyz"},
 	} {
 		args := []string{}
 		for _, p := range publish {

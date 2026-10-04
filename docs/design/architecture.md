@@ -1713,7 +1713,10 @@ stack inside the VMM, is superseded by it.
     while poll calls it writable, nor a vhost-user backend, which would give the network
     process the guest's memory. The VM process copies between the virtqueues and the
     ring; the ring moved 131 to 370 Gbit/s and a round trip in 0.8 µs, where datagrams
-    moved 11 to 75 Gbit/s in 22 µs.
+    moved 11 to 75 Gbit/s in 22 µs, with a receiver that spins before it sleeps. Neither
+    side spins: each sleeps on its doorbell as soon as its ring is empty, which costs an
+    idle VM nothing, and a round trip 6.6 µs at p50, 12 at p99, with 124 to 250 Gbit/s
+    one way (PM M105).
   - *Its cost per VM* (E2, D14): RSS idle and with 1k and 10k connections, beside a VM's
     own (M64), and the start: the network process is spawned and paired with a warm VM
     before its request, and must cost a restore nothing (E1).
