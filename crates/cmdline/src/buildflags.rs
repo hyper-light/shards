@@ -143,8 +143,19 @@ pub fn store(
     Ok(store)
 }
 
-fn too_big(id: &str, len: u64, max: u64) -> String {
-    format!("secret {id} too big: {len} bytes, more than the {max} a build step carries")
+/// BuildKit's words for a secret past the most it takes, with shards' most: go-units'
+/// `%#.f` of a size in binary units (`500KiB`, `1MiB`), as secretsprovider prints it.
+fn too_big(id: &str, _len: u64, max: u64) -> String {
+    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let (mut size, mut unit) = (max as f64, 0);
+    while size >= 1024.0 && unit + 1 < units.len() {
+        size /= 1024.0;
+        unit += 1;
+    }
+    format!(
+        "secret {id} too big. max size {size:.0}{}",
+        units.get(unit).unwrap_or(&"B")
+    )
 }
 
 /// An error of the OS in Go's words: on Linux its `syscall.Errno` table; elsewhere the C
@@ -332,5 +343,21 @@ pub fn validate(flag: &crate::flags::Flag, value: &str) -> Result<String, String
     match flag.name {
         "ulimit" => parse_ulimit(value).map(|u| u.to_string()),
         _ => Ok(value.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A secret past the limit is refused in BuildKit's words, with the limit it is past:
+    /// BuildKit's own, as buildx printed it (tests/buildx.json), and shards' step's.
+    #[test]
+    fn a_secret_past_the_limit_is_refused_in_buildkits_words() {
+        assert_eq!(
+            too_big("big", 0, 500 * 1024),
+            "secret big too big. max size 500KiB"
+        );
+        assert_eq!(too_big("big", 0, 1 << 20), "secret big too big. max size 1MiB");
     }
 }
