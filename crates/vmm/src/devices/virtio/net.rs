@@ -83,10 +83,29 @@ impl Waker {
 /// What the worker holds while it runs.
 struct Session {
     queues: Vec<Queue>,
-    /// A guest frame taken from TX while the ring was full, sent first next time.
-    pending_tx: Option<Chain>,
-    /// RX buffers taken for a frame that needs more of them than the guest gave yet.
-    pending_rx: Vec<Chain>,
+    /// The chain of the guest frame taken from TX last; held while the ring was full, and
+    /// sent first next time.
+    tx: Chain,
+    tx_held: bool,
+    /// RX buffers: the first `rx_held` taken for a frame that needs more of them than the
+    /// guest gave yet. Chains and `rx_lens`, what each held of the last frame, keep their
+    /// memory from one frame to the next (review 2.22).
+    rx: Vec<Chain>,
+    rx_held: usize,
+    rx_lens: Vec<u32>,
+}
+
+impl Session {
+    fn new(queues: Vec<Queue>) -> Session {
+        Session {
+            queues,
+            tx: Chain::default(),
+            tx_held: false,
+            rx: Vec::new(),
+            rx_held: 0,
+            rx_lens: Vec::new(),
+        }
+    }
 }
 
 struct Worker {
@@ -210,11 +229,7 @@ impl VirtioDevice for Net {
     fn activate(&mut self, a: Activation) -> Result<(), String> {
         self.stop();
         self.context = Some((a.memory, a.interrupt));
-        self.start(Session {
-            queues: a.queues,
-            pending_tx: None,
-            pending_rx: Vec::new(),
-        })
+        self.start(Session::new(a.queues))
     }
 
     fn notify(&self, _queue: u16) {
@@ -236,8 +251,8 @@ impl VirtioDevice for Net {
             return Vec::new();
         };
         let mut held = [0u16; 2];
-        held[RX] = u16::try_from(s.pending_rx.len()).unwrap_or(u16::MAX);
-        held[TX] = u16::from(s.pending_tx.is_some());
+        held[RX] = u16::try_from(s.rx_held).unwrap_or(u16::MAX);
+        held[TX] = u16::from(s.tx_held);
         let states = s
             .queues
             .iter()
@@ -355,26 +370,23 @@ fn step(
                 more = true;
                 break 'tx;
             }
-            let chain = match s.pending_tx.take() {
-                Some(c) => c,
-                None => match with(mem, |a| txq.pop(a))? {
-                    Some(c) => c,
-                    None => break,
-                },
-            };
+            if !s.tx_held && !with(mem, |a| txq.pop_into(a, &mut s.tx))? {
+                break;
+            }
+            s.tx_held = false;
             if !broken {
-                match push(tx, &chain, mem) {
+                match push(tx, &s.tx, mem) {
                     Ok(true) => {}
                     Ok(false) => {
                         // No room: the frame waits, and the network process rings once it
                         // drains the ring.
-                        s.pending_tx = Some(chain);
+                        s.tx_held = true;
                         break 'tx;
                     }
                     Err(why) => return Ok(Step::Broken(why)),
                 }
             }
-            with(mem, |a| txq.add_used(a, chain.head, 0))?;
+            with(mem, |a| txq.add_used(a, s.tx.head, 0))?;
             used[TX] = true;
             sent += 1;
         }
@@ -400,22 +412,28 @@ fn step(
             return Ok(Step::Broken("a frame shorter than its header".into()));
         }
         // Enough buffers for the frame, merged as MRG_RXBUF lets them be.
-        let mut room: usize = s.pending_rx.iter().map(writable).sum();
+        let mut room: usize = s.rx.iter().take(s.rx_held).map(writable).sum();
         while room < n {
-            let Some(chain) = with(mem, |a| rxq.pop(a))? else {
+            if s.rx.len() == s.rx_held {
+                s.rx.push(Chain::default());
+            }
+            let Some(chain) = s.rx.get_mut(s.rx_held) else {
                 break;
             };
+            if !with(mem, |a| rxq.pop_into(a, chain))? {
+                break;
+            }
             // A chain with no room for any of a frame goes back at once, empty (review
             // 2.23): held, it would count among the frame's buffers, and first among them
             // leave its header's `num_buffers` unwritten.
-            let cap = writable(&chain);
+            let cap = writable(chain);
             if cap == 0 {
                 with(mem, |a| rxq.add_used(a, chain.head, 0))?;
                 used[RX] = true;
                 continue;
             }
             room += cap;
-            s.pending_rx.push(chain);
+            s.rx_held += 1;
         }
         if room < n {
             // Too few buffers: wait for the driver to add some.
@@ -425,14 +443,15 @@ fn step(
             starved = true;
             break;
         }
-        let chains = std::mem::take(&mut s.pending_rx);
-        let lens = match deliver(rx, &chains, mem) {
-            Ok(lens) => lens,
-            Err(why) => return Ok(Step::Broken(why)),
-        };
-        for (chain, len) in chains.iter().zip(lens) {
-            with(mem, |a| rxq.add_used(a, chain.head, len))?;
+        let chains = s.rx.get(..s.rx_held).unwrap_or_default();
+        if let Err(why) = deliver(rx, chains, &mut s.rx_lens, mem) {
+            return Ok(Step::Broken(why));
         }
+        // The frame's buffers go back together: a driver that saw some used and not the
+        // rest would drop the frame and take what follows for them (review 2.34, PM M104).
+        let heads = chains.iter().map(|c| c.head);
+        with(mem, |a| rxq.add_used_all(a, heads.zip(s.rx_lens.iter().copied())))?;
+        s.rx_held = 0;
         used[RX] = true;
         received += 1;
     }
@@ -462,20 +481,23 @@ fn writable(c: &Chain) -> usize {
 /// none. A frame past the ring's largest, or one outside guest memory, is dropped, as a
 /// NIC drops what it cannot send.
 fn push(tx: &mut Producer<'_>, chain: &Chain, mem: &GuestMemory) -> Result<bool, String> {
-    let n: usize = chain.readable().map(|d| d.len as usize).sum();
-    let mut spans = Vec::with_capacity(chain.descriptors.len());
+    let mut n = 0usize;
     for d in chain.readable() {
-        let Ok(ptr) = mem.host_ptr(d.addr, d.len as usize) else {
+        if mem.host_ptr(d.addr, d.len as usize).is_err() {
             return Ok(true);
-        };
-        spans.push((ptr, d.len as usize));
+        }
+        n = n.saturating_add(d.len as usize);
     }
     match tx.try_push_with(n, |dst| {
         let mut off = 0;
-        for (ptr, len) in &spans {
-            // SAFETY: guest memory checked by host_ptr, into the record's `n` bytes.
-            unsafe { std::ptr::copy_nonoverlapping(*ptr as *const u8, dst.add(off), *len) };
-            off += len;
+        for d in chain.readable() {
+            // Checked above, in a memory map that does not change while a device runs.
+            if let Ok(ptr) = mem.host_ptr(d.addr, d.len as usize) {
+                // SAFETY: guest memory checked by host_ptr, into the record's `n` bytes,
+                // of which these are the next.
+                unsafe { std::ptr::copy_nonoverlapping(ptr as *const u8, dst.add(off), d.len as usize) };
+            }
+            off += d.len as usize;
         }
     }) {
         Ok(Some(_)) => Ok(true),
@@ -485,9 +507,15 @@ fn push(tx: &mut Producer<'_>, chain: &Chain, mem: &GuestMemory) -> Result<bool,
 }
 
 /// The next frame into `chains`, its header's `num_buffers` the count of them; each
-/// chain's bytes written.
-fn deliver(rx: &mut Consumer<'_>, chains: &[Chain], mem: &GuestMemory) -> Result<Vec<u32>, String> {
-    let mut lens = vec![0u32; chains.len()];
+/// chain's bytes written into `lens`.
+fn deliver(
+    rx: &mut Consumer<'_>,
+    chains: &[Chain],
+    lens: &mut Vec<u32>,
+    mem: &GuestMemory,
+) -> Result<(), String> {
+    lens.clear();
+    lens.resize(chains.len(), 0);
     let used = chains.len();
     rx.pop(|n, copy| {
         let mut done = 0usize;
@@ -520,7 +548,7 @@ fn deliver(rx: &mut Consumer<'_>, chains: &[Chain], mem: &GuestMemory) -> Result
     })
     .map_err(|b| b.to_string())?;
     // Chains that held none of the frame still go back, empty.
-    Ok(lens)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -551,7 +579,7 @@ mod tests {
     /// A device's session on guest memory, and the network process's ends of its frame
     /// ring: what `step` runs against, without a worker.
     struct Rig {
-        mem: GuestMemory,
+        mem: Arc<GuestMemory>,
         session: Session,
         region: Region,
         rx_published: u16,
@@ -561,7 +589,7 @@ mod tests {
     impl Rig {
         fn new() -> Rig {
             let page = crate::platform::page_size().unwrap();
-            let mem = GuestMemory::anonymous(&[(BASE, 16 * page)]).unwrap();
+            let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 16 * page)]).unwrap());
             let queue = |desc, avail, used| {
                 let cfg = QueueConfig {
                     size: SIZE,
@@ -577,11 +605,7 @@ mod tests {
                 queue(TX_DESC, TX_AVAIL, TX_USED),
             ];
             Rig {
-                session: Session {
-                    queues,
-                    pending_tx: None,
-                    pending_rx: Vec::new(),
-                },
+                session: Session::new(queues),
                 mem,
                 region: Region::map(shards_netring::memory().unwrap()).unwrap(),
                 rx_published: 0,
@@ -609,6 +633,9 @@ mod tests {
             let (_net_waits, device_rings) = shards_netring::doorbell().unwrap();
             let (device_waits, net_rings) = shards_netring::doorbell().unwrap();
             let (_tx_waits, tx_ring) = shards_netring::doorbell().unwrap();
+            // Each round's ends start the ring afresh: the consumer's first, so that the
+            // last round's tail is not taken for this one's.
+            let mut rx = self.region.consumer(1, device_rings, device_waits);
             let mut from_net = self.region.producer(1, net_rings);
             for f in frames {
                 assert_eq!(
@@ -620,7 +647,6 @@ mod tests {
                 );
             }
             let mut tx = self.region.producer(0, tx_ring);
-            let mut rx = self.region.consumer(1, device_rings, device_waits);
             step(&mut self.session, &mut tx, &mut rx, &self.mem, &self.irq, false).unwrap()
         }
 
@@ -652,10 +678,60 @@ mod tests {
         let f = frame(40);
         r.step(&[&f]);
         assert_eq!(r.rx_used(), [(0, 0), (1, 40)]);
-        assert!(r.session.pending_rx.is_empty());
+        assert_eq!(r.session.rx_held, 0);
         let a = r.mem.access().unwrap();
         assert_eq!(a.read_obj::<u16>(DATA + 0x100 + 10).unwrap(), 1, "num_buffers");
         assert_eq!(a.read_obj::<u8>(DATA + 0x100 + 39).unwrap(), 39);
+    }
+
+    /// A frame spread over buffers is seen used all at once (virtio 1.2 §5.1.6.4.1): a
+    /// driver polling the used ring while frames are delivered never sees some of a
+    /// frame's buffers used and not the rest. A Linux guest counts one it does in
+    /// rx_length_errors, drops it, and takes the next buffer for a frame's start.
+    #[test]
+    fn a_frames_buffers_are_used_together() {
+        let mut r = Rig::new();
+        // Frames of 150 bytes in buffers of 64: three each, two frames a round.
+        let f = frame(150);
+        let done = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            // The used index as a vCPU reads it: straight from guest memory, without the
+            // host threads' lock, which would keep it from ever seeing a frame half used.
+            let index = r.mem.host_ptr(RX_USED + 2, 2).unwrap() as usize;
+            let done = &done;
+            let observer = scope.spawn(move || {
+                // SAFETY: two bytes of the rig's guest memory, aligned (the used ring is),
+                // which outlives the scope; the device stores them atomically too.
+                let used = unsafe { std::sync::atomic::AtomicU16::from_ptr(index as *mut u16) };
+                let mut seen = 0u64;
+                while !done.load(Ordering::Acquire) {
+                    assert_eq!(
+                        used.load(Ordering::Acquire) % 3,
+                        0,
+                        "a frame's buffers seen used apart"
+                    );
+                    seen += 1;
+                }
+                seen
+            });
+            // The observer stops however the rounds end.
+            struct Stop<'a>(&'a AtomicBool);
+            impl Drop for Stop<'_> {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::Release);
+                }
+            }
+            let stop = Stop(done);
+            for _ in 0..2000 {
+                for i in 0..6 {
+                    r.rx_buffer(i, DATA + 0x100 * u64::from(i), 64, DESC_WRITE);
+                }
+                r.step(&[&f, &f]);
+            }
+            drop(stop);
+            assert!(observer.join().unwrap() > 0);
+        });
+        assert_eq!(r.rx_used().len(), 12_000);
     }
 
     /// A buffer whose address is at the top of the guest's address space is no frame's,
@@ -675,8 +751,8 @@ mod tests {
         let mut r = Rig::new();
         r.rx_buffer(0, DATA, 64, DESC_WRITE);
         assert!(matches!(r.step(&[&frame(100)]), Step::Starved));
-        assert_eq!(r.session.pending_rx.len(), 1);
-        let held = u16::try_from(r.session.pending_rx.len()).unwrap();
+        assert_eq!(r.session.rx_held, 1);
+        let held = u16::try_from(r.session.rx_held).unwrap();
         assert_eq!(r.session.queues[RX].state_before(held).next_avail, 0);
         assert_eq!(r.session.queues[RX].state().next_avail, 1);
     }

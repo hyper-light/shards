@@ -178,7 +178,7 @@ pub struct Descriptor {
 
 /// A request popped from the available ring: device-readable buffers first, then
 /// device-writable ones.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Chain {
     pub head: u16,
     pub descriptors: Vec<Descriptor>,
@@ -203,16 +203,18 @@ pub fn need_event(event: u16, new: u16, old: u16) -> bool {
 /// ordering (virtio 1.3 §2.7.4). A chain, its indirect descriptors included, is no longer
 /// than its queue: a driver must not make one longer (§2.7.5.3.1), and the devices
 /// advertise no more segments than fit (block's `seg_max` is its queue's size less two).
-struct ChainBuilder {
-    descriptors: Vec<Descriptor>,
+struct ChainBuilder<'c> {
+    descriptors: &'c mut Vec<Descriptor>,
     seen_writable: bool,
     limit: usize,
 }
 
-impl ChainBuilder {
-    fn new(limit: u16) -> ChainBuilder {
+impl ChainBuilder<'_> {
+    /// Fills `descriptors` afresh, keeping the memory it has.
+    fn new(descriptors: &mut Vec<Descriptor>, limit: u16) -> ChainBuilder<'_> {
+        descriptors.clear();
         ChainBuilder {
-            descriptors: Vec::new(),
+            descriptors,
             seen_writable: false,
             limit: usize::from(limit),
         }
@@ -239,16 +241,9 @@ impl ChainBuilder {
         });
         Ok(())
     }
-
-    fn finish(self, head: u16) -> Chain {
-        Chain {
-            head,
-            descriptors: self.descriptors,
-        }
-    }
 }
 
-fn walk_indirect(mem: &Access<'_>, table: &RawDesc, chain: &mut ChainBuilder) -> Result<(), QueueError> {
+fn walk_indirect(mem: &Access<'_>, table: &RawDesc, chain: &mut ChainBuilder<'_>) -> Result<(), QueueError> {
     // A table longer than the chain has room for is refused before it is read.
     if table.len == 0 || !table.len.is_multiple_of(16) || table.len as usize / 16 > chain.room() {
         return Err(QueueError::IndirectLength(table.len));
@@ -372,9 +367,19 @@ impl Queue {
 
     /// Takes the next available request, or `None` if the ring is empty.
     pub fn pop(&mut self, mem: &Access<'_>) -> Result<Option<Chain>, QueueError> {
+        let mut chain = Chain {
+            head: 0,
+            descriptors: Vec::new(),
+        };
+        Ok(self.pop_into(mem, &mut chain)?.then_some(chain))
+    }
+
+    /// [`Queue::pop`] into `chain`, whose memory is kept from one to the next: false if the
+    /// driver has made nothing available.
+    pub fn pop_into(&mut self, mem: &Access<'_>, chain: &mut Chain) -> Result<bool, QueueError> {
         let published = (self.avail_idx(mem)? - self.next_avail).0;
         if published == 0 {
-            return Ok(None);
+            return Ok(false);
         }
         if published > self.size {
             return Err(QueueError::AvailIndexJump {
@@ -384,11 +389,13 @@ impl Queue {
         }
         let head: u16 = mem.read_obj(self.avail + 4 + 2 * self.slot(self.next_avail))?;
         self.next_avail += 1;
-        self.walk(mem, head).map(Some)
+        chain.head = head;
+        self.walk(mem, head, &mut chain.descriptors)?;
+        Ok(true)
     }
 
-    fn walk(&self, mem: &Access<'_>, head: u16) -> Result<Chain, QueueError> {
-        let mut chain = ChainBuilder::new(self.size);
+    fn walk(&self, mem: &Access<'_>, head: u16, descriptors: &mut Vec<Descriptor>) -> Result<(), QueueError> {
+        let mut chain = ChainBuilder::new(descriptors, self.size);
         let mut index = head;
         // A direct chain visits each table entry at most once.
         for _ in 0..self.size {
@@ -401,12 +408,11 @@ impl Queue {
                     return Err(QueueError::IndirectNotNegotiated);
                 }
                 // An indirect descriptor ends the chain (INDIRECT with NEXT is invalid).
-                walk_indirect(mem, &d, &mut chain)?;
-                return Ok(chain.finish(head));
+                return walk_indirect(mem, &d, &mut chain);
             }
             chain.push(&d)?;
             if d.flags & DESC_F_NEXT == 0 {
-                return Ok(chain.finish(head));
+                return Ok(());
             }
             index = d.next;
         }
@@ -415,12 +421,27 @@ impl Queue {
 
     /// Returns a request to the driver with `len` bytes written into its buffers.
     pub fn add_used(&mut self, mem: &Access<'_>, head: u16, len: u32) -> Result<(), QueueError> {
-        let elem = UsedElem {
-            id: u32::from(head),
-            len,
-        };
-        mem.write_obj(self.used + 4 + 8 * self.slot(self.next_used), elem)?;
-        self.next_used += 1;
+        self.add_used_all(mem, [(head, len)])
+    }
+
+    /// Returns requests to the driver together, each a chain's head and the bytes written
+    /// into it: the used index moves past all of them at once, so that the driver sees
+    /// all used or none, as it must the buffers one packet is spread over (virtio 1.2
+    /// §5.1.6.4.1: "The device MUST use all buffers used by a single receive packet
+    /// together, such that at least num_buffers are observed by driver as used").
+    pub fn add_used_all(
+        &mut self,
+        mem: &Access<'_>,
+        used: impl IntoIterator<Item = (u16, u32)>,
+    ) -> Result<(), QueueError> {
+        for (head, len) in used {
+            let elem = UsedElem {
+                id: u32::from(head),
+                len,
+            };
+            mem.write_obj(self.used + 4 + 8 * self.slot(self.next_used), elem)?;
+            self.next_used += 1;
+        }
         mem.store_u16(self.used + 2, self.next_used.0, Ordering::Release)?;
         Ok(())
     }
