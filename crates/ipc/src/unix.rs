@@ -833,6 +833,30 @@ impl Child {
         }
     }
 
+    /// The status of a child that has ended, as [`wait`](Self::wait) gives it, without
+    /// reaping it: until it is reaped, its pid stays its own, and no new process's.
+    pub fn ended_status(&self) -> io::Result<i32> {
+        loop {
+            // SAFETY: an all-zero siginfo_t is valid; waitid(2) fills it for our child.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: as above.
+            let r = unsafe { libc::waitid(libc::P_PID, self.id(), &mut info, libc::WEXITED | libc::WNOWAIT) };
+            if r == 0 {
+                // SAFETY: si_status is set by waitid for a child that has ended.
+                let status = unsafe { info.si_status() };
+                return Ok(if info.si_code == libc::CLD_EXITED {
+                    status
+                } else {
+                    128 + status
+                });
+            }
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+
     /// Waits for the child to end: its exit status, or 128 plus the signal that ended it.
     pub fn wait(&self) -> io::Result<i32> {
         self.ended()?;

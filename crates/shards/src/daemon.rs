@@ -5772,6 +5772,39 @@ mod tests {
         });
     }
 
+    /// A VM that ends while its network process has its grace is not reaped until its
+    /// ports are freed: its pid, by which they are held, names no new process meanwhile,
+    /// whose ports the freeing would take (review 2.25).
+    #[test]
+    fn a_vms_pid_is_kept_until_its_ports_are_freed() {
+        let t = Test::new("vm-pid-kept");
+        t.run(|t| {
+            let (ready, _theirs) = t.warm_vm(None);
+            let vm = ready.vm.clone();
+            let net = shards_ipc::spawn(Path::new("/bin/sleep"), &["600".as_ref()], &[], false).unwrap();
+            let net_pid = net.id();
+            lock(&t.daemon.ports_held).push(publish::Held {
+                container: "c".into(),
+                vm: Some(vm.id()),
+                at: Vec::new(),
+                listeners: Vec::new(),
+            });
+            t.t.daemon.follow_vm(t.threads, vm.clone(), None, Some(net));
+            let _ = vm.kill(libc::SIGKILL);
+            vm.ended().unwrap();
+            // Its end handled: the network process given its grace, which a deadline holds.
+            t.until("the VM's end was not handled", |d| {
+                !lock(&d.followers.deadlines).is_empty()
+            });
+            assert!(!reaped(vm.id()), "reaped while its ports were held");
+            assert_eq!(lock(&t.daemon.ports_held).len(), 1);
+            // SAFETY: kill(2) of the test's own child.
+            unsafe { libc::kill(net_pid as libc::pid_t, libc::SIGKILL) };
+            t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
+            t.until("the VM was not reaped", |_| reaped(vm.id()));
+        });
+    }
+
     /// A VM that has ended before it is followed is reaped at once, and its network
     /// process given its grace: macOS watches only ends to come, and refuses one past, so
     /// the follower finds it, not the loop, which it then wakes to keep the grace.

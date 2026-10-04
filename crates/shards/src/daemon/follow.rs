@@ -38,11 +38,13 @@ enum Process {
         watch: Option<ExitWatch>,
     },
     /// A VM's network process: its VM's pid, whose ports are freed once both have ended,
-    /// and whether that VM still runs.
+    /// and whether that VM still runs; once it has ended, the VM, not yet reaped, so that
+    /// its pid names no new process before its ports are freed (review 2.25).
     Net {
         child: Arc<shards_ipc::Child>,
         vm: u32,
         vm_running: bool,
+        ended_vm: Option<Arc<shards_ipc::Child>>,
         watch: Option<ExitWatch>,
     },
 }
@@ -55,7 +57,7 @@ pub(super) struct Followers {
     /// Each process followed, by its token.
     processes: Mutex<HashMap<u64, Process>>,
     /// When network processes whose VMs have gone are ended, by their tokens.
-    deadlines: Mutex<BinaryHeap<Reverse<(Instant, u64)>>>,
+    pub(super) deadlines: Mutex<BinaryHeap<Reverse<(Instant, u64)>>>,
     next: AtomicU64,
     /// Written to wake the loop; its other end, which the poller watches, read.
     wake: (UnixStream, UnixStream),
@@ -254,6 +256,7 @@ impl<D: Disk> Daemon<D> {
                         child: child.clone(),
                         vm: vm.id(),
                         vm_running: true,
+                        ended_vm: None,
                         watch: None,
                     },
                 );
@@ -311,8 +314,8 @@ impl<D: Disk> Daemon<D> {
         match process {
             Process::Vm { vm, pool, net, .. } => {
                 let pid = vm.id();
-                // It has ended: no wait.
-                let status = vm.wait();
+                // It has ended: no wait. Reaped once the ports held by its pid are freed.
+                let status = vm.ended_status();
                 let waited = pool.is_some_and(|dir| {
                     let mut state = lock(&self.state);
                     let Some(pool) = state.pools.get_mut(&dir) else {
@@ -332,28 +335,38 @@ impl<D: Disk> Daemon<D> {
                     log(format!("VM {pid} ended with {status:?}"));
                 }
                 let Some(net) = net else {
+                    let _ = vm.wait();
                     return;
                 };
                 let mut processes = lock(&f.processes);
-                if let Some(Process::Net { vm_running, .. }) = processes.get_mut(&net) {
+                if let Some(Process::Net {
+                    vm_running, ended_vm, ..
+                }) = processes.get_mut(&net)
+                {
                     *vm_running = false;
+                    *ended_vm = Some(vm);
                     drop(processes);
                     lock(&f.deadlines).push(Reverse((Instant::now() + crate::netproc::GRACE, net)));
                     f.wake();
                 } else {
                     drop(processes);
                     self.free_ports(None, Some(pid));
+                    let _ = vm.wait();
                 }
             }
             Process::Net {
                 child,
                 vm,
                 vm_running,
+                ended_vm,
                 ..
             } => {
                 let _ = child.wait();
                 if !vm_running {
                     self.free_ports(None, Some(vm));
+                }
+                if let Some(ended) = ended_vm {
+                    let _ = ended.wait();
                 }
             }
         }
