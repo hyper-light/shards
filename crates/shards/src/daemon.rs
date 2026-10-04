@@ -1322,11 +1322,18 @@ impl<D: Disk> Daemon<D> {
         (out, gone)
     }
 
-    /// Ends the VMs still waiting, lets go of the home, and exits. `shards daemon stop`
+    /// Ends the VMs still waiting, lets go of the home, and exits ([`finish`](Self::finish)).
+    fn exit(&self) -> ! {
+        self.finish();
+        std::process::exit(0)
+    }
+
+    /// All [`exit`](Self::exit) does but end the process: ends the VMs still waiting, waits
+    /// for what it last knew to be written, and lets go of the home. `shards daemon stop`
     /// learns of it from its connection closing, which is done here, after the rest: the
     /// kernel would close it on exit, but in no order this could rely on (XNU closes a
     /// process's descriptors from the highest down, kern_descrip.c fdt_invalidate).
-    fn exit(&self) -> ! {
+    fn finish(&self) {
         let _ = std::fs::remove_file(self.home.join("daemon.pid"));
         let _ = std::fs::remove_file(self.home.join(shards_ipc::STOPPING));
         // A home being removed is removed: the socket the listener made again as its
@@ -1339,13 +1346,14 @@ impl<D: Disk> Daemon<D> {
         for vm in waiting.chain(state.starting.values()) {
             let _ = vm.kill(libc::SIGTERM);
         }
-        // What it last knew of its containers is what the next daemon reads.
+        // What it last knew of its containers is what the next daemon reads, and the
+        // files its runs asked for are made.
         self.await_recorded();
+        self.await_made();
         log("exiting");
         // SAFETY: flock(2) on the lock's own descriptor.
         unsafe { libc::flock(self.home_lock.as_raw_fd(), libc::LOCK_UN) };
         lock(&self.stoppers).clear();
-        std::process::exit(0)
     }
 
     /// Serves one client's request. A run it hands to a warm VM, registered, comes back
@@ -6125,6 +6133,49 @@ mod tests {
             let (status, _, err) = ask(&t.daemon, &["logs", "gone"]);
             assert_eq!(status, 1, "{err}");
             assert!(err.contains("its log"), "{err}");
+        });
+    }
+
+    /// The daemon exits once the files its runs asked for are made, those queued and the
+    /// one being made: a template's working set queued as it stops is written, not lost
+    /// with it (PM M98).
+    #[test]
+    fn the_files_asked_for_are_made_before_the_daemon_exits() {
+        let t = Test::new("files-drained");
+        t.run(|t| {
+            t.t.daemon.start_files(t.threads);
+            let (free_first, first) = mpsc::channel();
+            let (free_last, last) = mpsc::channel();
+            let (ours, vm) = UnixStream::pair().unwrap();
+            vm.set_read_timeout(Some(PATIENCE)).unwrap();
+            let dir = t.home.join("containers").join("made");
+            std::fs::create_dir_all(&dir).unwrap();
+            t.daemon.make_soon(files::Job::Hold(first));
+            t.daemon.make_soon(files::Job::Segment {
+                id: "made".into(),
+                dir: dir.clone(),
+                seq: 1,
+                socket: Arc::new(RunSocket::new(ours)),
+            });
+            t.daemon.make_soon(files::Job::Hold(last));
+            let (finished, waited) = mpsc::channel();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    t.daemon.finish();
+                    finished.send(()).unwrap();
+                });
+                let queued = waited.recv_timeout(Duration::from_millis(200));
+                free_first.send(()).unwrap();
+                t.until("the last job was not taken", |d| d.files.queued() == 0);
+                let working = waited.recv_timeout(Duration::from_millis(200));
+                free_last.send(()).unwrap();
+                assert!(queued.is_err(), "done with jobs queued");
+                assert!(working.is_err(), "done with a job being made");
+                waited.recv_timeout(PATIENCE).unwrap();
+            });
+            assert!(dir.join(crate::segments::log_segment(1).0).is_file());
+            let m = shards_ipc::recv(&vm).unwrap().unwrap();
+            assert_eq!((m.kind, m.fds.len()), (kind::SEGMENT, 2));
         });
     }
 

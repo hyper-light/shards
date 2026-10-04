@@ -217,18 +217,16 @@ fn repeat_runs_restore_a_template_of_the_image() {
         assert!(!booted(&recording), "{}", recording.stderr);
         assert_eq!(recording.prefetched(), Some(0), "{}", recording.stderr);
     }
+    // Stopped at once, the daemon writes it before it exits, which `daemon stop` waits
+    // for: no restore here records it again where restores record none.
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
     let working_set = common::snapshot_file(&home.join("templates").join(&saved[0]), "working-set");
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    while shards_vmm::vm::WORKING_SETS && !working_set.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
     let recorded = std::fs::metadata(&working_set).map(|m| m.len()).unwrap_or(0);
     assert!(
         recorded > 1024 || !shards_vmm::vm::WORKING_SETS,
         "a working set of {recorded} bytes"
     );
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
-    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 
     let before = now_ns();
     let second = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);

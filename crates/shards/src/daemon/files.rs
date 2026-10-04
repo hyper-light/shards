@@ -43,19 +43,28 @@ pub(super) enum Job {
 /// The jobs to do, and the thread that does them.
 #[derive(Default)]
 pub(super) struct Files {
-    queue: Mutex<VecDeque<Job>>,
+    queue: Mutex<Queue>,
     /// One is queued, or the thread is to return.
     queued: Condvar,
+    /// One is done: those waiting for the queue to empty look again.
+    done: Condvar,
     started: AtomicBool,
     /// The thread is to return once none is queued: a test's daemon's, as its scope ends.
     ended: AtomicBool,
+}
+
+#[derive(Default)]
+struct Queue {
+    jobs: VecDeque<Job>,
+    /// Those asked for and not yet done: queued, or being done.
+    unfinished: usize,
 }
 
 impl Files {
     /// How many jobs wait their turn.
     #[cfg(test)]
     pub(super) fn queued(&self) -> usize {
-        lock(&self.queue).len()
+        lock(&self.queue).jobs.len()
     }
 
     /// Whether the thread runs.
@@ -97,8 +106,23 @@ impl<D: Disk> Daemon<D> {
             self.make(job);
             return;
         }
-        lock(&f.queue).push_back(job);
+        {
+            let mut queue = lock(&f.queue);
+            queue.jobs.push_back(job);
+            queue.unfinished = queue.unfinished.saturating_add(1);
+        }
         f.queued.notify_one();
+    }
+
+    /// Waits until every job asked for so far is done: as the daemon exits, so that a
+    /// template's working set, which no restore records again where restores record none
+    /// (`vm::RESTORES_RECORD`), is not lost with it.
+    pub(super) fn await_made(&self) {
+        let f = &self.files;
+        let mut queue = lock(&f.queue);
+        while queue.unfinished > 0 {
+            queue = f.done.wait(queue).unwrap_or_else(PoisonError::into_inner);
+        }
     }
 
     /// Does the jobs queued, in turn, until [`Files::end`].
@@ -108,7 +132,7 @@ impl<D: Disk> Daemon<D> {
             let job = {
                 let mut queue = lock(&f.queue);
                 loop {
-                    if let Some(job) = queue.pop_front() {
+                    if let Some(job) = queue.jobs.pop_front() {
                         break job;
                     }
                     if f.ended.load(Ordering::SeqCst) {
@@ -118,6 +142,11 @@ impl<D: Disk> Daemon<D> {
                 }
             };
             self.make(job);
+            {
+                let mut queue = lock(&f.queue);
+                queue.unfinished = queue.unfinished.saturating_sub(1);
+            }
+            f.done.notify_all();
         }
     }
 
