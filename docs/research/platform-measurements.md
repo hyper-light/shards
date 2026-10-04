@@ -3785,3 +3785,34 @@ revision before comparing a changed API/implementation.
   its buffer where it can; `layer::apply` reads its archives so. An archive cut short is
   found as reading finds it, and the tar tests read every case both ways. On a busy
   host a build's time follows the CPU work it does, so work cut counts there most.
+
+### M111. Building a root filesystem: CRC-32 in hardware, and room without a lock
+
+- **Question.** A profile of golang:1.26's root filesystem built (macOS `sample`, 1 ms)
+  showed gzip's CRC-32 in zlib-rs's portable `crc32_braid`, and unpack threads blocked
+  in `__psynch_mutexwait` under `Checked::write`: 106 of one thread's 570 samples. flate2
+  with `default-features = false` leaves out `runtime_detection`, which alone turns on
+  zlib-rs's `std`, and zlib-rs looks for the CPU's CRC-32 (arm64), PCLMULQDQ and AVX2
+  (x86_64) only with it (zlib-rs 0.6.8 cpu_features.rs). And every 8 KiB the unpack
+  wrote locked the build's one `Room`. What does each fix save, idle and busy?
+- **Method.** `rootfs-build`'s `ab.sh` (M109), which now reports each build's CPU
+  time (getrusage, user and system, all threads), 2c05270 against the change, 9 rounds
+  idle and 9 with `BUSY=18`. Apple M5 Max, macOS 26.4.1, 2026-10-04, other sessions
+  running throughout.
+- **Results.** Milliseconds a build, wall p50 / p90, then CPU p50:
+
+  | image | host | before | after | CPU before | CPU after |
+  |---|---|---|---|---|---|
+  | golang:1.26 | idle | 950 / 3656 | 884 / 1411 | 2271 | 2079 |
+  | golang:1.26 | busy | 1028 / 1239 | 925 / 1111 | 2152 | 1902 |
+  | python:3.13 | idle | 1848 / 2808 | 1746 / 6385 | 2810 | 2598 |
+  | python:3.13 | busy | 2246 / 5083 | 1881 / 1977 | 2629 | 2352 |
+
+  CPU time falls 8–12% either way. Wall-time tails of 3–6 s fall on either build, idle
+  or busy; the profile puts them in `write`, threads blocked as the build writes about
+  1.8 GB (its unpacked layers, then its image) to a disk shared and 99% full.
+- **Consequence.** flate2 is built with `runtime_detection` in every crate. `Room`
+  keeps one atomic count of what its writers wrote together, and the writer whose bytes
+  reach the next 64 MiB looks at the free space, so writers never wait on one another;
+  with nothing to keep free it counts nothing. The write tails are the unpacked layers'
+  temporary archives, which the next step takes away.

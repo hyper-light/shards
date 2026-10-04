@@ -2,7 +2,7 @@
 # ab.sh OLD_REV ROUNDS LAYOUT...: builds rootfs-build against OLD_REV's crates/image
 # (in a git worktree) and against the working tree's, then runs them in turn, one root
 # filesystem of each image a round, after one warm-up round each; prints n, p50, p90,
-# p99 and max per image and build. LAYOUTs are `docker save` output, unpacked. With
+# p99 and max per image and build, and the CPU time a build took. LAYOUTs are `docker save` output, unpacked. With
 # BUSY=N in the environment, N processes spin on the CPU throughout the rounds: a busy
 # host, which is the usual one.
 set -eu
@@ -37,11 +37,12 @@ done | python3 -c '
 import sys, collections
 runs = collections.defaultdict(list)
 for line in sys.stdin:
-    side, image, ms = line.split()
-    runs[(image, side)].append(float(ms))
+    side, image, ms, cpu = line.split()
+    runs[(image, side)].append((float(ms), float(cpu)))
 def q(s, p): return s[min(len(s) - 1, int(p * len(s)))]
-print("| image | build | n | p50 ms | p90 | p99 | max |\n|---|---|---|---|---|---|---|")
+print("| image | build | n | p50 ms | p90 | p99 | max | CPU ms p50 | p90 |\n|---|---|---|---|---|---|---|---|---|")
 for (image, side), v in sorted(runs.items()):
-    s = sorted(v)
-    print(f"| {image} | {side} | {len(s)} | {q(s,.5):.0f} | {q(s,.9):.0f} | {q(s,.99):.0f} | {s[-1]:.0f} |")
+    s = sorted(m for m, _ in v)
+    c = sorted(c for _, c in v)
+    print(f"| {image} | {side} | {len(s)} | {q(s,.5):.0f} | {q(s,.9):.0f} | {q(s,.99):.0f} | {s[-1]:.0f} | {q(c,.5):.0f} | {q(c,.9):.0f} |")
 '

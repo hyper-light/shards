@@ -1,7 +1,8 @@
 //! `rootfs-build RUNS STORE LAYOUT...`: for each `docker save` layout, its layers' blobs
 //! (as the registry compressed them) put in a store under STORE, then its root
 //! filesystem built RUNS times from them by `Store::rootfs`, the built one removed
-//! between runs. Prints `NAME MS` a run.
+//! between runs. Prints `NAME MS CPU_MS` a run: its wall time, and the CPU time its
+//! threads took, user and system together, which is what it costs a busy host.
 use shards_image::reference::Digest;
 use shards_image::store::{Layer, Limits, Store};
 use std::path::Path;
@@ -40,11 +41,19 @@ fn main() {
             })
             .collect();
         for _ in 0..runs {
-            let t = Instant::now();
+            let (t, cpu) = (Instant::now(), cpu_ms());
             let built = store.rootfs(&layers, &Limits::none()).unwrap();
-            let ms = t.elapsed().as_secs_f64() * 1e3;
+            let (ms, cpu) = (t.elapsed().as_secs_f64() * 1e3, cpu_ms() - cpu);
             std::fs::remove_file(&built).unwrap();
-            println!("{name} {ms:.1}");
+            println!("{name} {ms:.1} {cpu:.1}");
         }
     }
+}
+
+/// The CPU time this process's threads have taken, user and system.
+fn cpu_ms() -> f64 {
+    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+    assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) }, 0);
+    let ms = |t: libc::timeval| t.tv_sec as f64 * 1e3 + t.tv_usec as f64 / 1e3;
+    ms(u.ru_utime) + ms(u.ru_stime)
 }

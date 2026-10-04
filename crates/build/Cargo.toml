@@ -16,7 +16,7 @@ shards-dockerfile = { path = "../dockerfile" }
 shards-image = { path = "../image" }
 # ADD's archives: gzip, bzip2 and xz decoded in-process, pure Rust (PM M77).
 bzip2 = "0.6"
-flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 lzma-rust2 = { version = "0.21", default-features = false, features = ["std", "xz"] }
 
 [target.'cfg(unix)'.dependencies]

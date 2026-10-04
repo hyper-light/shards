@@ -12,7 +12,7 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError, mpsc};
+use std::sync::mpsc;
 
 use sha2::{Digest as _, Sha256, Sha384, Sha512};
 
@@ -1455,13 +1455,7 @@ impl Store {
     /// whole decompressed stream, bytes after the tar's end included, must match the
     /// DiffID, as containerd's applier checks it (`core/diff/apply/apply.go`), and must
     /// not pass `max` bytes.
-    fn unpack(
-        &self,
-        layer: &Layer,
-        bytes: &AtomicU64,
-        limits: &Limits,
-        room: &Mutex<Room>,
-    ) -> Result<Tar, Error> {
+    fn unpack(&self, layer: &Layer, bytes: &AtomicU64, limits: &Limits, room: &Room) -> Result<Tar, Error> {
         let how = oci::layer_compression(&layer.media_type)?;
         let blob = self.blob_path(&layer.blob);
         let mut file = File::open(&blob)?;
@@ -1541,7 +1535,7 @@ impl Store {
     /// `layers`' archives, each decompressed and checked, together taking no more than
     /// `limits` allow, as [`Store::rootfs`] takes them.
     pub fn unpack_layers(&self, layers: &[Layer], limits: &Limits) -> Result<Vec<Unpacked>, Error> {
-        let room = Mutex::new(Room::new(&self.root.join("ingest"), limits)?);
+        let room = Room::new(&self.root.join("ingest"), limits)?;
         let mut out = Vec::with_capacity(layers.len());
         self.unpack_in_order(layers, limits, &room, |_, tar| {
             out.push(Unpacked(tar));
@@ -1562,7 +1556,7 @@ impl Store {
         &self,
         layers: &[Layer],
         limits: &Limits,
-        room: &Mutex<Room>,
+        room: &Room,
         mut each: impl FnMut(usize, Tar) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let workers = std::thread::available_parallelism()
@@ -1741,7 +1735,7 @@ impl Store {
         &self,
         layers: &[Layer],
         limits: &Limits,
-        make: impl FnOnce(&Mutex<Room>, &Path) -> Result<Partial, Error>,
+        make: impl FnOnce(&Room, &Path) -> Result<Partial, Error>,
     ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let path = self.rootfs_path(&diff_ids)?;
@@ -1758,7 +1752,7 @@ impl Store {
             return Ok(path);
         }
         let ingest = self.root.join("ingest");
-        let room = Mutex::new(Room::new(&ingest, limits)?);
+        let room = Room::new(&ingest, limits)?;
         let partial = make(&room, &ingest)?;
         partial.commit(&path)?;
         drop(building);
@@ -1799,30 +1793,31 @@ impl Limits {
 const LOOK_EVERY: u64 = 64 << 20;
 
 /// The room a file system has for what is written to it: past `Limits::keep_free`, the
-/// writing stops (audit A10). Free space is looked at as it starts, and again every
-/// `LOOK_EVERY` bytes.
+/// writing stops (audit A10). Free space is looked at as it starts, and again each time
+/// what its writers wrote together reaches another `LOOK_EVERY` bytes, by the writer
+/// that reached it: writers share it without waiting on one another.
 #[derive(Debug)]
 pub struct Room {
     dir: PathBuf,
     keep_free: u64,
     available: fn(&Path) -> io::Result<u64>,
-    since: u64,
+    /// Bytes its writers have written, together.
+    written: AtomicU64,
 }
 
 impl Room {
     pub fn new(dir: &Path, limits: &Limits) -> io::Result<Room> {
-        let mut room = Room {
+        let room = Room {
             dir: dir.to_path_buf(),
             keep_free: limits.keep_free,
             available: limits.available,
-            since: 0,
+            written: AtomicU64::new(0),
         };
         room.look()?;
         Ok(room)
     }
 
-    fn look(&mut self) -> io::Result<()> {
-        self.since = 0;
+    fn look(&self) -> io::Result<()> {
         // Nothing to leave free: nothing to look at, and a full disk fails the write.
         if self.keep_free == 0 {
             return Ok(());
@@ -1841,9 +1836,13 @@ impl Room {
         Ok(())
     }
 
-    pub fn wrote(&mut self, n: usize) -> io::Result<()> {
-        self.since = self.since.saturating_add(n as u64);
-        if self.since >= LOOK_EVERY {
+    pub fn wrote(&self, n: usize) -> io::Result<()> {
+        if self.keep_free == 0 {
+            return Ok(());
+        }
+        let n = n as u64;
+        let before = self.written.fetch_add(n, Ordering::Relaxed);
+        if before / LOOK_EVERY != before.saturating_add(n) / LOOK_EVERY {
             self.look()?;
         }
         Ok(())
@@ -1854,15 +1853,12 @@ impl Room {
 struct Checked<'a> {
     out: &'a mut Partial,
     /// Shared by the layers unpacked at once.
-    room: &'a Mutex<Room>,
+    room: &'a Room,
 }
 
 impl Write for Checked<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.room
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .wrote(buf.len())?;
+        self.room.wrote(buf.len())?;
         self.out.write(buf)
     }
 
@@ -2854,7 +2850,7 @@ mod tests {
         let store = Store::open(&root).unwrap();
         let (tars, layers) = uneven_layers(&store, 12);
         let limits = Limits::none();
-        let room = Mutex::new(Room::new(&root.join("ingest"), &limits).unwrap());
+        let room = Room::new(&root.join("ingest"), &limits).unwrap();
         // Each layer reaches `each` once, in order, whole.
         let mut seen = Vec::new();
         store
@@ -2932,7 +2928,7 @@ mod tests {
             bytes: max,
             ..Limits::none()
         };
-        let room = Mutex::new(Room::new(&store.root.join("ingest"), &limits)?);
+        let room = Room::new(&store.root.join("ingest"), &limits)?;
         store.unpack(layer, &AtomicU64::new(0), &limits, &room)
     }
 
