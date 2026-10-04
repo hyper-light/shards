@@ -1697,6 +1697,15 @@ stack inside the VMM, is superseded by it.
     the VM has the network process close them, and waits for it to say so, before it tells
     the daemon and the client (`kind::UNPUBLISH`), so that `run --rm -p N …` followed by
     any bind of N succeeds, as Docker's does. Only runs that publish pay that round trip.
+  - *Frames, and what the guest loses of them (PM M104).* The VM's device returns a
+    received frame's buffers to the guest together (virtio 1.2 §5.1.6.4.1), and a
+    segment's bytes go from a connection's queue to the ring in one copy. A guest short of
+    memory drops segments, and closes its window on what was in flight (Linux
+    `ICSK_ACK_NOMEM`); since ring and guest keep the order segments are sent in, the
+    network process repairs a loss at the first duplicate acknowledgement past RFC 6582's
+    `recover`, and each hole a partial acknowledgement shows; sends again, as the window
+    opens, what a window that shrank had the guest drop; sends a timeout's segment alone
+    (RFC 6298 §5.4); and probes a window closed on bytes waiting (RFC 9293 §3.8.6.1).
 - **Open, measured before it is built** (networking.md §4):
   - *The data path between the two processes* (E2), **decided (PM M83):** a ring of frame
     slots in memory the two processes share, not the datagram socket Apple's model uses

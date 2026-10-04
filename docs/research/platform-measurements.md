@@ -3482,3 +3482,60 @@ revision before comparing a changed API/implementation.
 - **Consequence.** The host reads up to what the guest sends at once (`run::BUFFERED`,
   shared with the guest) and writes each frame whole. The tail is the same in both arms,
   and is the next question.
+
+### M104. TCP through a published port, and what the guest made of the frames
+
+- **Question.** Each segment for the guest was copied three times on its way, and a
+  timeout sent the guest everything unacknowledged again (review 2.15, 2.21). What does
+  sending each once, from where it lies, and repairing losses as they are seen, buy? And
+  why did one connection in seven take 200 ms or more?
+- **Method.** `docs/research/measurements/net-throughput`: `ab.py` runs a container per
+  build whose port 7000 is published, its workload echoing each connection, and times
+  connections that send 32 MiB while reading them back, both builds in turn, n = 300
+  each, every byte checked; `counters.py` runs 1,000 such connections against one build
+  and reads the guest kernel's TCP and interface counters before and after. e19fa61, the
+  change, and e19fa61 with only the device's half of it (below). Apple M5 Max, macOS
+  26.4.1, load average 2.0–2.3, 2026-10-04.
+- **What the guest saw.** On e19fa61, 600 connections left the guest's `eth0` with 226
+  `rx_length_errors`, all its `rx_dropped`: its virtio-net driver had found frames whose
+  header names more buffers than the device had returned (`receive_mergeable`, "buffers
+  out of N missing"). The device returned each of a frame's buffers to the used ring,
+  and moved the ring's index, one at a time; virtio 1.2 §5.1.6.4.1 has it "use all
+  buffers used by a single receive packet together, such that at least num_buffers are
+  observed by driver as used". A guest polling the ring meanwhile drops the frame, and
+  takes the rest of its buffers for frames of their own. Of 1,000 connections, 4 came
+  back cut short (a prefix, then the end) and 184 took over 100 ms. With the device
+  returning a frame's buffers together and nothing else changed: 0 length errors, 0 cut
+  short, 21 over 100 ms.
+- **What was left.** The guest also drops what its memory cannot take: `TCPRcvQDrop`
+  (21 in 1,000 connections), after which Linux closes its window at once
+  (`tcp_select_window`, `ICSK_ACK_NOMEM`) and drops what was in flight past its edge
+  (`BeyondWindow`, 40), and `TCPOFODrop` (7), out-of-order segments it drops without an
+  acknowledgement. e19fa61 repaired none of these until a timeout, 200 ms, then sent the
+  whole window again. The change sends the oldest segment alone at a timeout (RFC 6298
+  §5.4); repairs a segment at the first duplicate acknowledgement past `recover` (ring
+  and guest keep the order segments were sent in, so a duplicate means a loss; RFC 6582
+  §3.2's `recover` keeps a duplicate of a timeout's or a shrunk window's resend from
+  counting) and each hole a partial acknowledgement shows; sends again what a window that
+  shrank had the guest drop; and probes a window closed on bytes waiting (RFC 9293
+  §3.8.6.1, RFC 1122 §4.2.2.17). 1,000 connections: 0 over 100 ms, 0 cut short, 0 length
+  errors; the guest dropped more (`TCPRcvQDrop` 88, `BeyondWindow` 143, `TCPOFODrop` 31),
+  every one repaired without a timeout.
+- **Results.** Connection times, ms, n = 300 per arm:
+
+  | Arms | p50 | p90 | p99 | max | new − old, paired median [95%] |
+  |---|---|---|---|---|---|
+  | e19fa61 | 12.0 | 217.3 | 420.8 | 434.6 | |
+  | the change | 11.3 | 16.1 | 19.9 | 21.6 | −1.2 [−1.5, −1.0] |
+  | e19fa61 with the device's half | 11.1 | 12.6 | 215.6 | 216.9 | |
+  | the change | 10.4 | 12.1 | 15.2 | 17.5 | −0.8 [−1.0, −0.6] |
+
+- **Consequence.** The device returns a frame's buffers together and allocates nothing a
+  frame (review 2.22); a segment's bytes go from the connection's queue to the ring in one
+  copy, and the guest's straight to the host's socket while nothing waits before them.
+  Two repairs still wait for a timeout: a segment sent again and lost again, and the
+  holes after a timeout's resend. The guest's duplicate acknowledgements cannot say which
+  segment they are for; SACK (RFC 2018) can, and with each segment's place in the order
+  sent, would show both at once. The guest drops more for want of memory the faster it is
+  sent to, which is the guest's to prune and collapse: what that costs it is the next
+  question.

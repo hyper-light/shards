@@ -296,6 +296,21 @@ impl Producer<'_> {
         Ok(Some(true))
     }
 
+    /// Writes one frame of `parts`, one after another, if there is room now, as
+    /// [`Producer::try_push_with`] does: a frame's headers and its payload, each where it
+    /// lies, copied once.
+    pub fn try_push(&mut self, parts: &[&[u8]]) -> Result<Option<bool>, Broken> {
+        let n = parts.iter().fold(0usize, |n, part| n.saturating_add(part.len()));
+        self.try_push_with(n, |dst| {
+            let mut off = 0;
+            for part in parts {
+                // SAFETY: `dst` has room for all `n` bytes, of which these are the next.
+                unsafe { ptr::copy_nonoverlapping(part.as_ptr(), dst.add(off), part.len()) };
+                off += part.len();
+            }
+        })
+    }
+
     fn write_header(&self, at: usize, len: u32, kind: u32) {
         let [a, b, c, d] = len.to_le_bytes();
         let [e, f, g, i] = kind.to_le_bytes();
@@ -525,17 +540,8 @@ mod tests {
 
     /// Writes one frame of `parts`, sleeping on `wait` while there is no room.
     fn push(p: &mut Producer<'_>, wait: &OwnedFd, parts: &[&[u8]]) -> Result<bool, Broken> {
-        let n: usize = parts.iter().map(|part| part.len()).sum();
         loop {
-            let pushed = p.try_push_with(n, |dst| {
-                let mut off = 0;
-                for part in parts {
-                    // SAFETY: `dst` has room for all `n` bytes.
-                    unsafe { ptr::copy_nonoverlapping(part.as_ptr(), dst.add(off), part.len()) };
-                    off += part.len();
-                }
-            })?;
-            match pushed {
+            match p.try_push(parts)? {
                 Some(fit) => return Ok(fit),
                 None => sleep(wait.as_raw_fd()),
             }
@@ -571,9 +577,12 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(|| {
                 for i in 0..n {
+                    // In three parts, as a frame's headers and the two halves of a
+                    // queue its payload wraps in come.
                     let f = frame(i, sizes[i as usize % sizes.len()]);
-                    let (a, b) = f.split_at(f.len() / 2);
-                    assert!(push(&mut producer, &p_wait, &[a, b]).unwrap());
+                    let (a, rest) = f.split_at(f.len() / 3);
+                    let (b, c) = rest.split_at(rest.len() / 2);
+                    assert!(push(&mut producer, &p_wait, &[a, b, c]).unwrap());
                 }
             });
             for i in 0..n {

@@ -9,7 +9,7 @@
 //! §3.4).
 
 use std::collections::VecDeque;
-use std::io::{self, Read, Write};
+use std::io::{self, IoSlice, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpStream};
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
@@ -25,9 +25,12 @@ const TO_GUEST: usize = 4 << 20;
 /// The largest segment this side takes, and sends: the device's MTU less IPv4 and TCP's
 /// headers (vmm virtio-net, MTU 65520).
 pub const MSS: u16 = 65520 - 40;
-/// Retransmission: first after 200 ms, Linux's TCP_RTO_MIN, then doubling; the connection
-/// is reset after 8 (Linux tcp_retries2 is 15, at minutes; a guest on the other end of a
-/// pipe that stops acknowledging is gone).
+/// Retransmission: first after 200 ms, Linux's TCP_RTO_MIN (include/net/tcp.h), then
+/// doubling (RFC 6298 §5.5). An RTO of measured round trips (RFC 6298 §2) would sit at that
+/// floor: the guest is a ring away, its round trips microseconds. The connection is reset
+/// after 8, 102.2 s unanswered in all, past the 100 s RFC 1122 §4.2.3.5 sets for R2
+/// (Linux's tcp_retries2 of 15 waits out minutes of a network's outages; a guest a ring
+/// away has none, and one that answers nothing that long is gone).
 const RTO: Duration = Duration::from_millis(200);
 const RETRIES: u32 = 8;
 
@@ -66,9 +69,12 @@ pub struct Conn {
     guest_mss: u16,
     /// Whether the guest offered window scaling (and so gets this side's).
     scaled: bool,
-    /// This side's sequence: the oldest byte the guest has not acknowledged, and the next.
+    /// This side's sequence: the oldest byte the guest has not acknowledged, the next to
+    /// send, and the next past all ever sent. `snd_nxt` is short of `snd_max` once a window
+    /// that shrank had the guest drop what was past its edge, to be sent again.
     snd_una: u32,
     snd_nxt: u32,
+    snd_max: u32,
     /// Bytes from `snd_una` sent to the guest and not yet acknowledged, then bytes not yet
     /// sent: what the guest may still need again.
     to_guest: VecDeque<u8>,
@@ -77,19 +83,57 @@ pub struct Conn {
     /// The guest sent FIN; the host's write side is shut once `to_host` drains.
     guest_fin: bool,
     host_shut: bool,
-    /// The host's socket ended; this side's FIN is sent once `to_guest` is.
+    /// The host's socket ended; this side's FIN is sent once `to_guest` is, numbered past
+    /// its last byte, and has been if `fin_sent`.
     host_eof: bool,
     fin_sent: bool,
     /// Whether the guest has acknowledged this side's SYN, which takes a sequence number
     /// and no byte.
     syn_acked: bool,
-    /// Retransmission: when the oldest unacknowledged byte was last sent, and how often.
+    /// Retransmission: when the oldest unacknowledged byte was last sent, and how often;
+    /// or, while a window closed on bytes waiting, when the guest was last probed, and how
+    /// many probes it has not answered.
     sent_at: Option<Instant>,
     retries: u32,
+    probes: u32,
     pub closed: bool,
     /// The ring to the guest had no room for a segment of bytes: the connection sends
     /// again once it has ([`Conn::unblock`]).
     blocked: bool,
+    /// Loss repair, as NewReno's (RFC 6582) without congestion control, which a ring has
+    /// no need of. The oldest segment unacknowledged is to be sent again; `snd_max` when
+    /// segments that may reach the guest twice were last sent (RFC 6582's `recover`); and,
+    /// while a loss is repaired, `snd_max` when it was seen, which the repair ends at.
+    resend: bool,
+    recover: u32,
+    repair: Option<u32>,
+}
+
+/// A segment's bytes, as they lie in a queue that may wrap: one part, then the other.
+pub type Payload<'a> = [&'a [u8]; 2];
+/// A segment without bytes.
+pub const EMPTY: Payload<'static> = [&[], &[]];
+
+/// Bytes `at..at + n` of `parts`, one after another, where they lie; fewer if they end
+/// first.
+fn span(parts: Payload<'_>, at: usize, n: usize) -> Payload<'_> {
+    let [a, b] = parts;
+    let end = at.saturating_add(n);
+    [
+        clip(a, at, end),
+        clip(b, at.saturating_sub(a.len()), end.saturating_sub(a.len())),
+    ]
+}
+
+/// `q`'s bytes `at..at + n`, where they lie in its two halves.
+fn bytes(q: &VecDeque<u8>, at: usize, n: usize) -> Payload<'_> {
+    span(q.as_slices().into(), at, n)
+}
+
+/// `s`'s bytes `from..to`, cut to its length.
+fn clip(s: &[u8], from: usize, to: usize) -> &[u8] {
+    let to = to.min(s.len());
+    s.get(from.min(to)..to).unwrap_or_default()
 }
 
 /// Where segments for the guest are written: the caller's frame builder.
@@ -104,7 +148,7 @@ pub trait ToGuest {
         flags: u8,
         window: u16,
         syn: Option<(u16, Option<u8>)>,
-        payload: &[u8],
+        payload: Payload<'_>,
     ) -> bool;
 }
 
@@ -123,6 +167,7 @@ impl Conn {
             scaled: seg.wscale.is_some(),
             snd_una: isn,
             snd_nxt: isn,
+            snd_max: isn,
             to_guest: VecDeque::new(),
             to_host: VecDeque::new(),
             guest_fin: false,
@@ -132,8 +177,12 @@ impl Conn {
             syn_acked: false,
             sent_at: None,
             retries: 0,
+            probes: 0,
             closed: false,
             blocked: false,
+            resend: false,
+            recover: isn,
+            repair: None,
         })
     }
 
@@ -152,6 +201,7 @@ impl Conn {
             scaled: false,
             snd_una: isn,
             snd_nxt: isn.wrapping_add(1),
+            snd_max: isn.wrapping_add(1),
             to_guest: VecDeque::new(),
             to_host: VecDeque::new(),
             guest_fin: false,
@@ -161,8 +211,12 @@ impl Conn {
             syn_acked: false,
             sent_at: Some(Instant::now()),
             retries: 0,
+            probes: 0,
             closed: false,
             blocked: false,
+            resend: false,
+            recover: isn,
+            repair: None,
         };
         c.send_syn(out);
         c
@@ -176,7 +230,7 @@ impl Conn {
             SYN,
             u16::try_from(TO_HOST.min(usize::from(u16::MAX))).unwrap_or(u16::MAX),
             Some((MSS, Some(OUR_WSCALE))),
-            &[],
+            EMPTY,
         );
     }
 
@@ -185,7 +239,7 @@ impl Conn {
     fn on_syn_sent(&mut self, seg: &wire::Tcp<'_>, out: &mut dyn ToGuest) {
         if seg.flags & ACK != 0 && seg.ack != self.snd_nxt {
             if seg.flags & RST == 0 {
-                out.segment(&self.key, seg.ack, 0, RST, 0, None, &[]);
+                out.segment(&self.key, seg.ack, 0, RST, 0, None, EMPTY);
             }
             return;
         }
@@ -228,13 +282,13 @@ impl Conn {
             ACK,
             self.window(),
             None,
-            &[],
+            EMPTY,
         );
     }
 
     /// A reset for the guest, ending the connection.
     pub fn reset(&mut self, out: &mut dyn ToGuest) {
-        out.segment(&self.key, self.snd_nxt, self.rcv_nxt, RST | ACK, 0, None, &[]);
+        out.segment(&self.key, self.snd_nxt, self.rcv_nxt, RST | ACK, 0, None, EMPTY);
         self.closed = true;
     }
 
@@ -276,9 +330,9 @@ impl Conn {
                 SYN | ACK,
                 u16::try_from(TO_HOST.min(usize::from(u16::MAX))).unwrap_or(u16::MAX),
                 Some((MSS, wscale)),
-                &[],
+                EMPTY,
             );
-            self.snd_nxt = self.snd_nxt.wrapping_add(1);
+            self.sent_to(self.snd_nxt.wrapping_add(1));
             self.sent_at = Some(Instant::now());
             return;
         }
@@ -287,15 +341,12 @@ impl Conn {
 
     fn flush_to_host(&mut self, out: &mut dyn ToGuest) {
         let before_window = self.window();
-        while !self.to_host.is_empty() {
-            let (a, _) = self.to_host.as_slices();
-            match self.sock.write(a) {
-                Ok(0) => break,
+        if !self.to_host.is_empty() {
+            let (a, b) = self.to_host.as_slices();
+            match write_now(&self.sock, [a, b]) {
                 Ok(n) => {
                     self.to_host.drain(..n);
                 }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(_) => {
                     self.reset(out);
                     return;
@@ -341,25 +392,53 @@ impl Conn {
         self.send_new(out);
     }
 
-    /// Sends what the guest has not had yet of `to_guest`, within its window, then FIN once
-    /// all is sent and the host is done.
+    /// The largest segment the guest takes.
+    fn mss(&self) -> usize {
+        usize::from(self.guest_mss.min(MSS)).max(1)
+    }
+
+    /// Bytes of `to_guest` in flight: sent, from `snd_una` to `snd_nxt`, and not yet
+    /// acknowledged. The FIN, if among them, is numbered past the last byte.
+    fn in_flight(&self) -> usize {
+        (self.snd_nxt.wrapping_sub(self.snd_una) as usize).min(self.to_guest.len())
+    }
+
+    /// Whether the guest has acknowledged this side's FIN: the last sequence number ever
+    /// sent.
+    fn fin_acked(&self) -> bool {
+        self.fin_sent && self.snd_una == self.snd_max
+    }
+
+    /// Records what was sent up to `seq`.
+    fn sent_to(&mut self, seq: u32) {
+        self.snd_nxt = seq;
+        if before(self.snd_max, seq) {
+            self.snd_max = seq;
+        }
+    }
+
+    /// Sends the segment repair asks for, then what the guest has not had yet of
+    /// `to_guest`, within its window, then FIN once all is sent and the host is done. Each
+    /// segment's bytes go from the queue to the ring, copied once.
     fn send_new(&mut self, out: &mut dyn ToGuest) {
         if !self.syn_acked {
             return;
         }
-        let mss = usize::from(self.guest_mss.min(MSS)).max(1);
         self.blocked = false;
+        if self.resend && !self.retransmit(out) {
+            self.blocked = true;
+            return;
+        }
+        let mss = self.mss();
         loop {
-            let sent =
-                (self.snd_nxt.wrapping_sub(self.snd_una) as usize).saturating_sub(usize::from(self.fin_sent));
+            let sent = self.in_flight();
             let unsent = self.to_guest.len().saturating_sub(sent);
-            let in_flight = sent;
-            let window = (self.guest_wnd as usize).saturating_sub(in_flight);
-            let n = unsent.min(window).min(mss);
+            let window = (self.guest_wnd as usize).saturating_sub(sent);
+            let payload = bytes(&self.to_guest, sent, unsent.min(window).min(mss));
+            let n = payload[0].len() + payload[1].len();
             if n == 0 {
                 break;
             }
-            let chunk: Vec<u8> = self.to_guest.range(sent..sent + n).copied().collect();
             let flags = ACK | if n == unsent { PSH } else { 0 };
             if !out.segment(
                 &self.key,
@@ -368,18 +447,20 @@ impl Conn {
                 flags,
                 self.window(),
                 None,
-                &chunk,
+                payload,
             ) {
                 self.blocked = true;
                 break;
             }
-            self.snd_nxt = self.snd_nxt.wrapping_add(n as u32);
+            self.sent_to(self.snd_nxt.wrapping_add(n as u32));
             self.sent_at.get_or_insert_with(Instant::now);
         }
+        // The FIN follows the last byte, sent once all of them are (and again if a window
+        // that shrank had the guest drop it).
         let all_sent = self.snd_nxt.wrapping_sub(self.snd_una) as usize == self.to_guest.len();
         if self.host_eof
-            && !self.fin_sent
             && all_sent
+            && !self.fin_acked()
             && out.segment(
                 &self.key,
                 self.snd_nxt,
@@ -387,12 +468,118 @@ impl Conn {
                 FIN | ACK,
                 self.window(),
                 None,
-                &[],
+                EMPTY,
             )
         {
-            self.snd_nxt = self.snd_nxt.wrapping_add(1);
+            self.sent_to(self.snd_nxt.wrapping_add(1));
             self.fin_sent = true;
             self.sent_at.get_or_insert_with(Instant::now);
+        }
+        // Bytes waiting on a window closed, none in flight: the guest is probed, lest a
+        // window it opens without saying so leave them waiting for ever ([`Conn::on_timer`]).
+        if self.closed_on_bytes() {
+            self.sent_at.get_or_insert_with(Instant::now);
+        }
+    }
+
+    /// Whether bytes wait on a window the guest closed, with none in flight.
+    fn closed_on_bytes(&self) -> bool {
+        self.syn_acked && self.snd_nxt == self.snd_una && self.guest_wnd == 0 && !self.to_guest.is_empty()
+    }
+
+    /// Sends again the oldest of what the guest has not acknowledged, alone (RFC 6298
+    /// §5.4): a segment of bytes from `snd_una`, or the FIN if it is all that is left.
+    /// Nothing past it is sent again: the guest's acknowledgement of it says what else it
+    /// lacks. False if the ring had no room; it is asked again once it has.
+    fn retransmit(&mut self, out: &mut dyn ToGuest) -> bool {
+        let in_flight = self.in_flight();
+        let payload = bytes(&self.to_guest, 0, in_flight.min(self.mss()));
+        let n = payload[0].len() + payload[1].len();
+        let (flags, payload) = if n > 0 {
+            (ACK | if n == in_flight { PSH } else { 0 }, payload)
+        } else if self.snd_nxt != self.snd_una {
+            // No bytes in flight, yet a sequence number is: the FIN's.
+            (FIN | ACK, EMPTY)
+        } else {
+            self.resend = false;
+            return true;
+        };
+        self.resend = !out.segment(
+            &self.key,
+            self.snd_una,
+            self.rcv_nxt,
+            flags,
+            self.window(),
+            None,
+            payload,
+        );
+        !self.resend
+    }
+
+    /// An acknowledgement of new sequence numbers, up to `ack`.
+    fn on_acked(&mut self, ack: u32) {
+        // The SYN takes a sequence number and no byte of `to_guest`, as does the FIN past
+        // its last byte.
+        let mut bytes = ack.wrapping_sub(self.snd_una) as usize;
+        if !self.syn_acked {
+            self.syn_acked = true;
+            bytes -= 1;
+        }
+        self.to_guest.drain(..bytes.min(self.to_guest.len()));
+        self.snd_una = ack;
+        // What a window that shrank had the guest drop came after all.
+        if before(self.snd_nxt, ack) {
+            self.snd_nxt = ack;
+        }
+        self.retries = 0;
+        self.sent_at = (self.snd_una != self.snd_nxt).then(Instant::now);
+        // Short of the repair's end, its acknowledgement stops at the next segment lost
+        // (RFC 6582 §3.2's partial acknowledgement): ring and guest take segments in
+        // order, so all sent before the one sent again had reached the guest before it,
+        // and what the guest lacks of them it lost.
+        if let Some(end) = self.repair {
+            if before(ack, end) {
+                self.resend = true;
+            } else {
+                self.repair = None;
+            }
+        }
+    }
+
+    /// A duplicate acknowledgement (RFC 5681 §2): the guest has a segment past one it
+    /// lacks, and ring and guest take segments in order, so the one it lacks was lost: it
+    /// goes again at once. RFC 5681 §3.2 waits for three duplicates, and RFC 5827 for one
+    /// fewer than the segments in flight, lest a segment only late be sent again; nothing
+    /// here comes late (the guest's one receive queue keeps the ring's order), and a guest
+    /// short of memory can leave a single duplicate, saying nothing of what it drops past a
+    /// hole (tcp_data_queue_ofo, LINUX_MIB_TCPOFODROP; PM M104).
+    ///
+    /// Not if it acknowledges no more than `recover` (RFC 6582 §3.2 step 2): a segment sent
+    /// again at a timeout, or after a window shrank, may reach the guest twice, and comes
+    /// after all sent before it, so the guest's duplicate for it acknowledges no more than
+    /// they. A repair's segments fill what the guest lacks, and reach it once.
+    fn on_duplicate(&mut self, ack: u32) {
+        if self.repair.is_none() && before(self.recover, ack) {
+            self.repair = Some(self.snd_max);
+            self.resend = true;
+            self.sent_at = Some(Instant::now());
+        }
+    }
+
+    /// The guest's window as it now is. One that shrank below what is in flight has the
+    /// guest drop what is past its edge, as Linux does when it drops a segment for want of
+    /// memory and closes its window (tcp_select_window, ICSK_ACK_NOMEM; its
+    /// LINUX_MIB_BEYOND_WINDOW counts what it then drops): sent again as the window opens,
+    /// as RFC 9293 §3.8.6.2.1 has a sender robust to a window that shrinks.
+    fn on_window(&mut self) {
+        let edge = self.snd_una.wrapping_add(self.guest_wnd);
+        if self.syn_acked && before(edge, self.snd_nxt) {
+            self.snd_nxt = edge;
+            self.recover = self.snd_max;
+            self.repair = None;
+            if self.snd_nxt == self.snd_una {
+                self.sent_at = None;
+            }
         }
     }
 
@@ -417,7 +604,7 @@ impl Conn {
                     SYN | ACK,
                     self.window(),
                     Some((MSS, wscale)),
-                    &[],
+                    EMPTY,
                 );
             }
             return;
@@ -427,23 +614,25 @@ impl Conn {
         }
         if seg.flags & ACK != 0 {
             let acked = seg.ack.wrapping_sub(self.snd_una);
-            let outstanding = self.snd_nxt.wrapping_sub(self.snd_una);
-            if acked > 0 && acked <= outstanding {
-                // The SYN and FIN take a sequence number each, but no byte of to_guest.
-                let mut bytes = acked as usize;
-                if !self.syn_acked {
-                    self.syn_acked = true;
-                    bytes -= 1;
+            let window = u32::from(seg.window) << self.guest_wscale;
+            // An acknowledgement of what was never sent, or from before what the guest has
+            // acknowledged, says nothing of what it has, nor of its window (RFC 9293
+            // §3.10.7.4).
+            if acked <= self.snd_max.wrapping_sub(self.snd_una) {
+                self.probes = 0;
+                if acked > 0 {
+                    self.on_acked(seg.ack);
+                } else if self.snd_nxt != self.snd_una
+                    && self.syn_acked
+                    && seg.payload.is_empty()
+                    && seg.flags & FIN == 0
+                    && window == self.guest_wnd
+                {
+                    self.on_duplicate(seg.ack);
                 }
-                if self.fin_sent && seg.ack == self.snd_nxt {
-                    bytes = bytes.saturating_sub(1);
-                }
-                self.to_guest.drain(..bytes.min(self.to_guest.len()));
-                self.snd_una = seg.ack;
-                self.retries = 0;
-                self.sent_at = (self.snd_una != self.snd_nxt).then(Instant::now);
+                self.guest_wnd = window;
+                self.on_window();
             }
-            self.guest_wnd = u32::from(seg.window) << self.guest_wscale;
         }
         // The guest's bytes: what is new of them, from rcv_nxt on.
         let mut data = seg.payload;
@@ -456,9 +645,22 @@ impl Conn {
         let mut answer = false;
         if seq == self.rcv_nxt && !data.is_empty() && !self.guest_fin {
             let room = TO_HOST.saturating_sub(self.to_host.len());
-            let take = data.len().min(room);
-            self.to_host.extend(data.get(..take).unwrap_or_default());
-            self.rcv_nxt = self.rcv_nxt.wrapping_add(take as u32);
+            let taken = data.get(..data.len().min(room)).unwrap_or_default();
+            // Straight from the frame to the host's socket while nothing waits before them;
+            // what it has no room for now waits in `to_host`.
+            let written = if self.to_host.is_empty() {
+                match write_now(&self.sock, [taken, &[]]) {
+                    Ok(n) => n,
+                    Err(_) => {
+                        self.reset(out);
+                        return;
+                    }
+                }
+            } else {
+                0
+            };
+            self.to_host.extend(taken.get(written..).unwrap_or_default());
+            self.rcv_nxt = self.rcv_nxt.wrapping_add(taken.len() as u32);
             answer = true;
         } else if !seg.payload.is_empty() {
             // Old or out of order: say where this side is.
@@ -480,7 +682,7 @@ impl Conn {
             self.ack(out);
         }
         self.send_new(out);
-        if self.fin_sent && self.snd_una == self.snd_nxt && self.guest_fin && self.host_shut {
+        if self.fin_acked() && self.guest_fin && self.host_shut {
             self.closed = true;
         }
     }
@@ -490,7 +692,8 @@ impl Conn {
         self.blocked
     }
 
-    /// Sends what a full ring kept from the guest, now that it may have room.
+    /// Sends what a full ring kept from the guest, a segment to send again first, now that
+    /// it may have room.
     pub fn unblock(&mut self, out: &mut dyn ToGuest) {
         if self.blocked {
             self.send_new(out);
@@ -502,11 +705,16 @@ impl Conn {
         self.sent_at.map(|t| t + RTO * 2u32.saturating_pow(self.retries))
     }
 
-    /// Resends from `snd_una` if its time has come; resets the connection after
-    /// [`RETRIES`].
+    /// Sends the oldest segment unacknowledged again if its time has come, alone (RFC
+    /// 6298 §5.4); resets the connection after [`RETRIES`]. While a window is closed on
+    /// bytes waiting, probes it instead.
     pub fn on_timer(&mut self, now: Instant, out: &mut dyn ToGuest) {
         let Some(due) = self.deadline() else { return };
         if now < due {
+            return;
+        }
+        if self.state == State::Open && self.snd_nxt == self.snd_una {
+            self.probe(now, out);
             return;
         }
         if self.retries >= RETRIES {
@@ -514,15 +722,16 @@ impl Conn {
             return;
         }
         self.retries += 1;
+        self.sent_at = Some(now);
+        // A timeout ends a repair, and what was sent before it is `recover` (RFC 6582
+        // §3.2): an acknowledgement after one may be of a segment the guest had all along,
+        // late rather than lost, and says nothing of what it lacks.
+        self.recover = self.snd_max;
+        self.repair = None;
         if self.state == State::SynSent {
-            self.sent_at = Some(now);
             self.send_syn(out);
             return;
         }
-        // Everything from snd_una is sent again.
-        self.snd_nxt = self.snd_una;
-        self.fin_sent = false;
-        self.sent_at = Some(now);
         if !self.syn_acked {
             let wscale = self.scaled.then_some(OUR_WSCALE);
             out.segment(
@@ -532,17 +741,62 @@ impl Conn {
                 SYN | ACK,
                 self.window(),
                 Some((MSS, wscale)),
-                &[],
+                EMPTY,
             );
-            self.snd_nxt = self.snd_una.wrapping_add(1);
             return;
         }
+        self.resend = true;
         self.send_new(out);
+    }
+
+    /// A probe of a window closed on bytes waiting (RFC 9293 §3.8.6.1): a segment numbered
+    /// one before what the guest has acknowledged, which it answers with its window, as
+    /// Linux's are (tcp_xmit_probe_skb). The wait doubles from one to the next, up to
+    /// [`RETRIES`] doublings; the connection is reset only after [`RETRIES`] go unanswered,
+    /// never while the guest answers them (RFC 1122 §4.2.2.17).
+    fn probe(&mut self, now: Instant, out: &mut dyn ToGuest) {
+        if !self.closed_on_bytes() {
+            self.sent_at = None;
+            return;
+        }
+        if self.probes >= RETRIES {
+            self.reset(out);
+            return;
+        }
+        self.probes += 1;
+        self.retries = (self.retries + 1).min(RETRIES);
+        self.sent_at = Some(now);
+        out.segment(
+            &self.key,
+            self.snd_una.wrapping_sub(1),
+            self.rcv_nxt,
+            ACK,
+            self.window(),
+            None,
+            EMPTY,
+        );
     }
 
     pub fn fd(&self) -> i32 {
         self.sock.as_raw_fd()
     }
+}
+
+/// Writes what `sock` takes now of `parts`, one after another, in as few writes as it
+/// takes them in: how much it took, or the error that ended it.
+fn write_now(mut sock: impl Write, parts: Payload<'_>) -> io::Result<usize> {
+    let mut done = 0;
+    while done < parts[0].len() + parts[1].len() {
+        let [a, b] = span(parts, done, usize::MAX);
+        match sock.write_vectored(&[IoSlice::new(a), IoSlice::new(b)]) {
+            Ok(0) => break,
+            Ok(n) => done += n,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(done)
 }
 
 /// A TCP socket connecting to `to` without blocking.
@@ -602,9 +856,12 @@ mod tests {
     use std::net::TcpListener;
 
     /// What a connection sent the guest: each segment's sequence, acknowledgement, flags
-    /// and length.
+    /// and bytes. A full ring refuses segments of bytes, as the stack's does.
     #[derive(Default)]
-    struct Sent(Vec<(u32, u32, u8, usize)>);
+    struct Sent {
+        segments: Vec<(u32, u32, u8, Vec<u8>)>,
+        full: bool,
+    }
 
     impl ToGuest for Sent {
         fn segment(
@@ -615,10 +872,20 @@ mod tests {
             flags: u8,
             _: u16,
             _: Option<(u16, Option<u8>)>,
-            payload: &[u8],
+            payload: Payload<'_>,
         ) -> bool {
-            self.0.push((seq, ack, flags, payload.len()));
+            if self.full && payload != EMPTY {
+                return false;
+            }
+            self.segments.push((seq, ack, flags, payload.concat()));
             true
+        }
+    }
+
+    impl Sent {
+        /// What was sent since last asked.
+        fn take(&mut self) -> Vec<(u32, u32, u8, Vec<u8>)> {
+            std::mem::take(&mut self.segments)
         }
     }
 
@@ -659,11 +926,404 @@ mod tests {
     fn probes_are_answered_and_acknowledgements_are_not() {
         let mut sent = Sent::default();
         let (mut c, _client) = opened(&mut sent);
-        sent.0.clear();
+        sent.take();
         c.on_segment(&segment(5000, 1001, ACK), &mut sent);
-        assert_eq!(sent.0, [(1001, 5001, ACK, 0)]);
-        sent.0.clear();
+        assert_eq!(sent.take(), [(1001, 5001, ACK, vec![])]);
         c.on_segment(&segment(5001, 1001, ACK), &mut sent);
-        assert_eq!(sent.0, []);
+        assert_eq!(sent.take(), []);
+    }
+
+    /// The guest's bytes go straight to the host's socket while nothing waits before them,
+    /// and both halves of a queue that wraps go in one write, in order.
+    #[test]
+    fn guest_bytes_reach_the_host_in_order() {
+        let mut sent = Sent::default();
+        let (mut c, mut client) = opened(&mut sent);
+        let straight = wire::Tcp {
+            payload: b"straight",
+            ..segment(5001, 1001, ACK)
+        };
+        c.on_segment(&straight, &mut sent);
+        // Taken at once, they never touched the queue, nor made it take memory.
+        assert_eq!(c.to_host.capacity(), 0);
+        let mut q = VecDeque::with_capacity(7);
+        for &b in b"abc".iter().rev() {
+            q.push_front(b);
+        }
+        q.extend(b"defg");
+        assert_eq!(q.as_slices(), (&b"abc"[..], &b"defg"[..]));
+        c.to_host = q;
+        c.on_writable(&mut sent);
+        assert!(c.to_host.is_empty());
+        let mut got = [0u8; 15];
+        client.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"straightabcdefg");
+    }
+
+    /// A socket that takes a few bytes a write is written the rest of `parts`, in order,
+    /// until it takes no more.
+    #[test]
+    fn short_writes_go_on_from_where_they_stopped() {
+        struct Trickle(Vec<u8>);
+        impl Write for Trickle {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                if self.0.len() >= 8 {
+                    return Err(io::ErrorKind::WouldBlock.into());
+                }
+                let n = b.len().min(3);
+                self.0.extend_from_slice(&b[..n]);
+                Ok(n)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut sock = Trickle(Vec::new());
+        // abc, then de (a write takes one slice at a time by default), then fgh.
+        assert_eq!(write_now(&mut sock, [b"abcde", b"fghij"]).unwrap(), 8);
+        assert_eq!(sock.0, b"abcdefgh");
+    }
+
+    /// What the host's socket has no room for waits in `to_host`, and follows in order as
+    /// the socket makes room.
+    #[test]
+    fn bytes_the_host_has_no_room_for_wait_their_turn() {
+        let mut sent = Sent::default();
+        let (mut c, mut client) = opened(&mut sent);
+        let chunk: Vec<u8> = (0..65_000u32).map(|i| (i % 249) as u8).collect();
+        let (mut seq, mut total) = (5001u32, 0usize);
+        while c.to_host.is_empty() && total < TO_HOST {
+            let bytes = wire::Tcp {
+                payload: &chunk,
+                ..segment(seq, 1001, ACK)
+            };
+            c.on_segment(&bytes, &mut sent);
+            seq = seq.wrapping_add(chunk.len() as u32);
+            total += chunk.len();
+        }
+        assert!(
+            !c.to_host.is_empty(),
+            "the host's socket took all {total} bytes at once"
+        );
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let (mut got, mut buf) = (Vec::with_capacity(total), vec![0u8; 1 << 16]);
+        while got.len() < total {
+            let n = client.read(&mut buf).unwrap();
+            assert!(n > 0);
+            got.extend_from_slice(&buf[..n]);
+            c.on_writable(&mut sent);
+        }
+        assert!(c.to_host.is_empty());
+        assert!(got.chunks(chunk.len()).all(|piece| piece == chunk));
+    }
+
+    /// 4000 host bytes for the guest, sent: the guest takes 536-byte segments (no MSS
+    /// offered), so 7 of them and one of 248 bytes, from 1001.
+    fn sending(sent: &mut Sent) -> (Conn, TcpStream, Vec<u8>) {
+        let (mut c, client) = opened(sent);
+        sent.take();
+        let data: Vec<u8> = (0..4000u32).map(|i| (i % 251) as u8).collect();
+        c.to_guest.extend(&data);
+        c.send_new(sent);
+        let segments = sent.take();
+        assert_eq!(segments.len(), 8);
+        assert_eq!(segments.last().unwrap().2, ACK | PSH);
+        let bytes: Vec<u8> = segments.iter().flat_map(|s| s.3.clone()).collect();
+        assert_eq!(bytes, data);
+        (c, client, data)
+    }
+
+    /// Segments are the queue's bytes where it wraps, each numbered by where it starts,
+    /// copied from the queue's two halves as they lie.
+    #[test]
+    fn segments_are_the_queues_bytes_across_its_wrap() {
+        let mut sent = Sent::default();
+        let (mut c, _client) = opened(&mut sent);
+        let data: Vec<u8> = (0..4000u32).map(|i| (i % 253) as u8).collect();
+        // Pushed in front of an empty queue, the first 1000 bytes lie at its buffer's end
+        // and the rest at its start.
+        let mut q = VecDeque::with_capacity(data.len());
+        for &b in data[..1000].iter().rev() {
+            q.push_front(b);
+        }
+        q.extend(&data[1000..]);
+        let (front, back) = q.as_slices();
+        assert_eq!((front.len(), back.len()), (1000, 3000));
+        c.to_guest = q;
+        sent.take();
+        c.send_new(&mut sent);
+        let mut at = 0;
+        for (seq, _, _, bytes) in sent.take() {
+            assert_eq!(seq, 1001 + at as u32);
+            assert_eq!(bytes, data[at..at + bytes.len()], "the segment at {at}");
+            at += bytes.len();
+        }
+        assert_eq!(at, data.len());
+    }
+
+    /// A timeout sends the oldest segment unacknowledged again, alone (RFC 6298 §5.4), and
+    /// doubles the wait for the next; nothing past it is sent again, and the guest's
+    /// acknowledgement of all ends it.
+    #[test]
+    fn a_timeout_sends_the_oldest_segment_alone() {
+        let mut sent = Sent::default();
+        let (mut c, _client, data) = sending(&mut sent);
+        let due = c.deadline().unwrap();
+        c.on_timer(due - Duration::from_millis(1), &mut sent);
+        assert_eq!(sent.take(), []);
+        c.on_timer(due, &mut sent);
+        assert_eq!(sent.take(), [(1001, 5001, ACK, data[..536].to_vec())]);
+        assert_eq!(c.deadline(), Some(due + 2 * RTO));
+        c.on_segment(&segment(5001, 5001, ACK), &mut sent);
+        assert_eq!(sent.take(), []);
+        assert_eq!(c.deadline(), None);
+    }
+
+    /// A duplicate acknowledgement sends the segment the guest lacks again, at once; each
+    /// partial acknowledgement after it, the next one it lacks (RFC 6582 §3.2); and all
+    /// acknowledged ends the repair.
+    #[test]
+    fn duplicates_and_partial_acknowledgements_repair_what_was_lost() {
+        let mut sent = Sent::default();
+        let (mut c, _client, data) = sending(&mut sent);
+        // The first and the fourth lost: each of the six that came says where the guest is.
+        let dup = segment(5001, 1001, ACK);
+        c.on_segment(&dup, &mut sent);
+        assert_eq!(sent.take(), [(1001, 5001, ACK, data[..536].to_vec())]);
+        for _ in 0..5 {
+            c.on_segment(&dup, &mut sent);
+        }
+        assert_eq!(sent.take(), []);
+        // The first filled, the guest acknowledges up to the fourth: sent again at once.
+        c.on_segment(&segment(5001, 1001 + 3 * 536, ACK), &mut sent);
+        assert_eq!(
+            sent.take(),
+            [(1001 + 3 * 536, 5001, ACK, data[3 * 536..4 * 536].to_vec())]
+        );
+        c.on_segment(&segment(5001, 5001, ACK), &mut sent);
+        assert_eq!(sent.take(), []);
+        assert_eq!(c.deadline(), None);
+        // A later loss is repaired as the first was.
+        c.to_guest.extend(&data[..1000]);
+        c.send_new(&mut sent);
+        assert_eq!(sent.take().len(), 2);
+        c.on_segment(&segment(5001, 5001, ACK), &mut sent);
+        assert_eq!(sent.take(), [(5001, 5001, ACK, data[..536].to_vec())]);
+    }
+
+    /// An acknowledgement that changes the window, carries bytes or a FIN says something
+    /// new, and is no duplicate (RFC 5681 §2): none of them repairs anything.
+    #[test]
+    fn what_says_something_new_is_no_duplicate() {
+        let mut sent = Sent::default();
+        let (mut c, _client, _) = sending(&mut sent);
+        for i in 0..4u16 {
+            let window = wire::Tcp {
+                window: 65_534 + i % 2,
+                ..segment(5001, 1001, ACK)
+            };
+            c.on_segment(&window, &mut sent);
+        }
+        for i in 0..4u32 {
+            let bytes = wire::Tcp {
+                payload: b"x",
+                ..segment(5001 + i, 1001, ACK)
+            };
+            c.on_segment(&bytes, &mut sent);
+        }
+        let fin = segment(5005, 1001, ACK | FIN);
+        c.on_segment(&fin, &mut sent);
+        assert!(sent.take().iter().all(|s| s.3.is_empty()));
+    }
+
+    /// Duplicates that acknowledge no more than what was sent before a timeout are of
+    /// segments the timeout sent again, which the guest had: they repair nothing (RFC 6582
+    /// §3.2 step 2).
+    #[test]
+    fn a_timeouts_duplicates_repair_nothing() {
+        let mut sent = Sent::default();
+        let (mut c, _client, data) = sending(&mut sent);
+        c.on_timer(c.deadline().unwrap(), &mut sent);
+        assert_eq!(sent.take(), [(1001, 5001, ACK, data[..536].to_vec())]);
+        // Late, not lost: the guest had it all, and says so again for each copy.
+        c.on_segment(&segment(5001, 5001, ACK), &mut sent);
+        c.to_guest.extend(&data[..2000]);
+        c.send_new(&mut sent);
+        assert_eq!(sent.take().len(), 4);
+        for _ in 0..3 {
+            c.on_segment(&segment(5001, 5001, ACK), &mut sent);
+        }
+        assert_eq!(sent.take(), []);
+    }
+
+    /// A window that shrinks below what is in flight has the guest drop what is past its
+    /// edge, as Linux's does when it closes its window for want of memory: nothing is
+    /// waited on meanwhile, and all past the edge goes again, in order, as it opens.
+    #[test]
+    fn a_window_that_shrinks_has_what_was_past_it_sent_again() {
+        let mut sent = Sent::default();
+        let (mut c, _client, data) = sending(&mut sent);
+        // The second segment dropped, the window closed at it.
+        let closed = wire::Tcp {
+            window: 0,
+            ..segment(5001, 1001 + 536, ACK)
+        };
+        c.on_segment(&closed, &mut sent);
+        // Nothing in flight, nothing awaited but the window: the guest is probed for it.
+        let probe = c.deadline().unwrap();
+        // What it drops past its edge, it says so of: nothing for it.
+        for _ in 0..4 {
+            c.on_segment(&closed, &mut sent);
+        }
+        assert_eq!(sent.take(), []);
+        assert_eq!(c.deadline(), Some(probe));
+        c.on_segment(&segment(5001, 1001 + 536, ACK), &mut sent);
+        let again = sent.take();
+        assert_eq!(again.first().map(|s| s.0), Some(1001 + 536));
+        let bytes: Vec<u8> = again.iter().flat_map(|s| s.3.clone()).collect();
+        assert_eq!(bytes, data[536..]);
+        // Segments past the edge still on their way when it shrank reach a guest whose
+        // window has opened, before those sent again: what it says of them is no loss.
+        c.on_segment(&segment(5001, 1001 + 536, ACK), &mut sent);
+        assert_eq!(sent.take(), []);
+        // Had the guest had them after all, its acknowledgement of them all is taken.
+        c.on_segment(&segment(5001, 5001, ACK), &mut sent);
+        assert_eq!(c.deadline(), None);
+        assert!(c.to_guest.is_empty());
+    }
+
+    /// A window closed on bytes waiting is probed with a segment numbered one before what
+    /// the guest has acknowledged, at waits that double; probes the guest answers keep the
+    /// connection, however long the window stays shut, and its opening sends the bytes.
+    #[test]
+    fn a_window_closed_on_bytes_is_probed_until_it_opens() {
+        let mut sent = Sent::default();
+        let (mut c, _client) = opened(&mut sent);
+        let shut = wire::Tcp {
+            window: 0,
+            ..segment(5001, 1001, ACK)
+        };
+        c.on_segment(&shut, &mut sent);
+        c.to_guest.extend(b"waiting");
+        c.send_new(&mut sent);
+        sent.take();
+        let mut due = c.deadline().unwrap();
+        for i in 1..=2 * RETRIES {
+            c.on_timer(due, &mut sent);
+            assert_eq!(sent.take(), [(1000, 5001, ACK, vec![])]);
+            let next = c.deadline().unwrap();
+            assert_eq!(next - due, RTO * 2u32.pow(i.min(RETRIES)));
+            due = next;
+            c.on_segment(&shut, &mut sent);
+            assert!(!c.closed);
+        }
+        c.on_segment(&segment(5001, 1001, ACK), &mut sent);
+        assert_eq!(sent.take(), [(1001, 5001, ACK | PSH, b"waiting".to_vec())]);
+    }
+
+    /// Probes the guest never answers end the connection after [`RETRIES`].
+    #[test]
+    fn unanswered_probes_end_the_connection() {
+        let mut sent = Sent::default();
+        let (mut c, _client) = opened(&mut sent);
+        let shut = wire::Tcp {
+            window: 0,
+            ..segment(5001, 1001, ACK)
+        };
+        c.on_segment(&shut, &mut sent);
+        c.to_guest.extend(b"waiting");
+        c.send_new(&mut sent);
+        for _ in 0..RETRIES {
+            c.on_timer(c.deadline().unwrap(), &mut sent);
+            assert!(!c.closed);
+        }
+        sent.take();
+        c.on_timer(c.deadline().unwrap(), &mut sent);
+        assert!(c.closed);
+        assert_eq!(sent.take(), [(1001, 5001, RST | ACK, vec![])]);
+    }
+
+    /// The FIN past the last byte goes again, after them, once a window that shrank had the
+    /// guest drop it; the connection's end waits for its acknowledgement.
+    #[test]
+    fn a_fin_past_a_shrunk_window_goes_again_after_the_bytes() {
+        let mut sent = Sent::default();
+        let (mut c, _client) = opened(&mut sent);
+        sent.take();
+        c.to_guest.extend(b"last words");
+        c.host_eof = true;
+        c.send_new(&mut sent);
+        assert_eq!(
+            sent.take(),
+            [
+                (1001, 5001, ACK | PSH, b"last words".to_vec()),
+                (1011, 5001, FIN | ACK, vec![])
+            ]
+        );
+        c.on_segment(
+            &wire::Tcp {
+                window: 0,
+                ..segment(5001, 1001, ACK)
+            },
+            &mut sent,
+        );
+        c.on_segment(&segment(5001, 1001, ACK), &mut sent);
+        assert_eq!(
+            sent.take(),
+            [
+                (1001, 5001, ACK | PSH, b"last words".to_vec()),
+                (1011, 5001, FIN | ACK, vec![])
+            ]
+        );
+        c.on_segment(&segment(5001, 1012, ACK | FIN), &mut sent);
+        c.flush_to_host(&mut sent);
+        assert!(c.closed);
+    }
+
+    /// A segment lost from a window of two has one duplicate say so (RFC 5827's early
+    /// retransmit): it goes again at once, not at a timeout.
+    #[test]
+    fn a_loss_in_a_small_window_is_repaired_at_once() {
+        let mut sent = Sent::default();
+        let (mut c, _client) = opened(&mut sent);
+        sent.take();
+        let small = |seq, ack| wire::Tcp {
+            window: 2 * 536,
+            ..segment(seq, ack, ACK)
+        };
+        c.on_segment(&small(5001, 1001), &mut sent);
+        let data: Vec<u8> = (0..4000u32).map(|i| (i % 251) as u8).collect();
+        c.to_guest.extend(&data);
+        c.send_new(&mut sent);
+        assert_eq!(sent.take().len(), 2);
+        c.on_segment(&small(5001, 1001), &mut sent);
+        assert_eq!(sent.take(), [(1001, 5001, ACK, data[..536].to_vec())]);
+    }
+
+    /// A segment to send again that a full ring has no room for waits for room, and goes
+    /// before anything new.
+    #[test]
+    fn a_full_ring_keeps_a_segment_to_send_again() {
+        let mut sent = Sent::default();
+        let (mut c, _client, data) = sending(&mut sent);
+        // 100 bytes more for the guest, which the full ring refuses too.
+        c.to_guest.extend(&data[..100]);
+        sent.full = true;
+        let dup = segment(5001, 1001, ACK);
+        for _ in 0..3 {
+            c.on_segment(&dup, &mut sent);
+        }
+        assert!(c.blocked());
+        assert_eq!(sent.take(), []);
+        sent.full = false;
+        c.unblock(&mut sent);
+        assert_eq!(
+            sent.take(),
+            [
+                (1001, 5001, ACK, data[..536].to_vec()),
+                (5001, 5001, ACK | PSH, data[..100].to_vec()),
+            ]
+        );
+        assert!(!c.blocked());
     }
 }

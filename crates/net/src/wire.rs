@@ -291,22 +291,24 @@ impl Frames {
         }
     }
 
-    /// A UDP datagram, its checksum left to the guest's trust in its device.
-    pub fn udp(&self, out: &mut Vec<u8>, src: (Ipv4Addr, u16), dst: (Ipv4Addr, u16), payload: &[u8]) {
+    /// A UDP datagram's headers, for `len` bytes of payload that follow them: its
+    /// checksum is left to the guest's trust in its device, so the headers need nothing of
+    /// the bytes, which go to the guest from where they lie.
+    pub fn udp_headers(&self, out: &mut Vec<u8>, src: (Ipv4Addr, u16), dst: (Ipv4Addr, u16), len: usize) {
         self.start(out, ETHERTYPE_IPV4, true);
-        self.ipv4(out, src.0, dst.0, PROTO_UDP, 8 + payload.len());
-        let len = u16::try_from(8 + payload.len()).unwrap_or(u16::MAX);
+        self.ipv4(out, src.0, dst.0, PROTO_UDP, 8 + len);
+        let len = u16::try_from(8 + len).unwrap_or(u16::MAX);
         out.extend_from_slice(&src.1.to_be_bytes());
         out.extend_from_slice(&dst.1.to_be_bytes());
         out.extend_from_slice(&len.to_be_bytes());
         out.extend_from_slice(&[0, 0]);
-        out.extend_from_slice(payload);
     }
 
-    /// A TCP segment, its checksum left to the guest's trust in its device; `syn_options`
-    /// adds the MSS and window scale a SYN-ACK offers.
+    /// A TCP segment's headers, for `len` bytes of payload that follow them, its checksum
+    /// left to the guest's trust in its device as a datagram's is; `syn_options` adds the
+    /// MSS and window scale a SYN or SYN-ACK offers.
     #[allow(clippy::too_many_arguments)]
-    pub fn tcp(
+    pub fn tcp_headers(
         &self,
         out: &mut Vec<u8>,
         src: (Ipv4Addr, u16),
@@ -316,7 +318,7 @@ impl Frames {
         flags: u8,
         window: u16,
         syn_options: Option<(u16, Option<u8>)>,
-        payload: &[u8],
+        len: usize,
     ) {
         let opts = match syn_options {
             Some((_, Some(_))) => 8,
@@ -324,7 +326,7 @@ impl Frames {
             None => 0,
         };
         self.start(out, ETHERTYPE_IPV4, true);
-        self.ipv4(out, src.0, dst.0, PROTO_TCP, 20 + opts + payload.len());
+        self.ipv4(out, src.0, dst.0, PROTO_TCP, 20 + opts + len);
         out.extend_from_slice(&src.1.to_be_bytes());
         out.extend_from_slice(&dst.1.to_be_bytes());
         out.extend_from_slice(&seq.to_be_bytes());
@@ -341,7 +343,6 @@ impl Frames {
                 out.extend_from_slice(&[1, 3, 3, w]);
             }
         }
-        out.extend_from_slice(payload);
     }
 }
 
@@ -360,7 +361,7 @@ mod tests {
         };
         let mut out = Vec::new();
         let (a, b) = (Ipv4Addr::new(1, 2, 3, 4), Ipv4Addr::new(172, 17, 0, 2));
-        f.tcp(
+        f.tcp_headers(
             &mut out,
             (a, 80),
             (b, 5000),
@@ -369,7 +370,7 @@ mod tests {
             SYN | ACK,
             1000,
             Some((65480, Some(7))),
-            b"",
+            0,
         );
         let e = eth(&out[VNET..]).unwrap();
         assert_eq!(
@@ -393,6 +394,32 @@ mod tests {
         }
     }
 
+    /// A segment's and a datagram's headers count the bytes that follow them, and read
+    /// back with them as their payload, to the last.
+    #[test]
+    fn headers_count_the_bytes_that_follow_them() {
+        let f = Frames {
+            gateway_mac: [2, 0, 0, 0, 0, 1],
+            guest_mac: [2, 0x42, 0xac, 0x11, 0, 2],
+        };
+        let (a, b) = (Ipv4Addr::new(1, 2, 3, 4), Ipv4Addr::new(172, 17, 0, 2));
+        let bytes: Vec<u8> = (0..1460u32).map(|i| (i * 7) as u8).collect();
+        let mut out = Vec::new();
+        f.tcp_headers(&mut out, (a, 80), (b, 5000), 7, 9, ACK, 1000, None, bytes.len());
+        assert_eq!(out.len(), VNET + 14 + IPV4 + 20);
+        out.extend_from_slice(&bytes);
+        let ip = ipv4(eth(&out[VNET..]).unwrap().payload).unwrap();
+        assert_eq!(checksum(ip.header), 0);
+        assert_eq!(tcp(ip.payload).unwrap().payload, bytes);
+        out.clear();
+        f.udp_headers(&mut out, (a, 53), (b, 5353), bytes.len());
+        assert_eq!(out.len(), VNET + 14 + IPV4 + 8);
+        out.extend_from_slice(&bytes);
+        let ip = ipv4(eth(&out[VNET..]).unwrap().payload).unwrap();
+        assert_eq!(checksum(ip.header), 0);
+        assert_eq!(udp(ip.payload).unwrap().payload, bytes);
+    }
+
     /// A destination unreachable quotes the datagram's header and the first 8 bytes of its
     /// data, under a checksum that sums to zero (RFC 792).
     #[test]
@@ -406,13 +433,10 @@ mod tests {
             Ipv4Addr::new(172, 17, 0, 2),
             Ipv4Addr::new(8, 8, 8, 8),
         );
+        let question = b"a question longer than eight";
         let mut sent = Vec::new();
-        f.udp(
-            &mut sent,
-            (guest, 5353),
-            (far, 53),
-            b"a question longer than eight",
-        );
+        f.udp_headers(&mut sent, (guest, 5353), (far, 53), question.len());
+        sent.extend_from_slice(question);
         let sent_ip = ipv4(eth(&sent[VNET..]).unwrap().payload).unwrap();
         let mut out = Vec::new();
         f.icmp_unreachable(&mut out, gateway, guest, ADMIN_PROHIBITED, &sent_ip);

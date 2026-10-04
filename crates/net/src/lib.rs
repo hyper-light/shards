@@ -22,7 +22,7 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
 use shards_netring::{Consumer, Producer, Region};
-use tcp::{Conn, Key, ToGuest};
+use tcp::{Conn, Key, Payload, ToGuest};
 use wire::Frames;
 
 /// The ports a published connection comes from, at the gateway: IANA's dynamic range
@@ -238,12 +238,11 @@ struct Out<'a, 'r> {
 }
 
 impl Out<'_, '_> {
-    fn send(&mut self, frame: &[u8]) -> bool {
+    /// Sends a frame of `parts`, one after another: into the ring, or queued while it is
+    /// full or others wait.
+    fn send(&mut self, parts: &[&[u8]]) -> bool {
         if self.backlog.is_empty() {
-            match self.to_guest.try_push_with(frame.len(), |dst| {
-                // SAFETY: the record's `frame.len()` bytes.
-                unsafe { std::ptr::copy_nonoverlapping(frame.as_ptr(), dst, frame.len()) };
-            }) {
+            match self.to_guest.try_push(parts) {
                 Ok(Some(_)) => return true,
                 Ok(None) => {}
                 Err(_) => return false,
@@ -252,8 +251,28 @@ impl Out<'_, '_> {
         if self.backlog.len() >= BACKLOG {
             self.backlog.pop_front();
         }
-        self.backlog.push_back(frame.to_vec());
+        self.backlog.push_back(parts.concat());
         true
+    }
+
+    /// Sends the frame `build` writes, made in the scratch.
+    fn built(&mut self, build: impl FnOnce(&Frames, &mut Vec<u8>)) -> bool {
+        let mut f = std::mem::take(self.scratch);
+        build(self.frames, &mut f);
+        let sent = self.send(&[&f]);
+        *self.scratch = f;
+        sent
+    }
+
+    /// Sends the guest `payload` from `src`, to its port `port`: the datagram's headers
+    /// made in the scratch, its bytes copied from where they lie.
+    fn datagram(&mut self, src: (Ipv4Addr, u16), port: u16, payload: &[u8]) -> bool {
+        let mut head = std::mem::take(self.scratch);
+        self.frames
+            .udp_headers(&mut head, src, (self.guest_ip, port), payload.len());
+        let sent = self.send(&[&head, payload]);
+        *self.scratch = head;
+        sent
     }
 }
 
@@ -267,15 +286,18 @@ impl ToGuest for Out<'_, '_> {
         flags: u8,
         window: u16,
         syn: Option<(u16, Option<u8>)>,
-        payload: &[u8],
+        payload: Payload<'_>,
     ) -> bool {
-        // TCP segments with bytes wait for room rather than fill the backlog.
-        if !self.backlog.is_empty() && !payload.is_empty() {
+        let [a, b] = payload;
+        let len = a.len() + b.len();
+        // A segment with bytes waits for room rather than fill the backlog, so that what
+        // TCP sends is what it holds; a bare control segment may queue.
+        if len > 0 && !self.backlog.is_empty() {
             return false;
         }
-        let mut f = std::mem::take(self.scratch);
-        self.frames.tcp(
-            &mut f,
+        let mut head = std::mem::take(self.scratch);
+        self.frames.tcp_headers(
+            &mut head,
             key.remote,
             (self.guest_ip, key.guest_port),
             seq,
@@ -283,22 +305,14 @@ impl ToGuest for Out<'_, '_> {
             flags,
             window,
             syn,
-            payload,
+            len,
         );
-        // A segment with bytes waits for room, so that what TCP sends is what it holds;
-        // a bare control segment may queue.
-        let sent = if payload.is_empty() {
-            self.send(&f)
+        let sent = if len == 0 {
+            self.send(&[&head])
         } else {
-            match self.to_guest.try_push_with(f.len(), |dst| {
-                // SAFETY: the record's `f.len()` bytes.
-                unsafe { std::ptr::copy_nonoverlapping(f.as_ptr(), dst, f.len()) };
-            }) {
-                Ok(Some(_)) => true,
-                _ => false,
-            }
+            matches!(self.to_guest.try_push(&[&head, a, b]), Ok(Some(_)))
         };
-        *self.scratch = f;
+        *self.scratch = head;
         sent
     }
 }
@@ -607,7 +621,6 @@ impl<'r> Stack<'r> {
             return;
         };
         let guest_port = *guest_port;
-        let mut out = Vec::new();
         for _ in 0..BUDGET {
             let Ok((n, peer, asked)) = pktinfo::recv(sock, &mut self.buf) else {
                 return;
@@ -640,21 +653,18 @@ impl<'r> Stack<'r> {
                     });
                 }
             }
-            self.frames.udp(
-                &mut out,
-                (self.cfg.gateway_ip, port),
-                (self.cfg.guest_ip, guest_port),
-                self.buf.get(..n).unwrap_or_default(),
-            );
-            let (frames, guest_ip) = (&self.frames, self.cfg.guest_ip);
             let mut o = Out {
-                frames,
+                frames: &self.frames,
                 to_guest: &mut self.to_guest,
                 backlog: &mut self.backlog,
-                guest_ip,
+                guest_ip: self.cfg.guest_ip,
                 scratch: &mut self.scratch,
             };
-            o.send(&out);
+            o.datagram(
+                (self.cfg.gateway_ip, port),
+                guest_port,
+                self.buf.get(..n).unwrap_or_default(),
+            );
         }
     }
 
@@ -725,10 +735,7 @@ impl<'r> Stack<'r> {
 
     fn flush_backlog(&mut self) {
         while let Some(f) = self.backlog.front() {
-            match self.to_guest.try_push_with(f.len(), |dst| {
-                // SAFETY: the record's `f.len()` bytes.
-                unsafe { std::ptr::copy_nonoverlapping(f.as_ptr(), dst, f.len()) };
-            }) {
+            match self.to_guest.try_push(&[f]) {
                 Ok(Some(_)) => {
                     self.backlog.pop_front();
                 }
@@ -750,9 +757,7 @@ impl<'r> Stack<'r> {
                     && req.sender_ip == self.cfg.guest_ip
                     && req.target_ip != self.cfg.guest_ip
                 {
-                    let mut out = Vec::new();
-                    self.frames.arp_reply(&mut out, &req);
-                    self.out().send(&out);
+                    self.out().built(|frames, f| frames.arp_reply(f, &req));
                 }
             }
             wire::ETHERTYPE_IPV4 => {
@@ -775,10 +780,9 @@ impl<'r> Stack<'r> {
     fn on_icmp(&mut self, ip: &wire::Ip<'_>) {
         let p = ip.payload;
         if p.first() == Some(&8) && ip.dst == self.cfg.gateway_ip {
-            let mut out = Vec::new();
-            self.frames
-                .icmp_echo_reply(&mut out, ip.dst, ip.src, p.get(4..).unwrap_or_default());
-            self.out().send(&out);
+            let data = p.get(4..).unwrap_or_default();
+            self.out()
+                .built(|frames, f| frames.icmp_echo_reply(f, ip.dst, ip.src, data));
         }
     }
 
@@ -799,10 +803,10 @@ impl<'r> Stack<'r> {
         // (Linux: EHOSTUNREACH, net/ipv4/icmp.c icmp_err_convert), where a datagram
         // dropped would leave a resolver to wait out its timeouts.
         if !self.cfg.allows(ip.dst) {
-            let mut out = Vec::new();
-            self.frames
-                .icmp_unreachable(&mut out, self.cfg.gateway_ip, ip.src, wire::ADMIN_PROHIBITED, ip);
-            self.out().send(&out);
+            let gateway = self.cfg.gateway_ip;
+            self.out().built(|frames, f| {
+                frames.icmp_unreachable(f, gateway, ip.src, wire::ADMIN_PROHIBITED, ip);
+            });
             return;
         }
         let key = (u.src_port, ip.dst, u.dst_port);
@@ -826,32 +830,20 @@ impl<'r> Stack<'r> {
     }
 
     fn on_udp(&mut self, key: &(u16, Ipv4Addr, u16)) {
-        let (guest_ip, frames) = (self.cfg.guest_ip, &self.frames);
         let Some(f) = self.udp.get_mut(key) else { return };
-        let mut out = Vec::new();
+        let mut o = Out {
+            frames: &self.frames,
+            to_guest: &mut self.to_guest,
+            backlog: &mut self.backlog,
+            guest_ip: self.cfg.guest_ip,
+            scratch: &mut self.scratch,
+        };
         for _ in 0..BUDGET {
             let Ok(n) = f.sock.recv(&mut self.buf) else {
                 return;
             };
-            {
-                {
-                    frames.udp(
-                        &mut out,
-                        (key.1, key.2),
-                        (guest_ip, key.0),
-                        self.buf.get(..n).unwrap_or_default(),
-                    );
-                    f.life.datagram(Instant::now(), true);
-                    let mut o = Out {
-                        frames,
-                        to_guest: &mut self.to_guest,
-                        backlog: &mut self.backlog,
-                        guest_ip,
-                        scratch: &mut self.scratch,
-                    };
-                    o.send(&out);
-                }
-            }
+            f.life.datagram(Instant::now(), true);
+            o.datagram((key.1, key.2), key.0, self.buf.get(..n).unwrap_or_default());
         }
     }
 
@@ -871,13 +863,13 @@ impl<'r> Stack<'r> {
                     // nothing; else it starts at 0 and acknowledges the segment.
                     let mut o = self.out();
                     if seg.flags & wire::ACK != 0 {
-                        o.segment(&key, seg.ack, 0, wire::RST, 0, None, &[]);
+                        o.segment(&key, seg.ack, 0, wire::RST, 0, None, tcp::EMPTY);
                     } else {
                         let ack = seg
                             .seq
                             .wrapping_add(seg.payload.len() as u32)
                             .wrapping_add(u32::from(seg.flags & (wire::SYN | wire::FIN) != 0));
-                        o.segment(&key, 0, ack, wire::RST | wire::ACK, 0, None, &[]);
+                        o.segment(&key, 0, ack, wire::RST | wire::ACK, 0, None, tcp::EMPTY);
                     }
                 }
                 return;
@@ -891,7 +883,7 @@ impl<'r> Stack<'r> {
                     wire::RST | wire::ACK,
                     0,
                     None,
-                    &[],
+                    tcp::EMPTY,
                 );
                 return;
             }
@@ -906,7 +898,7 @@ impl<'r> Stack<'r> {
                         wire::RST | wire::ACK,
                         0,
                         None,
-                        &[],
+                        tcp::EMPTY,
                     );
                     return;
                 }
@@ -997,6 +989,60 @@ impl<'r> Stack<'r> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A segment's headers and its bytes, from both halves of a queue that wraps, reach the
+    /// ring as one frame, as does a datagram; while frames wait in the backlog, a segment
+    /// of bytes waits for room, and a bare one queues behind them.
+    #[test]
+    fn frames_reach_the_ring_whole() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (cw, pr) = shards_netring::doorbell().unwrap();
+        let (_, cr) = shards_netring::doorbell().unwrap();
+        let mut producer = region.producer(1, pr);
+        let mut consumer = region.consumer(1, cr, cw);
+        let mut take = || {
+            consumer
+                .pop(|n, copy| {
+                    let mut f = vec![0u8; n];
+                    copy(0, f.as_mut_ptr(), n);
+                    f
+                })
+                .unwrap()
+        };
+        let frames = Frames {
+            gateway_mac: [2, 0, 0, 0, 0, 1],
+            guest_mac: [2, 0x42, 0xac, 0x11, 0, 2],
+        };
+        let (mut backlog, mut scratch) = (VecDeque::new(), Vec::new());
+        let guest_ip = Ipv4Addr::new(172, 17, 0, 2);
+        let mut out = Out {
+            frames: &frames,
+            to_guest: &mut producer,
+            backlog: &mut backlog,
+            guest_ip,
+            scratch: &mut scratch,
+        };
+        let key = Key {
+            guest_port: 80,
+            remote: (Ipv4Addr::new(1, 2, 3, 4), 40_000),
+        };
+        assert!(out.segment(&key, 7, 9, wire::ACK, 100, None, [b"hello, ", b"world"]));
+        assert!(out.datagram((Ipv4Addr::new(8, 8, 8, 8), 53), 5353, b"an answer"));
+        out.backlog.push_back(vec![0; 64]);
+        assert!(!out.segment(&key, 19, 9, wire::ACK, 100, None, [b"later", b""]));
+        assert!(out.segment(&key, 19, 9, wire::ACK, 100, None, tcp::EMPTY));
+        assert_eq!(out.backlog.len(), 2);
+        let segment = take().unwrap();
+        let ip = wire::ipv4(wire::eth(segment.get(wire::VNET..).unwrap()).unwrap().payload).unwrap();
+        assert_eq!((ip.src, ip.dst), (key.remote.0, guest_ip));
+        let t = wire::tcp(ip.payload).unwrap();
+        assert_eq!((t.seq, t.ack, t.payload), (7, 9, &b"hello, world"[..]));
+        let datagram = take().unwrap();
+        let ip = wire::ipv4(wire::eth(datagram.get(wire::VNET..).unwrap()).unwrap().payload).unwrap();
+        let u = wire::udp(ip.payload).unwrap();
+        assert_eq!((u.src_port, u.dst_port, u.payload), (53, 5353, &b"an answer"[..]));
+        assert_eq!(take(), None);
+    }
 
     /// What a build's steps reach: the Internet and the host's networks, not the host
     /// itself, a cloud's instance metadata, multicast or broadcast; a run's, by default,
