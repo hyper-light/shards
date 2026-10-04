@@ -32,6 +32,7 @@ rust-version = "1.98"
 libc = "0.2"
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
+  "Win32_Networking_WinSock",
   "Win32_Security_Cryptography",
   "Win32_Storage_FileSystem",
   "Win32_System_Console",

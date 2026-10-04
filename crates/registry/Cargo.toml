@@ -25,6 +25,9 @@ sha2 = "0.11"
 shards-image = { path = "../image" }
 time = { version = "0.3.55", features = ["parsing"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
 

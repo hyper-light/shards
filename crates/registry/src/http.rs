@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, ClientConnection, StreamOwned};
+use rustls::{ClientConfig, ClientConnection};
 
 use crate::proxy::{Proxies, Proxy};
 use crate::url::{Scheme, Url};
@@ -411,22 +411,15 @@ impl Client {
     }
 
     fn exchange(&self, mut conn: Conn, req: &Request<'_>, head: &[u8]) -> Result<Response<'_>, Failure> {
-        let written = conn.io.get_mut().write_all(head).and_then(|()| {
-            if let Some((mut file, len)) = req.file {
-                use std::io::{Seek as _, SeekFrom};
-                file.seek(SeekFrom::Start(0))?;
-                let sent = send_file(conn.io.get_mut(), file, len)?;
-                if sent != len {
-                    return Err(io::Error::other(format!("{sent} of the body's {len} bytes")));
-                }
-            }
-            conn.io.get_mut().flush()
+        let written = conn.io.get_mut().write_all(head).and_then(|()| match req.file {
+            Some((file, len)) => send_body(&mut conn, file, len),
+            None => conn.io.get_mut().flush().map(|()| true),
         });
         // A server may answer before it has read the whole request, then close: a 413 or a
-        // 401 to an upload. Go's transport reads that answer as the request is written, so
-        // where the write fails as the server leaves, the answer it left is read.
+        // 401 to an upload. Its answer is taken as it comes (`send_body`), or where a
+        // write fails as the server leaves, from what it left.
         let (head, early) = match written {
-            Ok(()) => (read_head(&mut conn, req.url)?, false),
+            Ok(whole) => (read_head(&mut conn, req.url)?, !whole),
             Err(e) => {
                 let left = matches!(
                     e.kind(),
@@ -515,7 +508,7 @@ impl Client {
     }
 
     /// A TLS session with `url`'s host over `io`, its handshake done within 10 s.
-    fn handshake<T: Wire>(&self, url: &Url, mut io: T) -> Result<StreamOwned<ClientConnection, T>, Error> {
+    fn handshake<T: Wire>(&self, url: &Url, mut io: T) -> Result<Tls<T>, Error> {
         let config = (self.tls)(url)?;
         let host = url.host().trim_start_matches('[').trim_end_matches(']');
         let name = ServerName::try_from(host.to_string()).map_err(|e| Error::new(format!("{url}: {e}")))?;
@@ -536,7 +529,7 @@ impl Client {
             tls.complete_io(&mut io)
                 .map_err(|e| Error::from(e).context(format!("{url}: TLS handshake")))?;
         }
-        Ok(StreamOwned::new(tls, io))
+        Ok(Tls { conn: tls, sock: io })
     }
 }
 
@@ -591,26 +584,173 @@ fn tunnel(hop: &mut Hop, url: &Url, proxy: &Proxy, user_agent: &str) -> Result<(
     }
 }
 
-/// Sends `len` bytes of `file`: on Linux a plain connection takes them as std copies a
-/// file to a socket, by sendfile(2); otherwise in 64 KiB writes, four TLS records each,
-/// where io::copy's 8 KiB writes make a record and a send of each.
-fn send_file(stream: &mut Stream, file: &std::fs::File, len: u64) -> io::Result<u64> {
-    let mut body = file.take(len);
-    #[cfg(target_os = "linux")]
-    if let Stream::Plain(Hop::Tcp(tcp)) = stream {
-        return io::copy(&mut body, tcp);
-    }
+/// Sends `len` bytes of `file` as the request's body, watching for the server's answer
+/// as it goes: whether all of it was sent before one came. A server may answer an upload
+/// before it has read it, a 413 or a 401, then close, resetting the connection over what
+/// it never read: Windows then discards what it had received (WSAECONNRESET), and a write
+/// waiting for room the server will never make waits until it does. So the socket waits
+/// only to be readable or writable, and an answer is taken as soon as it comes, as Go's
+/// transport reads a response while it writes the request (net/http transport.go,
+/// persistConn's readLoop and writeLoop).
+fn send_body(conn: &mut Conn, file: &std::fs::File, len: u64) -> io::Result<bool> {
+    conn.io.get_ref().tcp().set_nonblocking(true)?;
+    let sent = sending(conn, file, len);
+    let restored = conn.io.get_ref().tcp().set_nonblocking(false);
+    let sent = sent?;
+    restored?;
+    Ok(sent)
+}
+
+/// [`send_body`]'s writes: on Linux a plain connection takes the body by sendfile(2), as
+/// std copies a file to a socket; otherwise in 64 KiB writes, four TLS records each, where
+/// io::copy's 8 KiB writes make a record and a send of each.
+fn sending(conn: &mut Conn, mut file: &std::fs::File, len: u64) -> io::Result<bool> {
+    use std::io::{BufRead as _, Seek as _, SeekFrom};
+    // The server has left: what it said is read next.
+    let gone = |e: &io::Error| {
+        matches!(
+            e.kind(),
+            io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted
+        )
+    };
+    let again = |e: &io::Error| matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted);
+    let short = |sent: u64| io::Error::other(format!("{sent} of the body's {len} bytes"));
+    file.seek(SeekFrom::Start(0))?;
     let mut buf = vec![0u8; 64 << 10];
-    let mut sent = 0u64;
+    let (mut at, mut end, mut sent) = (0usize, 0usize, 0u64);
     loop {
-        let n = match body.read(&mut buf) {
-            Ok(0) => return Ok(sent),
-            Ok(n) => n,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
+        let (readable, writable) = ready(conn.io.get_ref().tcp(), STALL)?;
+        if readable {
+            match conn.io.fill_buf() {
+                // An answer, or the server's end: read next, either.
+                Ok(_) => return Ok(false),
+                Err(e) if again(&e) => {}
+                Err(e) if gone(&e) => return Ok(false),
+                Err(e) => return Err(e),
+            }
+        }
+        if !writable {
+            continue;
+        }
+        #[cfg(target_os = "linux")]
+        if let Stream::Plain(Hop::Tcp(tcp)) = conn.io.get_mut() {
+            if sent == len {
+                return Ok(true);
+            }
+            match send_from(tcp, file, sent, len - sent) {
+                Ok(0) => return Err(short(sent)),
+                Ok(n) => sent += n,
+                Err(e) if again(&e) => {}
+                Err(e) if gone(&e) => return Ok(false),
+                Err(e) => return Err(e),
+            }
+            continue;
+        }
+        if at == end && sent < len {
+            let want = usize::try_from(len - sent).unwrap_or(usize::MAX).min(buf.len());
+            end = match file.read(buf.get_mut(..want).unwrap_or_default()) {
+                Ok(0) => return Err(short(sent)),
+                Ok(n) => n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            };
+            at = 0;
+            sent += end as u64;
+        }
+        let stream = conn.io.get_mut();
+        let wrote = if at < end {
+            stream
+                .write(buf.get(at..end).unwrap_or_default())
+                .map(|n| at += n)
+        } else {
+            // All handed over: what TLS still holds goes out.
+            match stream.flush() {
+                Ok(()) => return Ok(true),
+                Err(e) => Err(e),
+            }
         };
-        stream.write_all(buf.get(..n).unwrap_or_default())?;
-        sent = sent.saturating_add(n as u64);
+        match wrote {
+            Ok(()) => {}
+            Err(e) if again(&e) => {}
+            Err(e) if gone(&e) => return Ok(false),
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// sendfile(2) of up to `left` bytes of `file` from `at` to `tcp`: how many it took.
+#[cfg(target_os = "linux")]
+fn send_from(tcp: &TcpStream, file: &std::fs::File, at: u64, left: u64) -> io::Result<u64> {
+    use std::os::fd::AsRawFd;
+    let mut offset = libc::off_t::try_from(at).map_err(|_| io::Error::other("a body past off_t"))?;
+    let count = usize::try_from(left).unwrap_or(usize::MAX).min(1 << 30);
+    // SAFETY: sendfile(2) between two descriptors held open, from an offset of ours.
+    let n = unsafe { libc::sendfile(tcp.as_raw_fd(), file.as_raw_fd(), &mut offset, count) };
+    u64::try_from(n).map_err(|_| io::Error::last_os_error())
+}
+
+/// Waits up to `d` until `tcp` has something to read, or has ended, or has room to write:
+/// (readable, writable), an error or hangup both. `TimedOut` past `d`.
+#[cfg(unix)]
+fn ready(tcp: &TcpStream, d: Duration) -> io::Result<(bool, bool)> {
+    use std::os::fd::AsRawFd;
+    let deadline = Instant::now() + d;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let ms = libc::c_int::try_from(left.as_micros().div_ceil(1000).max(1)).unwrap_or(libc::c_int::MAX);
+        let mut p = libc::pollfd {
+            fd: tcp.as_raw_fd(),
+            events: libc::POLLIN | libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: poll(2) on one pollfd of ours.
+        match unsafe { libc::poll(&mut p, 1, ms) } {
+            n if n > 0 => {
+                let (end, r) = (libc::POLLHUP | libc::POLLERR, p.revents);
+                return Ok((r & (libc::POLLIN | end) != 0, r & (libc::POLLOUT | end) != 0));
+            }
+            0 if Instant::now() >= deadline => {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "no progress in 30 s"));
+            }
+            0 => {}
+            _ => {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+    }
+}
+
+/// [`ready`] on Windows: WSAPoll.
+#[cfg(windows)]
+fn ready(tcp: &TcpStream, d: Duration) -> io::Result<(bool, bool)> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{
+        POLLERR, POLLHUP, POLLRDNORM, POLLWRNORM, WSAPOLLFD, WSAPoll,
+    };
+    let deadline = Instant::now() + d;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let ms = i32::try_from(left.as_micros().div_ceil(1000).max(1)).unwrap_or(i32::MAX);
+        let mut p = WSAPOLLFD {
+            fd: tcp.as_raw_socket() as usize,
+            events: POLLRDNORM | POLLWRNORM,
+            revents: 0,
+        };
+        // SAFETY: WSAPoll on one WSAPOLLFD of ours.
+        match unsafe { WSAPoll(&mut p, 1, ms) } {
+            n if n > 0 => {
+                let (end, r) = (POLLHUP | POLLERR, p.revents);
+                return Ok((r & (POLLRDNORM | end) != 0, r & (POLLWRNORM | end) != 0));
+            }
+            0 if Instant::now() >= deadline => {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "no progress in 30 s"));
+            }
+            0 => {}
+            _ => return Err(io::Error::last_os_error()),
+        }
     }
 }
 
@@ -1161,11 +1301,68 @@ impl Key {
     }
 }
 
+/// TLS over `sock`. A read takes the records that have come and the plaintext they hold,
+/// and sends nothing: rustls' Stream sends what is pending before it reads, and a server
+/// that answered before reading the whole request reads no more of it, so its answer
+/// would wait behind records it never takes (`send_body`). A write sends what is pending
+/// first, so that a socket with no room takes no more of it.
+#[derive(Debug)]
+struct Tls<T> {
+    conn: ClientConnection,
+    sock: T,
+}
+
+impl<T: Wire> Tls<T> {
+    /// Sends the records pending, as far as the socket takes them.
+    fn send_pending(&mut self) -> io::Result<()> {
+        while self.conn.wants_write() {
+            self.conn.write_tls(&mut self.sock)?;
+        }
+        Ok(())
+    }
+}
+
+impl<T: Wire> Read for Tls<T> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match self.conn.reader().read(buf) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                done => return done,
+            }
+            let ended = self.conn.read_tls(&mut self.sock)? == 0;
+            self.conn
+                .process_new_packets()
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            if ended {
+                // A close_notify ends it; anything else is cut short (UnexpectedEof).
+                return self.conn.reader().read(buf);
+            }
+        }
+    }
+}
+
+impl<T: Wire> Write for Tls<T> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.send_pending()?;
+        let n = self.conn.writer().write(buf)?;
+        // As far as the socket takes them now: the rest goes with the next write or
+        // flush, which also says what stopped it.
+        let _ = self.send_pending();
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.conn.writer().flush()?;
+        self.send_pending()?;
+        self.sock.flush()
+    }
+}
+
 /// A connection's first hop: TCP to the server or its proxy, or TLS to an https proxy.
 #[derive(Debug)]
 enum Hop {
     Tcp(TcpStream),
-    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
+    Tls(Box<Tls<TcpStream>>),
 }
 
 /// What TLS runs over, and the socket beneath it, for its timeouts.
@@ -1216,7 +1413,7 @@ impl Write for Hop {
 #[derive(Debug)]
 enum Stream {
     Plain(Hop),
-    Tls(Box<StreamOwned<ClientConnection, Hop>>),
+    Tls(Box<Tls<Hop>>),
 }
 
 impl Stream {
@@ -1612,7 +1809,11 @@ mod tests {
             }
             tcp.write_all(b"HTTP/1.1 413 Request Entity Too Large\r\nContent-Length: 0\r\n\r\n")
                 .unwrap();
-            // Gone with the body unread: the client's writes fail.
+            // Gone with the body unread, as Go's server leaves (net/http server.go,
+            // closeWriteAndWait): its end sent after its answer, a pause for the client to
+            // read them, then a close that resets the connection over what it never read.
+            tcp.shutdown(Shutdown::Write).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
         });
         let path = std::env::temp_dir().join(format!("shards-early-{}", std::process::id()));
         std::fs::write(&path, vec![0u8; 64 << 20]).unwrap();
@@ -1631,6 +1832,57 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         server.join().unwrap();
         assert_eq!(status.unwrap(), 413);
+    }
+
+    /// An answer before the body is read is heard over TLS too, 1.3 and 1.2: a read there
+    /// sends nothing first, so the records the server never takes do not hold it back.
+    #[test]
+    fn an_answer_before_the_body_is_read_is_heard_over_tls() {
+        use std::net::TcpListener;
+        for version in [&rustls::version::TLS13, &rustls::version::TLS12] {
+            let (ca, config) = registry(&[version]);
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (tcp, _) = listener.accept().unwrap();
+                let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(config).unwrap(), tcp);
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    tls.read_exact(&mut byte).unwrap();
+                    head.push(byte[0]);
+                }
+                tls.write_all(b"HTTP/1.1 413 Request Entity Too Large\r\nContent-Length: 0\r\n\r\n")
+                    .unwrap();
+                // Gone with the body unread, as Go's server leaves a TLS connection: a
+                // close_notify after its answer (crypto/tls Conn.CloseWrite), a pause, then
+                // a close that resets the connection over what it never read.
+                tls.conn.send_close_notify();
+                tls.flush().unwrap();
+                std::thread::sleep(Duration::from_millis(500));
+            });
+            let path = std::env::temp_dir().join(format!("shards-early-tls-{}", std::process::id()));
+            std::fs::write(&path, vec![0u8; 64 << 20]).unwrap();
+            let file = std::fs::File::open(&path).unwrap();
+            let client = Client::new(
+                Box::new(move |_| client_config(vec![ca.clone()], None)),
+                "shards-test",
+            );
+            // localhost may resolve to ::1 first, where nothing listens: the race moves on.
+            let url = at("https", "localhost", port);
+            let status = client
+                .send(&Request {
+                    method: "PUT",
+                    url: &url,
+                    headers: &[],
+                    body: &[],
+                    file: Some((&file, 64 << 20)),
+                })
+                .map(|r| r.status);
+            let _ = std::fs::remove_file(&path);
+            server.join().unwrap();
+            assert_eq!(status.unwrap(), 413, "{version:?}");
+        }
     }
 
     /// A head sent a byte at a time, its lines ended by LF alone, reads as one sent whole.
