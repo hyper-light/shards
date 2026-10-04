@@ -1460,9 +1460,10 @@ mod tests {
         let (mut ra, wa) = pipe();
         let (mut rb, wb) = pipe();
         let (a, b) = (wa.as_raw_fd(), wb.as_raw_fd());
-        // a's writer goes to b's number, and b's to a's.
+        // a's writer goes to b's number, and b's to a's. Written through /dev/fd: dash,
+        // Debian's sh, takes no descriptor above 9 in `>&N` ("Bad fd number").
         let script = format!(
-            "echo A >&{b}; echo B >&{a}; for fd in $(seq {} 64); do [ -e /dev/fd/$fd ] && echo leaked $fd >&{b}; done; exit 0",
+            "echo A >/dev/fd/{b}; echo B >/dev/fd/{a}; for fd in $(seq {} 64); do [ -e /dev/fd/$fd ] && echo leaked $fd >/dev/fd/{b}; done; exit 0",
             a.max(b) + 1
         );
         let child = spawn(
@@ -1486,7 +1487,7 @@ mod tests {
         let n = w.as_raw_fd();
         // SAFETY: fcntl(2) on a descriptor we own: close-on-exec, as ours all are.
         unsafe { libc::fcntl(n, libc::F_SETFD, libc::FD_CLOEXEC) };
-        let script = format!("echo kept >&{n}");
+        let script = format!("echo kept >/dev/fd/{n}");
         let child = spawn(
             Path::new("/bin/sh"),
             &["-c".as_ref(), script.as_ref()],
@@ -1558,13 +1559,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(child.wait().unwrap(), 7);
-        let child = spawn(
-            Path::new("/bin/sh"),
-            &["-c".as_ref(), "sleep 30".as_ref()],
-            &[],
-            false,
-        )
-        .unwrap();
+        // Not through sh: dash forks its one command, which would outlive the shell
+        // killed here, and hold this process's stdout for 30 s.
+        let child = spawn(Path::new("/bin/sleep"), &["30".as_ref()], &[], false).unwrap();
         child.kill(libc::SIGTERM).unwrap();
         assert_eq!(child.wait().unwrap(), 128 + libc::SIGTERM);
     }
@@ -1680,15 +1677,8 @@ mod tests {
 
     #[test]
     fn a_reaped_child_is_never_signalled() {
-        let child = std::sync::Arc::new(
-            spawn(
-                Path::new("/bin/sh"),
-                &["-c".as_ref(), "sleep 30".as_ref()],
-                &[],
-                false,
-            )
-            .unwrap(),
-        );
+        let child =
+            std::sync::Arc::new(spawn(Path::new("/bin/sleep"), &["30".as_ref()], &[], false).unwrap());
         let waiter = {
             let child = child.clone();
             std::thread::spawn(move || child.wait().unwrap())
