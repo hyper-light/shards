@@ -519,16 +519,37 @@ pub fn restore(
 
 /// Makes the private copies of RAM that the guest wrote while its working set was
 /// recorded, as its writes would make them: KVM then maps these pages writable ahead,
-/// where a write to a page mapped read-only would fault, copy, and fault again.
+/// where a write to a page mapped read-only would fault, copy, and fault again. Every run
+/// it can ([`every_run`]).
 fn copy_written(memory: &GuestMemory, working_set: &[hv::Touch]) -> Result<(), String> {
     let written = working_set.iter().filter(|t| t.written).map(|t| t.gpa);
-    for (gpa, len) in runs(written) {
-        let at = |e: &dyn std::fmt::Display| format!("copying written pages at {gpa:#x}+{len:#x}: {e}");
-        let len = usize::try_from(len).map_err(|e| at(&e))?;
-        let host = memory.host_ptr(gpa, len).map_err(|e| at(&e))?;
-        platform::populate_writable(host, len).map_err(|e| at(&e))?;
+    every_run(runs(written), |gpa, len| {
+        let len = usize::try_from(len).map_err(|e| e.to_string())?;
+        let host = memory.host_ptr(gpa, len).map_err(|e| e.to_string())?;
+        platform::populate_writable(host, len).map_err(|e| e.to_string())
+    })
+    .map_err(|e| format!("copying written pages {e}"))
+}
+
+/// Does `f` to each run of pages of `runs`, past any it fails on: what it does only
+/// readies pages ahead, and a page it does not is only faulted in later, so one run that
+/// fails is no reason to leave the others (review 1.19). The first failure, and how many
+/// runs failed, if any did.
+fn every_run(runs: Vec<(u64, u64)>, mut f: impl FnMut(u64, u64) -> Result<(), String>) -> Result<(), String> {
+    let mut failed: Option<(String, usize)> = None;
+    for (gpa, len) in runs {
+        if let Err(e) = f(gpa, len) {
+            match &mut failed {
+                Some((_, n)) => *n += 1,
+                None => failed = Some((format!("at {gpa:#x}+{len:#x}: {e}"), 1)),
+            }
+        }
     }
-    Ok(())
+    match failed {
+        None => Ok(()),
+        Some((first, 1)) => Err(first),
+        Some((first, n)) => Err(format!("{first}, and {} more", n - 1)),
+    }
 }
 
 /// The runs of consecutive pages among `pages`, as `(gpa, len)`, in order.
@@ -547,21 +568,25 @@ fn runs(pages: impl Iterator<Item = u64>) -> Vec<(u64, u64)> {
 }
 
 /// Maps every page of `working_set` into the stage-2 tables; how many it mapped. A page
-/// that cannot be mapped ahead is only a fault later.
+/// that cannot be mapped ahead is only a fault later: every run it can ([`every_run`]).
 fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> usize {
-    let mut mapped = 0;
-    for (gpa, len) in runs(working_set.iter().map(|t| t.gpa)) {
+    let (mut mapped, mut unable) = (0, false);
+    let done = every_run(runs(working_set.iter().map(|t| t.gpa)), |gpa, len| {
+        if unable {
+            return Ok(());
+        }
         match vcpu.pre_fault(gpa, len) {
             Ok(true) => mapped += (len / PAGE) as usize,
-            Ok(false) => {
-                debug!("KVM cannot map memory ahead here (Linux 6.10+, with two-dimensional paging)");
-                break;
-            }
-            Err(e) => {
-                warn!("mapping the working set ahead at {gpa:#x}+{len:#x}: {e}");
-                break;
-            }
+            Ok(false) => unable = true,
+            Err(e) => return Err(e.to_string()),
         }
+        Ok(())
+    });
+    if unable {
+        debug!("KVM cannot map memory ahead here (Linux 6.10+, with two-dimensional paging)");
+    }
+    if let Err(e) = done {
+        warn!("mapping the working set ahead {e}: the guest faults those pages in");
     }
     mapped
 }
@@ -761,5 +786,64 @@ mod tests {
             [(0x1000, 0x3000), (0x8000, 0x2000), (last, PAGE)]
         );
         assert_eq!(runs(std::iter::empty()), []);
+    }
+
+    /// Every run is tried, past those that fail; the first failure is said, with how many
+    /// more there were.
+    #[test]
+    fn every_run_is_tried_past_failures() {
+        let all = vec![(0x1000, PAGE), (0x5000, PAGE), (0x9000, PAGE), (0xd000, PAGE)];
+        let mut tried = Vec::new();
+        let failing = |gpa: u64| gpa == 0x5000 || gpa == 0xd000;
+        let done = every_run(all.clone(), |gpa, _| {
+            tried.push(gpa);
+            if failing(gpa) { Err("no".into()) } else { Ok(()) }
+        });
+        assert_eq!(tried, [0x1000, 0x5000, 0x9000, 0xd000]);
+        assert_eq!(done.unwrap_err(), "at 0x5000+0x1000: no, and 1 more");
+        assert_eq!(
+            every_run(all.clone(), |gpa, _| if gpa == 0x9000 {
+                Err("no".into())
+            } else {
+                Ok(())
+            }),
+            Err("at 0x9000+0x1000: no".into())
+        );
+        assert_eq!(every_run(all, |_, _| Ok(())), Ok(()));
+    }
+
+    /// The written pages of a run after one that cannot be copied are copied still: a
+    /// damaged working set's write to what is not RAM (read-only pmem, say) leaves the
+    /// rest of the copies ahead (review 1.19).
+    #[test]
+    fn written_pages_past_a_run_that_fails_are_copied() {
+        let path = std::env::temp_dir().join(format!("shards-copy-written-{}", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        file.set_len(32 * PAGE).unwrap();
+        let _ = std::fs::remove_file(&path);
+        // Two regions with a gap between them, which holds no RAM.
+        let ranges = [(0, 16 * PAGE as usize), (0x10_0000, 16 * PAGE as usize)];
+        let memory = GuestMemory::from_file(&ranges, &file).unwrap();
+        let touch = |gpa: u64| hv::Touch { gpa, written: true };
+        let ws = [
+            touch(0),
+            touch(PAGE),
+            touch(0x8_0000),
+            touch(0x10_0000),
+            touch(0x10_0000 + PAGE),
+        ];
+        let e = copy_written(&memory, &ws).unwrap_err();
+        assert!(e.starts_with("copying written pages at 0x80000+0x1000: "), "{e}");
+        for gpa in [0, 0x10_0000] {
+            let host = memory.host_ptr(gpa, 16 * PAGE as usize).unwrap();
+            let copies = platform::mapped_pages(host, 16 * PAGE as usize).unwrap();
+            assert_eq!(copies, [(0, true), (1, true)], "at {gpa:#x}");
+        }
     }
 }
