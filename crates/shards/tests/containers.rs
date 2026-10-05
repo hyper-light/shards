@@ -5146,3 +5146,97 @@ fn volume_commands_keep_volumes_as_docker_volume_does() {
     assert_eq!(shards(&["remove", "volume", "hostdir"]).stdout, "hostdir\n");
     assert!(host.join("h").exists(), "a bound directory outlives its volume");
 }
+
+/// `--restart`, as dockerd's restart manager keeps it: `on-failure:N` restarts a failing
+/// command N times; `always` until stopped, a stop ending it for good; as the daemon
+/// starts again, `unless-stopped` and `always` start again what its stop ended, and not
+/// what was stopped by hand.
+#[cfg(unix)]
+#[test]
+fn restart_policies_start_containers_again_as_dockerd_does() {
+    let Some((home, image)) = home("containers-restart") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let inspect =
+        |name: &str, format: &str| shards(&["inspect", "-f", format, name]).stdout.trim().to_string();
+    let until = |what: &str, check: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + TIMEOUT;
+        while !check() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let failing = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "failing", "--restart", "on-failure:2"],
+        &["exit", "3"],
+    );
+    assert_eq!(failing.status, Some(0), "{failing}");
+    until("on-failure:2 restarts twice, then stays exited", &|| {
+        inspect("failing", "{{.RestartCount}} {{.State.Status}}") == "2 exited"
+    });
+    assert_eq!(
+        inspect(
+            "failing",
+            "{{.State.ExitCode}} {{json .HostConfig.RestartPolicy}}"
+        ),
+        "3 {\"Name\":\"on-failure\",\"MaximumRetryCount\":2}"
+    );
+    // always: restarting between its runs, as ps and inspect say, until stopped.
+    let always = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "always", "--restart", "always"],
+        &["exit", "1"],
+    );
+    assert_eq!(always.status, Some(0), "{always}");
+    until("always restarts, and waits longer each time", &|| {
+        inspect("always", "{{.RestartCount}}").parse::<u64>().unwrap_or(0) >= 3
+    });
+    until("it is seen waiting to restart", &|| {
+        inspect(
+            "always",
+            "{{.State.Status}} {{.State.Running}} {{.State.Restarting}}",
+        ) == "restarting true true"
+    });
+    let listed = shards(&["ps", "--filter", "name=always", "--format", "{{.Status}}"]);
+    assert!(listed.stdout.starts_with("Restarting (1) "), "{listed}");
+    assert_eq!(shards(&["stop", "always"]).stdout, "always\n");
+    let count = inspect("always", "{{.RestartCount}}");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(inspect("always", "{{.State.Status}}"), "exited");
+    assert_eq!(
+        inspect("always", "{{.RestartCount}}"),
+        count,
+        "stopped, it restarts no more"
+    );
+    // The daemon's stop ends both; as it starts again, the one stopped by it starts, and
+    // the one stopped by hand does not.
+    let mut kept = start(
+        &home,
+        &image,
+        &["--name", "kept", "--restart", "unless-stopped"],
+        &["sleep"],
+    );
+    let mut held = start(
+        &home,
+        &image,
+        &["--name", "held", "--restart", "unless-stopped"],
+        &["sleep"],
+    );
+    assert_eq!(shards(&["stop", "-t", "0", "held"]).status, Some(0));
+    // SIGTERM, then SIGKILL at once: whichever ends it.
+    assert!(matches!(exit(&mut held), Some(137 | 143)));
+    assert_eq!(shards(&["stop", "daemon"]).status, Some(0));
+    let _ = exit(&mut kept);
+    until("the daemon starts kept again", &|| {
+        inspect("kept", "{{.State.Status}}") == "running"
+    });
+    assert_eq!(inspect("held", "{{.State.Status}}"), "exited");
+    assert_eq!(
+        shards(&["rm", "-f", "kept", "held", "always", "failing"]).status,
+        Some(0)
+    );
+}

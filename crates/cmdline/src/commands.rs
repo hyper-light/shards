@@ -115,6 +115,12 @@ pub static RUN: Command = Command {
             None,
             "Automatically remove the container and its associated anonymous volumes when it exits",
         ),
+        Flag::string(
+            "restart",
+            None,
+            "no",
+            "Restart policy to apply when a container exits",
+        ),
         Flag::string("stop-signal", None, "", "Signal to stop the container"),
         Flag::int(
             "stop-timeout",
@@ -289,7 +295,6 @@ mac-address - s - -\n\
 net-alias - m - network-alias\n\
 network-alias - m - -\n\
 pid - s - -\n\
-restart - s no -\n\
 runtime - s - -\n\
 security-opt - m - -\n\
 storage-opt - m - -\n\
@@ -396,6 +401,12 @@ pub static CREATE: Command = Command {
             "rm",
             None,
             "Automatically remove the container and its associated anonymous volumes when it exits",
+        ),
+        Flag::string(
+            "restart",
+            None,
+            "no",
+            "Restart policy to apply when a container exits",
         ),
         Flag::string("stop-signal", None, "", "Signal to stop the container"),
         Flag::int(
@@ -571,7 +582,6 @@ mac-address - s - -\n\
 net-alias - m - network-alias\n\
 network-alias - m - -\n\
 pid - s - -\n\
-restart - s no -\n\
 runtime - s - -\n\
 security-opt - m - -\n\
 storage-opt - m - -\n\

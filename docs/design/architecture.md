@@ -2330,6 +2330,30 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   data skip the hop; the local driver's other types (NFS and CIFS clients in the guest
   kernel; a tmpfs volume held where every microVM that mounts it shares it).
 
+### Restart policies (D39)
+
+`--restart` is read as docker/cli reads it (opts.ParseRestartPolicy; `--rm` refused with
+it), checked as dockerd checks it (ValidateRestartPolicy), and kept with the container.
+Its restart manager is dockerd's (moby docker-v29.8.1 daemon/internal/restartmanager,
+monitor.go handleContainerExit; `daemon/restart.rs`):
+
+- **Whether.** `always`; `unless-stopped` unless stopped by hand (any stop or kill, but
+  the daemon's own); `on-failure` on a non-zero status, under its count where it has one.
+  A command that never started is not restarted. A stop or kill by the container's stop
+  signal or SIGKILL cancels the next restart (ExitOnNext); a SIGHUP does not.
+- **When.** After a wait that starts at 100 ms, doubles each time to at most a minute,
+  and starts over once a run lasted 10 s. The wait is a deadline on the followers' loop
+  (no thread waits it out); the start then goes through the daemon's own door, a detached
+  `start` from a client of its own making, so a restart is handled, followed and recorded
+  as any start is.
+- **Meanwhile.** The container is restarting: running to `ps` (listed without `-a`,
+  `Restarting (CODE) X ago`), to inspect (`Status` restarting, `Running` and `Restarting`
+  true) and to `wait`, which waits on; `RestartCount` counts, and `shards start` starts it
+  over. `stop` and `kill` stop it there; `rm` refuses it without `-f`, as dockerd does.
+- **As the daemon starts**, the containers its stop ended start again where their policy
+  says, as dockerd's restore does: shards' daemon starts with the first command, so they
+  start with it.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

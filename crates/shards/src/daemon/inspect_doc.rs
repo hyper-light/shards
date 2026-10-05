@@ -184,7 +184,10 @@ pub(super) fn document(f: &Facts<'_>) -> Value {
         .field("HostsPath", s(""))
         .field("LogPath", s(&f.log_path))
         .field("Name", s(&format!("/{}", c.name)))
-        .field("RestartCount", int(0))
+        .field(
+            "RestartCount",
+            int(i64::try_from(c.restart.count).unwrap_or(i64::MAX)),
+        )
         // As `info` names them: each image a microVM's read-only EROFS disk.
         .field("Driver", s("erofs"))
         .field("Platform", s("linux"))
@@ -382,11 +385,14 @@ fn command_words(entrypoint: &Option<Vec<String>>, cmd: &Option<Vec<String>>) ->
 /// State, now.
 fn state(f: &Facts<'_>) -> Value {
     let c = f.container;
-    let running = c.state == Life::Running;
+    // One waiting to restart runs still, to dockerd (State.SetRestarting).
+    let restarting = c.state == Life::Exited && c.restart.restarting;
+    let running = c.state == Life::Running || restarting;
     let status = match c.state {
         Life::Running if f.paused => "paused",
         Life::Running => "running",
         Life::Created => "created",
+        Life::Exited if restarting => "restarting",
         Life::Exited => "exited",
     };
     let health = match &f.health {
@@ -419,7 +425,7 @@ fn state(f: &Facts<'_>) -> Value {
         .field("Status", s(status))
         .field("Running", Value::Bool(running))
         .field("Paused", Value::Bool(f.paused))
-        .field("Restarting", Value::Bool(false))
+        .field("Restarting", Value::Bool(restarting))
         .field("OOMKilled", Value::Bool(f.container.oom_killed))
         .field("Dead", Value::Bool(false))
         .field("Pid", int(f.pid.filter(|_| running).map_or(0, i64::from)))
@@ -670,8 +676,8 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field(
             "RestartPolicy",
             Struct::new("container.RestartPolicy")
-                .field("Name", s("no"))
-                .field("MaximumRetryCount", int(0))
+                .field("Name", s(&f.container.restart.policy))
+                .field("MaximumRetryCount", int(f.container.restart.max))
                 .value(),
         )
         .field("AutoRemove", Value::Bool(f.container.auto_remove))
@@ -1250,6 +1256,11 @@ mod tests {
                 labels: Default::default(),
                 oom_killed: false,
                 mounts,
+                restart: crate::containers::Restart {
+                    policy: run.restart_policy.0.clone(),
+                    max: run.restart_policy.1,
+                    ..Default::default()
+                },
             };
             let manifest = &want["ImageManifestDescriptor"];
             let facts = Facts {

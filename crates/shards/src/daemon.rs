@@ -54,6 +54,7 @@ mod pull;
 mod push;
 mod record;
 mod refill;
+mod restart;
 mod rmi;
 mod top;
 mod visit;
@@ -621,6 +622,11 @@ struct Daemon<D: Disk = Real> {
     /// one is no more.
     settling: Mutex<HashSet<String>>,
     settled: Condvar,
+    /// Each container's restart manager, as its runs end (restart.rs).
+    restarts: Mutex<HashMap<String, restart::Manager>>,
+    /// The containers the daemon itself is starting again, for their policies: such a
+    /// start keeps its restart count, where `shards start` resets it.
+    restarting_now: Mutex<HashSet<String>>,
     /// Stopped containers whose files a VM is visiting (visit.rs), and its end's wakeup:
     /// one visit at a time each, and no start meanwhile.
     visiting: Mutex<HashSet<String>>,
@@ -961,6 +967,7 @@ fn serve(ready: Option<File>) -> Result<(), String> {
         daemon.start_completer(threads);
         daemon.start_recorder(threads);
         daemon.start_collector(threads);
+        daemon.restart_at_start(threads);
         daemon.listen(threads, listener);
     });
     Ok(())
@@ -1141,6 +1148,8 @@ impl<D: Disk> Daemon<D> {
             events: events::Events::default(),
             settling: Mutex::default(),
             settled: Condvar::new(),
+            restarts: Mutex::default(),
+            restarting_now: Mutex::default(),
             visiting: Mutex::default(),
             visited: Condvar::new(),
             spare: Mutex::default(),
@@ -1370,7 +1379,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    fn take<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, conn: UnixStream) {
+    pub(super) fn take<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, conn: UnixStream) {
         // Only this user's processes: a home in a shared directory would let others'
         // reach the socket, and a run acts as this user.
         // SAFETY: geteuid(2) cannot fail.
@@ -2339,6 +2348,7 @@ impl<D: Disk> Daemon<D> {
         // it is made.
         crate::resources::verify(&run.resources, crate::resources::host_cpus())?;
         crate::setup::verify(run)?;
+        validate_restart_policy(&run.restart_policy)?;
         // A name held by a container that ended with `--rm`, its end not yet taken or its
         // removal not yet durable, is free once that is done, as dockerd's is by the time
         // `docker run --rm` returns: its end is taken, and its removal waited for.
@@ -2421,6 +2431,11 @@ impl<D: Disk> Daemon<D> {
             labels: prepared.labels.clone(),
             oom_killed: false,
             mounts,
+            restart: containers::Restart {
+                policy: run.restart_policy.0.clone(),
+                max: run.restart_policy.1,
+                ..Default::default()
+            },
         });
         self.event_for(id, &name, &run.image, "create", &[]);
         // Its run is owned from the moment the container is visible.
@@ -3049,10 +3064,16 @@ impl<D: Disk> Daemon<D> {
         if inbox.visit {
             return;
         }
+        let by_policy = self.restarted_by_policy(id);
         let changed = lock(&self.containers).change(id, |c| {
             c.state = Life::Running;
             c.started = Some(containers::now());
             c.oom_killed = false;
+            c.restart.restarting = false;
+            if !by_policy {
+                c.restart.count = 0;
+                c.restart.manually_stopped = false;
+            }
         });
         let told: Vec<UnixStream> = inbox.detached.take().into_iter().collect();
         if changed.is_ok() {
@@ -3116,6 +3137,13 @@ impl<D: Disk> Daemon<D> {
                 (ran, c.name.clone(), c.image.clone())
             })
             .unwrap_or_default();
+        // Its policy's say (handleContainerExit): started again after a wait, or not; a
+        // command that never started is never restarted.
+        let restart_after = if started {
+            self.should_restart(id, status, ran)
+        } else {
+            None
+        };
         let removal = {
             let mut registry = lock(&self.containers);
             let removal = self.end_container(&mut registry, id, |c| {
@@ -3123,6 +3151,10 @@ impl<D: Disk> Daemon<D> {
                 if started {
                     c.state = Life::Exited;
                     c.finished = Some(containers::now());
+                }
+                if restart_after.is_some() {
+                    c.restart.restarting = true;
+                    c.restart.count = c.restart.count.saturating_add(1);
                 }
             });
             lock(&self.runs).remove(id);
@@ -3144,13 +3176,19 @@ impl<D: Disk> Daemon<D> {
                 );
             }
             self.resolved.notify_all();
-            for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
-                waiter.hear(status);
+            // One restarting runs on, to `wait` (State.SetRestarting).
+            if restart_after.is_none() {
+                for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
+                    waiter.hear(status);
+                }
             }
             removal
         };
         if let Some(removal) = removal {
             self.complete_soon(removal);
+        }
+        if let Some(wait) = restart_after {
+            self.schedule_restart(id, wait);
         }
         // A detached command that never started: why, as `docker run -d` says it.
         if let Some(client) = inbox.detached.take() {
@@ -4155,6 +4193,29 @@ fn again_as(stored: Run, client: &Run, id: &str) -> Run {
         create: false,
         restart: false,
         ..stored
+    }
+}
+
+/// ValidateRestartPolicy (moby api/types/container/hostconfig.go): a known policy's name,
+/// a retry count only `on-failure`'s and never negative; none given passes, as from a CLI
+/// before dockerd v25.
+fn validate_restart_policy((name, max): &(String, i64)) -> Result<(), String> {
+    match name.as_str() {
+        "always" | "unless-stopped" | "no" if *max != 0 => {
+            let mut msg =
+                "invalid restart policy: maximum retry count can only be used with 'on-failure'".to_string();
+            if *max < 0 {
+                msg.push_str(" and cannot be negative");
+            }
+            Err(msg)
+        }
+        "on-failure" if *max < 0 => {
+            Err("invalid restart policy: maximum retry count cannot be negative".into())
+        }
+        "always" | "unless-stopped" | "no" | "on-failure" | "" => Ok(()),
+        other => Err(format!(
+            "invalid restart policy: unknown policy '{other}'; use one of 'no', 'always', 'on-failure', or 'unless-stopped'"
+        )),
     }
 }
 

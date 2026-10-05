@@ -1648,6 +1648,17 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 if let Some(removal) = self.cancel_start(&id) {
                     return Step::Now(finish(Some(removal)));
                 }
+                // One waiting to restart is running, to dockerd's rm (cleanupContainer).
+                if self.is_restarting(&id) {
+                    if !force {
+                        lock(&self.removing).remove(&id);
+                        return Step::Now(Err(cannot(
+                            &reference,
+                            "container is restarting: stop the container before removing or force remove",
+                        )));
+                    }
+                    self.exit_on_next(&id, 9);
+                }
                 if lock(&self.containers).get(&id).is_none() {
                     return Step::Now(finish(None));
                 }
@@ -1666,6 +1677,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             "container is running: stop the container before removing or force remove",
                         )));
                     }
+                    self.exit_on_next(&id, 9);
                     let taken = id.clone();
                     return Step::End {
                         id: id.clone(),
@@ -1716,6 +1728,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     Err(e) => return Step::Now(Err(e)),
                 };
                 self.await_start(&id);
+                // One waiting to restart is stopped by its stop signal: no restart, and
+                // stopped by hand (kill.go, ExitOnNext).
+                if self.is_restarting(&id) {
+                    let own = self.own_stop(&id).0.unwrap_or(9);
+                    self.exit_on_next(&id, own);
+                    self.container_event(&id, "stop", &[]);
+                    return Step::Now(Ok(true));
+                }
                 if !self.running(&id) {
                     return Step::Now(Ok(true));
                 }
@@ -1736,6 +1756,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 };
                 // No signal Linux has: killed, after 2 s.
                 let (linux, grace) = linux.map_or((9, Some(UNSENT_WAIT)), |l| (l, grace));
+                self.exit_on_next(&id, linux);
                 let unheard = cannot("tried to kill container, but did not receive an exit event");
                 let stopped = id.clone();
                 Step::End {
@@ -1854,9 +1875,15 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 };
                 let not_running = cannot(&format!("container {id} is not running"));
                 self.await_start(&id);
+                // One waiting to restart runs, to dockerd: the kill stops it there.
+                if self.is_restarting(&id) {
+                    self.exit_on_next(&id, linux);
+                    return Step::Now(Ok(true));
+                }
                 if !self.running(&id) {
                     return Step::Now(Err(not_running));
                 }
+                self.exit_on_next(&id, linux);
                 if linux == 9 {
                     let unheard = cannot("tried to kill container, but did not receive an exit event");
                     return Step::End {
@@ -1938,6 +1965,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     Life::Running if paused.contains(&c.id) => "paused",
                     Life::Running => "running",
                     Life::Created => "created",
+                    _ if c.restart.restarting => "restarting",
                     _ => "exited",
                 };
                 sheet.record(&[
@@ -1994,6 +2022,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     Life::Running if paused.contains(&c.id) => "paused",
                     Life::Running => "running",
                     Life::Created => "created",
+                    _ if c.restart.restarting => "restarting",
                     _ => "exited",
                 };
                 let checked = health.get(&c.id).map(|h| h.status);
@@ -2697,6 +2726,12 @@ fn status(
                 None => format!("Up {up}"),
             }
         }
+        // moby State.String: one waiting to restart, by how it ended and how long ago.
+        (_, Some(_), Some(finished)) if c.restart.restarting => format!(
+            "Restarting ({}) {} ago",
+            c.exit_code.unwrap_or(0),
+            human_duration(at.saturating_sub(finished))
+        ),
         _ if removing => "Removal In Progress".into(),
         (_, None, _) => "Created".into(),
         (_, Some(_), Some(finished)) => format!(

@@ -132,7 +132,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             if since.as_ref() == Some(&c.id) {
                 break;
             }
-            let running = c.state == Life::Running;
+            // One waiting to restart is running, to dockerd's list (State.Running).
+            let running = c.state == Life::Running || c.restart.restarting;
             if !running && !all && limit.is_none() {
                 continue;
             }
@@ -165,6 +166,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 Life::Running => "running",
                 _ if removing.contains(&c.id) => "removing",
                 Life::Created => "created",
+                Life::Exited if c.restart.restarting => "restarting",
                 Life::Exited => "exited",
             };
             if !statuses.matches(state) {

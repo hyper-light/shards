@@ -61,8 +61,11 @@ pub(super) struct Followers {
     pub(super) runs: Mutex<HashMap<u64, Followed>>,
     /// Each process followed, by its token.
     processes: Mutex<HashMap<u64, Process>>,
-    /// When network processes whose VMs have gone are ended, by their tokens.
+    /// When network processes whose VMs have gone are ended, and containers waiting to
+    /// restart start again, by their tokens.
     pub(super) deadlines: Mutex<BinaryHeap<Reverse<(Instant, u64)>>>,
+    /// The containers waiting to restart, by their deadlines' tokens (restart.rs).
+    pub(super) restarts: Mutex<HashMap<u64, String>>,
     next: AtomicU64,
     /// Written to wake the loop; its other end, which the poller watches, read.
     wake: (UnixStream, UnixStream),
@@ -83,6 +86,7 @@ impl Followers {
             runs: Mutex::new(HashMap::new()),
             processes: Mutex::new(HashMap::new()),
             deadlines: Mutex::new(BinaryHeap::new()),
+            restarts: Mutex::new(HashMap::new()),
             next: AtomicU64::new(WAKE + 1),
             wake: (tell, heard),
             started: AtomicBool::new(false),
@@ -90,8 +94,13 @@ impl Followers {
         })
     }
 
+    /// A token for a deadline or process of the loop's.
+    pub(super) fn next_token(&self) -> u64 {
+        self.next.fetch_add(1, Ordering::Relaxed)
+    }
+
     /// Wakes the loop, to look again at what it waits for.
-    fn wake(&self) {
+    pub(super) fn wake(&self) {
         // A byte is enough: one still unread wakes it as well.
         let _ = (&self.wake.0).write(&[0]);
     }
@@ -175,7 +184,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Starts the followers' thread, unless it runs.
-    fn start_followers<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
+    pub(super) fn start_followers<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
         let f = &self.followers;
         if !f.started.swap(true, Ordering::SeqCst)
             && let Err(e) = std::thread::Builder::new()
@@ -229,6 +238,12 @@ impl<D: Disk> Daemon<D> {
                 let Some(token) = overdue else {
                     break;
                 };
+                // A container whose wait to restart is up.
+                let restart = lock(&f.restarts).remove(&token);
+                if let Some(id) = restart {
+                    self.restart_due(threads, &id);
+                    continue;
+                }
                 // Its end follows, which frees its VM's ports.
                 if let Some(Process::Net { child, .. }) = lock(&f.processes).get(&token) {
                     let _ = child.kill(libc::SIGKILL);

@@ -448,6 +448,9 @@ pub struct Run {
     pub volumes_from: Vec<String>,
     /// `--volume-driver`.
     pub volume_driver: String,
+    /// `--restart`, as docker/cli sends it (ParseRestartPolicy): the policy's name, empty
+    /// where `--restart ""` gave none, and its most retries.
+    pub restart_policy: (String, i64),
 }
 
 /// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
@@ -791,6 +794,14 @@ impl Run {
                     vec![self.volume_driver.clone()]
                 },
             ),
+            (
+                "restart-policy",
+                if self.restart_policy == (String::new(), 0) {
+                    Vec::new()
+                } else {
+                    vec![self.restart_policy.0.clone(), self.restart_policy.1.to_string()]
+                },
+            ),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -924,6 +935,10 @@ impl Run {
                     "mounts" => run.mounts = values,
                     "volumes-from" => run.volumes_from = values,
                     "volume-driver" => run.volume_driver = values.into_iter().next().unwrap_or_default(),
+                    "restart-policy" => {
+                        let (name, max) = (values.first()?, values.get(1)?);
+                        run.restart_policy = (name.clone(), max.parse().ok()?);
+                    }
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1433,6 +1448,7 @@ mod tests {
             mounts: vec!["type=volume,source=v,target=/v".into()],
             volumes_from: vec!["web:ro".into()],
             volume_driver: "local".into(),
+            restart_policy: ("on-failure".into(), 3),
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -1466,6 +1482,7 @@ mod tests {
             mounts: Vec::new(),
             volumes_from: Vec::new(),
             volume_driver: String::new(),
+            restart_policy: Default::default(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

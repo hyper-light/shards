@@ -65,6 +65,23 @@ pub struct Container {
     /// What it mounts: binds and volumes, in the order they are mounted (D38).
     #[serde(default)]
     pub mounts: Vec<crate::volumes::MountPoint>,
+    /// Its restart policy, and where its restarts are (moby restartmanager).
+    #[serde(default)]
+    pub restart: Restart,
+}
+
+/// A container's restart policy (HostConfig.RestartPolicy) and what its restart manager
+/// keeps: how many times it was restarted (RestartCount), whether a stop or kill ended
+/// it (HasBeenManuallyStopped), and whether it waits to restart (State.Restarting).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Restart {
+    /// `no`, `always`, `unless-stopped`, `on-failure`, or none given.
+    pub policy: String,
+    /// `on-failure`'s most retries, none for no limit.
+    pub max: i64,
+    pub count: u64,
+    pub manually_stopped: bool,
+    pub restarting: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -707,6 +724,7 @@ mod tests {
             labels: Default::default(),
             oom_killed: false,
             mounts: Vec::new(),
+            restart: Default::default(),
         }
     }
 

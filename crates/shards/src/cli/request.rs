@@ -419,6 +419,11 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
             .map_err(|why| format!("invalid range format for --expose: {why}"))?;
         expose.extend((first..=last).map(|p| format!("{p}/{proto}")));
     }
+    let restart_policy = restart_policy(parsed.string("restart"))?;
+    // A policy other than none restarts what --rm removes (opts.go parse).
+    if parsed.bool("rm") && !matches!(restart_policy.0.as_str(), "" | "no") {
+        return Err("conflicting options: cannot specify both --restart and --rm".into());
+    }
     Ok(Run {
         image: image.clone(),
         cmd: cmd.to_vec(),
@@ -487,6 +492,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         mounts,
         volumes_from: parsed.many("volumes-from").to_vec(),
         volume_driver: parsed.string("volume-driver").to_string(),
+        restart_policy,
         // The flag's default is DOCKER_DEFAULT_PLATFORM (docker/cli run.go, create.go).
         platform: if parsed.changed("platform") {
             parsed.string("platform").to_string()
@@ -707,6 +713,27 @@ fn volumes(parsed: &Parsed) -> Result<Volumes, String> {
         mounts.push(shards_cmdline::mounts::encode(&m));
     }
     Ok((binds, anonymous, mounts))
+}
+
+/// `--restart` as docker/cli reads it (opts.ParseRestartPolicy): `NAME[:COUNT]`, an empty
+/// value none at all; the name checked by the daemon.
+fn restart_policy(policy: &str) -> Result<(String, i64), String> {
+    if policy.is_empty() {
+        return Ok((String::new(), 0));
+    }
+    let (name, count) = policy.split_once(':').unwrap_or((policy, ""));
+    if policy.contains(':') && name.is_empty() {
+        return Err("invalid restart policy format: no policy provided before colon".into());
+    }
+    let count = if count.is_empty() {
+        0
+    } else {
+        // strconv.Atoi: ParseInt in base 10 of a 64-bit int.
+        shards_cmdline::go::parse_int10(count).map_err(|_| {
+            "invalid restart policy format: maximum retry count must be an integer".to_string()
+        })?
+    };
+    Ok((name.to_string(), count))
 }
 
 /// `--cap-add` and `--cap-drop` as dockerd keeps them (moby daemon/pkg/oci/caps,
