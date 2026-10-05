@@ -70,7 +70,7 @@ pub(super) fn human_size(size: f64) -> String {
 }
 
 /// go-units' BytesSize: binary units, four significant digits.
-pub(super) fn bytes_size(size: f64) -> String {
+pub(crate) fn bytes_size(size: f64) -> String {
     custom_size(size, 4, 1024.0, &BINARY)
 }
 

@@ -32,6 +32,7 @@ mod names;
 #[cfg(unix)]
 mod netproc;
 mod pull;
+mod resources;
 mod run;
 #[cfg(unix)]
 mod segments;

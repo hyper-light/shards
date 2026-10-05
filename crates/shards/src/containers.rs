@@ -58,6 +58,10 @@ pub struct Container {
     /// record from before shards kept them.
     #[serde(default)]
     pub labels: std::collections::BTreeMap<String, String>,
+    /// The kernel killed a process of its last run for want of memory (State.OOMKilled),
+    /// until it runs again.
+    #[serde(default)]
+    pub oom_killed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -693,6 +697,7 @@ mod tests {
             ports: Vec::new(),
             image_id: None,
             labels: Default::default(),
+            oom_killed: false,
         }
     }
 

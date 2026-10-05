@@ -32,6 +32,7 @@ pub mod gotime;
 pub mod grammar;
 pub mod network;
 pub mod ports;
+pub mod resources;
 mod tables;
 pub mod term;
 pub mod width;

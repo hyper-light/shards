@@ -221,8 +221,8 @@ pub(super) fn document(f: &Facts<'_>) -> Value {
                 )
                 .value(),
         )
-        .tagged("SizeRw", Some("SizeRw"), true, Value::Nil)
-        .tagged("SizeRootFs", Some("SizeRootFs"), true, Value::Nil)
+        .tagged("SizeRw", Some("SizeRw"), true, Struct::nil("int64"))
+        .tagged("SizeRootFs", Some("SizeRootFs"), true, Struct::nil("int64"))
         .field("Mounts", empty())
         .field("Config", config.2)
         .field("NetworkSettings", network_settings(f, run))
@@ -287,7 +287,7 @@ fn state(f: &Facts<'_>) -> Value {
         .field("Running", Value::Bool(running))
         .field("Paused", Value::Bool(f.paused))
         .field("Restarting", Value::Bool(false))
-        .field("OOMKilled", Value::Bool(false))
+        .field("OOMKilled", Value::Bool(f.container.oom_killed))
         .field("Dead", Value::Bool(false))
         .field("Pid", int(f.pid.filter(|_| running).map_or(0, i64::from)))
         .field("ExitCode", int(c.exit_code.map_or(0, i64::from)))
@@ -422,7 +422,7 @@ fn config(f: &Facts<'_>) -> (Option<Vec<String>>, Option<Vec<String>>, Value) {
             "StopTimeout",
             Some("StopTimeout"),
             true,
-            run.stop_timeout.map_or(Value::Nil, Value::Int),
+            run.stop_timeout.map_or_else(|| Struct::nil("int"), Value::Int),
         )
         .tagged("Shell", Some("Shell"), true, Value::NilList(Kind::String))
         .value();
@@ -498,6 +498,7 @@ fn binding(ip: &str, port: &str) -> Value {
 /// HostConfig: what was asked, and dockerd's defaults for what was not.
 fn host_config(f: &Facts<'_>) -> Value {
     let run = f.request;
+    let res = &run.resources;
     let mut bindings: std::collections::BTreeMap<String, Vec<Value>> = std::collections::BTreeMap::new();
     for p in &run.publish {
         bindings
@@ -591,12 +592,14 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("ShmSize", int(SHM_SIZE))
         .tagged("Sysctls", Some("Sysctls"), true, Value::NilMap(Kind::String))
         .tagged("Runtime", Some("Runtime"), true, s("shards"))
-        .tagged("Umask", Some("Umask"), true, Value::Nil)
+        .tagged("Umask", Some("Umask"), true, Struct::nil("uint32"))
         .field("Isolation", s(""))
-        // Resources, embedded.
-        .tagged("CPUShares", Some("CpuShares"), false, int(0))
-        .field("Memory", int(0))
-        .tagged("NanoCPUs", Some("NanoCpus"), false, int(0))
+        // Resources, embedded, as dockerd keeps them: swap twice the memory where only
+        // memory is limited (adaptContainerSettings), a pids limit of 0 or less unset
+        // (postContainersCreate), and swappiness discarded on cgroup v2.
+        .tagged("CPUShares", Some("CpuShares"), false, int(res.cpu_shares))
+        .field("Memory", int(res.memory))
+        .tagged("NanoCPUs", Some("NanoCpus"), false, int(res.nano_cpus))
         .field("CgroupParent", s(""))
         .field("BlkioWeight", Value::Uint(0))
         .field("BlkioWeightDevice", empty())
@@ -604,29 +607,36 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("BlkioDeviceWriteBps", empty())
         .field("BlkioDeviceReadIOps", empty())
         .field("BlkioDeviceWriteIOps", empty())
-        .tagged("CPUPeriod", Some("CpuPeriod"), false, int(0))
-        .tagged("CPUQuota", Some("CpuQuota"), false, int(0))
+        .tagged("CPUPeriod", Some("CpuPeriod"), false, int(res.cpu_period))
+        .tagged("CPUQuota", Some("CpuQuota"), false, int(res.cpu_quota))
         .tagged("CPURealtimePeriod", Some("CpuRealtimePeriod"), false, int(0))
         .tagged("CPURealtimeRuntime", Some("CpuRealtimeRuntime"), false, int(0))
-        .field("CpusetCpus", s(""))
-        .field("CpusetMems", s(""))
+        .field("CpusetCpus", s(&res.cpuset_cpus))
+        .field("CpusetMems", s(&res.cpuset_mems))
         .field("Devices", empty())
         .field("DeviceCgroupRules", Value::NilList(Kind::String))
         .field("DeviceRequests", Value::NilList(Kind::Any))
-        .field("MemoryReservation", int(0))
-        .field("MemorySwap", int(0))
-        .field("MemorySwappiness", Value::Nil)
+        .field("MemoryReservation", int(res.memory_reservation))
+        .field("MemorySwap", int(crate::resources::memory_swap(res)))
+        .field("MemorySwappiness", Struct::nil("int64"))
         // Set false as it is made, and dropped as it starts where the kernel cannot
         // keep the OOM killer away (daemon/daemon_unix.go): cgroup v2's.
         .field(
             "OomKillDisable",
             if f.container.started.is_some() {
-                Value::Nil
+                Struct::nil("bool")
             } else {
                 Value::Bool(false)
             },
         )
-        .field("PidsLimit", Value::Nil)
+        .field(
+            "PidsLimit",
+            if res.pids_limit > 0 {
+                int(res.pids_limit)
+            } else {
+                Struct::nil("int64")
+            },
+        )
         .field("Ulimits", empty())
         .tagged("CPUCount", Some("CpuCount"), false, int(0))
         .tagged("CPUPercent", Some("CpuPercent"), false, int(0))
@@ -635,7 +645,7 @@ fn host_config(f: &Facts<'_>) -> Value {
         .tagged("Mounts", Some("Mounts"), true, Value::NilList(Kind::Any))
         .field("MaskedPaths", Value::strings(MASKED))
         .field("ReadonlyPaths", Value::strings(READONLY))
-        .tagged("Init", Some("Init"), true, Value::Nil)
+        .tagged("Init", Some("Init"), true, Struct::nil("bool"))
         .value()
 }
 
@@ -1021,6 +1031,7 @@ mod tests {
                 ports: Vec::new(),
                 image_id: Some(golden["image_id"].as_str().unwrap().to_owned()),
                 labels: Default::default(),
+                oom_killed: false,
             };
             let manifest = &want["ImageManifestDescriptor"];
             let facts = Facts {
@@ -1049,6 +1060,12 @@ mod tests {
         for d in [&mut *got, &mut *want] {
             d["Id"] = json!("<ID>");
             d["Created"] = json!("<TIME>");
+            // docker/cli sends the environment through a Go map (runCreate's
+            // ParseProxyConfig), in an order of Go's choosing that differs run to run;
+            // shards keeps the order given.
+            if let Some(env) = d["Config"]["Env"].as_array_mut() {
+                env.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+            }
             if started {
                 d["State"]["StartedAt"] = json!("<TIME>");
                 d["State"]["Pid"] = json!("<PID>");

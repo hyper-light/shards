@@ -1474,6 +1474,33 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   pulled. Docker pulls it and then fails as it starts, or runs it under emulation, which
   a microVM, running its own kernel on the host's CPU, has none of. Test:
   `run_writes_cidfiles_pulls_quietly_and_keeps_signals_as_docker_run_does`.
+- **Memory and CPU limits** (`resources.rs`, init `cgroups`, `isolate`, `limit`).
+  `run` and `create` take `-m`, `--memory-reservation`, `--memory-swap`,
+  `--memory-swappiness`, `--oom-kill-disable`, `--cpus`, `--cpu-period`, `--cpu-quota`,
+  `-c`, `--cpuset-cpus`, `--cpuset-mems` and `--pids-limit` as docker/cli v29.8.1 reads
+  them (MemBytes through go-units' RAMInBytes, NanoCPUs through math/big's Rat, each held
+  to the real CLI by the docker-cli oracle), and dockerd checks them as on a cgroup v2
+  host (verifyPlatformContainerResources: its errors, and its warnings for swappiness and
+  OomKillDisable, which v2 has not). A container's limits are a cgroup's, inside the
+  microVM as on a Linux host: the guest kernel has cgroup v2 with every controller runc
+  uses, init mounts it with `nsdelegate`, and each workload process joins one cgroup, in
+  a cgroup namespace rooted there and a mount namespace (a slave of init's) where
+  `/sys/fs/cgroup` is that cgroup, read-only, as a Docker container sees its own; the
+  standby the template keeps does so before the snapshot, so a run pays nothing for it.
+  init writes the limits as runc v1.5.1 does (fs2 Manager.Set, after moby's and runc's
+  translations: `--cpus` as `cpu.max` over 100 ms, shares to a weight, swap less memory).
+  The microVM is sized to hold them: as many vCPUs as `--cpus`, the quota or the cpuset
+  needs, and memory whose MemAvailable holds `-m`, from the guest kernel's own share
+  measured by size (PM M117). Where Docker limits a container below the host, shards does
+  both: the limit binds inside a VM no larger than it needs. A process the guest kernel
+  kills for want of memory is reported as dockerd reports containerd's OOM:
+  State.OOMKilled until the next start, and an `oom` event. Two differences:
+  `--cpuset-mems` is checked against the guest's memory nodes, where dockerd checks it
+  against the host's CPUs (its cgroup2 sysinfo parses `Cpus` into `MemSets`) and runc then
+  fails at the start; and a limit above the host's memory gives a VM of the host's
+  memory, past which it limits nothing. `shards create`'s refusals are dockerd's words
+  alone, exit 1, as runCreate returns them. Test:
+  `run_limits_resources_as_docker_run_does`.
 ### Shipping the guest (D28)
 
 `shards run IMAGE` works on first use: with no guest recorded and none named, a run boots

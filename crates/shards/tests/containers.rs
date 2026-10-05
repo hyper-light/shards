@@ -1446,6 +1446,165 @@ fn run_writes_cidfiles_pulls_quietly_and_keeps_signals_as_docker_run_does() {
     assert_eq!(removed.status, Some(0), "{removed}");
 }
 
+/// `run`'s memory and CPU flags as docker run takes them: checked as dockerd checks them,
+/// its warnings said, the microVM sized to hold them, and the workload's cgroup limited
+/// as runc limits it, seen read-only at /sys/fs/cgroup as a container sees its own; a
+/// workload past its memory killed, and OOMKilled, as Docker reports it.
+#[test]
+fn run_limits_resources_as_docker_run_does() {
+    let Some((home, image)) = home("containers-resources") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let files = [
+        "/sys/fs/cgroup/memory.max",
+        "/sys/fs/cgroup/memory.low",
+        "/sys/fs/cgroup/memory.swap.max",
+        "/sys/fs/cgroup/cpu.max",
+        "/sys/fs/cgroup/cpu.weight",
+        "/sys/fs/cgroup/pids.max",
+        "/sys/fs/cgroup/cpuset.cpus",
+        "/proc/self/cgroup",
+        "/sys/devices/system/cpu/online",
+    ];
+    let mut command = vec!["stat"];
+    command.extend(files);
+    let limited = run_in(
+        &home,
+        &image,
+        &[
+            "--name",
+            "limited",
+            "-m",
+            "64m",
+            "--memory-reservation",
+            "32m",
+            "--cpus",
+            "1.5",
+            "-c",
+            "512",
+            "--pids-limit",
+            "50",
+            "--cpuset-cpus",
+            "0",
+            "--memory-swappiness",
+            "50",
+        ],
+        &command,
+    );
+    assert_eq!(limited.status, Some(0), "{limited}");
+    assert!(
+        limited.stderr.starts_with(
+            "WARNING: Your kernel does not support memory swappiness capabilities or the cgroup is not mounted. Memory swappiness discarded.\n"
+        ),
+        "{limited}"
+    );
+    let read: Vec<&str> = limited
+        .stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("= "))
+        .collect();
+    assert_eq!(
+        read,
+        [
+            "67108864\\n",
+            "33554432\\n",
+            "67108864\\n",
+            "150000 100000\\n",
+            "59\\n",
+            "50\\n",
+            "0\\n",
+            "0::/\\n",
+            "0-1\\n",
+        ],
+        "{limited}"
+    );
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.MemoryReservation}} {{.HostConfig.NanoCPUs}} {{.HostConfig.CPUShares}} {{.HostConfig.PidsLimit}} {{.HostConfig.CpusetCpus}} {{.HostConfig.MemorySwappiness}}",
+        "limited",
+    ]);
+    assert_eq!(
+        shown.stdout, "67108864 134217728 33554432 1500000000 512 50 0 <nil>\n",
+        "{shown}"
+    );
+    // JSON's names fail on the Go types, and are read from the JSON, where a null is no
+    // value, as docker/cli's inspector falls back.
+    let raw = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.CpuShares}} {{.HostConfig.MemorySwappiness}}",
+        "limited",
+    ]);
+    assert_eq!(raw.stdout, "512 <no value>\n", "{raw}");
+    // The microVM holds what the limit allows: what the kernel says may be allocated is
+    // at least the limit, across the sizes where its own share steps up (M117).
+    for limit in ["700m", "2500m"] {
+        let meminfo = run_in(&home, &image, &["-m", limit], &["stat", "/proc/meminfo"]);
+        assert_eq!(meminfo.status, Some(0), "{meminfo}");
+        let available_kib: u64 = meminfo
+            .stdout
+            .split("\\n")
+            .find_map(|l| l.strip_prefix("MemAvailable:"))
+            .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse().ok())
+            .unwrap();
+        let limit_kib = limit.trim_end_matches('m').parse::<u64>().unwrap() * 1024;
+        assert!(
+            available_kib >= limit_kib,
+            "{limit}: {available_kib} KiB available"
+        );
+    }
+    // Past its limit, the workload is killed, as the kernel kills it in its cgroup.
+    let hog = run_in(&home, &image, &["--name", "hog", "-m", "32m"], &["alloc", "100"]);
+    assert_eq!(hog.status, Some(137), "{hog}");
+    let state = shards(&["inspect", "-f", "{{.State.OOMKilled}} {{.State.ExitCode}}", "hog"]);
+    assert_eq!(state.stdout, "true 137\n", "{state}");
+    let within = run_in(&home, &image, &["-m", "64m"], &["alloc", "16"]);
+    assert_eq!(
+        (within.status, within.stdout.as_str()),
+        (Some(0), "allocated 16\n"),
+        "{within}"
+    );
+    // dockerd's refusals: `run` with the CLI's prefix, help and 125; `create` as they are.
+    let small = run_in(&home, &image, &["-m", "4m"], &["exit", "0"]);
+    assert_eq!(
+        (small.status, small.stderr.as_str()),
+        (
+            Some(125),
+            "shards: Error response from daemon: Minimum memory limit allowed is 6MB\n\nRun 'shards run --help' for more information\n"
+        ),
+        "{small}"
+    );
+    let made = shards(&["create", "--pull", "never", "-m", "4m", &image]);
+    assert_eq!(
+        (made.status, made.stderr.as_str()),
+        (
+            Some(1),
+            "Error response from daemon: Minimum memory limit allowed is 6MB\n"
+        ),
+        "{made}"
+    );
+    let cpus = std::thread::available_parallelism().unwrap().get();
+    let many = run_in(&home, &image, &["--cpus", "100000"], &["exit", "0"]);
+    assert_eq!(many.status, Some(125), "{many}");
+    assert!(
+        many.stderr.contains(&format!(
+            "range of CPUs is from 0.01 to {cpus}.00, as there are only {cpus} CPUs available"
+        )),
+        "{many}"
+    );
+    let swappy = run_in(&home, &image, &["--memory-swappiness", "101"], &["exit", "0"]);
+    assert_eq!(
+        (swappy.status, swappy.stderr.as_str()),
+        (
+            Some(125),
+            "shards: invalid value: 101. Valid memory swappiness range is 0-100\n\nRun 'shards run --help' for more information\n"
+        ),
+        "{swappy}"
+    );
+}
+
 #[test]
 fn info_and_disk_usage_format_as_docker_does() {
     let Some((home, image)) = home("containers-info-df") else {

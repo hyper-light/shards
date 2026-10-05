@@ -34,6 +34,17 @@ CASES = [
     ["create", "--health-cmd", "true", "--health-interval", "5s", "--health-retries", "2"],
     ["create", "--no-healthcheck"],
     ["run", "-d", "sleep", "300"],
+    ["create", "--label", "a=1", "-l", "b", "--expose", "7000-7001/udp", "--add-host",
+     "db:10.0.0.2", "--dns", "9.9.9.9", "--dns-search", "example.org", "--dns-option",
+     "ndots:2", "--domainname", "example.org"],
+    ["create", "-m", "64m", "--memory-reservation", "32m", "--cpus", "1.5", "-c", "512",
+     "--cpuset-cpus", "0", "--pids-limit", "50", "--memory-swappiness", "50",
+     "--oom-kill-disable"],
+    ["create", "--cpu-period", "50000", "--cpu-quota", "25000", "-m", "32m",
+     "--memory-swap", "-1", "--pids-limit", "-1", "--cpuset-mems", "0"],
+    ["create", "-m", "64m", "--memory-swap", "128m"],
+    ["run", "-d", "-m", "64m", "--memory-swappiness", "50", "--oom-kill-disable",
+     "--pids-limit", "50", "--cpus", "0.5", "sleep", "300"],
 ]
 
 
@@ -97,7 +108,10 @@ def main():
         words = list(flags)
         takes = {"-e", "--entrypoint", "-w", "-u", "-p", "--network", "--hostname",
                  "--stop-signal", "--stop-timeout", "--health-cmd", "--health-interval",
-                 "--health-retries"}
+                 "--health-retries", "--label", "-l", "--expose", "--add-host", "--dns",
+                 "--dns-search", "--dns-option", "--domainname", "-m", "--memory-reservation",
+                 "--cpus", "-c", "--cpuset-cpus", "--cpuset-mems", "--pids-limit",
+                 "--memory-swappiness", "--cpu-period", "--cpu-quota", "--memory-swap"}
         while words:
             w = words.pop(0)
             if w in takes:

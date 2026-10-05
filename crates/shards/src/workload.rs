@@ -89,7 +89,7 @@ impl Timing {
 #[cfg(unix)]
 pub enum Request<'a> {
     /// Known before the guest connects.
-    Now { spec: Spec, interactive: bool },
+    Now { spec: Box<Spec>, interactive: bool },
     /// Asked for once the guest is connected and waiting: a warm VM's request.
     Later(&'a dyn Fn() -> Result<Asked<'a>, String>),
 }
@@ -126,6 +126,8 @@ pub struct Ended {
     pub not_run: Option<String>,
     /// Bytes of its output its log could not keep.
     pub lost: u64,
+    /// The kernel killed a process of it for want of memory.
+    pub oom: bool,
 }
 
 /// Keeps a container's output (spec.rs, `LOG_STDOUT`): each record appended to its log,
@@ -271,7 +273,7 @@ pub fn serve(
         saved,
     } = match request {
         Request::Now { spec, interactive } => Asked {
-            spec,
+            spec: *spec,
             interactive,
             log: None,
             started: None,
@@ -370,6 +372,7 @@ fn relay(
     // D08).
     let mut frame = Vec::new();
     let mut not_run = None;
+    let mut oom = false;
     // As much as the guest sends at once, in one read, whatever the frames it holds
     // (review 8.20).
     let mut conn = io::BufReader::with_capacity(run::BUFFERED, &*conn);
@@ -407,6 +410,7 @@ fn relay(
             }
             kind::SYSTEM_ERR => not_run = Some(String::from_utf8_lossy(payload).into_owned()),
             kind::EXEC_FAILED => exec_failed(payload),
+            kind::OOM => oom = true,
             kind::EXIT => {
                 let _ = timing.answered_us.set(shards_vmm::log::uptime_us());
                 let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;
@@ -414,6 +418,7 @@ fn relay(
                     status: u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX),
                     not_run,
                     lost: log.as_deref().map_or(0, Logger::lost),
+                    oom,
                 });
             }
             _ => return Err(format!("the guest sent an unknown frame kind {which}")),

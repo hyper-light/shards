@@ -94,6 +94,7 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
         // Set by the daemon as it is handed over, as the resolvers are.
         hosts: Vec::new(),
         domainname: Vec::new(),
+        cgroup: Vec::new(),
     };
     fits(&spec)?;
     Ok(spec)

@@ -35,7 +35,7 @@ pub mod image;
 mod reference;
 pub mod stats;
 mod tabwriter;
-mod units;
+pub(crate) mod units;
 pub mod version;
 
 use std::rc::Rc;

@@ -285,6 +285,7 @@ impl Warm {
             builtin: 0,
             hosts: Vec::new(),
             domainname: Vec::new(),
+            cgroup: Vec::new(),
         };
         let (conn, theirs) = UnixStream::pair().unwrap();
         let (stdin_r, stdin_w) = pipe();

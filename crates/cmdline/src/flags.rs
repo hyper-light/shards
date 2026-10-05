@@ -23,6 +23,10 @@ pub enum Kind {
     /// A time, read as Go's `time.ParseDuration` reads it, in nanoseconds; shown as
     /// `Duration.String` shows it.
     Duration,
+    /// One value of a type of docker/cli's own (a pflag `Var`); the name is its type in
+    /// `--help`: `bytes` (MemBytes, kept as the bytes) or `decimal` (NanoCPUs, kept as
+    /// billionths).
+    Value(&'static str),
 }
 
 /// A command's flag.
@@ -100,6 +104,15 @@ impl Flag {
         Flag::new(name, short, Kind::Duration, "0s", usage)
     }
 
+    pub const fn value(
+        name: &'static str,
+        short: Option<u8>,
+        type_name: &'static str,
+        usage: &'static str,
+    ) -> Flag {
+        Flag::new(name, short, Kind::Value(type_name), "", usage)
+    }
+
     pub const fn many(
         name: &'static str,
         short: Option<u8>,
@@ -170,6 +183,7 @@ impl Flag {
             Kind::String => self.default.is_empty(),
             Kind::Many(_) => matches!(self.default, "false" | "<nil>" | "" | "0"),
             Kind::Duration => matches!(self.default, "0" | "0s"),
+            Kind::Value(_) => matches!(self.default, "false" | "<nil>" | "" | "0"),
         }
     }
 }
@@ -351,6 +365,12 @@ impl Parsed {
                     Some(Value::Bool(b)) => b.to_string(),
                     Some(Value::Int(n)) if f.kind == Kind::Duration => crate::gotime::format_duration(*n),
                     Some(Value::Int(n)) => n.to_string(),
+                    Some(Value::Text(s)) if f.kind == Kind::Value("bytes") => {
+                        crate::resources::mem_bytes_string(s.parse().unwrap_or(0))
+                    }
+                    Some(Value::Text(s)) if f.kind == Kind::Value("decimal") => {
+                        crate::resources::nano_cpus_string(s.parse().unwrap_or(0))
+                    }
                     Some(Value::Text(s)) => s.clone(),
                     Some(Value::Many(v)) if v.is_empty() => String::new(),
                     // NetworkOpt prints as nothing, whatever it holds.
@@ -625,6 +645,10 @@ fn go_json(s: &str) -> String {
 pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
     match (flag.name, flag.kind) {
         (_, Kind::Many("filter")) => filter(value),
+        // MemSwapBytes takes -1 as itself (docker/cli opts/opts.go).
+        ("memory-swap", Kind::Value("bytes")) if value == "-1" => Ok(value.to_string()),
+        (_, Kind::Value("bytes")) => crate::resources::ram_in_bytes(value).map(|n| n.to_string()),
+        (_, Kind::Value("decimal")) => crate::resources::parse_cpus(value).map(|n| n.to_string()),
         ("label", Kind::Many("list")) => validate_label(value),
         ("dns", Kind::Many("list")) => validate_ip(value),
         ("dns-search", Kind::Many("list")) => validate_dns_search(value),
@@ -838,6 +862,7 @@ fn set(
         (Kind::Int, _) => Value::Int(go::parse_int(value).map_err(|e| invalid(e.to_string()))?),
         (Kind::String, _) => Value::Text(value.to_string()),
         (Kind::Duration, _) => Value::Int(crate::gotime::duration(value).map_err(invalid)?),
+        (Kind::Value(_), _) => Value::Text(validate(&flag, value).map_err(invalid)?),
         (Kind::Many(_), before) => {
             let mut all = match before {
                 Some(Value::Many(all)) => all,
@@ -961,7 +986,7 @@ fn unquote_usage(f: &Flag) -> (String, String) {
         Kind::Bool => "",
         Kind::Int => "int",
         Kind::String => "string",
-        Kind::Many(t) => t,
+        Kind::Many(t) | Kind::Value(t) => t,
         Kind::Duration => "duration",
     };
     (type_name.to_string(), usage.to_string())

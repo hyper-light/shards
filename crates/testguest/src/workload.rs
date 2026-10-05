@@ -49,6 +49,22 @@ pub fn main() -> ! {
             0
         }
         "exit" => arg(1).parse().unwrap_or(1),
+        // Touches N MiB, a page at a time, then says so: what a memory limit stops.
+        "alloc" => {
+            let mib: usize = arg(1).parse().unwrap_or(0);
+            let mut held: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..mib {
+                let mut chunk = vec![0u8; 1 << 20];
+                for page in chunk.chunks_mut(4096) {
+                    if let Some(b) = page.first_mut() {
+                        *b = 1;
+                    }
+                }
+                held.push(chunk);
+            }
+            let _ = writeln!(io::stdout(), "allocated {}", held.len());
+            0
+        }
         "kill" => {
             // SAFETY: raise(2) on ourselves.
             unsafe { libc::raise(libc::SIGKILL) };

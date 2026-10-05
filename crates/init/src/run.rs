@@ -96,6 +96,9 @@ pub fn main(device: &str, template: bool) -> ! {
             f.status
         }
     };
+    if oom_killed() {
+        let _ = send(&conn, kind::OOM, &[]);
+    }
     let _ = send(&conn, kind::EXIT, &status.to_be_bytes());
     // The host may ask for the container's writable layer, to keep (layer.rs).
     if asked_to_save(&conn)
@@ -268,8 +271,128 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     if let Some((addr, prefix, gateway)) = crate::net::from_cmdline() {
         crate::net::configure(addr, prefix, gateway).map_err(|e| setup_failed(format!("eth0: {e}")))?;
     }
+    cgroups()?;
     // Last: init writes /proc/sys above, and no more after.
     masked()
+}
+
+/// Where the workload's cgroup is, as init sees the hierarchy.
+const WORKLOAD_CGROUP: &str = "/sys/fs/cgroup/workload";
+
+/// The cgroup v2 hierarchy (Linux Documentation/admin-guide/cgroup-v2.rst), as runc gives
+/// a container its own: mounted with `nsdelegate`, so that a cgroup namespace bounds what
+/// its processes may change; the controllers runc sets limits through enabled below the
+/// root; and the cgroup every workload process joins ([`isolate`]). The root is then
+/// shared, so that what init mounts later reaches the workload's mount namespace.
+fn cgroups() -> Result<(), Failure> {
+    let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
+    mount(
+        "cgroup2",
+        "/sys/fs/cgroup",
+        "cgroup2",
+        nosuid | noexec | nodev,
+        "nsdelegate",
+    )?;
+    // One at a time: a controller the kernel lacks stays off, and a limit of it then
+    // fails where it is asked for.
+    for controller in ["cpu", "cpuset", "io", "memory", "pids"] {
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/sys/fs/cgroup/cgroup.subtree_control")
+            .and_then(|mut f| f.write_all(format!("+{controller}").as_bytes()));
+    }
+    mkdir(WORKLOAD_CGROUP)?;
+    mount("", "/", "", libc::MS_REC | libc::MS_SHARED, "")
+}
+
+/// Puts this process, a standby, in the workload's cgroup and in namespaces of its own,
+/// as runc puts a container's: a cgroup namespace rooted there, and a mount namespace,
+/// a slave of init's, in which `/sys/fs/cgroup` is that cgroup, read-only, as Docker's
+/// containers see theirs (moby daemon/pkg/oci/defaults.go). Returns the errno of the
+/// step that failed.
+fn isolate() -> Result<(), i32> {
+    let errno = |e: io::Error| e.raw_os_error().unwrap_or(libc::EIO);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(format!("{WORKLOAD_CGROUP}/cgroup.procs"))
+        .and_then(|mut f| f.write_all(b"0"))
+        .map_err(errno)?;
+    let last = || io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
+    let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
+    // SAFETY: unshare(2), mount(2) and umount2(2) on NUL-terminated literals; this
+    // process is a single-threaded fork of init.
+    unsafe {
+        if libc::unshare(libc::CLONE_NEWCGROUP | libc::CLONE_NEWNS) != 0 {
+            return Err(last());
+        }
+        if libc::mount(
+            std::ptr::null(),
+            c"/".as_ptr(),
+            std::ptr::null(),
+            libc::MS_REC | libc::MS_SLAVE,
+            std::ptr::null(),
+        ) != 0
+            || libc::umount2(c"/sys/fs/cgroup".as_ptr(), libc::MNT_DETACH) != 0
+            || libc::mount(
+                c"cgroup2".as_ptr(),
+                c"/sys/fs/cgroup".as_ptr(),
+                c"cgroup2".as_ptr(),
+                libc::MS_RDONLY | nosuid | noexec | nodev,
+                std::ptr::null(),
+            ) != 0
+        {
+            return Err(last());
+        }
+    }
+    Ok(())
+}
+
+/// Whether the kernel killed a process of the workload's cgroup for want of memory: its
+/// `memory.events` counts an `oom_kill` (Documentation/admin-guide/cgroup-v2.rst), whether
+/// its own limit or the VM's ran out.
+fn oom_killed() -> bool {
+    std::fs::read_to_string(format!("{WORKLOAD_CGROUP}/memory.events")).is_ok_and(|events| {
+        events.lines().any(|l| {
+            l.strip_prefix("oom_kill ")
+                .and_then(|n| n.trim().parse::<u64>().ok())
+                .is_some_and(|n| n > 0)
+        })
+    })
+}
+
+/// Sets the workload's limits, each `FILE=VALUE` of [`Spec::cgroup`], as runc's cgroups
+/// WriteFile does, and in its words when the kernel refuses one.
+fn limit(cgroup: &[Vec<u8>]) -> Result<(), Failure> {
+    for entry in cgroup {
+        let text = String::from_utf8_lossy(entry);
+        let (file, value) = text
+            .split_once('=')
+            .filter(|(f, _)| {
+                !f.is_empty()
+                    && f.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b == b'.' || b == b'_')
+            })
+            .ok_or_else(|| setup_failed(format!("a cgroup setting of no file: {text:?}")))?;
+        let path = format!("{WORKLOAD_CGROUP}/{file}");
+        let shown = format!("/sys/fs/cgroup/{file}");
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .map_err(|e| setup_failed(format!("open {shown}: {}", go_error(&e))))?;
+        f.write_all(value.as_bytes()).map_err(|e| {
+            setup_failed(format!(
+                "failed to write {}: write {shown}: {}",
+                shards_cmdline::go::quote(value),
+                go_error(&e)
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+/// An I/O error as Go's syscall.Errno words it.
+fn go_error(e: &io::Error) -> String {
+    shards_cmdline::go::linux_error(e.raw_os_error().unwrap_or(libc::EIO))
 }
 
 /// A container's devices in /dev, and runc's links (crate::defaults).
@@ -623,6 +746,8 @@ mod step {
     pub const ACCESS: u8 = 5;
     /// Opening its terminal, or making it the session's.
     pub const TTY: u8 = 6;
+    /// Joining the workload's cgroup, or its namespaces ([`super::isolate`]).
+    pub const CGROUP: u8 = 7;
 }
 
 /// A running workload and init's ends of its stdio. With a terminal, `stdout` is its
@@ -811,6 +936,7 @@ impl Standby {
                 _held: Some(orders),
             });
         }
+        limit(&spec.cgroup)?;
         standby.launch(spec, false)
     }
 
@@ -968,6 +1094,8 @@ fn standby(ends: Ends) -> ! {
         inits,
     } = ends;
     drop(inits);
+    // Before the orders: the standby the template keeps is isolated before its snapshot.
+    let isolated = isolate();
     let mut bytes = Vec::new();
     let got = File::from(orders).read_to_end(&mut bytes);
     let decoded = got.ok().and_then(|_| Orders::decode(&bytes));
@@ -992,6 +1120,15 @@ fn standby(ends: Ends) -> ! {
         // SAFETY: ends this process without running atexit handlers inherited from init.
         unsafe { libc::_exit(NOT_RUN as libc::c_int) }
     };
+    if let Err(errno) = isolated {
+        let [a, b, c, d] = errno.to_be_bytes();
+        let report = [step::CGROUP, a, b, c, d, 0, 0, 0, 0];
+        // SAFETY: write(2) of a local buffer to our error pipe, then _exit(2).
+        unsafe {
+            libc::write(err.as_raw_fd(), report.as_ptr().cast(), report.len());
+            libc::_exit(127)
+        }
+    }
     let (argv_ptrs, envp_ptrs) = (pointers(&argv), pointers(&envp));
     let [stdin, stdout, stderr] = &stdio;
     // Opened here, in this single-threaded fork of init: a workload without `-i` or a
@@ -1729,6 +1866,13 @@ fn exec_failure(which: u8, errno: i32, argv0: &[u8], tried: &[u8], cwd: &[u8], u
         ),
         step::USER => format!("setting user {}: {err}", quote(&String::from_utf8_lossy(user))),
         step::TTY => format!("open {}: {err}", String::from_utf8_lossy(tried)),
+        step::CGROUP => {
+            return Failure {
+                status: NOT_RUN,
+                message: format!("joining the container's cgroup: {err}"),
+                daemon: false,
+            };
+        }
         _ => format!("exec {}: {err}", String::from_utf8_lossy(tried)),
     };
     Failure {

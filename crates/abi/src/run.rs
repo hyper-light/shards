@@ -84,6 +84,10 @@ pub mod kind {
     /// Host to guest, after [`EXIT`]: send the container's writable layer as [`LAYER`]
     /// frames, then wait to be powered off.
     pub const SAVE: u8 = 27;
+    /// Guest to host, before [`EXIT`]: the kernel killed a process of the workload's
+    /// cgroup for want of memory (its `memory.events` counts an `oom_kill`), as
+    /// containerd tells dockerd of an OOM.
+    pub const OOM: u8 = 28;
 }
 
 /// Why an exec did not start, as its [`kind::SYSTEM_ERR`] says first: the runtime could
@@ -136,6 +140,9 @@ pub struct Spec {
     /// Docker's `--domainname`: the NIS domain name, and the host's full name in
     /// `/etc/hosts`.
     pub domainname: Vec<u8>,
+    /// The workload's resource limits, as its cgroup's interface files take them (Linux
+    /// Documentation/admin-guide/cgroup-v2.rst): each `FILE=VALUE`, written in order.
+    pub cgroup: Vec<Vec<u8>>,
 }
 
 /// What shards-init does itself for an exec ([`Spec::builtin`]).
@@ -192,7 +199,8 @@ impl Spec {
     /// Lists are a big-endian u32 count, then their strings; each string is a big-endian
     /// u32 length, then its bytes. Then the optional sections, each a tag and what it
     /// holds, in order: a terminal, 1 and its size; resolv.conf, 2 and its bytes; stdin
-    /// read, 3 alone; a built-in, 4 and its kind.
+    /// read, 3 alone; a built-in, 4 and its kind; hosts, 5 and a list; a domain name, 6
+    /// and its bytes; cgroup limits, 7 and a list.
     ///
     /// Callers see [`encoded_len`](Spec::encoded_len) within [`MAX_PAYLOAD`] first: past
     /// it, a length would not fit its u32.
@@ -240,6 +248,13 @@ impl Spec {
             out.push(6);
             put_bytes(out, &self.domainname);
         }
+        if !self.cgroup.is_empty() {
+            out.push(7);
+            put(out, self.cgroup.len());
+            for c in &self.cgroup {
+                put_bytes(out, c);
+            }
+        }
     }
 
     /// The bytes [`encode`](Spec::encode) writes, or `None` past `usize`: measured without
@@ -267,12 +282,18 @@ impl Spec {
         } else {
             self.domainname.len().checked_add(5)?
         };
+        let cgroup = if self.cgroup.is_empty() {
+            0
+        } else {
+            strings(&self.cgroup)?.checked_add(1)?
+        };
         n.checked_add(if self.tty.is_some() { 5 } else { 0 })?
             .checked_add(resolv)?
             .checked_add(usize::from(self.stdin))?
             .checked_add(if self.builtin != 0 { 2 } else { 0 })?
             .checked_add(hosts)?
-            .checked_add(domain)
+            .checked_add(domain)?
+            .checked_add(cgroup)
     }
 
     /// The spec in `bytes`, or `None` unless they hold exactly one.
@@ -290,10 +311,11 @@ impl Spec {
             builtin: 0,
             hosts: Vec::new(),
             domainname: Vec::new(),
+            cgroup: Vec::new(),
         };
         let mut spec = spec;
         // Optional sections, each once, in order: 1 a terminal, 2 resolv.conf, 3 stdin, 4
-        // a built-in, 5 hosts, 6 a domain name.
+        // a built-in, 5 hosts, 6 a domain name, 7 cgroup limits.
         let mut last = 0u8;
         while let Some(tag) = r.take(1).and_then(|t| t.first().copied()) {
             if tag <= last {
@@ -307,6 +329,7 @@ impl Spec {
                 4 => spec.builtin = r.take(1)?.first().copied().filter(|&b| b != 0)?,
                 5 => spec.hosts = r.list().filter(|l| !l.is_empty())?,
                 6 => spec.domainname = r.bytes().filter(|d| !d.is_empty())?,
+                7 => spec.cgroup = r.list().filter(|l| !l.is_empty())?,
                 _ => return None,
             }
         }
@@ -378,12 +401,13 @@ mod tests {
             builtin: builtin::CHANGES,
             hosts: vec![b"10.0.0.2\tdb".to_vec(), b"::1\tlocal6".to_vec()],
             domainname: b"example.org".to_vec(),
+            cgroup: vec![b"memory.max=33554432".to_vec(), b"cpu.max=50000 100000".to_vec()],
         };
         let bytes = spec.encode();
         assert_eq!(bytes.len(), spec.encoded_len().unwrap());
         assert_eq!(Spec::decode(&bytes), Some(spec.clone()));
         // Its length measured as written, whichever optional sections it has (review 1.20).
-        for sections in 0..64u8 {
+        for sections in 0..128u8 {
             let some = Spec {
                 tty: (sections & 1 != 0).then_some(Size { rows: 1, cols: 2 }),
                 resolv: (sections & 2 != 0).then(|| b"nameserver 10.0.0.1\n".to_vec()),
@@ -399,6 +423,11 @@ mod tests {
                 } else {
                     Vec::new()
                 },
+                cgroup: if sections & 64 != 0 {
+                    vec![b"pids.max=7".to_vec()]
+                } else {
+                    Vec::new()
+                },
                 ..spec.clone()
             };
             let written = some.encode();
@@ -408,6 +437,7 @@ mod tests {
         let piped = Spec {
             hosts: Vec::new(),
             domainname: Vec::new(),
+            cgroup: Vec::new(),
             tty: None,
             resolv: None,
             stdin: false,
@@ -419,6 +449,7 @@ mod tests {
         let tty_only = Spec {
             hosts: Vec::new(),
             domainname: Vec::new(),
+            cgroup: Vec::new(),
             resolv: None,
             stdin: false,
             builtin: 0,
@@ -428,6 +459,7 @@ mod tests {
         let closed = Spec {
             hosts: Vec::new(),
             domainname: Vec::new(),
+            cgroup: Vec::new(),
             stdin: false,
             builtin: 0,
             ..spec.clone()
@@ -436,6 +468,7 @@ mod tests {
         let commanded = Spec {
             hosts: Vec::new(),
             domainname: Vec::new(),
+            cgroup: Vec::new(),
             builtin: 0,
             ..spec.clone()
         };
@@ -443,14 +476,21 @@ mod tests {
         let hostless = Spec {
             hosts: Vec::new(),
             domainname: Vec::new(),
+            cgroup: Vec::new(),
             ..spec.clone()
         };
         let without_hosts = hostless.encode();
         let domainless = Spec {
             domainname: Vec::new(),
+            cgroup: Vec::new(),
             ..spec.clone()
         };
         let without_domain = domainless.encode();
+        let unlimited = Spec {
+            cgroup: Vec::new(),
+            ..spec.clone()
+        };
+        let without_cgroup = unlimited.encode();
         assert_eq!(Spec::decode(&Spec::default().encode()), Some(Spec::default()));
         let reading = Spec {
             stdin: true,
@@ -473,6 +513,8 @@ mod tests {
                 Some(hostless.clone())
             } else if cut == without_domain.len() {
                 Some(domainless.clone())
+            } else if cut == without_cgroup.len() {
+                Some(unlimited.clone())
             } else {
                 None
             };

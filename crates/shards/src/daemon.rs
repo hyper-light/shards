@@ -1628,6 +1628,17 @@ impl<D: Disk> Daemon<D> {
             let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
             return None;
         }
+        // `shards create` says the daemon's refusal as it is, and exits 1: runCreate
+        // returns createContainer's error unwrapped (docker/cli create.go).
+        let creating = run.create;
+        let refuse = |said: &str| {
+            if creating {
+                say(&format!("Error response from daemon: {said}"));
+                let _ = shards_ipc::send(conn, kind::EXIT, &[1], &[]);
+            } else {
+                refuse(said);
+            }
+        };
         // `shards start`: the container as it was made, attached as this client asks
         // (D37). One running already is left so, and named, as `docker start` names it.
         let mut again = None;
@@ -1774,6 +1785,14 @@ impl<D: Disk> Daemon<D> {
             None => self.create(&run, &prepared, &id, ports),
         };
         let name = match made {
+            // A new container's warnings, as the CLI prints ContainerCreate's.
+            Ok(name) if again.is_none() => {
+                let warned = crate::resources::verify(&run.resources, crate::resources::host_cpus());
+                for w in warned.unwrap_or_default() {
+                    say(&format!("WARNING: {w}"));
+                }
+                name
+            }
             Ok(name) => name,
             Err(e) => {
                 self.free_ports(Some(&id), None);
@@ -2124,6 +2143,7 @@ impl<D: Disk> Daemon<D> {
             })
             .collect::<Result<_, &str>>()?;
         spec.domainname = run.domainname.clone().into_bytes();
+        spec.cgroup = crate::resources::cgroup(&run.resources);
         Ok(())
     }
 
@@ -2232,6 +2252,9 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         }
+        // Its resources (verifyPlatformContainerResources), whose warnings it says once
+        // it is made.
+        crate::resources::verify(&run.resources, crate::resources::host_cpus())?;
         // A name held by a container that ended with `--rm`, its end not yet taken or its
         // removal not yet durable, is free once that is done, as dockerd's is by the time
         // `docker run --rm` returns: its end is taken, and its removal waited for.
@@ -2287,6 +2310,7 @@ impl<D: Disk> Daemon<D> {
             stop_timeout: run.stop_timeout,
             ports,
             labels: prepared.labels.clone(),
+            oom_killed: false,
         });
         self.event_for(id, &name, &run.image, "create", &[]);
         // Its run is owned from the moment the container is visible.
@@ -2716,6 +2740,7 @@ impl<D: Disk> Daemon<D> {
                 kind::STARTED => self.run_started(id, inbox),
                 kind::DONE => self.run_ended(id, inbox, Some(&m.payload)),
                 kind::LOST => self.log_lost(id, &m.payload),
+                kind::OOM => self.oom_killed(id),
                 kind::WORKING_SET => {
                     if let Some(whole) = working_set_part(id, inbox, &m.payload) {
                         self.make_soon(whole);
@@ -2846,6 +2871,22 @@ impl<D: Disk> Daemon<D> {
 
     /// Output of run `id` its log could not keep: counted on its container, for `logs` to
     /// say (audit A12).
+    /// Run `id`'s guest killed a process of it for want of memory: as dockerd hears
+    /// containerd's TaskOOM (daemon/monitor.go), State.OOMKilled until it runs again, and
+    /// an `oom` event.
+    fn oom_killed(&self, id: &str) {
+        let named = lock(&self.containers)
+            .made(id)
+            .map(|c| (c.name.clone(), c.image.clone()));
+        match lock(&self.containers).change(id, |c| c.oom_killed = true) {
+            Ok(()) => self.record_soon(id, Vec::new()),
+            Err(e) => log(format!("container {id}: its OOM is not recorded: {e}")),
+        }
+        if let Some((name, image)) = named {
+            self.event_for(id, &name, &image, "oom", &[]);
+        }
+    }
+
     fn log_lost(&self, id: &str, payload: &[u8]) {
         let Some(lost) = payload.first_chunk::<8>().map(|b| u64::from_be_bytes(*b)) else {
             return;
@@ -2872,6 +2913,7 @@ impl<D: Disk> Daemon<D> {
         let changed = lock(&self.containers).change(id, |c| {
             c.state = Life::Running;
             c.started = Some(containers::now());
+            c.oom_killed = false;
         });
         let told: Vec<UnixStream> = inbox.detached.take().into_iter().collect();
         if changed.is_ok() {
@@ -3240,7 +3282,9 @@ impl<D: Disk> Daemon<D> {
             network::Net::Bridge => Some(self.bridge.ok_or(shards_net::bridge::NO_SUBNET)?),
             network::Net::None => None,
         };
+        // Sized for its limits; a template is of one size (run::template).
         let on_network = |cfg: &mut Config| {
+            (cfg.vcpus, cfg.memory_mib) = prepared.size;
             if let Some(bridge) = &bridge {
                 cfg.cmdline.push(' ');
                 cfg.cmdline.push_str(&bridge.cmdline());
@@ -4392,6 +4436,7 @@ mod tests {
                 labels: Default::default(),
                 exposed: Vec::new(),
                 image_id: String::new(),
+                size: (1, shards_vmm::vm::MEMORY_MIB),
             };
             self.t.daemon.create(&run, &prepared, &id, Vec::new()).unwrap();
             self.t.daemon.record_arrival(self.threads, &id);

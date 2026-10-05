@@ -457,10 +457,13 @@ pub fn finish(
     if let Some((said, _)) = &failed {
         done.extend_from_slice(said.as_bytes());
     }
-    if let Ok(ended) = served
+    if let Ok(ended) = &served
         && ended.lost > 0
     {
         let _ = shards_ipc::send(&link.daemon, kind::LOST, &ended.lost.to_be_bytes(), &[]);
+    }
+    if served.as_ref().is_ok_and(|ended| ended.oom) {
+        let _ = shards_ipc::send(&link.daemon, kind::OOM, &[], &[]);
     }
     if let Some((name, set)) = working_set {
         let _ = shards_ipc::working_set_parts(name, set, |part| {

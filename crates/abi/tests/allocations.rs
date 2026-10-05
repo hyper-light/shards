@@ -70,6 +70,7 @@ fn launch() -> Spec {
         builtin: 0,
         hosts: Vec::new(),
         domainname: Vec::new(),
+        cgroup: Vec::new(),
     }
 }
 

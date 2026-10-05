@@ -3982,3 +3982,46 @@ revision before comparing a changed API/implementation.
   VM restored, the layer applied, the layer saved again. dockerd reads a stopped
   container's layer where it lies; a layer kept on the host from the start would let
   shards do the same, to be measured against this.
+
+### M117. What the guest kernel keeps of a microVM's memory
+
+- **Question.** `-m L` limits a workload's cgroup to L bytes (`memory.max`), as runc does;
+  the microVM around it must hold L for the workload besides what its kernel keeps for
+  itself, or the guest runs out before the limit binds. How much does the kernel keep, by
+  the VM's size?
+- **Method.** `docs/research/measurements/guest-memory/measure.sh`, with resources.rs's
+  table emptied so that `-m SIZE` boots a VM of exactly SIZE: an alpine workload reads
+  `/proc/meminfo`; the overhead is the VM's KiB less MemAvailable, which the kernel
+  computes as what may be allocated without reclaim or swap (Documentation/filesystems/
+  proc.rst). Three runs a size. Apple M5 Max (128 GiB), macOS 26.4.1, guest kernel
+  6.18.48 aarch64 (Image-6.18.48-aarch64-8363f9e3806f), revision 35a5e99 plus the resource
+  flags, 2026-10-05.
+- **Results** (KiB; the three runs of a size agreed but at 256 MiB, where MemAvailable
+  read 218,928, 218,988 and 218,988, and the largest overhead is given).
+
+  | VM (MiB) | MemTotal | MemAvailable | overhead |
+  |---:|---:|---:|---:|
+  | 256 | 237,164 | 218,928 | 43,216 |
+  | 384 | 365,288 | 346,212 | 47,004 |
+  | 512 | 494,056 | 474,288 | 50,000 |
+  | 768 | 750,308 | 700,260 | 86,172 |
+  | 1,024 | 1,007,844 | 957,792 | 90,784 |
+  | 1,536 | 1,520,340 | 1,468,424 | 104,440 |
+  | 2,048 | 2,035,412 | 1,983,488 | 113,664 |
+  | 3,072 | 2,998,248 | 2,906,440 | 239,288 |
+  | 3,584 | 3,513,316 | 3,419,528 | 250,488 |
+  | 4,096 | 4,028,388 | 3,932,580 | 261,724 |
+  | 4,608 | 4,537,312 | 4,430,524 | 288,068 |
+  | 6,144 | 6,082,524 | 5,969,704 | 321,752 |
+  | 8,192 | 8,142,800 | 8,021,408 | 367,200 |
+  | 12,288 | 12,251,068 | 12,106,300 | 476,612 |
+  | 16,384 | 16,371,628 | 16,202,024 | 575,192 |
+
+- **Consequence.** The overhead grows with the VM's size, and in steps: between 512 and
+  768 MiB and between 2 and 3 GiB the kernel keeps 36 and 125 MiB more. No line through
+  the points bounds them without giving small VMs over 100 MiB they do not need, so
+  `resources::memory_mib` takes the overhead of the next measured size up, which bounds
+  it where it does not decrease (it never did here), and past 16 GiB adds the 8 to 16 GiB
+  slope, 25.4 KiB a MiB, rounded up to 26. The table is this kernel's on arm64; x86_64 uses
+  it until measured on x86_64, and `run_limits_resources_as_docker_run_does` holds, on
+  each CI architecture, that a workload limited to L has L available.

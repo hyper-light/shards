@@ -166,6 +166,9 @@ pub mod kind {
     /// Warm VM → daemon, before `DONE`: the container's writable layer is whole where
     /// `RUN_LAYER_OUT` said to write it.
     pub const LAYER_SAVED: u8 = 32;
+    /// Warm VM → daemon, before DONE: the guest killed a process of the command for want
+    /// of memory (shards_abi::run::kind::OOM).
+    pub const OOM: u8 = 33;
 }
 
 /// An `EXEC_RUN` flag: the command reads the client's stdin (`-i`).
@@ -401,6 +404,97 @@ pub struct Run {
     pub quiet: bool,
     /// `--platform`, as given (or DOCKER_DEFAULT_PLATFORM): the image's to run.
     pub platform: String,
+    /// The resource flags, as docker/cli sends them.
+    pub resources: Resources,
+}
+
+/// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
+/// bytes, CPUs in billionths, the rest as given; zero, empty or `None` where not given.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Resources {
+    /// `-m`.
+    pub memory: i64,
+    /// `--memory-reservation`.
+    pub memory_reservation: i64,
+    /// `--memory-swap`: memory and swap together, -1 for no limit on swap.
+    pub memory_swap: i64,
+    /// `--memory-swappiness`, unless -1.
+    pub memory_swappiness: Option<i64>,
+    /// `--oom-kill-disable`.
+    pub oom_kill_disable: bool,
+    /// `--cpus`.
+    pub nano_cpus: i64,
+    /// `-c`.
+    pub cpu_shares: i64,
+    /// `--cpu-period` and `--cpu-quota`, in microseconds.
+    pub cpu_period: i64,
+    pub cpu_quota: i64,
+    /// `--cpuset-cpus` and `--cpuset-mems`.
+    pub cpuset_cpus: String,
+    pub cpuset_mems: String,
+    /// `--pids-limit`.
+    pub pids_limit: i64,
+}
+
+impl Resources {
+    /// Each given value as `name=value`, for a request's extension section.
+    fn encode(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut int = |name: &str, v: i64| {
+            if v != 0 {
+                out.push(format!("{name}={v}"));
+            }
+        };
+        int("memory", self.memory);
+        int("memory-reservation", self.memory_reservation);
+        int("memory-swap", self.memory_swap);
+        int("cpus", self.nano_cpus);
+        int("cpu-shares", self.cpu_shares);
+        int("cpu-period", self.cpu_period);
+        int("cpu-quota", self.cpu_quota);
+        int("pids-limit", self.pids_limit);
+        if let Some(s) = self.memory_swappiness {
+            out.push(format!("memory-swappiness={s}"));
+        }
+        if self.oom_kill_disable {
+            out.push("oom-kill-disable=true".into());
+        }
+        for (name, v) in [
+            ("cpuset-cpus", &self.cpuset_cpus),
+            ("cpuset-mems", &self.cpuset_mems),
+        ] {
+            if !v.is_empty() {
+                out.push(format!("{name}={v}"));
+            }
+        }
+        out
+    }
+
+    /// What [`encode`](Resources::encode) wrote, or `None` for a value that does not
+    /// read; a name it does not know is a later build's, and left.
+    fn decode(values: &[String]) -> Option<Resources> {
+        let mut r = Resources::default();
+        for v in values {
+            let (name, value) = v.split_once('=')?;
+            let int = || value.parse::<i64>().ok();
+            match name {
+                "memory" => r.memory = int()?,
+                "memory-reservation" => r.memory_reservation = int()?,
+                "memory-swap" => r.memory_swap = int()?,
+                "cpus" => r.nano_cpus = int()?,
+                "cpu-shares" => r.cpu_shares = int()?,
+                "cpu-period" => r.cpu_period = int()?,
+                "cpu-quota" => r.cpu_quota = int()?,
+                "pids-limit" => r.pids_limit = int()?,
+                "memory-swappiness" => r.memory_swappiness = Some(int()?),
+                "oom-kill-disable" => r.oom_kill_disable = value == "true",
+                "cpuset-cpus" => r.cpuset_cpus = value.to_string(),
+                "cpuset-mems" => r.cpuset_mems = value.to_string(),
+                _ => {}
+            }
+        }
+        Some(r)
+    }
 }
 
 /// A health check as a run sets it, or as an image's merged with a run's: its test
@@ -604,6 +698,7 @@ impl Run {
                     vec![self.platform.clone()]
                 },
             ),
+            ("resources", self.resources.encode()),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -721,6 +816,7 @@ impl Run {
                     "cidfile" => run.cidfile = values.into_iter().next().unwrap_or_default(),
                     "quiet" => run.quiet = true,
                     "platform" => run.platform = values.into_iter().next().unwrap_or_default(),
+                    "resources" => run.resources = Resources::decode(&values)?,
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1198,6 +1294,20 @@ mod tests {
             cidfile: "/tmp/cid".into(),
             quiet: true,
             platform: "linux/386".into(),
+            resources: Resources {
+                memory: 64 << 20,
+                memory_reservation: 32 << 20,
+                memory_swap: -1,
+                memory_swappiness: Some(0),
+                oom_kill_disable: true,
+                nano_cpus: 1_500_000_000,
+                cpu_shares: 512,
+                cpu_period: 50_000,
+                cpu_quota: 25_000,
+                cpuset_cpus: "0-1".into(),
+                cpuset_mems: "0".into(),
+                pids_limit: -1,
+            },
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -1215,6 +1325,7 @@ mod tests {
             cidfile: String::new(),
             quiet: false,
             platform: String::new(),
+            resources: Resources::default(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

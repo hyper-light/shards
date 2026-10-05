@@ -275,6 +275,82 @@ fn underscores_ok(s: &str) -> bool {
     saw != '_'
 }
 
+/// `s` read as `strconv.ParseFloat(s, 64)` reads it (internal/strconv atof.go, Go 1.26):
+/// `inf`, `infinity` and `nan` in any case, signed; decimal digits with a point and an
+/// `e` exponent; or `0x` and hexadecimal digits with a `p` exponent, which it must have;
+/// `_` between digits as [`underscores_ok`] allows. Out of range is ±Inf and an error.
+pub fn parse_float(s: &str) -> Result<f64, NumError> {
+    let syntax = || NumError::syntax("ParseFloat", s);
+    let (neg, body) = match s.as_bytes().first() {
+        Some(b'-') => (true, s.get(1..).ok_or_else(syntax)?),
+        Some(b'+') => (false, s.get(1..).ok_or_else(syntax)?),
+        _ => (false, s),
+    };
+    let signed = |v: f64| if neg { -v } else { v };
+    match body.to_ascii_lowercase().as_str() {
+        "inf" | "infinity" => return Ok(signed(f64::INFINITY)),
+        // special() takes no sign before "nan".
+        "nan" if body.len() == s.len() => return Ok(f64::NAN),
+        _ => {}
+    }
+    if s.contains('_') && !underscores_ok(s) {
+        return Err(syntax());
+    }
+    let clean: String = body.chars().filter(|&c| c != '_').collect();
+    let lower = clean.to_ascii_lowercase();
+    // readFloat takes the prefix only with a character after it.
+    let v = match lower.strip_prefix("0x").filter(|_| body.len() > 2) {
+        Some(hex) => hex_float(hex).ok_or_else(syntax)?,
+        None => {
+            let digits = |t: &str| t.bytes().any(|b| b.is_ascii_digit());
+            let (mantissa, exp) = lower.split_once('e').unwrap_or((&lower, ""));
+            let exp_ok = !lower.contains('e')
+                || exp
+                    .strip_prefix(['+', '-'])
+                    .unwrap_or(exp)
+                    .bytes()
+                    .all(|b| b.is_ascii_digit())
+                    && digits(exp);
+            let mantissa_ok = digits(mantissa)
+                && mantissa.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+                && mantissa.bytes().filter(|&b| b == b'.').count() <= 1;
+            if !(exp_ok && mantissa_ok) {
+                return Err(syntax());
+            }
+            lower.parse::<f64>().map_err(|_| syntax())?
+        }
+    };
+    if v.is_infinite() {
+        return Err(NumError::range("ParseFloat", s));
+    }
+    Ok(signed(v))
+}
+
+/// A hexadecimal float after its `0x`: digits, a point, and the `p` exponent it must have.
+fn hex_float(s: &str) -> Option<f64> {
+    let (mant, exp) = s.split_once('p')?;
+    let exp_digits = exp.strip_prefix(['+', '-']).unwrap_or(exp);
+    if exp_digits.is_empty() || !exp_digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    // readFloat stops growing the exponent at 10,000; past that it is out of range anyway.
+    let exp: i64 = exp
+        .parse::<i64>()
+        .unwrap_or(if exp.starts_with('-') { -100_000 } else { 100_000 });
+    let (int, frac) = mant.split_once('.').unwrap_or((mant, ""));
+    if int.is_empty() && frac.is_empty() || frac.contains('.') {
+        return None;
+    }
+    let mut digits = num_bigint::BigUint::default();
+    for c in int.chars().chain(frac.chars()) {
+        digits = digits * 16u32 + c.to_digit(16)?;
+    }
+    let shift = exp - 4 * i64::try_from(frac.len()).ok()?;
+    let v = num_traits::ToPrimitive::to_f64(&digits)?;
+    // Exact but for results beyond f64's normal range, which are 0 or ±Inf here too.
+    Some(v * 2f64.powi(i32::try_from(shift.clamp(-2200, 2200)).ok()?))
+}
+
 /// `s` read as `strconv.ParseBool` reads it, as pflag reads a `bool` flag's value.
 pub fn parse_bool(s: &str) -> Result<bool, NumError> {
     match s {
@@ -444,6 +520,39 @@ mod tests {
         assert_eq!(linux_error(40), "too many levels of symbolic links");
         assert_eq!(linux_error(0), "errno 0");
         assert_eq!(linux_error(9999), "errno 9999");
+    }
+
+    #[test]
+    fn floats_read_as_go_reads_them() {
+        for (s, v) in [
+            ("1", 1.0),
+            ("1.5", 1.5),
+            ("5.", 5.0),
+            (".5", 0.5),
+            ("1e3", 1000.0),
+            ("1_000", 1000.0),
+            ("0x1p4", 16.0),
+            ("0x1.8p1", 3.0),
+            ("-2", -2.0),
+            ("+Inf", f64::INFINITY),
+            ("infinity", f64::INFINITY),
+        ] {
+            assert_eq!(parse_float(s), Ok(v), "{s}");
+        }
+        assert!(parse_float("NaN").unwrap().is_nan());
+        for s in [
+            "", ".", "e5", "1e", "0x1", "0x", "1__0", "_1", "1.2.3", "+nan", "1x",
+        ] {
+            assert_eq!(
+                parse_float(s).unwrap_err().to_string(),
+                format!("strconv.ParseFloat: parsing {}: invalid syntax", quote(s)),
+                "{s}"
+            );
+        }
+        assert_eq!(
+            parse_float("1e400").unwrap_err().to_string(),
+            "strconv.ParseFloat: parsing \"1e400\": value out of range"
+        );
     }
 
     #[test]

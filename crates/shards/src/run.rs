@@ -58,6 +58,8 @@ pub struct Prepared {
     pub labels: std::collections::BTreeMap<String, String>,
     /// The image's ID: what its reference resolved to.
     pub image_id: String,
+    /// The microVM's vCPUs and memory in MiB, as its resource limits need them.
+    pub size: (u32, u64),
 }
 
 /// The health check a run's container has, as dockerd merges the run's with its image's
@@ -239,6 +241,14 @@ pub fn prepare(
             }
             labels
         },
+        size: (
+            crate::resources::vcpus(&request.resources, crate::resources::host_cpus()),
+            crate::resources::memory_mib(
+                request.resources.memory,
+                shards_vmm::vm::MEMORY_MIB,
+                crate::build::host_memory(),
+            ),
+        ),
         // The image's, then `--expose`'s, which `-P` publishes with them.
         exposed: {
             let mut exposed = image.config.config.map(|c| c.exposed_ports).unwrap_or_default();

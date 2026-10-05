@@ -149,6 +149,53 @@ pub static RUN: Command = Command {
         Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
         Flag::string("domainname", None, "", "Container NIS domain name"),
         Flag::string("cidfile", None, "", "Write the container ID to the file"),
+        Flag::int(
+            "cpu-period",
+            None,
+            "0",
+            "Limit CPU CFS (Completely Fair Scheduler) period",
+        ),
+        Flag::int(
+            "cpu-quota",
+            None,
+            "0",
+            "Limit CPU CFS (Completely Fair Scheduler) quota",
+        ),
+        Flag::int("cpu-shares", Some(b'c'), "0", "CPU shares (relative weight)"),
+        Flag::value("cpus", None, "decimal", "Number of CPUs"),
+        Flag::string(
+            "cpuset-cpus",
+            None,
+            "",
+            "CPUs in which to allow execution (0-3, 0,1)",
+        ),
+        Flag::string(
+            "cpuset-mems",
+            None,
+            "",
+            "MEMs in which to allow execution (0-3, 0,1)",
+        ),
+        Flag::value("memory", Some(b'm'), "bytes", "Memory limit"),
+        Flag::value("memory-reservation", None, "bytes", "Memory soft limit"),
+        Flag::value(
+            "memory-swap",
+            None,
+            "bytes",
+            "Swap limit equal to memory plus swap: '-1' to enable unlimited swap",
+        ),
+        Flag::int(
+            "memory-swappiness",
+            None,
+            "-1",
+            "Tune container memory swappiness (0 to 100)",
+        ),
+        Flag::bool("oom-kill-disable", None, "Disable OOM Killer"),
+        Flag::int(
+            "pids-limit",
+            None,
+            "0",
+            "Tune container pids limit (set -1 for unlimited)",
+        ),
         Flag::string(
             "platform",
             None,
@@ -183,15 +230,9 @@ cgroup-parent - s - -\n\
 cgroupns - s - -\n\
 cpu-count - i 0 -\n\
 cpu-percent - i 0 -\n\
-cpu-period - i 0 -\n\
-cpu-quota - i 0 -\n\
 cpu-rt-period - i 0 -\n\
 cpu-rt-runtime - i 0 -\n\
-cpu-shares c i 0 -\n\
-cpus - s - -\n\
-cpuset-cpus - s - -\n\
-cpuset-mems - s - -\n\
-device - m - -\n\
+cpuset-device - m - -\n\
 device-cgroup-rule - m - -\n\
 device-read-bps - m - -\n\
 device-read-iops - m - -\n\
@@ -210,17 +251,11 @@ link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
 mac-address - s - -\n\
-memory m s 0 -\n\
-memory-reservation - s 0 -\n\
-memory-swap - s 0 -\n\
-memory-swappiness - i -1 -\n\
 mount - m - -\n\
 net-alias - m - network-alias\n\
 network-alias - m - -\n\
-oom-kill-disable - b false -\n\
 oom-score-adj - i 0 -\n\
 pid - s - -\n\
-pids-limit - i 0 -\n\
 privileged - b false -\n\
 read-only - b false -\n\
 restart - s no -\n\
@@ -372,6 +407,53 @@ pub static CREATE: Command = Command {
         Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
         Flag::string("domainname", None, "", "Container NIS domain name"),
         Flag::string("cidfile", None, "", "Write the container ID to the file"),
+        Flag::int(
+            "cpu-period",
+            None,
+            "0",
+            "Limit CPU CFS (Completely Fair Scheduler) period",
+        ),
+        Flag::int(
+            "cpu-quota",
+            None,
+            "0",
+            "Limit CPU CFS (Completely Fair Scheduler) quota",
+        ),
+        Flag::int("cpu-shares", Some(b'c'), "0", "CPU shares (relative weight)"),
+        Flag::value("cpus", None, "decimal", "Number of CPUs"),
+        Flag::string(
+            "cpuset-cpus",
+            None,
+            "",
+            "CPUs in which to allow execution (0-3, 0,1)",
+        ),
+        Flag::string(
+            "cpuset-mems",
+            None,
+            "",
+            "MEMs in which to allow execution (0-3, 0,1)",
+        ),
+        Flag::value("memory", Some(b'm'), "bytes", "Memory limit"),
+        Flag::value("memory-reservation", None, "bytes", "Memory soft limit"),
+        Flag::value(
+            "memory-swap",
+            None,
+            "bytes",
+            "Swap limit equal to memory plus swap: '-1' to enable unlimited swap",
+        ),
+        Flag::int(
+            "memory-swappiness",
+            None,
+            "-1",
+            "Tune container memory swappiness (0 to 100)",
+        ),
+        Flag::bool("oom-kill-disable", None, "Disable OOM Killer"),
+        Flag::int(
+            "pids-limit",
+            None,
+            "0",
+            "Tune container pids limit (set -1 for unlimited)",
+        ),
         Flag::string(
             "platform",
             None,
@@ -405,14 +487,9 @@ cgroup-parent - s - -\n\
 cgroupns - s - -\n\
 cpu-count - i 0 -\n\
 cpu-percent - i 0 -\n\
-cpu-period - i 0 -\n\
-cpu-quota - i 0 -\n\
 cpu-rt-period - i 0 -\n\
 cpu-rt-runtime - i 0 -\n\
-cpu-shares c i 0 -\n\
 cpus - s - -\n\
-cpuset-cpus - s - -\n\
-cpuset-mems - s - -\n\
 device - m - -\n\
 device-cgroup-rule - m - -\n\
 device-read-bps - m - -\n\
@@ -432,17 +509,11 @@ link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
 mac-address - s - -\n\
-memory m s 0 -\n\
-memory-reservation - s 0 -\n\
-memory-swap - s 0 -\n\
-memory-swappiness - i -1 -\n\
 mount - m - -\n\
 net-alias - m - network-alias\n\
 network-alias - m - -\n\
-oom-kill-disable - b false -\n\
 oom-score-adj - i 0 -\n\
 pid - s - -\n\
-pids-limit - i 0 -\n\
 privileged - b false -\n\
 read-only - b false -\n\
 restart - s no -\n\
@@ -1428,7 +1499,6 @@ compress - b false -\n\
 cpu-period - s - -\n\
 cpu-quota - s - -\n\
 cpu-shares c s - -\n\
-cpuset-cpus - s - -\n\
 cpuset-mems - s - -\n\
 debug D b false -\n\
 force-rm - b false -\n\

@@ -590,7 +590,7 @@ fn serve_workload(
     /// The command, resolved before anything starts.
     enum Command {
         Given {
-            spec: shards_abi::run::Spec,
+            spec: Box<shards_abi::run::Spec>,
             interactive: bool,
             hold: bool,
         },
@@ -599,7 +599,7 @@ fn serve_workload(
     let command = match source {
         Source::Given { options, hold } => match crate::spec::spec(options, |name| std::env::var_os(name)) {
             Ok(spec) => Command::Given {
-                spec,
+                spec: Box::new(spec),
                 interactive: options.interactive,
                 hold,
             },
@@ -666,7 +666,7 @@ fn serve_workload(
                                 let _ = std::io::stdin().read_line(&mut String::new());
                             }
                             Ok(workload::Asked {
-                                spec: spec.clone(),
+                                spec: (*spec).clone(),
                                 interactive,
                                 log: None,
                                 started: None,

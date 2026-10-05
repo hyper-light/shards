@@ -377,6 +377,28 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         labels.extend(kv_file(file, false)?);
     }
     labels.extend(parsed.many("label").iter().cloned());
+    // container/opts.go parse: swappiness is -1 (unset) or 0 to 100.
+    let swappiness = parsed.int("memory-swappiness");
+    if swappiness != -1 && !(0..=100).contains(&swappiness) {
+        return Err(format!(
+            "invalid value: {swappiness}. Valid memory swappiness range is 0-100"
+        ));
+    }
+    let number = |name: &str| parsed.string(name).parse::<i64>().unwrap_or(0);
+    let resources = shards_ipc::Resources {
+        memory: number("memory"),
+        memory_reservation: number("memory-reservation"),
+        memory_swap: number("memory-swap"),
+        memory_swappiness: (swappiness != -1).then_some(swappiness),
+        oom_kill_disable: parsed.bool("oom-kill-disable"),
+        nano_cpus: number("cpus"),
+        cpu_shares: parsed.int("cpu-shares"),
+        cpu_period: parsed.int("cpu-period"),
+        cpu_quota: parsed.int("cpu-quota"),
+        cpuset_cpus: parsed.string("cpuset-cpus").to_string(),
+        cpuset_mems: parsed.string("cpuset-mems").to_string(),
+        pids_limit: parsed.int("pids-limit"),
+    };
     // Each range a port at a time, as the CLI exposes them (container/opts.go).
     let mut expose = Vec::new();
     for e in parsed.many("expose") {
@@ -436,6 +458,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
                 .into_owned(),
         },
         quiet: parsed.bool("quiet"),
+        resources,
         // The flag's default is DOCKER_DEFAULT_PLATFORM (docker/cli run.go, create.go).
         platform: if parsed.changed("platform") {
             parsed.string("platform").to_string()
