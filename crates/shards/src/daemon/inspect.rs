@@ -437,6 +437,128 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 }
 
+impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// `shards inspect vm NAME...` (`docker container inspect`): each microVM's document
+    /// as one array, indented as docker/cli prints it: Docker's container fields, those
+    /// shards keeps, and `MicroVM`, what only a microVM has; then what was not found.
+    pub(super) fn container_inspect(
+        &self,
+        args: &[String],
+        styled: bool,
+        reply: &super::commands::Reply<'_>,
+    ) -> u8 {
+        let (mut documents, mut errors) = (Vec::new(), Vec::new());
+        for given in args {
+            let found = self.resolve(given).and_then(|id| {
+                super::lock(&self.containers)
+                    .get(&id)
+                    .cloned()
+                    .ok_or_else(|| format!("No such container: {given}"))
+            });
+            match found {
+                Ok(c) => documents.push(container_document(&c, &self.home)),
+                Err(e) => errors.push(e),
+            }
+        }
+        let text = if documents.is_empty() {
+            "[]".to_string()
+        } else {
+            indent(&format!("[{}]", documents.join(",")), "    ")
+        };
+        if styled {
+            let mut sheet = shards_ipc::Sheet::new("json");
+            sheet.record(&[("text", text)]);
+            reply.sheet(&sheet);
+        } else {
+            reply.out(&text);
+        }
+        if errors.is_empty() {
+            return 0;
+        }
+        let said: Vec<String> = errors
+            .iter()
+            .map(|e| {
+                if e.starts_with("Error response") {
+                    e.clone()
+                } else {
+                    format!("Error response from daemon: {e}")
+                }
+            })
+            .collect();
+        reply.err(&said.join("\n"));
+        1
+    }
+}
+
+/// A container record's document, compact, in the order of Docker's
+/// ContainerJSONBase where shards keeps the field, then `MicroVM`.
+fn container_document(c: &crate::containers::Container, home: &std::path::Path) -> String {
+    use crate::containers::State;
+    let time = |ns: Option<u128>| -> serde_json::Value {
+        match ns {
+            Some(ns) => {
+                let secs = u64::try_from(ns / 1_000_000_000).unwrap_or(0);
+                let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+                serde_json::from_str(&time_json(t)).unwrap_or(serde_json::Value::Null)
+            }
+            None => serde_json::Value::from("0001-01-01T00:00:00Z"),
+        }
+    };
+    let status = match c.state {
+        State::Running => "running",
+        State::Created => "created",
+        State::Exited => "exited",
+    };
+    let mut ports = serde_json::Map::new();
+    for p in &c.ports {
+        let key = format!("{}/{}", p.private, p.proto);
+        let bound =
+            p.ip.map(|ip| serde_json::json!({"HostIp": ip.to_string(), "HostPort": p.public.to_string()}));
+        let entry = ports.entry(key).or_insert(serde_json::Value::Null);
+        if let Some(b) = bound {
+            match entry {
+                serde_json::Value::Array(list) => list.push(b),
+                other => *other = serde_json::Value::Array(vec![b]),
+            }
+        }
+    }
+    let doc = serde_json::json!({
+        "Id": c.id,
+        "Created": time(Some(c.created)),
+        "Path": c.command.first().cloned().unwrap_or_default(),
+        "Args": c.command.iter().skip(1).cloned().collect::<Vec<_>>(),
+        "State": {
+            "Status": status,
+            "Running": c.state == State::Running,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 0,
+            "ExitCode": c.exit_code.unwrap_or(0),
+            "Error": "",
+            "StartedAt": time(c.started),
+            "FinishedAt": time(c.finished),
+        },
+        "Image": c.image_id.clone().unwrap_or_default(),
+        "Name": format!("/{}", c.name),
+        "LogPath": home.join("containers").join(&c.id).join("log").display().to_string(),
+        "HostConfig": {"AutoRemove": c.auto_remove},
+        "Config": {
+            "Image": c.image,
+            "Cmd": c.command,
+            "StopSignal": c.stop_signal,
+            "StopTimeout": c.stop_timeout,
+        },
+        "NetworkSettings": {"Ports": ports},
+        "MicroVM": {
+            "Kind": "shards microVM",
+            "LogBytesLost": c.log_lost,
+        },
+    });
+    doc.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -51,8 +51,10 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("list" | "ls" | "ps", Thing::Vm | Thing::Container) => &["ps"],
         ("list" | "ls", Thing::Image) => &["images"],
         ("remove" | "rm" | "delete", Thing::Vm | Thing::Container) => &["rm"],
-        ("remove" | "rm" | "delete" | "rmi", Thing::Image) => &["rmi"],
+        // An image goes with the stopped microVMs made from it.
+        ("remove" | "rm" | "delete" | "rmi", Thing::Image) => &["rmi", "--vms"],
         ("inspect", Thing::Image) => &["image", "inspect"],
+        ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect"],
         ("run", Thing::Vm | Thing::Container) => &["run"],
         ("restore", Thing::Vm) => &["restore"],
         ("run" | "start", Thing::Daemon) => &["daemon"],
@@ -104,6 +106,11 @@ pub static ACTIONS: &[(&str, &str, &str)] = &[
     ("pull", "image NAME", "Download an image, and make it a microVM"),
     ("push", "image NAME", "Upload an image to a registry"),
     ("inspect", "image NAME", "Show an image's documents"),
+    (
+        "inspect",
+        "vm NAME",
+        "Show a microVM's document: what it runs, how it stands, its microVM",
+    ),
     ("restore", "vm DIR", "Resume a microVM from a snapshot"),
     (
         "run",
@@ -135,7 +142,7 @@ mod tests {
         assert_eq!(said("remove vm -f web").as_deref(), Some("rm -f web"));
         assert_eq!(
             said("remove image alpine:3.22").as_deref(),
-            Some("rmi alpine:3.22")
+            Some("rmi --vms alpine:3.22")
         );
         assert_eq!(said("list vm -a").as_deref(), Some("ps -a"));
         assert_eq!(said("ls images").as_deref(), Some("images"));
@@ -154,7 +161,7 @@ mod tests {
         );
         assert_eq!(said("restore vm dir").as_deref(), Some("restore dir"));
         // Docker's management form, turned round.
-        assert_eq!(said("image rm alpine").as_deref(), Some("rmi alpine"));
+        assert_eq!(said("image rm alpine").as_deref(), Some("rmi --vms alpine"));
         assert_eq!(said("container ls").as_deref(), Some("ps"));
         // `shards vm ...` is no form of shards'.
         assert_eq!(said("vm ls"), None);

@@ -214,6 +214,17 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     )
                     .collect()
             };
+            // Its microVMs, running and stopped, as `list vm` counts them.
+            let (running, stopped) = super::lock(&self.containers)
+                .all()
+                .filter(|c| c.image_id.as_deref() == Some(image.id.as_str()))
+                .fold((0u64, 0u64), |(r, s), c| {
+                    if c.state == crate::containers::State::Running {
+                        (r + 1, s)
+                    } else {
+                        (r, s + 1)
+                    }
+                });
             for (repo, tag) in names {
                 rows.push(vec![
                     ("repo", repo),
@@ -224,7 +235,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     ("disk", disk.to_string()),
                     ("platform", platform.clone()),
                     ("layers", layers.to_string()),
-                    ("in_use", image.containers.to_string()),
+                    ("running", running.to_string()),
+                    ("stopped", stopped.to_string()),
                 ]);
             }
         }
@@ -459,7 +471,19 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             }
         };
         let mut errors: Vec<super::rmi::Refused> = Vec::new();
+        let with_vms = parsed.bool("vms");
         for given in &parsed.args {
+            // `--vms`: the stopped microVMs made from it go first, so that it can; a
+            // running one keeps it, and is named.
+            if with_vms && let Some(s) = &store {
+                for name in self.remove_stopped_of(s, given) {
+                    if styled {
+                        sheet.record(&[("given", given.clone()), ("removed_vm", name)]);
+                    } else {
+                        reply.out(&format!("Removed microVM: {name}"));
+                    }
+                }
+            }
             let removed = match &store {
                 None => Err(super::rmi::Refused {
                     said: format!("Error response from daemon: {}", not_found(given)),
@@ -531,6 +555,48 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         let said: Vec<&str> = errors.iter().map(|e| e.said.as_str()).collect();
         reply.err(&said.join("\n"));
         u8::from(!force || errors.iter().any(|e| !e.not_found))
+    }
+}
+
+impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// Removes the stopped microVMs made from the image `given` names, and returns their
+    /// names: what `remove image` takes with the image.
+    fn remove_stopped_of(&self, store: &shards_image::store::Store, given: &str) -> Vec<String> {
+        let Ok(images) = store.named() else {
+            return Vec::new();
+        };
+        let Ok(image) = resolve(&images, given) else {
+            return Vec::new();
+        };
+        let id = image.id.to_string();
+        let stopped: Vec<(String, String)> = super::lock(&self.containers)
+            .all()
+            .filter(|c| {
+                c.image_id.as_deref() == Some(id.as_str()) && c.state != crate::containers::State::Running
+            })
+            .map(|c| (c.id.clone(), c.name.clone()))
+            .collect();
+        let mut removed = Vec::new();
+        for (cid, name) in stopped {
+            if !super::lock(&self.removing).insert(cid.clone()) {
+                continue;
+            }
+            let taken = super::lock(&self.containers).take_out(&cid);
+            let gone = match taken {
+                Some(removal) => {
+                    self.set_aside(&removal).is_ok() && {
+                        let _ = self.complete(&removal);
+                        true
+                    }
+                }
+                None => false,
+            };
+            super::lock(&self.removing).remove(&cid);
+            if gone {
+                removed.push(name);
+            }
+        }
+        removed
     }
 }
 

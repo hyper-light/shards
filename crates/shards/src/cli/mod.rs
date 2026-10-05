@@ -56,10 +56,20 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         .iter()
         .map_while(|a| a.to_str().map(str::to_string))
         .collect();
+    // An action of shards' own alone, or asked for its help: its page.
+    if let [action] | [action, _] = text.as_slice()
+        && matches!(action.as_str(), "list" | "remove" | "configure")
+        && text.get(1).is_none_or(|h| h == "-h" || h == "--help")
+    {
+        return action_help(action);
+    }
     if text.len() == args.len()
         && let Some(said) = shards_cmdline::grammar::rewrite(&text)
         && said != text
     {
+        // The page is named as it was asked for: `list vms`, not `ps`.
+        #[cfg(unix)]
+        look::name_as(&text.iter().take(2).cloned().collect::<Vec<_>>().join(" "));
         return dispatch(said.into_iter().map(OsString::from).collect());
     }
     let words: Vec<&str> = args.iter().map_while(|a| a.to_str()).take(2).collect();
@@ -247,6 +257,26 @@ fn container(
             "container commands need the daemon, which needs Unix sockets, which shards does not support on this platform yet",
         )
     }
+}
+
+/// The help of one of shards' own actions: what it does to each thing it takes.
+fn action_help(action: &str) -> ExitCode {
+    let rows: Vec<(&str, &str)> = shards_cmdline::grammar::ACTIONS
+        .iter()
+        .filter(|(a, _, _)| *a == action)
+        .map(|(_, takes, about)| (*takes, *about))
+        .collect();
+    #[cfg(unix)]
+    if let Some(p) = look::styled() {
+        look::action(&p, action, &rows, &mut std::io::stdout().lock());
+        return ExitCode::SUCCESS;
+    }
+    let mut text = format!("Usage:  shards {action} THING [ARG...]\n\n");
+    for (takes, about) in rows {
+        text.push_str(&format!("  shards {action} {takes:<20} {about}\n"));
+    }
+    let _ = std::io::stdout().write_all(text.as_bytes());
+    ExitCode::SUCCESS
 }
 
 /// `shards --help`: shards' own page on a colour terminal, docker/cli's text elsewhere.

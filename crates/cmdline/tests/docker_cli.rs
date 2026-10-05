@@ -72,10 +72,22 @@ fn answer(argv: &[String]) -> (String, String, u8, bool) {
 
 /// What shards' `--help` adds after the CLI's text, by command: its own flags
 /// (`Flag::extension`), each a deliberate difference.
-const EXTENDED: &[(&str, &str)] = &[(
-    "pull",
-    "\nShards options:\n      --no-cache                  Fetch every layer again, though stored,\n                                  and build its microVM again\n      --output-agentfile string   Write the image's Agentfile to this\n                                  file, or into this directory\n",
-)];
+const EXTENDED: &[(&str, &str)] = &[
+    (
+        "pull",
+        "\nShards options:\n      --no-cache                  Fetch every layer again, though stored,\n                                  and build its microVM again\n      --output-agentfile string   Write the image's Agentfile to this\n                                  file, or into this directory\n",
+    ),
+    (
+        "rmi",
+        "\nShards options:\n      --vms   Remove stopped microVMs\n",
+    ),
+    // `image rm` and `image remove` are rmi.
+    ("rm", "\nShards options:\n      --vms   Remove stopped microVMs\n"),
+    (
+        "remove",
+        "\nShards options:\n      --vms   Remove stopped microVMs\n",
+    ),
+];
 
 /// `got`, with the section shards adds to `argv`'s help taken off: that section must be
 /// what [`EXTENDED`] says, and the rest is the CLI's.

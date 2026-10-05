@@ -243,7 +243,7 @@ fn images(page: &mut Page, p: &Paint, sheet: &Sheet) {
     if rows.is_empty() {
         let l = page.line();
         l.pad(4).put(p, tokens::MUTED, "No images yet. ");
-        l.put(p, tokens::TEAL, "shards pull IMAGE");
+        l.put(p, tokens::TEAL, "shards pull image NAME");
         l.put(p, tokens::MUTED, " brings one, and makes it a microVM.");
         return;
     }
@@ -311,7 +311,7 @@ fn images(page: &mut Page, p: &Paint, sheet: &Sheet) {
                     None => repo.to_string(),
                 }
             };
-            let running = num(i, "in_use");
+            let (running, stopped) = (num(i, "running"), num(i, "stopped"));
             let marker = if vm {
                 Cell::new("●", tokens::SAGE)
             } else {
@@ -336,10 +336,11 @@ fn images(page: &mut Page, p: &Paint, sheet: &Sheet) {
                 Cell::new(num(i, "layers").to_string(), tokens::FOREGROUND),
                 size_cell,
                 Cell::new(sheet.get(i, "platform").unwrap_or(""), tokens::MUTED),
-                if running > 0 {
-                    Cell::new(format!("● {running} running"), tokens::AMBER)
-                } else {
-                    Cell::new("—", tokens::FAINT)
+                match (running, stopped) {
+                    (0, 0) => Cell::new("—", tokens::FAINT),
+                    (0, s) => Cell::new(format!("{s} stopped"), tokens::MUTED),
+                    (r, 0) => Cell::new(format!("● {r} running"), tokens::AMBER),
+                    (r, s) => Cell::new(format!("● {r} running · {s} stopped"), tokens::AMBER),
                 },
             ];
             (marker, cells)
@@ -363,7 +364,7 @@ fn ps(page: &mut Page, p: &Paint, sheet: &Sheet) {
         if stopped > 0 {
             words.push_str(&format!(" · {stopped} stopped"));
             if !all {
-                words.push_str(" (shards ps -a lists them)");
+                words.push_str(" (shards list vm -a lists them)");
             }
         }
         lines.push((tokens::MUTED, false, words));
@@ -376,7 +377,7 @@ fn ps(page: &mut Page, p: &Paint, sheet: &Sheet) {
     if rows.is_empty() {
         let l = page.line();
         l.pad(4).put(p, tokens::MUTED, "Nothing running. ");
-        l.put(p, tokens::TEAL, "shards run IMAGE");
+        l.put(p, tokens::TEAL, "shards run vm IMAGE");
         l.put(p, tokens::MUTED, " starts a microVM from an image.");
         return;
     }
@@ -542,50 +543,94 @@ fn ended(page: &mut Page, p: &Paint, sheet: &Sheet) {
     }
 }
 
-/// `shards rmi`: each name untagged, each image deleted and what it frees, each refusal.
+/// `shards rmi`: each image removed: the names it lost, whether its data went or is kept
+/// for a microVM still made from it, the stopped microVMs removed with it, each refusal.
 fn rmi(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let cols = look::width();
     let n = sheet.records.len();
-    let deleted = (0..n).filter(|&i| sheet.get(i, "deleted").is_some()).count();
-    let untagged = (0..n).filter(|&i| sheet.get(i, "untagged").is_some()).count();
+    // Each image asked for, in order, with what became of it.
+    let mut asked: Vec<&str> = Vec::new();
+    for i in 0..n {
+        if let Some(g) = sheet.get(i, "given")
+            && !asked.contains(&g)
+        {
+            asked.push(g);
+        }
+    }
+    let of = |g: &str, k: &str| -> Vec<&str> {
+        (0..n)
+            .filter(|&i| sheet.get(i, "given") == Some(g))
+            .filter_map(|i| sheet.get(i, k))
+            .collect()
+    };
+    let removed = asked.iter().filter(|g| of(g, "error").is_empty()).count();
+    let refused = asked.len() - removed;
     let freed: u64 = (0..n)
         .filter_map(|i| sheet.get(i, "freed").and_then(|f| f.parse::<u64>().ok()))
         .sum();
     let mut summary = format!(
-        "{deleted} {} deleted · {untagged} {} untagged",
-        if deleted == 1 { "image" } else { "images" },
-        if untagged == 1 { "name" } else { "names" }
+        "{removed} {} removed",
+        if removed == 1 { "image" } else { "images" }
     );
     if freed > 0 {
-        summary.push_str(&format!(" · {} to free", text::bytes(freed)));
+        summary.push_str(&format!(" · {} freed", text::bytes(freed)));
+    }
+    if refused > 0 {
+        summary.push_str(&format!(" · {refused} refused"));
     }
     look::head(page, p, cols, "rmi", &[(tokens::MUTED, false, summary)]);
     page.blank();
-    for i in 0..n {
+    for g in &asked {
         let l = page.line();
         l.pad(4);
-        if let Some(name) = sheet.get(i, "untagged") {
-            l.put(p, tokens::SUBTLE, "◇ ").put(p, tokens::FOREGROUND, name);
-            l.pad(2).put(p, tokens::MUTED, "untagged");
-        } else if let Some(id) = sheet.get(i, "deleted") {
-            l.put(p, tokens::SAGE, "◆ ").put(p, tokens::BRIGHT, id);
-            l.pad(2).put(p, tokens::SAGE, "deleted");
-            if let Some(f) = sheet
-                .get(i, "freed")
-                .and_then(|f| f.parse::<u64>().ok())
-                .filter(|f| *f > 0)
-            {
-                l.pad(2).put(
-                    p,
-                    tokens::MUTED,
-                    &format!("{} freed with its microVM disk", text::bytes(f)),
-                );
-            }
-        } else if let Some(e) = sheet.get(i, "error") {
-            l.put(p, tokens::ROSE, "○ ")
-                .put(p, tokens::BRIGHT, sheet.get(i, "given").unwrap_or(""));
+        if let Some(e) = of(g, "error").first().copied() {
+            l.put(p, tokens::ROSE, "● ")
+                .bold(p, true)
+                .put(p, tokens::BRIGHT, g)
+                .bold(p, false);
             let room = cols.saturating_sub(l.w + 2);
             l.pad(2).put(p, tokens::ROSE, &layout::clip(&look::ours(e), room));
+            continue;
+        }
+        l.put(p, tokens::SAGE, "● ")
+            .bold(p, true)
+            .put(p, tokens::BRIGHT, g)
+            .bold(p, false);
+        let deleted = of(g, "deleted").first().copied();
+        match deleted {
+            Some(id) => {
+                l.pad(2).put(p, tokens::SAGE, "removed");
+                let f = of(g, "freed")
+                    .first()
+                    .and_then(|f| f.parse::<u64>().ok())
+                    .unwrap_or(0);
+                let what = if f > 0 {
+                    format!("  {id} · {} freed with its microVM disk", text::bytes(f))
+                } else {
+                    format!("  {id}")
+                };
+                l.put(p, tokens::MUTED, &what);
+            }
+            None => {
+                l.pad(2).put(p, tokens::SAGE, "removed");
+                l.put(
+                    p,
+                    tokens::AMBER,
+                    "  its disk is kept while a microVM made from it remains",
+                );
+            }
+        }
+        for name in of(g, "untagged") {
+            let l = page.line();
+            l.pad(8)
+                .put(p, tokens::SUBTLE, "untagged ")
+                .put(p, tokens::FOREGROUND, name);
+        }
+        for name in of(g, "removed_vm") {
+            let l = page.line();
+            l.pad(8)
+                .put(p, tokens::SUBTLE, "stopped microVM removed ")
+                .put(p, tokens::FOREGROUND, name);
         }
     }
 }

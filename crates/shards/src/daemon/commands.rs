@@ -13,7 +13,8 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use shards_cmdline::commands::{
-    self, IMAGE_INSPECT, IMAGES, KILL, LOAD, LOGS, PORT, PS, PULL, PUSH, RM, RMI, SAVE, STOP, TAG, WAIT,
+    self, CONTAINER_INSPECT, IMAGE_INSPECT, IMAGES, KILL, LOAD, LOGS, PORT, PS, PULL, PUSH, RM, RMI, SAVE,
+    STOP, TAG, WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
@@ -372,6 +373,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.rmi(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &IMAGE_INSPECT) {
             self.image_inspect(&parsed.args, asker.styled(), reply)
+        } else if std::ptr::eq(command, &CONTAINER_INSPECT) {
+            self.container_inspect(&parsed.args, asker.styled(), reply)
         } else if std::ptr::eq(command, &SAVE) {
             self.save(&parsed.args, asker, reply)
         } else if std::ptr::eq(command, &LOAD) {

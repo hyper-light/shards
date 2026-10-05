@@ -348,6 +348,7 @@ pub static RMI: Command = Command {
         Flag::bool("force", Some(b'f'), "Force removal of the image"),
         HELP,
         Flag::bool("no-prune", None, "Do not delete untagged parents"),
+        Flag::bool("vms", None, "Remove stopped microVMs").extension(),
     ],
     unserved: "\
 platform - l - -",
@@ -365,6 +366,21 @@ pub static IMAGE_INSPECT: Command = Command {
     unserved: "\
 format f s - -\n\
 platform - s - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards container inspect`, `shards inspect vm`: a microVM's document, Docker's
+/// container fields and its microVM's own.
+pub static CONTAINER_INSPECT: Command = Command {
+    usage: "[OPTIONS] CONTAINER [CONTAINER...]",
+    about: "Display detailed information on one or more containers",
+    aliases: "",
+    args: Args::AtLeast(1),
+    flags: &[HELP],
+    unserved: "\
+format f s - -\n\
+size s b - -",
     interspersed: true,
     error_prefix: "",
 };
@@ -798,6 +814,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["image", "rm" | "remove", ..] => (&RMI, "shards image rm", 2),
         ["image", "tag", ..] => (&TAG, "shards image tag", 2),
         ["image", "inspect", ..] => (&IMAGE_INSPECT, "shards image inspect", 2),
+        ["container", "inspect", ..] => (&CONTAINER_INSPECT, "shards container inspect", 2),
         ["image", "ls" | "list", ..] => (&IMAGES, "shards image ls", 2),
         ["container", "port", ..] => (&PORT, "shards container port", 2),
         _ => return None,

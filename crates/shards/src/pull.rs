@@ -188,7 +188,9 @@ pub fn command(
             };
             // Docker's: up to date when the tag already named this image, or when a
             // digest's content was all here.
-            let up_to_date = same || (reference.digest.is_some() && !downloaded.load(Ordering::Relaxed));
+            // Fetched again with --no-cache, it is new however it compares.
+            let up_to_date = !parsed.bool("no-cache")
+                && (same || (reference.digest.is_some() && !downloaded.load(Ordering::Relaxed)));
             #[cfg(unix)]
             if let Some(disk) = &pulled.rootfs {
                 publish(reference, &pulled.id, &pulled.config, disk, env);

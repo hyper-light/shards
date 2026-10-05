@@ -81,6 +81,38 @@ impl Page {
     }
 }
 
+/// The name pages are titled with, where it is not their command's: the words a page
+/// was asked for by (`list vms`), set once, before any page is drawn.
+static NAMED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Titles this process's pages `name`.
+pub(crate) fn name_as(name: &str) {
+    let _ = NAMED.set(name.to_string());
+}
+
+/// An action's page: how it is said, and what it does to each thing it takes.
+pub(crate) fn action(p: &Paint, action: &str, rows: &[(&str, &str)], out: &mut impl std::io::Write) {
+    let cols = width();
+    let mut page = Page::new();
+    head(&mut page, p, cols, action, &[]);
+    heading(&mut page, p, "usage");
+    usage(&mut page, p, cols, &format!("shards {action} THING [ARG...]"));
+    heading(&mut page, p, "things");
+    let pad = rows.iter().map(|(t, _)| t.len()).max().unwrap_or(0) + 3;
+    for (takes, about) in rows {
+        let parts = layout::wrap(about, cols.saturating_sub(4 + pad).max(20));
+        let l = page.line();
+        l.pad(4).put(p, tokens::TEAL, takes);
+        if let Some(first) = parts.first() {
+            l.to(4 + pad).put(p, tokens::BODY, first);
+        }
+        for more in parts.iter().skip(1) {
+            page.line().pad(4 + pad).put(p, tokens::BODY, more);
+        }
+    }
+    page.write(p, out);
+}
+
 /// The paint for stdout, if it is a colour terminal: shards' pages are drawn there.
 pub(crate) fn styled() -> Option<Paint> {
     // SAFETY: isatty(3) on this process's stdout.
@@ -141,6 +173,7 @@ pub(super) fn head(page: &mut Page, p: &Paint, cols: usize, name: &str, lines: &
         brand.put(p, tokens::prism(k as f64 / n as f64), &ch.to_string());
     }
     brand.bold(p, false);
+    let name = NAMED.get().map_or(name, String::as_str);
     let brow = text::eyebrow(name);
     if !name.is_empty() && brand.w + 5 + brow.chars().count() <= room {
         brand
