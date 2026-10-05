@@ -313,9 +313,9 @@ fn images(page: &mut Page, p: &Paint, sheet: &Sheet) {
             };
             let running = num(i, "in_use");
             let marker = if vm {
-                Cell::new("◆", tokens::SAGE)
+                Cell::new("●", tokens::SAGE)
             } else {
-                Cell::new("◇", tokens::SUBTLE)
+                Cell::new("●", tokens::FAINT)
             };
             let mut size_cell = Cell::new(
                 format!("{:<size_w$}", text::bytes(size(i))),
@@ -337,7 +337,7 @@ fn images(page: &mut Page, p: &Paint, sheet: &Sheet) {
                 size_cell,
                 Cell::new(sheet.get(i, "platform").unwrap_or(""), tokens::MUTED),
                 if running > 0 {
-                    Cell::new(running.to_string(), tokens::AMBER)
+                    Cell::new(format!("● {running} running"), tokens::AMBER)
                 } else {
                     Cell::new("—", tokens::FAINT)
                 },
@@ -420,9 +420,9 @@ fn ps(page: &mut Page, p: &Paint, sheet: &Sheet) {
             // Running, sage; created, lavender; ended well, grey; ended badly, rose.
             let (glyph, c) = match state {
                 "running" => ("●", tokens::SAGE),
-                "created" => ("◌", tokens::LAVENDER),
-                _ if failed => ("○", tokens::ROSE),
-                _ => ("○", tokens::SUBTLE),
+                "created" => ("●", tokens::LAVENDER),
+                _ if failed => ("●", tokens::ROSE),
+                _ => ("●", tokens::FAINT),
             };
             let status_c = match state {
                 "running" => tokens::SAGE,
@@ -700,9 +700,114 @@ fn json(p: &Paint, text: &str) {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    /// `s` as a terminal shows it: escapes taken out.
+    fn seen(s: &str) -> String {
+        let mut out = String::new();
+        let mut esc = false;
+        for ch in s.chars() {
+            match (esc, ch) {
+                (false, '\x1b') => esc = true,
+                (true, c) if c.is_ascii_alphabetic() => esc = false,
+                (true, _) => {}
+                (false, ch) => out.push(ch),
+            }
+        }
+        out
+    }
+
+    /// Where each heading of the heading line starts, in columns.
+    fn starts(heading: &str) -> Vec<usize> {
+        let chars: Vec<char> = heading.chars().collect();
+        (0..chars.len())
+            .filter(|&i| chars[i] != ' ' && (i == 0 || chars[i - 1] == ' '))
+            .collect()
+    }
+
+    /// A table drawn at `cols`: each row's cells start where their headings do, and
+    /// every row's marker sits in one column, before them.
+    fn aligned(columns: &[Column], rows: &[(Cell, Vec<Cell>)], cols: usize) {
+        let mut page = Page::new();
+        table(&mut page, &Paint::new(true), cols, columns, rows);
+        let mut out = Vec::new();
+        page.write(&Paint::new(true), &mut out);
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<String> = text.lines().map(seen).collect();
+        let heads = starts(&lines[0]);
+        let marker_at = lines[1].chars().position(|c| c != ' ').unwrap();
+        for (r, line) in lines.iter().enumerate().skip(1) {
+            let chars: Vec<char> = line.chars().collect();
+            assert_eq!(
+                chars.iter().position(|c| *c != ' '),
+                Some(marker_at),
+                "row {r} at {cols}: {line:?}"
+            );
+            for &h in &heads {
+                // A cell begins where its heading does: there, something; before it, a gap.
+                assert!(
+                    h < chars.len() && chars[h] != ' ' && chars[h - 1] == ' ',
+                    "row {r}, heading at {h}, at {cols}:\n{}\n{line}",
+                    lines[0]
+                );
+            }
+            assert!(chars.len() <= cols, "row {r} wider than {cols}");
+        }
+    }
+
+    #[test]
+    fn tables_stand_in_their_columns_at_every_width() {
+        let columns = [
+            Column {
+                heading: "NAME",
+                right: false,
+                keep: 9,
+            },
+            Column {
+                heading: "TYPE",
+                right: false,
+                keep: 8,
+            },
+            Column {
+                heading: "LAYERS",
+                right: false,
+                keep: 2,
+            },
+            Column {
+                heading: "SIZE",
+                right: false,
+                keep: 7,
+            },
+            Column {
+                heading: "RUNNING",
+                right: false,
+                keep: 6,
+            },
+        ];
+        let row = |name: &str, kind: &str, layers: &str, size: &str, share: f64, running: &str| {
+            let mut size = Cell::new(format!("{size:<7}"), tokens::LAVENDER);
+            size.bar = Some((8, share));
+            (
+                Cell::new("●", tokens::SAGE),
+                vec![
+                    Cell::new(name, tokens::BRIGHT).bold(),
+                    Cell::new(kind, tokens::SAGE),
+                    Cell::new(layers, tokens::FOREGROUND),
+                    size,
+                    Cell::new(running, tokens::AMBER),
+                ],
+            )
+        };
+        let rows = [
+            row("ubuntu:latest", "microVM", "2", "133 MB", 1.0, "● 3 running"),
+            row("alpine:3.22", "image", "12", "8.85 MB", 0.06, "—"),
+        ];
+        for cols in [40, 60, 80, 120, 200] {
+            aligned(&columns, &rows, cols);
+        }
+    }
 
     #[test]
     fn ages_read_well() {
