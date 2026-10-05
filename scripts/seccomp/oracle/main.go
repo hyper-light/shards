@@ -102,7 +102,7 @@ func main() {
 	must(os.WriteFile(oracleOut, append(out, '\n'), 0o644))
 
 	// libseccomp's own tables, by which runc reads a profile's names: each name of
-	// syscalls.csv on each of this architecture's ABIs, where it is a syscall there.
+	// syscalls.csv on each of this architecture's ABIs that libseccomp resolves there.
 	arches := map[string][]libseccomp.ScmpArch{
 		"amd64": {libseccomp.ArchAMD64, libseccomp.ArchX86, libseccomp.ArchX32},
 		"arm64": {libseccomp.ArchARM64, libseccomp.ArchARM},
@@ -123,7 +123,9 @@ func main() {
 	for _, a := range arches {
 		t := map[string]int32{}
 		for _, n := range names {
-			if nr, err := libseccomp.GetSyscallFromNameByArch(n, a); err == nil && nr >= 0 {
+			// A negative number is libseccomp's pseudo-syscall for one this ABI
+			// lacks (__PNR_*), which it still takes rules for.
+			if nr, err := libseccomp.GetSyscallFromNameByArch(n, a); err == nil {
 				t[n] = int32(nr)
 			}
 		}
