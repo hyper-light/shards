@@ -81,52 +81,114 @@ fn once(action: &str, rest: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// The actions shards' grammar has, for its help: each with the things it takes, and
-/// what it does.
-pub static ACTIONS: &[(&str, &str, &str)] = &[
+/// The sections shards' help lists its actions in, by what they are for, in order.
+pub static SECTIONS: &[&str] = &["run", "inspect", "manage", "images"];
+
+/// The actions shards' grammar has, for its help: the section each is listed in, the
+/// action, the things it takes (those that take the same, together), and what it does.
+pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "run",
-        "vm IMAGE",
-        "Run a command in a new microVM, made from the image if it is a container's",
+        "exec",
+        "vm NAME COMMAND",
+        "Run a command in a running microVM",
     ),
+    ("run", "restore", "vm DIR", "Resume a microVM from a snapshot"),
     (
         "run",
-        "vm --kernel FILE",
-        "Boot a kernel directly in a microVM of its own",
-    ),
-    ("list", "vm | image", "List microVMs, or images"),
-    (
-        "stop",
-        "vm NAME",
-        "Stop microVMs: their stop signal, then SIGKILL once their grace is up",
-    ),
-    ("kill", "vm NAME", "Kill microVMs"),
-    ("remove", "vm | image NAME", "Remove microVMs, or images"),
-    ("logs", "vm NAME", "Show what a microVM's command printed"),
-    ("exec", "vm NAME", "Run a command in a running microVM"),
-    ("pull", "image NAME", "Download an image, and make it a microVM"),
-    ("push", "image NAME", "Upload an image to a registry"),
-    ("inspect", "image NAME", "Show an image's documents"),
-    ("history", "image NAME", "Show how an image's layers were made"),
-    (
-        "inspect",
-        "vm NAME",
-        "Show a microVM's document: what it runs, how it stands, its microVM",
-    ),
-    ("restore", "vm DIR", "Resume a microVM from a snapshot"),
-    (
         "run",
         "daemon",
         "Serve runs from warm microVMs (the first run starts it)",
     ),
-    ("stop", "daemon", "End the daemon's runs, and the daemon"),
     (
+        "run",
+        "run",
+        "vm --kernel FILE",
+        "Boot a kernel directly in a microVM of its own",
+    ),
+    (
+        "run",
+        "run",
+        "vm IMAGE",
+        "Run a command in a new microVM made from an image",
+    ),
+    (
+        "inspect",
+        "history",
+        "image NAME",
+        "Show how an image's layers were made",
+    ),
+    (
+        "inspect",
+        "inspect",
+        "guest",
+        "Show the kernel and shards-init runs boot",
+    ),
+    (
+        "inspect",
+        "inspect",
+        "vm | image NAME",
+        "Show what a microVM runs, or an image's documents",
+    ),
+    ("inspect", "list", "vm | image", "List microVMs, or images"),
+    (
+        "inspect",
+        "logs",
+        "vm NAME",
+        "Show what a microVM's command printed",
+    ),
+    (
+        "manage",
         "configure",
         "guest --kernel FILE --init FILE",
         "Choose the kernel and shards-init runs boot",
     ),
-    ("inspect", "guest", "Show the guest runs boot"),
+    ("manage", "kill", "vm NAME", "Kill microVMs"),
+    (
+        "manage",
+        "remove",
+        "vm | image NAME",
+        "Remove microVMs, or images with their stopped microVMs",
+    ),
+    (
+        "manage",
+        "stop",
+        "daemon",
+        "End the daemon's runs, and the daemon",
+    ),
+    (
+        "manage",
+        "stop",
+        "vm NAME",
+        "Stop microVMs: their stop signal, then SIGKILL once their grace is up",
+    ),
+    ("manage", "tag", "image SOURCE TARGET", "Name an image again"),
+    (
+        "images",
+        "build",
+        "image PATH",
+        "Build an image from a Dockerfile or Agentfile, and make it a microVM",
+    ),
+    (
+        "images",
+        "load",
+        "image",
+        "Load images from a tar archive or stdin",
+    ),
+    (
+        "images",
+        "pull",
+        "image NAME",
+        "Download an image, and make it a microVM",
+    ),
+    ("images", "push", "image NAME", "Upload an image to a registry"),
+    ("images", "save", "image NAME", "Save images to a tar archive"),
 ];
+
+/// Whether `word` is an action of shards' grammar.
+pub fn is_action(word: &str) -> bool {
+    ACTIONS.iter().any(|(_, a, _, _)| *a == word)
+}
 
 #[cfg(test)]
 mod tests {
@@ -193,5 +255,27 @@ mod tests {
         ] {
             assert_eq!(said(words), None, "{words}");
         }
+    }
+}
+
+#[cfg(test)]
+mod sorted {
+    use super::*;
+
+    #[test]
+    fn each_section_lists_its_actions_in_order_and_names_every_action_once() {
+        for section in SECTIONS {
+            let rows: Vec<(&str, &str)> = ACTIONS
+                .iter()
+                .filter(|r| r.0 == *section)
+                .map(|r| (r.1, r.2))
+                .collect();
+            let mut sorted = rows.clone();
+            sorted.sort();
+            assert_eq!(rows, sorted, "{section}");
+        }
+        assert!(ACTIONS.iter().all(|r| SECTIONS.contains(&r.0)));
+        let mut seen = std::collections::HashSet::new();
+        assert!(ACTIONS.iter().all(|r| seen.insert((r.1, r.2))));
     }
 }

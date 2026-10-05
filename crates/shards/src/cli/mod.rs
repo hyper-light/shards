@@ -63,6 +63,15 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
     {
         return action_help(action);
     }
+    // An action Docker has too, alone, on a colour terminal: its page, where Docker's
+    // answer is that it lacks an argument; elsewhere, Docker's answer.
+    #[cfg(unix)]
+    if let [action] = text.as_slice()
+        && shards_cmdline::grammar::is_action(action)
+        && look::styled_quiet()
+    {
+        return action_help(action);
+    }
     if text.len() == args.len()
         && let Some(said) = shards_cmdline::grammar::rewrite(&text)
         && said != text
@@ -263,8 +272,8 @@ fn container(
 fn action_help(action: &str) -> ExitCode {
     let rows: Vec<(&str, &str)> = shards_cmdline::grammar::ACTIONS
         .iter()
-        .filter(|(a, _, _)| *a == action)
-        .map(|(_, takes, about)| (*takes, *about))
+        .filter(|(_, a, _, _)| *a == action)
+        .map(|(_, _, takes, about)| (*takes, *about))
         .collect();
     #[cfg(unix)]
     if let Some(p) = look::styled() {

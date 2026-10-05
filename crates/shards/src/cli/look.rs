@@ -113,6 +113,14 @@ pub(crate) fn action(p: &Paint, action: &str, rows: &[(&str, &str)], out: &mut i
     page.write(p, out);
 }
 
+/// Whether stdout is a colour terminal, without asking it anything.
+pub(crate) fn styled_quiet() -> bool {
+    // SAFETY: isatty(3) on this process's stdout.
+    let tty = unsafe { libc::isatty(1) } == 1;
+    tty && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+        && std::env::var_os("TERM").is_none_or(|t| t != "dumb")
+}
+
 /// The paint for stdout, if it is a colour terminal: shards' pages are drawn there.
 pub(crate) fn styled() -> Option<Paint> {
     // SAFETY: isatty(3) on this process's stdout.
@@ -261,28 +269,6 @@ fn entries(page: &mut Page, p: &Paint, cols: usize, entries: &[Entry]) {
     }
 }
 
-/// [`entries`], what each does in shards' words.
-fn entries_worded(page: &mut Page, p: &Paint, cols: usize, list: &[Entry]) {
-    let pad = list.iter().map(|e| e.name.len()).max().unwrap_or(0) + 3;
-    let about_w = cols.saturating_sub(4 + pad);
-    for e in list {
-        let about = ours(e.about);
-        let parts = if about_w >= 20 {
-            layout::wrap(&about, about_w)
-        } else {
-            Vec::new()
-        };
-        let l = page.line();
-        l.pad(4).put(p, tokens::FOREGROUND, e.name);
-        if let Some(first) = parts.first() {
-            l.to(4 + pad).put(p, tokens::BODY, first);
-        }
-        for more in parts.iter().skip(1) {
-            page.line().pad(4 + pad).put(p, tokens::BODY, more);
-        }
-    }
-}
-
 /// The root's help: what shards is, and its commands by group.
 pub fn top(p: &Paint, out: &mut impl std::io::Write) {
     let cols = width();
@@ -296,16 +282,19 @@ pub fn top(p: &Paint, out: &mut impl std::io::Write) {
     );
     heading(&mut page, p, "usage");
     usage(&mut page, p, cols, "shards ACTION THING [ARG...]");
-    // shards' grammar first: each action, what it takes, what it does.
-    heading(&mut page, p, "actions");
-    {
-        let pad = shards_cmdline::grammar::ACTIONS
+    // The actions, a section for each thing they act on, each in order.
+    let pad = shards_cmdline::grammar::ACTIONS
+        .iter()
+        .map(|(_, a, t, _)| a.len() + 1 + t.len())
+        .max()
+        .unwrap_or(0)
+        + 3;
+    for section in shards_cmdline::grammar::SECTIONS {
+        heading(&mut page, p, section);
+        for (_, action, takes, about) in shards_cmdline::grammar::ACTIONS
             .iter()
-            .map(|(a, t, _)| a.len() + 1 + t.len())
-            .max()
-            .unwrap_or(0)
-            + 3;
-        for (action, takes, about) in shards_cmdline::grammar::ACTIONS {
+            .filter(|r| r.0 == *section)
+        {
             let parts = layout::wrap(about, cols.saturating_sub(4 + pad).max(20));
             let l = page.line();
             l.pad(4)
@@ -320,22 +309,12 @@ pub fn top(p: &Paint, out: &mut impl std::io::Write) {
             }
         }
     }
-    // The commands by their names alone.
-    for group in catalog::TOP {
-        let name = group.heading.strip_suffix(" Commands").unwrap_or(group.heading);
-        let name = match name {
-            "Commands" => "more".to_string(),
-            other => other.to_string(),
-        };
-        heading(&mut page, p, &name);
-        let worded: Vec<Entry> = group.entries.to_vec();
-        entries_worded(&mut page, p, cols, &worded);
-    }
     page.blank();
     let l = page.line();
-    l.pad(2).put(p, tokens::SUBTLE, "Run ");
-    l.put(p, tokens::TEAL, "shards COMMAND --help");
-    l.put(p, tokens::SUBTLE, " for more on a command.");
+    l.pad(2).put(p, tokens::TEAL, "shards ACTION");
+    l.put(p, tokens::SUBTLE, " shows what an action takes; ");
+    l.put(p, tokens::TEAL, "shards ACTION THING --help");
+    l.put(p, tokens::SUBTLE, " its options.");
     page.write(p, out);
 }
 
@@ -752,10 +731,8 @@ mod tests {
         let mut out = Vec::new();
         top(&p, &mut out);
         let text = seen(&out);
-        for group in catalog::TOP {
-            for e in group.entries {
-                assert!(text.contains(e.name), "{}", e.name);
-            }
+        for (_, action, takes, _) in shards_cmdline::grammar::ACTIONS {
+            assert!(text.contains(&format!("{action} {takes}")), "{action} {takes}");
         }
         assert!(text.contains("S H A R D S"));
         let mut out = Vec::new();
