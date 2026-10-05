@@ -1605,6 +1605,145 @@ fn run_limits_resources_as_docker_run_does() {
     );
 }
 
+/// `--read-only`, `--tmpfs`, `--shm-size`, `--ulimit` and `--sysctl` as docker run takes
+/// them: the workload's root read-only and its tmpfs mounts in its own mount namespace,
+/// which an exec joins; its rlimits, which an exec takes too; its sysctls set; inspect
+/// as dockerd keeps them; and dockerd's and runc's refusals.
+#[test]
+fn run_sets_up_mounts_limits_and_sysctls_as_docker_run_does() {
+    let Some((home, image)) = home("containers-setup") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let sealed = [
+        "--read-only",
+        "--tmpfs",
+        "/run:size=1m,exec",
+        "--shm-size",
+        "128m",
+        "--ulimit",
+        "nofile=1024:2048",
+        "--sysctl",
+        "net.core.somaxconn=1024",
+    ];
+    // The workload's own view.
+    let rooted = run_in(&home, &image, &sealed, &["fs", "write:/run/y=1", "write:/x=1"]);
+    assert_eq!(rooted.status, Some(1), "{rooted}");
+    assert!(
+        rooted.stderr.contains("write:/x=1: Read-only file system"),
+        "{rooted}"
+    );
+    let mut options = vec!["--name", "sealed"];
+    options.extend(sealed);
+    let mut held = start(&home, &image, &options, &["sleep"]);
+    // An exec's: the same mounts and limits.
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", "sealed", "/bin/testguest"];
+        all.extend(args);
+        shards(&all)
+    };
+    let wrote = exec(&["fs", "write:/run/z=1"]);
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    let refused = exec(&["fs", "write:/z=1"]);
+    assert_eq!(refused.status, Some(1), "{refused}");
+    let read = exec(&[
+        "stat",
+        "/proc/sys/net/core/somaxconn",
+        "/proc/self/limits",
+        "/proc/self/mounts",
+    ]);
+    let files: Vec<&str> = read.stdout.lines().filter_map(|l| l.strip_prefix("= ")).collect();
+    let [somaxconn, limits, mounts] = files[..] else {
+        panic!("{read}");
+    };
+    assert_eq!(somaxconn, "1024\\n", "{read}");
+    assert!(
+        limits.split("\\n").any(|l| l.starts_with("Max open files")
+            && l.split_whitespace().collect::<Vec<_>>()[3..5] == ["1024", "2048"]),
+        "{limits}"
+    );
+    assert!(mounts.contains("overlay / overlay ro,"), "{mounts}");
+    assert!(
+        mounts.contains("tmpfs /run tmpfs rw,nosuid,nodev,relatime,size=1024k"),
+        "{mounts}"
+    );
+    assert!(
+        mounts.contains("/dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=131072k"),
+        "{mounts}"
+    );
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.ReadonlyRootfs}} {{json .HostConfig.Tmpfs}} {{.HostConfig.ShmSize}} {{json .HostConfig.Ulimits}} {{json .HostConfig.Sysctls}}",
+        "sealed",
+    ]);
+    assert_eq!(
+        shown.stdout,
+        "true {\"/run\":\"size=1m,exec\"} 134217728 [{\"Name\":\"nofile\",\"Hard\":2048,\"Soft\":1024}] {\"net.core.somaxconn\":\"1024\"}\n",
+        "{shown}"
+    );
+    // checkWritablePath: nothing is copied onto a read-only root.
+    let file = home.join("copied.txt");
+    std::fs::write(&file, "x").unwrap();
+    let copied = shards(&["cp", file.to_str().unwrap(), "sealed:/copied.txt"]);
+    assert_eq!(
+        (copied.status, copied.stderr.as_str()),
+        (
+            Some(1),
+            "Error response from daemon: container rootfs is marked read-only\n"
+        ),
+        "{copied}"
+    );
+    assert_eq!(shards(&["kill", "sealed"]).status, Some(0));
+    exit(&mut held);
+    // dockerd's refusals as it makes the container, then runc's as it starts it.
+    let said = |options: &[&str]| run_in(&home, &image, options, &["exit", "0"]);
+    let help = "\n\nRun 'shards run --help' for more information\n";
+    for (options, status, words) in [
+        (
+            &["--tmpfs", "/"][..],
+            125,
+            "invalid specification: destination can't be '/'",
+        ),
+        (
+            &["--tmpfs", "run"][..],
+            125,
+            "invalid mount path: 'run' mount path must be absolute",
+        ),
+        (&["--tmpfs", "/x:foo"][..], 125, "invalid tmpfs option \"foo\""),
+        (
+            &["--tmpfs", "/x:size=abc"][..],
+            125,
+            "error mounting \"tmpfs\" to rootfs at \"/x\": mount src=tmpfs, dst=/x, flags=MS_NOSUID|MS_NODEV|MS_NOEXEC, data=size=abc: invalid argument",
+        ),
+        (
+            &["--sysctl", "net.core.nope=1"][..],
+            127,
+            "open sysctl net.core.nope file: open /proc/sys/net/core/nope: no such file or directory",
+        ),
+        (
+            &["--sysctl", "net.core.somaxconn=x"][..],
+            125,
+            "failed to write sysctl net.core.somaxconn = \"x\": write /proc/sys/net/core/somaxconn: invalid argument",
+        ),
+    ] {
+        let r = said(options);
+        let stderr: String = r
+            .stderr
+            .split_inclusive('\n')
+            .filter(|l| !l.starts_with("shards-timing "))
+            .collect();
+        assert_eq!(
+            (r.status, stderr.as_str()),
+            (
+                Some(status),
+                format!("shards: Error response from daemon: {words}{help}").as_str()
+            ),
+            "{options:?}"
+        );
+    }
+}
+
 #[test]
 fn info_and_disk_usage_format_as_docker_does() {
     let Some((home, image)) = home("containers-info-df") else {

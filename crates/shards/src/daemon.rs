@@ -2144,6 +2144,7 @@ impl<D: Disk> Daemon<D> {
             .collect::<Result<_, &str>>()?;
         spec.domainname = run.domainname.clone().into_bytes();
         spec.cgroup = crate::resources::cgroup(&run.resources);
+        spec.setup = crate::setup::setup(run)?;
         Ok(())
     }
 
@@ -2255,6 +2256,7 @@ impl<D: Disk> Daemon<D> {
         // Its resources (verifyPlatformContainerResources), whose warnings it says once
         // it is made.
         crate::resources::verify(&run.resources, crate::resources::host_cpus())?;
+        crate::setup::verify(run)?;
         // A name held by a container that ended with `--rm`, its end not yet taken or its
         // removal not yet durable, is free once that is done, as dockerd's is by the time
         // `docker run --rm` returns: its end is taken, and its removal waited for.

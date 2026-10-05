@@ -20,6 +20,9 @@ pub struct Orders {
     /// Its stdin is `/dev/null`, not the standby's pipe: a command without `-i` or a
     /// terminal (`Spec::stdin`).
     pub null_stdin: bool,
+    /// What the standby sets up in its namespaces before it execs, in order: entries of
+    /// `Spec::setup` (run.rs `set_up`).
+    pub setup: Vec<Vec<u8>>,
 }
 
 impl Orders {
@@ -39,7 +42,7 @@ impl Orders {
             }
         }
         let singles = [std::slice::from_ref(&self.cwd), std::slice::from_ref(&self.tty)];
-        let total = [&self.candidates[..], &self.argv, &self.env]
+        let total = [&self.candidates[..], &self.argv, &self.env, &self.setup]
             .into_iter()
             .chain(singles)
             .map(len)
@@ -61,6 +64,7 @@ impl Orders {
         list(&mut w, &self.argv);
         list(&mut w, &self.env);
         list(&mut w, std::slice::from_ref(&self.tty));
+        list(&mut w, &self.setup);
         w
     }
 
@@ -114,6 +118,7 @@ impl Orders {
             env: list(&mut r)?,
             tty: list(&mut r)?.pop()?,
             null_stdin: null_stdin != 0,
+            setup: list(&mut r)?,
         };
         r.is_empty().then_some(orders)
     }
@@ -155,6 +160,7 @@ mod tests {
                 .collect(),
             tty: b"/dev/pts/0".to_vec(),
             null_stdin: true,
+            setup: vec![b"readonly".to_vec()],
         }
     }
 

@@ -578,7 +578,7 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("PidMode", s(""))
         .field("Privileged", Value::Bool(false))
         .field("PublishAllPorts", Value::Bool(run.publish_all))
-        .field("ReadonlyRootfs", Value::Bool(false))
+        .field("ReadonlyRootfs", Value::Bool(run.read_only))
         .field("SecurityOpt", Value::NilList(Kind::String))
         .tagged(
             "StorageOpt",
@@ -586,11 +586,38 @@ fn host_config(f: &Facts<'_>) -> Value {
             true,
             Value::NilMap(Kind::String),
         )
-        .tagged("Tmpfs", Some("Tmpfs"), true, Value::NilMap(Kind::String))
+        .tagged(
+            "Tmpfs",
+            Some("Tmpfs"),
+            true,
+            if run.tmpfs.is_empty() {
+                Value::NilMap(Kind::String)
+            } else {
+                Value::string_map(run.tmpfs.iter().map(|t| {
+                    let (dest, opts) = t.split_once(':').unwrap_or((t.as_str(), ""));
+                    (dest.to_string(), opts.to_string())
+                }))
+            },
+        )
         .field("UTSMode", s(""))
         .field("UsernsMode", s(""))
-        .field("ShmSize", int(SHM_SIZE))
-        .tagged("Sysctls", Some("Sysctls"), true, Value::NilMap(Kind::String))
+        .field(
+            "ShmSize",
+            int(if run.shm_size == 0 { SHM_SIZE } else { run.shm_size }),
+        )
+        .tagged(
+            "Sysctls",
+            Some("Sysctls"),
+            true,
+            if run.sysctls.is_empty() {
+                Value::NilMap(Kind::String)
+            } else {
+                Value::string_map(run.sysctls.iter().map(|kv| {
+                    let (k, v) = kv.split_once('=').unwrap_or((kv.as_str(), ""));
+                    (k.to_string(), v.to_string())
+                }))
+            },
+        )
         .tagged("Runtime", Some("Runtime"), true, s("shards"))
         .tagged("Umask", Some("Umask"), true, Struct::nil("uint32"))
         .field("Isolation", s(""))
@@ -637,7 +664,23 @@ fn host_config(f: &Facts<'_>) -> Value {
                 Struct::nil("int64")
             },
         )
-        .field("Ulimits", empty())
+        .field(
+            "Ulimits",
+            Value::List(
+                Kind::Any,
+                shards_cmdline::buildflags::ulimits(&run.ulimits)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|u| {
+                        Struct::pointer("container.Ulimit")
+                            .field("Name", s(&u.name))
+                            .field("Hard", int(u.hard))
+                            .field("Soft", int(u.soft))
+                            .value()
+                    })
+                    .collect(),
+            ),
+        )
         .tagged("CPUCount", Some("CpuCount"), false, int(0))
         .tagged("CPUPercent", Some("CpuPercent"), false, int(0))
         .field("IOMaximumIOps", Value::Uint(0))

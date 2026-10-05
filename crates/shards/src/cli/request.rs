@@ -309,6 +309,7 @@ fn validate(flag: &Flag, value: &str) -> Result<String, String> {
     if matches!(flag.name, "network" | "net") {
         return network::attachment(value).map(|_| value.to_string());
     }
+
     if flag.name != "env" {
         return shards_cmdline::flags::value(flag, value);
     }
@@ -459,6 +460,11 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         },
         quiet: parsed.bool("quiet"),
         resources,
+        read_only: parsed.bool("read-only"),
+        tmpfs: parsed.many("tmpfs").to_vec(),
+        shm_size: parsed.string("shm-size").parse().unwrap_or(0),
+        ulimits: parsed.many("ulimit").to_vec(),
+        sysctls: parsed.many("sysctl").to_vec(),
         // The flag's default is DOCKER_DEFAULT_PLATFORM (docker/cli run.go, create.go).
         platform: if parsed.changed("platform") {
             parsed.string("platform").to_string()

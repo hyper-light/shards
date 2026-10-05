@@ -25,7 +25,7 @@ import (
 
 // The flags shards serves, by command; the rest are hidden, as shards hides them.
 var served = map[string][]string{
-	"run": {"add-host", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "name", "net", "network", "no-healthcheck", "oom-kill-disable", "pids-limit", "platform", "publish", "publish-all", "pull", "quiet", "rm", "sig-proxy", "stop-signal", "stop-timeout", "tty", "user", "workdir"},
+	"run": {"add-host", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "name", "net", "network", "no-healthcheck", "oom-kill-disable", "pids-limit", "platform", "publish", "publish-all", "pull", "quiet", "read-only", "rm", "shm-size", "sig-proxy", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "workdir"},
 	"ps":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet"},
 	"ls":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet"},
 	"wait": {"help"},
@@ -73,7 +73,7 @@ var served = map[string][]string{
 	// `container prune` and `system prune`, which share the name.
 	"prune":             {"all", "filter", "force", "help"},
 	"image prune":       {"all", "filter", "force", "help"},
-	"create": {"add-host", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "name", "net", "network", "no-healthcheck", "oom-kill-disable", "pids-limit", "platform", "publish", "publish-all", "pull", "quiet", "rm", "stop-signal", "stop-timeout", "tty", "user", "workdir"},
+	"create": {"add-host", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "name", "net", "network", "no-healthcheck", "oom-kill-disable", "pids-limit", "platform", "publish", "publish-all", "pull", "quiet", "read-only", "rm", "shm-size", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "workdir"},
 	"container create": {
 		"disable-content-trust", "entrypoint", "env", "help",
 		"hostname", "init", "interactive", "kernel-memory", "name", "net", "network", "pull",
@@ -226,6 +226,18 @@ var cases = [][]string{
 	{"run", "--memory-swappiness", "101", "alpine"},
 	{"run", "--oom-kill-disable", "--cpu-period", "50000", "--cpu-quota", "25000", "--cpuset-mems", "0", "alpine"},
 	{"create", "-m", "64m", "--cpus", "2", "alpine"},
+	{"run", "--read-only", "--tmpfs", "/run:size=1m,exec", "--tmpfs", "/tmp", "--shm-size", "128m", "--ulimit", "nofile=1024:2048", "--ulimit", "nproc=10", "--sysctl", "net.core.somaxconn=1024", "--sysctl", "kernel.shmmax=1", "--sysctl", "net.core.somaxconn=2048", "alpine"},
+	{"run", "--sysctl", "kernel.hostname=x", "alpine"},
+	{"run", "--sysctl", "net", "alpine"},
+	{"run", "--sysctl", "=1", "alpine"},
+	{"run", "--sysctl", "fs.mqueue.msg_max=10", "--sysctl", "kernel.sem=1 2 3 4", "alpine"},
+	{"run", "--ulimit", "as=1", "alpine"},
+	{"run", "--ulimit", "nofile=2:1", "alpine"},
+	{"run", "--ulimit", "nofile", "alpine"},
+	{"run", "--ulimit", "nofile=x", "alpine"},
+	{"run", "--ulimit", "nofile=-1:5", "alpine"},
+	{"run", "--shm-size", "x", "alpine"},
+	{"run", "--shm-size", "1g", "alpine"},
 	{"create", "-q", "--cidfile", "c", "--platform", "arm64", "alpine"},
 	{"run", "--help"},
 	{"run", "-h"},

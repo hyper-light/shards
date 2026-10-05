@@ -143,6 +143,10 @@ pub struct Spec {
     /// The workload's resource limits, as its cgroup's interface files take them (Linux
     /// Documentation/admin-guide/cgroup-v2.rst): each `FILE=VALUE`, written in order.
     pub cgroup: Vec<Vec<u8>>,
+    /// What the workload's namespaces are given before it starts, in order, each
+    /// `KIND=VALUE`: `tmpfs=DEST\0OPTIONS` (moby's merged tmpfs options), `shm=BYTES`,
+    /// `ulimit=NAME=SOFT:HARD`, `sysctl=KEY=VALUE`, and `readonly` alone.
+    pub setup: Vec<Vec<u8>>,
 }
 
 /// What shards-init does itself for an exec ([`Spec::builtin`]).
@@ -200,7 +204,7 @@ impl Spec {
     /// u32 length, then its bytes. Then the optional sections, each a tag and what it
     /// holds, in order: a terminal, 1 and its size; resolv.conf, 2 and its bytes; stdin
     /// read, 3 alone; a built-in, 4 and its kind; hosts, 5 and a list; a domain name, 6
-    /// and its bytes; cgroup limits, 7 and a list.
+    /// and its bytes; cgroup limits, 7 and a list; namespace setup, 8 and a list.
     ///
     /// Callers see [`encoded_len`](Spec::encoded_len) within [`MAX_PAYLOAD`] first: past
     /// it, a length would not fit its u32.
@@ -255,6 +259,13 @@ impl Spec {
                 put_bytes(out, c);
             }
         }
+        if !self.setup.is_empty() {
+            out.push(8);
+            put(out, self.setup.len());
+            for c in &self.setup {
+                put_bytes(out, c);
+            }
+        }
     }
 
     /// The bytes [`encode`](Spec::encode) writes, or `None` past `usize`: measured without
@@ -287,13 +298,19 @@ impl Spec {
         } else {
             strings(&self.cgroup)?.checked_add(1)?
         };
+        let setup = if self.setup.is_empty() {
+            0
+        } else {
+            strings(&self.setup)?.checked_add(1)?
+        };
         n.checked_add(if self.tty.is_some() { 5 } else { 0 })?
             .checked_add(resolv)?
             .checked_add(usize::from(self.stdin))?
             .checked_add(if self.builtin != 0 { 2 } else { 0 })?
             .checked_add(hosts)?
             .checked_add(domain)?
-            .checked_add(cgroup)
+            .checked_add(cgroup)?
+            .checked_add(setup)
     }
 
     /// The spec in `bytes`, or `None` unless they hold exactly one.
@@ -312,6 +329,7 @@ impl Spec {
             hosts: Vec::new(),
             domainname: Vec::new(),
             cgroup: Vec::new(),
+            setup: Vec::new(),
         };
         let mut spec = spec;
         // Optional sections, each once, in order: 1 a terminal, 2 resolv.conf, 3 stdin, 4
@@ -330,6 +348,7 @@ impl Spec {
                 5 => spec.hosts = r.list().filter(|l| !l.is_empty())?,
                 6 => spec.domainname = r.bytes().filter(|d| !d.is_empty())?,
                 7 => spec.cgroup = r.list().filter(|l| !l.is_empty())?,
+                8 => spec.setup = r.list().filter(|l| !l.is_empty())?,
                 _ => return None,
             }
         }
@@ -402,12 +421,13 @@ mod tests {
             hosts: vec![b"10.0.0.2\tdb".to_vec(), b"::1\tlocal6".to_vec()],
             domainname: b"example.org".to_vec(),
             cgroup: vec![b"memory.max=33554432".to_vec(), b"cpu.max=50000 100000".to_vec()],
+            setup: vec![b"readonly".to_vec(), b"shm=1".to_vec()],
         };
         let bytes = spec.encode();
         assert_eq!(bytes.len(), spec.encoded_len().unwrap());
         assert_eq!(Spec::decode(&bytes), Some(spec.clone()));
         // Its length measured as written, whichever optional sections it has (review 1.20).
-        for sections in 0..128u8 {
+        for sections in 0..=255u8 {
             let some = Spec {
                 tty: (sections & 1 != 0).then_some(Size { rows: 1, cols: 2 }),
                 resolv: (sections & 2 != 0).then(|| b"nameserver 10.0.0.1\n".to_vec()),
@@ -428,6 +448,11 @@ mod tests {
                 } else {
                     Vec::new()
                 },
+                setup: if sections & 128 != 0 {
+                    vec![b"readonly".to_vec()]
+                } else {
+                    Vec::new()
+                },
                 ..spec.clone()
             };
             let written = some.encode();
@@ -438,6 +463,7 @@ mod tests {
             hosts: Vec::new(),
             domainname: Vec::new(),
             cgroup: Vec::new(),
+            setup: Vec::new(),
             tty: None,
             resolv: None,
             stdin: false,
@@ -450,6 +476,7 @@ mod tests {
             hosts: Vec::new(),
             domainname: Vec::new(),
             cgroup: Vec::new(),
+            setup: Vec::new(),
             resolv: None,
             stdin: false,
             builtin: 0,
@@ -460,6 +487,7 @@ mod tests {
             hosts: Vec::new(),
             domainname: Vec::new(),
             cgroup: Vec::new(),
+            setup: Vec::new(),
             stdin: false,
             builtin: 0,
             ..spec.clone()
@@ -469,6 +497,7 @@ mod tests {
             hosts: Vec::new(),
             domainname: Vec::new(),
             cgroup: Vec::new(),
+            setup: Vec::new(),
             builtin: 0,
             ..spec.clone()
         };
@@ -477,20 +506,28 @@ mod tests {
             hosts: Vec::new(),
             domainname: Vec::new(),
             cgroup: Vec::new(),
+            setup: Vec::new(),
             ..spec.clone()
         };
         let without_hosts = hostless.encode();
         let domainless = Spec {
             domainname: Vec::new(),
             cgroup: Vec::new(),
+            setup: Vec::new(),
             ..spec.clone()
         };
         let without_domain = domainless.encode();
         let unlimited = Spec {
             cgroup: Vec::new(),
+            setup: Vec::new(),
             ..spec.clone()
         };
         let without_cgroup = unlimited.encode();
+        let bare = Spec {
+            setup: Vec::new(),
+            ..spec.clone()
+        };
+        let without_setup = bare.encode();
         assert_eq!(Spec::decode(&Spec::default().encode()), Some(Spec::default()));
         let reading = Spec {
             stdin: true,
@@ -515,6 +552,8 @@ mod tests {
                 Some(domainless.clone())
             } else if cut == without_cgroup.len() {
                 Some(unlimited.clone())
+            } else if cut == without_setup.len() {
+                Some(bare.clone())
             } else {
                 None
             };

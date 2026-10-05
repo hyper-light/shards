@@ -406,6 +406,16 @@ pub struct Run {
     pub platform: String,
     /// The resource flags, as docker/cli sends them.
     pub resources: Resources,
+    /// `--read-only`.
+    pub read_only: bool,
+    /// `--tmpfs`, each `DEST[:OPTIONS]`.
+    pub tmpfs: Vec<String>,
+    /// `--shm-size` in bytes, or 0 for the default.
+    pub shm_size: i64,
+    /// `--ulimit`, each `NAME=SOFT[:HARD]`.
+    pub ulimits: Vec<String>,
+    /// `--sysctl`, each `KEY=VALUE`.
+    pub sysctls: Vec<String>,
 }
 
 /// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
@@ -699,6 +709,25 @@ impl Run {
                 },
             ),
             ("resources", self.resources.encode()),
+            (
+                "read-only",
+                if self.read_only {
+                    vec![String::new()]
+                } else {
+                    Vec::new()
+                },
+            ),
+            ("tmpfs", self.tmpfs.clone()),
+            (
+                "shm-size",
+                if self.shm_size == 0 {
+                    Vec::new()
+                } else {
+                    vec![self.shm_size.to_string()]
+                },
+            ),
+            ("ulimits", self.ulimits.clone()),
+            ("sysctls", self.sysctls.clone()),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -817,6 +846,11 @@ impl Run {
                     "quiet" => run.quiet = true,
                     "platform" => run.platform = values.into_iter().next().unwrap_or_default(),
                     "resources" => run.resources = Resources::decode(&values)?,
+                    "read-only" => run.read_only = true,
+                    "tmpfs" => run.tmpfs = values,
+                    "shm-size" => run.shm_size = values.first()?.parse().ok()?,
+                    "ulimits" => run.ulimits = values,
+                    "sysctls" => run.sysctls = values,
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1308,6 +1342,11 @@ mod tests {
                 cpuset_mems: "0".into(),
                 pids_limit: -1,
             },
+            read_only: true,
+            tmpfs: vec!["/run:size=1m".into(), "/tmp".into()],
+            shm_size: 128 << 20,
+            ulimits: vec!["nofile=1024:2048".into()],
+            sysctls: vec!["net.core.somaxconn=1024".into()],
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -1326,6 +1365,11 @@ mod tests {
             quiet: false,
             platform: String::new(),
             resources: Resources::default(),
+            read_only: false,
+            tmpfs: Vec::new(),
+            shm_size: 0,
+            ulimits: Vec::new(),
+            sysctls: Vec::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

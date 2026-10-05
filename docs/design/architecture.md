@@ -1501,6 +1501,24 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   memory, past which it limits nothing. `shards create`'s refusals are dockerd's words
   alone, exit 1, as runCreate returns them. Test:
   `run_limits_resources_as_docker_run_does`.
+- **Mounts, rlimits and sysctls** (`setup.rs`; init `setup.rs`, `isolate`). `run` and
+  `create` take `--read-only`, `--tmpfs`, `--shm-size`, `--ulimit` and `--sysctl` as
+  docker/cli v29.8.1 reads them (ValidateSysctl, go-units' ParseUlimit, MapOpts), and
+  dockerd checks the tmpfs destinations as it makes the container and merges their
+  options with its defaults (`noexec,nosuid,nodev,rprivate`, MergeTmpfsOptions) as it
+  starts it. In the guest, the standby sets them up in the workload's mount namespace
+  as runc does: each tmpfs, the shallowest first, its options read as runc's
+  parseMountOptions reads them; `/dev/shm` resized; the rlimits; and the root remounted
+  read-only last. init writes the sysctls through a `/proc/sys` it opened before
+  `/proc/sys` was made read-only, as runc writes through an unmasked procfs. An exec's
+  standby joins the workload's cgroup and mount namespaces, as runc's exec enters a
+  container's, and takes its rlimits, so an exec sees the same root, mounts and limits.
+  Failures are runc's inner words (its `OCI runtime create failed` chain left out, as for
+  every start failure), with Docker's exit codes; `cp` onto a read-only root is refused
+  as checkWritablePath refuses it. Test:
+  `run_sets_up_mounts_limits_and_sysctls_as_docker_run_does`. Not yet Docker's: the
+  default rlimits, which are the guest kernel's (`nproc` 994, `memlock` 8 MiB) where
+  dockerd's come from its own and containerd's.
 ### Shipping the guest (D28)
 
 `shards run IMAGE` works on first use: with no guest recorded and none named, a run boots

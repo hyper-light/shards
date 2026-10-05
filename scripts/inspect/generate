@@ -45,6 +45,9 @@ CASES = [
     ["create", "-m", "64m", "--memory-swap", "128m"],
     ["run", "-d", "-m", "64m", "--memory-swappiness", "50", "--oom-kill-disable",
      "--pids-limit", "50", "--cpus", "0.5", "sleep", "300"],
+    ["create", "--read-only", "--tmpfs", "/run:size=1m,exec", "--tmpfs", "/tmp",
+     "--shm-size", "128m", "--ulimit", "nofile=1024:2048", "--ulimit", "nproc=10",
+     "--sysctl", "net.core.somaxconn=1024", "--sysctl", "kernel.shmmax=1"],
 ]
 
 
@@ -111,7 +114,8 @@ def main():
                  "--health-retries", "--label", "-l", "--expose", "--add-host", "--dns",
                  "--dns-search", "--dns-option", "--domainname", "-m", "--memory-reservation",
                  "--cpus", "-c", "--cpuset-cpus", "--cpuset-mems", "--pids-limit",
-                 "--memory-swappiness", "--cpu-period", "--cpu-quota", "--memory-swap"}
+                 "--memory-swappiness", "--cpu-period", "--cpu-quota", "--memory-swap",
+                 "--tmpfs", "--shm-size", "--ulimit", "--sysctl"}
         while words:
             w = words.pop(0)
             if w in takes:

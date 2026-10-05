@@ -382,12 +382,25 @@ impl Parsed {
                     // UlimitOpt keeps the last of each resource, and prints them sorted.
                     Some(Value::Many(v)) if matches!(f.kind, Kind::Many("ulimit")) => {
                         let mut by_name = std::collections::BTreeMap::new();
+                        // Each as go-units' Ulimit.String writes it: `name=soft:hard`.
                         for u in v {
-                            by_name.insert(u.split_once('=').map_or(u.as_str(), |(n, _)| n), u.as_str());
+                            let shown = crate::buildflags::parse_ulimit(u)
+                                .map_or_else(|_| u.clone(), |u| u.to_string());
+                            by_name.insert(u.split_once('=').map_or(u.as_str(), |(n, _)| n), shown);
                         }
-                        let mut shown: Vec<&str> = by_name.into_values().collect();
+                        let mut shown: Vec<String> = by_name.into_values().collect();
                         shown.sort_unstable();
                         format!("[{}]", shown.join(" "))
+                    }
+                    // MapOpts prints its map as fmt's %v does: keys sorted, the last of each.
+                    Some(Value::Many(v)) if matches!(f.kind, Kind::Many("map")) => {
+                        let mut by_key = std::collections::BTreeMap::new();
+                        for kv in v {
+                            let (k, val) = kv.split_once('=').unwrap_or((kv.as_str(), ""));
+                            by_key.insert(k, val);
+                        }
+                        let shown: Vec<String> = by_key.iter().map(|(k, v)| format!("{k}:{v}")).collect();
+                        format!("map[{}]", shown.join(" "))
                     }
                     // FilterOpt prints its map as JSON, its names and values sorted.
                     Some(Value::Many(v)) if matches!(f.kind, Kind::Many("filter")) => filter_json(v),
@@ -653,6 +666,13 @@ pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
         ("dns", Kind::Many("list")) => validate_ip(value),
         ("dns-search", Kind::Many("list")) => validate_dns_search(value),
         ("add-host", Kind::Many("list")) => validate_extra_host(value),
+        ("sysctl", Kind::Many("map")) => validate_sysctl(value),
+        // UlimitOpt, through go-units' ParseUlimit, whose names leave out `as`, which
+        // shards' build alone takes (buildflags::validate).
+        (_, Kind::Many("ulimit")) => match crate::buildflags::parse_ulimit(value)? {
+            u if u.name == "as" => Err("invalid ulimit type: as".into()),
+            _ => Ok(value.to_string()),
+        },
         _ => Ok(value.to_string()),
     }
 }
@@ -738,6 +758,30 @@ fn validate_extra_host(value: &str) -> Result<String, String> {
         return Ok(format!("{k}:{bare}"));
     }
     Ok(format!("{k}:{v}"))
+}
+
+/// docker/cli's opts.ValidateSysctl: the sysctls a container's namespaces hold, the IPC
+/// ones by name, the network and message queue ones by prefix.
+fn validate_sysctl(value: &str) -> Result<String, String> {
+    const NAMED: [&str; 8] = [
+        "kernel.msgmax",
+        "kernel.msgmnb",
+        "kernel.msgmni",
+        "kernel.sem",
+        "kernel.shmall",
+        "kernel.shmmax",
+        "kernel.shmmni",
+        "kernel.shm_rmid_forced",
+    ];
+    match value.split_once('=') {
+        Some((k, _))
+            if !k.is_empty()
+                && (NAMED.contains(&k) || k.starts_with("net.") || k.starts_with("fs.mqueue.")) =>
+        {
+            Ok(value.to_string())
+        }
+        _ => Err(format!("sysctl '{value}' is not allowed")),
+    }
 }
 
 /// pflag's parseLongArg: `--name`, `--name=value`, or `--name value`.

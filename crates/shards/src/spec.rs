@@ -95,6 +95,7 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
         hosts: Vec::new(),
         domainname: Vec::new(),
         cgroup: Vec::new(),
+        setup: Vec::new(),
     };
     fits(&spec)?;
     Ok(spec)

@@ -59,7 +59,7 @@ fn setup_failed(message: impl Into<String>) -> Failure {
 /// restored from it continues from there, and dials the host for its own workload.
 pub fn main(device: &str, template: bool) -> ! {
     // Before any snapshot, so that every copy of a template has one.
-    let standby = mount_root(device).and_then(|()| Standby::fork());
+    let standby = mount_root(device).and_then(|()| Standby::fork(None));
     if template && standby.is_ok() {
         await_crypto_selftests();
         if let Err(e) = crate::linux::control_write(control::SNAPSHOT, control::SNAPSHOT_NOW) {
@@ -272,9 +272,13 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         crate::net::configure(addr, prefix, gateway).map_err(|e| setup_failed(format!("eth0: {e}")))?;
     }
     cgroups()?;
-    // Last: init writes /proc/sys above, and no more after.
+    crate::setup::keep_proc_sys().map_err(|e| setup_failed(format!("/proc/sys: {e}")))?;
+    // Last: init writes /proc/sys above, and no more after but through what it kept.
     masked()
 }
+
+/// The workload's rlimits, which its execs take too (`ulimit=` entries of its setup).
+static WORKLOAD_RLIMITS: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
 
 /// Where the workload's cgroup is, as init sees the hierarchy.
 const WORKLOAD_CGROUP: &str = "/sys/fs/cgroup/workload";
@@ -308,9 +312,10 @@ fn cgroups() -> Result<(), Failure> {
 /// Puts this process, a standby, in the workload's cgroup and in namespaces of its own,
 /// as runc puts a container's: a cgroup namespace rooted there, and a mount namespace,
 /// a slave of init's, in which `/sys/fs/cgroup` is that cgroup, read-only, as Docker's
-/// containers see theirs (moby daemon/pkg/oci/defaults.go). Returns the errno of the
-/// step that failed.
-fn isolate() -> Result<(), i32> {
+/// containers see theirs (moby daemon/pkg/oci/defaults.go). An exec's joins the
+/// workload's (`join`, its process), as runc's exec enters a container's. Returns the
+/// errno of the step that failed.
+fn isolate(join: Option<libc::pid_t>) -> Result<(), i32> {
     let errno = |e: io::Error| e.raw_os_error().unwrap_or(libc::EIO);
     std::fs::OpenOptions::new()
         .write(true)
@@ -318,6 +323,26 @@ fn isolate() -> Result<(), i32> {
         .and_then(|mut f| f.write_all(b"0"))
         .map_err(errno)?;
     let last = || io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
+    if let Some(pid) = join {
+        for (ns, kind) in [("cgroup", libc::CLONE_NEWCGROUP), ("mnt", libc::CLONE_NEWNS)] {
+            let path = CString::new(format!("/proc/{pid}/ns/{ns}")).map_err(|_| libc::EINVAL)?;
+            // SAFETY: open(2) of a NUL-terminated path, and setns(2) on the descriptor,
+            // closed after; this process is a single-threaded fork of init.
+            unsafe {
+                let fd = libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+                if fd < 0 {
+                    return Err(last());
+                }
+                let joined = libc::setns(fd, kind);
+                let e = last();
+                libc::close(fd);
+                if joined != 0 {
+                    return Err(e);
+                }
+            }
+        }
+        return Ok(());
+    }
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
     // SAFETY: unshare(2), mount(2) and umount2(2) on NUL-terminated literals; this
     // process is a single-threaded fork of init.
@@ -748,6 +773,9 @@ mod step {
     pub const TTY: u8 = 6;
     /// Joining the workload's cgroup, or its namespaces ([`super::isolate`]).
     pub const CGROUP: u8 = 7;
+    /// An entry of `Spec::setup`, its index in the candidate's place
+    /// (crate::setup::apply).
+    pub const SETUP: u8 = 8;
 }
 
 /// A running workload and init's ends of its stdio. With a terminal, `stdout` is its
@@ -846,7 +874,9 @@ struct Ends {
 }
 
 impl Standby {
-    fn fork() -> Result<Standby, Failure> {
+    /// A standby in namespaces of its own, or, with `join`, in those of that process, the
+    /// workload an exec runs beside.
+    fn fork(join: Option<libc::pid_t>) -> Result<Standby, Failure> {
         let passwd = std::fs::read("/etc/passwd").ok();
         let group = std::fs::read("/etc/group").ok();
         let (stdin_r, stdin_w) = pipe()?;
@@ -874,12 +904,15 @@ impl Standby {
             return Err(setup_failed(format!("fork: {}", io::Error::last_os_error())));
         }
         if pid == 0 {
-            standby(Ends {
-                orders: orders_r,
-                stdio: [stdin_r, stdout_w, stderr_w],
-                err: err_w,
-                inits: [stdin_w, stdout_r, stderr_r, err_r, orders_w, sigchld],
-            })
+            standby(
+                Ends {
+                    orders: orders_r,
+                    stdio: [stdin_r, stdout_w, stderr_w],
+                    err: err_w,
+                    inits: [stdin_w, stdout_r, stderr_r, err_r, orders_w, sigchld],
+                },
+                join,
+            )
         }
         drop((stdin_r, stdout_w, stderr_w, err_w, orders_r));
         Ok(Standby {
@@ -901,7 +934,7 @@ impl Standby {
         let mut status = 0;
         // SAFETY: waitpid(2) for our own child, without blocking.
         let ended = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) } == self.pid;
-        let standby = if ended { Standby::fork()? } else { self };
+        let standby = if ended { Standby::fork(None)? } else { self };
         if !spec.hostname.is_empty() {
             // SAFETY: a buffer of the given length.
             if unsafe { libc::sethostname(spec.hostname.as_ptr().cast(), spec.hostname.len()) } != 0 {
@@ -937,14 +970,34 @@ impl Standby {
             });
         }
         limit(&spec.cgroup)?;
-        standby.launch(spec, false)
+        // Sysctls, by init; the rest by the standby, in its namespaces. Its rlimits are an
+        // exec's too, as runc's exec takes the container's process's.
+        let mut setup = Vec::new();
+        for entry in &spec.setup {
+            match entry.strip_prefix(b"sysctl=") {
+                Some(kv) => {
+                    let kv = String::from_utf8_lossy(kv);
+                    let (k, v) = kv.split_once('=').unwrap_or((&kv, ""));
+                    crate::setup::write_sysctl(k, v).map_err(setup_failed)?;
+                }
+                None => setup.push(entry.clone()),
+            }
+        }
+        let _ = WORKLOAD_RLIMITS.set(
+            setup
+                .iter()
+                .filter(|e| e.starts_with(b"ulimit="))
+                .cloned()
+                .collect(),
+        );
+        standby.launch(spec, false, setup)
     }
 
     /// Resolves the spec as Docker and runc do, then has the standby exec it. The
     /// workload's working directory is made if missing, as `docker run` makes it; an
     /// exec's (`exec`) must be there, as runc's exec finds it, and its unknown user is the
     /// daemon's refusal.
-    fn launch(self, spec: &Spec, exec: bool) -> Result<Workload, Failure> {
+    fn launch(self, spec: &Spec, exec: bool, setup: Vec<Vec<u8>>) -> Result<Workload, Failure> {
         let standby = self;
         let argv0 = spec
             .argv
@@ -1023,6 +1076,7 @@ impl Standby {
             env,
             tty: pty.as_ref().map(|p| p.peer.clone()).unwrap_or_default(),
             null_stdin,
+            setup: setup.clone(),
         }
         .encode();
         let Standby {
@@ -1046,6 +1100,18 @@ impl Standby {
             // SAFETY: waits for our own child.
             unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
             let errno = i32::from_be_bytes([e0, e1, e2, e3]);
+            if which == step::SETUP {
+                let entry = usize::try_from(u32::from_be_bytes([c0, c1, c2, c3]))
+                    .ok()
+                    .and_then(|i| setup.get(i))
+                    .map_or(&[][..], Vec::as_slice);
+                let message = crate::setup::failed(entry, errno);
+                return Err(Failure {
+                    status: u32::from(shards_cmdline::commands::run_status(&message)),
+                    message,
+                    daemon: false,
+                });
+            }
             let tried = match (which, &pty) {
                 (step::TTY, Some(p)) => &p.peer[..],
                 _ => usize::try_from(u32::from_be_bytes([c0, c1, c2, c3]))
@@ -1086,7 +1152,7 @@ impl Standby {
 /// The standby's side of the fork: it closes init's ends, waits for its orders, and runs
 /// them as `child` does. The standby is single-threaded, as init was when it forked, so
 /// it may allocate.
-fn standby(ends: Ends) -> ! {
+fn standby(ends: Ends, join: Option<libc::pid_t>) -> ! {
     let Ends {
         orders,
         stdio,
@@ -1095,7 +1161,7 @@ fn standby(ends: Ends) -> ! {
     } = ends;
     drop(inits);
     // Before the orders: the standby the template keeps is isolated before its snapshot.
-    let isolated = isolate();
+    let isolated = isolate(join);
     let mut bytes = Vec::new();
     let got = File::from(orders).read_to_end(&mut bytes);
     let decoded = got.ok().and_then(|_| Orders::decode(&bytes));
@@ -1120,13 +1186,22 @@ fn standby(ends: Ends) -> ! {
         // SAFETY: ends this process without running atexit handlers inherited from init.
         unsafe { libc::_exit(NOT_RUN as libc::c_int) }
     };
-    if let Err(errno) = isolated {
+    let fail = |which: u8, errno: i32, index: usize| -> ! {
         let [a, b, c, d] = errno.to_be_bytes();
-        let report = [step::CGROUP, a, b, c, d, 0, 0, 0, 0];
+        let [e, f, g, h] = u32::try_from(index).unwrap_or(u32::MAX).to_be_bytes();
+        let report = [which, a, b, c, d, e, f, g, h];
         // SAFETY: write(2) of a local buffer to our error pipe, then _exit(2).
         unsafe {
             libc::write(err.as_raw_fd(), report.as_ptr().cast(), report.len());
             libc::_exit(127)
+        }
+    };
+    if let Err(errno) = isolated {
+        fail(step::CGROUP, errno, 0);
+    }
+    for (i, entry) in o.setup.iter().enumerate() {
+        if let Err(errno) = crate::setup::apply(entry) {
+            fail(step::SETUP, errno, i);
         }
     }
     let (argv_ptrs, envp_ptrs) = (pointers(&argv), pointers(&envp));
@@ -1315,7 +1390,7 @@ impl Exec {
     /// has ended (`running`), and dials its connection. Without a connection, the exec's
     /// id and why, for the host to hear on the workload's ([`kind::EXEC_FAILED`]); none if
     /// the frame does not say which exec it is.
-    fn start(payload: &[u8], running: bool) -> Result<Exec, Option<(u32, String)>> {
+    fn start(payload: &[u8], running: bool, workload: libc::pid_t) -> Result<Exec, Option<(u32, String)>> {
         let (token, rest) = payload.split_at_checked(run::TOKEN).ok_or(None)?;
         let (id, spec) = rest.split_at_checked(4).ok_or(None)?;
         let id = u32::from_be_bytes(id.try_into().map_err(|_| None)?);
@@ -1343,8 +1418,10 @@ impl Exec {
         let started = if spec.builtin != 0 && running {
             builtin(spec.builtin, &spec.argv)
         } else if running {
-            Standby::fork()
-                .and_then(|standby| standby.launch(&spec, true))
+            Standby::fork(Some(workload))
+                .and_then(|standby| {
+                    standby.launch(&spec, true, WORKLOAD_RLIMITS.get().cloned().unwrap_or_default())
+                })
                 .map(|w| Started {
                     pid: w.pid,
                     tty: w.tty,
@@ -1652,7 +1729,7 @@ impl Workload {
                                                 unsafe { libc::kill(pid, sig as libc::c_int) };
                                             }
                                         }
-                                        kind::EXEC => match Exec::start(payload, running) {
+                                        kind::EXEC => match Exec::start(payload, running, pid) {
                                             Ok(e) => execs.push(e),
                                             // Said where the host hears it, which otherwise
                                             // waits for the exec's connection (review 8.8).

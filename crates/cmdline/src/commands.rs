@@ -149,6 +149,15 @@ pub static RUN: Command = Command {
         Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
         Flag::string("domainname", None, "", "Container NIS domain name"),
         Flag::string("cidfile", None, "", "Write the container ID to the file"),
+        Flag::bool(
+            "read-only",
+            None,
+            "Mount the container's root filesystem as read only",
+        ),
+        Flag::value("shm-size", None, "bytes", "Size of /dev/shm"),
+        Flag::many("sysctl", None, "map", "Sysctl options").defaulting("map[]"),
+        Flag::many("tmpfs", None, "list", "Mount a tmpfs directory"),
+        Flag::many("ulimit", None, "ulimit", "Ulimit options").defaulting("[]"),
         Flag::int(
             "cpu-period",
             None,
@@ -257,15 +266,10 @@ network-alias - m - -\n\
 oom-score-adj - i 0 -\n\
 pid - s - -\n\
 privileged - b false -\n\
-read-only - b false -\n\
 restart - s no -\n\
 runtime - s - -\n\
 security-opt - m - -\n\
-shm-size - s 0 -\n\
 storage-opt - m - -\n\
-sysctl - m - -\n\
-tmpfs - m - -\n\
-ulimit - m - -\n\
 umask - s - -\n\
 use-api-socket - b false -\n\
 userns - s - -\n\
@@ -407,6 +411,15 @@ pub static CREATE: Command = Command {
         Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
         Flag::string("domainname", None, "", "Container NIS domain name"),
         Flag::string("cidfile", None, "", "Write the container ID to the file"),
+        Flag::bool(
+            "read-only",
+            None,
+            "Mount the container's root filesystem as read only",
+        ),
+        Flag::value("shm-size", None, "bytes", "Size of /dev/shm"),
+        Flag::many("sysctl", None, "map", "Sysctl options").defaulting("map[]"),
+        Flag::many("tmpfs", None, "list", "Mount a tmpfs directory"),
+        Flag::many("ulimit", None, "ulimit", "Ulimit options").defaulting("[]"),
         Flag::int(
             "cpu-period",
             None,
@@ -515,15 +528,10 @@ network-alias - m - -\n\
 oom-score-adj - i 0 -\n\
 pid - s - -\n\
 privileged - b false -\n\
-read-only - b false -\n\
 restart - s no -\n\
 runtime - s - -\n\
 security-opt - m - -\n\
-shm-size - s 0 -\n\
 storage-opt - m - -\n\
-sysctl - m - -\n\
-tmpfs - m - -\n\
-ulimit - m - -\n\
 umask - s - -\n\
 use-api-socket - b false -\n\
 userns - s - -\n\

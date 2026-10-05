@@ -36,6 +36,7 @@ mod resources;
 mod run;
 #[cfg(unix)]
 mod segments;
+mod setup;
 mod spec;
 
 const USAGE: &str = "usage: shards <command> [args...]
