@@ -46,6 +46,9 @@ pub fn run(home: &Path, daemon: &Path, request: &Run, detach_keys: &[u8]) -> Exi
         detach: request.detach,
         tty: request.tty.is_some(),
         proxies_signals: true,
+        card: request
+            .detach
+            .then(|| (request.image.clone(), request.name.clone())),
     };
     let code = serve(home, daemon, &asked, detach_keys);
     terminal::restore();
@@ -63,6 +66,7 @@ pub fn exec(home: &Path, daemon: &Path, request: &shards_ipc::Exec, detach_keys:
         detach: request.detach,
         tty: request.tty.is_some(),
         proxies_signals: false,
+        card: None,
     };
     let code = serve(home, daemon, &asked, detach_keys);
     terminal::restore();
@@ -78,6 +82,8 @@ struct Attached {
     tty: bool,
     /// The signals `docker run` passes on go to the command (not `docker exec`'s).
     proxies_signals: bool,
+    /// A detached run's image and name: on a colour terminal its ID is shown in a card.
+    card: Option<(String, Option<String>)>,
 }
 
 fn serve(home: &Path, daemon: &Path, request: &Attached, detach_keys: &[u8]) -> ExitCode {
@@ -180,7 +186,12 @@ fn serve(home: &Path, daemon: &Path, request: &Attached, detach_keys: &[u8]) -> 
                 Ok(Some(m)) if m.kind == kind::RESTART => break,
                 // A detached run's answer: its container's ID, or why it did not start.
                 Ok(Some(m)) if m.kind == kind::OUT => {
-                    let _ = io::stdout().write_all(&m.payload);
+                    if let (Some((image, name)), Some(p)) = (&request.card, crate::cli::look::styled()) {
+                        let id = String::from_utf8_lossy(&m.payload).trim().to_string();
+                        crate::cli::look::started(&p, &id, image, name.as_deref(), &mut io::stdout().lock());
+                    } else {
+                        let _ = io::stdout().write_all(&m.payload);
+                    }
                 }
                 Ok(Some(m)) if m.kind == kind::ERR => {
                     let _ = io::stderr().write_all(&m.payload);

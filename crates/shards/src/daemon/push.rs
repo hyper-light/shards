@@ -49,6 +49,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         };
         let given = parsed.args.first().map(String::as_str).unwrap_or_default();
         let (all, quiet) = (parsed.bool("all-tags"), parsed.bool("quiet"));
+        // A colour terminal is shown the push as it goes, in shards' look.
+        let shown = asker.styled() && !quiet;
         let mut named = match Reference::parse_normalized(given) {
             Ok(r) => r,
             Err(e) => return refuse(&e.to_string()),
@@ -58,7 +60,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             return refuse("tag can't be used with --all-tags/-a");
         }
         let say = |line: String| {
-            if !quiet {
+            if !quiet && !shown {
                 reply.out(&line);
             }
         };
@@ -137,9 +139,36 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     }
                 };
                 let tag = reference.tag.clone();
+                let began = std::time::Instant::now();
+                if shown {
+                    reply.progress(&shards_ipc::Progress::Pushing {
+                        reference: reference.to_string(),
+                        repository: reference.path.clone(),
+                    });
+                    // The layers of our platform's manifest, which are what is told.
+                    let layers = std::fs::read(store.blob_path(&image.manifest))
+                        .ok()
+                        .and_then(|b| serde_json::from_slice::<shards_image::oci::Manifest>(&b).ok())
+                        .map(|m| {
+                            m.layers
+                                .iter()
+                                .map(|l| (l.digest.clone(), u64::try_from(l.size).unwrap_or(0)))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    reply.progress(&shards_ipc::Progress::Layers(layers));
+                }
                 let report = |digest: &Digest, fate: Layer| {
                     let short = digest.hex().get(..12).unwrap_or_default().to_string();
                     if quiet {
+                        return;
+                    }
+                    if shown {
+                        reply.progress(&match fate {
+                            Layer::Pushed => shards_ipc::Progress::Verified(digest.to_string()),
+                            Layer::Exists => shards_ipc::Progress::Have(digest.to_string()),
+                            Layer::Mounted(repo) => shards_ipc::Progress::Mounted(digest.to_string(), repo),
+                        });
                         return;
                     }
                     reply.out(&match fate {
@@ -219,8 +248,24 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 if let Some(tag) = &tag {
                     say(format!("{tag}: digest: {} size: {}", pushed.digest, pushed.size));
                 }
+                if shown {
+                    let mut facts = vec![
+                        ("size".to_string(), pushed.size.to_string()),
+                        ("elapsed_ms".to_string(), began.elapsed().as_millis().to_string()),
+                    ];
+                    // Only our platform's manifest went, where the index was not all here.
+                    if pushed.digest != target.digest {
+                        facts.push(("partial".into(), target.digest.clone()));
+                    }
+                    reply.progress(&shards_ipc::Progress::Facts(facts));
+                    reply.progress(&shards_ipc::Progress::Done {
+                        digest: pushed.digest.clone(),
+                        unchanged: false,
+                        bootable: false,
+                    });
+                }
             }
-            for n in &notes {
+            for n in notes.iter().filter(|_| !shown) {
                 let _ = reply.bytes(
                     crate::spec::LOG_STDOUT,
                     note(n, asker.terminal && asker.color).as_bytes(),

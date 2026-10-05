@@ -363,7 +363,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &KILL) {
             self.kill(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &PORT) {
-            self.port(&parsed.args, reply)
+            self.port(&parsed.args, asker.styled(), reply)
         } else if std::ptr::eq(command, &IMAGES) {
             self.images(&parsed, asker, reply)
         } else if std::ptr::eq(command, &TAG) {
@@ -371,7 +371,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &RMI) {
             self.rmi(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &IMAGE_INSPECT) {
-            self.image_inspect(&parsed.args, reply)
+            self.image_inspect(&parsed.args, asker.styled(), reply)
         } else if std::ptr::eq(command, &SAVE) {
             self.save(&parsed.args, asker, reply)
         } else if std::ptr::eq(command, &LOAD) {
@@ -389,7 +389,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// `shards port CONTAINER [PORT]` (docker/cli cli/command/container/port.go): each
     /// published port of a running container as `PORT/PROTO -> HOST:PORT`, or with PORT
     /// the host addresses of that one, in natural order.
-    fn port(&self, args: &[String], reply: &Reply<'_>) -> u8 {
+    fn port(&self, args: &[String], styled: bool, reply: &Reply<'_>) -> u8 {
         let (Some(reference), wanted) = (args.first(), args.get(1).filter(|p| !p.is_empty())) else {
             return 1;
         };
@@ -434,6 +434,15 @@ impl<D: crate::containers::Disk> Daemon<D> {
             return 0;
         }
         lines.sort_by(|a, b| shards_cmdline::ports::natural_compare(a, b));
+        if styled {
+            let mut sheet = shards_ipc::Sheet::new("port");
+            sheet.record(&[("kind", "head".into()), ("target", reference.clone())]);
+            for line in lines {
+                sheet.record(&[("mapping", line)]);
+            }
+            reply.sheet(&sheet);
+            return 0;
+        }
         for line in lines {
             reply.out(&line);
         }

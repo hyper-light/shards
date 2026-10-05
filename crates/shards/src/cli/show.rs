@@ -55,6 +55,8 @@ struct Layer {
     state: State,
     /// Whether it was stored before the pull: shared with another image.
     had: bool,
+    /// For a push: the repository the registry mounted it from.
+    mounted: Option<String>,
 }
 
 /// The terminal's rows and columns now.
@@ -107,6 +109,8 @@ impl Line {
 pub struct Pull {
     reference: String,
     repository: String,
+    /// What is under way: a pull, or a push.
+    verb: &'static str,
     layers: Vec<Layer>,
     building: bool,
     /// The pull's end: what the reference resolved to, whether nothing was new, whether
@@ -131,6 +135,7 @@ impl Pull {
     pub fn new(paint: Paint, east_asian: bool, reduced: bool) -> Pull {
         Pull {
             reference: String::new(),
+            verb: "pull",
             repository: String::new(),
             layers: Vec::new(),
             building: false,
@@ -178,6 +183,22 @@ impl Pull {
                 self.reference = reference;
                 self.repository = repository;
             }
+            Progress::Pushing {
+                reference,
+                repository,
+            } => {
+                self.verb = "push";
+                self.began_at.get_or_insert(t);
+                self.reference = reference;
+                self.repository = repository;
+            }
+            Progress::Mounted(d, from) => {
+                if let Some(l) = self.layers.iter_mut().find(|l| l.digest == d) {
+                    l.state = State::Here;
+                    l.got = l.size;
+                    l.mounted = Some(from);
+                }
+            }
             Progress::Layers(layers) => {
                 self.layers = layers
                     .into_iter()
@@ -188,6 +209,7 @@ impl Pull {
                         shown: 0.0,
                         state: State::Waiting,
                         had: false,
+                        mounted: None,
                     })
                     .collect();
             }
@@ -373,7 +395,7 @@ impl Pull {
                     l.put(p, c, &ch.to_string());
                 }
                 l.bold(p, false);
-                let brow = text::eyebrow("pull");
+                let brow = text::eyebrow(self.verb);
                 if room >= l.w + 5 + brow.chars().count() {
                     l.put(p, tokens::SUBTLE, "  ·  ").put(p, tokens::EYEBROW, &brow);
                 }
@@ -609,8 +631,12 @@ impl Pull {
                 State::Arriving if layer.size > 0 => {
                     format!("{:>3.0}%", layer.got as f64 * 100.0 / layer.size as f64)
                 }
+                State::Arriving if self.verb == "push" => "uploading".to_string(),
                 State::Arriving => "arriving".to_string(),
+                State::Here if layer.mounted.is_some() => "mounted".to_string(),
+                State::Here if self.verb == "push" => "there".to_string(),
                 State::Here => "stored".to_string(),
+                State::Verified if self.verb == "push" => "pushed".to_string(),
                 State::Verified => "verified".to_string(),
                 State::Unpacking => "unpacking".to_string(),
                 State::Unpacked => "on disk".to_string(),
@@ -669,13 +695,23 @@ impl Pull {
         let unpacked = self.done.is_some();
         let bootable = self.done.as_ref().is_some_and(|d| d.2);
         // (name, short, done, going)
-        let stages = [
+        let pulled = [
             ("fetch", "fetch", fetched, fetching),
             ("verify", "check", fetched, fetching),
             ("unpack", "unpack", unpacked, self.building),
             ("erofs disk", "disk", unpacked, self.building),
             ("microvm", "vm", bootable, false),
         ];
+        // A push: each layer checked for, mounted or uploaded; then the manifest, by tag.
+        let started = all && self.layers.iter().any(|l| l.state != State::Waiting);
+        let pushed = [
+            ("check", "check", started, all && !started),
+            ("mount", "mount", fetched, started && !fetched),
+            ("upload", "upload", fetched, fetching),
+            ("manifest", "manifest", unpacked, fetched && !unpacked),
+            ("tag", "tag", unpacked, false),
+        ];
+        let stages = if self.verb == "push" { pushed } else { pulled };
         let long: usize = stages.iter().map(|s| s.0.len()).sum::<usize>() + 2 * 5 + 5 * 4 + 2;
         let use_long = long <= cols;
         let mut l = Line::new();
@@ -743,6 +779,13 @@ impl Pull {
         let mut out = Vec::new();
         let name = layout::familiar(&self.reference);
         let said = match (unchanged, bootable) {
+            _ if self.verb == "push" && *unchanged => {
+                ["Already there.".to_string(), "Already there.".to_string()]
+            }
+            _ if self.verb == "push" => [
+                format!("Pushed. {name} is in its registry."),
+                "Pushed.".to_string(),
+            ],
             (true, _) => ["Up to date.".to_string(), "Up to date.".to_string()],
             (false, true) => [format!("Ready. {name} is a microVM now."), "Ready.".to_string()],
             (false, false) => [
@@ -780,6 +823,9 @@ impl Pull {
 
     /// The facts to show: label, value, and its colour.
     fn fact_rows(&self, digest: &str) -> Vec<(&'static str, String, Rgb)> {
+        if self.verb == "push" {
+            return self.push_rows(digest);
+        }
         let mut rows = Vec::new();
         let short = |d: &str| -> String {
             let hex = d.split_once(':').map_or(d, |(_, h)| h);
@@ -894,6 +940,75 @@ impl Pull {
         if let Some(reference) = self.fact("reference") {
             rows.push(("source", reference.to_string(), tokens::FOREGROUND));
         }
+        rows
+    }
+}
+
+impl Pull {
+    /// A push's facts: where it went, its digest and size, and what each layer took.
+    fn push_rows(&self, digest: &str) -> Vec<(&'static str, String, Rgb)> {
+        let mut rows = Vec::new();
+        rows.push(("digest", digest.to_string(), tokens::FOREGROUND));
+        if let Some(size) = self.fact("size").and_then(|s| s.parse::<u64>().ok()) {
+            rows.push(("manifest", text::bytes(size), tokens::FOREGROUND));
+        }
+        let all: u64 = self.layers.iter().map(|l| l.size).sum();
+        let (mut sent, mut sent_bytes, mut mounted, mut there) = (0, 0u64, 0, 0);
+        for l in &self.layers {
+            match (l.state, &l.mounted) {
+                (State::Verified, _) => {
+                    sent += 1;
+                    sent_bytes += l.size;
+                }
+                (State::Here, Some(_)) => mounted += 1,
+                (State::Here, None) => there += 1,
+                _ => {}
+            }
+        }
+        let n = self.layers.len();
+        rows.push((
+            "layers",
+            format!(
+                "{n} · {} · {sent} uploaded, {mounted} mounted, {there} there already",
+                text::bytes(all)
+            ),
+            tokens::FOREGROUND,
+        ));
+        if let Some(from) = self.layers.iter().find_map(|l| l.mounted.clone()) {
+            rows.push(("mounted", format!("from {from}"), tokens::TEAL));
+        }
+        // How long, as the daemon timed it: what the client hears comes in bursts.
+        let took = self
+            .fact("elapsed_ms")
+            .and_then(|m| m.parse::<f64>().ok())
+            .map(|m| m / 1000.0)
+            .filter(|s| *s > 0.0);
+        if let Some(took) = took
+            && sent_bytes > 0
+        {
+            rows.push((
+                "uploaded",
+                format!(
+                    "{} in {} · {}",
+                    text::bytes(sent_bytes),
+                    text::duration(took),
+                    text::rate(sent_bytes as f64 / took)
+                ),
+                tokens::MUTED,
+            ));
+        }
+        if let Some(index) = self.fact("partial") {
+            let short = index.split_once(':').map_or(index, |(_, h)| h);
+            rows.push((
+                "platform",
+                format!(
+                    "this platform's image alone: index {} names others not here",
+                    short.get(..12).unwrap_or(short)
+                ),
+                tokens::AMBER,
+            ));
+        }
+        rows.push(("target", self.reference.clone(), tokens::FOREGROUND));
         rows
     }
 }

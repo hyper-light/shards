@@ -99,13 +99,19 @@ pub(crate) fn styled() -> Option<Paint> {
 }
 
 /// The paint for stderr, if it is a colour terminal, for errors.
-pub fn styled_err() -> Option<Paint> {
+pub(crate) fn styled_err() -> Option<Paint> {
     // SAFETY: isatty(3) on this process's stderr.
     let tty = unsafe { libc::isatty(2) } == 1;
     let color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
         && std::env::var_os("TERM").is_none_or(|t| t != "dumb");
     let env = |k: &str| std::env::var(k).ok();
     (tty && color).then(|| Paint::new(shards_tui::tokens_truecolor(&env)))
+}
+
+/// The size of the terminal stderr is, rows then columns; 0×0 where it is none.
+pub(crate) fn err_size() -> (usize, usize) {
+    let (r, c) = super::terminal::size(2);
+    (usize::from(r), usize::from(c))
 }
 
 /// The terminal's width, or 80.
@@ -454,6 +460,44 @@ pub(crate) fn version(p: &Paint, out: &mut impl std::io::Write) {
             l.pad(4).put(p, tokens::EYEBROW, &format!("{label:<12}"));
             l.put(p, c, &layout::clip(&value, cols.saturating_sub(16)));
         }
+    }
+    page.write(p, out);
+}
+
+/// `shards run -d`: the microVM started, its ID, image and name, and what to do next.
+pub(crate) fn started(p: &Paint, id: &str, image: &str, name: Option<&str>, out: &mut impl std::io::Write) {
+    let cols = width();
+    let short = id.get(..12).unwrap_or(id);
+    let mut page = Page::new();
+    head(
+        &mut page,
+        p,
+        cols,
+        "run",
+        &[(tokens::MUTED, false, "running in the background".to_string())],
+    );
+    page.blank();
+    let l = page.line();
+    l.pad(4).put(p, tokens::SAGE, "● ").bold(p, true);
+    l.put(p, tokens::BRIGHT, name.unwrap_or(short)).bold(p, false);
+    l.pad(2)
+        .put(p, tokens::MUTED, "from ")
+        .put(p, tokens::FOREGROUND, image);
+    page.blank();
+    let rows = [("id", id.to_string(), tokens::FOREGROUND)];
+    for (label, value, c) in rows {
+        let l = page.line();
+        l.pad(4).put(p, tokens::EYEBROW, &format!("{label:<10}"));
+        l.put(p, c, &layout::clip(&value, cols.saturating_sub(15)));
+    }
+    let handle = name.unwrap_or(short);
+    for (label, command) in [
+        ("follow", format!("shards logs -f {handle}")),
+        ("stop", format!("shards stop {handle}")),
+    ] {
+        let l = page.line();
+        l.pad(4).put(p, tokens::EYEBROW, &format!("{label:<10}"));
+        l.put(p, tokens::TEAL, &command);
     }
     page.write(p, out);
 }

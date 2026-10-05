@@ -22,6 +22,11 @@ pub fn show(sheet: &Sheet) {
         "ended" => ended(&mut page, &p, sheet),
         "rmi" => rmi(&mut page, &p, sheet),
         "tag" => tag(&mut page, &p, sheet),
+        "port" => port(&mut page, &p, sheet),
+        "json" => {
+            json(&p, sheet.get(0, "text").unwrap_or(""));
+            return;
+        }
         _ => plain(&mut page, &p, sheet),
     }
     page.write(&p, &mut std::io::stdout().lock());
@@ -515,6 +520,91 @@ fn tag(page: &mut Page, p: &Paint, sheet: &Sheet) {
         .put(p, tokens::MUTED, "now names what ")
         .put(p, tokens::FOREGROUND, get("source"))
         .put(p, tokens::MUTED, " does");
+}
+
+/// `shards port`: a microVM's published ports, each from the host to it.
+fn port(page: &mut Page, p: &Paint, sheet: &Sheet) {
+    let cols = look::width();
+    let target = sheet.get(0, "target").unwrap_or("");
+    look::head(
+        page,
+        p,
+        cols,
+        "port",
+        &[(tokens::BRIGHT, true, target.to_string())],
+    );
+    page.blank();
+    for i in 1..sheet.records.len() {
+        let Some(mapping) = sheet.get(i, "mapping") else {
+            continue;
+        };
+        let l = page.line();
+        l.pad(4);
+        match mapping.split_once(" -> ") {
+            Some((inside, outside)) => {
+                l.put(p, tokens::TEAL, outside)
+                    .put(p, tokens::SUBTLE, "  ──▸  ")
+                    .put(p, tokens::FOREGROUND, inside);
+            }
+            None => {
+                l.put(p, tokens::TEAL, mapping);
+            }
+        }
+    }
+}
+
+/// JSON, coloured as the site colours code: keys in the foreground, strings sage,
+/// numbers and literals lavender, punctuation subtle.
+fn json(p: &Paint, text: &str) {
+    let mut out = String::with_capacity(text.len() * 2);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                let mut s = String::from('"');
+                let mut escaped = false;
+                for d in chars.by_ref() {
+                    s.push(d);
+                    if escaped {
+                        escaped = false;
+                    } else if d == '\\' {
+                        escaped = true;
+                    } else if d == '"' {
+                        break;
+                    }
+                }
+                // A key is a string a colon follows.
+                let mut ahead = chars.clone();
+                while ahead.peek().is_some_and(|c| *c == ' ') {
+                    ahead.next();
+                }
+                let key = ahead.peek() == Some(&':');
+                p.fg(&mut out, if key { tokens::FOREGROUND } else { tokens::SAGE });
+                out.push_str(&s);
+            }
+            '{' | '}' | '[' | ']' | ':' | ',' => {
+                p.fg(&mut out, tokens::SUBTLE);
+                out.push(c);
+            }
+            c if c.is_ascii_digit() || c == '-' || c.is_ascii_alphabetic() => {
+                p.fg(&mut out, tokens::LAVENDER);
+                out.push(c);
+                while let Some(d) = chars.peek().copied() {
+                    if d.is_ascii_alphanumeric() || matches!(d, '.' | '-' | '+') {
+                        out.push(d);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    p.reset(&mut out);
+    out.push('\n');
+    use std::io::Write as _;
+    let _ = std::io::stdout().write_all(out.as_bytes());
 }
 
 #[cfg(test)]

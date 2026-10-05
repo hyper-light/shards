@@ -818,6 +818,11 @@ mod tests {
             Progress::Verified("sha256:bb".into()),
             Progress::Building,
             Progress::Unpacking(7),
+            Progress::Pushing {
+                reference: "localhost:5055/a:1".into(),
+                repository: "a".into(),
+            },
+            Progress::Mounted("sha256:aa".into(), "library/alpine".into()),
             Progress::Facts(vec![
                 ("id".into(), "sha256:dd".into()),
                 ("cmd".into(), "sh -c a=b".into()),
@@ -1170,6 +1175,11 @@ impl Sheet {
 pub enum Progress {
     /// The reference being pulled, and its repository's path.
     Pulling { reference: String, repository: String },
+    /// The reference being pushed, and its repository's path: what follows is a push's.
+    Pushing { reference: String, repository: String },
+    /// A layer the registry had another repository of mount, by digest, and that
+    /// repository.
+    Mounted(String, String),
     /// The image's layers, by digest and compressed size, in order.
     Layers(Vec<(String, u64)>),
     /// A layer already here.
@@ -1202,6 +1212,11 @@ impl Progress {
                 reference,
                 repository,
             } => format!("pulling\t{reference}\t{repository}"),
+            Progress::Pushing {
+                reference,
+                repository,
+            } => format!("pushing\t{reference}\t{repository}"),
+            Progress::Mounted(d, from) => format!("mounted\t{d}\t{from}"),
             Progress::Layers(layers) => {
                 let mut out = String::from("layers");
                 for (digest, size) in layers {
@@ -1259,6 +1274,14 @@ impl Progress {
                 reference: next()?,
                 repository: next()?,
             },
+            "pushing" => Progress::Pushing {
+                reference: next()?,
+                repository: next()?,
+            },
+            "mounted" => {
+                let digest = next()?;
+                Progress::Mounted(digest, next()?)
+            }
             "layers" => {
                 let mut layers = Vec::new();
                 while let Some(field) = next() {

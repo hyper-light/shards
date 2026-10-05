@@ -256,7 +256,12 @@ fn record_name(given: &str) -> Option<String> {
 impl<D: crate::containers::Disk> super::Daemon<D> {
     /// `shards image inspect IMAGE...` (docker/cli inspect.Inspect): the documents of the
     /// images found, as one array, then what could not be found.
-    pub(super) fn image_inspect(&self, args: &[String], reply: &super::commands::Reply<'_>) -> u8 {
+    pub(super) fn image_inspect(
+        &self,
+        args: &[String],
+        styled: bool,
+        reply: &super::commands::Reply<'_>,
+    ) -> u8 {
         let (store, images) = match self.store() {
             Ok(Some(store)) => match store.named() {
                 Ok(images) => (Some(store), images),
@@ -291,7 +296,14 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         } else {
             indent(&format!("[{}]", documents.join(",")), "    ")
         };
-        reply.out(&text);
+        if styled {
+            // Coloured by the client, as a terminal reads it.
+            let mut sheet = shards_ipc::Sheet::new("json");
+            sheet.record(&[("text", text)]);
+            reply.sheet(&sheet);
+        } else {
+            reply.out(&text);
+        }
         if errors.is_empty() {
             return 0;
         }

@@ -36,6 +36,8 @@ use shards_registry::pull::{self as registry_pull, Event};
 mod builder;
 mod exec;
 mod http;
+#[cfg(unix)]
+mod live;
 pub(crate) mod step;
 
 const PATH: &str = "shards buildx build";
@@ -85,6 +87,9 @@ fn failed(message: &str) -> ExitCode {
 struct Progress {
     quiet: bool,
     next: usize,
+    /// On a colour terminal, shards' own display in place of the plain one.
+    #[cfg(unix)]
+    live: Option<RefCell<live::Live>>,
 }
 
 struct Vertex {
@@ -98,6 +103,10 @@ impl Progress {
     }
 
     fn say_bytes(&self, bytes: &[u8]) {
+        #[cfg(unix)]
+        if self.live.is_some() {
+            return;
+        }
         if !self.quiet {
             let _ = std::io::stderr().write_all(bytes);
         }
@@ -106,6 +115,10 @@ impl Progress {
     /// A vertex begins: a blank line after the one before, as progressui separates them.
     fn start(&mut self, name: &str) -> Vertex {
         self.next += 1;
+        #[cfg(unix)]
+        if let Some(live) = &self.live {
+            live.borrow_mut().start(name);
+        }
         self.say(&format!("\n#{} {name}\n", self.next));
         Vertex {
             index: self.next,
@@ -114,20 +127,37 @@ impl Progress {
     }
 
     fn line(&self, v: &Vertex, text: &str) {
+        #[cfg(unix)]
+        if let Some(live) = &self.live {
+            live.borrow_mut().line(v.index, text);
+        }
         self.say(&format!("#{} {text}\n", v.index));
     }
 
     fn done(&self, v: &Vertex) {
+        #[cfg(unix)]
+        if let Some(live) = &self.live {
+            live.borrow_mut().done(v.index);
+        }
         let secs = v.started.elapsed().as_secs_f64();
         self.say(&format!("#{} DONE {secs:.1}s\n", v.index));
     }
 
     fn error(&self, v: &Vertex, message: &str) {
+        #[cfg(unix)]
+        if let Some(live) = &self.live {
+            live.borrow_mut().error(v.index, message);
+        }
         self.say(&format!("#{} ERROR: {message}\n", v.index));
     }
 
     /// A vertex the build's failure stopped.
     fn canceled(&self, v: &Vertex) {
+        #[cfg(unix)]
+        if let Some(live) = &self.live {
+            live.borrow_mut().canceled(v.index);
+            live.borrow_mut().leave();
+        }
         self.say(&format!("#{} CANCELED\n", v.index));
     }
 }
@@ -320,6 +350,11 @@ impl StepLog {
             return;
         };
         let out = clip.write(bytes, limits);
+        #[cfg(unix)]
+        if let Some(live) = &p.live {
+            live.borrow_mut().output(v.index, &out);
+            return;
+        }
         p.say_bytes(&self.show(v, &out));
     }
 
@@ -830,7 +865,8 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             "unable to prepare context: path {context_arg:?} not found"
         ));
     }
-    let mode = match parsed.string("progress") {
+    let asked = parsed.string("progress");
+    let mode = match asked {
         "auto" | "plain" | "tty" => "plain",
         "quiet" | "none" => "quiet",
         "rawjson" => return Err("--progress=rawjson is not supported by shards yet".into()),
@@ -850,7 +886,17 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             }
         }
     }
-    let progress = RefCell::new(Progress { quiet, next: 0 });
+    let progress = RefCell::new(Progress {
+        quiet,
+        next: 0,
+        // `auto` or `tty` on a colour terminal: shards' own display.
+        #[cfg(unix)]
+        live: if !quiet && matches!(asked, "auto" | "tty") {
+            live::Live::new().map(RefCell::new)
+        } else {
+            None
+        },
+    });
     progress
         .borrow()
         .say("#0 building with \"shards\" instance using shards driver\n");
