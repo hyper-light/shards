@@ -61,6 +61,11 @@ pub enum Value {
     List(Kind, Vec<Value>),
     /// A map with string keys whose values are of the kind given.
     Map(Kind, BTreeMap<String, Value>),
+    /// A nil slice of the kind given: an empty one everywhere but in JSON (`null`) and
+    /// `%#v`.
+    NilList(Kind),
+    /// A nil map, likewise.
+    NilMap(Kind),
     /// A struct, or a pointer to one.
     Object(Rc<dyn Object>),
 }
@@ -109,8 +114,8 @@ impl Value {
             Value::Uint(_) => "uint".into(),
             Value::Float(_) => "float64".into(),
             Value::String(_) => "string".into(),
-            Value::List(k, _) => format!("[]{}", k.name()),
-            Value::Map(k, _) => format!("map[string]{}", k.name()),
+            Value::List(k, _) | Value::NilList(k) => format!("[]{}", k.name()),
+            Value::Map(k, _) | Value::NilMap(k) => format!("map[string]{}", k.name()),
             Value::Object(o) => o.type_name().into(),
         }
     }
@@ -122,7 +127,7 @@ impl Value {
     /// Go's encoding/json, as `json` encodes it (HTML characters left as they are).
     pub(crate) fn json(&self, out: &mut String) -> Result<(), String> {
         match self {
-            Value::Nil => out.push_str("null"),
+            Value::Nil | Value::NilList(_) | Value::NilMap(_) => out.push_str("null"),
             Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
             Value::Int(i) => out.push_str(&i.to_string()),
             Value::Uint(u) => out.push_str(&u.to_string()),
@@ -180,6 +185,12 @@ pub trait Object: fmt::Debug {
     fn call(&self, name: &str, args: &[Value]) -> Result<Value, String> {
         let _ = args;
         Err(format!("no method {name}"))
+    }
+
+    /// Whether it is a nil pointer: fields read through it fail as Go's do, and it is
+    /// false in a condition.
+    fn is_nil(&self) -> bool {
+        false
     }
 
     /// The struct as fmt's `%v` prints it (`{a b}`). For a pointer (a type name starting

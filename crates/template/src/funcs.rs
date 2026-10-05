@@ -371,6 +371,10 @@ fn index<'d>(item: R<'d>, indexes: Vec<R<'d>>) -> Result<R<'d>, String> {
             return Err("index of untyped nil".into());
         };
         item = match v.as_ref() {
+            Value::NilList(_) => {
+                index_arg(&idx, 0)?;
+                return Err("reflect: slice index out of range".into());
+            }
             Value::List(kind, items) => {
                 let x = index_arg(&idx, items.len())?;
                 let e = child(&v, Key::Index(x)).ok_or("reflect: slice index out of range")?;
@@ -381,7 +385,7 @@ fn index<'d>(item: R<'d>, indexes: Vec<R<'d>>) -> Result<R<'d>, String> {
                 let byte = s.as_bytes().get(x).ok_or("reflect: string index out of range")?;
                 R::owned(Value::Uint(u64::from(*byte)))
             }
-            Value::Map(kind, _) => {
+            Value::Map(kind, _) | Value::NilMap(kind) => {
                 let key = match &idx {
                     R::Invalid => return Err("value is nil; should be of type string".into()),
                     R::Plain(k) => match k.as_ref() {
@@ -421,6 +425,7 @@ fn slice<'d>(item: R<'d>, indexes: Vec<R<'d>>) -> Result<R<'d>, String> {
             s.len()
         }
         Value::List(_, items) => items.len(),
+        Value::NilList(_) => 0,
         _ => return Err(format!("can't slice item of type {}", pointee(&v))),
     };
     let mut idx = [0, len, 0];
@@ -442,6 +447,7 @@ fn slice<'d>(item: R<'d>, indexes: Vec<R<'d>>) -> Result<R<'d>, String> {
             Value::String(String::from_utf8_lossy(s.as_bytes().get(i..j).unwrap_or(&[])).into_owned())
         }
         Value::List(kind, items) => Value::List(*kind, items.get(i..j).unwrap_or(&[]).to_vec()),
+        Value::NilList(kind) => Value::NilList(*kind),
         _ => Value::Nil,
     }))
 }
@@ -458,6 +464,7 @@ fn length(item: R<'_>) -> Result<i64, String> {
             Value::String(s) => s.len(),
             Value::List(_, l) => l.len(),
             Value::Map(_, m) => m.len(),
+            Value::NilList(_) | Value::NilMap(_) => 0,
             _ => return Err(format!("len of type {}", pointee(v))),
         },
     };
@@ -490,8 +497,8 @@ fn basic_kind(r: &R<'_>) -> (Basic, bool) {
 fn reflect_kind(r: &R<'_>) -> u8 {
     match r.value() {
         None => 0,
-        Some(Value::List(..)) => 1,
-        Some(Value::Map(..)) => 2,
+        Some(Value::List(..) | Value::NilList(_)) => 1,
+        Some(Value::Map(..) | Value::NilMap(_)) => 2,
         Some(_) => 3,
     }
 }
@@ -542,8 +549,15 @@ fn eq(arg1: R<'_>, args: Vec<R<'_>>) -> Result<bool, String> {
                             show(v2, "%v")
                         ));
                     }
+                    // funcs.go's isNil: no value, or a nil slice, map or pointer.
+                    let nil = |v: Option<&Value>| match v {
+                        None => true,
+                        Some(Value::NilList(_) | Value::NilMap(_)) => true,
+                        Some(Value::Object(o)) => o.is_nil(),
+                        Some(_) => false,
+                    };
                     match (v1, v2) {
-                        (None, None) => true,
+                        _ if nil(v1) || nil(v2) => nil(v1) == nil(v2),
                         (None, _) | (_, None) => false,
                         (Some(a), Some(b)) => match (a, b) {
                             (Value::Object(a), Value::Object(b)) => std::rc::Rc::ptr_eq(a, b),
@@ -632,6 +646,7 @@ fn join(elems: &R<'_>, sep: &str) -> Result<String, String> {
             out.sort();
             Ok(out.join(sep))
         }
+        Value::NilList(_) | Value::NilMap(_) => Ok(String::new()),
         _ => Err(format!("expected slice, got {}", v.type_name())),
     }
 }

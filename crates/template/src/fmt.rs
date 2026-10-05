@@ -449,6 +449,7 @@ impl Printer {
         if let Value::Object(o) = arg
             && !self.deref
             && o.type_name().starts_with('*')
+            && !o.is_nil()
         {
             self.buf.push('&');
         }
@@ -474,6 +475,12 @@ impl Printer {
                 o.format(&mut s);
                 self.buf.push_str(&s);
             }
+            Value::NilList(_) | Value::NilMap(_) if self.f.sharp_v => {
+                self.buf.push_str(&v.type_name());
+                self.buf.push_str("(nil)");
+            }
+            Value::NilList(_) => self.buf.push_str("[]"),
+            Value::NilMap(_) => self.buf.push_str("map[]"),
             Value::Map(kind, entries) => {
                 if self.f.sharp_v {
                     self.buf.push_str(&v.type_name());

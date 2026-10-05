@@ -73,7 +73,10 @@ pub(crate) fn indirect_interface(r: R<'_>) -> R<'_> {
 pub(crate) fn indirect(r: R<'_>) -> (R<'_>, bool) {
     match r {
         R::Iface(v) if v.is_nil() => (R::Iface(v), true),
+        // A nil pointer in an interface: the interface is not nil, what it holds is.
+        R::Iface(v) if matches!(v.as_ref(), Value::Object(o) if o.is_nil()) => (R::Iface(v), true),
         R::Iface(v) => (R::Plain(v), false),
+        R::Plain(v) if matches!(v.as_ref(), Value::Object(o) if o.is_nil()) => (R::Plain(v), true),
         r => (r, false),
     }
 }
@@ -92,7 +95,8 @@ pub(crate) fn is_true(r: &R<'_>) -> bool {
             Value::String(s) => !s.is_empty(),
             Value::List(_, l) => !l.is_empty(),
             Value::Map(_, m) => !m.is_empty(),
-            Value::Object(_) => true,
+            Value::NilList(_) | Value::NilMap(_) => false,
+            Value::Object(o) => !o.is_nil(),
         },
     }
 }

@@ -306,6 +306,7 @@ impl<'t, 'd> State<'t, 'd, '_> {
                         Some((index, R::elem(*kind, e)))
                     })
                     .collect(),
+                Value::NilList(_) | Value::NilMap(_) => Vec::new(),
                 Value::Map(kind, m) => m
                     .keys()
                     .filter_map(|k| {
@@ -592,7 +593,7 @@ impl<'t, 'd> State<'t, 'd, '_> {
                         return Ok(R::owned(f));
                     }
                 }
-                Value::Map(kind, _) => {
+                Value::Map(kind, _) | Value::NilMap(kind) => {
                     if has_args {
                         return self.errorf(format!("{name} is not a method but has arguments"));
                     }

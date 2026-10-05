@@ -104,6 +104,16 @@ func convert(v any) any {
 		if m, ok := x["$strmap"]; ok {
 			return strmap(m)
 		}
+		// Typed nils: a nil slice, map and struct pointer.
+		if _, ok := x["$nilstrings"]; ok {
+			return []string(nil)
+		}
+		if _, ok := x["$nilstrmap"]; ok {
+			return map[string]string(nil)
+		}
+		if _, ok := x["$nilperson"]; ok {
+			return (*Person)(nil)
+		}
 		switch x["$object"] {
 		case "Person":
 			p := Person{Name: x["Name"].(string), Age: convert(x["Age"]).(int)}
@@ -154,6 +164,7 @@ var data = map[string]string{
 	"person":    person,
 	"container": container,
 	"header":    `{"$strmap": {"ID": "CONTAINER ID", "Names": "NAMES", "Image": "IMAGE"}}`,
+	"nils":      `{"ns": {"$nilstrings": true}, "nm": {"$nilstrmap": true}, "np": {"$nilperson": true}, "es": {"$strings": []}}`,
 	"m": `{
 		"str": "hello", "empty": "", "int": 42, "neg": -7, "zero": 0, "n5": 5,
 		"float": 3.5, "fint": 2.0, "big": 1e21, "small": 0.000001234, "t": true, "f": false, "null": null,
@@ -455,6 +466,15 @@ func corpus() {
 	named("mytmpl", "m", "{{.str.x}}", `{{define "inner"}}{{.y.z}}{{end}}{{template "inner" .str}}`, "{{.str",
 		`{{define "mytmpl"}}X{{end}}`, `{{define "mytmpl"}}X{{end}}main`, `{{define "mytmpl"}}X{{end}}  `)
 	named("a%b", "m", "{{.str.x}}", "{{.str")
+	// Typed nils, as inspect's documents hold them.
+	add("nils", "{{.ns}}", "{{json .ns}}", "{{len .ns}}", "{{range .ns}}x{{else}}none{{end}}",
+		"{{if .ns}}y{{else}}n{{end}}", `{{printf "%#v" .ns}}`, "{{index .ns 0}}", "{{slice .ns}}",
+		"{{json (slice .ns)}}", `{{join .ns ","}}`, "{{json .es}}", `{{printf "%#v" .es}}`,
+		"{{.nm}}", "{{json .nm}}", "{{.nm.k}}", `{{index .nm "k"}}`, `{{printf "%#v" .nm}}`,
+		"{{len .nm}}", "{{range .nm}}x{{else}}none{{end}}", "{{.np}}", "{{json .np}}",
+		"{{.np.Name}}", "{{if .np}}y{{else}}n{{end}}", "{{len .np}}", "{{index .np 0}}",
+		`{{printf "%v" .np}}`, "{{with .np}}x{{else}}none{{end}}", "{{eq .ns .ns}}")
+	missingKey("nils", "{{.nm.k}}", "{{.np.Name}}")
 	// missingkey=error, as inspect's raw fallback runs a template.
 	missingKey("m", "{{.str}}", "{{.nope}}", "{{.nested.inner.deep}}", "{{.nested.inner.nope}}",
 		"{{.null}}", "{{.null.x}}", "{{index . \"nope\"}}", "{{range .nested.list}}{{.name}}{{.age}}{{end}}",

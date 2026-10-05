@@ -155,6 +155,20 @@
    ]
   },
   "nil": null,
+  "nils": {
+   "ns": {
+    "$nilstrings": true
+   },
+   "nm": {
+    "$nilstrmap": true
+   },
+   "np": {
+    "$nilperson": true
+   },
+   "es": {
+    "$strings": []
+   }
+  },
   "person": {
    "$object": "Person",
    "Name": "Ann",
@@ -5457,6 +5471,164 @@
    "template": "{{.str",
    "output": "",
    "error": "template: a{0 110 %!b(string=unclosed action) 1}:1: %!s(MISSING)"
+  },
+  {
+   "data": "nils",
+   "template": "{{.ns}}",
+   "output": "[]"
+  },
+  {
+   "data": "nils",
+   "template": "{{json .ns}}",
+   "output": "null"
+  },
+  {
+   "data": "nils",
+   "template": "{{len .ns}}",
+   "output": "0"
+  },
+  {
+   "data": "nils",
+   "template": "{{range .ns}}x{{else}}none{{end}}",
+   "output": "none"
+  },
+  {
+   "data": "nils",
+   "template": "{{if .ns}}y{{else}}n{{end}}",
+   "output": "n"
+  },
+  {
+   "data": "nils",
+   "template": "{{printf \"%#v\" .ns}}",
+   "output": "[]string(nil)"
+  },
+  {
+   "data": "nils",
+   "template": "{{index .ns 0}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .ns 0>: error calling index: reflect: slice index out of range"
+  },
+  {
+   "data": "nils",
+   "template": "{{slice .ns}}",
+   "output": "[]"
+  },
+  {
+   "data": "nils",
+   "template": "{{json (slice .ns)}}",
+   "output": "null"
+  },
+  {
+   "data": "nils",
+   "template": "{{join .ns \",\"}}",
+   "output": ""
+  },
+  {
+   "data": "nils",
+   "template": "{{json .es}}",
+   "output": "[]"
+  },
+  {
+   "data": "nils",
+   "template": "{{printf \"%#v\" .es}}",
+   "output": "[]string{}"
+  },
+  {
+   "data": "nils",
+   "template": "{{.nm}}",
+   "output": "map[]"
+  },
+  {
+   "data": "nils",
+   "template": "{{json .nm}}",
+   "output": "null"
+  },
+  {
+   "data": "nils",
+   "template": "{{.nm.k}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "nils",
+   "template": "{{index .nm \"k\"}}",
+   "output": ""
+  },
+  {
+   "data": "nils",
+   "template": "{{printf \"%#v\" .nm}}",
+   "output": "map[string]string(nil)"
+  },
+  {
+   "data": "nils",
+   "template": "{{len .nm}}",
+   "output": "0"
+  },
+  {
+   "data": "nils",
+   "template": "{{range .nm}}x{{else}}none{{end}}",
+   "output": "none"
+  },
+  {
+   "data": "nils",
+   "template": "{{.np}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "nils",
+   "template": "{{json .np}}",
+   "output": "null"
+  },
+  {
+   "data": "nils",
+   "template": "{{.np.Name}}",
+   "output": "",
+   "error": "template: :1:5: executing \"\" at <.np.Name>: nil pointer evaluating interface {}.Name"
+  },
+  {
+   "data": "nils",
+   "template": "{{if .np}}y{{else}}n{{end}}",
+   "output": "n"
+  },
+  {
+   "data": "nils",
+   "template": "{{len .np}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <len .np>: error calling len: len of nil pointer"
+  },
+  {
+   "data": "nils",
+   "template": "{{index .np 0}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .np 0>: error calling index: index of nil pointer"
+  },
+  {
+   "data": "nils",
+   "template": "{{printf \"%v\" .np}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "nils",
+   "template": "{{with .np}}x{{else}}none{{end}}",
+   "output": "none"
+  },
+  {
+   "data": "nils",
+   "template": "{{eq .ns .ns}}",
+   "output": "true"
+  },
+  {
+   "data": "nils",
+   "template": "{{.nm.k}}",
+   "missingkey": true,
+   "output": "",
+   "error": "template: :1:5: executing \"\" at <.nm.k>: map has no entry for key \"k\""
+  },
+  {
+   "data": "nils",
+   "template": "{{.np.Name}}",
+   "missingkey": true,
+   "output": "",
+   "error": "template: :1:5: executing \"\" at <.np.Name>: nil pointer evaluating interface {}.Name"
   },
   {
    "data": "m",

@@ -200,6 +200,29 @@ fn str_map(v: &serde_json::Value) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// A nil `*Person`.
+#[derive(Debug)]
+struct NilPerson;
+
+impl Object for NilPerson {
+    fn type_name(&self) -> &str {
+        "*oracle.Person"
+    }
+
+    fn is_nil(&self) -> bool {
+        true
+    }
+
+    fn format(&self, out: &mut String) {
+        out.push_str("<nil>");
+    }
+
+    fn json(&self, out: &mut String) -> Result<(), String> {
+        out.push_str("null");
+        Ok(())
+    }
+}
+
 /// oracle_test.go's convert: JSON, with its tags for Go's other types.
 fn convert(v: &serde_json::Value) -> Value {
     use serde_json::Value as J;
@@ -219,6 +242,15 @@ fn convert(v: &serde_json::Value) -> Value {
             }
             if let Some(s) = m.get("$strmap") {
                 return Value::string_map(str_map(s));
+            }
+            if m.contains_key("$nilstrings") {
+                return Value::NilList(Kind::String);
+            }
+            if m.contains_key("$nilstrmap") {
+                return Value::NilMap(Kind::String);
+            }
+            if m.contains_key("$nilperson") {
+                return Value::object(NilPerson);
             }
             match m.get("$object").and_then(J::as_str) {
                 Some("Person") => {
