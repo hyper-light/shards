@@ -127,6 +127,21 @@ fn command_lines_are_answered_as_the_docker_cli_answers_them() {
             case["status"].as_u64().unwrap(),
         );
         let (stdout, stderr, status, refusal) = answer(&argv);
+        // `-h` with nothing after it is help in shards, where `run`'s and `create`'s `-h`
+        // is `--hostname` and docker/cli wants its value: shards answers as `--help` does.
+        if argv.last().is_some_and(|a| a == "-h")
+            && case["stderr"]
+                .as_str()
+                .unwrap()
+                .starts_with("flag needs an argument: 'h' in -h")
+        {
+            let mut helped = argv.clone();
+            helped.pop();
+            helped.push("--help".into());
+            assert_eq!(answer(&argv).0, answer(&helped).0, "{argv:?}");
+            assert_eq!(status, 0, "{argv:?}");
+            continue;
+        }
         if refusal {
             // The CLI ran it; shards says which flags it does not serve yet.
             assert!(

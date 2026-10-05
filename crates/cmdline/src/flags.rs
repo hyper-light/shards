@@ -858,6 +858,14 @@ fn read_short(
         } else if let Some(next) = words.next() {
             value = next.clone();
             shorts = "";
+        } else if c == b'h'
+            && let Some(help) = parsed.find(|f| f.name == "help")
+        {
+            // `-h` with nothing after it is help, whatever else it is short for
+            // (`run -h`, where `-h HOST` is `--hostname`).
+            set(parsed, help, "true", validate)?;
+            shorts = "";
+            continue;
         } else {
             return Err(format!(
                 "flag needs an argument: {} in -{shorts}",
