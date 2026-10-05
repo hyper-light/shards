@@ -166,12 +166,12 @@ pub(super) fn width() -> usize {
 
 /// The head: the mark, where there is room, beside the brand and `name` in tracked
 /// capitals, then `lines` under them.
-/// Whether this process has drawn its head already: a page after it (a prune's results,
-/// below its question) shows its lines alone, under it.
+/// Whether a question has drawn this process's head already: the page after it (a
+/// prune's results, below its question) shows its lines alone, under it.
 static HEADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub(super) fn head(page: &mut Page, p: &Paint, cols: usize, name: &str, lines: &[(Rgb, bool, String)]) {
-    if HEADED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+    if HEADED.load(std::sync::atomic::Ordering::Relaxed) {
         page.blank();
         for (c, bold, words) in lines {
             for (i, part) in layout::wrap(words, cols.saturating_sub(5))
@@ -716,6 +716,8 @@ pub(crate) fn confirm(p: &Paint, name: &str, items: &[&str]) -> bool {
         text.push_str(&l.s);
         text.push('\n');
     }
+    // What follows is under this head.
+    HEADED.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut ask = Line::default();
     ask.pad(4)
         .bold(p, true)

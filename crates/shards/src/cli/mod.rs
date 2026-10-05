@@ -386,6 +386,7 @@ fn prune_warning(command: &'static Command, parsed: &Parsed) -> Option<String> {
 }
 
 /// A page's name for the command `path` names: `prune image` for `shards image prune`.
+#[cfg(unix)]
 fn look_name(path: &str) -> String {
     let words: Vec<&str> = path.split(' ').skip(1).collect();
     match words.as_slice() {
@@ -396,6 +397,7 @@ fn look_name(path: &str) -> String {
 }
 
 /// What a prune removes, in shards' words, for its page.
+#[cfg(unix)]
 fn prune_items(command: &'static Command, parsed: &Parsed) -> Vec<&'static str> {
     use shards_cmdline::commands::{CONTAINER_PRUNE, IMAGE_PRUNE};
     let images = if parsed.bool("all") {
