@@ -259,6 +259,15 @@ fn cli_reports_usage_and_rejects_unknown_commands() {
         unknown.stderr.contains("unknown command: shards frobnicate"),
         "{unknown}"
     );
+    // Piped, as docker/cli lays its version out; the server is this shards too.
     let version = run_shards(&["version"], &none, TIMEOUT);
-    assert!(version.stdout.starts_with("shards "), "{version}");
+    assert!(version.stdout.starts_with("Client:\n Version:"), "{version}");
+    assert!(
+        version.stdout.contains("\nServer: shards\n Engine:\n"),
+        "{version}"
+    );
+    let short = run_shards(&["--version"], &none, TIMEOUT);
+    assert!(short.stdout.starts_with("shards version "), "{short}");
+    let server = run_shards(&["version", "-f", "{{.Server.Platform.Name}}"], &none, TIMEOUT);
+    assert_eq!(server.stdout, "shards\n", "{server}");
 }

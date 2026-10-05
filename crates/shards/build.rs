@@ -37,6 +37,13 @@ fn main() {
 fn build() -> Result<(), String> {
     helpers()?;
     let mut out = io::stdout().lock();
+    // The compiler that built it, which `version` names where Docker names Go's.
+    let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    if let Ok(o) = std::process::Command::new(&rustc).arg("--version").output()
+        && let Ok(v) = String::from_utf8(o.stdout)
+    {
+        let _ = writeln!(out, "cargo::rustc-env=SHARDS_RUSTC={}", v.trim());
+    }
     let _ = writeln!(out, "cargo::rerun-if-env-changed=SHARDS_INIT_BINARY");
     // Only Unix hosts run VMs from `shardsd` yet.
     if env::var("CARGO_CFG_TARGET_FAMILY").is_ok_and(|f| !f.split(',').any(|f| f == "unix")) {

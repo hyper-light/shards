@@ -70,15 +70,8 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         Some("grants") => grant_answer::broker(),
         Some("build") => build::build(args),
         Some("run") => usage_error("run: the `shards` command runs commands, through the daemon"),
-        Some("version" | "--version") => {
-            #[cfg(unix)]
-            if let Some(p) = cli::look::styled() {
-                cli::look::version(&p, &mut std::io::stdout().lock());
-                return ExitCode::SUCCESS;
-            }
-            let _ = writeln!(std::io::stdout(), "shards {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
-        }
+        Some("version") => cli::version::run(&args.collect::<Vec<_>>()),
+        Some("--version") => cli::version::short(),
         Some("help" | "-h" | "--help") | None => {
             let _ = writeln!(std::io::stdout(), "{USAGE}");
             ExitCode::SUCCESS

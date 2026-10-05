@@ -29,6 +29,7 @@ mod screens;
 mod show;
 #[cfg(unix)]
 mod terminal;
+pub(crate) mod version;
 
 /// `docker run`'s status when it could not run the command at all.
 const NOT_RUN: u8 = 125;
@@ -156,6 +157,8 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         },
         // `shards restore DIR`: a microVM resumed from its snapshot.
         ["restore", ..] => vm(&args),
+        // This shards' own version: nothing asked of a daemon (version.rs).
+        ["version", ..] => version::run(args.get(1..).unwrap_or_default()),
         // `build` (or `builder build`, `image build`, `buildx build`, `buildx b`): shardsd's.
         _ if let Some(named) = shards_cmdline::commands::build(&words) => {
             let mut rest = vec![OsString::from("build")];

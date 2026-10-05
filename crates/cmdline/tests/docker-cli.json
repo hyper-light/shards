@@ -308,6 +308,33 @@
   },
   {
     "argv": [
+      "version",
+      "--help"
+    ],
+    "stdout": "Usage:  shards version [OPTIONS]\n\nShow the Docker version information\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "version",
+      "extra"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards version' accepts no arguments\n\nUsage:  shards version [OPTIONS]\n\nRun 'shards version --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "version",
+      "-f"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: 'f' in -f\n\nUsage:  shards version [OPTIONS]\n\nRun 'shards version --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
       "inspect",
       "--help"
     ],

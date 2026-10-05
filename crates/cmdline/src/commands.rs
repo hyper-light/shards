@@ -458,6 +458,18 @@ pub static COMMIT: Command = Command {
 /// docker/cli's flags.InspectFormatHelp (cli/flags/options.go).
 const INSPECT_FORMAT_HELP: &str = "Format output using a custom template:\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates";
 
+/// `shards version` (docker/cli cli/command/system/version.go).
+pub static VERSION: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Show the Docker version information",
+    aliases: "",
+    args: Args::None,
+    flags: &[Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP), HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards inspect` (docker/cli cli/command/system/inspect.go).
 pub static INSPECT: Command = Command {
     usage: "[OPTIONS] NAME|ID [NAME|ID...]",
@@ -1438,6 +1450,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["commit", ..] => (&COMMIT, "shards commit", 1),
         ["cp", ..] => (&COPY, "shards cp", 1),
         ["inspect", ..] => (&INSPECT, "shards inspect", 1),
+        ["version", ..] => (&VERSION, "shards version", 1),
         ["container", "cp", ..] => (&COPY, "shards container cp", 2),
         ["container", "commit", ..] => (&COMMIT, "shards container commit", 2),
         ["container", "start", ..] => (&START, "shards container start", 2),

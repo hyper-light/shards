@@ -36,6 +36,7 @@ mod reference;
 pub mod stats;
 mod tabwriter;
 mod units;
+pub mod version;
 
 use std::rc::Rc;
 
