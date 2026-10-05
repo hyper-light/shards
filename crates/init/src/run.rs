@@ -968,6 +968,7 @@ fn builtin(kind: u8) -> Result<Started, Failure> {
         let done = match kind {
             run::builtin::PROCESSES => out.write_all(&crate::procs::dump()),
             run::builtin::CHANGES => crate::changes::write(&mut out),
+            run::builtin::EXPORT => export(&mut out),
             other => Err(io::Error::other(format!("no built-in {other}"))),
         }
         .and_then(|()| out.flush());
@@ -989,6 +990,30 @@ fn builtin(kind: u8) -> Result<Started, Failure> {
         stdout: Some(stdout_r),
         stderr: Some(stderr_r),
     })
+}
+
+/// The container's files as a tar archive, as dockerd exports its root (moby
+/// daemon/export.go: go-archive's Tar of the container's mounted root): what is
+/// mounted over the root is not its files, and the files init writes in `/etc` are
+/// left out, where Docker's root holds them empty for its mounts.
+fn export(out: &mut impl Write) -> io::Result<()> {
+    let opts = shards_archive::PackOptions {
+        exclude_patterns: [
+            "proc/*",
+            "sys/*",
+            "dev/*",
+            "etc/hosts",
+            "etc/hostname",
+            "etc/resolv.conf",
+        ]
+        .iter()
+        .map(|p| p.as_bytes().to_vec())
+        .collect(),
+        ..Default::default()
+    };
+    shards_archive::pack(std::path::Path::new("/"), &opts, out)
+        .map(drop)
+        .map_err(|e| io::Error::other(e.to_string()))
 }
 
 /// An exec started: its process and init's ends of its stdio.

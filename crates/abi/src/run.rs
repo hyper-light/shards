@@ -131,6 +131,8 @@ pub mod builtin {
     /// What the container changed of its image's files, for `shards diff` (init
     /// changes.rs).
     pub const CHANGES: u8 = 2;
+    /// The container's files as a tar archive, for `shards export` (init run.rs).
+    pub const EXPORT: u8 = 3;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

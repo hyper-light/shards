@@ -4,6 +4,8 @@
 //!   and BuildKit read them;
 //! - `catalog`: the commands there are, as the root's and management commands' help
 //!   list them;
+//! - `format`: the formatter's `--format`: tables, templates and JSON of `ps`, `images`,
+//!   `stats`, `history` and `system df`;
 //! - `flags`: spf13/pflag's parsing, cobra's order of checks, and docker/cli's usage,
 //!   help and error texts;
 //! - `commands`: the commands, with docker/cli's flags and words;
@@ -24,6 +26,7 @@ pub mod buildflags;
 pub mod catalog;
 pub mod commands;
 pub mod flags;
+pub mod format;
 pub mod go;
 pub mod gotime;
 pub mod grammar;

@@ -187,10 +187,17 @@ fn container(
     }
     #[cfg(unix)]
     {
-        // `save` writes where the client says, opened here, before the client moves to
-        // the daemon's home.
-        let output = if std::ptr::eq(command, &shards_cmdline::commands::SAVE) {
-            match save::output(parsed.string("output")) {
+        // `save` and `export` write where the client says, opened here, before the
+        // client moves to the daemon's home.
+        let written = if std::ptr::eq(command, &shards_cmdline::commands::SAVE) {
+            Some("failed to save image")
+        } else if std::ptr::eq(command, &shards_cmdline::commands::EXPORT) {
+            Some("failed to export container")
+        } else {
+            None
+        };
+        let output = if let Some(written) = written {
+            match save::output(parsed.string("output"), written) {
                 Ok(output) => Some(output),
                 Err(e) => {
                     let _ = writeln!(std::io::stderr(), "{e}");

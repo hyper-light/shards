@@ -13,5 +13,6 @@ workspace = true
 [dependencies]
 libc = { workspace = true }
 shards-abi = { path = "../abi" }
+shards-archive = { path = "../archive" }
 shards-cmdline = { path = "../cmdline" }
 shards-user = { path = "../user" }

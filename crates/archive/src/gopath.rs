@@ -29,6 +29,11 @@ pub(crate) mod posix {
         super::split(super::Os::Unix, p)
     }
 
+    /// path.Base.
+    pub(crate) fn base(p: &[u8]) -> Vec<u8> {
+        super::base(super::Os::Unix, p)
+    }
+
     /// path.Join.
     pub(crate) fn join(parts: &[&[u8]]) -> Vec<u8> {
         super::join(super::Os::Unix, parts)

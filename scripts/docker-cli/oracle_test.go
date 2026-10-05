@@ -69,6 +69,10 @@ var served = map[string][]string{
 	"container diff":    {"help"},
 	"events":            {"filter", "format", "help", "since", "until"},
 	"system events":     {"filter", "format", "help", "since", "until"},
+	"export":            {"help", "output"},
+	"container export":  {"help", "output"},
+	"info":              {"help"},
+	"system info":       {"help"},
 }
 
 // The command lines asked, each the words after `shards`.
@@ -99,6 +103,13 @@ var cases = [][]string{
 	{"events", "--filter", "nope"},
 	{"events", "-f", "a=b", "--since"},
 	{"system", "events", "-h"},
+	{"export"},
+	{"export", "--help"},
+	{"export", "-o"},
+	{"container", "export", "-h"},
+	{"info", "--help"},
+	{"info", "x"},
+	{"system", "info", "-h"},
 	{"run"},
 	{"run", "--help"},
 	{"run", "-h"},

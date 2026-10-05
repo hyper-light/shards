@@ -10,5 +10,8 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+shards-template = { path = "../template" }
+
 [dev-dependencies]
 serde_json = "1"

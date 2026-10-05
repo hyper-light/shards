@@ -749,6 +749,21 @@ format f s - -",
     error_prefix: "",
 };
 
+/// `shards export` (docker/cli cli/command/container/export.go).
+pub static EXPORT: Command = Command {
+    usage: "[OPTIONS] CONTAINER",
+    about: "Export a container's filesystem as a tar archive",
+    aliases: "shards container export, shards export",
+    args: Args::Exactly(1),
+    flags: &[
+        HELP,
+        Flag::string("output", Some(b'o'), "", "Write to a file, instead of STDOUT"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards port`.
 pub static PORT: Command = Command {
     usage: "CONTAINER [PRIVATE_PORT[/PROTO]]",
@@ -1049,6 +1064,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["diff", ..] => (&DIFF, "shards diff", 1),
         ["events", ..] => (&EVENTS, "shards events", 1),
         ["info", ..] => (&INFO, "shards info", 1),
+        ["export", ..] => (&EXPORT, "shards export", 1),
+        ["container", "export", ..] => (&EXPORT, "shards container export", 2),
         ["system", "info", ..] => (&INFO, "shards system info", 2),
         ["system", "events", ..] => (&EVENTS, "shards system events", 2),
         ["container", "diff", ..] => (&DIFF, "shards container diff", 2),

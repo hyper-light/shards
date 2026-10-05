@@ -18,20 +18,30 @@
 //! - Archives are not decompressed: `docker export` and `docker cp` send them plain.
 //! - On Windows, devices and FIFOs are skipped (go-archive fails on them there).
 //!
-//! Not ported, as neither command uses them: ID mappings, user namespaces, overlay
-//! whiteouts, compression, and go-archive's change and diff helpers.
+//! [`apply_layer`] applies a layer over a tree, whiteouts as deletions (diff.go's
+//! UnpackLayer); [`WhiteoutFormat::Overlay`] packs an overlayfs upper directory into such a
+//! layer and unpacks one back into an upper directory.
+//!
+//! Not ported, as nothing here uses them: ID mappings, user namespaces, compression, and
+//! go-archive's change and diff helpers.
 
 mod error;
 mod gopath;
+mod layer;
 mod pack;
 mod patterns;
 mod root;
 mod sys;
 mod unpack;
+mod whiteout;
 
 pub mod copy;
 pub mod tar;
 
 pub use error::{Error, Kind};
+pub use layer::apply_layer;
 pub use pack::{PackOptions, pack};
 pub use unpack::{UnpackOptions, unpack, untar};
+pub use whiteout::{
+    WHITEOUT_LINK_DIR, WHITEOUT_META_PREFIX, WHITEOUT_OPAQUE_DIR, WHITEOUT_PREFIX, WhiteoutFormat,
+};

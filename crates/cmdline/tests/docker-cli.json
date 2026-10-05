@@ -244,6 +244,70 @@
   },
   {
     "argv": [
+      "export"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards export' requires 1 argument\n\nUsage:  shards export [OPTIONS] CONTAINER\n\nRun 'shards export --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "export",
+      "--help"
+    ],
+    "stdout": "Usage:  shards export [OPTIONS] CONTAINER\n\nExport a container's filesystem as a tar archive\n\nAliases:\n  shards container export, shards export\n\nOptions:\n  -o, --output string   Write to a file, instead of STDOUT\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "export",
+      "-o"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: 'o' in -o\n\nUsage:  shards export [OPTIONS] CONTAINER\n\nRun 'shards export --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "export",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container export [OPTIONS] CONTAINER\n\nExport a container's filesystem as a tar archive\n\nAliases:\n  shards container export, shards export\n\nOptions:\n  -o, --output string   Write to a file, instead of STDOUT\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "info",
+      "--help"
+    ],
+    "stdout": "Usage:  shards info [OPTIONS]\n\nDisplay system-wide information\n\nAliases:\n  shards system info, shards info\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "info",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards info' accepts no arguments\n\nUsage:  shards info [OPTIONS]\n\nRun 'shards info --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "system",
+      "info",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards system info [OPTIONS]\n\nDisplay system-wide information\n\nAliases:\n  shards system info, shards info\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "run"
     ],
     "stdout": "",

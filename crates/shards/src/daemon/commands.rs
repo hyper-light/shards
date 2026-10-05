@@ -13,9 +13,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use shards_cmdline::commands::{
-    self, CONTAINER_INSPECT, CONTAINER_PRUNE, DIFF, EVENTS, HISTORY, IMAGE_INSPECT, IMAGE_PRUNE, IMAGES,
-    INFO, KILL, LOAD, LOGS, PAUSE, PORT, PS, PULL, PUSH, RENAME, RM, RMI, SAVE, STATS, STOP, SYSTEM_DF,
-    SYSTEM_PRUNE, TAG, TOP, UNPAUSE, WAIT,
+    self, CONTAINER_INSPECT, CONTAINER_PRUNE, DIFF, EVENTS, EXPORT, HISTORY, IMAGE_INSPECT, IMAGE_PRUNE,
+    IMAGES, INFO, KILL, LOAD, LOGS, PAUSE, PORT, PS, PULL, PUSH, RENAME, RM, RMI, SAVE, STATS, STOP,
+    SYSTEM_DF, SYSTEM_PRUNE, TAG, TOP, UNPAUSE, WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
@@ -415,6 +415,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.prune(true, true, parsed.bool("all"), asker, reply)
         } else if std::ptr::eq(command, &SYSTEM_DF) {
             self.system_df(asker, reply)
+        } else if std::ptr::eq(command, &EXPORT) {
+            self.export(&parsed.args, asker, reply)
         } else if std::ptr::eq(command, &INFO) {
             self.info(asker, reply)
         } else if std::ptr::eq(command, &EVENTS) {
@@ -446,6 +448,61 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else {
             reply.err(&format!("shards: {path} is not a container command"));
             1
+        }
+    }
+
+    /// `shards export CONTAINER` (moby daemon/export.go, ContainerExport): the
+    /// microVM's files as a tar archive, written by its init straight to where the
+    /// client asked (`-o`'s file or its stdout), through no copy here. A microVM's
+    /// writable layer lives with it, so one that has ended has nothing to export, where
+    /// dockerd keeps a stopped container's.
+    fn export(&self, args: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
+        let (Some(given), Some(out)) = (args.first(), asker.files.first()) else {
+            reply.err("shards: export: the client sent nowhere to write");
+            return 1;
+        };
+        let refuse = |said: String| {
+            reply.err(&format!("Error response from daemon: {said}"));
+            1
+        };
+        let id = match self.resolve(given) {
+            Ok(id) => id,
+            Err(e) => {
+                reply.err(&e);
+                return 1;
+            }
+        };
+        self.await_start(&id);
+        if !self.running(&id) {
+            return refuse(format!(
+                "container {id} is not running: a microVM's files end with it"
+            ));
+        }
+        if lock(&self.paused).contains(&id) {
+            return refuse(format!(
+                "container {id} is paused: its files can be exported once it is unpaused"
+            ));
+        }
+        let spec = shards_abi::run::Spec {
+            builtin: shards_abi::run::builtin::EXPORT,
+            ..Default::default()
+        };
+        let pieces = std::fs::File::open("/dev/null").and_then(|null| Ok((null, std::io::pipe()?)));
+        let (null, (mut said, into)) = match pieces {
+            Ok(p) => p,
+            Err(e) => return refuse(format!("Error exporting container {given}: {e}")),
+        };
+        let ended = self.exec_on(&id, &spec, false, [null.as_fd(), out.as_fd(), into.as_fd()]);
+        drop(into);
+        let mut why = String::new();
+        let _ = said.read_to_string(&mut why);
+        match ended {
+            Ok(e) if e.status == Some(0) => {
+                self.container_event(&id, "export", &[]);
+                0
+            }
+            Ok(_) => refuse(format!("Error exporting container {given}: {}", why.trim())),
+            Err(e) => refuse(format!("Error exporting container {given}: {e}")),
         }
     }
 

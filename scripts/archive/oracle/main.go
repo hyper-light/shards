@@ -11,6 +11,11 @@
 //   - rebase: RebaseArchiveEntries' output, testdata/rebase/NAME.tar.
 //   - read: every header and data hash Go's tar.Reader gives of an archive.
 //   - paths: SplitPathDirEntry and PreserveTrailingDotOrSeparator.
+//   - overlays: a lower tree mounted under overlayfs and changed through the mount, so the
+//     kernel writes the upper directory's whiteouts and opaque directories; the upper
+//     directory stays in WORKDIR/overlay-NAME/upper (times normalized) for the Rust side
+//     to pack, and the merged view is recorded.
+//   - layer: ApplyUncompressedLayer of an archive over a fixture tree (UnpackLayer).
 //
 // It runs in scripts/archive/generate's privileged Linux container:
 //
@@ -60,11 +65,13 @@ type packOpts struct {
 	Chown            *[2]int           `json:"chown"`
 	IncludeSourceDir bool              `json:"include_source_dir"`
 	Rebase           map[string]string `json:"rebase"`
+	Whiteout         string            `json:"whiteout"`
 }
 
 type packCase struct {
 	Name       string   `json:"name"`
 	Tree       string   `json:"tree"`
+	Overlay    string   `json:"overlay"`
 	Src        string   `json:"src"`
 	Kind       string   `json:"kind"`
 	RebaseName string   `json:"rebase_name"`
@@ -104,6 +111,7 @@ type unpackOpts struct {
 	NoOverwriteDirNonDir bool     `json:"no_overwrite_dir_non_dir"`
 	BestEffortXattrs     bool     `json:"best_effort_xattrs"`
 	Exclude              []string `json:"exclude"`
+	Whiteout             string   `json:"whiteout"`
 }
 
 type unpackCase struct {
@@ -112,6 +120,28 @@ type unpackCase struct {
 	Owners bool       `json:"owners"`
 	Opts   unpackOpts `json:"opts"`
 	Input  input      `json:"input"`
+}
+
+type layerCase struct {
+	Name   string     `json:"name"`
+	Pre    string     `json:"pre"`
+	Owners bool       `json:"owners"`
+	Opts   unpackOpts `json:"opts"`
+	Input  input      `json:"input"`
+}
+
+type op struct {
+	Op     string `json:"op"`
+	Path   string `json:"path"`
+	Data   string `json:"data"`
+	Target string `json:"target"`
+	Mode   uint32 `json:"mode"`
+}
+
+type overlay struct {
+	Name  string `json:"name"`
+	Lower string `json:"lower"`
+	Ops   []op   `json:"ops"`
 }
 
 type copyCase struct {
@@ -134,6 +164,8 @@ type cases struct {
 	Unpack []unpackCase       `json:"unpack"`
 	Copy   []copyCase         `json:"copy"`
 	Rebase []rebaseCase       `json:"rebase"`
+	Layer  []layerCase        `json:"layer"`
+	Over   []overlay          `json:"overlays"`
 	Read   []string           `json:"read"`
 	Paths  []string           `json:"paths"`
 }
@@ -455,6 +487,61 @@ func dump(b []byte) map[string]any {
 	}
 }
 
+func whiteout(s string) archive.WhiteoutFormat {
+	if s == "overlay" {
+		return archive.OverlayWhiteoutFormat
+	}
+	return archive.AUFSWhiteoutFormat
+}
+
+// makeOverlay mounts the lower tree under overlayfs, applies the ops through the mount,
+// records the merged view, unmounts, and sets every time in the upper directory to one
+// instant, so the archives made of it do not depend on when it was made.
+func makeOverlay(dir string, o overlay, lower []entry) any {
+	low, up, wk, merged := filepath.Join(dir, "lower"), filepath.Join(dir, "upper"), filepath.Join(dir, "work"), filepath.Join(dir, "merged")
+	build(low, lower)
+	for _, d := range []string{up, wk, merged} {
+		must(os.MkdirAll(d, 0o755))
+	}
+	must(unix.Mount("overlay", merged, "overlay", 0, fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", low, up, wk)))
+	for _, o := range o.Ops {
+		p := filepath.Join(merged, o.Path)
+		switch o.Op {
+		case "write":
+			must(os.WriteFile(p, []byte(o.Data), 0o644))
+		case "rm":
+			must(os.Remove(p))
+		case "rmrf":
+			must(os.RemoveAll(p))
+		case "mkdir":
+			must(os.Mkdir(p, 0o755))
+		case "symlink":
+			must(os.Symlink(o.Target, p))
+		case "chmod":
+			must(os.Chmod(p, os.FileMode(o.Mode)))
+		case "rename":
+			must(os.Rename(p, filepath.Join(merged, o.Target)))
+		default:
+			panic("op " + o.Op)
+		}
+	}
+	var view []map[string]any
+	for _, m := range manifest(merged, false, time.Now()) {
+		view = append(view, map[string]any{"path": m["path"], "type": m["type"], "data": m["data"], "target": m["target"]})
+	}
+	must(unix.Unmount(merged, 0))
+	var paths []string
+	must(filepath.WalkDir(up, func(p string, _ fs.DirEntry, err error) error {
+		paths = append(paths, p)
+		return err
+	}))
+	for i := len(paths) - 1; i >= 0; i-- {
+		ts := []unix.Timespec{{Sec: 1500000000}, {Sec: 1500000000}}
+		must(unix.UtimesNanoAt(unix.AT_FDCWD, paths[i], ts, unix.AT_SYMLINK_NOFOLLOW))
+	}
+	return map[string]any{"merged": view}
+}
+
 func errText(err error, path, as string) any {
 	if err == nil {
 		return nil
@@ -469,7 +556,7 @@ func main() {
 	must(err)
 	var c cases
 	must(json.Unmarshal(raw, &c))
-	for _, dir := range []string{"pack", "unpack", "rebase"} {
+	for _, dir := range []string{"pack", "unpack", "rebase", "layer"} {
 		must(os.RemoveAll(filepath.Join(testdata, dir)))
 		must(os.MkdirAll(filepath.Join(testdata, dir), 0o755))
 	}
@@ -487,10 +574,24 @@ func main() {
 		return p
 	}
 
+	overlays := map[string]any{}
+	uppers := map[string]string{}
+	for _, o := range c.Over {
+		dir := filepath.Join(work, "overlay-"+o.Name)
+		overlays[o.Name] = makeOverlay(dir, o, c.Trees[o.Lower])
+		uppers[o.Name] = filepath.Join(dir, "upper")
+	}
+	answers["overlays"] = overlays
+
 	packs := map[string][]byte{}
 	packAnswers := map[string]any{}
 	for _, pc := range c.Pack {
-		root := tree(pc.Tree)
+		var root string
+		if pc.Overlay != "" {
+			root = uppers[pc.Overlay]
+		} else {
+			root = tree(pc.Tree)
+		}
 		src := root
 		if pc.Src != "" {
 			src = root + "/" + pc.Src
@@ -504,6 +605,7 @@ func main() {
 				ExcludePatterns:  pc.Opts.Exclude,
 				IncludeSourceDir: pc.Opts.IncludeSourceDir,
 				RebaseNames:      pc.Opts.Rebase,
+				WhiteoutFormat:   whiteout(pc.Opts.Whiteout),
 			}
 			if pc.Opts.Chown != nil {
 				opts.ChownOpts = &archive.ChownOpts{UID: pc.Opts.Chown[0], GID: pc.Opts.Chown[1]}
@@ -541,6 +643,7 @@ func main() {
 			NoOverwriteDirNonDir: uc.Opts.NoOverwriteDirNonDir,
 			BestEffortXattrs:     uc.Opts.BestEffortXattrs,
 			ExcludePatterns:      uc.Opts.Exclude,
+			WhiteoutFormat:       whiteout(uc.Opts.Whiteout),
 		}
 		if uc.Opts.Chown != nil {
 			opts.ChownOpts = &archive.ChownOpts{UID: uc.Opts.Chown[0], GID: uc.Opts.Chown[1]}
@@ -552,6 +655,32 @@ func main() {
 		}
 	}
 	answers["unpack"] = unpackAnswers
+
+	layerAnswers := map[string]any{}
+	for _, lc := range c.Layer {
+		b := makeTar(lc.Input, testdata, packs, inputs)
+		inputs[lc.Name] = b
+		if lc.Input.GoTar == "" && lc.Input.Pack == "" {
+			must(os.WriteFile(filepath.Join(testdata, "layer", lc.Name+".tar"), b, 0o644))
+		}
+		dest := filepath.Join(work, "layer-"+lc.Name, "dest")
+		if lc.Pre != "" {
+			build(dest, c.Trees[lc.Pre])
+		} else {
+			must(os.MkdirAll(dest, 0o755))
+		}
+		opts := &archive.TarOptions{NoLchown: lc.Opts.NoLchown, BestEffortXattrs: lc.Opts.BestEffortXattrs}
+		if lc.Opts.Chown != nil {
+			opts.ChownOpts = &archive.ChownOpts{UID: lc.Opts.Chown[0], GID: lc.Opts.Chown[1]}
+		}
+		size, err := archive.ApplyUncompressedLayer(dest, bytes.NewReader(b), opts)
+		layerAnswers[lc.Name] = map[string]any{
+			"error":    errText(err, dest, "<dest>"),
+			"size":     size,
+			"manifest": manifest(filepath.Dir(dest), lc.Owners, now),
+		}
+	}
+	answers["layer"] = layerAnswers
 
 	copyAnswers := map[string]any{}
 	for _, cc := range c.Copy {
@@ -586,6 +715,11 @@ func main() {
 	for _, uc := range c.Unpack {
 		if uc.Input.GoTar == "" && uc.Input.Pack == "" {
 			reads["unpack/"+uc.Name+".tar"] = dump(inputs[uc.Name])
+		}
+	}
+	for _, lc := range c.Layer {
+		if lc.Input.GoTar == "" && lc.Input.Pack == "" {
+			reads["layer/"+lc.Name+".tar"] = dump(inputs[lc.Name])
 		}
 	}
 	answers["read"] = reads

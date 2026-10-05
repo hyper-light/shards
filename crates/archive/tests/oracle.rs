@@ -32,7 +32,7 @@ use shards_archive::copy::{
     tar_resource_rebase,
 };
 use shards_archive::tar::{Header, Reader, Time};
-use shards_archive::{PackOptions, UnpackOptions, pack, unpack};
+use shards_archive::{PackOptions, UnpackOptions, WhiteoutFormat, apply_layer, pack, unpack};
 
 fn testdata() -> PathBuf {
     match std::env::var_os("SHARDS_ARCHIVE_TESTDATA") {
@@ -564,6 +564,7 @@ fn pack_opts(o: &Value) -> PackOptions {
             .as_array()
             .map(|c| (c[0].as_i64().unwrap(), c[1].as_i64().unwrap())),
         include_source_dir: o["include_source_dir"].as_bool().unwrap_or(false),
+        whiteout: whiteout(o),
         rebase_names: o["rebase"]
             .as_object()
             .map(|m| {
@@ -573,6 +574,26 @@ fn pack_opts(o: &Value) -> PackOptions {
             })
             .unwrap_or_default(),
     }
+}
+
+fn whiteout(o: &Value) -> WhiteoutFormat {
+    match o["whiteout"].as_str() {
+        Some("overlay") => WhiteoutFormat::Overlay,
+        _ => WhiteoutFormat::Aufs,
+    }
+}
+
+/// Where scripts/archive/generate's Go side left the overlayfs upper directories it made
+/// in the container; elsewhere there are none.
+fn overlay_upper(name: &str) -> Option<PathBuf> {
+    let dir = std::env::var_os("SHARDS_ARCHIVE_OVERLAY");
+    if dir.is_none() {
+        assert!(
+            std::env::var_os("SHARDS_ARCHIVE_ROOT").is_none(),
+            "SHARDS_ARCHIVE_ROOT is set, but SHARDS_ARCHIVE_OVERLAY is not"
+        );
+    }
+    Some(PathBuf::from(dir?).join(format!("overlay-{name}")).join("upper"))
 }
 
 #[test]
@@ -589,7 +610,18 @@ fn pack_as_go_archive() {
             continue;
         }
         let name = case["name"].as_str().unwrap();
-        let tree = case["tree"].as_str().unwrap();
+        if let Some(o) = case["overlay"].as_str() {
+            let Some(upper) = overlay_upper(o) else {
+                println!("SKIP: {name} needs the overlayfs upper directory the generator makes");
+                continue;
+            };
+            built.insert(format!("overlay:{o}"), upper);
+        }
+        let tree = match case["overlay"].as_str() {
+            Some(o) => format!("overlay:{o}"),
+            None => case["tree"].as_str().unwrap().to_string(),
+        };
+        let tree = tree.as_str();
         let root = built
             .entry(tree.to_string())
             .or_insert_with(|| {
@@ -636,6 +668,11 @@ fn pack_as_go_archive() {
 
 /// A case's input archive, as oracle/main.go's makeTar found or made it.
 fn input(case: &Value, name: &str) -> Vec<u8> {
+    input_in(case, name, "unpack")
+}
+
+/// A case's input archive; one made by Go's tar.Writer is in `dir`.
+fn input_in(case: &Value, name: &str, dir: &str) -> Vec<u8> {
     let i = &case["input"];
     if let Some(f) = i["go_tar"].as_str() {
         return fs::read(testdata().join("go-tar").join(f)).unwrap();
@@ -654,7 +691,40 @@ fn input(case: &Value, name: &str) -> Vec<u8> {
             .clone();
         return input(&uc, u);
     }
-    fs::read(testdata().join("unpack").join(format!("{name}.tar"))).unwrap()
+    fs::read(testdata().join(dir).join(format!("{name}.tar"))).unwrap()
+}
+
+fn unpack_opts(o: &Value) -> UnpackOptions {
+    UnpackOptions {
+        no_lchown: o["no_lchown"].as_bool().unwrap_or(false),
+        chown: o["chown"]
+            .as_array()
+            .map(|c| (c[0].as_i64().unwrap(), c[1].as_i64().unwrap())),
+        no_overwrite_dir_non_dir: o["no_overwrite_dir_non_dir"].as_bool().unwrap_or(false),
+        best_effort_xattrs: o["best_effort_xattrs"].as_bool().unwrap_or(false),
+        exclude_patterns: o["exclude"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|s| s.as_str().unwrap().as_bytes().to_vec())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        whiteout: whiteout(o),
+    }
+}
+
+/// A case's destination, `top/dest`: its `pre` tree, or an empty directory.
+fn destination(case: &Value, top: &Path, trees: &serde_json::Map<String, Value>) -> PathBuf {
+    let dest = top.join("dest");
+    match case["pre"].as_str() {
+        Some(pre) => build(&dest, trees[pre].as_array().unwrap()),
+        None => {
+            fs::create_dir_all(&dest).unwrap();
+            fs::set_permissions(&dest, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        }
+    }
+    dest
 }
 
 #[test]
@@ -672,31 +742,8 @@ fn unpack_as_go_archive() {
         let name = case["name"].as_str().unwrap();
         let archive = input(case, name);
         let top = work.join(format!("unpack-{name}"));
-        let dest = top.join("dest");
-        match case["pre"].as_str() {
-            Some(pre) => build(&dest, trees[pre].as_array().unwrap()),
-            None => {
-                fs::create_dir_all(&dest).unwrap();
-                fs::set_permissions(&dest, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-            }
-        }
-        let o = &case["opts"];
-        let opts = UnpackOptions {
-            no_lchown: o["no_lchown"].as_bool().unwrap_or(false),
-            chown: o["chown"]
-                .as_array()
-                .map(|c| (c[0].as_i64().unwrap(), c[1].as_i64().unwrap())),
-            no_overwrite_dir_non_dir: o["no_overwrite_dir_non_dir"].as_bool().unwrap_or(false),
-            best_effort_xattrs: o["best_effort_xattrs"].as_bool().unwrap_or(false),
-            exclude_patterns: o["exclude"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .map(|s| s.as_str().unwrap().as_bytes().to_vec())
-                        .collect()
-                })
-                .unwrap_or_default(),
-        };
+        let dest = destination(case, &top, &trees);
+        let opts = unpack_opts(&case["opts"]);
         let err = unpack(archive.as_slice(), &dest, &opts).err();
         let got = json!({
             "error": error_text(err, &dest, "<dest>"),
@@ -714,6 +761,57 @@ fn unpack_as_go_archive() {
                 "unpack {name}: tree differs\n  go:   {}\n  rust: {}",
                 want["manifest"], got["manifest"]
             ));
+        }
+    }
+    let _ = fs::remove_dir_all(&work);
+    report(failures);
+}
+
+#[test]
+fn layer_as_go_archive() {
+    umask();
+    let cases = load("cases.json");
+    let answers = load("answers.json");
+    let trees = trees();
+    let work = tmp("layer");
+    let mut failures = Vec::new();
+    for case in cases["layer"].as_array().unwrap() {
+        if !runs(case) {
+            continue;
+        }
+        let name = case["name"].as_str().unwrap();
+        let archive = input_in(case, name, "layer");
+        let top = work.join(format!("layer-{name}"));
+        let dest = destination(case, &top, &trees);
+        let (size, err) = match apply_layer(archive.as_slice(), &dest, &unpack_opts(&case["opts"])) {
+            Ok(size) => (size, None),
+            Err(e) => (0, Some(e)),
+        };
+        let got = json!({
+            "error": error_text(err, &dest, "<dest>"),
+            "size": size,
+            "manifest": manifest(&top, case["owners"].as_bool().unwrap_or(false)),
+        });
+        let want = &answers["layer"][name];
+        if &got != want {
+            failures.push(format!("layer {name}:\n  go:   {want}\n  rust: {got}"));
+        }
+        // A saved overlayfs upper directory applied over its lower tree is what the
+        // kernel showed through the mount.
+        if let Some(o) = case["merged"].as_str() {
+            let applied: Vec<Value> = manifest(&dest, false)
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| json!({"path": m["path"], "type": m["type"], "data": m["data"], "target": m["target"]}))
+                .collect();
+            let merged = &answers["overlays"][o]["merged"];
+            if &Value::Array(applied.clone()) != merged {
+                failures.push(format!(
+                    "layer {name}: not overlayfs' merged view\n  kernel: {merged}\n  rust:   {}",
+                    Value::Array(applied)
+                ));
+            }
         }
     }
     let _ = fs::remove_dir_all(&work);

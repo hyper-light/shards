@@ -3542,6 +3542,2898 @@
    ]
   }
  },
+ "layer": {
+  "layer-dir-over-file": {
+   "error": null,
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "data": "9ce8fb720ea0b8ce",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gone",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir",
+     "type": "dir"
+    },
+    {
+     "data": "af63dc4c8601ec8c",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/a",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub",
+     "type": "dir"
+    },
+    {
+     "data": "af63df4c8601f1a5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub/b",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "type": "dir"
+    },
+    {
+     "data": "af63f54c86021707",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt/x",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir"
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "data": "5e9a955df01906fb",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "size": 8,
+     "type": "file"
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/renamed-from",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir"
+    },
+    {
+     "data": "08950407b53f0cfc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/gone2",
+     "size": 2,
+     "type": "file"
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/stay",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir"
+    },
+    {
+     "data": "e6303cb458b86190",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 4,
+     "type": "file"
+    }
+   ],
+   "size": 9
+  },
+  "layer-escape": {
+   "error": "invalid entry name \"../.wh.x\"",
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "data": "9ce8fb720ea0b8ce",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gone",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir",
+     "type": "dir"
+    },
+    {
+     "data": "af63dc4c8601ec8c",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/a",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub",
+     "type": "dir"
+    },
+    {
+     "data": "af63df4c8601f1a5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub/b",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "1a0fad1921d08076",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir"
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "data": "08b05d07b5566bef",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/ok",
+     "size": 2,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir"
+    },
+    {
+     "data": "af63ac4c86019afc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/old1",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir",
+     "type": "dir"
+    },
+    {
+     "data": "af63f54c86021707",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir/x",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/renamed-from",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir"
+    },
+    {
+     "data": "08950407b53f0cfc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/gone2",
+     "size": 2,
+     "type": "file"
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/stay",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir"
+    },
+    {
+     "data": "e6303cb458b86190",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 4,
+     "type": "file"
+    }
+   ],
+   "size": 0
+  },
+  "layer-global": {
+   "error": null,
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "data": "af63dc4c8601ec8c",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/after",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "9ce8fb720ea0b8ce",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gone",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir",
+     "type": "dir"
+    },
+    {
+     "data": "af63dc4c8601ec8c",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/a",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub",
+     "type": "dir"
+    },
+    {
+     "data": "af63df4c8601f1a5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub/b",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "1a0fad1921d08076",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir"
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir"
+    },
+    {
+     "data": "af63ac4c86019afc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/old1",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir",
+     "type": "dir"
+    },
+    {
+     "data": "af63f54c86021707",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir/x",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/renamed-from",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir"
+    },
+    {
+     "data": "08950407b53f0cfc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/gone2",
+     "size": 2,
+     "type": "file"
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/stay",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir"
+    },
+    {
+     "data": "e6303cb458b86190",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 4,
+     "type": "file"
+    }
+   ],
+   "size": 1
+  },
+  "layer-hand": {
+   "error": null,
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest/deep",
+     "type": "dir"
+    },
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest/deep/implied",
+     "type": "dir"
+    },
+    {
+     "data": "af7bfe15af02b5cf",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gone",
+     "size": 5,
+     "type": "file"
+    },
+    {
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "target": "untouched/file",
+     "type": "symlink"
+    },
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest/notopq",
+     "type": "dir"
+    },
+    {
+     "mode": 448,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir"
+    },
+    {
+     "data": "08b35207b5588f15",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/newfile",
+     "size": 2,
+     "type": "file"
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/renamed-from",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest/sub",
+     "type": "dir"
+    },
+    {
+     "data": "08950407b53f0cfc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/gone2",
+     "size": 2,
+     "type": "file"
+    },
+    {
+     "mode": 448,
+     "mtime": [
+      1100000000,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir"
+    },
+    {
+     "data": "e6303cb458b86190",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 4,
+     "type": "file"
+    }
+   ],
+   "size": 15
+  },
+  "layer-opaque-new-dir": {
+   "error": null,
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest/nodir",
+     "type": "dir"
+    },
+    {
+     "data": "af63db4c8601ead9",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/nodir/f",
+     "size": 1,
+     "type": "file"
+    }
+   ],
+   "size": 1
+  },
+  "layer-owners": {
+   "error": null,
+   "manifest": [
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "9ce8fb720ea0b8ce",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gone",
+     "size": 4,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "af63dc4c8601ec8c",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/a",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "af63df4c8601f1a5",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub/b",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "data": "1a0fad1921d08076",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "data": "af63e24c8601f6be",
+     "gid": 1000,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/o",
+     "size": 1,
+     "type": "file",
+     "uid": 1000
+    },
+    {
+     "gid": 1000,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/od",
+     "type": "dir",
+     "uid": 1000
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest/od/implied",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "af63f54c86021707",
+     "gid": 9,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/od/implied/x",
+     "size": 1,
+     "type": "file",
+     "uid": 9
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "af63ac4c86019afc",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/old1",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "af63f54c86021707",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir/x",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/renamed-from",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "08950407b53f0cfc",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/gone2",
+     "size": 2,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/stay",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "e6303cb458b86190",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 4,
+     "type": "file",
+     "uid": 0
+    }
+   ],
+   "size": 2
+  },
+  "layer-plnk": {
+   "error": null,
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "data": "af63dc4c8601ec8c",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/after",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "9ce8fb720ea0b8ce",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gone",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir",
+     "type": "dir"
+    },
+    {
+     "data": "af63dc4c8601ec8c",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/a",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub",
+     "type": "dir"
+    },
+    {
+     "data": "af63df4c8601f1a5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub/b",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "55a0e9c5bbc2f9a0",
+     "mode": 416,
+     "mtime": [
+      1200000000,
+      0
+     ],
+     "path": "dest/hl",
+     "size": 6,
+     "type": "file"
+    },
+    {
+     "data": "55a0e9c5bbc2f9a0",
+     "mode": 416,
+     "mtime": [
+      1200000000,
+      0
+     ],
+     "path": "dest/hl2",
+     "size": 6,
+     "type": "file"
+    },
+    {
+     "data": "1a0fad1921d08076",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir"
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir"
+    },
+    {
+     "data": "af63ac4c86019afc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/old1",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir",
+     "type": "dir"
+    },
+    {
+     "data": "af63f54c86021707",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir/x",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/renamed-from",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir"
+    },
+    {
+     "data": "08950407b53f0cfc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/gone2",
+     "size": 2,
+     "type": "file"
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/stay",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir"
+    },
+    {
+     "data": "e6303cb458b86190",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 4,
+     "type": "file"
+    }
+   ],
+   "size": 14
+  },
+  "layer-plnk-abs": {
+   "error": "linkat .wh..wh.plnk/1234 hl: no such file or directory",
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "data": "9ce8fb720ea0b8ce",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gone",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir",
+     "type": "dir"
+    },
+    {
+     "data": "af63dc4c8601ec8c",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/a",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub",
+     "type": "dir"
+    },
+    {
+     "data": "af63df4c8601f1a5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub/b",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "1a0fad1921d08076",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir"
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir"
+    },
+    {
+     "data": "af63ac4c86019afc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/old1",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir",
+     "type": "dir"
+    },
+    {
+     "data": "af63f54c86021707",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir/x",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/renamed-from",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir"
+    },
+    {
+     "data": "08950407b53f0cfc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/gone2",
+     "size": 2,
+     "type": "file"
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/stay",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir"
+    },
+    {
+     "data": "e6303cb458b86190",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 4,
+     "type": "file"
+    }
+   ],
+   "size": 0
+  },
+  "layer-plnk-missing": {
+   "error": "invalid aufs hardlink",
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "data": "9ce8fb720ea0b8ce",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gone",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir",
+     "type": "dir"
+    },
+    {
+     "data": "af63dc4c8601ec8c",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/a",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub",
+     "type": "dir"
+    },
+    {
+     "data": "af63df4c8601f1a5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub/b",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "1a0fad1921d08076",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir"
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir"
+    },
+    {
+     "data": "af63ac4c86019afc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/old1",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir",
+     "type": "dir"
+    },
+    {
+     "data": "af63f54c86021707",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir/x",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/renamed-from",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir"
+    },
+    {
+     "data": "08950407b53f0cfc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/gone2",
+     "size": 2,
+     "type": "file"
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/stay",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir"
+    },
+    {
+     "data": "e6303cb458b86190",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 4,
+     "type": "file"
+    }
+   ],
+   "size": 0
+  },
+  "layer-real": {
+   "error": null,
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "data": "2138d5192571b731",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file"
+    },
+    {
+     "data": "fcd500563d7a36cf",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/new.txt",
+     "size": 5,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/newdir",
+     "type": "dir"
+    },
+    {
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/newdir/l",
+     "target": "../keep.txt",
+     "type": "symlink"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir"
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "mode": 384,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir"
+    },
+    {
+     "data": "af63e34c8601f871",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/opq/new",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/renamed-to",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir"
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/stay",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir"
+    },
+    {
+     "data": "693f1fb78d21cf70",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 9,
+     "type": "file"
+    }
+   ],
+   "size": 23
+  },
+  "layer-real-owners": {
+   "error": null,
+   "manifest": [
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "2138d5192571b731",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "data": "fcd500563d7a36cf",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/new.txt",
+     "size": 5,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/newdir",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/newdir/l",
+     "target": "../keep.txt",
+     "type": "symlink",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "gid": 0,
+     "mode": 384,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "af63e34c8601f871",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/opq/new",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/renamed-to",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/stay",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "693f1fb78d21cf70",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 9,
+     "type": "file",
+     "uid": 0
+    }
+   ],
+   "size": 23
+  },
+  "layer-root-opaque": {
+   "error": null,
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "data": "af63dc4c8601ec8c",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/a",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "af63df4c8601f1a5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/b",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "af63e64c8601fd8a",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 1,
+     "type": "file"
+    }
+   ],
+   "size": 3
+  },
+  "layer-upper": {
+   "error": null,
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/emptyopq",
+     "type": "dir"
+    },
+    {
+     "data": "af63db4c8601ead9",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/fileopq",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "2138d5192571b731",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir"
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir"
+    },
+    {
+     "data": "af63e34c8601f871",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/new",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/renamed-from",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 488,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir"
+    },
+    {
+     "major": 1,
+     "minor": 3,
+     "mode": 438,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/dev",
+     "type": "char"
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/stay",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir"
+    },
+    {
+     "data": "e6303cb458b86190",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 4,
+     "type": "file"
+    }
+   ],
+   "size": 9
+  },
+  "layer-upper-aufs": {
+   "error": null,
+   "manifest": [
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/emptyopq",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "af63db4c8601ead9",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/fileopq",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gone",
+     "type": "char",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir",
+     "type": "char",
+     "uid": 0
+    },
+    {
+     "data": "2138d5192571b731",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "gid": 0,
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "af63e34c8601f871",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/new",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "data": "af63ac4c86019afc",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/old1",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "af63f54c86021707",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir/x",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/renamed-from",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 488,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "major": 1,
+     "minor": 3,
+     "mode": 438,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/dev",
+     "type": "char",
+     "uid": 0
+    },
+    {
+     "gid": 6,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/gone2",
+     "type": "char",
+     "uid": 5
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/stay",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "e6303cb458b86190",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 4,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "link": "dest/gone",
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/wh-linked",
+     "type": "char",
+     "uid": 0
+    }
+   ],
+   "size": 9
+  },
+  "layer-whiteout-abs-symlink": {
+   "error": null,
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "data": "9ce8fb720ea0b8ce",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gone",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir",
+     "type": "dir"
+    },
+    {
+     "data": "af63dc4c8601ec8c",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/a",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub",
+     "type": "dir"
+    },
+    {
+     "data": "af63df4c8601f1a5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub/b",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/l",
+     "target": "/",
+     "type": "symlink"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir"
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir"
+    },
+    {
+     "data": "af63ac4c86019afc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/old1",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir",
+     "type": "dir"
+    },
+    {
+     "data": "af63f54c86021707",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir/x",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/renamed-from",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir"
+    },
+    {
+     "data": "08950407b53f0cfc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/gone2",
+     "size": 2,
+     "type": "file"
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/stay",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir"
+    },
+    {
+     "data": "e6303cb458b86190",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 4,
+     "type": "file"
+    }
+   ],
+   "size": 0
+  },
+  "layer-whiteout-rel-escape": {
+   "error": "statat r: path escapes from parent",
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "data": "9ce8fb720ea0b8ce",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gone",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir",
+     "type": "dir"
+    },
+    {
+     "data": "af63dc4c8601ec8c",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/a",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub",
+     "type": "dir"
+    },
+    {
+     "data": "af63df4c8601f1a5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/gonedir/sub/b",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "1a0fad1921d08076",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir"
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir"
+    },
+    {
+     "data": "af63ac4c86019afc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/old1",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir",
+     "type": "dir"
+    },
+    {
+     "data": "af63f54c86021707",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/olddir/x",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/r",
+     "target": "..",
+     "type": "symlink"
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/renamed-from",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir"
+    },
+    {
+     "data": "08950407b53f0cfc",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/gone2",
+     "size": 2,
+     "type": "file"
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/stay",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir"
+    },
+    {
+     "data": "e6303cb458b86190",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 4,
+     "type": "file"
+    }
+   ],
+   "size": 0
+  }
+ },
+ "overlays": {
+  "real": {
+   "merged": [
+    {
+     "data": "2138d5192571b731",
+     "path": "keep.txt",
+     "target": null,
+     "type": "file"
+    },
+    {
+     "data": "fcd500563d7a36cf",
+     "path": "new.txt",
+     "target": null,
+     "type": "file"
+    },
+    {
+     "data": null,
+     "path": "newdir",
+     "target": null,
+     "type": "dir"
+    },
+    {
+     "data": null,
+     "path": "newdir/l",
+     "target": "../keep.txt",
+     "type": "symlink"
+    },
+    {
+     "data": null,
+     "path": "notopq",
+     "target": null,
+     "type": "dir"
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "path": "notopq/stay",
+     "target": null,
+     "type": "file"
+    },
+    {
+     "data": null,
+     "path": "opq",
+     "target": null,
+     "type": "dir"
+    },
+    {
+     "data": "af63e34c8601f871",
+     "path": "opq/new",
+     "target": null,
+     "type": "file"
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "path": "renamed-to",
+     "target": null,
+     "type": "file"
+    },
+    {
+     "data": null,
+     "path": "sub",
+     "target": null,
+     "type": "dir"
+    },
+    {
+     "data": "af63ee4c86020b22",
+     "path": "sub/stay",
+     "target": null,
+     "type": "file"
+    },
+    {
+     "data": null,
+     "path": "untouched",
+     "target": null,
+     "type": "dir"
+    },
+    {
+     "data": "693f1fb78d21cf70",
+     "path": "untouched/file",
+     "target": null,
+     "type": "file"
+    }
+   ]
+  }
+ },
  "pack": {
   "full": {
    "error": null
@@ -3576,6 +6468,12 @@
   "plain-source-dir": {
    "error": null
   },
+  "real-aufs": {
+   "error": null
+  },
+  "real-overlay": {
+   "error": null
+  },
   "resource-dir": {
    "error": null
   },
@@ -3589,6 +6487,21 @@
    "error": "lstat \u003croot\u003e/nope: no such file or directory"
   },
   "resource-symlink": {
+   "error": null
+  },
+  "upper-aufs": {
+   "error": null
+  },
+  "upper-overlay": {
+   "error": null
+  },
+  "upper-overlay-chown": {
+   "error": null
+  },
+  "upper-overlay-rebase": {
+   "error": null
+  },
+  "upper-overlay-source-dir": {
    "error": null
   }
  },
@@ -5614,6 +8527,1022 @@
      "typeflag": 48,
      "uid": 1000,
      "uname": "alex"
+    }
+   ]
+  },
+  "layer/layer-dir-over-file.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "keep.txt/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63f54c86021707",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "keep.txt/x",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "5e9a955df01906fb",
+     "data_len": 8,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "opq",
+     "pax": null,
+     "size": 8,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "layer/layer-escape.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "08b05d07b5566bef",
+     "data_len": 2,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "ok",
+     "pax": null,
+     "size": 2,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "../.wh.x",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "layer/layer-global.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 4,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 0,
+     "mtime": null,
+     "name": "GlobalHead.0.0",
+     "pax": [
+      [
+       "comment",
+       "global"
+      ]
+     ],
+     "size": 0,
+     "typeflag": 103,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63dc4c8601ec8c",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "after",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "layer/layer-hand.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.nothere",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.gonedir",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 448,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "opq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "opq/.wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "08b35207b5588f15",
+     "data_len": 2,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "opq/newfile",
+     "pax": null,
+     "size": 2,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "notopq/.wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.gone",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af7bfe15af02b5cf",
+     "data_len": 5,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "gone",
+     "pax": null,
+     "size": 5,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "e7f16644073d5f45",
+     "data_len": 8,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "sub/stay",
+     "pax": null,
+     "size": 8,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "sub/.wh.stay",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "deep/implied/.wh.x",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 448,
+     "mtime": [
+      1100000000,
+      0
+     ],
+     "name": "untouched/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "untouched/file",
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "keep.txt",
+     "pax": null,
+     "size": 0,
+     "typeflag": 50,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "layer/layer-opaque-new-dir.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "nodir/.wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63db4c8601ead9",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "nodir/f",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "layer/layer-owners.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63e24c8601f6be",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 1000,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "o",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 1000,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 1000,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "od/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 1000,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63f54c86021707",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 9,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "od/implied/x",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 9,
+     "uname": ""
+    }
+   ]
+  },
+  "layer/layer-plnk-abs.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "55a0e9c5bbc2f9a0",
+     "data_len": 6,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh..wh.plnk/1234",
+     "pax": null,
+     "size": 6,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "/.wh..wh.plnk/1234",
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "hl",
+     "pax": null,
+     "size": 0,
+     "typeflag": 49,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "layer/layer-plnk-missing.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": ".wh..wh.plnk/999",
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "hl",
+     "pax": null,
+     "size": 0,
+     "typeflag": 49,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "layer/layer-plnk.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh..wh.plnk/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "55a0e9c5bbc2f9a0",
+     "data_len": 6,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 416,
+     "mtime": [
+      1200000000,
+      0
+     ],
+     "name": ".wh..wh.plnk/1234",
+     "pax": null,
+     "size": 6,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": ".wh..wh.plnk/1234",
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "hl",
+     "pax": null,
+     "size": 0,
+     "typeflag": 49,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": ".wh..wh.plnk/./1234",
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "hl2",
+     "pax": null,
+     "size": 0,
+     "typeflag": 49,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "eee13c69133b70b7",
+     "data_len": 7,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh..wh.other",
+     "pax": null,
+     "size": 7,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63dc4c8601ec8c",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "after",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "layer/layer-root-opaque.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63dc4c8601ec8c",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "a",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63e64c8601fd8a",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "keep.txt",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63df4c8601f1a5",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "b",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "layer/layer-whiteout-abs-symlink.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "/",
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "l",
+     "pax": null,
+     "size": 0,
+     "typeflag": 50,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "l/.wh.keep.txt",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "layer/layer-whiteout-rel-escape.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "..",
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "r",
+     "pax": null,
+     "size": 0,
+     "typeflag": 50,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "r/.wh.x",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
     }
    ]
   },
@@ -9817,6 +13746,773 @@
     }
    ]
   },
+  "pack/real-aufs.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 0,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "gone",
+     "pax": null,
+     "size": 0,
+     "typeflag": 51,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "gone",
+     "mode": 0,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "gonedir",
+     "pax": null,
+     "size": 0,
+     "typeflag": 49,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "2138d5192571b731",
+     "data_len": 3,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "keep.txt",
+     "pax": null,
+     "size": 3,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "fcd500563d7a36cf",
+     "data_len": 5,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "new.txt",
+     "pax": null,
+     "size": 5,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "newdir/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "../keep.txt",
+     "mode": 511,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "newdir/l",
+     "pax": null,
+     "size": 0,
+     "typeflag": 50,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "notopq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "aefd4d191d95cde0",
+     "data_len": 4,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "notopq/stay",
+     "pax": null,
+     "size": 4,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "opq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63e34c8601f871",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "opq/new",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 0,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "renamed-from",
+     "pax": null,
+     "size": 0,
+     "typeflag": 51,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63ef4c86020cd5",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "renamed-to",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "sub/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "gone",
+     "mode": 0,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "sub/gone2",
+     "pax": null,
+     "size": 0,
+     "typeflag": 49,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "untouched/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "693f1fb78d21cf70",
+     "data_len": 9,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "untouched/file",
+     "pax": null,
+     "size": 9,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "pack/real-overlay.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": ".wh.gone",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "gone",
+     "mode": 384,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": ".wh.gonedir",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "2138d5192571b731",
+     "data_len": 3,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "keep.txt",
+     "pax": null,
+     "size": 3,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "fcd500563d7a36cf",
+     "data_len": 5,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "new.txt",
+     "pax": null,
+     "size": 5,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "newdir/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "../keep.txt",
+     "mode": 511,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "newdir/l",
+     "pax": null,
+     "size": 0,
+     "typeflag": 50,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "notopq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "aefd4d191d95cde0",
+     "data_len": 4,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "notopq/stay",
+     "pax": null,
+     "size": 4,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "opq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      0,
+      0
+     ],
+     "name": "opq/.wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63e34c8601f871",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "opq/new",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": ".wh.renamed-from",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63ef4c86020cd5",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "renamed-to",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "sub/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "gone",
+     "mode": 384,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "sub/.wh.gone2",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "untouched/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "693f1fb78d21cf70",
+     "data_len": 9,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "name": "untouched/file",
+     "pax": null,
+     "size": 9,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
   "pack/resource-dir.tar": {
    "entries": [
     {
@@ -10150,6 +14846,1452 @@
      "pax": null,
      "size": 0,
      "typeflag": 50,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "pack/upper-aufs.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "emptyopq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63db4c8601ead9",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "fileopq",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "gone",
+     "pax": null,
+     "size": 0,
+     "typeflag": 51,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "gonedir",
+     "pax": null,
+     "size": 0,
+     "typeflag": 51,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "2138d5192571b731",
+     "data_len": 3,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "keep.txt",
+     "pax": null,
+     "size": 3,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "notopq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "aefd4d191d95cde0",
+     "data_len": 4,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "notopq/stay",
+     "pax": null,
+     "size": 4,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "opq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63e34c8601f871",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "opq/new",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 488,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "sub/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 1,
+     "devminor": 3,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 438,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "sub/dev",
+     "pax": null,
+     "size": 0,
+     "typeflag": 51,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 6,
+     "gname": "",
+     "linkname": "",
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "sub/gone2",
+     "pax": null,
+     "size": 0,
+     "typeflag": 51,
+     "uid": 5,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "gone",
+     "mode": 0,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "wh-linked",
+     "pax": null,
+     "size": 0,
+     "typeflag": 49,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "pack/upper-overlay-chown.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "emptyopq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      0,
+      0
+     ],
+     "name": "emptyopq/.wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63db4c8601ead9",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "fileopq",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.gone",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.gonedir",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "2138d5192571b731",
+     "data_len": 3,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "keep.txt",
+     "pax": null,
+     "size": 3,
+     "typeflag": 48,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "notopq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "aefd4d191d95cde0",
+     "data_len": 4,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "notopq/stay",
+     "pax": null,
+     "size": 4,
+     "typeflag": 48,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "opq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      0,
+      0
+     ],
+     "name": "opq/.wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63e34c8601f871",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "opq/new",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 488,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "sub/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 1,
+     "devminor": 3,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 438,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "sub/dev",
+     "pax": null,
+     "size": 0,
+     "typeflag": 51,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "sub/.wh.gone2",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 3,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 4,
+     "gname": "",
+     "linkname": "gone",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.wh-linked",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 3,
+     "uname": ""
+    }
+   ]
+  },
+  "pack/upper-overlay-rebase.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "x/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      0,
+      0
+     ],
+     "name": "x/.wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63e34c8601f871",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "x/new",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "pack/upper-overlay-source-dir.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "./",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "./emptyopq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      0,
+      0
+     ],
+     "name": "emptyopq/.wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63db4c8601ead9",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "./fileopq",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.gone",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.gonedir",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "2138d5192571b731",
+     "data_len": 3,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "./keep.txt",
+     "pax": null,
+     "size": 3,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "./notopq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "aefd4d191d95cde0",
+     "data_len": 4,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "./notopq/stay",
+     "pax": null,
+     "size": 4,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "./opq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      0,
+      0
+     ],
+     "name": "opq/.wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63e34c8601f871",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "./opq/new",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 488,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "./sub/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 1,
+     "devminor": 3,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 438,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "./sub/dev",
+     "pax": null,
+     "size": 0,
+     "typeflag": 51,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 6,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "sub/.wh.gone2",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 5,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "./gone",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.wh-linked",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "pack/upper-overlay.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "emptyopq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      0,
+      0
+     ],
+     "name": "emptyopq/.wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63db4c8601ead9",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "fileopq",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.gone",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.gonedir",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "2138d5192571b731",
+     "data_len": 3,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "keep.txt",
+     "pax": null,
+     "size": 3,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "notopq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "aefd4d191d95cde0",
+     "data_len": 4,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "notopq/stay",
+     "pax": null,
+     "size": 4,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "opq/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      0,
+      0
+     ],
+     "name": "opq/.wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63e34c8601f871",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "opq/new",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 488,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "sub/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 1,
+     "devminor": 3,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 438,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "sub/dev",
+     "pax": null,
+     "size": 0,
+     "typeflag": 51,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 6,
+     "gname": "",
+     "linkname": "",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "sub/.wh.gone2",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 5,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "gone",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.wh-linked",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
      "uid": 0,
      "uname": ""
     }
@@ -11639,6 +17781,348 @@
      "size": 0,
      "typeflag": 53,
      "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "unpack/overlay-exists.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.f",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "unpack/overlay-hand.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 6,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.a",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 5,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "d/",
+     "pax": null,
+     "size": 0,
+     "typeflag": 53,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "d/.wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63f54c86021707",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "d/x",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "e/.wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "f/.wh.g",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh..wh..opq",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63ed4c8602096f",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "plain",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "unpack/overlay-invalid-dot.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "a/.wh.",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "unpack/overlay-invalid.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "08b05d07b5566bef",
+     "data_len": 2,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "ok",
+     "pax": null,
+     "size": 2,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 0,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh..",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 0,
+     "uname": ""
+    }
+   ]
+  },
+  "unpack/overlay-no-lchown.tar": {
+   "entries": [
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "cbf29ce484222325",
+     "data_len": 0,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 6,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": ".wh.a",
+     "pax": null,
+     "size": 0,
+     "typeflag": 48,
+     "uid": 5,
+     "uname": ""
+    },
+    {
+     "atime": null,
+     "ctime": null,
+     "data": "af63df4c8601f1a5",
+     "data_len": 1,
+     "devmajor": 0,
+     "devminor": 0,
+     "format": 2,
+     "gid": 8,
+     "gname": "",
+     "linkname": "",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "name": "b",
+     "pax": null,
+     "size": 1,
+     "typeflag": 48,
+     "uid": 7,
      "uname": ""
     }
    ]
@@ -14356,6 +20840,773 @@
      "path": "dest/f",
      "size": 3,
      "type": "file"
+    }
+   ]
+  },
+  "overlay-as-aufs": {
+   "error": null,
+   "manifest": [
+    {
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir"
+    },
+    {
+     "data": "cbf29ce484222325",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/.wh.gone",
+     "size": 0,
+     "type": "file"
+    },
+    {
+     "data": "cbf29ce484222325",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/.wh.gonedir",
+     "size": 0,
+     "type": "file"
+    },
+    {
+     "data": "cbf29ce484222325",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/.wh.wh-linked",
+     "size": 0,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/emptyopq",
+     "type": "dir"
+    },
+    {
+     "data": "cbf29ce484222325",
+     "mode": 493,
+     "mtime": [
+      0,
+      0
+     ],
+     "path": "dest/emptyopq/.wh..wh..opq",
+     "size": 0,
+     "type": "file"
+    },
+    {
+     "data": "af63db4c8601ead9",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/fileopq",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "data": "2138d5192571b731",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir"
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file"
+    },
+    {
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir"
+    },
+    {
+     "data": "cbf29ce484222325",
+     "mode": 493,
+     "mtime": [
+      0,
+      0
+     ],
+     "path": "dest/opq/.wh..wh..opq",
+     "size": 0,
+     "type": "file"
+    },
+    {
+     "data": "af63e34c8601f871",
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/new",
+     "size": 1,
+     "type": "file"
+    },
+    {
+     "mode": 488,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir"
+    },
+    {
+     "data": "cbf29ce484222325",
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/.wh.gone2",
+     "size": 0,
+     "type": "file"
+    },
+    {
+     "major": 1,
+     "minor": 3,
+     "mode": 438,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/dev",
+     "type": "char"
+    }
+   ]
+  },
+  "overlay-exists": {
+   "error": "failed to mknod('f', S_IFCHR, 0): file exists",
+   "manifest": [
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 448,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/d",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "583876d75cd7d1d9",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/d/child",
+     "size": 4,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "data": "1a0fad1921d08076",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/f",
+     "size": 3,
+     "type": "file",
+     "uid": 0
+    }
+   ]
+  },
+  "overlay-from-real": {
+   "error": null,
+   "manifest": [
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": "now",
+     "path": "dest/gone",
+     "type": "char",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": "now",
+     "path": "dest/gonedir",
+     "type": "char",
+     "uid": 0
+    },
+    {
+     "data": "2138d5192571b731",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "data": "fcd500563d7a36cf",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/new.txt",
+     "size": 5,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/newdir",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/newdir/l",
+     "target": "../keep.txt",
+     "type": "symlink",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "gid": 0,
+     "mode": 384,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir",
+     "uid": 0,
+     "xattrs": {
+      "trusted.overlay.opaque": "79"
+     }
+    },
+    {
+     "data": "af63e34c8601f871",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/opq/new",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": "now",
+     "path": "dest/renamed-from",
+     "type": "char",
+     "uid": 0
+    },
+    {
+     "data": "af63ef4c86020cd5",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/renamed-to",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": "now",
+     "path": "dest/sub/gone2",
+     "type": "char",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/untouched",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "693f1fb78d21cf70",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1500000000,
+      0
+     ],
+     "path": "dest/untouched/file",
+     "size": 9,
+     "type": "file",
+     "uid": 0
+    }
+   ]
+  },
+  "overlay-from-upper": {
+   "error": null,
+   "manifest": [
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/emptyopq",
+     "type": "dir",
+     "uid": 0,
+     "xattrs": {
+      "trusted.overlay.opaque": "79"
+     }
+    },
+    {
+     "data": "af63db4c8601ead9",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/fileopq",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": "now",
+     "path": "dest/gone",
+     "type": "char",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": "now",
+     "path": "dest/gonedir",
+     "type": "char",
+     "uid": 0
+    },
+    {
+     "data": "2138d5192571b731",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/keep.txt",
+     "size": 3,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "aefd4d191d95cde0",
+     "gid": 0,
+     "mode": 384,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/notopq/stay",
+     "size": 4,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq",
+     "type": "dir",
+     "uid": 0,
+     "xattrs": {
+      "trusted.overlay.opaque": "79"
+     }
+    },
+    {
+     "data": "af63e34c8601f871",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/opq/new",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 488,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "major": 1,
+     "minor": 3,
+     "mode": 438,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/sub/dev",
+     "type": "char",
+     "uid": 0
+    },
+    {
+     "gid": 6,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": "now",
+     "path": "dest/sub/gone2",
+     "type": "char",
+     "uid": 5
+    },
+    {
+     "gid": 0,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": "now",
+     "path": "dest/wh-linked",
+     "type": "char",
+     "uid": 0
+    }
+   ]
+  },
+  "overlay-hand": {
+   "error": null,
+   "manifest": [
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir",
+     "uid": 0,
+     "xattrs": {
+      "trusted.overlay.opaque": "79"
+     }
+    },
+    {
+     "gid": 6,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": "now",
+     "path": "dest/a",
+     "type": "char",
+     "uid": 5
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/d",
+     "type": "dir",
+     "uid": 0,
+     "xattrs": {
+      "trusted.overlay.opaque": "79"
+     }
+    },
+    {
+     "data": "af63f54c86021707",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/d/x",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest/e",
+     "type": "dir",
+     "uid": 0,
+     "xattrs": {
+      "trusted.overlay.opaque": "79"
+     }
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest/f",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": "now",
+     "path": "dest/f/g",
+     "type": "char",
+     "uid": 0
+    },
+    {
+     "data": "af63ed4c8602096f",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/plain",
+     "size": 1,
+     "type": "file",
+     "uid": 0
+    }
+   ]
+  },
+  "overlay-invalid": {
+   "error": "invalid whiteout entry \".wh..\"",
+   "manifest": [
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "data": "08b05d07b5566bef",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/ok",
+     "size": 2,
+     "type": "file",
+     "uid": 0
+    }
+   ]
+  },
+  "overlay-invalid-dot": {
+   "error": "invalid whiteout entry \"a/.wh.\"",
+   "manifest": [
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest/a",
+     "type": "dir",
+     "uid": 0
+    }
+   ]
+  },
+  "overlay-no-lchown": {
+   "error": null,
+   "manifest": [
+    {
+     "gid": 0,
+     "mode": 493,
+     "mtime": "now",
+     "path": "dest",
+     "type": "dir",
+     "uid": 0
+    },
+    {
+     "gid": 6,
+     "major": 0,
+     "minor": 0,
+     "mode": 0,
+     "mtime": "now",
+     "path": "dest/a",
+     "type": "char",
+     "uid": 5
+    },
+    {
+     "data": "af63df4c8601f1a5",
+     "gid": 0,
+     "mode": 420,
+     "mtime": [
+      1234567890,
+      0
+     ],
+     "path": "dest/b",
+     "size": 1,
+     "type": "file",
+     "uid": 0
     }
    ]
   },

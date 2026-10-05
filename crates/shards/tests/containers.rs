@@ -552,6 +552,51 @@ fn events_tell_a_microvms_life_as_docker_events_does() {
 }
 
 #[test]
+fn export_writes_a_microvms_files_as_a_tar_archive() {
+    let Some((home, image)) = home("containers-export") else {
+        return;
+    };
+    let mut sleeper = start(&home, &image, &["--name", "exported"], &["sleep"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let made = shards(&[
+        "exec",
+        "-u",
+        "0",
+        "exported",
+        "/bin/testguest",
+        "fs",
+        "write:/made=by the microVM",
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let out = home.join("exported.tar");
+    let exported = shards(&["export", "-o", out.to_str().unwrap(), "exported"]);
+    assert_eq!(
+        (exported.status, exported.stdout.as_str()),
+        (Some(0), ""),
+        "{exported}"
+    );
+    let tar = std::fs::read(&out).unwrap();
+    // Its own files, what it wrote, and nothing of what is mounted over its root.
+    let has = |name: &[u8]| tar.windows(name.len()).any(|w| w == name);
+    assert!(has(b"bin/testguest\0") && has(b"made\0") && has(b"by the microVM"));
+    let listed = Command::new("tar").arg("tf").arg(&out).output().unwrap();
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    let names: Vec<&str> = listed.lines().collect();
+    assert!(names.contains(&"proc/") && names.contains(&"dev/"), "{listed}");
+    assert!(
+        !names
+            .iter()
+            .any(|n| n.starts_with("proc/") && *n != "proc/" || n.starts_with("dev/") && *n != "dev/"),
+        "{listed}"
+    );
+    assert_eq!(tar.len() % 512, 0);
+    assert_eq!(shards(&["stop", "exported"]).status, Some(0));
+    exit(&mut sleeper);
+    let ended = shards(&["export", "-o", out.to_str().unwrap(), "exported"]);
+    assert!(ended.stderr.contains("is not running"), "{ended}");
+}
+
+#[test]
 fn rm_refuses_a_running_container_unless_forced() {
     let Some((home, image)) = home("containers-force") else {
         return;

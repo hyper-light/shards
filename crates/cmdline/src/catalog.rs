@@ -73,6 +73,7 @@ pub static TOP: &[Group] = &[
         entries: &[
             of("diff", &commands::DIFF),
             of("events", &commands::EVENTS),
+            of("export", &commands::EXPORT),
             of("history", &commands::HISTORY),
             of("info", &commands::INFO),
             of("kill", &commands::KILL),
@@ -102,6 +103,7 @@ pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
         &[
             of("diff", &commands::DIFF),
             of("exec", &commands::EXEC),
+            of("export", &commands::EXPORT),
             of("kill", &commands::KILL),
             of("logs", &commands::LOGS),
             of("ls", &commands::PS),

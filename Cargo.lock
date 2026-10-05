@@ -893,6 +893,7 @@ name = "shards-cmdline"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "shards-template",
 ]
 
 [[package]]
@@ -924,6 +925,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "shards-abi",
+ "shards-archive",
  "shards-cmdline",
  "shards-user",
 ]

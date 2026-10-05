@@ -23,6 +23,7 @@ use crate::tar::{
     Format, Header, PAX_SCHILY_XATTR, TYPE_BLOCK, TYPE_CHAR, TYPE_DIR, TYPE_FIFO, TYPE_LINK, TYPE_REG,
     TYPE_SYMLINK, Time, Writer,
 };
+use crate::whiteout::{self, Overlay, WhiteoutFormat};
 
 /// TarOptions' fields that making an archive reads.
 #[derive(Debug, Clone, Default)]
@@ -37,6 +38,9 @@ pub struct PackOptions {
     pub include_source_dir: bool,
     /// RebaseNames: for an include, what its first occurrence in each name becomes.
     pub rebase_names: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// WhiteoutFormat: with Overlay, an overlayfs upper directory's whiteouts and opaque
+    /// directories are archived as `.wh.` files.
+    pub whiteout: WhiteoutFormat,
 }
 
 /// Writes the archive of `src` to `out`: TarWithOptions. A source that is not a directory
@@ -58,6 +62,7 @@ pub fn pack<W: Write>(src: &Path, opts: &PackOptions, out: W) -> Result<W, Error
         tw: Writer::new(out),
         seen_inodes: HashMap::new(),
         chown: opts.chown,
+        whiteout: whiteout::converter(opts.whiteout),
     };
     let mut seen: HashSet<Vec<u8>> = HashSet::new();
     let sep = NATIVE.sep();
@@ -206,6 +211,7 @@ struct Packer<W: Write> {
     /// share an inode number; within one filesystem the archives are the same.
     seen_inodes: HashMap<(u64, u64), Vec<u8>>,
     chown: Option<(i64, i64)>,
+    whiteout: Option<Overlay>,
 }
 
 impl<W: Write> Packer<W> {
@@ -253,6 +259,23 @@ impl<W: Write> Packer<W> {
         if let Some((uid, gid)) = self.chown {
             hdr.uid = uid;
             hdr.gid = gid;
+        }
+        if let Some(conv) = &self.whiteout {
+            // A converted directory's header goes first, its opaque marker after it.
+            let Ok(marker) = conv.convert_write(&mut hdr, src, &st) else {
+                return Ok(());
+            };
+            if let Some(marker) = marker {
+                // go-archive's "tar: cannot use whiteout for non-empty file", logged.
+                if hdr.typeflag == TYPE_REG && hdr.size > 0 {
+                    return Ok(());
+                }
+                if crate::tar::allowed(&hdr).is_none() {
+                    return Ok(());
+                }
+                self.tw.write_header(&hdr)?;
+                hdr = marker;
+            }
         }
         if crate::tar::allowed(&hdr).is_none() {
             return Ok(());

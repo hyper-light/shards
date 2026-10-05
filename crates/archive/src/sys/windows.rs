@@ -164,6 +164,11 @@ pub(crate) fn read_dir(p: &[u8]) -> io::Result<Vec<(Vec<u8>, bool)>> {
     Ok(out)
 }
 
+/// No attributes on Windows (xattr_unsupported.go).
+pub(crate) fn lgetxattr(_: &[u8], _: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    Ok(None)
+}
+
 /// No security.capability on Windows (xattr_unsupported.go).
 pub(crate) fn capability(_: &[u8]) -> Option<Vec<u8>> {
     None
@@ -369,6 +374,14 @@ impl Root {
     }
 
     pub(crate) fn chmod_nofollow(&self, _: &[u8], _: &[u8], _: u32) -> Result<io::Result<()>, WalkError> {
+        Ok(Ok(()))
+    }
+
+    pub(crate) fn set_xattr_dir(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<io::Result<()>, WalkError> {
+        Ok(Ok(()))
+    }
+
+    pub(crate) fn lchown_in(&self, _: &[u8], _: &[u8], _: i64, _: i64) -> Result<io::Result<()>, WalkError> {
         Ok(Ok(()))
     }
 

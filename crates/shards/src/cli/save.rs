@@ -1,4 +1,5 @@
-//! Where `shards save` writes, as docker/cli's runSave chooses (cli/command/image/save.go):
+//! Where `shards save` and `export` write, as docker/cli's runSave and runExport choose
+//! (cli/command/image/save.go, container/export.go):
 //! stdout, unless it is a terminal; or with `-o`, a file written whole or not at all, as
 //! moby/sys/atomicwriter writes one: a temporary file beside it, synced, made 0600 and
 //! renamed over it once the archive is whole. What is not whole goes, an interrupted save's
@@ -43,7 +44,7 @@ fn go(e: &std::io::Error) -> String {
 }
 
 /// The output `-o` names, or stdout; or what the CLI says instead.
-pub fn output(path: &str) -> Result<Output, String> {
+pub fn output(path: &str, failed: &str) -> Result<Output, String> {
     if path.is_empty() {
         // SAFETY: isatty(3) on this process's stdout.
         if unsafe { libc::isatty(1) } == 1 {
@@ -51,8 +52,8 @@ pub fn output(path: &str) -> Result<Output, String> {
         }
         return Ok(Output::Stdout(std::io::stdout()));
     }
-    validate(path).map_err(|e| format!("failed to save image: {e}"))?;
-    let dest = std::path::absolute(path).map_err(|e| format!("failed to save image: {}", go(&e)))?;
+    validate(path).map_err(|e| format!("{failed}: {e}"))?;
+    let dest = std::path::absolute(path).map_err(|e| format!("{failed}: {}", go(&e)))?;
     let dir = dest.parent().unwrap_or(Path::new("/")).to_path_buf();
     let base = dest
         .file_name()
@@ -60,18 +61,18 @@ pub fn output(path: &str) -> Result<Output, String> {
         .unwrap_or_default();
     // The signals that end the client are blocked before the file is made, for a thread
     // to take once it is: one sent in between stays pending, so nothing is left behind.
-    let ends = block_ends()?;
+    let ends = block_ends().map_err(|e| format!("{failed}: {e}"))?;
     let (file, temp) = match create_temp(&dir, &base) {
         Ok(made) => made,
         Err(e) => {
             unblock(&ends);
-            return Err(e);
+            return Err(format!("{failed}: {e}"));
         }
     };
     if let Err(e) = remove_when_ended(ends, temp.0.clone()) {
         drop(temp);
         unblock(&ends);
-        return Err(format!("failed to save image: {e}"));
+        return Err(format!("{failed}: {e}"));
     }
     Ok(Output::File { file, temp, dest })
 }
@@ -90,15 +91,11 @@ fn create_temp(dir: &Path, base: &str) -> Result<(File, Temp), String> {
             Ok(file) => return Ok((file, Temp(temp))),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => {
-                return Err(format!(
-                    "failed to save image: open {}: {}",
-                    temp.display(),
-                    go(&e)
-                ));
+                return Err(format!("open {}: {}", temp.display(), go(&e)));
             }
         }
     }
-    Err("failed to save image: no temporary file could be made".into())
+    Err("no temporary file could be made".into())
 }
 
 /// Blocks the signals of `ENDS` this process was not started ignoring, in this thread,
@@ -117,10 +114,7 @@ fn block_ends() -> Result<libc::sigset_t, String> {
         }
         match libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) {
             0 => Ok(set),
-            n => Err(format!(
-                "failed to save image: {}",
-                go(&std::io::Error::from_raw_os_error(n))
-            )),
+            n => Err(go(&std::io::Error::from_raw_os_error(n))),
         }
     }
 }
@@ -166,10 +160,7 @@ fn random() -> Result<u32, String> {
     // SAFETY: getentropy(2) fills the 4 bytes given.
     let filled = unsafe { libc::getentropy(b.as_mut_ptr().cast(), b.len()) } == 0;
     if !filled {
-        return Err(format!(
-            "failed to save image: {}",
-            go(&std::io::Error::last_os_error())
-        ));
+        return Err(go(&std::io::Error::last_os_error()));
     }
     Ok(u32::from_le_bytes(b))
 }

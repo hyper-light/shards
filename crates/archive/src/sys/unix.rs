@@ -157,26 +157,65 @@ pub(crate) fn read_dir(p: &[u8]) -> io::Result<Vec<(Vec<u8>, bool)>> {
     Ok(out)
 }
 
-/// lgetxattr of security.capability, None where it is unset or unreadable, as go-archive
-/// ignores the error (xattr_supported.go).
-pub(crate) fn capability(p: &[u8]) -> Option<Vec<u8>> {
-    let path = cstring(p).ok()?;
-    let name = c"security.capability";
+/// go-archive's lgetxattr (xattr_supported.go): an attribute's value, None where it is
+/// unset.
+pub(crate) fn lgetxattr(p: &[u8], name: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    let path = cstring(p)?;
+    let name = cstring(name)?;
     let mut buf = vec![0u8; 128];
     loop {
         // SAFETY: path and name are NUL-terminated; buf is valid for buf.len() bytes.
-        let n = unsafe { get_xattr(&path, name, buf.as_mut_ptr(), buf.len()) };
+        let n = unsafe { get_xattr(&path, &name, buf.as_mut_ptr(), buf.len()) };
         if n >= 0 {
-            buf.truncate(usize::try_from(n).ok()?);
-            return Some(buf);
+            buf.truncate(usize::try_from(n).unwrap_or(0));
+            return Ok(Some(buf));
         }
-        if io::Error::last_os_error().raw_os_error() != Some(libc::ERANGE) {
-            return None;
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() == Some(NOATTR) {
+            return Ok(None);
+        }
+        if e.raw_os_error() != Some(libc::ERANGE) {
+            return Err(e);
         }
         // SAFETY: a null buffer of size 0 asks for the size.
-        let size = unsafe { get_xattr(&path, name, std::ptr::null_mut(), 0) };
-        buf = vec![0u8; usize::try_from(size).ok()?];
+        let size = unsafe { get_xattr(&path, &name, std::ptr::null_mut(), 0) };
+        if size < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        buf = vec![0u8; usize::try_from(size).unwrap_or(0)];
     }
+}
+
+/// What an unset attribute's error is.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const NOATTR: i32 = libc::ENODATA;
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const NOATTR: i32 = libc::ENOATTR;
+
+/// security.capability, None where it is unset or unreadable, as go-archive ignores the
+/// error (ReadSecurityXattrToTarHeader).
+pub(crate) fn capability(p: &[u8]) -> Option<Vec<u8>> {
+    lgetxattr(p, b"security.capability").ok().flatten()
+}
+
+/// fsetxattr.
+///
+/// # Safety
+/// `fd` must be open.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+unsafe fn fsetxattr(fd: RawFd, key: &CStr, value: &[u8]) -> libc::c_int {
+    // SAFETY: the caller's contract; key is NUL-terminated, value valid for its length.
+    unsafe { libc::fsetxattr(fd, key.as_ptr(), value.as_ptr().cast(), value.len(), 0) }
+}
+
+/// fsetxattr.
+///
+/// # Safety
+/// `fd` must be open.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+unsafe fn fsetxattr(fd: RawFd, key: &CStr, value: &[u8]) -> libc::c_int {
+    // SAFETY: the caller's contract; key is NUL-terminated, value valid for its length.
+    unsafe { libc::fsetxattr(fd, key.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0) }
 }
 
 /// lgetxattr.
@@ -564,6 +603,48 @@ impl Root {
                 }
                 r => r,
             }
+        })
+    }
+
+    /// An attribute of the directory `dir` itself, set through a descriptor of it
+    /// (overlayWhiteoutConverter.ConvertRead's fsetxattr).
+    pub(crate) fn set_xattr_dir(
+        &self,
+        dir: &[u8],
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<io::Result<()>, WalkError> {
+        let key = cstring(key)?;
+        self.in_dir(dir, libc::O_RDONLY, |fd| {
+            retry(|| {
+                // SAFETY: key is NUL-terminated; value is valid for its length.
+                check(unsafe { fsetxattr(fd, &key, value) })
+            })
+        })
+    }
+
+    /// fchownat in the parent, never following the name.
+    pub(crate) fn lchown_in(
+        &self,
+        dir: &[u8],
+        base: &[u8],
+        uid: i64,
+        gid: i64,
+    ) -> Result<io::Result<()>, WalkError> {
+        let base = cstring(base)?;
+        self.in_dir(dir, libc::O_RDONLY, |fd| {
+            retry(|| {
+                // SAFETY: base is NUL-terminated. Ids are truncated as Go passes an int.
+                check(unsafe {
+                    libc::fchownat(
+                        fd,
+                        base.as_ptr(),
+                        uid as u32,
+                        gid as u32,
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
+                })
+            })
         })
     }
 

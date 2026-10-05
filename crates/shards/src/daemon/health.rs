@@ -418,42 +418,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         timeout: Option<Duration>,
         sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
     ) -> std::io::Result<Ended> {
-        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
         let (mut out, into) = std::io::pipe()?;
         let null = std::fs::File::open("/dev/null")?;
-        let held = theirs.try_clone()?;
-        {
-            // Taken out of `runs` before the inbox is locked (commands.rs, exec).
-            let (socket, inbox) = match lock(&self.runs).get(id) {
-                Some(RunState::Tracked(run)) => (run.socket.clone(), run.inbox.clone()),
-                _ => return Err(std::io::Error::other("the container is not running")),
-            };
-            let number = self.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let mut payload = Vec::with_capacity(9 + spec.encoded_len().unwrap_or(0));
-            payload.extend_from_slice(&number.to_be_bytes());
-            payload.push(0);
-            spec.encode_into(&mut payload);
-            let exec_id = argv.and_then(|argv| self.exec_events(id, argv));
-            {
-                let mut inbox = lock(&inbox);
-                inbox.execs_in_flight.push((number, held));
-                if let Some(exec_id) = exec_id {
-                    inbox.exec_ids.push((number, exec_id));
-                }
-            }
-            let fds = [theirs.as_fd(), null.as_fd(), into.as_fd(), into.as_fd()];
-            if let Err(e) = socket.send(shards_ipc::kind::EXEC_RUN, &payload, &fds) {
-                let mut held = lock(&inbox);
-                held.execs_in_flight.retain(|(n, _)| *n != number);
-                held.exec_ids.retain(|(n, _)| *n != number);
-                return Err(e);
-            }
-        }
+        let ours = self.send_exec(id, spec, argv, false, [null.as_fd(), into.as_fd(), into.as_fd()])?;
         // The VM holds the rest: its end sees the output end.
-        drop((theirs, into, null));
-        let kill = |conn: &std::os::unix::net::UnixStream| {
-            let _ = shards_ipc::send(conn, shards_ipc::kind::SIGNAL, &9u32.to_be_bytes(), &[]);
-        };
+        drop((into, null));
         Ok(std::thread::scope(|scope| {
             let control = &ours;
             let reader = scope.spawn(move || {
@@ -466,32 +435,99 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     }
                 }
             });
-            let _ = ours.set_read_timeout(timeout);
-            let mut timed_out = false;
-            let status = loop {
-                match shards_ipc::recv(&ours) {
-                    Ok(Some(m)) if m.kind == shards_ipc::kind::EXIT => {
-                        break m.payload.first().map(|&s| i64::from(s));
-                    }
-                    Ok(Some(_)) => {}
-                    Err(e)
-                        if !timed_out
-                            && matches!(
-                                e.kind(),
-                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                            ) =>
-                    {
-                        timed_out = true;
-                        kill(&ours);
-                        let _ = ours.set_read_timeout(None);
-                    }
-                    Ok(None) | Err(_) => break None,
-                }
-            };
+            let ended = await_exit(&ours, timeout);
             let _ = reader.join();
-            Ended { status, timed_out }
+            ended
         }))
     }
+
+    /// An exec of `spec` in container `id` on the asker's own descriptors: what it
+    /// reads (with `input`, its stdin; else nothing), and where its output and errors
+    /// go; until it ends.
+    pub(super) fn exec_on(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        input: bool,
+        stdio: [std::os::fd::BorrowedFd<'_>; 3],
+    ) -> std::io::Result<Ended> {
+        let ours = self.send_exec(id, spec, None, input, stdio)?;
+        Ok(await_exit(&ours, None))
+    }
+
+    /// Sends container `id`'s VM an exec of `spec` with `stdio`, logging its events if
+    /// it is a command (`argv`); returns the connection its end is told on.
+    fn send_exec(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        argv: Option<&[String]>,
+        input: bool,
+        stdio: [std::os::fd::BorrowedFd<'_>; 3],
+    ) -> std::io::Result<std::os::unix::net::UnixStream> {
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        let held = theirs.try_clone()?;
+        // Taken out of `runs` before the inbox is locked (commands.rs, exec).
+        let (socket, inbox) = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(run)) => (run.socket.clone(), run.inbox.clone()),
+            _ => return Err(std::io::Error::other("the container is not running")),
+        };
+        let number = self.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut payload = Vec::with_capacity(9 + spec.encoded_len().unwrap_or(0));
+        payload.extend_from_slice(&number.to_be_bytes());
+        payload.push(if input { shards_ipc::EXEC_INTERACTIVE } else { 0 });
+        spec.encode_into(&mut payload);
+        let exec_id = argv.and_then(|argv| self.exec_events(id, argv));
+        {
+            let mut inbox = lock(&inbox);
+            inbox.execs_in_flight.push((number, held));
+            if let Some(exec_id) = exec_id {
+                inbox.exec_ids.push((number, exec_id));
+            }
+        }
+        let [stdin, stdout, stderr] = stdio;
+        let fds = [theirs.as_fd(), stdin, stdout, stderr];
+        if let Err(e) = socket.send(shards_ipc::kind::EXEC_RUN, &payload, &fds) {
+            let mut held = lock(&inbox);
+            held.execs_in_flight.retain(|(n, _)| *n != number);
+            held.exec_ids.retain(|(n, _)| *n != number);
+            return Err(e);
+        }
+        Ok(ours)
+    }
+}
+
+/// Ends an exec run by the daemon: SIGKILL, on the connection its end is told on.
+fn kill(conn: &std::os::unix::net::UnixStream) {
+    let _ = shards_ipc::send(conn, shards_ipc::kind::SIGNAL, &9u32.to_be_bytes(), &[]);
+}
+
+/// Waits on `ours` for an exec's end, killing it once `timeout` (if any) has passed and
+/// waiting on for that.
+fn await_exit(ours: &std::os::unix::net::UnixStream, timeout: Option<Duration>) -> Ended {
+    let _ = ours.set_read_timeout(timeout);
+    let mut timed_out = false;
+    let status = loop {
+        match shards_ipc::recv(ours) {
+            Ok(Some(m)) if m.kind == shards_ipc::kind::EXIT => {
+                break m.payload.first().map(|&s| i64::from(s));
+            }
+            Ok(Some(_)) => {}
+            Err(e)
+                if !timed_out
+                    && matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+            {
+                timed_out = true;
+                kill(ours);
+                let _ = ours.set_read_timeout(None);
+            }
+            Ok(None) | Err(_) => break None,
+        }
+    };
+    Ended { status, timed_out }
 }
 
 #[cfg(test)]

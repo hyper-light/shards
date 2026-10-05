@@ -72,6 +72,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("diff" | "changes", Thing::Vm | Thing::Container) => &["diff"],
         ("events" | "watch", Thing::System) => &["events"],
         ("inspect", Thing::System) => &["info"],
+        ("export", Thing::Vm | Thing::Container) => &["export"],
         ("unpause" | "resume" | "thaw", Thing::Vm | Thing::Container) => &["unpause"],
         ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect"],
         ("run", Thing::Vm | Thing::Container) => &["run"],
@@ -181,6 +182,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "build",
         "image",
         "Build an image from a Dockerfile or Agentfile, and make it a microVM",
+    ),
+    (
+        "images",
+        "export",
+        "vm",
+        "Write a microVM's files out as a tar archive",
     ),
     (
         "images",
@@ -337,6 +344,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "build",
         "image PATH",
         "Build an image from a Dockerfile or Agentfile, and make it a microVM",
+    ),
+    (
+        "images",
+        "export",
+        "vm NAME",
+        "Write a microVM's files out as a tar archive",
     ),
     (
         "images",

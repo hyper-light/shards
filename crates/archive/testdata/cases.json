@@ -1,354 +1,3114 @@
 {
   "trees": {
     "plain": [
-      {"path": "", "type": "dir", "mode": 493, "mtime": [1500000000, 0]},
-      {"path": "d", "type": "dir", "mode": 493, "mtime": [1400000000, 0]},
-      {"path": "d/sub", "type": "dir", "mode": 1517, "mtime": [1400000001, 0]},
-      {"path": "d/a.txt", "type": "file", "mode": 420, "data": "hello\n", "mtime": [1300000000, 0]},
-      {"path": "d/sub/deep.txt", "type": "file", "mode": 384, "data": "deep", "mtime": [1300000001, 0]},
-      {"path": "empty", "type": "file", "mode": 384, "data": ""},
-      {"path": "big.bin", "type": "file", "mode": 420, "size": 33000, "seed": 3},
-      {"path": "suid", "type": "file", "mode": 2541, "data": "x"},
-      {"path": "sticky", "type": "dir", "mode": 1023},
-      {"path": "rel", "type": "symlink", "target": "d/a.txt", "mtime": [1200000000, 0]},
-      {"path": "abs", "type": "symlink", "target": "/etc/passwd"},
-      {"path": "dangling", "type": "symlink", "target": "nowhere/x"},
-      {"path": "d/a-link", "type": "hardlink", "target": "d/a.txt"},
-      {"path": "hl2", "type": "hardlink", "target": "big.bin"},
-      {"path": "pipe", "type": "fifo", "mode": 420},
-      {"path": "ünï", "type": "dir", "mode": 493},
-      {"path": "ünï/日本語.txt", "type": "file", "mode": 420, "data": "にほん"},
-      {"path": "nnnnnnnnnnaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "type": "dir", "mode": 493},
-      {"path": "nnnnnnnnnnaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "type": "dir", "mode": 493},
-      {"path": "nnnnnnnnnnaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.txt", "type": "file", "mode": 420, "data": "long"},
-      {"path": "x100xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "type": "file", "mode": 420, "data": "100"},
-      {"path": "x101xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "type": "file", "mode": 420, "data": "101"},
-      {"path": "nanos", "type": "file", "mode": 420, "data": "n", "mtime": [1600000000, 123456789]},
-      {"path": "old", "type": "file", "mode": 420, "data": "o", "mtime": [-1000000, 500]},
-      {"path": "future", "type": "file", "mode": 420, "data": "f", "mtime": [9000000000, 0]},
-      {"path": "skip.log", "type": "file", "mode": 420, "data": "log"},
-      {"path": "d/keep.log", "type": "file", "mode": 420, "data": "keep"}
+      {
+        "path": "",
+        "type": "dir",
+        "mode": 493,
+        "mtime": [
+          1500000000,
+          0
+        ]
+      },
+      {
+        "path": "d",
+        "type": "dir",
+        "mode": 493,
+        "mtime": [
+          1400000000,
+          0
+        ]
+      },
+      {
+        "path": "d/sub",
+        "type": "dir",
+        "mode": 1517,
+        "mtime": [
+          1400000001,
+          0
+        ]
+      },
+      {
+        "path": "d/a.txt",
+        "type": "file",
+        "mode": 420,
+        "data": "hello\n",
+        "mtime": [
+          1300000000,
+          0
+        ]
+      },
+      {
+        "path": "d/sub/deep.txt",
+        "type": "file",
+        "mode": 384,
+        "data": "deep",
+        "mtime": [
+          1300000001,
+          0
+        ]
+      },
+      {
+        "path": "empty",
+        "type": "file",
+        "mode": 384,
+        "data": ""
+      },
+      {
+        "path": "big.bin",
+        "type": "file",
+        "mode": 420,
+        "size": 33000,
+        "seed": 3
+      },
+      {
+        "path": "suid",
+        "type": "file",
+        "mode": 2541,
+        "data": "x"
+      },
+      {
+        "path": "sticky",
+        "type": "dir",
+        "mode": 1023
+      },
+      {
+        "path": "rel",
+        "type": "symlink",
+        "target": "d/a.txt",
+        "mtime": [
+          1200000000,
+          0
+        ]
+      },
+      {
+        "path": "abs",
+        "type": "symlink",
+        "target": "/etc/passwd"
+      },
+      {
+        "path": "dangling",
+        "type": "symlink",
+        "target": "nowhere/x"
+      },
+      {
+        "path": "d/a-link",
+        "type": "hardlink",
+        "target": "d/a.txt"
+      },
+      {
+        "path": "hl2",
+        "type": "hardlink",
+        "target": "big.bin"
+      },
+      {
+        "path": "pipe",
+        "type": "fifo",
+        "mode": 420
+      },
+      {
+        "path": "ünï",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "ünï/日本語.txt",
+        "type": "file",
+        "mode": 420,
+        "data": "にほん"
+      },
+      {
+        "path": "nnnnnnnnnnaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "nnnnnnnnnnaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "nnnnnnnnnnaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.txt",
+        "type": "file",
+        "mode": 420,
+        "data": "long"
+      },
+      {
+        "path": "x100xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "type": "file",
+        "mode": 420,
+        "data": "100"
+      },
+      {
+        "path": "x101xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "type": "file",
+        "mode": 420,
+        "data": "101"
+      },
+      {
+        "path": "nanos",
+        "type": "file",
+        "mode": 420,
+        "data": "n",
+        "mtime": [
+          1600000000,
+          123456789
+        ]
+      },
+      {
+        "path": "old",
+        "type": "file",
+        "mode": 420,
+        "data": "o",
+        "mtime": [
+          -1000000,
+          500
+        ]
+      },
+      {
+        "path": "future",
+        "type": "file",
+        "mode": 420,
+        "data": "f",
+        "mtime": [
+          9000000000,
+          0
+        ]
+      },
+      {
+        "path": "skip.log",
+        "type": "file",
+        "mode": 420,
+        "data": "log"
+      },
+      {
+        "path": "d/keep.log",
+        "type": "file",
+        "mode": 420,
+        "data": "keep"
+      }
     ],
     "full": [
-      {"path": "", "type": "dir", "mode": 493, "mtime": [1500000000, 0]},
-      {"path": "d", "type": "dir", "mode": 493, "uid": 1000, "gid": 1000},
-      {"path": "d/a.txt", "type": "file", "mode": 420, "uid": 1000, "gid": 1000, "data": "hello\n"},
-      {"path": "d/a-link", "type": "hardlink", "target": "d/a.txt"},
-      {"path": "bigids", "type": "file", "mode": 420, "uid": 3000000, "gid": 3000001, "data": "ids"},
-      {"path": "suid", "type": "file", "mode": 2541, "uid": 1000, "gid": 0, "data": "x"},
-      {"path": "sgid", "type": "file", "mode": 1517, "uid": 0, "gid": 1000, "data": "x"},
-      {"path": "stickyfile", "type": "file", "mode": 932, "data": "t"},
-      {"path": "null", "type": "char", "mode": 438, "major": 1, "minor": 3},
-      {"path": "loop", "type": "block", "mode": 432, "major": 7, "minor": 0},
-      {"path": "bigdev", "type": "char", "mode": 384, "major": 300, "minor": 70000},
-      {"path": "pipe", "type": "fifo", "mode": 420, "uid": 5, "gid": 6},
-      {"path": "cap", "type": "file", "mode": 493, "data": "c", "xattrs": {"security.capability": "0100000200040000000000000000000000000000"}},
-      {"path": "cap3", "type": "file", "mode": 493, "data": "c", "xattrs": {"security.capability": "010000030004000000000000000000000000000000000000"}},
-      {"path": "userx", "type": "file", "mode": 420, "data": "u", "xattrs": {"user.foo": "626172"}},
-      {"path": "rel", "type": "symlink", "target": "d/a.txt", "uid": 1000, "gid": 1000},
-      {"path": "big.bin", "type": "file", "mode": 420, "size": 33000, "seed": 9},
-      {"path": "nanos", "type": "file", "mode": 420, "data": "n", "mtime": [1600000000, 123456789]},
-      {"path": "old", "type": "file", "mode": 420, "data": "o", "mtime": [-1000000, 500]}
+      {
+        "path": "",
+        "type": "dir",
+        "mode": 493,
+        "mtime": [
+          1500000000,
+          0
+        ]
+      },
+      {
+        "path": "d",
+        "type": "dir",
+        "mode": 493,
+        "uid": 1000,
+        "gid": 1000
+      },
+      {
+        "path": "d/a.txt",
+        "type": "file",
+        "mode": 420,
+        "uid": 1000,
+        "gid": 1000,
+        "data": "hello\n"
+      },
+      {
+        "path": "d/a-link",
+        "type": "hardlink",
+        "target": "d/a.txt"
+      },
+      {
+        "path": "bigids",
+        "type": "file",
+        "mode": 420,
+        "uid": 3000000,
+        "gid": 3000001,
+        "data": "ids"
+      },
+      {
+        "path": "suid",
+        "type": "file",
+        "mode": 2541,
+        "uid": 1000,
+        "gid": 0,
+        "data": "x"
+      },
+      {
+        "path": "sgid",
+        "type": "file",
+        "mode": 1517,
+        "uid": 0,
+        "gid": 1000,
+        "data": "x"
+      },
+      {
+        "path": "stickyfile",
+        "type": "file",
+        "mode": 932,
+        "data": "t"
+      },
+      {
+        "path": "null",
+        "type": "char",
+        "mode": 438,
+        "major": 1,
+        "minor": 3
+      },
+      {
+        "path": "loop",
+        "type": "block",
+        "mode": 432,
+        "major": 7,
+        "minor": 0
+      },
+      {
+        "path": "bigdev",
+        "type": "char",
+        "mode": 384,
+        "major": 300,
+        "minor": 70000
+      },
+      {
+        "path": "pipe",
+        "type": "fifo",
+        "mode": 420,
+        "uid": 5,
+        "gid": 6
+      },
+      {
+        "path": "cap",
+        "type": "file",
+        "mode": 493,
+        "data": "c",
+        "xattrs": {
+          "security.capability": "0100000200040000000000000000000000000000"
+        }
+      },
+      {
+        "path": "cap3",
+        "type": "file",
+        "mode": 493,
+        "data": "c",
+        "xattrs": {
+          "security.capability": "010000030004000000000000000000000000000000000000"
+        }
+      },
+      {
+        "path": "userx",
+        "type": "file",
+        "mode": 420,
+        "data": "u",
+        "xattrs": {
+          "user.foo": "626172"
+        }
+      },
+      {
+        "path": "rel",
+        "type": "symlink",
+        "target": "d/a.txt",
+        "uid": 1000,
+        "gid": 1000
+      },
+      {
+        "path": "big.bin",
+        "type": "file",
+        "mode": 420,
+        "size": 33000,
+        "seed": 9
+      },
+      {
+        "path": "nanos",
+        "type": "file",
+        "mode": 420,
+        "data": "n",
+        "mtime": [
+          1600000000,
+          123456789
+        ]
+      },
+      {
+        "path": "old",
+        "type": "file",
+        "mode": 420,
+        "data": "o",
+        "mtime": [
+          -1000000,
+          500
+        ]
+      }
     ],
     "pre-dir": [
-      {"path": "", "type": "dir", "mode": 493},
-      {"path": "d", "type": "dir", "mode": 448},
-      {"path": "d/child", "type": "file", "mode": 420, "data": "kept"},
-      {"path": "f", "type": "file", "mode": 420, "data": "old"}
+      {
+        "path": "",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "d",
+        "type": "dir",
+        "mode": 448
+      },
+      {
+        "path": "d/child",
+        "type": "file",
+        "mode": 420,
+        "data": "kept"
+      },
+      {
+        "path": "f",
+        "type": "file",
+        "mode": 420,
+        "data": "old"
+      }
     ],
     "copy": [
-      {"path": "", "type": "dir", "mode": 493},
-      {"path": "src", "type": "dir", "mode": 493},
-      {"path": "src/file", "type": "file", "mode": 420, "data": "hello"},
-      {"path": "src/dir", "type": "dir", "mode": 493},
-      {"path": "src/dir/a", "type": "file", "mode": 420, "data": "a"},
-      {"path": "src/dir/b", "type": "dir", "mode": 493},
-      {"path": "src/dir/b/c", "type": "file", "mode": 420, "data": "c"},
-      {"path": "src/link", "type": "symlink", "target": "dir"},
-      {"path": "src/filelink", "type": "symlink", "target": "file"},
-      {"path": "dst", "type": "dir", "mode": 493},
-      {"path": "dst/existingdir", "type": "dir", "mode": 493},
-      {"path": "dst/existingdir/a", "type": "file", "mode": 420, "data": "old a"},
-      {"path": "dst/existingfile", "type": "file", "mode": 420, "data": "old file"},
-      {"path": "dst/linktodir", "type": "symlink", "target": "existingdir"},
-      {"path": "dst/linktonew", "type": "symlink", "target": "made"}
+      {
+        "path": "",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "src",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "src/file",
+        "type": "file",
+        "mode": 420,
+        "data": "hello"
+      },
+      {
+        "path": "src/dir",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "src/dir/a",
+        "type": "file",
+        "mode": 420,
+        "data": "a"
+      },
+      {
+        "path": "src/dir/b",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "src/dir/b/c",
+        "type": "file",
+        "mode": 420,
+        "data": "c"
+      },
+      {
+        "path": "src/link",
+        "type": "symlink",
+        "target": "dir"
+      },
+      {
+        "path": "src/filelink",
+        "type": "symlink",
+        "target": "file"
+      },
+      {
+        "path": "dst",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "dst/existingdir",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "dst/existingdir/a",
+        "type": "file",
+        "mode": 420,
+        "data": "old a"
+      },
+      {
+        "path": "dst/existingfile",
+        "type": "file",
+        "mode": 420,
+        "data": "old file"
+      },
+      {
+        "path": "dst/linktodir",
+        "type": "symlink",
+        "target": "existingdir"
+      },
+      {
+        "path": "dst/linktonew",
+        "type": "symlink",
+        "target": "made"
+      }
+    ],
+    "lower": [
+      {
+        "path": "",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "keep.txt",
+        "type": "file",
+        "mode": 420,
+        "data": "old"
+      },
+      {
+        "path": "gone",
+        "type": "file",
+        "mode": 420,
+        "data": "gone"
+      },
+      {
+        "path": "gonedir",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "gonedir/a",
+        "type": "file",
+        "mode": 420,
+        "data": "a"
+      },
+      {
+        "path": "gonedir/sub",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "gonedir/sub/b",
+        "type": "file",
+        "mode": 420,
+        "data": "b"
+      },
+      {
+        "path": "opq",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "opq/old1",
+        "type": "file",
+        "mode": 420,
+        "data": "1"
+      },
+      {
+        "path": "opq/olddir",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "opq/olddir/x",
+        "type": "file",
+        "mode": 420,
+        "data": "x"
+      },
+      {
+        "path": "notopq",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "notopq/stay",
+        "type": "file",
+        "mode": 420,
+        "data": "stay"
+      },
+      {
+        "path": "sub",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "sub/gone2",
+        "type": "file",
+        "mode": 420,
+        "data": "g2"
+      },
+      {
+        "path": "sub/stay",
+        "type": "file",
+        "mode": 420,
+        "data": "s"
+      },
+      {
+        "path": "untouched",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "untouched/file",
+        "type": "file",
+        "mode": 420,
+        "data": "orig"
+      },
+      {
+        "path": "renamed-from",
+        "type": "file",
+        "mode": 420,
+        "data": "r"
+      }
+    ],
+    "upper": [
+      {
+        "path": "",
+        "type": "dir",
+        "mode": 493
+      },
+      {
+        "path": "keep.txt",
+        "type": "file",
+        "mode": 420,
+        "data": "new"
+      },
+      {
+        "path": "gone",
+        "type": "char",
+        "mode": 0,
+        "major": 0,
+        "minor": 0
+      },
+      {
+        "path": "gonedir",
+        "type": "char",
+        "mode": 0,
+        "major": 0,
+        "minor": 0
+      },
+      {
+        "path": "opq",
+        "type": "dir",
+        "mode": 493,
+        "xattrs": {
+          "trusted.overlay.opaque": "79"
+        }
+      },
+      {
+        "path": "opq/new",
+        "type": "file",
+        "mode": 420,
+        "data": "n"
+      },
+      {
+        "path": "notopq",
+        "type": "dir",
+        "mode": 493,
+        "xattrs": {
+          "trusted.overlay.opaque": "6e"
+        }
+      },
+      {
+        "path": "notopq/stay",
+        "type": "file",
+        "mode": 384,
+        "data": "stay"
+      },
+      {
+        "path": "sub",
+        "type": "dir",
+        "mode": 488
+      },
+      {
+        "path": "sub/gone2",
+        "type": "char",
+        "mode": 0,
+        "major": 0,
+        "minor": 0,
+        "uid": 5,
+        "gid": 6
+      },
+      {
+        "path": "sub/dev",
+        "type": "char",
+        "mode": 438,
+        "major": 1,
+        "minor": 3
+      },
+      {
+        "path": "emptyopq",
+        "type": "dir",
+        "mode": 493,
+        "xattrs": {
+          "trusted.overlay.opaque": "79"
+        }
+      },
+      {
+        "path": "wh-linked",
+        "type": "hardlink",
+        "target": "gone"
+      },
+      {
+        "path": "fileopq",
+        "type": "file",
+        "mode": 420,
+        "data": "f",
+        "xattrs": {
+          "trusted.overlay.opaque": "79"
+        }
+      }
     ]
   },
   "pack": [
-    {"name": "plain", "tree": "plain", "opts": {"chown": [0, 0]}},
-    {"name": "plain-source-dir", "tree": "plain", "opts": {"chown": [0, 0], "include_source_dir": true}},
-    {"name": "plain-includes", "tree": "plain", "opts": {"chown": [0, 0], "include": ["d", "big.bin", "missing", "rel"]}},
-    {"name": "plain-excludes", "tree": "plain", "opts": {"chown": [0, 0], "exclude": ["*.log", "!d/keep.log", "big*", "ünï/**", "x10?x*"]}},
-    {"name": "plain-exclude-dir", "tree": "plain", "opts": {"chown": [0, 0], "exclude": ["d"]}},
-    {"name": "plain-rebase", "tree": "plain", "opts": {"chown": [0, 0], "include": ["d"], "include_source_dir": true, "rebase": {"d": "renamed"}}},
-    {"name": "plain-rebase-dot", "tree": "plain", "opts": {"chown": [0, 0], "include": ["."], "include_source_dir": true, "rebase": {".": "top"}}},
-    {"name": "plain-file-src", "tree": "plain", "src": "d/a.txt", "opts": {"chown": [0, 0]}},
-    {"name": "plain-bad-pattern", "tree": "plain", "opts": {"chown": [0, 0], "exclude": ["["]}},
-    {"name": "full", "tree": "full", "root": true, "opts": {}},
-    {"name": "full-chown", "tree": "full", "root": true, "opts": {"chown": [7, 8]}},
-    {"name": "resource-dot", "tree": "plain", "root": true, "kind": "resource", "src": "d/."},
-    {"name": "resource-dir", "tree": "plain", "root": true, "kind": "resource", "src": "d", "rebase_name": "x"},
-    {"name": "resource-file", "tree": "plain", "root": true, "kind": "resource", "src": "d/a.txt", "rebase_name": "b.txt"},
-    {"name": "resource-symlink", "tree": "plain", "root": true, "kind": "resource", "src": "rel"},
-    {"name": "resource-missing", "tree": "plain", "root": true, "kind": "resource", "src": "nope"}
+    {
+      "name": "plain",
+      "tree": "plain",
+      "opts": {
+        "chown": [
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "name": "plain-source-dir",
+      "tree": "plain",
+      "opts": {
+        "chown": [
+          0,
+          0
+        ],
+        "include_source_dir": true
+      }
+    },
+    {
+      "name": "plain-includes",
+      "tree": "plain",
+      "opts": {
+        "chown": [
+          0,
+          0
+        ],
+        "include": [
+          "d",
+          "big.bin",
+          "missing",
+          "rel"
+        ]
+      }
+    },
+    {
+      "name": "plain-excludes",
+      "tree": "plain",
+      "opts": {
+        "chown": [
+          0,
+          0
+        ],
+        "exclude": [
+          "*.log",
+          "!d/keep.log",
+          "big*",
+          "ünï/**",
+          "x10?x*"
+        ]
+      }
+    },
+    {
+      "name": "plain-exclude-dir",
+      "tree": "plain",
+      "opts": {
+        "chown": [
+          0,
+          0
+        ],
+        "exclude": [
+          "d"
+        ]
+      }
+    },
+    {
+      "name": "plain-rebase",
+      "tree": "plain",
+      "opts": {
+        "chown": [
+          0,
+          0
+        ],
+        "include": [
+          "d"
+        ],
+        "include_source_dir": true,
+        "rebase": {
+          "d": "renamed"
+        }
+      }
+    },
+    {
+      "name": "plain-rebase-dot",
+      "tree": "plain",
+      "opts": {
+        "chown": [
+          0,
+          0
+        ],
+        "include": [
+          "."
+        ],
+        "include_source_dir": true,
+        "rebase": {
+          ".": "top"
+        }
+      }
+    },
+    {
+      "name": "plain-file-src",
+      "tree": "plain",
+      "src": "d/a.txt",
+      "opts": {
+        "chown": [
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "name": "plain-bad-pattern",
+      "tree": "plain",
+      "opts": {
+        "chown": [
+          0,
+          0
+        ],
+        "exclude": [
+          "["
+        ]
+      }
+    },
+    {
+      "name": "full",
+      "tree": "full",
+      "root": true,
+      "opts": {}
+    },
+    {
+      "name": "full-chown",
+      "tree": "full",
+      "root": true,
+      "opts": {
+        "chown": [
+          7,
+          8
+        ]
+      }
+    },
+    {
+      "name": "resource-dot",
+      "tree": "plain",
+      "root": true,
+      "kind": "resource",
+      "src": "d/."
+    },
+    {
+      "name": "resource-dir",
+      "tree": "plain",
+      "root": true,
+      "kind": "resource",
+      "src": "d",
+      "rebase_name": "x"
+    },
+    {
+      "name": "resource-file",
+      "tree": "plain",
+      "root": true,
+      "kind": "resource",
+      "src": "d/a.txt",
+      "rebase_name": "b.txt"
+    },
+    {
+      "name": "resource-symlink",
+      "tree": "plain",
+      "root": true,
+      "kind": "resource",
+      "src": "rel"
+    },
+    {
+      "name": "resource-missing",
+      "tree": "plain",
+      "root": true,
+      "kind": "resource",
+      "src": "nope"
+    },
+    {
+      "name": "upper-overlay",
+      "root": true,
+      "opts": {
+        "whiteout": "overlay"
+      },
+      "tree": "upper"
+    },
+    {
+      "name": "upper-aufs",
+      "root": true,
+      "opts": {},
+      "tree": "upper"
+    },
+    {
+      "name": "upper-overlay-chown",
+      "root": true,
+      "opts": {
+        "whiteout": "overlay",
+        "chown": [
+          3,
+          4
+        ]
+      },
+      "tree": "upper"
+    },
+    {
+      "name": "upper-overlay-source-dir",
+      "root": true,
+      "opts": {
+        "whiteout": "overlay",
+        "include_source_dir": true
+      },
+      "tree": "upper"
+    },
+    {
+      "name": "upper-overlay-rebase",
+      "root": true,
+      "opts": {
+        "whiteout": "overlay",
+        "include": [
+          "opq"
+        ],
+        "include_source_dir": true,
+        "rebase": {
+          "opq": "x"
+        }
+      },
+      "tree": "upper"
+    },
+    {
+      "name": "real-overlay",
+      "root": true,
+      "opts": {
+        "whiteout": "overlay"
+      },
+      "overlay": "real"
+    },
+    {
+      "name": "real-aufs",
+      "root": true,
+      "opts": {},
+      "overlay": "real"
+    }
   ],
   "unpack": [
-    {"name": "basic", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "d/", "type": "5", "mode": 493, "mtime": [1400000000, 0]},
-      {"name": "d/f", "type": "0", "mode": 416, "data": "file", "mtime": [1600000000, 123456789], "format": "pax"},
-      {"name": "d/l", "type": "2", "linkname": "f", "mode": 448, "mtime": [1300000000, 0]},
-      {"name": "d/h", "type": "1", "linkname": "d/f"},
-      {"name": "p", "type": "6", "mode": 420},
-      {"name": "x", "type": "0", "mode": 420, "data": "attrs", "pax": {"SCHILY.xattr.user.k": "v"}},
-      {"name": "deep/implied/x", "type": "0", "mode": 420, "data": "deep"},
-      {"name": "g/", "type": "5", "mode": 1533},
-      {"name": "s", "type": "0", "mode": 2541, "data": "suid"},
-      {"name": "e", "type": "0", "mode": 384, "data": ""},
-      {"name": "big", "type": "0", "mode": 420, "size": 33000, "seed": 5},
-      {"name": "./dot", "type": "0", "mode": 420, "data": "dot"},
-      {"name": "./", "type": "5", "mode": 493},
-      {"name": "/abs/file", "type": "0", "mode": 420, "data": "abs"},
-      {"name": "ünï/日本語", "type": "0", "mode": 420, "data": "u"},
-      {"name": "nnnnnnnnnnaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.txt", "type": "0", "mode": 420, "data": "long"},
-      {"name": "old", "type": "0", "mode": 420, "data": "o", "mtime": [-1000000, 500], "format": "pax"},
-      {"name": "future", "type": "0", "mode": 420, "data": "f", "mtime": [16999999999, 0], "format": "pax"},
-      {"name": "atime", "type": "0", "mode": 420, "data": "a", "mtime": [1000000000, 0], "atime": [1700000000, 5], "format": "pax"}
-    ]}},
-    {"name": "owners", "root": true, "owners": true, "opts": {}, "input": {"entries": [
-      {"name": "d/", "type": "5", "mode": 493, "uid": 1000, "gid": 2000},
-      {"name": "d/f", "type": "0", "mode": 2541, "uid": 1000, "gid": 2000, "data": "suid kept after chown"},
-      {"name": "big", "type": "0", "mode": 420, "uid": 3000000, "gid": 3000001, "data": "ids", "format": "pax"},
-      {"name": "l", "type": "2", "linkname": "d/f", "uid": 7, "gid": 8},
-      {"name": "null", "type": "3", "mode": 438, "devmajor": 1, "devminor": 3},
-      {"name": "loop", "type": "4", "mode": 432, "devmajor": 7, "devminor": 1},
-      {"name": "implied/a/b", "type": "0", "mode": 420, "uid": 9, "gid": 9, "data": "b"},
-      {"name": "cap", "type": "0", "mode": 493, "data": "c", "pax": {"SCHILY.xattr.security.capability": {"hex": "0100000200040000000000000000000000000000"}, "SCHILY.xattr.user.a": "b", "SCHILY.xattr.trusted.t": "t"}}
-    ]}},
-    {"name": "chown-opts", "root": true, "owners": true, "opts": {"chown": [7, 8]}, "input": {"entries": [
-      {"name": "f", "type": "0", "mode": 420, "uid": 1000, "gid": 1000, "data": "f"},
-      {"name": "l", "type": "2", "linkname": "f", "uid": 1000, "gid": 1000}
-    ]}},
-    {"name": "dotdot", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "ok", "type": "0", "mode": 420, "data": "ok"},
-      {"name": "../escape", "type": "0", "mode": 420, "data": "x"}
-    ]}},
-    {"name": "dotdot-inner", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "a/../../escape", "type": "0", "mode": 420, "data": "x"}
-    ]}},
-    {"name": "dotdot-cleaned", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "a/../b/./c", "type": "0", "mode": 420, "data": "c"},
-      {"name": "/../../x", "type": "0", "mode": 420, "data": "x"}
-    ]}},
-    {"name": "symlink-escape-rel", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "l", "type": "2", "linkname": "../outside"},
-      {"name": "l/x", "type": "0", "mode": 420, "data": "x"}
-    ]}},
-    {"name": "symlink-escape-deep", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "a/", "type": "5", "mode": 493},
-      {"name": "a/l", "type": "2", "linkname": "../../outside"},
-      {"name": "a/l/x", "type": "0", "mode": 420, "data": "x"}
-    ]}},
-    {"name": "symlink-abs-root", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "l", "type": "2", "linkname": "/"},
-      {"name": "l/x", "type": "0", "mode": 420, "data": "x"}
-    ]}},
-    {"name": "symlink-abs-self", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "etc", "type": "2", "linkname": "/etc"},
-      {"name": "etc/passwd", "type": "0", "mode": 420, "data": "pwned"}
-    ]}},
-    {"name": "symlink-abs-into", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "real/", "type": "5", "mode": 493},
-      {"name": "l", "type": "2", "linkname": "/real"},
-      {"name": "l/x", "type": "0", "mode": 420, "data": "x"}
-    ]}},
-    {"name": "symlink-abs-then-rel-escape", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "a/", "type": "5", "mode": 493},
-      {"name": "a/up", "type": "2", "linkname": "../../../../x"},
-      {"name": "l", "type": "2", "linkname": "/a/up"},
-      {"name": "l/f", "type": "0", "mode": 420, "data": "f"}
-    ]}},
-    {"name": "symlink-rel-then-abs", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "abs", "type": "2", "linkname": "/"},
-      {"name": "l", "type": "2", "linkname": "abs/../.."},
-      {"name": "l/f", "type": "0", "mode": 420, "data": "f"}
-    ]}},
-    {"name": "symlink-inside", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "d/", "type": "5", "mode": 493},
-      {"name": "s", "type": "2", "linkname": "d"},
-      {"name": "s/f", "type": "0", "mode": 420, "data": "through"},
-      {"name": "c1", "type": "2", "linkname": "c2"},
-      {"name": "c2", "type": "2", "linkname": "d/../d"},
-      {"name": "c1/g", "type": "0", "mode": 420, "data": "chain"}
-    ]}},
-    {"name": "symlink-loop", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "a", "type": "2", "linkname": "a"},
-      {"name": "a/x", "type": "0", "mode": 420, "data": "x"}
-    ]}},
-    {"name": "symlink-dangling-parent", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "l", "type": "2", "linkname": "missing/dir"},
-      {"name": "l/x", "type": "0", "mode": 420, "data": "x"}
-    ]}},
-    {"name": "symlink-then-file-over", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "l", "type": "2", "linkname": "/etc/passwd"},
-      {"name": "l", "type": "0", "mode": 420, "data": "replaced, not followed"}
-    ]}},
-    {"name": "symlink-then-dir-over", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "d", "type": "2", "linkname": "/tmp"},
-      {"name": "d/", "type": "5", "mode": 493},
-      {"name": "d/x", "type": "0", "mode": 420, "data": "x"}
-    ]}},
-    {"name": "hardlink-escape", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "h", "type": "1", "linkname": "../outside"}
-    ]}},
-    {"name": "hardlink-abs", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "d/f", "type": "0", "mode": 420, "data": "target"},
-      {"name": "h", "type": "1", "linkname": "/d/f"},
-      {"name": "h2", "type": "1", "linkname": "//d/../d/f"}
-    ]}},
-    {"name": "hardlink-abs-dotdot", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "d/f", "type": "0", "mode": 420, "data": "target"},
-      {"name": "h", "type": "1", "linkname": "/../d/f"}
-    ]}},
-    {"name": "hardlink-through-symlink", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "s", "type": "2", "linkname": "/"},
-      {"name": "h", "type": "1", "linkname": "s/etc/passwd"}
-    ]}},
-    {"name": "hardlink-to-symlink", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "f", "type": "0", "mode": 384, "data": "f", "mtime": [1000000000, 0]},
-      {"name": "s", "type": "2", "linkname": "f", "mtime": [1100000000, 0]},
-      {"name": "h", "type": "1", "linkname": "s", "mode": 511, "mtime": [1200000000, 0]}
-    ]}},
-    {"name": "hardlink-missing", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "h", "type": "1", "linkname": "nope"}
-    ]}},
-    {"name": "hardlink-dot", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "h", "type": "1", "linkname": "./"}
-    ]}},
-    {"name": "no-overwrite-dir", "pre": "pre-dir", "opts": {"no_lchown": true, "no_overwrite_dir_non_dir": true}, "input": {"entries": [
-      {"name": "d", "type": "0", "mode": 420, "data": "file over dir"}
-    ]}},
-    {"name": "no-overwrite-nondir", "pre": "pre-dir", "opts": {"no_lchown": true, "no_overwrite_dir_non_dir": true}, "input": {"entries": [
-      {"name": "f/", "type": "5", "mode": 493}
-    ]}},
-    {"name": "no-overwrite-merge", "pre": "pre-dir", "opts": {"no_lchown": true, "no_overwrite_dir_non_dir": true}, "input": {"entries": [
-      {"name": "d/", "type": "5", "mode": 493, "mtime": [1100000000, 0]},
-      {"name": "d/new", "type": "0", "mode": 420, "data": "new"},
-      {"name": "f", "type": "0", "mode": 384, "data": "new f"}
-    ]}},
-    {"name": "overwrite", "pre": "pre-dir", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "d", "type": "0", "mode": 420, "data": "file replaces dir"},
-      {"name": "f/", "type": "5", "mode": 493},
-      {"name": "f/x", "type": "0", "mode": 420, "data": "x"}
-    ]}},
-    {"name": "dir-over-symlink", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "real/", "type": "5", "mode": 493},
-      {"name": "d", "type": "2", "linkname": "real"},
-      {"name": "d/", "type": "5", "mode": 448},
-      {"name": "d/x", "type": "0", "mode": 420, "data": "x"}
-    ]}},
-    {"name": "file-parent-is-file", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "f", "type": "0", "mode": 420, "data": "f"},
-      {"name": "f/x", "type": "0", "mode": 420, "data": "x"}
-    ]}},
-    {"name": "exclude", "opts": {"no_lchown": true, "exclude": ["d/", "skip"]}, "input": {"entries": [
-      {"name": "d/x", "type": "0", "mode": 420, "data": "x"},
-      {"name": "dx", "type": "0", "mode": 420, "data": "dx"},
-      {"name": "skipped", "type": "0", "mode": 420, "data": "s"},
-      {"name": "kept", "type": "0", "mode": 420, "data": "k"}
-    ]}},
-    {"name": "gnu-long", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg", "type": "0", "mode": 420, "data": "g", "format": "gnu"},
-      {"name": "glink", "type": "2", "linkname": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg", "format": "gnu"}
-    ]}},
-    {"name": "global-header", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "", "type": "g", "pax": {"comment": "global"}},
-      {"name": "after", "type": "0", "mode": 420, "data": "a"}
-    ]}},
-    {"name": "unknown-type", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "ok", "type": "0", "mode": 420, "data": "ok"},
-      {"name": "v", "type": "V", "mode": 420, "data": "volume"}
-    ]}},
-    {"name": "device-range", "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "dev", "type": "3", "mode": 420, "devmajor": 8589934592, "devminor": 1, "format": "gnu"}
-    ]}},
-    {"name": "truncated", "opts": {"no_lchown": true}, "input": {"truncate_at": 1100, "entries": [
-      {"name": "a", "type": "0", "mode": 420, "size": 2000, "seed": 1}
-    ]}},
-    {"name": "truncated-header", "opts": {"no_lchown": true}, "input": {"truncate_at": 1300, "entries": [
-      {"name": "a", "type": "0", "mode": 420, "data": "a"},
-      {"name": "b", "type": "0", "mode": 420, "data": "b"}
-    ]}},
-    {"name": "garbage", "opts": {"no_lchown": true}, "input": {"hex": "6e6f742061207461722066696c65"}},
-    {"name": "empty", "opts": {"no_lchown": true}, "input": {"hex": ""}},
-    {"name": "xattr-unsupported", "linux": true, "opts": {"no_lchown": true}, "input": {"entries": [
-      {"name": "f", "type": "0", "mode": 420, "data": "f", "pax": {"SCHILY.xattr.nosuchnamespace.k": "v"}}
-    ]}},
-    {"name": "go-pax-sparse", "opts": {"no_lchown": true}, "input": {"go_tar": "pax-nil-sparse-data.tar"}},
-    {"name": "go-pax-sparse-hole", "opts": {"no_lchown": true}, "input": {"go_tar": "pax-nil-sparse-hole.tar"}},
-    {"name": "go-gnu-sparse", "opts": {"no_lchown": true}, "input": {"go_tar": "gnu-nil-sparse-data.tar"}},
-    {"name": "go-sparse-formats", "opts": {"no_lchown": true}, "input": {"go_tar": "sparse-formats.tar"}},
-    {"name": "go-hardlink", "opts": {"no_lchown": true}, "input": {"go_tar": "hardlink.tar"}},
-    {"name": "go-trailing-slash", "opts": {"no_lchown": true}, "input": {"go_tar": "trailing-slash.tar"}},
-    {"name": "go-gnu-long-nul", "opts": {"no_lchown": true}, "input": {"go_tar": "gnu-long-nul.tar"}},
-    {"name": "go-pax-records", "opts": {"no_lchown": true}, "input": {"go_tar": "pax-records.tar"}},
-    {"name": "go-xattrs", "root": true, "owners": true, "opts": {}, "input": {"go_tar": "xattrs.tar"}},
-    {"name": "go-ustar-devs", "root": true, "owners": true, "opts": {}, "input": {"go_tar": "ustar-file-devs.tar"}},
-    {"name": "go-v7", "opts": {"no_lchown": true}, "input": {"go_tar": "v7.tar"}},
-    {"name": "go-star", "opts": {"no_lchown": true}, "input": {"go_tar": "star.tar"}},
-    {"name": "go-gnu-utf8", "opts": {"no_lchown": true}, "input": {"go_tar": "gnu-utf8.tar"}},
-    {"name": "go-gnu-not-utf8", "linux": true, "opts": {"no_lchown": true}, "input": {"go_tar": "gnu-not-utf8.tar"}},
-    {"name": "go-pax-global", "opts": {"no_lchown": true}, "input": {"go_tar": "pax-global-records.tar"}},
-    {"name": "go-neg-mtime", "opts": {"no_lchown": true}, "input": {"go_tar": "pax-bad-mtime-file.tar"}},
-    {"name": "go-issue12435", "opts": {"no_lchown": true}, "input": {"go_tar": "issue12435.tar"}},
-    {"name": "pack-plain", "opts": {"no_lchown": true}, "input": {"pack": "plain"}},
-    {"name": "pack-full", "root": true, "owners": true, "opts": {}, "input": {"pack": "full"}}
+    {
+      "name": "basic",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "d/",
+            "type": "5",
+            "mode": 493,
+            "mtime": [
+              1400000000,
+              0
+            ]
+          },
+          {
+            "name": "d/f",
+            "type": "0",
+            "mode": 416,
+            "data": "file",
+            "mtime": [
+              1600000000,
+              123456789
+            ],
+            "format": "pax"
+          },
+          {
+            "name": "d/l",
+            "type": "2",
+            "linkname": "f",
+            "mode": 448,
+            "mtime": [
+              1300000000,
+              0
+            ]
+          },
+          {
+            "name": "d/h",
+            "type": "1",
+            "linkname": "d/f"
+          },
+          {
+            "name": "p",
+            "type": "6",
+            "mode": 420
+          },
+          {
+            "name": "x",
+            "type": "0",
+            "mode": 420,
+            "data": "attrs",
+            "pax": {
+              "SCHILY.xattr.user.k": "v"
+            }
+          },
+          {
+            "name": "deep/implied/x",
+            "type": "0",
+            "mode": 420,
+            "data": "deep"
+          },
+          {
+            "name": "g/",
+            "type": "5",
+            "mode": 1533
+          },
+          {
+            "name": "s",
+            "type": "0",
+            "mode": 2541,
+            "data": "suid"
+          },
+          {
+            "name": "e",
+            "type": "0",
+            "mode": 384,
+            "data": ""
+          },
+          {
+            "name": "big",
+            "type": "0",
+            "mode": 420,
+            "size": 33000,
+            "seed": 5
+          },
+          {
+            "name": "./dot",
+            "type": "0",
+            "mode": 420,
+            "data": "dot"
+          },
+          {
+            "name": "./",
+            "type": "5",
+            "mode": 493
+          },
+          {
+            "name": "/abs/file",
+            "type": "0",
+            "mode": 420,
+            "data": "abs"
+          },
+          {
+            "name": "ünï/日本語",
+            "type": "0",
+            "mode": 420,
+            "data": "u"
+          },
+          {
+            "name": "nnnnnnnnnnaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.txt",
+            "type": "0",
+            "mode": 420,
+            "data": "long"
+          },
+          {
+            "name": "old",
+            "type": "0",
+            "mode": 420,
+            "data": "o",
+            "mtime": [
+              -1000000,
+              500
+            ],
+            "format": "pax"
+          },
+          {
+            "name": "future",
+            "type": "0",
+            "mode": 420,
+            "data": "f",
+            "mtime": [
+              16999999999,
+              0
+            ],
+            "format": "pax"
+          },
+          {
+            "name": "atime",
+            "type": "0",
+            "mode": 420,
+            "data": "a",
+            "mtime": [
+              1000000000,
+              0
+            ],
+            "atime": [
+              1700000000,
+              5
+            ],
+            "format": "pax"
+          }
+        ]
+      }
+    },
+    {
+      "name": "owners",
+      "root": true,
+      "owners": true,
+      "opts": {},
+      "input": {
+        "entries": [
+          {
+            "name": "d/",
+            "type": "5",
+            "mode": 493,
+            "uid": 1000,
+            "gid": 2000
+          },
+          {
+            "name": "d/f",
+            "type": "0",
+            "mode": 2541,
+            "uid": 1000,
+            "gid": 2000,
+            "data": "suid kept after chown"
+          },
+          {
+            "name": "big",
+            "type": "0",
+            "mode": 420,
+            "uid": 3000000,
+            "gid": 3000001,
+            "data": "ids",
+            "format": "pax"
+          },
+          {
+            "name": "l",
+            "type": "2",
+            "linkname": "d/f",
+            "uid": 7,
+            "gid": 8
+          },
+          {
+            "name": "null",
+            "type": "3",
+            "mode": 438,
+            "devmajor": 1,
+            "devminor": 3
+          },
+          {
+            "name": "loop",
+            "type": "4",
+            "mode": 432,
+            "devmajor": 7,
+            "devminor": 1
+          },
+          {
+            "name": "implied/a/b",
+            "type": "0",
+            "mode": 420,
+            "uid": 9,
+            "gid": 9,
+            "data": "b"
+          },
+          {
+            "name": "cap",
+            "type": "0",
+            "mode": 493,
+            "data": "c",
+            "pax": {
+              "SCHILY.xattr.security.capability": {
+                "hex": "0100000200040000000000000000000000000000"
+              },
+              "SCHILY.xattr.user.a": "b",
+              "SCHILY.xattr.trusted.t": "t"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "chown-opts",
+      "root": true,
+      "owners": true,
+      "opts": {
+        "chown": [
+          7,
+          8
+        ]
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "f",
+            "type": "0",
+            "mode": 420,
+            "uid": 1000,
+            "gid": 1000,
+            "data": "f"
+          },
+          {
+            "name": "l",
+            "type": "2",
+            "linkname": "f",
+            "uid": 1000,
+            "gid": 1000
+          }
+        ]
+      }
+    },
+    {
+      "name": "dotdot",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "ok",
+            "type": "0",
+            "mode": 420,
+            "data": "ok"
+          },
+          {
+            "name": "../escape",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "dotdot-inner",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "a/../../escape",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "dotdot-cleaned",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "a/../b/./c",
+            "type": "0",
+            "mode": 420,
+            "data": "c"
+          },
+          {
+            "name": "/../../x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-escape-rel",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "l",
+            "type": "2",
+            "linkname": "../outside"
+          },
+          {
+            "name": "l/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-escape-deep",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "a/",
+            "type": "5",
+            "mode": 493
+          },
+          {
+            "name": "a/l",
+            "type": "2",
+            "linkname": "../../outside"
+          },
+          {
+            "name": "a/l/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-abs-root",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "l",
+            "type": "2",
+            "linkname": "/"
+          },
+          {
+            "name": "l/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-abs-self",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "etc",
+            "type": "2",
+            "linkname": "/etc"
+          },
+          {
+            "name": "etc/passwd",
+            "type": "0",
+            "mode": 420,
+            "data": "pwned"
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-abs-into",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "real/",
+            "type": "5",
+            "mode": 493
+          },
+          {
+            "name": "l",
+            "type": "2",
+            "linkname": "/real"
+          },
+          {
+            "name": "l/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-abs-then-rel-escape",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "a/",
+            "type": "5",
+            "mode": 493
+          },
+          {
+            "name": "a/up",
+            "type": "2",
+            "linkname": "../../../../x"
+          },
+          {
+            "name": "l",
+            "type": "2",
+            "linkname": "/a/up"
+          },
+          {
+            "name": "l/f",
+            "type": "0",
+            "mode": 420,
+            "data": "f"
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-rel-then-abs",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "abs",
+            "type": "2",
+            "linkname": "/"
+          },
+          {
+            "name": "l",
+            "type": "2",
+            "linkname": "abs/../.."
+          },
+          {
+            "name": "l/f",
+            "type": "0",
+            "mode": 420,
+            "data": "f"
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-inside",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "d/",
+            "type": "5",
+            "mode": 493
+          },
+          {
+            "name": "s",
+            "type": "2",
+            "linkname": "d"
+          },
+          {
+            "name": "s/f",
+            "type": "0",
+            "mode": 420,
+            "data": "through"
+          },
+          {
+            "name": "c1",
+            "type": "2",
+            "linkname": "c2"
+          },
+          {
+            "name": "c2",
+            "type": "2",
+            "linkname": "d/../d"
+          },
+          {
+            "name": "c1/g",
+            "type": "0",
+            "mode": 420,
+            "data": "chain"
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-loop",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "a",
+            "type": "2",
+            "linkname": "a"
+          },
+          {
+            "name": "a/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-dangling-parent",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "l",
+            "type": "2",
+            "linkname": "missing/dir"
+          },
+          {
+            "name": "l/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-then-file-over",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "l",
+            "type": "2",
+            "linkname": "/etc/passwd"
+          },
+          {
+            "name": "l",
+            "type": "0",
+            "mode": 420,
+            "data": "replaced, not followed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "symlink-then-dir-over",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "d",
+            "type": "2",
+            "linkname": "/tmp"
+          },
+          {
+            "name": "d/",
+            "type": "5",
+            "mode": 493
+          },
+          {
+            "name": "d/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "hardlink-escape",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "h",
+            "type": "1",
+            "linkname": "../outside"
+          }
+        ]
+      }
+    },
+    {
+      "name": "hardlink-abs",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "d/f",
+            "type": "0",
+            "mode": 420,
+            "data": "target"
+          },
+          {
+            "name": "h",
+            "type": "1",
+            "linkname": "/d/f"
+          },
+          {
+            "name": "h2",
+            "type": "1",
+            "linkname": "//d/../d/f"
+          }
+        ]
+      }
+    },
+    {
+      "name": "hardlink-abs-dotdot",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "d/f",
+            "type": "0",
+            "mode": 420,
+            "data": "target"
+          },
+          {
+            "name": "h",
+            "type": "1",
+            "linkname": "/../d/f"
+          }
+        ]
+      }
+    },
+    {
+      "name": "hardlink-through-symlink",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "s",
+            "type": "2",
+            "linkname": "/"
+          },
+          {
+            "name": "h",
+            "type": "1",
+            "linkname": "s/etc/passwd"
+          }
+        ]
+      }
+    },
+    {
+      "name": "hardlink-to-symlink",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "f",
+            "type": "0",
+            "mode": 384,
+            "data": "f",
+            "mtime": [
+              1000000000,
+              0
+            ]
+          },
+          {
+            "name": "s",
+            "type": "2",
+            "linkname": "f",
+            "mtime": [
+              1100000000,
+              0
+            ]
+          },
+          {
+            "name": "h",
+            "type": "1",
+            "linkname": "s",
+            "mode": 511,
+            "mtime": [
+              1200000000,
+              0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "hardlink-missing",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "h",
+            "type": "1",
+            "linkname": "nope"
+          }
+        ]
+      }
+    },
+    {
+      "name": "hardlink-dot",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "h",
+            "type": "1",
+            "linkname": "./"
+          }
+        ]
+      }
+    },
+    {
+      "name": "no-overwrite-dir",
+      "pre": "pre-dir",
+      "opts": {
+        "no_lchown": true,
+        "no_overwrite_dir_non_dir": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "d",
+            "type": "0",
+            "mode": 420,
+            "data": "file over dir"
+          }
+        ]
+      }
+    },
+    {
+      "name": "no-overwrite-nondir",
+      "pre": "pre-dir",
+      "opts": {
+        "no_lchown": true,
+        "no_overwrite_dir_non_dir": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "f/",
+            "type": "5",
+            "mode": 493
+          }
+        ]
+      }
+    },
+    {
+      "name": "no-overwrite-merge",
+      "pre": "pre-dir",
+      "opts": {
+        "no_lchown": true,
+        "no_overwrite_dir_non_dir": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "d/",
+            "type": "5",
+            "mode": 493,
+            "mtime": [
+              1100000000,
+              0
+            ]
+          },
+          {
+            "name": "d/new",
+            "type": "0",
+            "mode": 420,
+            "data": "new"
+          },
+          {
+            "name": "f",
+            "type": "0",
+            "mode": 384,
+            "data": "new f"
+          }
+        ]
+      }
+    },
+    {
+      "name": "overwrite",
+      "pre": "pre-dir",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "d",
+            "type": "0",
+            "mode": 420,
+            "data": "file replaces dir"
+          },
+          {
+            "name": "f/",
+            "type": "5",
+            "mode": 493
+          },
+          {
+            "name": "f/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "dir-over-symlink",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "real/",
+            "type": "5",
+            "mode": 493
+          },
+          {
+            "name": "d",
+            "type": "2",
+            "linkname": "real"
+          },
+          {
+            "name": "d/",
+            "type": "5",
+            "mode": 448
+          },
+          {
+            "name": "d/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "file-parent-is-file",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "f",
+            "type": "0",
+            "mode": 420,
+            "data": "f"
+          },
+          {
+            "name": "f/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "exclude",
+      "opts": {
+        "no_lchown": true,
+        "exclude": [
+          "d/",
+          "skip"
+        ]
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "d/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          },
+          {
+            "name": "dx",
+            "type": "0",
+            "mode": 420,
+            "data": "dx"
+          },
+          {
+            "name": "skipped",
+            "type": "0",
+            "mode": 420,
+            "data": "s"
+          },
+          {
+            "name": "kept",
+            "type": "0",
+            "mode": 420,
+            "data": "k"
+          }
+        ]
+      }
+    },
+    {
+      "name": "gnu-long",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+            "type": "0",
+            "mode": 420,
+            "data": "g",
+            "format": "gnu"
+          },
+          {
+            "name": "glink",
+            "type": "2",
+            "linkname": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+            "format": "gnu"
+          }
+        ]
+      }
+    },
+    {
+      "name": "global-header",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "",
+            "type": "g",
+            "pax": {
+              "comment": "global"
+            }
+          },
+          {
+            "name": "after",
+            "type": "0",
+            "mode": 420,
+            "data": "a"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown-type",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "ok",
+            "type": "0",
+            "mode": 420,
+            "data": "ok"
+          },
+          {
+            "name": "v",
+            "type": "V",
+            "mode": 420,
+            "data": "volume"
+          }
+        ]
+      }
+    },
+    {
+      "name": "device-range",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "dev",
+            "type": "3",
+            "mode": 420,
+            "devmajor": 8589934592,
+            "devminor": 1,
+            "format": "gnu"
+          }
+        ]
+      }
+    },
+    {
+      "name": "truncated",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "truncate_at": 1100,
+        "entries": [
+          {
+            "name": "a",
+            "type": "0",
+            "mode": 420,
+            "size": 2000,
+            "seed": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "truncated-header",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "truncate_at": 1300,
+        "entries": [
+          {
+            "name": "a",
+            "type": "0",
+            "mode": 420,
+            "data": "a"
+          },
+          {
+            "name": "b",
+            "type": "0",
+            "mode": 420,
+            "data": "b"
+          }
+        ]
+      }
+    },
+    {
+      "name": "garbage",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "hex": "6e6f742061207461722066696c65"
+      }
+    },
+    {
+      "name": "empty",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "hex": ""
+      }
+    },
+    {
+      "name": "xattr-unsupported",
+      "linux": true,
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "f",
+            "type": "0",
+            "mode": 420,
+            "data": "f",
+            "pax": {
+              "SCHILY.xattr.nosuchnamespace.k": "v"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "go-pax-sparse",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "pax-nil-sparse-data.tar"
+      }
+    },
+    {
+      "name": "go-pax-sparse-hole",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "pax-nil-sparse-hole.tar"
+      }
+    },
+    {
+      "name": "go-gnu-sparse",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "gnu-nil-sparse-data.tar"
+      }
+    },
+    {
+      "name": "go-sparse-formats",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "sparse-formats.tar"
+      }
+    },
+    {
+      "name": "go-hardlink",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "hardlink.tar"
+      }
+    },
+    {
+      "name": "go-trailing-slash",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "trailing-slash.tar"
+      }
+    },
+    {
+      "name": "go-gnu-long-nul",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "gnu-long-nul.tar"
+      }
+    },
+    {
+      "name": "go-pax-records",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "pax-records.tar"
+      }
+    },
+    {
+      "name": "go-xattrs",
+      "root": true,
+      "owners": true,
+      "opts": {},
+      "input": {
+        "go_tar": "xattrs.tar"
+      }
+    },
+    {
+      "name": "go-ustar-devs",
+      "root": true,
+      "owners": true,
+      "opts": {},
+      "input": {
+        "go_tar": "ustar-file-devs.tar"
+      }
+    },
+    {
+      "name": "go-v7",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "v7.tar"
+      }
+    },
+    {
+      "name": "go-star",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "star.tar"
+      }
+    },
+    {
+      "name": "go-gnu-utf8",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "gnu-utf8.tar"
+      }
+    },
+    {
+      "name": "go-gnu-not-utf8",
+      "linux": true,
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "gnu-not-utf8.tar"
+      }
+    },
+    {
+      "name": "go-pax-global",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "pax-global-records.tar"
+      }
+    },
+    {
+      "name": "go-neg-mtime",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "pax-bad-mtime-file.tar"
+      }
+    },
+    {
+      "name": "go-issue12435",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "go_tar": "issue12435.tar"
+      }
+    },
+    {
+      "name": "pack-plain",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "pack": "plain"
+      }
+    },
+    {
+      "name": "pack-full",
+      "root": true,
+      "owners": true,
+      "opts": {},
+      "input": {
+        "pack": "full"
+      }
+    },
+    {
+      "name": "overlay-from-upper",
+      "linux": true,
+      "root": true,
+      "owners": true,
+      "opts": {
+        "whiteout": "overlay"
+      },
+      "input": {
+        "pack": "upper-overlay"
+      }
+    },
+    {
+      "name": "overlay-from-real",
+      "linux": true,
+      "root": true,
+      "owners": true,
+      "opts": {
+        "whiteout": "overlay"
+      },
+      "input": {
+        "pack": "real-overlay"
+      }
+    },
+    {
+      "name": "overlay-hand",
+      "linux": true,
+      "root": true,
+      "owners": true,
+      "opts": {
+        "whiteout": "overlay"
+      },
+      "input": {
+        "entries": [
+          {
+            "name": ".wh.a",
+            "type": "0",
+            "mode": 420,
+            "uid": 5,
+            "gid": 6
+          },
+          {
+            "name": "d/",
+            "type": "5",
+            "mode": 493
+          },
+          {
+            "name": "d/.wh..wh..opq",
+            "type": "0",
+            "mode": 420
+          },
+          {
+            "name": "d/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          },
+          {
+            "name": "e/.wh..wh..opq",
+            "type": "0",
+            "mode": 420
+          },
+          {
+            "name": "f/.wh.g",
+            "type": "0",
+            "mode": 420
+          },
+          {
+            "name": ".wh..wh..opq",
+            "type": "0",
+            "mode": 420
+          },
+          {
+            "name": "plain",
+            "type": "0",
+            "mode": 420,
+            "data": "p"
+          }
+        ]
+      }
+    },
+    {
+      "name": "overlay-invalid",
+      "linux": true,
+      "root": true,
+      "owners": true,
+      "opts": {
+        "whiteout": "overlay"
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "ok",
+            "type": "0",
+            "mode": 420,
+            "data": "ok"
+          },
+          {
+            "name": ".wh..",
+            "type": "0",
+            "mode": 420
+          }
+        ]
+      }
+    },
+    {
+      "name": "overlay-invalid-dot",
+      "linux": true,
+      "root": true,
+      "owners": true,
+      "opts": {
+        "whiteout": "overlay"
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "a/.wh.",
+            "type": "0",
+            "mode": 420
+          }
+        ]
+      }
+    },
+    {
+      "name": "overlay-exists",
+      "linux": true,
+      "root": true,
+      "owners": true,
+      "opts": {
+        "whiteout": "overlay"
+      },
+      "input": {
+        "entries": [
+          {
+            "name": ".wh.f",
+            "type": "0",
+            "mode": 420
+          }
+        ]
+      },
+      "pre": "pre-dir"
+    },
+    {
+      "name": "overlay-no-lchown",
+      "linux": true,
+      "root": true,
+      "owners": true,
+      "opts": {
+        "whiteout": "overlay",
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": ".wh.a",
+            "type": "0",
+            "mode": 420,
+            "uid": 5,
+            "gid": 6
+          },
+          {
+            "name": "b",
+            "type": "0",
+            "mode": 420,
+            "data": "b",
+            "uid": 7,
+            "gid": 8
+          }
+        ]
+      }
+    },
+    {
+      "name": "overlay-as-aufs",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "pack": "upper-overlay"
+      },
+      "root": true
+    }
   ],
   "copy": [
-    {"name": "a-file-to-new", "src": "src/file", "dst": "dst/new"},
-    {"name": "b-file-to-new-dir", "src": "src/file", "dst": "dst/new/"},
-    {"name": "c-file-to-file", "src": "src/file", "dst": "dst/existingfile"},
-    {"name": "d-file-to-dir", "src": "src/file", "dst": "dst/existingdir"},
-    {"name": "d-file-to-dir-slash", "src": "src/file", "dst": "dst/existingdir/"},
-    {"name": "e-dir-to-new", "src": "src/dir", "dst": "dst/newdir"},
-    {"name": "f-dir-to-file", "src": "src/dir", "dst": "dst/existingfile"},
-    {"name": "g-dir-to-dir", "src": "src/dir", "dst": "dst/existingdir"},
-    {"name": "h-contents-to-new", "src": "src/dir/.", "dst": "dst/newdir"},
-    {"name": "i-contents-to-file", "src": "src/dir/.", "dst": "dst/existingfile"},
-    {"name": "j-contents-to-dir", "src": "src/dir/.", "dst": "dst/existingdir"},
-    {"name": "k-symlink", "src": "src/link", "dst": "dst/k"},
-    {"name": "k-symlink-follow", "src": "src/link", "dst": "dst/k", "follow": true},
-    {"name": "k-symlink-slash", "src": "src/link/", "dst": "dst/k"},
-    {"name": "k-symlink-dot-follow", "src": "src/link/.", "dst": "dst/k", "follow": true},
-    {"name": "k-filelink-follow", "src": "src/filelink", "dst": "dst/existingdir", "follow": true},
-    {"name": "l-to-link-to-dir", "src": "src/file", "dst": "dst/linktodir"},
-    {"name": "l-to-dangling-link", "src": "src/file", "dst": "dst/linktonew"},
-    {"name": "m-missing-src", "src": "src/nope", "dst": "dst/x"},
-    {"name": "m-file-slash", "src": "src/file/", "dst": "dst/x"},
-    {"name": "m-missing-dst-parent", "src": "src/file", "dst": "dst/nope/x"},
-    {"name": "m-dst-parent-file", "src": "src/file", "dst": "dst/existingfile/x"},
-    {"name": "n-long-name", "src": "src/file", "dst": "dst/llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll"}
+    {
+      "name": "a-file-to-new",
+      "src": "src/file",
+      "dst": "dst/new"
+    },
+    {
+      "name": "b-file-to-new-dir",
+      "src": "src/file",
+      "dst": "dst/new/"
+    },
+    {
+      "name": "c-file-to-file",
+      "src": "src/file",
+      "dst": "dst/existingfile"
+    },
+    {
+      "name": "d-file-to-dir",
+      "src": "src/file",
+      "dst": "dst/existingdir"
+    },
+    {
+      "name": "d-file-to-dir-slash",
+      "src": "src/file",
+      "dst": "dst/existingdir/"
+    },
+    {
+      "name": "e-dir-to-new",
+      "src": "src/dir",
+      "dst": "dst/newdir"
+    },
+    {
+      "name": "f-dir-to-file",
+      "src": "src/dir",
+      "dst": "dst/existingfile"
+    },
+    {
+      "name": "g-dir-to-dir",
+      "src": "src/dir",
+      "dst": "dst/existingdir"
+    },
+    {
+      "name": "h-contents-to-new",
+      "src": "src/dir/.",
+      "dst": "dst/newdir"
+    },
+    {
+      "name": "i-contents-to-file",
+      "src": "src/dir/.",
+      "dst": "dst/existingfile"
+    },
+    {
+      "name": "j-contents-to-dir",
+      "src": "src/dir/.",
+      "dst": "dst/existingdir"
+    },
+    {
+      "name": "k-symlink",
+      "src": "src/link",
+      "dst": "dst/k"
+    },
+    {
+      "name": "k-symlink-follow",
+      "src": "src/link",
+      "dst": "dst/k",
+      "follow": true
+    },
+    {
+      "name": "k-symlink-slash",
+      "src": "src/link/",
+      "dst": "dst/k"
+    },
+    {
+      "name": "k-symlink-dot-follow",
+      "src": "src/link/.",
+      "dst": "dst/k",
+      "follow": true
+    },
+    {
+      "name": "k-filelink-follow",
+      "src": "src/filelink",
+      "dst": "dst/existingdir",
+      "follow": true
+    },
+    {
+      "name": "l-to-link-to-dir",
+      "src": "src/file",
+      "dst": "dst/linktodir"
+    },
+    {
+      "name": "l-to-dangling-link",
+      "src": "src/file",
+      "dst": "dst/linktonew"
+    },
+    {
+      "name": "m-missing-src",
+      "src": "src/nope",
+      "dst": "dst/x"
+    },
+    {
+      "name": "m-file-slash",
+      "src": "src/file/",
+      "dst": "dst/x"
+    },
+    {
+      "name": "m-missing-dst-parent",
+      "src": "src/file",
+      "dst": "dst/nope/x"
+    },
+    {
+      "name": "m-dst-parent-file",
+      "src": "src/file",
+      "dst": "dst/existingfile/x"
+    },
+    {
+      "name": "n-long-name",
+      "src": "src/file",
+      "dst": "dst/llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll"
+    }
   ],
   "rebase": [
-    {"name": "plain-to-x", "input": {"pack": "plain-source-dir"}, "old": ".", "new": "x"},
-    {"name": "file", "input": {"pack": "plain-file-src"}, "old": "a.txt", "new": "renamed.txt"},
-    {"name": "root-to-under", "input": {"pack": "plain"}, "old": "", "new": "under"},
-    {"name": "gnu-to-pax", "input": {"unpack": "gnu-long"}, "old": "glink", "new": "glink2"},
-    {"name": "global", "input": {"unpack": "global-header"}, "old": "after", "new": "before"},
-    {"name": "go-pax", "input": {"go_tar": "pax.tar"}, "old": "a", "new": "b"},
-    {"name": "go-sparse", "input": {"go_tar": "pax-nil-sparse-data.tar"}, "old": "sparse.db", "new": "dense.db"},
-    {"name": "go-xattrs", "input": {"go_tar": "xattrs.tar"}, "old": "small.txt", "new": "s.txt"}
+    {
+      "name": "plain-to-x",
+      "input": {
+        "pack": "plain-source-dir"
+      },
+      "old": ".",
+      "new": "x"
+    },
+    {
+      "name": "file",
+      "input": {
+        "pack": "plain-file-src"
+      },
+      "old": "a.txt",
+      "new": "renamed.txt"
+    },
+    {
+      "name": "root-to-under",
+      "input": {
+        "pack": "plain"
+      },
+      "old": "",
+      "new": "under"
+    },
+    {
+      "name": "gnu-to-pax",
+      "input": {
+        "unpack": "gnu-long"
+      },
+      "old": "glink",
+      "new": "glink2"
+    },
+    {
+      "name": "global",
+      "input": {
+        "unpack": "global-header"
+      },
+      "old": "after",
+      "new": "before"
+    },
+    {
+      "name": "go-pax",
+      "input": {
+        "go_tar": "pax.tar"
+      },
+      "old": "a",
+      "new": "b"
+    },
+    {
+      "name": "go-sparse",
+      "input": {
+        "go_tar": "pax-nil-sparse-data.tar"
+      },
+      "old": "sparse.db",
+      "new": "dense.db"
+    },
+    {
+      "name": "go-xattrs",
+      "input": {
+        "go_tar": "xattrs.tar"
+      },
+      "old": "small.txt",
+      "new": "s.txt"
+    }
   ],
   "read": [
-    "gnu.tar", "gnu-incremental.tar", "gnu-long-nul.tar", "gnu-multi-hdrs.tar", "gnu-nil-sparse-data.tar",
-    "gnu-nil-sparse-hole.tar", "gnu-not-utf8.tar", "gnu-utf8.tar", "hardlink.tar", "hdr-only.tar",
-    "invalid-go17.tar", "issue10968.tar", "issue11169.tar", "issue12435.tar", "nil-uid.tar", "pax.tar",
-    "pax-bad-hdr-file.tar", "pax-bad-mtime-file.tar", "pax-global-records.tar", "pax-multi-hdrs.tar",
-    "pax-nil-sparse-data.tar", "pax-nil-sparse-hole.tar", "pax-nul-path.tar", "pax-nul-xattrs.tar",
-    "pax-path-hdr.tar", "pax-pos-size-file.tar", "pax-records.tar", "sparse-formats.tar", "star.tar",
-    "trailing-slash.tar", "ustar.tar", "ustar-file-devs.tar", "ustar-file-reg.tar", "v7.tar", "xattrs.tar",
-    "file-and-dir.tar", "writer.tar"
+    "gnu.tar",
+    "gnu-incremental.tar",
+    "gnu-long-nul.tar",
+    "gnu-multi-hdrs.tar",
+    "gnu-nil-sparse-data.tar",
+    "gnu-nil-sparse-hole.tar",
+    "gnu-not-utf8.tar",
+    "gnu-utf8.tar",
+    "hardlink.tar",
+    "hdr-only.tar",
+    "invalid-go17.tar",
+    "issue10968.tar",
+    "issue11169.tar",
+    "issue12435.tar",
+    "nil-uid.tar",
+    "pax.tar",
+    "pax-bad-hdr-file.tar",
+    "pax-bad-mtime-file.tar",
+    "pax-global-records.tar",
+    "pax-multi-hdrs.tar",
+    "pax-nil-sparse-data.tar",
+    "pax-nil-sparse-hole.tar",
+    "pax-nul-path.tar",
+    "pax-nul-xattrs.tar",
+    "pax-path-hdr.tar",
+    "pax-pos-size-file.tar",
+    "pax-records.tar",
+    "sparse-formats.tar",
+    "star.tar",
+    "trailing-slash.tar",
+    "ustar.tar",
+    "ustar-file-devs.tar",
+    "ustar-file-reg.tar",
+    "v7.tar",
+    "xattrs.tar",
+    "file-and-dir.tar",
+    "writer.tar"
   ],
   "paths": [
-    "/a/b", "/a/b/", "/a/b/.", "/a/b/./", "a", "a/", "a/.", ".", "./", "/", "/.", "//", "/a//b/..", "a/../..", "", "/a/b/..", "/a/b/../."
+    "/a/b",
+    "/a/b/",
+    "/a/b/.",
+    "/a/b/./",
+    "a",
+    "a/",
+    "a/.",
+    ".",
+    "./",
+    "/",
+    "/.",
+    "//",
+    "/a//b/..",
+    "a/../..",
+    "",
+    "/a/b/..",
+    "/a/b/../."
+  ],
+  "overlays": [
+    {
+      "name": "real",
+      "lower": "lower",
+      "ops": [
+        {
+          "op": "write",
+          "path": "keep.txt",
+          "data": "new"
+        },
+        {
+          "op": "rm",
+          "path": "gone"
+        },
+        {
+          "op": "rmrf",
+          "path": "gonedir"
+        },
+        {
+          "op": "rmrf",
+          "path": "opq"
+        },
+        {
+          "op": "mkdir",
+          "path": "opq"
+        },
+        {
+          "op": "write",
+          "path": "opq/new",
+          "data": "n"
+        },
+        {
+          "op": "rm",
+          "path": "sub/gone2"
+        },
+        {
+          "op": "write",
+          "path": "new.txt",
+          "data": "fresh"
+        },
+        {
+          "op": "rm",
+          "path": "untouched/file"
+        },
+        {
+          "op": "write",
+          "path": "untouched/file",
+          "data": "recreated"
+        },
+        {
+          "op": "mkdir",
+          "path": "newdir"
+        },
+        {
+          "op": "symlink",
+          "path": "newdir/l",
+          "target": "../keep.txt"
+        },
+        {
+          "op": "chmod",
+          "path": "notopq/stay",
+          "mode": 384
+        },
+        {
+          "op": "rename",
+          "path": "renamed-from",
+          "target": "renamed-to"
+        }
+      ]
+    }
+  ],
+  "layer": [
+    {
+      "name": "layer-real",
+      "pre": "lower",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "pack": "real-overlay"
+      },
+      "merged": "real"
+    },
+    {
+      "name": "layer-real-owners",
+      "pre": "lower",
+      "opts": {},
+      "input": {
+        "pack": "real-overlay"
+      },
+      "root": true,
+      "owners": true
+    },
+    {
+      "name": "layer-upper",
+      "pre": "lower",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "pack": "upper-overlay"
+      },
+      "root": true
+    },
+    {
+      "name": "layer-upper-aufs",
+      "pre": "lower",
+      "opts": {},
+      "input": {
+        "pack": "upper-aufs"
+      },
+      "root": true,
+      "owners": true
+    },
+    {
+      "name": "layer-hand",
+      "pre": "lower",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": ".wh.nothere",
+            "type": "0",
+            "mode": 420
+          },
+          {
+            "name": ".wh.gonedir",
+            "type": "0",
+            "mode": 420
+          },
+          {
+            "name": "opq/",
+            "type": "5",
+            "mode": 448
+          },
+          {
+            "name": "opq/.wh..wh..opq",
+            "type": "0",
+            "mode": 420
+          },
+          {
+            "name": "opq/newfile",
+            "type": "0",
+            "mode": 420,
+            "data": "nf"
+          },
+          {
+            "name": "notopq/.wh..wh..opq",
+            "type": "0",
+            "mode": 420
+          },
+          {
+            "name": ".wh.gone",
+            "type": "0",
+            "mode": 420
+          },
+          {
+            "name": "gone",
+            "type": "0",
+            "mode": 420,
+            "data": "again"
+          },
+          {
+            "name": "sub/stay",
+            "type": "0",
+            "mode": 420,
+            "data": "replaced"
+          },
+          {
+            "name": "sub/.wh.stay",
+            "type": "0",
+            "mode": 420
+          },
+          {
+            "name": "deep/implied/.wh.x",
+            "type": "0",
+            "mode": 420
+          },
+          {
+            "name": "untouched/",
+            "type": "5",
+            "mode": 448,
+            "mtime": [
+              1100000000,
+              0
+            ]
+          },
+          {
+            "name": "keep.txt",
+            "type": "2",
+            "linkname": "untouched/file"
+          }
+        ]
+      }
+    },
+    {
+      "name": "layer-root-opaque",
+      "pre": "lower",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "a",
+            "type": "0",
+            "mode": 420,
+            "data": "a"
+          },
+          {
+            "name": "keep.txt",
+            "type": "0",
+            "mode": 420,
+            "data": "k"
+          },
+          {
+            "name": ".wh..wh..opq",
+            "type": "0",
+            "mode": 420
+          },
+          {
+            "name": "b",
+            "type": "0",
+            "mode": 420,
+            "data": "b"
+          }
+        ]
+      }
+    },
+    {
+      "name": "layer-plnk",
+      "pre": "lower",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": ".wh..wh.plnk/",
+            "type": "5",
+            "mode": 493
+          },
+          {
+            "name": ".wh..wh.plnk/1234",
+            "type": "0",
+            "data": "linked",
+            "mode": 416,
+            "mtime": [
+              1200000000,
+              0
+            ]
+          },
+          {
+            "name": "hl",
+            "type": "1",
+            "linkname": ".wh..wh.plnk/1234"
+          },
+          {
+            "name": "hl2",
+            "type": "1",
+            "linkname": ".wh..wh.plnk/./1234"
+          },
+          {
+            "name": ".wh..wh.other",
+            "type": "0",
+            "mode": 420,
+            "data": "skipped"
+          },
+          {
+            "name": "after",
+            "type": "0",
+            "mode": 420,
+            "data": "a"
+          }
+        ]
+      }
+    },
+    {
+      "name": "layer-plnk-missing",
+      "pre": "lower",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "hl",
+            "type": "1",
+            "linkname": ".wh..wh.plnk/999"
+          }
+        ]
+      }
+    },
+    {
+      "name": "layer-escape",
+      "pre": "lower",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "ok",
+            "type": "0",
+            "mode": 420,
+            "data": "ok"
+          },
+          {
+            "name": "../.wh.x",
+            "type": "0",
+            "mode": 420
+          }
+        ]
+      }
+    },
+    {
+      "name": "layer-whiteout-abs-symlink",
+      "pre": "lower",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "l",
+            "type": "2",
+            "linkname": "/"
+          },
+          {
+            "name": "l/.wh.keep.txt",
+            "type": "0",
+            "mode": 420
+          }
+        ]
+      }
+    },
+    {
+      "name": "layer-whiteout-rel-escape",
+      "pre": "lower",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "r",
+            "type": "2",
+            "linkname": ".."
+          },
+          {
+            "name": "r/.wh.x",
+            "type": "0",
+            "mode": 420
+          }
+        ]
+      }
+    },
+    {
+      "name": "layer-global",
+      "pre": "lower",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "",
+            "type": "g",
+            "pax": {
+              "comment": "global"
+            }
+          },
+          {
+            "name": "after",
+            "type": "0",
+            "mode": 420,
+            "data": "a"
+          }
+        ]
+      }
+    },
+    {
+      "name": "layer-opaque-new-dir",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "nodir/.wh..wh..opq",
+            "type": "0",
+            "mode": 420
+          },
+          {
+            "name": "nodir/f",
+            "type": "0",
+            "mode": 420,
+            "data": "f"
+          }
+        ]
+      }
+    },
+    {
+      "name": "layer-dir-over-file",
+      "pre": "lower",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": "keep.txt/",
+            "type": "5",
+            "mode": 493
+          },
+          {
+            "name": "keep.txt/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x"
+          },
+          {
+            "name": "opq",
+            "type": "0",
+            "mode": 420,
+            "data": "file now"
+          }
+        ]
+      }
+    },
+    {
+      "name": "layer-owners",
+      "pre": "lower",
+      "opts": {},
+      "input": {
+        "entries": [
+          {
+            "name": "o",
+            "type": "0",
+            "mode": 420,
+            "data": "o",
+            "uid": 1000,
+            "gid": 1000
+          },
+          {
+            "name": "od/",
+            "type": "5",
+            "mode": 493,
+            "uid": 1000,
+            "gid": 1000
+          },
+          {
+            "name": "od/implied/x",
+            "type": "0",
+            "mode": 420,
+            "data": "x",
+            "uid": 9,
+            "gid": 9
+          }
+        ]
+      },
+      "root": true,
+      "owners": true
+    },
+    {
+      "name": "layer-plnk-abs",
+      "pre": "lower",
+      "opts": {
+        "no_lchown": true
+      },
+      "input": {
+        "entries": [
+          {
+            "name": ".wh..wh.plnk/1234",
+            "type": "0",
+            "mode": 420,
+            "data": "linked"
+          },
+          {
+            "name": "hl",
+            "type": "1",
+            "linkname": "/.wh..wh.plnk/1234"
+          }
+        ]
+      }
+    }
   ]
 }

@@ -26,6 +26,7 @@ use crate::tar::{
     Header, PAX_SCHILY_XATTR, Reader, TYPE_BLOCK, TYPE_CHAR, TYPE_DIR, TYPE_FIFO, TYPE_LINK, TYPE_REG,
     TYPE_SYMLINK, TYPE_XGLOBAL_HEADER, Time,
 };
+use crate::whiteout::{self, WhiteoutFormat};
 
 /// ImpliedDirectoryMode: directories made for entries whose parents have none.
 const IMPLIED_DIR_MODE: u32 = 0o755;
@@ -44,6 +45,9 @@ pub struct UnpackOptions {
     pub best_effort_xattrs: bool,
     /// ExcludePatterns as Unpack applies them: prefixes of cleaned names.
     pub exclude_patterns: Vec<Vec<u8>>,
+    /// WhiteoutFormat: with Overlay, `.wh.` entries become overlayfs' whiteouts and
+    /// opaque directories, for an upper directory.
+    pub whiteout: WhiteoutFormat,
 }
 
 /// Untar: `dest` cleaned, then [`unpack`]. Archives must be uncompressed.
@@ -58,6 +62,7 @@ pub fn unpack(input: impl Read, dest: &Path, opts: &UnpackOptions) -> Result<(),
     let root = Root::open(&dest)?;
     let mut tr = Reader::new(input);
     let mut dirs: Vec<(Header, Vec<u8>)> = Vec::new();
+    let converter = whiteout::converter(opts.whiteout);
     'entries: while let Some(mut hdr) = tr.next_header()? {
         if hdr.typeflag == TYPE_XGLOBAL_HEADER {
             continue;
@@ -102,7 +107,12 @@ pub fn unpack(input: impl Read, dest: &Path, opts: &UnpackOptions) -> Result<(),
                 root.remove_all(&dst).map_err(|e| e.error("RemoveAll", &dst))?;
             }
         }
-        implied_directories(&root, &dst, opts)?;
+        implied_directories(&root, &dst, opts.no_lchown)?;
+        if let Some(conv) = &converter
+            && !conv.convert_read(&root, &hdr, &dst)?
+        {
+            continue;
+        }
         create(&root, &dst, &hdr, &mut tr, opts)?;
         if hdr.typeflag == TYPE_DIR {
             dirs.push((hdr, dst));
@@ -116,14 +126,14 @@ pub fn unpack(input: impl Read, dest: &Path, opts: &UnpackOptions) -> Result<(),
     Ok(())
 }
 
-fn trim_slashes(name: &[u8]) -> &[u8] {
+pub(crate) fn trim_slashes(name: &[u8]) -> &[u8] {
     let start = name.iter().position(|&c| c != b'/').unwrap_or(name.len());
     name.get(start..).unwrap_or_default()
 }
 
 /// unrepresentableOnWindows: `:` and `\` in a name, or in a hard link's target, cannot
 /// be a Windows path's; and on Windows devices and FIFOs are skipped (see the module).
-fn unrepresentable(hdr: &Header) -> bool {
+pub(crate) fn unrepresentable(hdr: &Header) -> bool {
     if NATIVE != Os::Windows {
         return false;
     }
@@ -134,12 +144,12 @@ fn unrepresentable(hdr: &Header) -> bool {
 }
 
 /// The latest of two times.
-fn latest(a: Time, b: Time) -> Time {
+pub(crate) fn latest(a: Time, b: Time) -> Time {
     if a < b { b } else { a }
 }
 
 /// boundTime: a time os.Chtimes cannot set (before 1970, after 2262) becomes 1970.
-fn bound(t: Time) -> Time {
+pub(crate) fn bound(t: Time) -> Time {
     let min = Time::unix(0, 0);
     let max = Time::unix(0, i64::MAX);
     if t < min || t > max { min } else { t }
@@ -148,7 +158,7 @@ fn bound(t: Time) -> Time {
 /// resolveArchivePath: `name` with its parent's symlinks resolved as if the root were
 /// `/` where os.Root alone would refuse an absolute one, or where a parent is missing.
 /// A relative symlink that leaves the root stays refused.
-fn resolve_archive_path(root: &Root, name: &[u8]) -> Result<Vec<u8>, Error> {
+pub(crate) fn resolve_archive_path(root: &Root, name: &[u8]) -> Result<Vec<u8>, Error> {
     let (parent, base) = gopath::split(NATIVE, name);
     if parent.is_empty() {
         return Ok(name.to_vec());
@@ -199,8 +209,8 @@ fn resolve_hardlink_target(root: &Root, linkname: &[u8]) -> Result<Vec<u8>, Erro
 }
 
 /// What resolveFSRootPath found.
-struct Resolved {
-    path: Vec<u8>,
+pub(crate) struct Resolved {
+    pub(crate) path: Vec<u8>,
     followed_absolute: bool,
     relative_escape_first: bool,
 }
@@ -208,7 +218,7 @@ struct Resolved {
 /// resolveFSRootPath (rootpath.go, after containerd's fs.RootPath): `path` under `root`
 /// with every symlink resolved as if `root` were `/`. Paths only: os.Root checks what is
 /// done with the result.
-fn resolve_fs_root_path(root: &[u8], path: &[u8]) -> Result<Resolved, Error> {
+pub(crate) fn resolve_fs_root_path(root: &[u8], path: &[u8]) -> Result<Resolved, Error> {
     let mut r = Resolved {
         path: root.to_vec(),
         followed_absolute: false,
@@ -310,7 +320,7 @@ fn walk_links(root: &[u8], path: &[u8], links: &mut usize, r: &mut Resolved) -> 
 
 /// createImpliedDirectories: the missing parents of `dst`, mode 0755 and the root's
 /// owner, as an archive without their entries implies them.
-fn implied_directories(root: &Root, dst: &[u8], opts: &UnpackOptions) -> Result<(), Error> {
+pub(crate) fn implied_directories(root: &Root, dst: &[u8], no_lchown: bool) -> Result<(), Error> {
     let parent = gopath::dir(NATIVE, dst);
     if parent == b"." || parent.is_empty() {
         return Ok(());
@@ -340,7 +350,7 @@ fn implied_directories(root: &Root, dst: &[u8], opts: &UnpackOptions) -> Result<
             }
             Err(e) => return Err(e.error("mkdirat", &cur)),
         }
-        if opts.no_lchown {
+        if no_lchown {
             continue;
         }
         // Mkdir's mode is under the umask; the mode is set again so it is not.
@@ -350,7 +360,7 @@ fn implied_directories(root: &Root, dst: &[u8], opts: &UnpackOptions) -> Result<
 }
 
 /// createTarFile: one entry, then its owner, attributes, mode and times.
-fn create(
+pub(crate) fn create(
     root: &Root,
     dst: &[u8],
     hdr: &Header,

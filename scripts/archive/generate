@@ -1,13 +1,17 @@
 #!/bin/sh
-# Regenerates crates/archive/testdata/answers.json, pack/, unpack/ and rebase/: what
-# moby/go-archive v0.3.3 and Go's archive/tar make of testdata/cases.json (oracle/main.go),
-# then runs shards-archive's oracle test against them (crates/archive/tests/oracle.rs).
+# Regenerates crates/archive/testdata/answers.json, pack/, unpack/, layer/ and rebase/:
+# what moby/go-archive v0.3.3 and Go's archive/tar make of testdata/cases.json
+# (oracle/main.go), then runs shards-archive's oracle test against them
+# (crates/archive/tests/oracle.rs).
 #
 # Both run as root in a privileged Linux container (Docker's), on an ext4 volume: the
-# fixture trees have owners, setuid bits, devices and security.capability, which only
-# root can make, and unpacking applies them. The test is built for the host's
-# architecture as a static musl binary, so it runs there as it does in a guest; hosts
-# without root run the cases that need none.
+# fixture trees have owners, setuid bits, devices, security.capability and overlayfs'
+# trusted. attributes, which only root can make, and unpacking applies them. The Go side
+# also mounts overlayfs there and changes files through it, so the kernel writes an upper
+# directory's whiteouts and opaque directories; the Rust side packs the same directory
+# (SHARDS_ARCHIVE_OVERLAY). The test is built for the host's architecture as a static musl
+# binary, so it runs there as it does in a guest; hosts without root run the cases that
+# need none.
 #
 #   scripts/archive/generate
 set -eu
@@ -37,5 +41,5 @@ docker run --rm --privileged --platform "linux/$goarch" \
 	-v "$out:/oracle:ro" -v "$data:/data" --mount type=volume,dst=/work "$image" \
 	sh -c 'mkdir -p /work/go /work/rust && /oracle/oracle /data /work/go &&
 		TMPDIR=/work/rust SHARDS_ARCHIVE_ROOT=1 SHARDS_ARCHIVE_TESTDATA=/data \
-		/oracle/oracle-test --test-threads=1'
+		SHARDS_ARCHIVE_OVERLAY=/work/go /oracle/oracle-test --test-threads=1'
 echo "wrote $data"
