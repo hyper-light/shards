@@ -23,6 +23,7 @@ pub fn show(sheet: &Sheet) {
         "rmi" => rmi(&mut page, &p, sheet),
         "tag" => tag(&mut page, &p, sheet),
         "port" => port(&mut page, &p, sheet),
+        "history" => history(&mut page, &p, sheet),
         "json" => {
             json(&p, sheet.get(0, "text").unwrap_or(""));
             return;
@@ -633,6 +634,107 @@ fn rmi(page: &mut Page, p: &Paint, sheet: &Sheet) {
                 .put(p, tokens::FOREGROUND, name);
         }
     }
+}
+
+/// `shards history`: how an image's layers were made, newest first: when, by what, and
+/// each layer's size drawn against the largest; the steps that made no layer quieter.
+fn history(page: &mut Page, p: &Paint, sheet: &Sheet) {
+    let cols = look::width();
+    let image = sheet.get(0, "image").unwrap_or("");
+    let id = sheet.get(0, "id").unwrap_or("");
+    let rows: Vec<usize> = (1..sheet.records.len()).collect();
+    let num = |i: usize, k: &str| sheet.get(i, k).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+    let layers = rows
+        .iter()
+        .filter(|&&i| sheet.get(i, "empty") != Some("true"))
+        .count();
+    let total: i64 = rows.iter().map(|&i| num(i, "size")).sum();
+    look::head(
+        page,
+        p,
+        cols,
+        "history",
+        &[
+            (tokens::BRIGHT, true, image.to_string()),
+            (
+                tokens::MUTED,
+                false,
+                format!(
+                    "{id} · {} steps · {layers} layers · {} compressed",
+                    rows.len(),
+                    text::bytes(u64::try_from(total).unwrap_or(0))
+                ),
+            ),
+        ],
+    );
+    page.blank();
+    let largest = rows.iter().map(|&i| num(i, "size")).max().unwrap_or(0).max(1);
+    let size_w = rows
+        .iter()
+        .map(|&i| text::bytes(u64::try_from(num(i, "size")).unwrap_or(0)).len())
+        .max()
+        .unwrap_or(0);
+    let columns = [
+        Column {
+            heading: "CREATED",
+            right: false,
+            keep: 5,
+        },
+        Column {
+            heading: "SIZE",
+            right: false,
+            keep: 7,
+        },
+        Column {
+            heading: "CREATED BY",
+            right: false,
+            keep: 9,
+        },
+    ];
+    let table_rows: Vec<(Cell, Vec<Cell>)> = rows
+        .iter()
+        .map(|&i| {
+            let empty = sheet.get(i, "empty") == Some("true");
+            let size = u64::try_from(num(i, "size")).unwrap_or(0);
+            let mut size_cell = Cell::new(
+                format!(
+                    "{:<size_w$}",
+                    if empty {
+                        "—".to_string()
+                    } else {
+                        text::bytes(size)
+                    }
+                ),
+                if empty { tokens::FAINT } else { tokens::LAVENDER },
+            );
+            if !empty {
+                size_cell.bar = Some((8, size as f64 / largest as f64));
+            }
+            let by = sheet.get(i, "by").unwrap_or("").replace('\t', " ");
+            // A RUN said as it was written, without the shell it ran in.
+            let by = match by.strip_prefix("RUN /bin/sh -c ") {
+                Some(rest) => format!("RUN {rest}"),
+                None => by,
+            };
+            let marker = if empty {
+                Cell::new("●", tokens::FAINT)
+            } else {
+                Cell::new("●", tokens::SAGE)
+            };
+            (
+                marker,
+                vec![
+                    Cell::new(ago(num(i, "created")), tokens::MUTED),
+                    size_cell,
+                    Cell::new(
+                        layout::clip(&by, 80),
+                        if empty { tokens::MUTED } else { tokens::FOREGROUND },
+                    ),
+                ],
+            )
+        })
+        .collect();
+    table(page, p, cols, &columns, &table_rows);
 }
 
 /// `shards tag`: the new name, and the image it names.

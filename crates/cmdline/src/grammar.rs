@@ -54,6 +54,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         // An image goes with the stopped microVMs made from it.
         ("remove" | "rm" | "delete" | "rmi", Thing::Image) => &["rmi", "--vms"],
         ("inspect", Thing::Image) => &["image", "inspect"],
+        ("history", Thing::Image) => &["history"],
         ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect"],
         ("run", Thing::Vm | Thing::Container) => &["run"],
         ("restore", Thing::Vm) => &["restore"],
@@ -106,6 +107,7 @@ pub static ACTIONS: &[(&str, &str, &str)] = &[
     ("pull", "image NAME", "Download an image, and make it a microVM"),
     ("push", "image NAME", "Upload an image to a registry"),
     ("inspect", "image NAME", "Show an image's documents"),
+    ("history", "image NAME", "Show how an image's layers were made"),
     (
         "inspect",
         "vm NAME",

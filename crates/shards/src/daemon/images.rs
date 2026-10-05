@@ -600,6 +600,143 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 }
 
+impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// `shards history IMAGE` (docker/cli history.go): each step of the image's config
+    /// history, newest first: the image's ID on the newest, `<missing>` on the rest, as
+    /// dockerd's containerd store has it; when, by what, the size of the layer it made, and
+    /// its comment. A layer's size is its compressed size, where dockerd's is unpacked.
+    pub(super) fn history(
+        &self,
+        parsed: &shards_cmdline::flags::Parsed,
+        asker: &super::commands::Asker,
+        reply: &super::commands::Reply<'_>,
+    ) -> u8 {
+        let given = parsed.args.first().map(String::as_str).unwrap_or_default();
+        let read = self.store().and_then(|store| {
+            let store = store.ok_or_else(|| not_found(given))?;
+            let images = store.named().map_err(|e| e.to_string())?;
+            let named = resolve(&images, given)?;
+            store.image(named).map_err(|e| e.to_string())
+        });
+        let image = match read {
+            Ok(image) => image,
+            Err(e) => {
+                reply.err(&format!("Error response from daemon: {e}"));
+                return 1;
+            }
+        };
+        let config: serde_json::Value = image
+            .config
+            .as_deref()
+            .and_then(|c| serde_json::from_slice(c).ok())
+            .unwrap_or(serde_json::Value::Null);
+        // The layers' sizes, in order, from our platform's manifest.
+        let sizes: Vec<i64> = self
+            .store()
+            .ok()
+            .flatten()
+            .and_then(|s| std::fs::read(s.blob_path(&image.manifest)).ok())
+            .and_then(|b| serde_json::from_slice::<shards_image::oci::Manifest>(&b).ok())
+            .map(|m| m.layers.iter().map(|l| l.size).collect())
+            .unwrap_or_default();
+        let mut layer = 0;
+        let mut steps: Vec<(String, String, String, i64, bool)> = Vec::new();
+        for h in config
+            .get("history")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let text = |k: &str| {
+                h.get(k)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            let empty = h
+                .get("empty_layer")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let size = if empty {
+                0
+            } else {
+                let s = sizes.get(layer).copied().unwrap_or(0);
+                layer += 1;
+                s
+            };
+            steps.push((text("created"), text("created_by"), text("comment"), size, empty));
+        }
+        steps.reverse();
+        let now = asker.now / 1_000_000_000;
+        let id = truncate_id(&image.id.to_string()).to_string();
+        if asker.styled() && !parsed.bool("quiet") {
+            let mut sheet = shards_ipc::Sheet::new("history");
+            sheet.record(&[
+                ("kind", "head".into()),
+                ("image", given.to_string()),
+                ("id", id.clone()),
+            ]);
+            for (created, by, comment, size, empty) in &steps {
+                let when = shards_dockerfile::go::parse_rfc3339(created.as_bytes()).map_or(0, |t| t.unix().0);
+                sheet.record(&[
+                    ("created", when.to_string()),
+                    ("by", by.clone()),
+                    ("size", size.to_string()),
+                    ("empty", empty.to_string()),
+                    ("comment", comment.clone()),
+                ]);
+            }
+            reply.sheet(&sheet);
+            return 0;
+        }
+        let (human, trunc) = (parsed.bool("human"), !parsed.bool("no-trunc"));
+        if parsed.bool("quiet") {
+            for (i, _) in steps.iter().enumerate() {
+                reply.out(if i == 0 { &id } else { "<missing>" });
+            }
+            return 0;
+        }
+        let mut rows = vec![[
+            "IMAGE".to_string(),
+            "CREATED".into(),
+            "CREATED BY".into(),
+            "SIZE".into(),
+            "COMMENT".into(),
+        ]];
+        for (i, (created, by, comment, size, _)) in steps.iter().enumerate() {
+            let when = shards_dockerfile::go::parse_rfc3339(created.as_bytes()).map_or(0, |t| t.unix().0);
+            let created = if human {
+                let ago = u128::try_from(now.saturating_sub(when).max(0)).unwrap_or(0) * 1_000_000_000;
+                format!("{} ago", super::commands::human_duration(ago))
+            } else {
+                created.clone()
+            };
+            let by = by.replace('\t', " ");
+            let by = if trunc && by.chars().count() > 45 {
+                format!("{}…", by.chars().take(44).collect::<String>())
+            } else {
+                by
+            };
+            let size = if human {
+                human_size(*size)
+            } else {
+                size.to_string()
+            };
+            rows.push([
+                if i == 0 { id.clone() } else { "<missing>".into() },
+                created,
+                by,
+                size,
+                comment.clone(),
+            ]);
+        }
+        for line in super::commands::tabulate(&rows, asker.east_asian) {
+            reply.out(&line);
+        }
+        0
+    }
+}
+
 /// The microVM a name made, gone from the machine's local image store with the name.
 fn unpublish(name: &str) {
     if std::env::var("SHARDS_LOCAL_STORE").is_ok_and(|v| v == "none") {

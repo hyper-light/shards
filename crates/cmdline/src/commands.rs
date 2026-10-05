@@ -385,6 +385,31 @@ size s b - -",
     error_prefix: "",
 };
 
+/// `shards history` (docker/cli cli/command/image/history.go): an image's layers and
+/// how each was made, newest first.
+pub static HISTORY: Command = Command {
+    usage: "[OPTIONS] IMAGE",
+    about: "Show the history of an image",
+    aliases: "shards image history, shards history",
+    args: Args::Exactly(1),
+    flags: &[
+        HELP,
+        Flag::bool(
+            "human",
+            Some(b'H'),
+            "Print sizes and dates in human readable format",
+        )
+        .defaulting("true"),
+        Flag::bool("no-trunc", None, "Don't truncate output"),
+        Flag::bool("quiet", Some(b'q'), "Only show image IDs"),
+    ],
+    unserved: "\
+format - s - -\n\
+platform - s - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards save`.
 pub static SAVE: Command = Command {
     usage: "[OPTIONS] IMAGE [IMAGE...]",
@@ -814,6 +839,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["image", "rm" | "remove", ..] => (&RMI, "shards image rm", 2),
         ["image", "tag", ..] => (&TAG, "shards image tag", 2),
         ["image", "inspect", ..] => (&IMAGE_INSPECT, "shards image inspect", 2),
+        ["history", ..] => (&HISTORY, "shards history", 1),
+        ["image", "history", ..] => (&HISTORY, "shards image history", 2),
         ["container", "inspect", ..] => (&CONTAINER_INSPECT, "shards container inspect", 2),
         ["image", "ls" | "list", ..] => (&IMAGES, "shards image ls", 2),
         ["container", "port", ..] => (&PORT, "shards container port", 2),

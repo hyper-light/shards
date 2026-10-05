@@ -71,6 +71,7 @@ pub static TOP: &[Group] = &[
     Group {
         heading: "Commands",
         entries: &[
+            of("history", &commands::HISTORY),
             of("kill", &commands::KILL),
             of("load", &commands::LOAD),
             of("logs", &commands::LOGS),
@@ -107,6 +108,7 @@ pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
         "Manage images",
         &[
             BUILD,
+            of("history", &commands::HISTORY),
             of("inspect", &commands::IMAGE_INSPECT),
             of("load", &commands::LOAD),
             of("ls", &commands::IMAGES),
