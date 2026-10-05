@@ -279,6 +279,8 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
         if unsafe { libc::setrlimit(resource, &limit) } != 0 {
             return Err(last());
         }
+    } else if let Some(rest) = text.strip_prefix("volume=") {
+        volume(rest).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
     } else if let Some(n) = text.strip_prefix("oom=") {
         // runc sets the container's process's own (setupOOMScoreAdj, before exec).
         std::fs::write("/proc/self/oom_score_adj", n).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
@@ -295,6 +297,204 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
         )?;
     }
     Ok(())
+}
+
+/// Mounts a shared directory (D38), `TAG\0DEST\0FLAGS\0NAME`: by its virtio-fs tag at
+/// DEST, read-only with `ro`; with `copy`, the image's files at DEST copied into it first,
+/// where it is empty (moby daemon/create_unix.go populateVolume); with a NAME, only that
+/// file of it, bound at DEST, as a file bind mount is.
+fn volume(spec: &str) -> io::Result<()> {
+    let mut parts = spec.split('\0');
+    let (Some(tag), Some(dest), Some(flags), Some(name)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    };
+    let file = (!name.is_empty()).then_some(name);
+    let ro = flags.split(',').any(|f| f == "ro");
+    let copy = flags.split(',').any(|f| f == "copy");
+    let base = if ro { libc::MS_RDONLY } else { 0 };
+    let mount = |src: &str, dst: &str, fstype: Option<&str>, flags: libc::c_ulong| -> io::Result<()> {
+        let (src, dst) = (
+            c(src).ok_or(io::ErrorKind::InvalidInput)?,
+            c(dst).ok_or(io::ErrorKind::InvalidInput)?,
+        );
+        let fstype = fstype.and_then(c);
+        let ty = fstype.as_ref().map_or(std::ptr::null(), |t| t.as_ptr());
+        // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
+        if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), ty, flags, std::ptr::null()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    };
+    let staging = format!("/dev/.shards-{tag}");
+    match file {
+        Some(name) => {
+            std::fs::create_dir_all(&staging)?;
+            mount(tag, &staging, Some("virtiofs"), base)?;
+            if let Some(parent) = std::path::Path::new(dest).parent() {
+                mkdir_all(&parent.to_string_lossy())?;
+            }
+            if std::fs::symlink_metadata(dest).is_err() {
+                std::fs::File::create(dest)?;
+            }
+            mount(&format!("{staging}/{name}"), dest, None, libc::MS_BIND)?;
+            if ro {
+                mount("", dest, None, libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY)?;
+            }
+            detach(&staging);
+            let _ = std::fs::remove_dir(&staging);
+        }
+        None if copy => {
+            mkdir_all(dest)?;
+            std::fs::create_dir_all(&staging)?;
+            mount(tag, &staging, Some("virtiofs"), 0)?;
+            let empty = std::fs::read_dir(&staging)?.next().is_none();
+            if empty {
+                copy_tree(std::path::Path::new(dest), std::path::Path::new(&staging))?;
+            }
+            mount(&staging, dest, None, libc::MS_MOVE)?;
+            if ro {
+                mount("", dest, None, libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY)?;
+            }
+            let _ = std::fs::remove_dir(&staging);
+        }
+        None => {
+            mkdir_all(dest)?;
+            mount(tag, dest, Some("virtiofs"), base)?;
+        }
+    }
+    Ok(())
+}
+
+fn detach(path: &str) {
+    if let Some(p) = c(path) {
+        // SAFETY: umount2(2) of a NUL-terminated path.
+        unsafe { libc::umount2(p.as_ptr(), libc::MNT_DETACH) };
+    }
+}
+
+/// Copies directory `src`'s contents into `dst`, and its own owner, mode and times, as
+/// continuity's CopyDir does (fs/copy.go): directories, files, symlinks, hard links as
+/// links, devices and FIFOs, each with its owner, mode, times and extended attributes,
+/// those `dst` does not take left.
+pub fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let mut links: std::collections::HashMap<(u64, u64), std::path::PathBuf> =
+        std::collections::HashMap::new();
+    let meta = std::fs::symlink_metadata(src)?;
+    copy_tree_into(src, dst, &mut links)?;
+    std::os::unix::fs::lchown(dst, Some(meta.uid()), Some(meta.gid()))?;
+    std::fs::set_permissions(dst, std::fs::Permissions::from_mode(meta.mode() & 0o7777))?;
+    copy_times(&meta, dst);
+    Ok(())
+}
+
+fn copy_tree_into(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    links: &mut std::collections::HashMap<(u64, u64), std::path::PathBuf>,
+) -> io::Result<()> {
+    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let (from, to) = (entry.path(), dst.join(entry.file_name()));
+        let meta = std::fs::symlink_metadata(&from)?;
+        let kind = meta.file_type();
+        if kind.is_dir() {
+            std::fs::create_dir(&to)?;
+            copy_tree_into(&from, &to, links)?;
+        } else if kind.is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
+        } else if meta.nlink() > 1
+            && let Some(first) = links.get(&(meta.dev(), meta.ino()))
+        {
+            std::fs::hard_link(first, &to)?;
+            continue;
+        } else if kind.is_file() {
+            std::fs::copy(&from, &to)?;
+            if meta.nlink() > 1 {
+                links.insert((meta.dev(), meta.ino()), to.clone());
+            }
+        } else if kind.is_fifo() || kind.is_char_device() || kind.is_block_device() || kind.is_socket() {
+            let p = c(&to.to_string_lossy()).ok_or(io::ErrorKind::InvalidInput)?;
+            // SAFETY: mknod(2) of a NUL-terminated path, with the source's type and number.
+            if unsafe {
+                libc::mknod(
+                    p.as_ptr(),
+                    meta.mode() as libc::mode_t,
+                    meta.rdev() as libc::dev_t,
+                )
+            } != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        copy_xattrs(&from, &to);
+        std::os::unix::fs::lchown(&to, Some(meta.uid()), Some(meta.gid()))?;
+        if !kind.is_symlink() {
+            std::fs::set_permissions(&to, std::fs::Permissions::from_mode(meta.mode() & 0o7777))?;
+        }
+        copy_times(&meta, &to);
+    }
+    Ok(())
+}
+
+fn copy_times(meta: &std::fs::Metadata, to: &std::path::Path) {
+    use std::os::unix::fs::MetadataExt as _;
+    let times = [
+        libc::timespec {
+            tv_sec: meta.atime() as _,
+            tv_nsec: meta.atime_nsec() as _,
+        },
+        libc::timespec {
+            tv_sec: meta.mtime() as _,
+            tv_nsec: meta.mtime_nsec() as _,
+        },
+    ];
+    if let Some(p) = c(&to.to_string_lossy()) {
+        // SAFETY: utimensat(2) of a NUL-terminated path with two times, not following it.
+        unsafe {
+            libc::utimensat(
+                libc::AT_FDCWD,
+                p.as_ptr(),
+                times.as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+    }
+}
+
+/// The extended attributes of `from` on `to`, those it takes (ignoreUnsupportedXAttrs).
+fn copy_xattrs(from: &std::path::Path, to: &std::path::Path) {
+    let (Some(f), Some(t)) = (c(&from.to_string_lossy()), c(&to.to_string_lossy())) else {
+        return;
+    };
+    let mut names = vec![0u8; 4096];
+    // SAFETY: llistxattr(2) into a buffer of its length.
+    let n = unsafe { libc::llistxattr(f.as_ptr(), names.as_mut_ptr().cast(), names.len()) };
+    let Ok(n) = usize::try_from(n) else {
+        return;
+    };
+    for name in names
+        .get(..n)
+        .unwrap_or_default()
+        .split(|&b| b == 0)
+        .filter(|n| !n.is_empty())
+    {
+        let Ok(name) = CString::new(name) else {
+            continue;
+        };
+        let mut value = vec![0u8; 65536];
+        // SAFETY: lgetxattr(2) into a buffer of its length.
+        let len =
+            unsafe { libc::lgetxattr(f.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), value.len()) };
+        let Ok(len) = usize::try_from(len) else {
+            continue;
+        };
+        // SAFETY: lsetxattr(2) of a buffer of `len` bytes.
+        unsafe { libc::lsetxattr(t.as_ptr(), name.as_ptr(), value.as_ptr().cast(), len, 0) };
+    }
 }
 
 /// What a privileged container has of the host's, of the VM's (moby daemon/oci_linux.go,
@@ -413,6 +613,10 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
     }
     if text == "privileged" {
         return format!("making the container privileged: {err}");
+    }
+    if let Some(rest) = text.strip_prefix("volume=") {
+        let dest = rest.split('\0').nth(1).unwrap_or_default();
+        return format!("error mounting a shared directory to rootfs at \"{dest}\": {err}");
     }
     format!("error remounting the root read-only: {err}")
 }

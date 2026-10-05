@@ -1830,6 +1830,26 @@ impl<D: Disk> Daemon<D> {
         // From here, its client passes signals on to the command; it has the ID for
         // `--cidfile`.
         let _ = shards_ipc::send(conn, kind::CREATED, id.as_bytes(), &[]);
+        // Its mount points, opened and served (D38): the guest mounts each as its setup
+        // says. One that cannot be fails the start, as a mount runc cannot make does.
+        let (points, first) = lock(&self.containers)
+            .made(&id)
+            .map(|c| (c.mounts.clone(), c.started.is_none()))
+            .unwrap_or_default();
+        let shared = crate::volumes::open(&points, first).and_then(|opened| {
+            prepared.spec.setup = crate::setup::setup(&run, &opened.mounts)?;
+            crate::spec::fits(&prepared.spec)?;
+            let link = self.start_shares(threads, &opened.dirs)?;
+            prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
+            Ok(link)
+        });
+        let shares = match shared {
+            Ok(link) => link,
+            Err(e) => {
+                start = network::Start::Fails(e);
+                None
+            }
+        };
         if let Some(e) = unbound {
             start = network::Start::Fails(format!(
                 "failed to set up container networking: driver failed programming external connectivity on endpoint {name} ({id}): {e}"
@@ -1893,6 +1913,9 @@ impl<D: Disk> Daemon<D> {
         if let Some(file) = &layer_out {
             flags |= shards_ipc::RUN_LAYER_OUT;
             fds.push(file.as_fd());
+        }
+        if let Some(link) = &shares {
+            fds.push(link.as_fd());
         }
         // The flags, the retention's two u64s, the log's segment, then the spec, in one
         // allocation (audit D10).
@@ -2144,7 +2167,7 @@ impl<D: Disk> Daemon<D> {
             .collect::<Result<_, &str>>()?;
         spec.domainname = run.domainname.clone().into_bytes();
         spec.cgroup = crate::resources::cgroup(&run.resources);
-        spec.setup = crate::setup::setup(run)?;
+        spec.setup = crate::setup::setup(run, &[])?;
         Ok(())
     }
 
@@ -2214,6 +2237,62 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// The mount points of a container `run` makes (moby daemon/volumes.go,
+    /// registerMountPoints). Anonymous volumes it made go again if a later one fails, as
+    /// dockerd's cleanup removes them with the container it could not make.
+    fn register_mounts(
+        &self,
+        run: &Run,
+        prepared: &Prepared,
+    ) -> Result<Vec<crate::volumes::MountPoint>, String> {
+        let store = crate::volumes::Store::new(&self.home);
+        let from = |id: &str| -> Result<Vec<crate::volumes::MountPoint>, String> {
+            let (registry, found) = self.resolve_held(lock(&self.containers), id);
+            let found = found.map_err(|e| {
+                e.strip_prefix("Error response from daemon: ")
+                    .unwrap_or(&e)
+                    .to_string()
+            })?;
+            Ok(registry.get(&found).map(|c| c.mounts.clone()).unwrap_or_default())
+        };
+        let image_volumes: Vec<String> = prepared
+            .image_volumes
+            .iter()
+            .chain(run.volumes.iter())
+            .cloned()
+            .collect();
+        let points = crate::volumes::register(&store, run, &image_volumes, &from)?;
+        Ok(points.into_iter().map(|(p, _)| p).collect())
+    }
+
+    /// Starts the share process (share.rs) serving `dirs`: the VM's connection to it, none
+    /// for none. It is reaped on the followers' loop, and ends as its VM's connections
+    /// close.
+    fn start_shares<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        dirs: &[(OwnedFd, bool, OsString)],
+    ) -> Result<Option<UnixStream>, String> {
+        if dirs.is_empty() {
+            return Ok(None);
+        }
+        let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
+        let (vm, share) = UnixStream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
+        let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        for (_, read_only, only) in dirs {
+            args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
+            args.push(only.as_os_str());
+        }
+        let mut fds = vec![(share.as_fd(), 3)];
+        for (i, (dir, _, _)) in dirs.iter().enumerate() {
+            fds.push((dir.as_fd(), 4 + i32::try_from(i).map_err(|_| "too many shares")?));
+        }
+        let child = shards_ipc::spawn_in(&exe, &args, &fds, false, &[])
+            .map_err(|e| format!("starting the share process: {e}"))?;
+        self.follow_share(threads, child);
+        Ok(Some(vm))
+    }
+
     /// Container `id` of `run`, with the name the run gave, or one made for it, as dockerd
     /// names containers (moby daemon/names.go). Reserved, its name held, and seen once its
     /// record is written ([`record_arrival`](Self::record_arrival)), so that it outlives a
@@ -2257,6 +2336,9 @@ impl<D: Disk> Daemon<D> {
         // it is made.
         crate::resources::verify(&run.resources, crate::resources::host_cpus())?;
         crate::setup::verify(run)?;
+        // Its mount points (registerMountPoints): volumes made as they are named, binds
+        // checked; an image's volumes, and `-v DEST`'s, anonymous.
+        let mounts = self.register_mounts(run, prepared)?;
         // A name held by a container that ended with `--rm`, its end not yet taken or its
         // removal not yet durable, is free once that is done, as dockerd's is by the time
         // `docker run --rm` returns: its end is taken, and its removal waited for.
@@ -2313,6 +2395,7 @@ impl<D: Disk> Daemon<D> {
             ports,
             labels: prepared.labels.clone(),
             oom_killed: false,
+            mounts,
         });
         self.event_for(id, &name, &run.image, "create", &[]);
         // Its run is owned from the moment the container is visible.
@@ -2516,7 +2599,32 @@ impl<D: Disk> Daemon<D> {
                 "container {id}: deleting its files: {e}; the next start deletes them"
             ));
         }
+        if removal.container.auto_remove {
+            self.drop_anonymous(&removal.container);
+        }
         synced
+    }
+
+    /// Removes the anonymous volumes `removed` mounted that no other container mounts, as
+    /// dockerd does with a container removed with its volumes (`rm -v`, `run --rm`; moby
+    /// daemon/delete.go, removeMountPoints): a volume another holds stays, as dockerd's
+    /// does, in use.
+    pub(super) fn drop_anonymous(&self, removed: &Container) {
+        let store = crate::volumes::Store::new(&self.home);
+        for m in removed.mounts.iter().filter(|m| m.kind == "volume") {
+            if !store.get(&m.name).is_some_and(|v| v.anonymous) {
+                continue;
+            }
+            let held = lock(&self.containers).all().any(|c| {
+                c.id != removed.id && c.mounts.iter().any(|o| o.kind == "volume" && o.name == m.name)
+            });
+            if held {
+                continue;
+            }
+            if let Err(e) = store.remove(&m.name) {
+                log(format!("container {}: its volume {}: {e}", removed.id, m.name));
+            }
+        }
     }
 
     /// [`set_aside`](Self::set_aside), then [`complete`](Self::complete), of a batch: one
@@ -2539,6 +2647,9 @@ impl<D: Disk> Daemon<D> {
                 log(format!(
                     "container {id}: deleting its files: {e}; the next start deletes them"
                 ));
+            }
+            if removal.container.auto_remove {
+                self.drop_anonymous(&removal.container);
             }
         }
     }
@@ -3287,6 +3398,8 @@ impl<D: Disk> Daemon<D> {
         // Sized for its limits; a template is of one size (run::template).
         let on_network = |cfg: &mut Config| {
             (cfg.vcpus, cfg.memory_mib) = prepared.size;
+            // A slot for each directory it shares (D38), which its run fills.
+            cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
             if let Some(bridge) = &bridge {
                 cfg.cmdline.push(' ');
                 cfg.cmdline.push_str(&bridge.cmdline());
@@ -3659,6 +3772,9 @@ impl<D: Disk> Daemon<D> {
         }
         if let Some(fresh) = save {
             args.extend(["--snapshot-dir".into(), fresh.into()]);
+        }
+        if !cfg.shares.is_empty() {
+            args.extend(["--shares".into(), cfg.shares.len().to_string().into()]);
         }
         args.extend(["--warm".into(), "3".into()]);
         // A guest on a network: a fresh MAC, which a template it saves keeps.
@@ -4423,7 +4539,7 @@ mod tests {
                 ..Run::default()
             };
             let prepared = Prepared {
-                boot: Boot::Given(Config::new(PathBuf::from("kernel"), None)),
+                boot: Boot::Given(Box::new(Config::new(PathBuf::from("kernel"), None))),
                 rootfs: PathBuf::new(),
                 spec: shards_abi::run::Spec {
                     argv: vec![b"exit".to_vec(), b"7".to_vec()],
@@ -4439,6 +4555,8 @@ mod tests {
                 exposed: Vec::new(),
                 image_id: String::new(),
                 size: (1, shards_vmm::vm::MEMORY_MIB),
+                image_volumes: Vec::new(),
+                shares: 0,
             };
             self.t.daemon.create(&run, &prepared, &id, Vec::new()).unwrap();
             self.t.daemon.record_arrival(self.threads, &id);

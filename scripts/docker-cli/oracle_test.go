@@ -25,7 +25,7 @@ import (
 
 // The flags shards serves, by command; the rest are hidden, as shards hides them.
 var served = map[string][]string{
-	"run": {"add-host", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "name", "net", "network", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "rm", "shm-size", "sig-proxy", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "workdir"},
+	"run": {"add-host", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "network", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "rm", "shm-size", "sig-proxy", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
 	"ps":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet"},
 	"ls":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet"},
 	"wait": {"help"},
@@ -73,7 +73,7 @@ var served = map[string][]string{
 	// `container prune` and `system prune`, which share the name.
 	"prune":             {"all", "filter", "force", "help"},
 	"image prune":       {"all", "filter", "force", "help"},
-	"create": {"add-host", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "name", "net", "network", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "rm", "shm-size", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "workdir"},
+	"create": {"add-host", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "network", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "rm", "shm-size", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
 	"container create": {
 		"disable-content-trust", "entrypoint", "env", "help",
 		"hostname", "init", "interactive", "kernel-memory", "name", "net", "network", "pull",
@@ -240,6 +240,24 @@ var cases = [][]string{
 	{"run", "--shm-size", "1g", "alpine"},
 	{"run", "--cap-add", "net_admin", "--cap-add", "ALL", "--cap-drop", "chown", "--group-add", "audio", "--group-add", "1234", "--oom-score-adj", "-500", "--privileged", "alpine"},
 	{"run", "--oom-score-adj", "x", "alpine"},
+	{"run", "-v", "/h:/c:ro", "-v", "name:/d", "-v", "/anon", "--mount", "type=bind,src=/a,dst=/b,readonly", "--mount", "type=tmpfs,dst=/t,tmpfs-size=64m", "--volumes-from", "web:ro", "--volume-driver", "local", "alpine"},
+	{"run", "--mount", "", "alpine"},
+	{"run", "--mount", "type=bind,src", "alpine"},
+	{"run", "--mount", "type=volume,bind-propagation=shared", "alpine"},
+	{"run", "--mount", "type=bind,ro=maybe", "alpine"},
+	{"run", "--mount", "type=bind,nope=1", "alpine"},
+	{"run", "--mount", "type=tmpfs,tmpfs-size=x", "alpine"},
+	{"run", "--mount", "type=tmpfs,tmpfs-mode=9", "alpine"},
+	{"run", "--mount", "type=bind,bind-nonrecursive", "alpine"},
+	{"run", "--mount", "type=bind,src= /a", "alpine"},
+	{"run", "--mount", "type=bind, src=/a", "alpine"},
+	{"run", "--mount", "type=bind,bind-recursive=writable", "alpine"},
+	{"run", "--mount", "type=bind,bind-recursive=readonly,readonly", "alpine"},
+	{"run", "--mount", "type=bind,bind-recursive=nope", "alpine"},
+	{"run", "--mount", "type=bind,src=\"a,b\",dst=/x", "alpine"},
+	{"run", "--mount", "type=bind,src=\"a", "alpine"},
+	{"run", "--mount", "src=/a,dst=/b,volume-label=x=1,volume-opt=o=2,volume-driver=local,volume-nocopy,volume-subpath=s", "alpine"},
+	{"run", "--mount", "type=,dst=/b", "alpine"},
 	{"exec", "--privileged", "--env-file", "a.env", "web", "ls"},
 	{"create", "-q", "--cidfile", "c", "--platform", "arm64", "alpine"},
 	{"run", "--help"},

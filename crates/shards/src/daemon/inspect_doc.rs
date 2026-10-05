@@ -223,7 +223,7 @@ pub(super) fn document(f: &Facts<'_>) -> Value {
         )
         .tagged("SizeRw", Some("SizeRw"), true, Struct::nil("int64"))
         .tagged("SizeRootFs", Some("SizeRootFs"), true, Struct::nil("int64"))
-        .field("Mounts", empty())
+        .field("Mounts", mount_points(c))
         .field("Config", config.2)
         .field("NetworkSettings", network_settings(f, run))
         .tagged(
@@ -234,6 +234,139 @@ pub(super) fn document(f: &Facts<'_>) -> Value {
                 .map_or_else(|| Struct::nil("v1.Descriptor"), descriptor),
         )
         .value()
+}
+
+/// The container's mount points, as InspectResponse's Mounts holds them
+/// (container.MountPoint): by destination, where dockerd's map has none.
+fn mount_points(c: &Container) -> Value {
+    let mut points: Vec<&crate::volumes::MountPoint> = c.mounts.iter().collect();
+    points.sort_by(|a, b| a.destination.cmp(&b.destination));
+    Value::List(
+        Kind::Any,
+        points
+            .into_iter()
+            .map(|p| {
+                Struct::new("container.MountPoint")
+                    .tagged("Type", Some("Type"), true, s(&p.kind))
+                    .tagged("Name", Some("Name"), true, s(&p.name))
+                    .field("Source", s(&p.source))
+                    .field("Destination", s(&p.destination))
+                    .tagged("Driver", Some("Driver"), true, s(&p.driver))
+                    .field("Mode", s(&p.mode))
+                    .field("RW", Value::Bool(p.rw))
+                    .field("Propagation", s(&p.propagation))
+                    .value()
+            })
+            .collect(),
+    )
+}
+
+/// HostConfig.Mounts: each `--mount` as the API's mount.Mount holds what the CLI read.
+fn api_mounts(sent: &[String]) -> Value {
+    if sent.is_empty() {
+        return Value::NilList(Kind::Any);
+    }
+    let map = |m: &std::collections::BTreeMap<String, String>| {
+        if m.is_empty() {
+            Value::NilMap(Kind::String)
+        } else {
+            Value::string_map(m.clone())
+        }
+    };
+    let list = sent
+        .iter()
+        .filter_map(|m| shards_cmdline::mounts::parse_mount(m, None).ok())
+        .map(|m| {
+            let bind = m.bind.as_ref().map_or_else(
+                || Struct::nil("mount.BindOptions"),
+                |b| {
+                    Struct::pointer("mount.BindOptions")
+                        .tagged("Propagation", Some("Propagation"), true, s(&b.propagation))
+                        .tagged(
+                            "NonRecursive",
+                            Some("NonRecursive"),
+                            true,
+                            Value::Bool(b.non_recursive),
+                        )
+                        .tagged(
+                            "CreateMountpoint",
+                            Some("CreateMountpoint"),
+                            true,
+                            Value::Bool(b.create_mountpoint),
+                        )
+                        .tagged(
+                            "ReadOnlyNonRecursive",
+                            Some("ReadOnlyNonRecursive"),
+                            true,
+                            Value::Bool(b.read_only_non_recursive),
+                        )
+                        .tagged(
+                            "ReadOnlyForceRecursive",
+                            Some("ReadOnlyForceRecursive"),
+                            true,
+                            Value::Bool(b.read_only_force_recursive),
+                        )
+                        .value()
+                },
+            );
+            let volume = m.volume.as_ref().map_or_else(
+                || Struct::nil("mount.VolumeOptions"),
+                |v| {
+                    let driver = v.driver.as_ref().map_or_else(
+                        || Struct::nil("mount.Driver"),
+                        |(name, opts)| {
+                            Struct::pointer("mount.Driver")
+                                .tagged("Name", Some("Name"), true, s(name))
+                                .tagged("Options", Some("Options"), true, map(opts))
+                                .value()
+                        },
+                    );
+                    Struct::pointer("mount.VolumeOptions")
+                        .tagged("NoCopy", Some("NoCopy"), true, Value::Bool(v.no_copy))
+                        .tagged("Labels", Some("Labels"), true, map(&v.labels))
+                        .tagged("Subpath", Some("Subpath"), true, s(&v.subpath))
+                        .tagged("DriverConfig", Some("DriverConfig"), true, driver)
+                        .value()
+                },
+            );
+            let image = m.image.as_ref().map_or_else(
+                || Struct::nil("mount.ImageOptions"),
+                |i| {
+                    Struct::pointer("mount.ImageOptions")
+                        .tagged("Subpath", Some("Subpath"), true, s(&i.subpath))
+                        .value()
+                },
+            );
+            let tmpfs = m.tmpfs.as_ref().map_or_else(
+                || Struct::nil("mount.TmpfsOptions"),
+                |t| {
+                    Struct::pointer("mount.TmpfsOptions")
+                        .tagged("SizeBytes", Some("SizeBytes"), true, int(t.size_bytes))
+                        .tagged("Mode", Some("Mode"), true, Value::Uint(u64::from(t.mode)))
+                        .tagged("Options", Some("Options"), true, Value::NilList(Kind::Any))
+                        .value()
+                },
+            );
+            Struct::new("mount.Mount")
+                .tagged("Type", Some("Type"), true, s(&m.kind))
+                .tagged("Source", Some("Source"), true, s(&m.source))
+                .tagged("Target", Some("Target"), true, s(&m.target))
+                .tagged("ReadOnly", Some("ReadOnly"), true, Value::Bool(m.read_only))
+                .tagged("Consistency", Some("Consistency"), true, s(&m.consistency))
+                .tagged("BindOptions", Some("BindOptions"), true, bind)
+                .tagged("VolumeOptions", Some("VolumeOptions"), true, volume)
+                .tagged("ImageOptions", Some("ImageOptions"), true, image)
+                .tagged("TmpfsOptions", Some("TmpfsOptions"), true, tmpfs)
+                .tagged(
+                    "ClusterOptions",
+                    Some("ClusterOptions"),
+                    true,
+                    Struct::nil("mount.ClusterOptions"),
+                )
+                .value()
+        })
+        .collect();
+    Value::List(Kind::Any, list)
 }
 
 /// Entrypoint then command, as dockerd runs them.
@@ -366,11 +499,16 @@ fn config(f: &Facts<'_>) -> (Option<Vec<String>>, Option<Vec<String>>, Value) {
         let (k, v) = l.split_once('=').unwrap_or((l, ""));
         labels.insert(k.to_owned(), v.to_owned());
     }
-    let volumes = image
+    // The image's, and `-v DEST`'s, which the CLI sends as the config's.
+    let mut volumes: Vec<String> = image
         .and_then(|i| i.get("Volumes"))
         .and_then(serde_json::Value::as_object)
-        .filter(|v| !v.is_empty())
-        .map(|v| set(v.keys().cloned()));
+        .map(|v| v.keys().cloned().collect())
+        .unwrap_or_default();
+    volumes.extend(run.volumes.iter().cloned());
+    volumes.sort();
+    volumes.dedup();
+    let volumes = (!volumes.is_empty()).then(|| set(volumes));
     let health = healthcheck(run, image);
     let stop_signal = run
         .stop_signal
@@ -512,7 +650,7 @@ fn host_config(f: &Facts<'_>) -> Value {
         other => other,
     };
     Struct::pointer("container.HostConfig")
-        .field("Binds", Value::NilList(Kind::String))
+        .field("Binds", strs(&run.binds, run.binds.is_empty()))
         .field("ContainerIDFile", s(&run.cidfile))
         .field(
             "LogConfig",
@@ -537,8 +675,11 @@ fn host_config(f: &Facts<'_>) -> Value {
                 .value(),
         )
         .field("AutoRemove", Value::Bool(f.container.auto_remove))
-        .field("VolumeDriver", s(""))
-        .field("VolumesFrom", Value::NilList(Kind::String))
+        .field("VolumeDriver", s(&run.volume_driver))
+        .field(
+            "VolumesFrom",
+            strs(&run.volumes_from, run.volumes_from.is_empty()),
+        )
         .field(
             "ConsoleSize",
             Value::List(
@@ -693,7 +834,7 @@ fn host_config(f: &Facts<'_>) -> Value {
         .tagged("CPUPercent", Some("CpuPercent"), false, int(0))
         .field("IOMaximumIOps", Value::Uint(0))
         .field("IOMaximumBandwidth", Value::Uint(0))
-        .tagged("Mounts", Some("Mounts"), true, Value::NilList(Kind::Any))
+        .tagged("Mounts", Some("Mounts"), true, api_mounts(&run.mounts))
         // A privileged container's are none (daemon/oci_linux.go).
         .field(
             "MaskedPaths",
@@ -1080,6 +1221,16 @@ mod tests {
             run.detach = detached;
             let want = &case["doc"];
             let started = want["State"]["Status"] == "running";
+            // Its mount points, as the daemon registers them, its volumes in a store of
+            // the test's.
+            let home = std::env::temp_dir().join(format!("shards-inspect-{}", std::process::id()));
+            let store = crate::volumes::Store::new(&home);
+            let mounts = crate::volumes::register(&store, &run, &run.volumes, &|_| Ok(Vec::new()))
+                .unwrap()
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect();
+            let _ = std::fs::remove_dir_all(&home);
             let container = Container {
                 id: "c".repeat(64),
                 name: want["Name"].as_str().unwrap().trim_start_matches('/').to_owned(),
@@ -1098,6 +1249,7 @@ mod tests {
                 image_id: Some(golden["image_id"].as_str().unwrap().to_owned()),
                 labels: Default::default(),
                 oom_killed: false,
+                mounts,
             };
             let manifest = &want["ImageManifestDescriptor"];
             let facts = Facts {
@@ -1131,6 +1283,18 @@ mod tests {
             // shards keeps the order given.
             if let Some(env) = d["Config"]["Env"].as_array_mut() {
                 env.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+            }
+            // dockerd lists mount points from a map, in no order; a volume's files are where
+            // its daemon keeps them, and an anonymous one's name is random.
+            if let Some(mounts) = d["Mounts"].as_array_mut() {
+                mounts.sort_by(|a, b| a["Destination"].as_str().cmp(&b["Destination"].as_str()));
+                for m in mounts.iter_mut().filter(|m| m["Type"] == "volume") {
+                    m["Source"] = json!("<VOLUME-DATA>");
+                    let name = m["Name"].as_str().unwrap_or_default();
+                    if name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        m["Name"] = json!("<ANONYMOUS>");
+                    }
+                }
             }
             if started {
                 d["State"]["StartedAt"] = json!("<TIME>");

@@ -5,6 +5,8 @@
 //! (docs/research/virtio-io-exits.md R2).
 
 pub mod block;
+#[cfg(unix)]
+pub mod fs;
 pub mod mmio;
 #[cfg(unix)]
 pub mod net;

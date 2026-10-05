@@ -62,6 +62,9 @@ pub struct Container {
     /// until it runs again.
     #[serde(default)]
     pub oom_killed: bool,
+    /// What it mounts: binds and volumes, in the order they are mounted (D38).
+    #[serde(default)]
+    pub mounts: Vec<crate::volumes::MountPoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -698,6 +701,7 @@ mod tests {
             image_id: None,
             labels: Default::default(),
             oom_killed: false,
+            mounts: Vec::new(),
         }
     }
 

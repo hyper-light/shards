@@ -53,6 +53,9 @@ pub(crate) struct Hosts<'a> {
     pub vsock: Option<&'a VsockHost>,
     #[cfg(unix)]
     pub net: Option<&'a crate::devices::virtio::net::NetHost>,
+    /// Each virtio-fs device's slot, in order (D38).
+    #[cfg(unix)]
+    pub shares: &'a [crate::devices::virtio::fs::Share],
 }
 
 /// A snapshot's vsock and network devices, and the restore's host sides for them, come
@@ -78,6 +81,14 @@ fn check_hosts(snap: &crate::snapshot::Snapshot, hosts: Hosts<'_>) -> Result<(),
         }
         (None, Some(_)) => return Err("the snapshot has no network device for a network process".into()),
         _ => {}
+    }
+    #[cfg(unix)]
+    if snap.config.shares as usize != hosts.shares.len() {
+        return Err(format!(
+            "the snapshot has {} shared directories; the restore gives {}",
+            snap.config.shares,
+            hosts.shares.len()
+        ));
     }
     Ok(())
 }
@@ -116,8 +127,11 @@ fn virtio_devices(
     hosts: Hosts<'_>,
     max: u64,
 ) -> Result<Vec<Box<dyn crate::devices::virtio::VirtioDevice>>, String> {
-    let slots =
-        config.disks.len() + regions.len() + usize::from(config.vsock) + usize::from(config.net.is_some());
+    let slots = config.disks.len()
+        + regions.len()
+        + usize::from(config.vsock)
+        + usize::from(config.net.is_some())
+        + config.shares as usize;
     if slots as u64 > max {
         return Err(format!("at most {max} virtio devices are supported"));
     }
@@ -147,6 +161,19 @@ fn virtio_devices(
         // The machine's own MAC, a snapshot's included: its guest was set up with it.
         host.mac = mac;
         devices.push(Box::new(crate::devices::virtio::net::Net::new(host)?));
+    }
+    // Then its shared directories, each mounted by its tag, `shards0` and on.
+    #[cfg(unix)]
+    for i in 0..config.shares as usize {
+        let slot = hosts
+            .shares
+            .get(i)
+            .ok_or("the machine has a shared directory but no slot for it")?
+            .clone();
+        devices.push(Box::new(crate::devices::virtio::fs::Fs::new(
+            &format!("shards{i}"),
+            slot,
+        )?));
     }
     Ok(devices)
 }
@@ -185,6 +212,10 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         net: cfg.net.as_ref().map(|n| n.mac),
         #[cfg(not(unix))]
         net: None,
+        #[cfg(unix)]
+        shares: u32::try_from(cfg.shares.len()).map_err(|_| "too many shared directories")?,
+        #[cfg(not(unix))]
+        shares: 0,
     })
 }
 
@@ -240,6 +271,9 @@ pub struct Config {
     /// A virtio-net device, and the network process's side of it (D31).
     #[cfg(unix)]
     pub net: Option<crate::devices::virtio::net::NetHost>,
+    /// virtio-fs devices, each a slot its directory's server is put in (D38).
+    #[cfg(unix)]
+    pub shares: Vec<crate::devices::virtio::fs::Share>,
 }
 
 /// The host side of a VM's virtio-vsock device.
@@ -296,6 +330,8 @@ impl Config {
             vsock: None,
             #[cfg(unix)]
             net: None,
+            #[cfg(unix)]
+            shares: Vec::new(),
         }
     }
 }
@@ -318,6 +354,9 @@ pub struct RestoreConfig {
     /// one: a network process serves one VM alone.
     #[cfg(unix)]
     pub net: Option<crate::devices::virtio::net::NetHost>,
+    /// The slots of the snapshot's shared directories, one each (D38).
+    #[cfg(unix)]
+    pub shares: Vec<crate::devices::virtio::fs::Share>,
     /// Prefetch the snapshot's working set, if it has one, before the guest runs: for a
     /// restore ahead of its request, which it moves off the request's path (PM M30).
     pub prefetch: bool,
@@ -440,6 +479,7 @@ mod tests {
             pmem: Vec::new(),
             vsock,
             net,
+            shares: 0,
         }
     }
 
@@ -469,6 +509,7 @@ mod tests {
         let hosts = |v: bool, n: bool| Hosts {
             vsock: v.then_some(&vsock),
             net: n.then_some(&net),
+            shares: &[],
         };
         let mac = Some([2, 0, 0, 0, 0, 1]);
         for (has_vsock, has_net) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -538,6 +579,7 @@ mod tests {
         let hosts = Hosts {
             vsock: Some(&vsock),
             net: Some(&net),
+            shares: &[],
         };
         let e = virtio_devices(&config, &regions, hosts, 4).err().unwrap();
         assert_eq!(e, "at most 4 virtio devices are supported");
@@ -555,12 +597,14 @@ mod tests {
         let missing = Hosts {
             vsock: None,
             net: Some(&net),
+            shares: &[],
         };
         let e = virtio_devices(&config, &regions, missing, 5).err().unwrap();
         assert!(e.contains("no host side"), "{e}");
         let missing = Hosts {
             vsock: Some(&vsock),
             net: None,
+            shares: &[],
         };
         let e = virtio_devices(&config, &regions, missing, 5).err().unwrap();
         assert!(e.contains("no network process"), "{e}");

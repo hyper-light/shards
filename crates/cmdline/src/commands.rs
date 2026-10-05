@@ -149,6 +149,25 @@ pub static RUN: Command = Command {
         Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
         Flag::string("domainname", None, "", "Container NIS domain name"),
         Flag::string("cidfile", None, "", "Write the container ID to the file"),
+        Flag::many(
+            "mount",
+            None,
+            "mount",
+            "Attach a filesystem mount to the container",
+        ),
+        Flag::many("volume", Some(b'v'), "list", "Bind mount a volume"),
+        Flag::string(
+            "volume-driver",
+            None,
+            "",
+            "Optional volume driver for the container",
+        ),
+        Flag::many(
+            "volumes-from",
+            None,
+            "list",
+            "Mount volumes from the specified container(s)",
+        ),
         Flag::many("cap-add", None, "list", "Add Linux capabilities"),
         Flag::many("cap-drop", None, "list", "Drop Linux capabilities"),
         Flag::many("group-add", None, "list", "Add additional groups to join"),
@@ -267,7 +286,6 @@ link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
 mac-address - s - -\n\
-mount - m - -\n\
 net-alias - m - network-alias\n\
 network-alias - m - -\n\
 pid - s - -\n\
@@ -278,10 +296,7 @@ storage-opt - m - -\n\
 umask - s - -\n\
 use-api-socket - b false -\n\
 userns - s - -\n\
-uts - s - -\n\
-volume v m - -\n\
-volume-driver - s - -\n\
-volumes-from - m - -",
+uts - s - -",
     interspersed: false,
     error_prefix: "",
 };
@@ -416,6 +431,25 @@ pub static CREATE: Command = Command {
         Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
         Flag::string("domainname", None, "", "Container NIS domain name"),
         Flag::string("cidfile", None, "", "Write the container ID to the file"),
+        Flag::many(
+            "mount",
+            None,
+            "mount",
+            "Attach a filesystem mount to the container",
+        ),
+        Flag::many("volume", Some(b'v'), "list", "Bind mount a volume"),
+        Flag::string(
+            "volume-driver",
+            None,
+            "",
+            "Optional volume driver for the container",
+        ),
+        Flag::many(
+            "volumes-from",
+            None,
+            "list",
+            "Mount volumes from the specified container(s)",
+        ),
         Flag::many("cap-add", None, "list", "Add Linux capabilities"),
         Flag::many("cap-drop", None, "list", "Drop Linux capabilities"),
         Flag::many("group-add", None, "list", "Add additional groups to join"),
@@ -534,7 +568,6 @@ link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
 mac-address - s - -\n\
-mount - m - -\n\
 net-alias - m - network-alias\n\
 network-alias - m - -\n\
 pid - s - -\n\
@@ -545,10 +578,7 @@ storage-opt - m - -\n\
 umask - s - -\n\
 use-api-socket - b false -\n\
 userns - s - -\n\
-uts - s - -\n\
-volume v m - -\n\
-volume-driver - s - -\n\
-volumes-from - m - -",
+uts - s - -",
     interspersed: false,
     error_prefix: "",
 };
@@ -1348,7 +1378,6 @@ pub static RM: Command = Command {
             "Force the removal of a running container (uses SIGKILL)",
         ),
         HELP,
-        // A container has no anonymous volumes in shards: there is nothing more to remove.
         Flag::bool(
             "volumes",
             Some(b'v'),

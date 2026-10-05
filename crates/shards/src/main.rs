@@ -37,7 +37,11 @@ mod run;
 #[cfg(unix)]
 mod segments;
 mod setup;
+#[cfg(unix)]
+mod share;
 mod spec;
+#[cfg(unix)]
+mod volumes;
 
 const USAGE: &str = "usage: shards <command> [args...]
 
@@ -70,6 +74,9 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         // the VM's broker (`shards run --kernel`, `shards restore`): not for people to run.
         #[cfg(target_os = "macos")]
         Some("grants") => grant_answer::broker(),
+        // a run's share process (D38), which the daemon starts: not for people to run.
+        #[cfg(unix)]
+        Some("share") => share::share(args),
         Some("build") => build::build(args),
         Some("run") => usage_error("run: the `shards` command runs commands, through the daemon"),
         Some("version") => cli::version::run(&args.collect::<Vec<_>>()),

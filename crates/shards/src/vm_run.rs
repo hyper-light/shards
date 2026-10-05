@@ -229,6 +229,15 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                     .map_err(|e| format!("--memory: {e}"))?
             }
             "--disk" => cfg.disks.push(disk(value("--disk")?)),
+            // Shared directories its run gives it (D38): slots, filled as the run arrives.
+            #[cfg(unix)]
+            "--shares" => {
+                let n: u32 = text(value("--shares")?)?
+                    .parse()
+                    .map_err(|e| format!("--shares: {e}"))?;
+                cfg.shares = (0..n).map(|_| std::sync::Arc::default()).collect();
+                let _ = SHARES.set(cfg.shares.clone());
+            }
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
             "--warm" => {
@@ -349,14 +358,18 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     {
         return Err("--warm takes its command from the daemon: no --hold, --vsock, --snapshot-dir, workload options or command".into());
     }
+    let dir = dir.ok_or("the snapshot directory is required")?;
     let cfg = RestoreConfig {
-        dir: dir.ok_or("the snapshot directory is required")?,
+        dir,
         console: common.console,
         snapshot: common.policy(),
         hold,
         vsock: common.vsock.map(VsockHost::at),
         #[cfg(unix)]
         net: common.net.take(),
+        // Its slots are made once its snapshot is read (`restore_vm`).
+        #[cfg(unix)]
+        shares: Vec::new(),
         // Restored ahead of its request: the prefetch costs the request nothing.
         prefetch: hold || warm.is_some(),
         // A warm VM's request ends the recording as it ends a template's (RECORD_FOR).
@@ -368,6 +381,11 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         warm,
     })
 }
+
+/// This VM's shared directories' slots, which its run fills (D38).
+#[cfg(unix)]
+pub static SHARES: std::sync::OnceLock<Vec<shards_vmm::devices::virtio::fs::Share>> =
+    std::sync::OnceLock::new();
 
 /// Console output that never fails the caller (e.g. with stderr closed).
 fn report(message: impl Display) {
@@ -1033,6 +1051,16 @@ fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
             confine(&paths)?;
             pinned
         }
+    };
+    // A slot for each of its shared directories, which its run fills (D38).
+    #[cfg(unix)]
+    let cfg = &{
+        let mut cfg = cfg.clone();
+        cfg.shares = (0..pinned.snapshot.config.shares)
+            .map(|_| std::sync::Arc::default())
+            .collect();
+        let _ = SHARES.set(cfg.shares.clone());
+        cfg
     };
     vm::restore_from(cfg, pinned)
 }

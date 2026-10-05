@@ -104,7 +104,7 @@ fn home(name: &str) -> Option<(TempDir, String)> {
     Some((home, image))
 }
 
-/// More published sockets than one message carries (shards_ipc::MAX_FDS, 8): five
+/// More published sockets than one message carries (shards_ipc::MAX_FDS, 9): five
 /// ports on every address are ten listeners, each handed to the VM's network process, and
 /// each reaching the guest.
 #[test]
@@ -4852,4 +4852,172 @@ fn push_uploads_images_as_docker_push_does() {
     );
     let tagged = shards(&["push", "-a", &format!("{repo}:1")]);
     assert_eq!(tagged.stderr, "tag can't be used with --all-tags/-a\n");
+}
+
+/// `-v` and `--mount`, as `docker run` takes them (D38): a host directory shared both ways
+/// and owned as Docker Desktop records it, read-only where asked, a file bound alone; a
+/// named volume filled from the image where it is empty, and kept; tmpfs; inspect's
+/// mounts; anonymous volumes removed with `--rm` and `rm -v`, and kept by `rm`.
+#[cfg(unix)]
+#[test]
+fn run_mounts_binds_volumes_and_tmpfs_as_docker_run_does() {
+    let Some((home, image)) = home("containers-volumes") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let shared = home.join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::write(shared.join("a"), "host").unwrap();
+    let file = home.join("one");
+    std::fs::write(&file, "alone").unwrap();
+    let bind = format!("{}:/data", shared.display());
+    let ro = format!("{}:/ro:ro", shared.display());
+    let single = format!("{}:/etc/one:ro", file.display());
+    let ran = run_in(
+        &home,
+        &image,
+        &[
+            "--rm",
+            "-v",
+            &bind,
+            "-v",
+            &ro,
+            "-v",
+            &single,
+            "-v",
+            "tools:/bin",
+            "--mount",
+            "type=tmpfs,dst=/t,tmpfs-size=1m",
+        ],
+        &["stat", "/data/a", "/etc/one", "/proc/self/mounts"],
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    assert!(ran.stdout.contains("/data/a file 644 0:0 4\n= host\n"), "{ran}");
+    assert!(ran.stdout.contains("/etc/one file 644 0:0 5\n= alone\n"), "{ran}");
+    for mount in [
+        "shards0 /data virtiofs rw,",
+        "shards1 /ro virtiofs ro,",
+        "shards2 /etc/one virtiofs ro,",
+        "shards3 /bin virtiofs rw,",
+        "tmpfs /t tmpfs rw,nosuid,nodev,noexec,relatime,size=1024k",
+    ] {
+        assert!(ran.stdout.contains(mount), "{mount}: {ran}");
+    }
+    // Written in the guest, there on the host, owned as the guest made it; read-only
+    // where asked; the file alone, nothing else of its directory.
+    let wrote = run_in(
+        &home,
+        &image,
+        &["--rm", "-v", &bind, "-v", &ro, "-u", "1000:1000"],
+        &["fs", "mkdir:/data/d", "write:/data/d/b=guest"],
+    );
+    assert_eq!(
+        wrote.status,
+        Some(1),
+        "a directory root owns refuses user 1000: {wrote}"
+    );
+    // The image's user is `app`; root makes the directory.
+    let wrote = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", &bind],
+        &[
+            "fs",
+            "mkdir:/data/d",
+            "write:/data/d/b=guest",
+            "chmod:1777:/data/d",
+        ],
+    );
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    assert_eq!(std::fs::read_to_string(shared.join("d/b")).unwrap(), "guest");
+    let user = run_in(
+        &home,
+        &image,
+        &["--rm", "-v", &bind, "-u", "1000:1000"],
+        &["fs", "write:/data/d/c=user"],
+    );
+    assert_eq!(user.status, Some(0), "{user}");
+    let owned = run_in(
+        &home,
+        &image,
+        &["--rm", "-v", &bind],
+        &["stat", "/data/d/c", "/data/d"],
+    );
+    assert!(
+        owned.stdout.contains("/data/d/c file 644 1000:1000 4\n"),
+        "{owned}"
+    );
+    assert!(owned.stdout.contains("/data/d dir 1777 0:0"), "{owned}");
+    let refused = run_in(&home, &image, &["--rm", "-v", &ro], &["fs", "write:/ro/x=1"]);
+    assert!(
+        refused.stderr.contains("write:/ro/x=1: Read-only file system"),
+        "{refused}"
+    );
+    let alone = run_in(
+        &home,
+        &image,
+        &["--rm", "-v", &single],
+        &["stat", "/etc/one/../a"],
+    );
+    assert_eq!(alone.status, Some(1), "{alone}");
+    // The named volume keeps what the image had at /bin, copied as it was first mounted.
+    let kept = home.join("volumes/tools/_data/testguest");
+    assert!(kept.exists(), "the image's /bin in the volume");
+    let again = run_in(
+        &home,
+        &image,
+        &["--rm", "-v", "tools:/opt"],
+        &["stat", "/opt/testguest"],
+    );
+    assert_eq!(again.status, Some(0), "{again}");
+    // Inspect: dockerd's fields.
+    let made = shards(&[
+        "create",
+        "--name",
+        "held",
+        "-v",
+        &bind,
+        "-v",
+        "/anon",
+        "--mount",
+        "type=volume,src=named,dst=/v",
+        &image,
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{range .Mounts}}{{.Type}} {{.Destination}} {{.RW}} {{.Mode}} {{.Propagation}};{{end}} {{json .HostConfig.Binds}} {{json .Config.Volumes}}",
+        "held",
+    ]);
+    assert_eq!(
+        shown.stdout,
+        format!(
+            "volume /anon true  ;bind /data true  rprivate;volume /v true z ; [\"{}\"] {{\"/anon\":{{}}}}\n",
+            bind
+        ),
+        "{shown}"
+    );
+    // Anonymous volumes: `rm` keeps them, `rm -v` and `--rm` do not; named ones stay.
+    let volumes = || {
+        std::fs::read_dir(home.join("volumes"))
+            .unwrap()
+            .filter(|e| !e.as_ref().unwrap().file_name().to_string_lossy().starts_with('.'))
+            .count()
+    };
+    let before = volumes();
+    assert_eq!(shards(&["rm", "-v", "held"]).status, Some(0));
+    assert_eq!(volumes(), before - 1, "rm -v removes the anonymous volume alone");
+    let anon = run_in(&home, &image, &["--rm", "-v", "/anon"], &["stat", "/anon"]);
+    assert_eq!(anon.status, Some(0), "{anon}");
+    // Removed as its removal completes.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while volumes() != before - 1 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(volumes(), before - 1, "--rm removes its anonymous volume");
+    let made = shards(&["create", "--name", "kept", "-v", "/anon", &image]);
+    assert_eq!(made.status, Some(0), "{made}");
+    assert_eq!(shards(&["rm", "kept"]).status, Some(0));
+    assert_eq!(volumes(), before, "rm keeps it");
 }

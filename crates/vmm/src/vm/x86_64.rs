@@ -356,6 +356,8 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         vsock: cfg.vsock.as_ref(),
         #[cfg(unix)]
         net: cfg.net.as_ref(),
+        #[cfg(unix)]
+        shares: &cfg.shares,
     };
     let a = assemble(&memory, &config, cfg.console, hosts)?;
     let tables = acpi::build(cfg.vcpus, &a.virtio)?.blobs;

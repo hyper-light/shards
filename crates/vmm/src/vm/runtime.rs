@@ -395,6 +395,8 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
             vsock: cfg.vsock.as_ref(),
             #[cfg(unix)]
             net: cfg.net.as_ref(),
+            #[cfg(unix)]
+            shares: &cfg.shares,
         },
         working_set.unwrap_or_default(),
     )?;
@@ -743,6 +745,7 @@ mod tests {
                 pmem: vec![granted, file.clone()],
                 vsock: false,
                 net: None,
+                shares: 0,
             },
             arch: Vec::new(),
             devices: Vec::new(),

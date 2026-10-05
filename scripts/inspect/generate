@@ -52,7 +52,14 @@ CASES = [
      "--cap-drop", "net_admin", "--group-add", "audio", "--group-add", "1234",
      "--oom-score-adj", "-500"],
     ["create", "--privileged", "--cap-drop", "ALL"],
+    ["create", "-v", "/tmp/shards-inspect-oracle:/c:ro", "-v", "shards-inspect-oracle:/d",
+     "-v", "/anon", "--mount", "type=bind,src=/tmp,dst=/b,readonly", "--mount",
+     "type=tmpfs,dst=/t,tmpfs-size=1m,tmpfs-mode=1770", "--mount",
+     "type=volume,src=shards-inspect-oracle-2,dst=/v,volume-nocopy,volume-label=a=b",
+     "--volume-driver", "local"],
 ]
+# The named volumes the cases make, removed after.
+VOLUMES = ["shards-inspect-oracle", "shards-inspect-oracle-2"]
 
 
 def docker(*args):
@@ -91,6 +98,12 @@ def normalize(doc, cid):
     for k in ("ResolvConfPath", "HostnamePath", "HostsPath", "LogPath"):
         if doc.get(k):
             doc[k] = f"<{k}>"
+    # A volume's files are where its daemon keeps them; an anonymous one's name is random.
+    for m in doc.get("Mounts") or []:
+        if m.get("Type") == "volume":
+            m["Source"] = "<VOLUME-DATA>"
+            if re.fullmatch(r"[0-9a-f]{64}", m.get("Name", "")):
+                m["Name"] = "<ANONYMOUS>"
     return doc
 
 
@@ -120,7 +133,7 @@ def main():
                  "--cpus", "-c", "--cpuset-cpus", "--cpuset-mems", "--pids-limit",
                  "--memory-swappiness", "--cpu-period", "--cpu-quota", "--memory-swap",
                  "--tmpfs", "--shm-size", "--ulimit", "--sysctl", "--cap-add", "--cap-drop",
-                 "--group-add", "--oom-score-adj"}
+                 "--group-add", "--oom-score-adj", "-v", "--mount", "--volume-driver"}
         while words:
             w = words.pop(0)
             if w in takes:
@@ -133,7 +146,9 @@ def main():
         args = [verb, *opts, "--name", name, IMAGE, *cmd]
         cid = docker(*args).strip().splitlines()[-1]
         doc = json.loads(docker("inspect", name))[0]
-        docker("rm", "-f", name)
+        docker("rm", "-fv", name)
+        for v in VOLUMES:
+            subprocess.run(["docker", "volume", "rm", "-f", v], capture_output=True)
         out["cases"].append({"args": [*opts, IMAGE, *cmd], "verb": verb, "doc": normalize(doc, cid)})
     path = os.path.join(root, "crates/shards/src/daemon/testdata/inspect.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)

@@ -392,6 +392,10 @@ impl Parsed {
                         shown.sort_unstable();
                         format!("[{}]", shown.join(" "))
                     }
+                    // MountOpt prints each mount's type, source and target.
+                    Some(Value::Many(v)) if matches!(f.kind, Kind::Many("mount")) => {
+                        crate::mounts::mounts_string(v)
+                    }
                     // MapOpts prints its map as fmt's %v does: keys sorted, the last of each.
                     Some(Value::Many(v)) if matches!(f.kind, Kind::Many("map")) => {
                         let mut by_key = std::collections::BTreeMap::new();
@@ -667,6 +671,8 @@ pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
         ("dns-search", Kind::Many("list")) => validate_dns_search(value),
         ("add-host", Kind::Many("list")) => validate_extra_host(value),
         ("sysctl", Kind::Many("map")) => validate_sysctl(value),
+        // opts.MountOpt.Set.
+        (_, Kind::Many("mount")) => crate::mounts::parse_mount(value, None).map(|_| value.to_string()),
         // UlimitOpt, through go-units' ParseUlimit, whose names leave out `as`, which
         // shards' build alone takes (buildflags::validate).
         (_, Kind::Many("ulimit")) => match crate::buildflags::parse_ulimit(value)? {

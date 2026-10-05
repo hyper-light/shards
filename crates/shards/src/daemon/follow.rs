@@ -47,6 +47,11 @@ enum Process {
         ended_vm: Option<Arc<shards_ipc::Child>>,
         watch: Option<ExitWatch>,
     },
+    /// A run's share process (D38), which ends as its VM's connections close.
+    Share {
+        child: Arc<shards_ipc::Child>,
+        watch: Option<ExitWatch>,
+    },
 }
 
 /// The runs being followed, and the loop that follows them.
@@ -104,7 +109,8 @@ impl Followers {
         self.ended.store(true, Ordering::SeqCst);
         self.wake();
         for process in lock(&self.processes).values() {
-            let (Process::Vm { vm: child, .. } | Process::Net { child, .. }) = process;
+            let (Process::Vm { vm: child, .. } | Process::Net { child, .. } | Process::Share { child, .. }) =
+                process;
             let _ = child.kill(libc::SIGKILL);
         }
     }
@@ -273,30 +279,39 @@ impl<D: Disk> Daemon<D> {
         }
         self.start_followers(threads);
         for (token, child) in watched {
-            match f.poller.add_exit(child.id(), token) {
-                // Kept while it is followed; one that has ended meanwhile goes now.
-                Ok(watch) => {
-                    if let Some(Process::Vm { watch: kept, .. } | Process::Net { watch: kept, .. }) =
-                        lock(&f.processes).get_mut(&token)
-                    {
-                        *kept = Some(watch);
-                    }
+            self.watch_exit(threads, token, child);
+        }
+    }
+
+    /// Watches process `token`'s end on the poller; where it cannot, on a thread of its own.
+    fn watch_exit<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, token: u64, child: Arc<shards_ipc::Child>) {
+        let f = &self.followers;
+        match f.poller.add_exit(child.id(), token) {
+            // Kept while it is followed; one that has ended meanwhile goes now.
+            Ok(watch) => {
+                if let Some(
+                    Process::Vm { watch: kept, .. }
+                    | Process::Net { watch: kept, .. }
+                    | Process::Share { watch: kept, .. },
+                ) = lock(&f.processes).get_mut(&token)
+                {
+                    *kept = Some(watch);
                 }
-                // Ended already: macOS watches only ends to come.
-                Err(e) if e.raw_os_error() == Some(libc::ESRCH) => self.process_ended(threads, token),
-                Err(e) => {
-                    let pid = child.id();
-                    let waiting = std::thread::Builder::new()
-                        .name("process end".into())
-                        .spawn_scoped(threads, move || {
-                            let _ = child.ended();
-                            self.process_ended(threads, token);
-                        });
-                    if let Err(spawn) = waiting {
-                        log(format!(
-                            "process {pid}: its end cannot be watched ({e}) nor waited for ({spawn})"
-                        ));
-                    }
+            }
+            // Ended already: macOS watches only ends to come.
+            Err(e) if e.raw_os_error() == Some(libc::ESRCH) => self.process_ended(threads, token),
+            Err(e) => {
+                let pid = child.id();
+                let waiting = std::thread::Builder::new()
+                    .name("process end".into())
+                    .spawn_scoped(threads, move || {
+                        let _ = child.ended();
+                        self.process_ended(threads, token);
+                    });
+                if let Err(spawn) = waiting {
+                    log(format!(
+                        "process {pid}: its end cannot be watched ({e}) nor waited for ({spawn})"
+                    ));
                 }
             }
         }
@@ -369,7 +384,26 @@ impl<D: Disk> Daemon<D> {
                     let _ = ended.wait();
                 }
             }
+            Process::Share { child, .. } => {
+                let _ = child.wait();
+            }
         }
+    }
+
+    /// Follows share process `child` to its end on the followers' loop, which reaps it.
+    pub(super) fn follow_share<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, child: shards_ipc::Child) {
+        let f = &self.followers;
+        let token = f.next.fetch_add(1, Ordering::Relaxed);
+        let child = Arc::new(child);
+        lock(&f.processes).insert(
+            token,
+            Process::Share {
+                child: child.clone(),
+                watch: None,
+            },
+        );
+        self.start_followers(threads);
+        self.watch_exit(threads, token, child);
     }
 
     /// Follows run `id` on this thread, waiting on its socket alone: where the poller

@@ -30,6 +30,7 @@ pub mod format;
 pub mod go;
 pub mod gotime;
 pub mod grammar;
+pub mod mounts;
 pub mod network;
 pub mod ports;
 pub mod resources;

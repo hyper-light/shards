@@ -1582,6 +1582,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// for a start under way (moby daemon/start.go holds the container's lock throughout).
     fn rm(&self, parsed: &Parsed, styled: bool, reply: &Reply<'_>) -> u8 {
         let force = parsed.bool("force");
+        let volumes = parsed.bool("volumes");
         let args = self.by_image(&parsed.args, false);
         self.each(
             "rm",
@@ -1619,7 +1620,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                 .set_aside(&removal)
                                 .map_err(|e| cannot(&reference, &e.to_string()))
                                 .and_then(|()| {
-                                    self.complete(&removal).map(|()| true).map_err(|e| {
+                                    let completed = self.complete(&removal);
+                                    if volumes && !removal.container.auto_remove {
+                                        self.drop_anonymous(&removal.container);
+                                    }
+                                    completed.map(|()| true).map_err(|e| {
                                         format!(
                                             "Error response from daemon: container \"{reference}\" is removed, but its removal may not outlast a crash: {e}"
                                         )

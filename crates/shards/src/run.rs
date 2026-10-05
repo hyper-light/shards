@@ -29,7 +29,7 @@ use crate::spec::Options;
 /// What a run boots: the kernel and init the request named, or a guest from the store:
 /// the recorded one, else the default (D28).
 pub enum Boot {
-    Given(Config),
+    Given(Box<Config>),
     Stored(Guest),
 }
 
@@ -60,6 +60,10 @@ pub struct Prepared {
     pub image_id: String,
     /// The microVM's vCPUs and memory in MiB, as its resource limits need them.
     pub size: (u32, u64),
+    /// The image's `VOLUME`s.
+    pub image_volumes: Vec<String>,
+    /// How many directories it shares with its guest (D38): set once its mount points are.
+    pub shares: u32,
 }
 
 /// The health check a run's container has, as dockerd merges the run's with its image's
@@ -118,9 +122,10 @@ pub fn prepare(
     // `--platform`'s image, else the best this host's microVMs run.
     let targets = crate::pull::targets(&request.platform)?;
     let boot = match (&request.kernel, &request.init) {
-        (Some(kernel), Some(init)) => {
-            Boot::Given(Config::new(PathBuf::from(kernel), Some(PathBuf::from(init))))
-        }
+        (Some(kernel), Some(init)) => Boot::Given(Box::new(Config::new(
+            PathBuf::from(kernel),
+            Some(PathBuf::from(init)),
+        ))),
         (None, None) => Boot::Stored(match crate::guest::current(home)? {
             Some(recorded) => recorded,
             None => crate::guest::default(home, say, Some(cancel), &|k| {
@@ -249,6 +254,13 @@ pub fn prepare(
                 crate::build::host_memory(),
             ),
         ),
+        image_volumes: image
+            .config
+            .config
+            .as_ref()
+            .map(|c| c.volumes.clone())
+            .unwrap_or_default(),
+        shares: 0,
         // The image's, then `--expose`'s, which `-P` publishes with them.
         exposed: {
             let mut exposed = image.config.config.map(|c| c.exposed_ports).unwrap_or_default();
@@ -267,20 +279,32 @@ pub fn prepare(
 /// SHA-256 of everything that goes into it, the snapshot format included.
 pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> PathBuf {
     let key = format!(
-        "snapshot format {}\nkernel {}\ninit {}\nrootfs {}\ncpus {}\nmemory {}\ncmdline {}\n",
+        "snapshot format {}\nkernel {}\ninit {}\nrootfs {}\ncpus {}\nmemory {}\ncmdline {}\n{}",
         shards_vmm::snapshot::FORMAT,
         guest.kernel_digest,
         guest.init_digest,
         rootfs.display(),
         cfg.vcpus,
         cfg.memory_mib,
-        cfg.cmdline
+        cfg.cmdline,
+        shares(cfg),
     );
     let hex: String = Sha256::digest(key.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
     home.join("templates").join(hex)
+}
+
+/// A template's shared directories (D38), in its key where it has any: the keys of those
+/// without stay as they were.
+fn shares(cfg: &Config) -> String {
+    #[cfg(unix)]
+    if !cfg.shares.is_empty() {
+        return format!("shares {}\n", cfg.shares.len());
+    }
+    let _ = cfg;
+    String::new()
 }
 
 /// What a template was saved from, recorded in it: its root filesystem and its guest. It

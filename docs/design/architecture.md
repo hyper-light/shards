@@ -2254,6 +2254,59 @@ and `FOR`.
   `EXPOSE`, `VOLUME`) build. `AGENT`, `HARNESS`, `SKILL` and `MCP`, whose content a build
   fetches, refuse to build until it does, by name.
 
+### Volumes and bind mounts (D38)
+
+`-v`, `--mount` and `--volumes-from`, and an image's `VOLUME`s, are read and kept as
+dockerd reads and keeps them (moby docker-v29.8.1 daemon/volume/mounts linux_parser.go
+and validate.go, daemon/volumes.go registerMountPoints; `volumes.rs`), and reach the
+microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
+
+- **Kept as dockerd keeps them.** A container's mount points are registered as it is made,
+  named volumes made as they are named, anonymous ones for the image's `VOLUME`s and
+  `-v DEST`, binds checked; a later failure removes the anonymous volumes it made, as
+  dockerd's cleanup does. Volumes live in the home (`volumes/NAME/_data`, `opts.json`)
+  as the local driver keeps them under its root. `rm -v` and `--rm` remove a container's
+  anonymous volumes that no other container mounts (removeMountPoints), `--rm`'s as its
+  removal completes, after its client has its status.
+  `inspect` gives dockerd's `Mounts`, `HostConfig.Binds`, `Mounts`, `VolumeDriver`,
+  `VolumesFrom` and `Config.Volumes`, held to Docker Engine 29.3.1's by
+  testdata/inspect.json; its `Mounts` is sorted by destination, where dockerd lists a
+  map's order.
+- **Served by a process of the run's, not the VM's.** The VM process is confined before it
+  is given a run (D30): Landlock (Linux) and App Sandbox (macOS) let it reach no directory
+  given later, and its seccomp list holds no filesystem calls. So each run that shares
+  anything gets a share process (`shards share`, `share.rs`; the one binary, D36),
+  started by the daemon with the directories open, reaped on the followers' loop. The VM
+  device forwards each FUSE request over a Unix socket, one connection a share, and the
+  share process answers it (`fs/server.rs`): every operation relative to a descriptor of
+  the shared tree, never following a final symlink (`O_NOFOLLOW`), names that are one
+  component only. Its connections reach the VM after the run is taken: the run's message
+  carries one socket, over which the share process sends a connection a share,
+  `MAX_FDS` a message, keeping its copies until the VM says it has them (M24). A VM
+  restored ahead of its run has its devices (`shards{i}`), empty slots its run fills:
+  a template is made for each number of shares (`run::template`). A guest that mounts
+  a share before its run has one is told ENODEV.
+- **Owned as Docker Desktop owns them.** A host file's owner is the user's; the guest sees
+  the owner, group and mode recorded in the xattr `com.docker.grpcfuse.ownership` that
+  Docker Desktop's file sharing writes (`{"UID":…,"GID":…,"mode":…}`), root's where there
+  is none, and a file the guest makes records its maker (a setgid directory's group).
+  Unlike Docker Desktop (fakeowner), the guest kernel checks permissions against those
+  owners (`default_permissions`): user 1000 cannot write a directory root owns, as on
+  Linux. The owner xattr is hidden from the guest's `listxattr`.
+- **Mounted by init** (`init/src/setup.rs`, `volume`): each share at its destination,
+  read-only where asked; with the mounts of `--tmpfs` and `--mount type=tmpfs`, sorted by
+  depth (sortMounts). A file bound alone is shared through its directory, the server
+  limited to its one name (the rest of the directory neither listed nor reachable, no
+  name moved in or out), and bound at its destination from a staging mount. A volume
+  whose destination holds files in the image, first mounted empty, gets them copied in
+  as continuity's CopyDir copies them (owners, modes, times, xattrs, hard links), then
+  its root's owner and mode (copyExistingContents); dockerd copies at create, shards at
+  the first start, the only moment the image's files are in reach.
+- **The kernel** has `CONFIG_VIRTIO_FS` and `CONFIG_FUSE_DAX` (kernel-6.18.48-98788948976a).
+- Open, unmeasured: the forwarding hop's cost per request against an in-process server,
+  and throughput against Docker Desktop's virtiofs; DAX windows, which would let file
+  data skip the hop; the local driver's `type`/`device`/`o` options.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

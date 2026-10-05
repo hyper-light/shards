@@ -411,6 +411,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         pids_limit: parsed.int("pids-limit"),
     };
     let (cap_add, cap_drop) = effective_caps(parsed.many("cap-add"), parsed.many("cap-drop"));
+    let (binds, volumes, mounts) = volumes(parsed)?;
     // Each range a port at a time, as the CLI exposes them (container/opts.go).
     let mut expose = Vec::new();
     for e in parsed.many("expose") {
@@ -481,6 +482,11 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         group_add: parsed.many("group-add").to_vec(),
         oom_score_adj: parsed.int("oom-score-adj"),
         privileged: parsed.bool("privileged"),
+        binds,
+        volumes,
+        mounts,
+        volumes_from: parsed.many("volumes-from").to_vec(),
+        volume_driver: parsed.string("volume-driver").to_string(),
         // The flag's default is DOCKER_DEFAULT_PLATFORM (docker/cli run.go, create.go).
         platform: if parsed.changed("platform") {
             parsed.string("platform").to_string()
@@ -660,6 +666,47 @@ fn kv_file(path: &str, lookup: bool) -> Result<Vec<String>, String> {
         }
     }
     Ok(out)
+}
+
+/// `-v` and `--mount` as docker/cli sends them (container/opts.go parse): `-v`'s values
+/// each once, those with a source binds (a relative host path made absolute), the rest
+/// anonymous volumes; `--mount`'s with their relative sources made absolute.
+/// `-v`'s binds, its anonymous volumes, and `--mount`'s, encoded.
+type Volumes = (Vec<String>, Vec<String>, Vec<String>);
+
+fn volumes(parsed: &Parsed) -> Result<Volumes, String> {
+    let cwd = std::env::current_dir().ok();
+    let mut seen = std::collections::BTreeSet::new();
+    let (mut binds, mut anonymous) = (Vec::new(), Vec::new());
+    for v in parsed.many("volume") {
+        if !seen.insert(v.clone()) {
+            continue;
+        }
+        let spec = shards_cmdline::mounts::parse_volume(v)?;
+        if spec.source.is_empty() {
+            anonymous.push(v.clone());
+            continue;
+        }
+        let mut bind = v.clone();
+        if spec.kind == "bind"
+            && let Some((host, target)) = v.split_once(':')
+        {
+            let host = match &cwd {
+                Some(cwd) if !host.starts_with('/') && host.starts_with('.') => {
+                    shards_cmdline::mounts::clean(&cwd.join(host).to_string_lossy())
+                }
+                _ => host.to_string(),
+            };
+            bind = format!("{host}:{target}");
+        }
+        binds.push(bind);
+    }
+    let mut mounts = Vec::new();
+    for m in parsed.many("mount") {
+        let m = shards_cmdline::mounts::parse_mount(m, cwd.as_deref())?;
+        mounts.push(shards_cmdline::mounts::encode(&m));
+    }
+    Ok((binds, anonymous, mounts))
 }
 
 /// `--cap-add` and `--cap-drop` as dockerd keeps them (moby daemon/pkg/oci/caps,

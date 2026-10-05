@@ -140,7 +140,7 @@ fn tmpfs_flag(option: &str) -> Option<&'static str> {
 
 /// moby/sys/mount's MergeTmpfsOptions: the options with each flag and each data key
 /// once, the last given of each kept, in the order they were last given.
-fn merge_tmpfs_options(options: &[&str]) -> Result<Vec<String>, String> {
+pub(crate) fn merge_tmpfs_options(options: &[&str]) -> Result<Vec<String>, String> {
     const DATA: [&str; 8] = ["", "size", "mode", "uid", "gid", "nr_inodes", "nr_blocks", "mpol"];
     let mut flags_seen: Vec<&str> = Vec::new();
     let mut data_seen: Vec<&str> = Vec::new();
@@ -173,22 +173,24 @@ fn merge_tmpfs_options(options: &[&str]) -> Result<Vec<String>, String> {
 /// as moby sorts mounts, with moby's default options before the run's; `/dev/shm`'s size;
 /// the ulimits, the last of each by name; the sysctls, the last of each; and the root
 /// read-only last, after everything is mounted on it.
-pub fn setup(run: &Run) -> Result<Vec<Vec<u8>>, String> {
+pub fn setup(run: &Run, points: &[(String, Vec<u8>)]) -> Result<Vec<Vec<u8>>, String> {
     let mut out: Vec<Vec<u8>> = Vec::new();
-    let mut tmpfs: Vec<(String, String)> = tmpfs_map(run)
-        .into_iter()
-        .map(|(dest, opts)| (clean(&dest), opts))
-        .collect();
-    // sortMounts (daemon/volumes_unix.go): fewer path parts first.
-    tmpfs.sort_by_key(|(dest, _)| dest.split('/').filter(|p| !p.is_empty()).count());
-    for (dest, opts) in tmpfs {
+    let mut mounts: Vec<(String, Vec<u8>)> = Vec::new();
+    for (dest, opts) in tmpfs_map(run) {
+        let dest = clean(&dest);
         let mut options = vec!["noexec", "nosuid", "nodev", "rprivate"];
         if !opts.is_empty() {
             options.extend(opts.split(','));
         }
         let merged = merge_tmpfs_options(&options)?;
-        out.push(format!("tmpfs={dest}\0{}", merged.join(",")).into_bytes());
+        let entry = format!("tmpfs={dest}\0{}", merged.join(",")).into_bytes();
+        mounts.push((dest, entry));
     }
+    // The mount points' (volumes.rs, `open`), then sortMounts (daemon/volumes_unix.go):
+    // fewer path parts first, so that a mount's parent's is under it.
+    mounts.extend(points.iter().cloned());
+    mounts.sort_by_key(|(dest, _)| dest.split('/').filter(|p| !p.is_empty()).count());
+    out.extend(mounts.into_iter().map(|(_, entry)| entry));
     if run.shm_size != 0 {
         out.push(format!("shm={}", run.shm_size).into_bytes());
     }
@@ -287,7 +289,7 @@ mod tests {
             Err("invalid mount path: 'run' mount path must be absolute".into())
         );
         assert_eq!(
-            setup(&run(&["/x:foo"])),
+            setup(&run(&["/x:foo"]), &[]),
             Err("invalid tmpfs option \"foo\"".into())
         );
         let set = Run {
@@ -302,7 +304,7 @@ mod tests {
             read_only: true,
             ..Run::default()
         };
-        let text: Vec<String> = setup(&set)
+        let text: Vec<String> = setup(&set, &[])
             .unwrap()
             .into_iter()
             .map(|b| String::from_utf8(b).unwrap())

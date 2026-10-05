@@ -54,6 +54,8 @@ pub mod kind {
     /// client's connection, then its stdin, stdout and stderr, then with
     /// [`RUN_LOG`](super::RUN_LOG) the container's directory, where its log is. With
     /// [`RUN_DETACHED`](super::RUN_DETACHED), only the command's stdin and the directory.
+    /// Last, where the VM shares directories with its guest (D38), its connection to the
+    /// run's share process, which sends a connection for each ([`SHARE_ENDS`]).
     pub const RUN: u8 = 2;
     /// Warm VM → client: the command's exit status, one byte, then, if the client asked
     /// for `SHARDS_TIMING`, the VM's timing line for the client to print.
@@ -169,6 +171,11 @@ pub mod kind {
     /// Warm VM → daemon, before DONE: the guest killed a process of the command for want
     /// of memory (shards_abi::run::kind::OOM).
     pub const OOM: u8 = 33;
+    /// Share process → VM, once the VM has its run: a connection for each directory it
+    /// shares, in its devices' order, [`MAX_FDS`](super::MAX_FDS) a message at most; the VM
+    /// answers [`TAKEN`] once it has them all, before which the share process keeps its
+    /// copies (shards_ipc's flush in flight, PM M24).
+    pub const SHARE_ENDS: u8 = 34;
 }
 
 /// An `EXEC_RUN` flag: the command reads the client's stdin (`-i`).
@@ -430,6 +437,17 @@ pub struct Run {
     pub oom_score_adj: i64,
     /// `--privileged`.
     pub privileged: bool,
+    /// `-v`'s binds and named volumes (HostConfig.Binds), each `SOURCE:DEST[:MODE]`, a
+    /// relative host path made absolute.
+    pub binds: Vec<String>,
+    /// `-v DEST`'s anonymous volumes (Config.Volumes).
+    pub volumes: Vec<String>,
+    /// `--mount`, each as shards_cmdline::mounts::encode writes it.
+    pub mounts: Vec<String>,
+    /// `--volumes-from`, each `CONTAINER[:MODE]`.
+    pub volumes_from: Vec<String>,
+    /// `--volume-driver`.
+    pub volume_driver: String,
 }
 
 /// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
@@ -761,6 +779,18 @@ impl Run {
                     Vec::new()
                 },
             ),
+            ("binds", self.binds.clone()),
+            ("volumes", self.volumes.clone()),
+            ("mounts", self.mounts.clone()),
+            ("volumes-from", self.volumes_from.clone()),
+            (
+                "volume-driver",
+                if self.volume_driver.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.volume_driver.clone()]
+                },
+            ),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -889,6 +919,11 @@ impl Run {
                     "group-add" => run.group_add = values,
                     "oom-score-adj" => run.oom_score_adj = values.first()?.parse().ok()?,
                     "privileged" => run.privileged = true,
+                    "binds" => run.binds = values,
+                    "volumes" => run.volumes = values,
+                    "mounts" => run.mounts = values,
+                    "volumes-from" => run.volumes_from = values,
+                    "volume-driver" => run.volume_driver = values.into_iter().next().unwrap_or_default(),
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1085,8 +1120,10 @@ pub fn working_set_part(payload: &[u8]) -> Option<(u8, &str, &[u8])> {
     let (name, part) = rest.split_at_checked(usize::from(len))?;
     Some((flags, std::str::from_utf8(name).ok()?, part))
 }
-/// The most descriptors a message may carry.
-pub const MAX_FDS: usize = 8;
+/// The most descriptors a message may carry: a run's ([`kind::RUN`]) at most, the client's
+/// connection and stdio, the log's two files, the writable layer in and out, and the
+/// share process's connection.
+pub const MAX_FDS: usize = 9;
 
 #[cfg(unix)]
 mod unix;
@@ -1391,6 +1428,11 @@ mod tests {
             group_add: vec!["audio".into()],
             oom_score_adj: -500,
             privileged: true,
+            binds: vec!["/h:/c:ro".into()],
+            volumes: vec!["/anon".into()],
+            mounts: vec!["type=volume,source=v,target=/v".into()],
+            volumes_from: vec!["web:ro".into()],
+            volume_driver: "local".into(),
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -1419,6 +1461,11 @@ mod tests {
             group_add: Vec::new(),
             oom_score_adj: 0,
             privileged: false,
+            binds: Vec::new(),
+            volumes: Vec::new(),
+            mounts: Vec::new(),
+            volumes_from: Vec::new(),
+            volume_driver: String::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

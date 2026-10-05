@@ -93,7 +93,7 @@ Run a command in an image, as `docker run` does:
 
 ```console
 $ shards run alpine echo hello
-Downloading the guest kernel Image-6.18.48-aarch64-8363f9e3806f from https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-8363f9e3806f/Image-6.18.48-aarch64
+Downloading the guest kernel Image-6.18.48-aarch64-98788948976a from https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-98788948976a/Image-6.18.48-aarch64
 Guest kernel: sha256:5cc14e7758925368367175486516b2e338f89d18b185d9c67daaa33f893a8a96
 Unable to find image 'alpine:latest' locally
 latest: Pulling from library/alpine
@@ -116,7 +116,7 @@ reproducibly by CI ([resources/kernel](resources/kernel/README.md)):
 ```sh
 arch=$(uname -m | sed s/arm64/aarch64/)
 file=$([ $arch = x86_64 ] && echo vmlinux || echo Image)-6.18.48-$arch
-curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-8363f9e3806f/$file
+curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-98788948976a/$file
 shasum -a 256 vmlinux
 ```
 

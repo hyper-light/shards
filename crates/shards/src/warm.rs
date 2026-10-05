@@ -121,6 +121,33 @@ pub struct Request {
     pub layer_out: Option<File>,
 }
 
+/// Takes a connection for each of `slots` from the run's share process, in order, and
+/// says it has them (`kind::SHARE_ENDS`).
+fn shared(link: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::Share]) -> Result<(), String> {
+    let mut ends = Vec::with_capacity(slots.len());
+    while ends.len() < slots.len() {
+        let m = shards_ipc::recv(link)
+            .map_err(|e| format!("the share process: {e}"))?
+            .ok_or("the share process ended first")?;
+        if m.kind != kind::SHARE_ENDS {
+            return Err(format!("the share process said message kind {}", m.kind));
+        }
+        ends.extend(m.fds.into_iter().map(UnixStream::from));
+    }
+    if ends.len() != slots.len() {
+        return Err(format!(
+            "the share process gave {} connections for {} shares",
+            ends.len(),
+            slots.len()
+        ));
+    }
+    shards_ipc::send(link, kind::TAKEN, &[], &[]).map_err(|e| format!("the share process: {e}"))?;
+    for (slot, end) in slots.iter().zip(ends) {
+        slot.attach(end);
+    }
+    Ok(())
+}
+
 /// Tells the daemon this VM is ready, then waits for its request, and tells the daemon it
 /// has taken it. Until then the daemon holds its own copies of the client's descriptors,
 /// and gives the request to another VM if this one fails. Then makes the client's stdio
@@ -214,6 +241,13 @@ pub fn receive(
     } else {
         None
     };
+    // Its share process (D38), where this VM was made with shared directories.
+    let slots = crate::vm_run::SHARES.get().map(Vec::as_slice).unwrap_or_default();
+    let share_link = if slots.is_empty() {
+        None
+    } else {
+        Some(UnixStream::from(next()?))
+    };
     if fds.next().is_some() {
         return Err(format!("a request brings too many descriptors: {count}"));
     }
@@ -232,6 +266,9 @@ pub fn receive(
         )
     {
         return Err(format!("telling the daemon the request is taken: {e}"));
+    }
+    if let Some(link) = share_link {
+        shared(&link, slots)?;
     }
     // The VM's own log stays where it was, its daemon's: the client's stderr carries the
     // command's alone, as a container's does (review 8.10).
