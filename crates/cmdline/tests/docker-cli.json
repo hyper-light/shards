@@ -308,6 +308,79 @@
   },
   {
     "argv": [
+      "inspect",
+      "--help"
+    ],
+    "stdout": "Usage:  shards inspect [OPTIONS] NAME|ID [NAME|ID...]\n\nReturn low-level information on Docker objects\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --type string     Only inspect objects of the given type\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "inspect"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards inspect' requires at least 1 argument\n\nUsage:  shards inspect [OPTIONS] NAME|ID [NAME|ID...]\n\nSee 'shards inspect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "inspect",
+      "--type",
+      "container",
+      "-f",
+      "{{.Id}}",
+      "x"
+    ],
+    "stdout": "RUN --format={{.Id}} --type=container \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "inspect",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container inspect [OPTIONS] CONTAINER [CONTAINER...]\n\nDisplay detailed information on one or more containers\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "inspect",
+      "-f",
+      "{{.Id}}",
+      "x",
+      "y"
+    ],
+    "stdout": "RUN --format={{.Id}} \"x\" \"y\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "inspect",
+      "--format=json",
+      "x"
+    ],
+    "stdout": "RUN --format=json \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "inspect"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards container inspect' requires at least 1 argument\n\nUsage:  shards container inspect [OPTIONS] CONTAINER [CONTAINER...]\n\nSee 'shards container inspect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
       "container",
       "prune",
       "--help"
@@ -1132,7 +1205,7 @@
       "inspect",
       "--help"
     ],
-    "stdout": "Usage:  shards image inspect [OPTIONS] IMAGE [IMAGE...]\n\nDisplay detailed information on one or more images\n",
+    "stdout": "Usage:  shards image inspect [OPTIONS] IMAGE [IMAGE...]\n\nDisplay detailed information on one or more images\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n",
     "stderr": "",
     "status": 0
   },

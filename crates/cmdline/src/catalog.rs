@@ -91,6 +91,7 @@ pub static TOP: &[Group] = &[
             of("export", &commands::EXPORT),
             of("history", &commands::HISTORY),
             of("info", &commands::INFO),
+            of("inspect", &commands::INSPECT),
             of("kill", &commands::KILL),
             of("load", &commands::LOAD),
             of("logs", &commands::LOGS),

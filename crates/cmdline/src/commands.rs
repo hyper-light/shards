@@ -455,6 +455,26 @@ pub static COMMIT: Command = Command {
     error_prefix: "",
 };
 
+/// docker/cli's flags.InspectFormatHelp (cli/flags/options.go).
+const INSPECT_FORMAT_HELP: &str = "Format output using a custom template:\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates";
+
+/// `shards inspect` (docker/cli cli/command/system/inspect.go).
+pub static INSPECT: Command = Command {
+    usage: "[OPTIONS] NAME|ID [NAME|ID...]",
+    about: "Return low-level information on Docker objects",
+    aliases: "",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP),
+        HELP,
+        Flag::string("type", None, "", "Only inspect objects of the given type"),
+    ],
+    unserved: "\
+size s b - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards cp` (docker/cli cli/command/container/cp.go): its Long, which its help shows.
 pub static COPY: Command = Command {
     usage: "[OPTIONS] CONTAINER:SRC_PATH DEST_PATH|-\n\tdocker cp [OPTIONS] SRC_PATH|- CONTAINER:DEST_PATH",
@@ -695,9 +715,8 @@ pub static IMAGE_INSPECT: Command = Command {
     about: "Display detailed information on one or more images",
     aliases: "",
     args: Args::AtLeast(1),
-    flags: &[HELP],
+    flags: &[Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP), HELP],
     unserved: "\
-format f s - -\n\
 platform - s - -",
     interspersed: true,
     error_prefix: "",
@@ -710,9 +729,8 @@ pub static CONTAINER_INSPECT: Command = Command {
     about: "Display detailed information on one or more containers",
     aliases: "",
     args: Args::AtLeast(1),
-    flags: &[HELP],
+    flags: &[Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP), HELP],
     unserved: "\
-format f s - -\n\
 size s b - -",
     interspersed: true,
     error_prefix: "",
@@ -1419,6 +1437,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["start", ..] => (&START, "shards start", 1),
         ["commit", ..] => (&COMMIT, "shards commit", 1),
         ["cp", ..] => (&COPY, "shards cp", 1),
+        ["inspect", ..] => (&INSPECT, "shards inspect", 1),
         ["container", "cp", ..] => (&COPY, "shards container cp", 2),
         ["container", "commit", ..] => (&COMMIT, "shards container commit", 2),
         ["container", "start", ..] => (&START, "shards container start", 2),

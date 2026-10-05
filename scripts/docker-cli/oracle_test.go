@@ -47,7 +47,7 @@ var served = map[string][]string{
 	"image ls": {"all", "digests", "filter", "format", "help", "no-trunc", "quiet", "tree"},
 	"image rm": {"force", "help", "no-prune"},
 	"image tag": {"help"},
-	"image inspect": {"help"},
+	"image inspect": {"format", "help"},
 	"save":          {"help", "output"},
 	"image save":    {"help", "output"},
 	"load":          {"help", "input", "quiet"},
@@ -73,6 +73,9 @@ var served = map[string][]string{
 	"container export":  {"help", "output"},
 	"info":              {"help"},
 	"system info":       {"help"},
+	// `container inspect` (and the top-level inspect, whose own flags shards does not
+	// serve yet).
+	"inspect": {"format", "help", "type"},
 	// `container prune` and `system prune`, which share the name.
 	"prune":             {"all", "filter", "force", "help"},
 	"image prune":       {"all", "filter", "force", "help"},
@@ -137,6 +140,13 @@ var cases = [][]string{
 	{"info", "--help"},
 	{"info", "x"},
 	{"system", "info", "-h"},
+	{"inspect", "--help"},
+	{"inspect"},
+	{"inspect", "--type", "container", "-f", "{{.Id}}", "x"},
+	{"container", "inspect", "-h"},
+	{"container", "inspect", "-f", "{{.Id}}", "x", "y"},
+	{"container", "inspect", "--format=json", "x"},
+	{"container", "inspect"},
 	{"container", "prune", "--help"},
 	{"container", "prune", "-f", "--filter", "until=1h"},
 	{"image", "prune", "-h"},

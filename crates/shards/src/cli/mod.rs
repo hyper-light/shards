@@ -20,7 +20,7 @@ mod cp;
 pub(crate) mod listing;
 #[cfg(unix)]
 pub(crate) mod look;
-mod request;
+pub(crate) mod request;
 #[cfg(unix)]
 mod save;
 #[cfg(unix)]

@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Regenerates crates/shards/src/daemon/testdata/inspect.json: what dockerd makes of each
+case's command line, as `docker inspect` shows the container, for daemon/inspect_doc.rs's
+tests, which expect shards to make the same document of the same request. Needs a local
+Docker Engine; the image is pulled at the digest pinned below.
+
+Each case is the words after `docker create` (or `docker run -d`, for a detached one).
+What only one host or one moment can say (IDs, times, addresses, process IDs, paths
+under the engine's root) is replaced by a placeholder naming it, as is the engine's
+own version of a value shards cannot share (its runtime, driver and paths).
+
+    scripts/inspect/generate
+"""
+import json, os, re, subprocess, sys
+
+IMAGE = "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+
+CASES = [
+    ["create"],
+    ["create", "sleep", "30"],
+    ["create", "-e", "A=1", "-e", "PATH=/x"],
+    ["create", "-i"],
+    ["create", "-t"],
+    ["create", "-it", "sh"],
+    ["create", "--entrypoint", "/bin/echo", "hi"],
+    ["create", "--entrypoint", "", "echo", "hi"],
+    ["create", "-w", "/tmp", "-u", "nobody"],
+    ["create", "-p", "8080:80", "-p", "127.0.0.1::53/udp"],
+    ["create", "-P"],
+    ["create", "--network", "none"],
+    ["create", "--rm"],
+    ["create", "--hostname", "web"],
+    ["create", "--stop-signal", "SIGINT", "--stop-timeout", "5"],
+    ["create", "--health-cmd", "true", "--health-interval", "5s", "--health-retries", "2"],
+    ["create", "--no-healthcheck"],
+    ["run", "-d", "sleep", "300"],
+]
+
+
+def docker(*args):
+    r = subprocess.run(["docker", *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"docker {' '.join(args)}: {r.stderr}")
+    return r.stdout
+
+
+def normalize(doc, cid):
+    text = json.dumps(doc)
+    text = text.replace(cid, "<ID>").replace(cid[:12], "<ID12>")
+    doc = json.loads(text)
+    times = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z$")
+
+    def walk(v, path):
+        if isinstance(v, dict):
+            return {k: walk(e, f"{path}.{k}") for k, e in v.items()}
+        if isinstance(v, list):
+            return [walk(e, path) for e in v]
+        if isinstance(v, str) and times.match(v):
+            return "<TIME>"
+        return v
+
+    doc = walk(doc, "")
+    if doc["State"]["Pid"]:
+        doc["State"]["Pid"] = "<PID>"
+    ns = doc["NetworkSettings"]
+    for k in ("SandboxID", "SandboxKey"):
+        if ns.get(k):
+            ns[k] = f"<{k}>"
+    for net in (ns.get("Networks") or {}).values():
+        for k in ("NetworkID", "EndpointID", "Gateway", "IPAddress", "MacAddress"):
+            if net.get(k):
+                net[k] = f"<{k}>"
+    for k in ("ResolvConfPath", "HostnamePath", "HostsPath", "LogPath"):
+        if doc.get(k):
+            doc[k] = f"<{k}>"
+    return doc
+
+
+def main():
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    docker("pull", "-q", IMAGE)
+    image = json.loads(docker("image", "inspect", IMAGE))[0]
+    out = {
+        "engine": docker("version", "--format", "{{.Server.Version}}").strip(),
+        "image": IMAGE,
+        "image_id": image["Id"],
+        "image_config": image["Config"],
+        "cases": [],
+    }
+    for i, case in enumerate(CASES):
+        verb, flags = case[0], case[1:]
+        name = f"shards-inspect-oracle-{i}"
+        docker("rm", "-f", name)
+        # Flags before the image, the command after: each case's words split at the
+        # first that is not a flag's.
+        opts, cmd = [], []
+        words = list(flags)
+        takes = {"-e", "--entrypoint", "-w", "-u", "-p", "--network", "--hostname",
+                 "--stop-signal", "--stop-timeout", "--health-cmd", "--health-interval",
+                 "--health-retries"}
+        while words:
+            w = words.pop(0)
+            if w in takes:
+                opts += [w, words.pop(0)]
+            elif w.startswith("-"):
+                opts.append(w)
+            else:
+                cmd = [w, *words]
+                break
+        args = [verb, *opts, "--name", name, IMAGE, *cmd]
+        cid = docker(*args).strip().splitlines()[-1]
+        doc = json.loads(docker("inspect", name))[0]
+        docker("rm", "-f", name)
+        out["cases"].append({"args": [*opts, IMAGE, *cmd], "verb": verb, "doc": normalize(doc, cid)})
+    path = os.path.join(root, "crates/shards/src/daemon/testdata/inspect.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(out, f, indent=1)
+        f.write("\n")
+
+
+main()

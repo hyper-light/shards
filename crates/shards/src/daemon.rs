@@ -44,6 +44,7 @@ mod health;
 mod images;
 mod info;
 mod inspect;
+mod inspect_doc;
 mod load;
 mod logs;
 mod network;
@@ -210,6 +211,8 @@ struct Ready {
     /// Its network process's control socket, if it has one: where its run's published
     /// ports go.
     net: Option<UnixStream>,
+    /// The guest's MAC on its network, if it has one.
+    mac: Option<[u8; 6]>,
     /// The template whose pool it came from.
     pool: Option<PathBuf>,
     /// The template the working set it records goes with: its pool's, or the one it saves.
@@ -376,6 +379,8 @@ struct Tracked {
     inbox: Arc<Mutex<Inbox>>,
     /// [`Keep::visit`]: the container is not running.
     visit: bool,
+    /// Its guest's MAC on its network, for `inspect`.
+    mac: Option<[u8; 6]>,
 }
 
 /// What a run has told the daemon, and the socket it tells it on: read under this lock
@@ -1779,8 +1784,9 @@ impl<D: Disk> Daemon<D> {
         // A new container keeps the request it was made by, for `shards start` (D37).
         if again.is_none() {
             let dir = lock(&self.containers).dir(&id);
+            // Detached as it was made, which its Config says (AttachStdout); a start says
+            // how it attaches then (`again_as`).
             let mut kept = run.clone();
-            kept.detach = false;
             kept.create = false;
             if let Err(e) = std::fs::write(dir.join(REQUEST), kept.encode()) {
                 log(format!(
@@ -2623,6 +2629,7 @@ impl<D: Disk> Daemon<D> {
             vm: ready.vm,
             inbox: inbox.clone(),
             visit,
+            mac: ready.mac,
         };
         // As the daemon stops, the stop thread, which this wakes, stops it.
         lock(&self.runs).insert(id.to_string(), RunState::Tracked(tracked));
@@ -3676,8 +3683,9 @@ impl<D: Disk> Daemon<D> {
         drop(fds);
         // The VM holds its side of its network now; its network process goes with it.
         // The control socket stays the daemon's.
+        let mac = net;
         let (net_process, net_control) = match network {
-            Some((net, side)) => (Some(net), Some(side.control)),
+            Some((net, side)) => (Some(net), Some((side.control, mac))),
             None => (None, None),
         };
         let grants = grants.map(|(grants, _)| grants);
@@ -3715,10 +3723,15 @@ impl<D: Disk> Daemon<D> {
         child: Arc<shards_ipc::Child>,
         socket: UnixStream,
         grants: Option<UnixStream>,
-        net: Option<UnixStream>,
+        net: Option<(UnixStream, Option<[u8; 6]>)>,
         dest: For,
         net_process: Option<shards_ipc::Child>,
     ) {
+        // Its network process's control socket, and the guest's MAC on it.
+        let (net, mac) = match net {
+            Some((control, mac)) => (Some(control), mac),
+            None => (None, None),
+        };
         let pid = child.id();
         let began = Instant::now();
         // What it asks to reach comes first: it opens nothing until it has it.
@@ -3750,6 +3763,7 @@ impl<D: Disk> Daemon<D> {
                             vm: child.clone(),
                             socket,
                             net,
+                            mac,
                             pool: Some(dir.clone()),
                             records,
                         });
@@ -3775,6 +3789,7 @@ impl<D: Disk> Daemon<D> {
                         vm: child.clone(),
                         socket,
                         net,
+                        mac,
                         pool: None,
                         records: None,
                     }));
@@ -4243,6 +4258,7 @@ mod tests {
                 vm,
                 socket: ours,
                 net: None,
+                mac: None,
                 pool: pool.map(PathBuf::from),
                 records: None,
             };

@@ -706,7 +706,12 @@ fn a_stopped_microvms_files_are_read_and_written_as_dockerd_does() {
         &["fs", "write:/made=yes", "rm:/etc/group"],
     );
     assert_eq!(made.status, Some(0), "{made}");
-    let before = shards(&["ps", "-a", "--format", "{{.Names}} {{.State}} {{.Status}}"]);
+    // Its state and exit code; not its age, which the visits below take time from.
+    let state = "{{.Names}} {{.State}}";
+    let before = shards(&["ps", "-a", "--format", state]);
+    assert_eq!(before.stdout, "resting exited\n", "{before}");
+    let code = shards(&["inspect", "-f", "{{.State.ExitCode}}", "resting"]);
+    assert_eq!(code.stdout, "0\n", "{code}");
     // Its changes, read in a VM over its files, as dockerd reads a stopped container's.
     let diff = shards(&["diff", "resting"]);
     assert_eq!(diff.status, Some(0), "{diff}");
@@ -735,7 +740,7 @@ fn a_stopped_microvms_files_are_read_and_written_as_dockerd_does() {
     );
     assert!(!listed.lines().any(|n| n == "etc/group"), "{listed}");
     // Still stopped, as it was: the visits started and ended nothing.
-    let after = shards(&["ps", "-a", "--format", "{{.Names}} {{.State}} {{.Status}}"]);
+    let after = shards(&["ps", "-a", "--format", state]);
     assert_eq!(after.stdout, before.stdout);
     // Until a second on: `0s` is this second's start, as the client sends whole seconds.
     let until = (std::time::SystemTime::now()
@@ -1095,6 +1100,84 @@ fn images_and_prunes_filter_as_dockerd_does() {
         listed(&[]).lines().count() >= 1,
         "the image it was made from stays"
     );
+}
+
+#[test]
+fn inspect_answers_as_docker_inspect_does() {
+    let Some((home, image)) = home("containers-inspect-any") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let mut sleeper = start(&home, &image, &["--name", "probe", "-e", "A=1"], &["sleep"]);
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{.State.Status}} {{.State.Running}} {{index .Config.Env 0}} {{.Name}}",
+        "probe",
+    ]);
+    assert_eq!(
+        (shown.status, shown.stdout.as_str()),
+        (Some(0), "running true A=1 /probe\n"),
+        "{shown}"
+    );
+    // Not a Go field of the response, but a key of its JSON: read there, as the CLI does.
+    let id = shards(&["inspect", "-f", "{{.Id}}", "probe"]);
+    assert_eq!(id.stdout.trim().len(), 64, "{id}");
+    let typed = shards(&["inspect", "-f", "{{.ID}}", "probe"]);
+    assert_eq!(typed.stdout, id.stdout);
+    let health = shards(&["container", "inspect", "-f", "{{.State.Health.Status}}", "probe"]);
+    assert_eq!(health.status, Some(1), "{health}");
+    assert!(
+        health.stderr.contains(r#"map has no entry for key "Health""#),
+        "{health}"
+    );
+    let bad = shards(&["inspect", "-f", "{{.Nope", "probe"]);
+    assert_eq!(bad.status, Some(64), "{bad}");
+    assert!(bad.stderr.starts_with("template parsing error: "), "{bad}");
+    let json = shards(&["container", "inspect", "--format", "json", "probe"]);
+    let docs: serde_json::Value = serde_json::from_str(&json.stdout).unwrap();
+    // Attached, as `start` runs it; on the bridge, where every guest is .2.
+    assert_eq!(docs[0]["Config"]["AttachStdout"], true, "{json}");
+    assert!(
+        docs[0]["NetworkSettings"]["Networks"]["bridge"]["IPAddress"]
+            .as_str()
+            .unwrap()
+            .ends_with(".2")
+    );
+    assert_eq!(docs[0]["HostConfig"]["NetworkMode"], "bridge", "{json}");
+    assert!(docs[0]["State"]["Pid"].as_u64().unwrap() > 0, "{json}");
+    // Images too, typed: a time prints as Go's Time.String.
+    let at = shards(&[
+        "inspect",
+        "--type",
+        "image",
+        "-f",
+        "{{.Metadata.LastTagTime}}",
+        &image,
+    ]);
+    assert_eq!(at.status, Some(0), "{at}");
+    assert!(at.stdout.trim_end().ends_with(" +0000 UTC"), "{at}");
+    // What is not there, in the CLI's and dockerd's words.
+    let none = shards(&["inspect", "nosuch"]);
+    assert_eq!(
+        (none.status, none.stdout.as_str(), none.stderr.as_str()),
+        (Some(1), "[]\n", "error: no such object: nosuch\n"),
+        "{none}"
+    );
+    let volume = shards(&["inspect", "--type", "volume", "v"]);
+    assert_eq!(
+        volume.stderr, "Error response from daemon: get v: no such volume\n",
+        "{volume}"
+    );
+    let empty = shards(&["inspect", "--type", "", "x"]);
+    assert!(
+        empty
+            .stderr
+            .starts_with("type is empty: must be one of \"config\""),
+        "{empty}"
+    );
+    assert_eq!(shards(&["rm", "-f", "probe"]).status, Some(0));
+    exit(&mut sleeper);
 }
 
 #[test]

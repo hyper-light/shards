@@ -1416,6 +1416,19 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   after, typed input is echoed and read, a resize reaches the command, ^C interrupts
   it (130), and both detach keys leave it running.
 
+- **Inspect** (`daemon/inspect_doc.rs`, `daemon/inspect.rs`). `inspect`, `container
+  inspect` and `image inspect` show dockerd's InspectResponse as Go types
+  (shards_template::Struct, with typed nils), so that `--format` reads them as
+  docker/cli's inspector does (typed first, then the raw JSON with `missingkey=error`),
+  and the JSON is dockerd's field for field: a microVM's Config is its request merged
+  with its image's config as dockerd merges them, and its HostConfig dockerd's defaults
+  for what was not asked. Held to Docker Engine 29.3.1 by testdata/inspect.json
+  (`scripts/inspect/generate`, 18 command lines). What is shards' own, each true of a
+  microVM where Docker's would not be: Runtime `shards`; no host paths for the guest's
+  resolv.conf, hostname and hosts; no libnetwork sandbox or endpoint IDs; the guest's
+  address on the bridge, the same in every guest; the VM process as State.Pid. Docker
+  Desktop's engine sets Config.StopTimeout 1 where none was asked; dockerd and shards
+  leave it unset. `--size`, networks' and volumes' documents are still to come.
 - **Filters** (`daemon/ps.rs`, `daemon/images.rs`, `daemon/filters.rs`). `ps`, `images`
   and the prunes take `--filter` as dockerd does at docker-v29.8.1 (moby list.go,
   containerd image_list.go and image_prune.go, prune.go), names and statuses as regular

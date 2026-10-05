@@ -258,7 +258,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// images found, as one array, then what could not be found.
     pub(super) fn image_inspect(
         &self,
-        args: &[String],
+        parsed: &shards_cmdline::flags::Parsed,
         styled: bool,
         reply: &super::commands::Reply<'_>,
     ) -> u8 {
@@ -277,7 +277,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             }
         };
         let (mut documents, mut errors) = (Vec::new(), Vec::new());
-        for given in args {
+        for given in &parsed.args {
             // Only what is asked for is read.
             let read = super::images::resolve(&images, given).and_then(|named| {
                 store
@@ -287,32 +287,16 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     .map_err(|e| e.to_string())
             });
             match read {
-                Ok(image) => documents.push(document(&image, record_name(given).as_deref())),
+                Ok(image) => documents.push(super::inspect_doc::image_value(&document(
+                    &image,
+                    record_name(given).as_deref(),
+                ))),
                 Err(e) => errors.push(format!("Error response from daemon: {e}")),
             }
         }
-        let text = if documents.is_empty() {
-            "[]".to_string()
-        } else {
-            indent(&format!("[{}]", documents.join(",")), "    ")
-        };
-        if styled {
-            // Coloured by the client, as a terminal reads it.
-            let mut sheet = shards_ipc::Sheet::new("json");
-            sheet.record(&[("text", text)]);
-            reply.sheet(&sheet);
-        } else {
-            reply.out(&text);
-        }
-        if errors.is_empty() {
-            return 0;
-        }
-        reply.err(&errors.join("\n"));
-        1
+        inspected(parsed.string("format"), &documents, errors, styled, reply)
     }
-}
 
-impl<D: crate::containers::Disk> super::Daemon<D> {
     /// `shards save IMAGE...` (moby ImageExport): every image found first, as dockerd
     /// finds them all before it streams; then the archive, written to what the client
     /// sent (its stdout, or its `-o` file), under a lease, so that no collection takes a
@@ -445,16 +429,17 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
     /// `shards inspect vm NAME...` (`docker container inspect`): each microVM's document
-    /// as one array, indented as docker/cli prints it: Docker's container fields, those
-    /// shards keeps, and `MicroVM`, what only a microVM has; then what was not found.
+    /// (inspect_doc.rs), as docker/cli's inspect.Inspect prints them; then what was not
+    /// found.
     pub(super) fn container_inspect(
         &self,
-        args: &[String],
+        parsed: &shards_cmdline::flags::Parsed,
         styled: bool,
         reply: &super::commands::Reply<'_>,
     ) -> u8 {
-        let (mut documents, mut errors) = (Vec::new(), Vec::new());
-        for given in args {
+        let mut documents = Vec::new();
+        let mut errors = Vec::new();
+        for given in &parsed.args {
             let found = self.resolve(given).and_then(|id| {
                 super::lock(&self.containers)
                     .get(&id)
@@ -462,111 +447,333 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     .ok_or_else(|| format!("No such container: {given}"))
             });
             match found {
-                Ok(c) => {
-                    let paused = super::lock(&self.paused).contains(&c.id);
-                    documents.push(container_document(&c, paused, &self.home));
-                }
-                Err(e) => errors.push(e),
+                Ok(c) => documents.push(self.container_value(&c)),
+                Err(e) if e.starts_with("Error response") => errors.push(e),
+                Err(e) => errors.push(format!("Error response from daemon: {e}")),
             }
         }
-        let text = if documents.is_empty() {
-            "[]".to_string()
-        } else {
-            indent(&format!("[{}]", documents.join(",")), "    ")
+        inspected(parsed.string("format"), &documents, errors, styled, reply)
+    }
+
+    /// Container `c`'s InspectResponse, from its record, its request, its image and its
+    /// VM (inspect_doc.rs).
+    fn container_value(&self, c: &crate::containers::Container) -> shards_template::Value {
+        use super::inspect_doc::{Facts, Health, Net, document};
+        let dir = super::lock(&self.containers).dir(&c.id);
+        let request = std::fs::read(dir.join(super::REQUEST))
+            .ok()
+            .and_then(|b| shards_ipc::Run::decode(&b))
+            .unwrap_or_else(|| shards_ipc::Run {
+                image: c.image.clone(),
+                ..shards_ipc::Run::default()
+            });
+        let (config, manifest) = self.image_facts(c.image_id.as_deref());
+        let (pid, mac, exec_ids) = match super::lock(&self.runs).get(&c.id) {
+            Some(super::RunState::Tracked(t)) if !t.visit => {
+                let execs = super::lock(&t.inbox)
+                    .exec_ids
+                    .iter()
+                    .map(|(_, e)| e.clone())
+                    .collect();
+                (Some(t.vm.id()), t.mac, execs)
+            }
+            _ => (None, None, Vec::new()),
         };
-        if styled {
-            let mut sheet = shards_ipc::Sheet::new("json");
-            sheet.record(&[("text", text)]);
-            reply.sheet(&sheet);
+        let health = super::lock(&self.health).get(&c.id).map(|h| Health {
+            status: match h.status {
+                super::health::Status::Starting => "starting",
+                super::health::Status::Healthy => "healthy",
+                super::health::Status::Unhealthy => "unhealthy",
+            },
+            failing_streak: h.failing_streak,
+            log: h
+                .log
+                .iter()
+                .map(|p| (p.start_ns, p.end_ns, p.exit_code, p.output.clone()))
+                .collect(),
+        });
+        let net = self.bridge.as_ref().map(|b| Net {
+            ip: b.guest(),
+            gateway: b.gateway(),
+            prefix: b.subnet().1,
+            mac,
+        });
+        let paused = super::lock(&self.paused).contains(&c.id);
+        document(&Facts {
+            container: c,
+            request: &request,
+            image: config.as_ref(),
+            manifest: manifest.as_ref(),
+            paused,
+            pid,
+            health,
+            exec_ids,
+            log_path: dir.join("log").display().to_string(),
+            net,
+        })
+    }
+
+    /// Image `id`'s config (its `config`), and the descriptor of its manifest for this
+    /// platform, as Go encodes one: from its index where it has one.
+    fn image_facts(&self, id: Option<&str>) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
+        let Some(id) = id else {
+            return (None, None);
+        };
+        let Ok(Some(store)) = self.store() else {
+            return (None, None);
+        };
+        let Some(image) = store
+            .images()
+            .ok()
+            .and_then(|l| l.into_iter().find(|i| i.id.to_string() == id))
+        else {
+            return (None, None);
+        };
+        let config = image
+            .config
+            .as_deref()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+            .and_then(|c| c.get("config").cloned());
+        let ours = image.manifest.to_string();
+        let manifest = if image.target.digest == ours {
+            serde_json::to_value(&image.target).ok()
         } else {
-            reply.out(&text);
-        }
-        if errors.is_empty() {
-            return 0;
-        }
-        let said: Vec<String> = errors
-            .iter()
-            .map(|e| {
-                if e.starts_with("Error response") {
-                    e.clone()
-                } else {
-                    format!("Error response from daemon: {e}")
-                }
-            })
-            .collect();
-        reply.err(&said.join("\n"));
-        1
+            std::fs::read(store.blob_path(&image.id))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .and_then(|index| {
+                    index
+                        .get("manifests")?
+                        .as_array()?
+                        .iter()
+                        .find(|m| m.get("digest").and_then(serde_json::Value::as_str) == Some(&ours))
+                        .cloned()
+                })
+        };
+        (config, manifest)
     }
 }
 
-/// A container record's document, compact, in the order of Docker's
-/// ContainerJSONBase where shards keeps the field, then `MicroVM`.
-fn container_document(c: &crate::containers::Container, paused: bool, home: &std::path::Path) -> String {
-    use crate::containers::State;
-    let time = |ns: Option<u128>| -> serde_json::Value {
-        match ns {
-            Some(ns) => {
-                let secs = u64::try_from(ns / 1_000_000_000).unwrap_or(0);
-                let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
-                serde_json::from_str(&time_json(t)).unwrap_or(serde_json::Value::Null)
-            }
-            None => serde_json::Value::from("0001-01-01T00:00:00Z"),
+/// The object types `inspect --type` names (docker/cli system/inspect.go, allTypes).
+const TYPES: [&str; 10] = [
+    "config",
+    "container",
+    "image",
+    "network",
+    "node",
+    "plugin",
+    "secret",
+    "service",
+    "task",
+    "volume",
+];
+
+impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// `shards inspect NAME...` (docker/cli system/inspect.go): each name as the first
+    /// kind of object it names, in inspectAll's order (a microVM, an image, a network,
+    /// ...), or as `--type` says; then printed as inspect.Inspect prints.
+    pub(super) fn inspect_any(
+        &self,
+        parsed: &shards_cmdline::flags::Parsed,
+        styled: bool,
+        reply: &super::commands::Reply<'_>,
+    ) -> u8 {
+        let kind = parsed.string("type");
+        let all = TYPES.map(|t| format!("\"{t}\"")).join(", ");
+        if parsed.changed("type") && kind.is_empty() {
+            reply.err(&format!("type is empty: must be one of {all}"));
+            return 1;
         }
-    };
-    let status = match c.state {
-        State::Running if paused => "paused",
-        State::Running => "running",
-        State::Created => "created",
-        State::Exited => "exited",
-    };
-    let mut ports = serde_json::Map::new();
-    for p in &c.ports {
-        let key = format!("{}/{}", p.private, p.proto);
-        let bound =
-            p.ip.map(|ip| serde_json::json!({"HostIp": ip.to_string(), "HostPort": p.public.to_string()}));
-        let entry = ports.entry(key).or_insert(serde_json::Value::Null);
-        if let Some(b) = bound {
-            match entry {
-                serde_json::Value::Array(list) => list.push(b),
-                other => *other = serde_json::Value::Array(vec![b]),
+        if !kind.is_empty() && !TYPES.contains(&kind) {
+            reply.err(&format!("unknown type: {}: must be one of {all}", go_quote(kind)));
+            return 1;
+        }
+        let any = kind.is_empty();
+        let (mut documents, mut errors) = (Vec::new(), Vec::new());
+        for given in &parsed.args {
+            let found = (|| {
+                if any || kind == "container" {
+                    let c = self.resolve(given).and_then(|id| {
+                        super::lock(&self.containers)
+                            .get(&id)
+                            .cloned()
+                            .ok_or_else(|| format!("No such container: {given}"))
+                    });
+                    match c {
+                        Ok(c) => return Ok(self.container_value(&c)),
+                        Err(e) if !any => return Err(daemon_said(&e)),
+                        Err(_) => {}
+                    }
+                }
+                if any || kind == "image" {
+                    match self.image_doc(given) {
+                        Ok(d) => return Ok(d),
+                        Err(e) if !any => return Err(daemon_said(&e)),
+                        Err(_) => {}
+                    }
+                }
+                // shards' networks have no documents yet: said so, not that they are not.
+                if (any || kind == "network") && matches!(given.as_str(), "bridge" | "none") {
+                    return Err(format!(
+                        "shards: network {given}: network documents are not served yet"
+                    ));
+                }
+                match kind {
+                    "network" => Err(format!("Error response from daemon: network {given} not found")),
+                    "volume" => Err(format!("Error response from daemon: get {given}: no such volume")),
+                    "plugin" => Err(format!("Error response from daemon: plugin {} not found", go_quote(given))),
+                    "node" | "service" | "task" | "secret" | "config" => Err(
+                        "Error response from daemon: This node is not a swarm manager: shards has no swarm mode"
+                            .into(),
+                    ),
+                    _ => Err(format!("error: no such object: {given}")),
+                }
+            })();
+            match found {
+                Ok(d) => documents.push(d),
+                Err(e) => errors.push(e),
             }
+        }
+        inspected(parsed.string("format"), &documents, errors, styled, reply)
+    }
+
+    /// Image `given`'s InspectResponse, or why not.
+    fn image_doc(&self, given: &str) -> Result<shards_template::Value, String> {
+        let store = self.store()?.ok_or_else(|| super::images::not_found(given))?;
+        let images = store.named().map_err(|e| e.to_string())?;
+        let named = super::images::resolve(&images, given)?;
+        let image = store.image(named).map_err(|e| e.to_string())?;
+        Ok(super::inspect_doc::image_value(&document(
+            &image,
+            record_name(given).as_deref(),
+        )))
+    }
+}
+
+/// `e` as the CLI says what dockerd answered.
+fn daemon_said(e: &str) -> String {
+    if e.starts_with("Error response") {
+        e.to_owned()
+    } else {
+        format!("Error response from daemon: {e}")
+    }
+}
+
+/// `s` as Go's %q writes it.
+fn go_quote(s: &str) -> String {
+    let mut out = String::new();
+    json_string_into(s, &mut out);
+    out
+}
+
+fn json_string_into(s: &str, out: &mut String) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c => out.push(c),
         }
     }
-    let doc = serde_json::json!({
-        "Id": c.id,
-        "Created": time(Some(c.created)),
-        "Path": c.command.first().cloned().unwrap_or_default(),
-        "Args": c.command.iter().skip(1).cloned().collect::<Vec<_>>(),
-        "State": {
-            "Status": status,
-            "Running": c.state == State::Running,
-            "Paused": paused,
-            "Restarting": false,
-            "OOMKilled": false,
-            "Dead": false,
-            "Pid": 0,
-            "ExitCode": c.exit_code.unwrap_or(0),
-            "Error": "",
-            "StartedAt": time(c.started),
-            "FinishedAt": time(c.finished),
-        },
-        "Image": c.image_id.clone().unwrap_or_default(),
-        "Name": format!("/{}", c.name),
-        "LogPath": home.join("containers").join(&c.id).join("log").display().to_string(),
-        "HostConfig": {"AutoRemove": c.auto_remove},
-        "Config": {
-            "Image": c.image,
-            "Cmd": c.command,
-            "StopSignal": c.stop_signal,
-            "StopTimeout": c.stop_timeout,
-        },
-        "NetworkSettings": {"Ports": ports},
-        "MicroVM": {
-            "Kind": "shards microVM",
-            "LogBytesLost": c.log_lost,
-        },
-    });
-    doc.to_string()
+    out.push('"');
+}
+
+/// What docker/cli's inspect.Inspect writes of `documents`, then `errors`, `format`
+/// being `--format`: the documents as an indented JSON array, or compact (`json`), or
+/// each through the template (on its Go types, and failing that on its JSON with
+/// missingkey=error, as TemplateInspector does), a line each; a template that does not
+/// parse exits 64, and anything not found 1.
+pub(super) fn inspected(
+    format: &str,
+    documents: &[shards_template::Value],
+    errors: Vec<String>,
+    styled: bool,
+    reply: &super::commands::Reply<'_>,
+) -> u8 {
+    let mut errors = errors;
+    let json = |v: &shards_template::Value| super::inspect_doc::json(v);
+    let text = match format {
+        "" => {
+            let compact: Vec<String> = documents.iter().map(json).collect();
+            if compact.is_empty() {
+                "[]".to_string()
+            } else {
+                indent(&format!("[{}]", compact.join(",")), "    ")
+            }
+        }
+        "json" => {
+            let compact: Vec<String> = documents.iter().map(json).collect();
+            format!("[{}]", compact.join(","))
+        }
+        template => {
+            let t = match shards_template::Template::parse("", template) {
+                Ok(t) => t,
+                Err(e) => {
+                    reply.err(&format!("template parsing error: {e}"));
+                    return 64;
+                }
+            };
+            let mut out = String::new();
+            for d in documents {
+                match t.execute(d) {
+                    Ok(o) => {
+                        out.push_str(&o);
+                        out.push('\n');
+                    }
+                    Err(_) => {
+                        // tryRawInspectFallback: its JSON, numbers as json.Number.
+                        let raw = serde_json::from_str::<serde_json::Value>(&json(d))
+                            .map(|r| raw_value(&r))
+                            .unwrap_or(shards_template::Value::Nil);
+                        match t.missing_key_error().execute(&raw) {
+                            Ok(o) => {
+                                out.push_str(&o);
+                                out.push('\n');
+                            }
+                            Err(e) => errors.push(format!("template parsing error: {e}")),
+                        }
+                    }
+                }
+            }
+            // Flush: nothing written is a line of its own.
+            if out.is_empty() {
+                out.push('\n');
+            }
+            out.pop();
+            out
+        }
+    };
+    if styled && format.is_empty() {
+        let mut sheet = shards_ipc::Sheet::new("json");
+        sheet.record(&[("text", text)]);
+        reply.sheet(&sheet);
+    } else {
+        reply.out(&text);
+    }
+    if errors.is_empty() {
+        return 0;
+    }
+    reply.err(&errors.join("\n"));
+    1
+}
+
+/// A JSON value as json.Decoder with UseNumber decodes it into `any`: numbers as
+/// json.Number, which prints as the number's text.
+fn raw_value(v: &serde_json::Value) -> shards_template::Value {
+    use serde_json::Value as J;
+    use shards_template::Value;
+    match v {
+        J::Null => Value::Nil,
+        J::Bool(b) => Value::Bool(*b),
+        J::Number(n) => Value::String(n.to_string()),
+        J::String(s) => Value::String(s.clone()),
+        J::Array(l) => Value::list(l.iter().map(raw_value).collect()),
+        J::Object(m) => Value::map(m.iter().map(|(k, v)| (k.clone(), raw_value(v))).collect()),
+    }
 }
 
 #[cfg(test)]

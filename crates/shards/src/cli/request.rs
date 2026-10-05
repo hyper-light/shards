@@ -389,6 +389,16 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
     })
 }
 
+/// The request `args` (`run`'s words) make, as `run` makes it: for tests that hold what a
+/// request becomes to what Docker makes of the same words.
+#[cfg(all(test, unix))]
+pub(crate) fn for_test(args: &[String]) -> Result<Run, String> {
+    match shards_cmdline::flags::parse(&RUN, "shards run", args, &validate) {
+        shards_cmdline::flags::Outcome::Run(parsed) => request(&parsed),
+        _ => Err(format!("{args:?} is no run")),
+    }
+}
+
 /// The health check the command line sets, as the CLI reads it (docker/cli
 /// cli/command/container/opts.go, parse): `NONE` for `--no-healthcheck`, which no other
 /// `--health-*` may join; otherwise what the `--health-*` flags say, none negative, and

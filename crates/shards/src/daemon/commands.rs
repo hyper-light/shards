@@ -412,7 +412,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &RMI) {
             self.rmi(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &IMAGE_INSPECT) {
-            self.image_inspect(&parsed.args, asker.styled(), reply)
+            self.image_inspect(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &CONTAINER_PRUNE) {
             self.prune(false, true, &parsed, asker, reply)
         } else if std::ptr::eq(command, &IMAGE_PRUNE) {
@@ -443,8 +443,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.rename(&parsed.args, reply)
         } else if std::ptr::eq(command, &HISTORY) {
             self.history(&parsed, asker, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::INSPECT) {
+            self.inspect_any(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &CONTAINER_INSPECT) {
-            self.container_inspect(&parsed.args, asker.styled(), reply)
+            self.container_inspect(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &SAVE) {
             self.save(&parsed.args, asker, reply)
         } else if std::ptr::eq(command, &LOAD) {

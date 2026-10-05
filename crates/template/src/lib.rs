@@ -23,8 +23,10 @@ mod lex;
 mod parse;
 mod reflect;
 mod strconv;
+mod strukt;
 mod value;
 
+pub use strukt::Struct;
 pub use value::{Kind, Object, Value};
 
 /// A parsed template, with the templates it defines.

@@ -1,0 +1,3796 @@
+{
+ "engine": "29.3.1",
+ "image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+ "image_id": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+ "image_config": {
+  "Env": [
+   "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  ],
+  "Cmd": [
+   "/bin/sh"
+  ],
+  "WorkingDir": "/"
+ },
+ "cases": [
+  {
+   "args": [
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-0",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "/bin/sh"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "sleep",
+    "30"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "sleep",
+    "Args": [
+     "30"
+    ],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-1",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "sleep",
+      "30"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "-e",
+    "A=1",
+    "-e",
+    "PATH=/x",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-2",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "A=1",
+      "PATH=/x"
+     ],
+     "Cmd": [
+      "/bin/sh"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "-i",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-3",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": true,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": true,
+     "StdinOnce": true,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "/bin/sh"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "-t",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-4",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": true,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "/bin/sh"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "-it",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "sh"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-5",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": true,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": true,
+     "OpenStdin": true,
+     "StdinOnce": true,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "sh"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "--entrypoint",
+    "/bin/echo",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "hi"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/echo",
+    "Args": [
+     "hi"
+    ],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-6",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "hi"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": [
+      "/bin/echo"
+     ],
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "--entrypoint",
+    "",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "echo",
+    "hi"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "echo",
+    "Args": [
+     "hi"
+    ],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-7",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "echo",
+      "hi"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "-w",
+    "/tmp",
+    "-u",
+    "nobody",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-8",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "nobody",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "/bin/sh"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/tmp",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "-p",
+    "8080:80",
+    "-p",
+    "127.0.0.1::53/udp",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-9",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {
+      "53/udp": [
+       {
+        "HostIp": "127.0.0.1",
+        "HostPort": ""
+       }
+      ],
+      "80/tcp": [
+       {
+        "HostIp": "",
+        "HostPort": "8080"
+       }
+      ]
+     },
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "ExposedPorts": {
+      "53/udp": {},
+      "80/tcp": {}
+     },
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "/bin/sh"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "-P",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-10",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": true,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "/bin/sh"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "--network",
+    "none",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-11",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "none",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "/bin/sh"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "none": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "--rm",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-12",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": true,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "/bin/sh"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "--hostname",
+    "web",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-13",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "web",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "/bin/sh"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "--stop-signal",
+    "SIGINT",
+    "--stop-timeout",
+    "5",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-14",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "/bin/sh"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopSignal": "SIGINT",
+     "StopTimeout": 5
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "--health-cmd",
+    "true",
+    "--health-interval",
+    "5s",
+    "--health-retries",
+    "2",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-15",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "/bin/sh"
+     ],
+     "Healthcheck": {
+      "Test": [
+       "CMD-SHELL",
+       "true"
+      ],
+      "Interval": 5000000000,
+      "Retries": 2
+     },
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "--no-healthcheck",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+   ],
+   "verb": "create",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "/bin/sh",
+    "Args": [],
+    "State": {
+     "Status": "created",
+     "Running": false,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": 0,
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "0001-01-01T00:00:00Z",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "",
+    "HostnamePath": "",
+    "HostsPath": "",
+    "LogPath": "",
+    "Name": "/shards-inspect-oracle-16",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": false,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": true,
+     "AttachStderr": true,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "/bin/sh"
+     ],
+     "Healthcheck": {
+      "Test": [
+       "NONE"
+      ]
+     },
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "",
+     "SandboxKey": "",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "",
+       "EndpointID": "",
+       "Gateway": "",
+       "IPAddress": "",
+       "MacAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  },
+  {
+   "args": [
+    "-d",
+    "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "sleep",
+    "300"
+   ],
+   "verb": "run",
+   "doc": {
+    "Id": "<ID>",
+    "Created": "<TIME>",
+    "Path": "sleep",
+    "Args": [
+     "300"
+    ],
+    "State": {
+     "Status": "running",
+     "Running": true,
+     "Paused": false,
+     "Restarting": false,
+     "OOMKilled": false,
+     "Dead": false,
+     "Pid": "<PID>",
+     "ExitCode": 0,
+     "Error": "",
+     "StartedAt": "<TIME>",
+     "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+    "ResolvConfPath": "<ResolvConfPath>",
+    "HostnamePath": "<HostnamePath>",
+    "HostsPath": "<HostsPath>",
+    "LogPath": "<LogPath>",
+    "Name": "/shards-inspect-oracle-17",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+     "Binds": null,
+     "ContainerIDFile": "",
+     "LogConfig": {
+      "Type": "json-file",
+      "Config": {}
+     },
+     "NetworkMode": "bridge",
+     "PortBindings": {},
+     "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+     },
+     "AutoRemove": false,
+     "VolumeDriver": "",
+     "VolumesFrom": null,
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "CapAdd": null,
+     "CapDrop": null,
+     "CgroupnsMode": "private",
+     "Dns": null,
+     "DnsOptions": [],
+     "DnsSearch": [],
+     "ExtraHosts": null,
+     "GroupAdd": null,
+     "IpcMode": "private",
+     "Cgroup": "",
+     "Links": null,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyRootfs": false,
+     "SecurityOpt": null,
+     "UTSMode": "",
+     "UsernsMode": "",
+     "ShmSize": 67108864,
+     "Runtime": "runc",
+     "Isolation": "",
+     "CpuShares": 0,
+     "Memory": 0,
+     "NanoCpus": 0,
+     "CgroupParent": "",
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": [],
+     "BlkioDeviceReadBps": [],
+     "BlkioDeviceWriteBps": [],
+     "BlkioDeviceReadIOps": [],
+     "BlkioDeviceWriteIOps": [],
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "Devices": [],
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "OomKillDisable": null,
+     "PidsLimit": null,
+     "Ulimits": [],
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "IOMaximumIOps": 0,
+     "IOMaximumBandwidth": 0,
+     "MaskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+     ],
+     "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+     ]
+    },
+    "Storage": {
+     "RootFS": {
+      "Snapshot": {
+       "Name": "overlayfs"
+      }
+     }
+    },
+    "Mounts": [],
+    "Config": {
+     "Hostname": "<ID12>",
+     "Domainname": "",
+     "User": "",
+     "AttachStdin": false,
+     "AttachStdout": false,
+     "AttachStderr": false,
+     "Tty": false,
+     "OpenStdin": false,
+     "StdinOnce": false,
+     "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     ],
+     "Cmd": [
+      "sleep",
+      "300"
+     ],
+     "Image": "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+     "Volumes": null,
+     "WorkingDir": "/",
+     "Entrypoint": null,
+     "Labels": {},
+     "StopTimeout": 1
+    },
+    "NetworkSettings": {
+     "SandboxID": "<SandboxID>",
+     "SandboxKey": "<SandboxKey>",
+     "Ports": {},
+     "Networks": {
+      "bridge": {
+       "IPAMConfig": null,
+       "Links": null,
+       "Aliases": null,
+       "DriverOpts": null,
+       "GwPriority": 0,
+       "NetworkID": "<NetworkID>",
+       "EndpointID": "<EndpointID>",
+       "Gateway": "<Gateway>",
+       "IPAddress": "<IPAddress>",
+       "MacAddress": "<MacAddress>",
+       "IPPrefixLen": 16,
+       "IPv6Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "DNSNames": null
+      }
+     }
+    },
+    "ImageManifestDescriptor": {
+     "mediaType": "application/vnd.oci.image.manifest.v1+json",
+     "digest": "sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+     "size": 1025,
+     "annotations": {
+      "com.docker.official-images.bashbrew.arch": "arm64v8",
+      "org.opencontainers.image.base.name": "scratch",
+      "org.opencontainers.image.created": "2026-09-17T20:36:42Z",
+      "org.opencontainers.image.revision": "1c744e2d49059e51b063a11a6e3e18c9ccf04ab8",
+      "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#1c744e2d49059e51b063a11a6e3e18c9ccf04ab8:aarch64",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+      "org.opencontainers.image.version": "3.24.2"
+     },
+     "platform": {
+      "architecture": "arm64",
+      "os": "linux",
+      "variant": "v8"
+     }
+    }
+   }
+  }
+ ]
+}
