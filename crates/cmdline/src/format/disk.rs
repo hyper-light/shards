@@ -1,17 +1,15 @@
 //! `system df`'s rows (formatter/disk_usage.go's DiskUsageContext and its contexts, with
 //! volume.go's and buildcache.go's for `-v`).
 
-use std::collections::BTreeMap;
-
 use shards_template::{Object, Value};
 
 use super::container::{self, Container};
 use super::image::{self, Image, is_dangling};
 use super::reference::parse_normalized_named;
 use super::units::{human_size, human_size_precision};
+pub use super::volume::Volume;
 use super::{
-    Clock, Context, Ctx, Header, Methods, RAW, TABLE, context_format, join_labels, parse, post_format,
-    truncate_id,
+    Clock, Context, Ctx, Header, Methods, RAW, TABLE, context_format, parse, post_format, truncate_id,
 };
 
 /// What dockerd's disk usage says of one kind of thing: how many there are and how many
@@ -32,18 +30,6 @@ pub struct DiskUsage {
     pub containers: Usage<Container>,
     pub volumes: Usage<Volume>,
     pub build_cache: Usage<BuildCache>,
-}
-
-/// A volume (volume.Volume): a local one, as shards has no cluster volumes.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Volume {
-    pub name: String,
-    pub driver: String,
-    pub scope: String,
-    pub mountpoint: String,
-    pub labels: BTreeMap<String, String>,
-    /// UsageData's reference count and size, where worked out.
-    pub usage: Option<(i64, i64)>,
 }
 
 /// A build cache record (build.CacheRecord).
@@ -195,7 +181,7 @@ fn verbose_write(ctx: &Context<'_>, du: &DiskUsage, out: &mut String) -> Result<
         .volumes
         .items
         .iter()
-        .map(|v| Ctx::value(VolumeRow(v.clone())))
+        .map(|v| Ctx::value(super::volume::Row(v.clone())))
         .collect();
     let mut cache = du.build_cache.items.clone();
     sort_build_cache(&mut cache);
@@ -216,7 +202,7 @@ fn verbose_write(ctx: &Context<'_>, du: &DiskUsage, out: &mut String) -> Result<
             (
                 "\nLocal Volumes space usage:\n\n",
                 VOLUME_TABLE,
-                &VOLUME_HEADER,
+                &super::volume::HEADER,
                 &volumes,
             ),
             ("", BUILD_CACHE_TABLE, &CACHE_HEADER, &cache),
@@ -323,67 +309,6 @@ impl Methods for Summary {
             _ => return None,
         };
         Some(Value::String(s))
-    }
-}
-
-static VOLUME_HEADER: Header = Header(&[
-    ("Availability", "AVAILABILITY"),
-    ("Driver", "DRIVER"),
-    ("Group", "GROUP"),
-    ("ID", "ID"),
-    ("Labels", "LABELS"),
-    ("Links", "LINKS"),
-    ("Mountpoint", "MOUNTPOINT"),
-    ("Name", "VOLUME NAME"),
-    ("Scope", "SCOPE"),
-    ("Size", "SIZE"),
-    ("Status", "STATUS"),
-]);
-
-/// volumeContext, of a volume with no ClusterVolume.
-#[derive(Debug)]
-struct VolumeRow(Volume);
-
-impl Methods for VolumeRow {
-    fn type_name(&self) -> &'static str {
-        "*formatter.volumeContext"
-    }
-    const METHODS: &'static [&'static str] = &[
-        "Availability",
-        "Driver",
-        "Group",
-        "Labels",
-        "Links",
-        "Mountpoint",
-        "Name",
-        "Scope",
-        "Size",
-        "Status",
-    ];
-    const HEADER: &'static Header = &VOLUME_HEADER;
-    const LABEL: bool = true;
-
-    #[allow(clippy::cast_precision_loss)]
-    fn get(&self, name: &str) -> Option<Value> {
-        let v = &self.0;
-        let s = match name {
-            "Availability" | "Group" | "Status" => "N/A".into(),
-            "Driver" => v.driver.clone(),
-            "Labels" => join_labels(&v.labels),
-            "Links" => v.usage.map_or_else(|| "N/A".into(), |(refs, _)| refs.to_string()),
-            "Mountpoint" => v.mountpoint.clone(),
-            "Name" => v.name.clone(),
-            "Scope" => v.scope.clone(),
-            "Size" => v
-                .usage
-                .map_or_else(|| "N/A".into(), |(_, size)| human_size(size as f64)),
-            _ => return None,
-        };
-        Some(Value::String(s))
-    }
-
-    fn label(&self, name: &str) -> String {
-        self.0.labels.get(name).cloned().unwrap_or_default()
     }
 }
 

@@ -71,8 +71,13 @@ var served = map[string][]string{
 	// serve yet).
 	"inspect": {"format", "help", "type"},
 	// `container prune` and `system prune`, which share the name.
-	"prune":             {"all", "filter", "force", "help"},
+	"prune":             {"all", "filter", "force", "help", "volumes"},
 	"image prune":       {"all", "filter", "force", "help"},
+	"volume create":     {"driver", "help", "label", "name", "opt"},
+	"volume ls":         {"filter", "format", "help", "quiet"},
+	"volume inspect":    {"format", "help"},
+	"volume rm":         {"force", "help"},
+	"volume prune":      {"all", "filter", "force", "help"},
 	"create": {"add-host", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "network", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "rm", "shm-size", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
 	"container create": {
 		"disable-content-trust", "entrypoint", "env", "help",
@@ -146,6 +151,24 @@ var cases = [][]string{
 	{"container", "prune", "--help"},
 	{"container", "prune", "-f", "--filter", "until=1h"},
 	{"image", "prune", "-h"},
+	{"volume", "create", "--help"},
+	{"volume", "create", "-d", "local", "--label", "a=b", "-o", "type=tmpfs", "-o", "device=tmpfs", "v1"},
+	{"volume", "create", "--name", "n", "v"},
+	{"volume", "create", "a", "b"},
+	{"volume", "create", "--scope", "multi"},
+	{"volume", "ls", "--help"},
+	{"volume", "list", "-q", "-f", "dangling=true", "--format", "{{.Name}}"},
+	{"volume", "ls", "x"},
+	{"volume", "ls", "--cluster"},
+	{"volume", "inspect", "--help"},
+	{"volume", "inspect", "-f", "{{.Name}}", "a", "b"},
+	{"volume", "inspect"},
+	{"volume", "rm", "--help"},
+	{"volume", "remove", "-f", "a"},
+	{"volume", "rm"},
+	{"volume", "prune", "--help"},
+	{"volume", "prune", "-af", "--filter", "label=a"},
+	{"volume", "prune", "x"},
 	{"image", "prune", "-af", "--filter", "label=a", "--filter", "label!=b"},
 	{"system", "prune", "--help"},
 	{"system", "prune", "--filter", "nope"},
@@ -500,8 +523,8 @@ func root(t *testing.T, stdout, stderr *bytes.Buffer) *cobra.Command {
 		}
 		// `image ls` and `image rm` share their names with container commands.
 		key := c.Name()
-		if c.Parent().Name() == "image" {
-			key = "image " + key
+		if p := c.Parent().Name(); p == "image" || p == "volume" {
+			key = p + " " + key
 		}
 		keep, ok := served[key]
 		if !ok {

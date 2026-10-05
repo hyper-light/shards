@@ -78,6 +78,7 @@ pub static TOP: &[Group] = &[
         entries: &[
             own("container", "Manage containers"),
             own("image", "Manage images"),
+            own("volume", "Manage volumes"),
         ],
     },
     Group {
@@ -156,6 +157,17 @@ pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
             of("rm", &commands::RMI),
             of("save", &commands::SAVE),
             of("tag", &commands::TAG),
+        ],
+    ),
+    (
+        "volume",
+        "Manage volumes",
+        &[
+            of("create", &commands::VOLUME_CREATE),
+            of("inspect", &commands::VOLUME_INSPECT),
+            of("ls", &commands::VOLUME_LS),
+            of("prune", &commands::VOLUME_PRUNE),
+            short("rm", "Remove one or more volumes", &commands::VOLUME_RM),
         ],
     ),
 ];

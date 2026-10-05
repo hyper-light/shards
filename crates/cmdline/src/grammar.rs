@@ -26,6 +26,8 @@ pub enum Thing {
     Disk,
     /// All of shards' own: what prune system clears.
     System,
+    /// Volumes: directories microVMs mount, which outlive them.
+    Volume,
 }
 
 impl Thing {
@@ -38,6 +40,7 @@ impl Thing {
             "guest" => Some(Thing::Guest),
             "disk" => Some(Thing::Disk),
             "system" => Some(Thing::System),
+            "volume" | "volumes" => Some(Thing::Volume),
             _ => None,
         }
     }
@@ -50,7 +53,9 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
     // `shards image ls` is `shards ls image`: Docker's management form, turned round.
     let (action, thing, rest) = match (Thing::of(first), second) {
         (Some(thing @ (Thing::Image | Thing::Container)), Some(action)) => (action, thing, args.get(2..)?),
-        (Some(Thing::Vm | Thing::Daemon | Thing::Guest | Thing::Disk | Thing::System), _) => return None,
+        (Some(Thing::Vm | Thing::Daemon | Thing::Guest | Thing::Disk | Thing::System | Thing::Volume), _) => {
+            return None;
+        }
         _ => (first, Thing::of(second?)?, args.get(2..)?),
     };
     let said: &[&str] = match (action, thing) {
@@ -65,6 +70,11 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("prune", Thing::Vm | Thing::Container) => &["container", "prune"],
         ("prune", Thing::Image) => &["image", "prune"],
         ("prune", Thing::System) => &["system", "prune"],
+        ("list" | "ls", Thing::Volume) => &["volume", "ls"],
+        ("create" | "make", Thing::Volume) => &["volume", "create"],
+        ("remove" | "rm" | "delete", Thing::Volume) => &["volume", "rm"],
+        ("inspect", Thing::Volume) => &["volume", "inspect"],
+        ("prune", Thing::Volume) => &["volume", "prune"],
         ("rename", Thing::Vm | Thing::Container) => &["rename"],
         ("stats" | "watch", Thing::Vm | Thing::Container) => &["stats"],
         ("pause" | "freeze", Thing::Vm | Thing::Container) => &["pause"],
@@ -112,7 +122,12 @@ pub static SECTIONS: &[&str] = &["run", "inspect", "manage", "images"];
 /// the things it acts on, and what it does. How each thing is given is on the action's
 /// own page ([`USES`]).
 pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
-    ("run", "create", "vm", "Make a microVM without starting it"),
+    (
+        "run",
+        "create",
+        "vm | volume",
+        "Make a microVM without starting it, or a volume",
+    ),
     ("run", "exec", "vm", "Run a command in a running microVM"),
     ("run", "restart", "vm", "Stop microVMs, and start them again"),
     ("run", "restore", "vm", "Resume a microVM from a snapshot"),
@@ -149,10 +164,15 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "inspect",
         "inspect",
-        "vm | image | disk | guest | system",
-        "Show a microVM, an image, disk use, the guest, or shards itself",
+        "vm | image | volume | disk | guest | system",
+        "Show a microVM, an image, a volume, disk use, the guest, or shards itself",
     ),
-    ("inspect", "list", "vm | image", "List microVMs, or images"),
+    (
+        "inspect",
+        "list",
+        "vm | image | volume",
+        "List microVMs, images, or volumes",
+    ),
     ("inspect", "logs", "vm", "Show what a microVM's command printed"),
     (
         "inspect",
@@ -173,14 +193,14 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "manage",
         "prune",
-        "vm | image | system",
-        "Remove stopped microVMs, unused images, or both",
+        "vm | image | volume | system",
+        "Remove stopped microVMs, unused images or volumes, or all of them",
     ),
     (
         "manage",
         "remove",
-        "vm | image",
-        "Remove microVMs, or images with their stopped microVMs",
+        "vm | image | volume",
+        "Remove microVMs, images with their stopped microVMs, or volumes",
     ),
     ("manage", "rename", "vm", "Name a microVM again"),
     (
@@ -245,6 +265,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "restart",
         "vm NAME",
         "Stop microVMs: their stop signal, then SIGKILL; and start them again",
+    ),
+    (
+        "run",
+        "create",
+        "volume [NAME]",
+        "Make a volume microVMs can mount, named or not",
     ),
     ("run", "restore", "vm DIR", "Resume a microVM from a snapshot"),
     (
@@ -313,7 +339,18 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "vm | image NAME",
         "Show what a microVM runs, or an image's documents",
     ),
-    ("inspect", "list", "vm | image", "List microVMs, or images"),
+    (
+        "inspect",
+        "inspect",
+        "volume NAME",
+        "Show a volume: where its files are, and its options",
+    ),
+    (
+        "inspect",
+        "list",
+        "vm | image | volume",
+        "List microVMs, images, or volumes",
+    ),
     (
         "inspect",
         "logs",
@@ -359,9 +396,21 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "manage",
+        "prune",
+        "volume",
+        "Remove volumes no microVM mounts: anonymous ones, or all with --all",
+    ),
+    (
+        "manage",
         "remove",
         "vm | image NAME",
         "Remove microVMs, or images with their stopped microVMs",
+    ),
+    (
+        "manage",
+        "remove",
+        "volume NAME",
+        "Remove volumes no microVM mounts",
     ),
     ("manage", "rename", "vm NAME NEW_NAME", "Name a microVM again"),
     (
@@ -471,6 +520,19 @@ mod tests {
             Some("guest use --kernel k --init i")
         );
         assert_eq!(said("inspect guest").as_deref(), Some("guest"));
+        assert_eq!(said("list volumes -q").as_deref(), Some("volume ls -q"));
+        assert_eq!(said("create volume data").as_deref(), Some("volume create data"));
+        assert_eq!(
+            said("remove volume -f data").as_deref(),
+            Some("volume rm -f data")
+        );
+        assert_eq!(
+            said("inspect volume data").as_deref(),
+            Some("volume inspect data")
+        );
+        assert_eq!(said("prune volumes -a").as_deref(), Some("volume prune -a"));
+        // Docker's own `volume` commands are left as they are.
+        assert_eq!(said("volume ls"), None);
     }
 
     #[test]

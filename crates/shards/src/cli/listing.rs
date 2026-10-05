@@ -129,6 +129,29 @@ pub fn render(sheet: &shards_ipc::Sheet, asked: &Asked, clock: &Clock<'_>) -> Re
             };
             format::image::write(&ctx, asked.digests, &images, &mut out)?;
         }
+        "volumes-rows" => {
+            let mut volumes: Vec<format::volume::Volume> = rows
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(volume)
+                .collect();
+            // runList: by name, in natural order.
+            volumes.sort_by(|a, b| shards_cmdline::ports::natural_compare(&a.name, &b.name));
+            let source = if asked.format.is_empty() {
+                format::TABLE
+            } else {
+                &asked.format
+            };
+            let ctx = Context {
+                format: &format::volume::format(source, asked.quiet),
+                trunc: false,
+                east_asian: shards_cmdline::width::east_asian(|name| std::env::var(name).ok()),
+                clock,
+            };
+            format::volume::write(&ctx, &volumes, &mut out)?;
+        }
         "history-rows" => {
             let steps: Vec<format::history::History> = rows
                 .as_array()
@@ -207,7 +230,7 @@ pub fn render(sheet: &shards_ipc::Sheet, asked: &Asked, clock: &Clock<'_>) -> Re
                     active_count: va,
                     total_size: vs,
                     reclaimable: vr,
-                    items: Vec::new(),
+                    items: items("volumes").iter().map(volume).collect(),
                 },
                 build_cache: format::disk::Usage {
                     total_count: bt,
@@ -234,6 +257,34 @@ pub fn render(sheet: &shards_ipc::Sheet, asked: &Asked, clock: &Clock<'_>) -> Re
         _ => return Ok(None),
     }
     Ok(Some(out))
+}
+
+/// A volume of a `volumes-rows` sheet.
+fn volume(row: &serde_json::Value) -> format::volume::Volume {
+    let text = |k: &str| {
+        row.get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    format::volume::Volume {
+        name: text("Name"),
+        driver: text("Driver"),
+        scope: text("Scope"),
+        mountpoint: text("Mountpoint"),
+        labels: row
+            .get("Labels")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        usage: row
+            .get("UsageData")
+            .and_then(|u| Some((u.get("RefCount")?.as_i64()?, u.get("Size")?.as_i64()?))),
+    }
 }
 
 /// A kind's counts in a `df-rows` sheet: total, active, size and reclaimable.

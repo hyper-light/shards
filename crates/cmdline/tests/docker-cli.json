@@ -501,6 +501,206 @@
   },
   {
     "argv": [
+      "volume",
+      "create",
+      "--help"
+    ],
+    "stdout": "Usage:  shards volume create [OPTIONS] [VOLUME]\n\nCreate a volume\n\nOptions:\n  -d, --driver string   Specify volume driver name (default \"local\")\n      --label list      Set metadata for a volume\n  -o, --opt map         Set driver specific options (default map[])\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "create",
+      "-d",
+      "local",
+      "--label",
+      "a=b",
+      "-o",
+      "type=tmpfs",
+      "-o",
+      "device=tmpfs",
+      "v1"
+    ],
+    "stdout": "RUN --driver=local --label=[a=b] --opt=map[device:tmpfs type:tmpfs] \"v1\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "create",
+      "--name",
+      "n",
+      "v"
+    ],
+    "stdout": "RUN --name=n \"v\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "create",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards volume create' requires at most 1 argument\n\nUsage:  shards volume create [OPTIONS] [VOLUME]\n\nRun 'shards volume create --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "volume",
+      "create",
+      "--scope",
+      "multi"
+    ],
+    "stdout": "RUN --scope=multi\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "ls",
+      "--help"
+    ],
+    "stdout": "Usage:  shards volume ls [OPTIONS]\n\nList volumes\n\nAliases:\n  shards volume ls, shards volume list\n\nOptions:\n  -f, --filter filter   Provide filter values (e.g. \"dangling=true\")\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -q, --quiet           Only display volume names\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "list",
+      "-q",
+      "-f",
+      "dangling=true",
+      "--format",
+      "{{.Name}}"
+    ],
+    "stdout": "RUN --filter={\"dangling\":{\"true\":true}} --format={{.Name}} --quiet=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "ls",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards volume ls' accepts no arguments\n\nUsage:  shards volume ls [OPTIONS]\n\nRun 'shards volume ls --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "volume",
+      "ls",
+      "--cluster"
+    ],
+    "stdout": "RUN --cluster=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "inspect",
+      "--help"
+    ],
+    "stdout": "Usage:  shards volume inspect [OPTIONS] VOLUME [VOLUME...]\n\nDisplay detailed information on one or more volumes\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "inspect",
+      "-f",
+      "{{.Name}}",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --format={{.Name}} \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "inspect"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards volume inspect' requires at least 1 argument\n\nUsage:  shards volume inspect [OPTIONS] VOLUME [VOLUME...]\n\nSee 'shards volume inspect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "volume",
+      "rm",
+      "--help"
+    ],
+    "stdout": "Usage:  shards volume rm [OPTIONS] VOLUME [VOLUME...]\n\nRemove one or more volumes. You cannot remove a volume that is in use by a container.\n\nAliases:\n  shards volume rm, shards volume remove\n\nOptions:\n  -f, --force   Force the removal of one or more volumes\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "remove",
+      "-f",
+      "a"
+    ],
+    "stdout": "RUN --force=true \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "rm"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards volume rm' requires at least 1 argument\n\nUsage:  shards volume rm [OPTIONS] VOLUME [VOLUME...]\n\nSee 'shards volume rm --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "volume",
+      "prune",
+      "--help"
+    ],
+    "stdout": "Usage:  shards volume prune [OPTIONS]\n\nRemove unused local volumes\n\nOptions:\n  -a, --all             Remove all unused volumes, not just anonymous ones\n      --filter filter   Provide filter values (e.g. \"label=\u003clabel\u003e\")\n  -f, --force           Do not prompt for confirmation\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "prune",
+      "-af",
+      "--filter",
+      "label=a"
+    ],
+    "stdout": "RUN --all=true --filter={\"label\":{\"a\":true}} --force=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "prune",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards volume prune' accepts no arguments\n\nUsage:  shards volume prune [OPTIONS]\n\nRun 'shards volume prune --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
       "image",
       "prune",
       "-af",
@@ -519,7 +719,7 @@
       "prune",
       "--help"
     ],
-    "stdout": "Usage:  shards system prune [OPTIONS]\n\nRemove unused data\n\nOptions:\n  -a, --all             Remove all unused images not just dangling ones\n      --filter filter   Provide filter values (e.g. \"label=\u003ckey\u003e=\u003cvalue\u003e\")\n  -f, --force           Do not prompt for confirmation\n",
+    "stdout": "Usage:  shards system prune [OPTIONS]\n\nRemove unused data\n\nOptions:\n  -a, --all             Remove all unused images not just dangling ones\n      --filter filter   Provide filter values (e.g. \"label=\u003ckey\u003e=\u003cvalue\u003e\")\n  -f, --force           Do not prompt for confirmation\n      --volumes         Prune anonymous volumes\n",
     "stderr": "",
     "status": 0
   },

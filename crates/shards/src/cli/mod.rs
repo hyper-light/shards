@@ -105,10 +105,11 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
             rest.push("--help".into());
             return dispatch(rest);
         }
-        [name @ ("image" | "container")] | [name @ ("image" | "container"), "-h" | "--help"] => {
+        [name @ ("image" | "container" | "volume")]
+        | [name @ ("image" | "container" | "volume"), "-h" | "--help"] => {
             return management_help(name);
         }
-        [name @ ("image" | "container"), word, ..]
+        [name @ ("image" | "container" | "volume"), word, ..]
             if shards_cmdline::commands::find(&words).is_none()
                 && shards_cmdline::commands::build(&words).is_none()
                 && !matches!(*word, "run" | "exec") =>
@@ -225,6 +226,43 @@ fn container(
             human: false,
             verbose: false,
         });
+    }
+    #[cfg(unix)]
+    if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_LS) {
+        listing::ask(listing::Asked {
+            format: parsed.string("format").to_string(),
+            quiet: parsed.bool("quiet"),
+            ..listing::Asked::default()
+        });
+    }
+    // `system prune --volumes` with `until`: the CLI's own refusal (volume/prune.go,
+    // pruneFn), before it asks.
+    if std::ptr::eq(command, &shards_cmdline::commands::SYSTEM_PRUNE)
+        && parsed.bool("volumes")
+        && parsed
+            .many("filter")
+            .iter()
+            .any(|f| f.split_once('=').is_some_and(|(k, _)| k == "until"))
+    {
+        let _ = writeln!(
+            std::io::stderr(),
+            "ERROR: The \"until\" filter is not supported with \"--volumes\""
+        );
+        return ExitCode::FAILURE;
+    }
+    // `volume prune --all` and a filter `all` both: the CLI's own refusal (volume/prune.go).
+    if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_PRUNE)
+        && parsed.bool("all")
+        && parsed
+            .many("filter")
+            .iter()
+            .any(|f| f.split_once('=').is_some_and(|(k, _)| k == "all"))
+    {
+        let _ = writeln!(
+            std::io::stderr(),
+            "conflicting options: cannot specify both --all and --filter all=1"
+        );
+        return ExitCode::FAILURE;
     }
     #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::SYSTEM_DF) {
@@ -445,9 +483,15 @@ fn unknown(text: &str) -> ExitCode {
 /// (container/prune.go, image/prune.go, system/prune.go); none if it is forced or is no
 /// prune.
 fn prune_warning(command: &'static Command, parsed: &Parsed) -> Option<String> {
-    use shards_cmdline::commands::{CONTAINER_PRUNE, IMAGE_PRUNE, SYSTEM_PRUNE};
+    use shards_cmdline::commands::{CONTAINER_PRUNE, IMAGE_PRUNE, SYSTEM_PRUNE, VOLUME_PRUNE};
     if parsed.bool("force") {
         return None;
+    }
+    if std::ptr::eq(command, &VOLUME_PRUNE) {
+        let which = if parsed.bool("all") { "all" } else { "anonymous" };
+        return Some(format!(
+            "WARNING! This will remove {which} local volumes not used by at least one container.\nAre you sure you want to continue? [y/N] "
+        ));
     }
     let all = std::ptr::eq(command, &IMAGE_PRUNE) || std::ptr::eq(command, &SYSTEM_PRUNE);
     let all = all && parsed.bool("all");
@@ -473,6 +517,12 @@ fn prune_warning(command: &'static Command, parsed: &Parsed) -> Option<String> {
         } else {
             ("all dangling images", "unused build cache")
         };
+        // Volumes after networks (pruner.pruneOrder), with `--volumes`.
+        let volumes = if parsed.bool("volumes") {
+            "\n  - all anonymous volumes not used by at least one container"
+        } else {
+            ""
+        };
         // confirmationTemplate: the filters, where there are any, below the list.
         let filters: String = prune_filters(parsed)
             .iter()
@@ -484,7 +534,7 @@ fn prune_warning(command: &'static Command, parsed: &Parsed) -> Option<String> {
             format!("\n  Items to be pruned will be filtered with:{filters}\n")
         };
         Some(format!(
-            "WARNING! This will remove:\n  - all stopped containers\n  - all networks not used by at least one container\n  - {images}\n  - {cache}\n{filtered}\n{ask}"
+            "WARNING! This will remove:\n  - all stopped containers\n  - all networks not used by at least one container{volumes}\n  - {images}\n  - {cache}\n{filtered}\n{ask}"
         ))
     } else {
         None
@@ -505,7 +555,20 @@ fn look_name(path: &str) -> String {
 /// What a prune removes, in shards' words, for its page.
 #[cfg(unix)]
 fn prune_items(command: &'static Command, parsed: &Parsed) -> Vec<String> {
-    use shards_cmdline::commands::{CONTAINER_PRUNE, IMAGE_PRUNE};
+    use shards_cmdline::commands::{CONTAINER_PRUNE, IMAGE_PRUNE, VOLUME_PRUNE};
+    if std::ptr::eq(command, &VOLUME_PRUNE) {
+        let mut items = vec![if parsed.bool("all") {
+            "every volume no microVM mounts".to_string()
+        } else {
+            "every anonymous volume no microVM mounts".to_string()
+        }];
+        items.extend(
+            prune_filters(parsed)
+                .into_iter()
+                .map(|f| format!("only those {f} keeps")),
+        );
+        return items;
+    }
     let images = if parsed.bool("all") {
         "every image no microVM was made from"
     } else {

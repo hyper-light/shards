@@ -336,6 +336,63 @@ pub struct Volume {
 
 const RESTRICTED: &str = "[a-zA-Z0-9][a-zA-Z0-9_.-]";
 
+/// The label of a volume made for a container without a name (moby
+/// daemon/volume/service AnonymousLabel), which `volume prune` takes without `--all`.
+pub const ANONYMOUS: &str = "com.docker.volume.anonymous";
+
+/// One volume change at a time, and none while a container's mount points are taken: as
+/// the local driver's lock and dockerd's reference counts keep a volume in use from
+/// being removed.
+static CHANGES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Holds volume changes off until it is dropped.
+pub fn lock() -> std::sync::MutexGuard<'static, ()> {
+    CHANGES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Volume {
+    /// Made for a container, by none's name.
+    pub fn is_anonymous(&self) -> bool {
+        self.anonymous || self.labels.contains_key(ANONYMOUS)
+    }
+}
+
+/// The local driver's validateOpts (daemon/volume/local/local_unix.go): `type`, `o`,
+/// `device` and `size`, `device` and `type` given together and with `o`; a size wants
+/// quotas, which shards' volumes have none of, as dockerd's have none on a filesystem
+/// without them.
+pub fn validate_options(opts: &BTreeMap<String, String>) -> Result<(), String> {
+    for k in opts.keys() {
+        if !matches!(k.as_str(), "type" | "o" | "device" | "size") {
+            return Err(format!("invalid option: {}", shards_cmdline::go::quote(k)));
+        }
+    }
+    if let Some(size) = opts.get("size") {
+        let bytes = shards_cmdline::resources::ram_in_bytes(size)?;
+        if bytes > 0 {
+            return Err("quota size requested but no quota support".into());
+        }
+    }
+    // mandatoryOpts, a Go map: whichever is missing first; each check names one.
+    for (opt, required) in [
+        ("device", &["type"][..]),
+        ("type", &["device"][..]),
+        ("o", &["device", "type"][..]),
+    ] {
+        if opts.contains_key(opt) {
+            for r in required {
+                if !opts.contains_key(*r) {
+                    return Err(format!(
+                        "missing required option: {}",
+                        shards_cmdline::go::quote(r)
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Store {
     pub fn new(home: &Path) -> Store {
         Store {
@@ -369,21 +426,25 @@ impl Store {
     }
 
     /// Volume `name`, made if it is not there (as the local driver's Create): itself, and
-    /// whether it was made now. An empty name is an anonymous volume's, named at random.
+    /// whether it was made now. An empty name is an anonymous volume's, named at random
+    /// and labelled so. Callers hold [`lock`].
     pub fn create(
         &self,
         name: &str,
         labels: &BTreeMap<String, String>,
         options: &BTreeMap<String, String>,
     ) -> Result<(Volume, bool), String> {
+        let mut labels = labels.clone();
         let (name, anonymous) = if name.is_empty() {
             let mut bytes = [0u8; 32];
             getrandom(&mut bytes)?;
+            labels.insert(ANONYMOUS.into(), String::new());
             (bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(), true)
         } else {
-            Store::valid(name)?;
+            Store::valid(name).map_err(|e| format!("create {name}: {e}"))?;
             (name.to_string(), false)
         };
+        validate_options(options).map_err(|e| format!("create {name}: {e}"))?;
         if let Some(v) = self.get(&name) {
             return Ok((v, false));
         }
@@ -392,7 +453,7 @@ impl Store {
             .map_err(|e| format!("error while creating volume root path '{}': {e}", dir.display()))?;
         let v = Volume {
             name: name.clone(),
-            labels: labels.clone(),
+            labels,
             options: options.clone(),
             created: crate::containers::now(),
             anonymous,
@@ -403,8 +464,32 @@ impl Store {
     }
 
     pub fn get(&self, name: &str) -> Option<Volume> {
+        // A name is one component, never `.` or `..`, nor one being removed.
+        if name.is_empty() || name.starts_with('.') || name.contains('/') {
+            return None;
+        }
         let text = std::fs::read(self.root.join(name).join("opts.json")).ok()?;
         serde_json::from_slice(&text).ok()
+    }
+
+    /// Every volume, by name.
+    pub fn list(&self) -> Vec<Volume> {
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return Vec::new();
+        };
+        let mut out: Vec<Volume> = entries
+            .flatten()
+            .filter_map(|e| self.get(&e.file_name().to_string_lossy()))
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// The bytes volume `name`'s files take (directory.Size: each file's size, a hard
+    /// link's once), -1 where they cannot be read.
+    pub fn size(&self, name: &str) -> i64 {
+        let mut seen = std::collections::HashSet::new();
+        dir_size(&self.data(name), &mut seen).map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX))
     }
 
     /// Removes volume `name` and its files: gone at once, renamed aside, then deleted,
@@ -427,6 +512,21 @@ impl Store {
         }
         Ok(())
     }
+}
+
+fn dir_size(dir: &Path, seen: &mut std::collections::HashSet<(u64, u64)>) -> std::io::Result<u64> {
+    use std::os::unix::fs::MetadataExt as _;
+    let mut total = 0u64;
+    for e in std::fs::read_dir(dir)? {
+        let e = e?;
+        let meta = std::fs::symlink_metadata(e.path())?;
+        if meta.is_dir() {
+            total = total.saturating_add(dir_size(&e.path(), seen)?);
+        } else if meta.nlink() < 2 || seen.insert((meta.dev(), meta.ino())) {
+            total = total.saturating_add(meta.size());
+        }
+    }
+    Ok(total)
 }
 
 /// Deletes `path` and all under it, its directories first made this user's to empty.
@@ -606,7 +706,7 @@ pub struct Opened {
 /// its directory, limited to it; an image's files copied into a volume only as its
 /// container is first started, where dockerd copies them as it is made (populateVolumes).
 /// Each in the guest at `shards{i}`, `i` its place in `dirs`.
-pub fn open(points: &[MountPoint], first: bool) -> Result<Opened, String> {
+pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened, String> {
     use std::os::fd::OwnedFd;
     use std::os::unix::ffi::OsStrExt as _;
     let mut opened = Opened::default();
@@ -625,10 +725,36 @@ pub fn open(points: &[MountPoint], first: bool) -> Result<Opened, String> {
             ));
             continue;
         }
-        let source = Path::new(&p.source);
+        // A local volume made with options mounts what they say (the local driver's
+        // mount): a host directory bound (`o=bind`, its `device`) is shared as a bind is.
+        let device;
+        let source = match store
+            .get(&p.name)
+            .filter(|_| p.kind == "volume")
+            .map(|v| v.options)
+        {
+            Some(opts) if !opts.is_empty() => {
+                let bound = opts
+                    .get("o")
+                    .is_some_and(|o| o.split(',').any(|f| f == "bind" || f == "rbind"));
+                if !bound {
+                    return Err(format!(
+                        "error while mounting volume '{}': failed to mount local volume: a volume of type {} is not supported yet: shards mounts host directories (o=bind) and its own volumes",
+                        p.source,
+                        shards_cmdline::go::quote(opts.get("type").map_or("", String::as_str))
+                    ));
+                }
+                device = opts.get("device").cloned().unwrap_or_default();
+                Path::new(&device)
+            }
+            _ => Path::new(&p.source),
+        };
         let meta = match std::fs::metadata(source) {
             Ok(meta) => meta,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && (p.create_source || p.kind == "volume") => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && (p.create_source || (p.kind == "volume" && source == Path::new(&p.source))) =>
+            {
                 std::fs::create_dir_all(source)
                     .map_err(|e| format!("error while creating mount source path '{}': {e}", p.source))?;
                 std::fs::metadata(source).map_err(|e| format!("{}: {e}", p.source))?

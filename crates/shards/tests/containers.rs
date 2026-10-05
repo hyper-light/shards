@@ -5010,14 +5010,139 @@ fn run_mounts_binds_volumes_and_tmpfs_as_docker_run_does() {
     assert_eq!(volumes(), before - 1, "rm -v removes the anonymous volume alone");
     let anon = run_in(&home, &image, &["--rm", "-v", "/anon"], &["stat", "/anon"]);
     assert_eq!(anon.status, Some(0), "{anon}");
-    // Removed as its removal completes.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while volumes() != before - 1 && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    // Gone by the next command that reads volumes, as by the time `docker run --rm`
+    // returns.
+    let listed = shards(&["volume", "ls", "-q"]);
+    assert_eq!(listed.stdout.lines().count(), before - 1, "{listed}");
     assert_eq!(volumes(), before - 1, "--rm removes its anonymous volume");
     let made = shards(&["create", "--name", "kept", "-v", "/anon", &image]);
     assert_eq!(made.status, Some(0), "{made}");
     assert_eq!(shards(&["rm", "kept"]).status, Some(0));
     assert_eq!(volumes(), before, "rm keeps it");
+}
+
+/// `volume create`, `ls`, `inspect`, `rm` and `prune`, as `docker volume` says them: a
+/// volume made, mounted, refused removal while a microVM mounts it, listed, pruned; a
+/// local volume with `o=bind` mounts its host directory; `system df` counts them.
+#[cfg(unix)]
+#[test]
+fn volume_commands_keep_volumes_as_docker_volume_does() {
+    let Some((home, image)) = home("containers-volume-commands") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let made = shards(&["volume", "create", "--label", "team=a", "data"]);
+    assert_eq!((made.status, made.stdout.as_str()), (Some(0), "data\n"), "{made}");
+    // Made again, it is the same volume.
+    assert_eq!(shards(&["volume", "create", "data"]).stdout, "data\n");
+    let refused = shards(&["volume", "create", "-o", "bad=1", "other"]);
+    assert_eq!(
+        (refused.status, refused.stderr.as_str()),
+        (
+            Some(1),
+            "Error response from daemon: create other: invalid option: \"bad\"\n"
+        )
+    );
+    // Written by one microVM, read by the next.
+    let wrote = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", "data:/d"],
+        &["fs", "write:/d/f=kept"],
+    );
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    let read = run_in(&home, &image, &["--rm", "-v", "data:/d"], &["stat", "/d/f"]);
+    assert!(read.stdout.contains("= kept\n"), "{read}");
+    // In use while a microVM mounts it, stopped or not.
+    assert_eq!(
+        shards(&["create", "--name", "holder", "-v", "data:/d", &image]).status,
+        Some(0)
+    );
+    let id = shards(&["inspect", "-f", "{{.Id}}", "holder"])
+        .stdout
+        .trim()
+        .to_string();
+    let in_use = shards(&["volume", "rm", "data"]);
+    assert_eq!(
+        (in_use.status, in_use.stderr),
+        (
+            Some(1),
+            format!("Error response from daemon: remove data: volume is in use - [{id}]\n")
+        )
+    );
+    let listed = shards(&[
+        "volume",
+        "ls",
+        "-f",
+        "dangling=false",
+        "--format",
+        "{{.Driver}} {{.Name}} {{.Labels}}",
+    ]);
+    assert_eq!(listed.stdout, "local data team=a\n", "{listed}");
+    let shown = shards(&[
+        "volume",
+        "inspect",
+        "-f",
+        "{{.Name}} {{.Driver}} {{.Scope}} {{json .Labels}} {{json .Options}}",
+        "data",
+    ]);
+    assert_eq!(
+        shown.stdout, "data local local {\"team\":\"a\"} null\n",
+        "{shown}"
+    );
+    let missing = shards(&["volume", "inspect", "nope"]);
+    assert_eq!(
+        (missing.status, missing.stdout.as_str(), missing.stderr.as_str()),
+        (
+            Some(1),
+            "[]\n",
+            "Error response from daemon: get nope: no such volume\n"
+        )
+    );
+    // system df counts it, in use.
+    let df = shards(&[
+        "system",
+        "df",
+        "--format",
+        "{{.Type}} {{.TotalCount}} {{.Active}}",
+    ]);
+    assert!(df.stdout.contains("Local Volumes 1 1\n"), "{df}");
+    assert_eq!(shards(&["rm", "holder"]).status, Some(0));
+    // Pruned: anonymous volumes alone, then all with -a.
+    assert_eq!(shards(&["volume", "create"]).status, Some(0));
+    let pruned = shards(&["volume", "prune", "-f"]);
+    assert!(
+        pruned.stdout.starts_with("Deleted Volumes:\n") && !pruned.stdout.contains("\ndata\n"),
+        "{pruned}"
+    );
+    let all = shards(&["volume", "prune", "-af"]);
+    assert!(
+        all.stdout
+            .starts_with("Deleted Volumes:\ndata\n\nTotal reclaimed space: "),
+        "{all}"
+    );
+    assert_eq!(shards(&["volume", "ls", "-q"]).stdout, "");
+    // A local volume of a host directory, bound.
+    let host = home.join("bound");
+    std::fs::create_dir(&host).unwrap();
+    std::fs::write(host.join("h"), "host").unwrap();
+    let device = format!("device={}", host.display());
+    let bound = shards(&[
+        "volume",
+        "create",
+        "-o",
+        "type=none",
+        "-o",
+        "o=bind",
+        "-o",
+        &device,
+        "hostdir",
+    ]);
+    assert_eq!(bound.status, Some(0), "{bound}");
+    let through = run_in(&home, &image, &["--rm", "-v", "hostdir:/h"], &["stat", "/h/h"]);
+    assert!(through.stdout.contains("= host\n"), "{through}");
+    // Shards' grammar says the same.
+    assert_eq!(shards(&["list", "volumes", "-q"]).stdout, "hostdir\n");
+    assert_eq!(shards(&["remove", "volume", "hostdir"]).stdout, "hostdir\n");
+    assert!(host.join("h").exists(), "a bound directory outlives its volume");
 }

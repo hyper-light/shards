@@ -125,6 +125,9 @@ pub(super) struct Completing {
     queued: Condvar,
     /// A batch is done: names it held are free.
     done: Condvar,
+    /// The removals of the batch in hand, taken from `pending` and not yet complete:
+    /// changed under `pending`'s lock.
+    working: AtomicU64,
     started: AtomicBool,
     ended: AtomicBool,
 }
@@ -471,12 +474,28 @@ impl<D: Disk> Daemon<D> {
                 if pending.is_empty() {
                     return;
                 }
+                c.working.store(pending.len() as u64, Ordering::SeqCst);
                 std::mem::take(&mut *pending)
             };
             self.complete_batch(&batch);
             // Under the queue's lock, which waiters check names under: no wakeup lost.
             let _guard = lock(&c.pending);
+            c.working.store(0, Ordering::SeqCst);
             c.done.notify_all();
+        }
+    }
+
+    /// Waits until every removal queued is complete, with the anonymous volumes of those
+    /// that ended with `--rm`: what a command that reads volumes sees, as `docker run
+    /// --rm` has removed them by the time it returns.
+    pub(super) fn await_removals(&self) {
+        let c = &self.completing;
+        let mut pending = lock(&c.pending);
+        while !pending.is_empty() || c.working.load(Ordering::SeqCst) > 0 {
+            pending = c
+                .done
+                .wait(pending)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 

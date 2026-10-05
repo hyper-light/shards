@@ -2267,7 +2267,8 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   dockerd's cleanup does. Volumes live in the home (`volumes/NAME/_data`, `opts.json`)
   as the local driver keeps them under its root. `rm -v` and `--rm` remove a container's
   anonymous volumes that no other container mounts (removeMountPoints), `--rm`'s as its
-  removal completes, after its client has its status.
+  removal completes; a command that reads volumes waits for removals queued, so that,
+  as with Docker, `run --rm` then `volume ls` lists none of its.
   `inspect` gives dockerd's `Mounts`, `HostConfig.Binds`, `Mounts`, `VolumeDriver`,
   `VolumesFrom` and `Config.Volumes`, held to Docker Engine 29.3.1's by
   testdata/inspect.json; its `Mounts` is sorted by destination, where dockerd lists a
@@ -2302,10 +2303,32 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   as continuity's CopyDir copies them (owners, modes, times, xattrs, hard links), then
   its root's owner and mode (copyExistingContents); dockerd copies at create, shards at
   the first start, the only moment the image's files are in reach.
+- **`shards volume`** (`daemon/volume.rs`): `create`, `ls`, `inspect`, `rm` and `prune`
+  as `docker volume` (docker/cli v29.8.1 cli/command/volume; the help and parse held by
+  the docker-cli oracle), dockerd's volume service behind them (filters `dangling`,
+  `name`, `driver` and `label`; prune's `label`, `label!` and `all`, anonymous volumes
+  alone without `--all`), its words held to Docker Engine 29.3.1's (`create NAME:
+  invalid option`, `get NAME: no such volume`, `remove NAME: volume is in use - [ID]`),
+  `volume ls`'s table the CLI's formatter's (formatter/volume.go, held to its output).
+  Anonymous volumes carry dockerd's `com.docker.volume.anonymous` label. One lock orders
+  volume changes and a container's registration, so that no volume a container is being
+  made with is removed: the reference counts' guarantee. `system df` counts volumes
+  (LocalVolumesSize: size and references), `system prune --volumes` prunes the anonymous
+  ones after the containers, as pruner.pruneOrder has it. A colour terminal gets shards'
+  pages: each volume, what it holds, and how many microVMs mount it. Shards' grammar says
+  them as `create volume`, `list volumes`, `inspect volume`, `remove volume`, `prune
+  volumes`.
+- **The local driver's options** are dockerd's (`type`, `o`, `device`, `size`, and which
+  require which). A volume of a host directory (`o=bind`, its `device`) is shared as a
+  bind is. A size wants quotas, refused as dockerd refuses it on a filesystem without
+  them. Other types are made, as dockerd makes them, and refused at start: the guest
+  kernel has no NFS or CIFS client, and a tmpfs volume mounted in each microVM would not
+  be the one tmpfs that Docker's containers share.
 - **The kernel** has `CONFIG_VIRTIO_FS` and `CONFIG_FUSE_DAX` (kernel-6.18.48-98788948976a).
 - Open, unmeasured: the forwarding hop's cost per request against an in-process server,
   and throughput against Docker Desktop's virtiofs; DAX windows, which would let file
-  data skip the hop; the local driver's `type`/`device`/`o` options.
+  data skip the hop; the local driver's other types (NFS and CIFS clients in the guest
+  kernel; a tmpfs volume held where every microVM that mounts it shares it).
 
 ## 4. Start path (≤ 5 ms budget)
 

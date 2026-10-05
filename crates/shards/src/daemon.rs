@@ -57,6 +57,7 @@ mod refill;
 mod rmi;
 mod top;
 mod visit;
+mod volume;
 use crate::run::{Boot, Prepared};
 use crate::segments::log_segment;
 use crate::spec::{LogRetention, NOT_RUN};
@@ -1836,13 +1837,15 @@ impl<D: Disk> Daemon<D> {
             .made(&id)
             .map(|c| (c.mounts.clone(), c.started.is_none()))
             .unwrap_or_default();
-        let shared = crate::volumes::open(&points, first).and_then(|opened| {
-            prepared.spec.setup = crate::setup::setup(&run, &opened.mounts)?;
-            crate::spec::fits(&prepared.spec)?;
-            let link = self.start_shares(threads, &opened.dirs)?;
-            prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
-            Ok(link)
-        });
+        let shared = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home)).and_then(
+            |opened| {
+                prepared.spec.setup = crate::setup::setup(&run, &opened.mounts)?;
+                crate::spec::fits(&prepared.spec)?;
+                let link = self.start_shares(threads, &opened.dirs)?;
+                prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
+                Ok(link)
+            },
+        );
         let shares = match shared {
             Ok(link) => link,
             Err(e) => {
@@ -2244,7 +2247,7 @@ impl<D: Disk> Daemon<D> {
         &self,
         run: &Run,
         prepared: &Prepared,
-    ) -> Result<Vec<crate::volumes::MountPoint>, String> {
+    ) -> Result<Vec<(crate::volumes::MountPoint, bool)>, String> {
         let store = crate::volumes::Store::new(&self.home);
         let from = |id: &str| -> Result<Vec<crate::volumes::MountPoint>, String> {
             let (registry, found) = self.resolve_held(lock(&self.containers), id);
@@ -2262,7 +2265,7 @@ impl<D: Disk> Daemon<D> {
             .cloned()
             .collect();
         let points = crate::volumes::register(&store, run, &image_volumes, &from)?;
-        Ok(points.into_iter().map(|(p, _)| p).collect())
+        Ok(points)
     }
 
     /// Starts the share process (share.rs) serving `dirs`: the VM's connection to it, none
@@ -2336,9 +2339,6 @@ impl<D: Disk> Daemon<D> {
         // it is made.
         crate::resources::verify(&run.resources, crate::resources::host_cpus())?;
         crate::setup::verify(run)?;
-        // Its mount points (registerMountPoints): volumes made as they are named, binds
-        // checked; an image's volumes, and `-v DEST`'s, anonymous.
-        let mounts = self.register_mounts(run, prepared)?;
         // A name held by a container that ended with `--rm`, its end not yet taken or its
         // removal not yet durable, is free once that is done, as dockerd's is by the time
         // `docker run --rm` returns: its end is taken, and its removal waited for.
@@ -2352,26 +2352,51 @@ impl<D: Disk> Daemon<D> {
                 self.await_released(name);
             }
         }
-        let mut registry = lock(&self.containers);
-        let name = match &run.name {
-            Some(given) => {
-                if !containers::valid_name(given) {
-                    return Err(format!(
-                        "Invalid container name ({given}), only [a-zA-Z0-9][a-zA-Z0-9_.-] are allowed"
-                    ));
+        // dockerd's name reservation comes first (newContainer, then the mount points).
+        if let Some(given) = &run.name
+            && !containers::valid_name(given)
+        {
+            return Err(format!(
+                "Invalid container name ({given}), only [a-zA-Z0-9][a-zA-Z0-9_.-] are allowed"
+            ));
+        }
+        // Its mount points (registerMountPoints): volumes made as they are named, binds
+        // checked; an image's volumes, and `-v DEST`'s, anonymous. No volume is removed
+        // from here until the container that mounts it is seen.
+        let _volumes = crate::volumes::lock();
+        let points = self.register_mounts(run, prepared)?;
+        let unmade = |e: String| {
+            let store = crate::volumes::Store::new(&self.home);
+            for (p, made) in &points {
+                if *made && store.get(&p.name).is_some_and(|v| v.is_anonymous()) {
+                    let _ = store.remove(&p.name);
                 }
+            }
+            e
+        };
+        let mut registry = lock(&self.containers);
+        let named = match &run.name {
+            Some(given) => {
                 let name = given.strip_prefix('/').unwrap_or(given);
-                if let Some(holder) = registry.name_taken(name) {
-                    return Err(format!(
+                match registry.name_taken(name) {
+                    Some(holder) => Err(format!(
                         "Conflict. The container name \"/{name}\" is already in use by container \"{}\". You have to remove (or rename) that container to be able to reuse that name.",
                         holder.id
-                    ));
+                    )),
+                    None => Ok(name.to_string()),
                 }
-                name.to_string()
             }
             None => crate::names::generate(id, |name| registry.name_taken(name).is_some())
-                .map_err(|e| format!("a container name: {e}"))?,
+                .map_err(|e| format!("a container name: {e}")),
         };
+        let name = match named {
+            Ok(name) => name,
+            Err(e) => {
+                drop(registry);
+                return Err(unmade(e));
+            }
+        };
+        let mounts = points.iter().map(|(p, _)| p.clone()).collect();
         registry.reserve(Container {
             id: id.to_string(),
             name: name.clone(),
@@ -2611,6 +2636,7 @@ impl<D: Disk> Daemon<D> {
     /// does, in use.
     pub(super) fn drop_anonymous(&self, removed: &Container) {
         let store = crate::volumes::Store::new(&self.home);
+        let _volumes = crate::volumes::lock();
         for m in removed.mounts.iter().filter(|m| m.kind == "volume") {
             if !store.get(&m.name).is_some_and(|v| v.anonymous) {
                 continue;

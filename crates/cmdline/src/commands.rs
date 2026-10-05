@@ -1022,6 +1022,116 @@ pub static IMAGE_PRUNE: Command = Command {
     error_prefix: "",
 };
 
+/// `shards volume create` (docker/cli cli/command/volume/create.go): its cluster volume
+/// flags are swarm's, which shards does not serve.
+pub static VOLUME_CREATE: Command = Command {
+    usage: "[OPTIONS] [VOLUME]",
+    about: "Create a volume",
+    aliases: "",
+    args: Args::AtMost(1),
+    flags: &[
+        Flag::string("driver", Some(b'd'), "local", "Specify volume driver name"),
+        HELP,
+        Flag::many("label", None, "list", "Set metadata for a volume"),
+        Flag::string("name", None, "", "Specify volume name").hidden(),
+        Flag::many("opt", Some(b'o'), "map", "Set driver specific options").defaulting("map[]"),
+    ],
+    unserved: "\
+availability - s active -
+group - s - -
+limit-bytes - s 0 -
+required-bytes - s 0 -
+scope - s single -
+secret - m - -
+sharing - s none -
+topology-preferred - m - -
+topology-required - m - -
+type - s block -",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards volume ls` (docker/cli cli/command/volume/list.go).
+pub static VOLUME_LS: Command = Command {
+    usage: "[OPTIONS]",
+    about: "List volumes",
+    aliases: "shards volume ls, shards volume list",
+    args: Args::None,
+    flags: &[
+        Flag::many(
+            "filter",
+            Some(b'f'),
+            "filter",
+            "Provide filter values (e.g. \"dangling=true\")",
+        ),
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
+        HELP,
+        Flag::bool("quiet", Some(b'q'), "Only display volume names"),
+    ],
+    unserved: "\
+cluster - b false -",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards volume inspect` (docker/cli cli/command/volume/inspect.go).
+pub static VOLUME_INSPECT: Command = Command {
+    usage: "[OPTIONS] VOLUME [VOLUME...]",
+    about: "Display detailed information on one or more volumes",
+    aliases: "",
+    args: Args::AtLeast(1),
+    flags: &[Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP), HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards volume rm` (docker/cli cli/command/volume/remove.go).
+pub static VOLUME_RM: Command = Command {
+    usage: "[OPTIONS] VOLUME [VOLUME...]",
+    about: "Remove one or more volumes. You cannot remove a volume that is in use by a container.",
+    aliases: "shards volume rm, shards volume remove",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::bool("force", Some(b'f'), "Force the removal of one or more volumes"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards volume prune` (docker/cli cli/command/volume/prune.go).
+pub static VOLUME_PRUNE: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Remove unused local volumes",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::bool(
+            "all",
+            Some(b'a'),
+            "Remove all unused volumes, not just anonymous ones",
+        ),
+        Flag::many(
+            "filter",
+            None,
+            "filter",
+            "Provide filter values (e.g. \"label=<label>\")",
+        ),
+        Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards system prune` (docker/cli cli/command/system/prune.go).
 pub static SYSTEM_PRUNE: Command = Command {
     usage: "[OPTIONS]",
@@ -1042,9 +1152,9 @@ pub static SYSTEM_PRUNE: Command = Command {
         ),
         Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
         HELP,
+        Flag::bool("volumes", None, "Prune anonymous volumes"),
     ],
-    unserved: "\
-volumes - b - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -1650,6 +1760,11 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["container", "inspect", ..] => (&CONTAINER_INSPECT, "shards container inspect", 2),
         ["image", "ls" | "list", ..] => (&IMAGES, "shards image ls", 2),
         ["container", "port", ..] => (&PORT, "shards container port", 2),
+        ["volume", "create", ..] => (&VOLUME_CREATE, "shards volume create", 2),
+        ["volume", "ls" | "list", ..] => (&VOLUME_LS, "shards volume ls", 2),
+        ["volume", "inspect", ..] => (&VOLUME_INSPECT, "shards volume inspect", 2),
+        ["volume", "rm" | "remove", ..] => (&VOLUME_RM, "shards volume rm", 2),
+        ["volume", "prune", ..] => (&VOLUME_PRUNE, "shards volume prune", 2),
         _ => return None,
     })
 }

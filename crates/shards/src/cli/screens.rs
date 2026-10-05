@@ -27,6 +27,8 @@ pub fn show(sheet: &Sheet, live: &mut shards_tui::frame::Frame) {
         "history" => history(&mut page, &p, sheet),
         "df" => disk(&mut page, &p, sheet),
         "prune" => prune(&mut page, &p, sheet),
+        "volumes" => volumes(&mut page, &p, sheet),
+        "volume" => volume(&mut page, &p, sheet),
         "top" => top(&mut page, &p, sheet),
         "info" => info(&mut page, &p, sheet),
         "events" => {
@@ -1242,24 +1244,30 @@ fn prune(page: &mut Page, p: &Paint, sheet: &Sheet) {
         .unwrap_or(0);
     let vms = (0..n).filter(|&i| sheet.get(i, "vm").is_some()).count();
     let images = (0..n).filter(|&i| sheet.get(i, "deleted").is_some()).count();
+    let vols = (0..n).filter(|&i| sheet.get(i, "volume").is_some()).count();
     look::head(
         page,
         p,
         cols,
         "prune",
-        &[(
-            tokens::MUTED,
-            false,
-            format!(
-                "{vms} {} · {images} {} · {} freed",
-                if vms == 1 { "microVM" } else { "microVMs" },
-                if images == 1 { "image" } else { "images" },
-                text::bytes(freed)
-            ),
-        )],
+        &[(tokens::MUTED, false, {
+            let mut said = Vec::new();
+            if vms > 0 || images > 0 || vols == 0 {
+                said.push(format!("{vms} {}", if vms == 1 { "microVM" } else { "microVMs" }));
+                said.push(format!(
+                    "{images} {}",
+                    if images == 1 { "image" } else { "images" }
+                ));
+            }
+            if vols > 0 {
+                said.push(format!("{vols} {}", if vols == 1 { "volume" } else { "volumes" }));
+            }
+            said.push(format!("{} freed", text::bytes(freed)));
+            said.join(" · ")
+        })],
     );
     page.blank();
-    if vms + images == 0 {
+    if vms + images + vols == 0 {
         page.line().pad(4).put(p, tokens::MUTED, "Nothing to remove.");
         return;
     }
@@ -1277,12 +1285,141 @@ fn prune(page: &mut Page, p: &Paint, sheet: &Sheet) {
             l.pad(6)
                 .put(p, tokens::SUBTLE, "untagged ")
                 .put(p, tokens::FOREGROUND, name);
+        } else if let Some(name) = sheet.get(i, "volume") {
+            l.pad(4)
+                .put(p, tokens::SAGE, "● ")
+                .put(p, tokens::FOREGROUND, name)
+                .pad(2)
+                .put(p, tokens::MUTED, "volume removed");
         } else if let Some(id) = sheet.get(i, "deleted") {
             l.pad(4)
                 .put(p, tokens::SAGE, "● ")
                 .put(p, tokens::FOREGROUND, id)
                 .pad(2)
                 .put(p, tokens::MUTED, "image removed");
+        }
+    }
+}
+
+/// `shards list volumes`: each volume, how much it holds, and how many microVMs mount it.
+fn volumes(page: &mut Page, p: &Paint, sheet: &Sheet) {
+    let cols = look::width();
+    let head = (0..sheet.records.len()).find(|&i| sheet.get(i, "kind") == Some("head"));
+    let num = |i: usize, k: &str| sheet.get(i, k).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+    let rows: Vec<usize> = (0..sheet.records.len())
+        .filter(|&i| sheet.get(i, "kind").is_none())
+        .collect();
+    let held: u64 = rows
+        .iter()
+        .map(|&i| u64::try_from(num(i, "size")).unwrap_or(0))
+        .sum();
+    let mut lines = vec![(
+        tokens::MUTED,
+        false,
+        format!(
+            "{} {} · {} held",
+            rows.len(),
+            if rows.len() == 1 { "volume" } else { "volumes" },
+            text::bytes(held)
+        ),
+    )];
+    if let Some(store) = head.and_then(|h| sheet.get(h, "store")) {
+        lines.push((tokens::SUBTLE, false, home_relative(store)));
+    }
+    look::head(page, p, cols, "volumes", &lines);
+    page.blank();
+    if rows.is_empty() {
+        let l = page.line();
+        l.pad(4).put(p, tokens::MUTED, "No volumes yet. ");
+        l.put(p, tokens::TEAL, "shards create volume NAME");
+        l.put(p, tokens::MUTED, " makes one; ");
+        l.put(p, tokens::TEAL, "-v NAME:/path");
+        l.put(p, tokens::MUTED, " mounts it in a microVM.");
+        return;
+    }
+    let columns = [
+        Column {
+            heading: "VOLUME",
+            right: false,
+            keep: 9,
+        },
+        Column {
+            heading: "SIZE",
+            right: true,
+            keep: 6,
+        },
+        Column {
+            heading: "MOUNTED BY",
+            right: false,
+            keep: 5,
+        },
+        Column {
+            heading: "MADE",
+            right: false,
+            keep: 3,
+        },
+    ];
+    let table_rows: Vec<(Cell, Vec<Cell>)> = rows
+        .iter()
+        .map(|&i| {
+            let vms = num(i, "vms");
+            let anonymous = sheet.get(i, "anonymous") == Some("true");
+            let name = sheet.get(i, "name").unwrap_or("");
+            // An anonymous volume's name is its 64 hex digits: twelve say which.
+            let shown = if anonymous {
+                name.get(..12).unwrap_or(name)
+            } else {
+                name
+            };
+            let size = match num(i, "size") {
+                n if n < 0 => "—".to_string(),
+                n => text::bytes(u64::try_from(n).unwrap_or(0)),
+            };
+            let mounted = match vms {
+                0 => "no microVM".to_string(),
+                1 => "1 microVM".to_string(),
+                n => format!("{n} microVMs"),
+            };
+            let (glyph, c) = if vms > 0 {
+                ("●", tokens::SAGE)
+            } else {
+                ("○", tokens::FAINT)
+            };
+            let cells = vec![
+                Cell::new(shown, if anonymous { tokens::MUTED } else { tokens::BRIGHT }).bold(),
+                Cell::new(size, tokens::FOREGROUND),
+                Cell::new(mounted, if vms > 0 { tokens::SAGE } else { tokens::MUTED }),
+                Cell::new(ago(num(i, "created")), tokens::SUBTLE),
+            ];
+            (Cell::new(glyph, c), cells)
+        })
+        .collect();
+    table(page, p, cols, &columns, &table_rows);
+}
+
+/// `shards create volume` and `remove volume`: each volume made, and where its files
+/// are, or removed.
+fn volume(page: &mut Page, p: &Paint, sheet: &Sheet) {
+    let cols = look::width();
+    look::head(page, p, cols, "volume", &[]);
+    page.blank();
+    for i in 0..sheet.records.len() {
+        let l = page.line();
+        if let Some(name) = sheet.get(i, "made") {
+            l.pad(4)
+                .put(p, tokens::SAGE, "◆ ")
+                .bold(p, true)
+                .put(p, tokens::BRIGHT, name)
+                .bold(p, false);
+            if let Some(at) = sheet.get(i, "at") {
+                l.pad(2).put(p, tokens::SUBTLE, &home_relative(at));
+            }
+        } else if let Some(name) = sheet.get(i, "removed") {
+            l.pad(4)
+                .put(p, tokens::SAGE, "● ")
+                .put(p, tokens::FOREGROUND, name)
+                .pad(2)
+                .put(p, tokens::MUTED, "volume removed");
         }
     }
 }

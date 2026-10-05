@@ -1158,6 +1158,17 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 .sum::<u64>(),
         )
         .unwrap_or(i64::MAX);
+        // Local volumes, each its size and references (LocalVolumesSize): in use where
+        // any container mounts it, reclaimable where none does.
+        let volumes = self.volume_usage();
+        let v_total = volumes.len();
+        let v_active = volumes.iter().filter(|(_, _, refs)| *refs > 0).count();
+        let v_size: i64 = volumes.iter().map(|(_, size, _)| (*size).max(0)).sum();
+        let v_free: i64 = volumes
+            .iter()
+            .filter(|(_, _, refs)| *refs == 0)
+            .map(|(_, size, _)| (*size).max(0))
+            .sum();
         let templates = self.home.join("templates");
         let t_total = std::fs::read_dir(&templates)
             .map(|d| d.flatten().count())
@@ -1195,7 +1206,15 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             let rows = serde_json::json!({
                 "images": kind(img_total, img_active, img_size, img_free, image_rows),
                 "containers": kind(c_total, c_active, c_size, c_free, items),
-                "volumes": kind(0, 0, 0, 0, Vec::new()),
+                "volumes": kind(v_total, v_active, v_size, v_free, volumes
+                    .iter()
+                    .map(|(v, size, refs)| serde_json::json!({
+                        "Name": v.name, "Driver": "local", "Scope": "local",
+                        "Mountpoint": crate::volumes::Store::new(&self.home).data(&v.name).display().to_string(),
+                        "Labels": v.labels,
+                        "UsageData": {"RefCount": refs, "Size": size},
+                    }))
+                    .collect()),
                 "build_cache": kind(0, 0, 0, 0, Vec::new()),
             });
             let mut sheet = shards_ipc::Sheet::new("df-rows");
@@ -1208,6 +1227,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         for (kind, total, active, bytes, freeable) in [
             ("images", img_total, img_active, img_size, img_free),
             ("microVMs", c_total, c_active, c_size, c_free),
+            ("volumes", v_total, v_active, v_size, v_free),
             ("templates", t_total, t_total, t_size, 0),
         ] {
             sheet.record(&[
@@ -1224,7 +1244,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 }
 
 /// go-units' HumanSize: four significant digits, as prune reports what it reclaimed.
-fn human_size4(size: i64) -> String {
+pub(super) fn human_size4(size: i64) -> String {
     const UNITS: [&str; 9] = ["B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
     #[allow(clippy::cast_precision_loss)]
     let mut size = size as f64;
@@ -1310,6 +1330,18 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     reclaimed = reclaimed.saturating_add(i64::try_from(bytes).unwrap_or(i64::MAX));
                     removed_vms.push((id, name));
                 }
+            }
+        }
+        // `system prune --volumes`: the anonymous volumes no container mounts, after the
+        // containers that mounted them (pruner.pruneOrder).
+        let mut removed_volumes: Vec<String> = Vec::new();
+        if images && containers && parsed.bool("volumes") {
+            match self.prune_volumes(given, false) {
+                Ok((names, bytes)) => {
+                    reclaimed = reclaimed.saturating_add(i64::try_from(bytes).unwrap_or(i64::MAX));
+                    removed_volumes = names;
+                }
+                Err(e) => return refuse(e),
             }
         }
         let mut removed_images: Vec<super::rmi::Removed> = Vec::new();
@@ -1424,6 +1456,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             for (id, name) in &removed_vms {
                 sheet.record(&[("vm", name.clone()), ("id", truncate_id(id).to_string())]);
             }
+            for name in &removed_volumes {
+                sheet.record(&[("volume", name.clone())]);
+            }
             for r in &removed_images {
                 match r {
                     super::rmi::Removed::Untagged(n) => sheet.record(&[("untagged", n.clone())]),
@@ -1440,6 +1475,14 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             text.push_str("Deleted Containers:\n");
             for (id, _) in &removed_vms {
                 text.push_str(id);
+                text.push('\n');
+            }
+            text.push('\n');
+        }
+        if !removed_volumes.is_empty() {
+            text.push_str("Deleted Volumes:\n");
+            for name in &removed_volumes {
+                text.push_str(name);
                 text.push('\n');
             }
             text.push('\n');

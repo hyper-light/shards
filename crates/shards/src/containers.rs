@@ -347,6 +347,11 @@ impl Registry {
         self.by_id.get(id).or_else(|| self.arriving.get(id))
     }
 
+    /// Every container, those whose records are still being written too.
+    pub fn every(&self) -> impl Iterator<Item = &Container> {
+        self.by_id.values().chain(self.arriving.values())
+    }
+
     pub fn all(&self) -> impl Iterator<Item = &Container> {
         self.by_id.values()
     }

@@ -37,12 +37,13 @@ pub mod stats;
 mod tabwriter;
 pub(crate) mod units;
 pub mod version;
+pub mod volume;
 
 use std::rc::Rc;
 
 use shards_template::{Kind, Object, Template, Value};
 
-pub use clock::{Clock, Zone, utc};
+pub use clock::{Clock, Zone, rfc3339_at, utc};
 
 /// formatter.go's format keys.
 pub const TABLE: &str = "table";

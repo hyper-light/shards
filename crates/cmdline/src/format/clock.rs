@@ -40,6 +40,15 @@ pub fn utc(_: i64) -> Zone {
 
 const NANOS: i128 = 1_000_000_000;
 
+/// `time.Unix(sec, 0).Format(time.RFC3339)` in a zone `offset` seconds east of UTC.
+pub fn rfc3339_at(sec: i64, offset: i64) -> String {
+    let zone = move |_: i64| Zone {
+        offset,
+        name: String::new(),
+    };
+    Clock { now: 0, zone: &zone }.rfc3339(sec)
+}
+
 impl Clock<'_> {
     /// `units.HumanDuration(time.Now().UTC().Sub(t)) + " ago"`, for `t` in nanoseconds
     /// since the epoch. Sub saturates at the longest durations Go has.
