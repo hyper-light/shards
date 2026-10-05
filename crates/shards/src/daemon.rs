@@ -34,10 +34,13 @@ use crate::containers::{self, Container, Disk, Real, Registry, Removal, State as
 
 mod commands;
 mod demand;
+mod events;
 mod files;
+mod filters;
 mod follow;
 mod health;
 mod images;
+mod info;
 mod inspect;
 mod load;
 mod logs;
@@ -48,6 +51,7 @@ mod push;
 mod record;
 mod refill;
 mod rmi;
+mod top;
 use crate::run::{Boot, Prepared};
 use crate::segments::log_segment;
 use crate::spec::{LogRetention, NOT_RUN};
@@ -363,6 +367,8 @@ struct Inbox {
     /// Exec clients' connections handed to the VM and not yet taken, by number: held
     /// meanwhile, as XNU collects a socket in flight that no process holds (M24).
     execs_in_flight: Vec<(u64, UnixStream)>,
+    /// Execs that have events, by number: each one's ID, for its `exec_die`.
+    exec_ids: Vec<(u64, String)>,
     /// What has come of the VM's next message: a VM that stops partway through one holds
     /// up no reader (`take_messages`).
     incoming: shards_ipc::Incoming,
@@ -564,6 +570,8 @@ struct Daemon<D: Disk = Real> {
     ports_freed: Condvar,
     /// The containers `shards rm` is removing.
     removing: Mutex<HashSet<String>>,
+    /// What has happened, for `shards events`.
+    events: events::Events,
     /// The containers `shards pause` froze: their VM processes stopped (SIGSTOP), until
     /// `unpause`, or a stop or kill, lets them go on.
     paused: Mutex<HashSet<String>>,
@@ -1077,6 +1085,7 @@ impl<D: Disk> Daemon<D> {
             ports_freed: Condvar::new(),
             removing: Mutex::default(),
             paused: Mutex::default(),
+            events: events::Events::default(),
             spare: Mutex::default(),
             saved: AtomicU64::new(0),
             collecting: Collecting {
@@ -1996,6 +2005,7 @@ impl<D: Disk> Daemon<D> {
             stop_timeout: run.stop_timeout,
             ports,
         });
+        self.event_for(id, &name, &run.image, "create", &[]);
         // Its run is owned from the moment the container is visible.
         lock(&self.runs).insert(id.to_string(), RunState::Pending { cancelled: false });
         Ok(name)
@@ -2138,12 +2148,45 @@ impl<D: Disk> Daemon<D> {
                 Err(_) => registry.bring_back(id),
             }
         }
+        if set.is_ok() {
+            let c = &removal.container;
+            self.event_for(id, &c.name, &c.image, "destroy", &[]);
+        }
         self.arrived.notify_all();
         if let Err(e) = &set {
             log(format!("container {id}: removing it: {e}"));
             self.record_soon(id, Vec::new());
         }
         set
+    }
+
+    /// Logs container event `action` (moby daemon/events.go,
+    /// LogContainerEventWithAttributes): `extra`, the container's image and its name.
+    pub(super) fn container_event(&self, id: &str, action: impl Into<String>, extra: &[(&str, String)]) {
+        let (name, image) = lock(&self.containers)
+            .made(id)
+            .map(|c| (c.name.clone(), c.image.clone()))
+            .unwrap_or_default();
+        self.event_for(id, &name, &image, action, extra);
+    }
+
+    /// [`container_event`](Self::container_event), of a container named `name` made
+    /// from `image`.
+    pub(super) fn event_for(
+        &self,
+        id: &str,
+        name: &str,
+        image: &str,
+        action: impl Into<String>,
+        extra: &[(&str, String)],
+    ) {
+        let mut attributes: std::collections::BTreeMap<String, String> =
+            extra.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect();
+        if !image.is_empty() {
+            attributes.insert("image".into(), image.to_string());
+        }
+        attributes.insert("name".into(), name.trim_start_matches('/').to_string());
+        self.events.log("container", action, id, attributes);
     }
 
     /// Makes `removal`, set aside, durable out of the registry's lock, then lets its name
@@ -2322,6 +2365,7 @@ impl<D: Disk> Daemon<D> {
             container: lock(&self.containers).dir(id),
             segment: 0,
             execs_in_flight: Vec::new(),
+            exec_ids: Vec::new(),
             incoming: shards_ipc::Incoming::default(),
         }));
         let tracked = Tracked {
@@ -2381,6 +2425,22 @@ impl<D: Disk> Daemon<D> {
                 kind::EXEC_TAKEN => {
                     if let Ok(n) = <[u8; 8]>::try_from(m.payload.as_slice()).map(u64::from_be_bytes) {
                         inbox.execs_in_flight.retain(|(held, _)| *held != n);
+                    }
+                }
+                kind::EXEC_ENDED => {
+                    if let Some((n, &[status])) = m.payload.split_first_chunk::<8>()
+                        && let Some(at) = inbox
+                            .exec_ids
+                            .iter()
+                            .position(|(e, _)| *e == u64::from_be_bytes(*n))
+                    {
+                        let (_, exec_id) = inbox.exec_ids.swap_remove(at);
+                        // moby daemon/monitor.go, ProcessEvent's exit of an exec.
+                        self.container_event(
+                            id,
+                            "exec_die",
+                            &[("execID", exec_id), ("exitCode", status.to_string())],
+                        );
                     }
                 }
                 _ => {}
@@ -2491,6 +2551,9 @@ impl<D: Disk> Daemon<D> {
             c.started = Some(containers::now());
         });
         let told: Vec<UnixStream> = inbox.detached.take().into_iter().collect();
+        if changed.is_ok() {
+            self.container_event(id, "start", &[]);
+        }
         match changed {
             Ok(()) => self.record_soon(id, told),
             Err(e) => {
@@ -2527,6 +2590,15 @@ impl<D: Disk> Daemon<D> {
         };
         // A run may end before its container's record is written: its end waits in its
         // reservation, for the record (`end_container`).
+        // What `die` says of it (moby daemon/monitor.go): its status, and how long it ran
+        // in whole seconds; a command that never started does not die.
+        let (ran, name, image) = lock(&self.containers)
+            .made(id)
+            .map(|c| {
+                let ran = c.started.map(|s| containers::now().saturating_sub(s));
+                (ran, c.name.clone(), c.image.clone())
+            })
+            .unwrap_or_default();
         let removal = {
             let mut registry = lock(&self.containers);
             let removal = self.end_container(&mut registry, id, |c| {
@@ -2539,6 +2611,21 @@ impl<D: Disk> Daemon<D> {
             lock(&self.runs).remove(id);
             lock(&self.health).remove(id);
             lock(&self.paused).remove(id);
+            // Logged before anyone waiting hears of the end, as dockerd logs it in the
+            // exit's handling (monitor.go), ahead of `stop`'s own event.
+            if started {
+                let seconds = ran.map_or(0, |ns| ns / 1_000_000_000);
+                self.event_for(
+                    id,
+                    &name,
+                    &image,
+                    "die",
+                    &[
+                        ("exitCode", status.to_string()),
+                        ("execDuration", seconds.to_string()),
+                    ],
+                );
+            }
             self.resolved.notify_all();
             for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
                 waiter.hear(status);

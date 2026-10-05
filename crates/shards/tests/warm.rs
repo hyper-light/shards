@@ -280,6 +280,7 @@ impl Warm {
             tty: None,
             resolv: None,
             stdin: interactive,
+            builtin: 0,
         };
         let (conn, theirs) = UnixStream::pair().unwrap();
         let (stdin_r, stdin_w) = pipe();

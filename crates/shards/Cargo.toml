@@ -27,6 +27,7 @@ shards-abi = { path = "../abi" }
 shards-net = { path = "../net" }
 shards-netring = { path = "../netring" }
 shards-user = { path = "../user" }
+shards-template = { path = "../template" }
 shards-build = { path = "../build" }
 shards-cmdline = { path = "../cmdline" }
 shards-dockerfile = { path = "../dockerfile" }

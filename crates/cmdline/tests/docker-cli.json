@@ -113,6 +113,137 @@
   },
   {
     "argv": [
+      "top"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards top' requires at least 1 argument\n\nUsage:  shards top CONTAINER [ps OPTIONS]\n\nSee 'shards top --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "top",
+      "--help"
+    ],
+    "stdout": "Usage:  shards top CONTAINER [ps OPTIONS]\n\nDisplay the running processes of a container\n\nAliases:\n  shards container top, shards top\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "top",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards top CONTAINER [ps OPTIONS]\n\nDisplay the running processes of a container\n\nAliases:\n  shards container top, shards top\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "top",
+      "--nope"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards top CONTAINER [ps OPTIONS]\n\nRun 'shards top --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "top",
+      "--help"
+    ],
+    "stdout": "Usage:  shards container top CONTAINER [ps OPTIONS]\n\nDisplay the running processes of a container\n\nAliases:\n  shards container top, shards top\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "diff"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards diff' requires 1 argument\n\nUsage:  shards diff CONTAINER\n\nRun 'shards diff --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "diff",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards diff' requires 1 argument\n\nUsage:  shards diff CONTAINER\n\nRun 'shards diff --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "diff",
+      "--help"
+    ],
+    "stdout": "Usage:  shards diff CONTAINER\n\nInspect changes to files or directories on a container's filesystem\n\nAliases:\n  shards container diff, shards diff\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "diff",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container diff CONTAINER\n\nInspect changes to files or directories on a container's filesystem\n\nAliases:\n  shards container diff, shards diff\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "events",
+      "--help"
+    ],
+    "stdout": "Usage:  shards events [OPTIONS]\n\nGet real time events from the server\n\nAliases:\n  shards system events, shards events\n\nOptions:\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --since string    Show all events created since timestamp\n      --until string    Stream events until this timestamp\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "events",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards events' accepts no arguments\n\nUsage:  shards events [OPTIONS]\n\nRun 'shards events --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "events",
+      "--filter",
+      "nope"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nope\" for \"-f, --filter\" flag: bad format of filter (expected name=value)\n\nUsage:  shards events [OPTIONS]\n\nRun 'shards events --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "events",
+      "-f",
+      "a=b",
+      "--since"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --since\n\nUsage:  shards events [OPTIONS]\n\nRun 'shards events --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "system",
+      "events",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards system events [OPTIONS]\n\nGet real time events from the server\n\nAliases:\n  shards system events, shards events\n\nOptions:\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --since string    Show all events created since timestamp\n      --until string    Stream events until this timestamp\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "run"
     ],
     "stdout": "",

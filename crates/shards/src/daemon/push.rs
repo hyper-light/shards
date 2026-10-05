@@ -248,6 +248,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 if let Some(tag) = &tag {
                     say(format!("{tag}: digest: {} size: {}", pushed.digest, pushed.size));
                 }
+                // moby daemon/containerd/image_push.go: the reference pushed, named
+                // without its tag.
+                self.image_event(&reference.familiar(), &reference.familiar_name(), "push");
                 if shown {
                     let mut facts = vec![
                         ("size".to_string(), pushed.size.to_string()),

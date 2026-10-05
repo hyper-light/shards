@@ -69,6 +69,23 @@ impl Checks {
     }
 }
 
+/// How an exec run by the daemon itself ended: its status if it did, and whether its
+/// timeout ended it.
+pub(super) struct Ended {
+    pub status: Option<i64>,
+    pub timed_out: bool,
+}
+
+/// What an exec run by the daemon itself said ([`Daemon::exec_quietly`]): its output, cut
+/// at its limit (`more` if there was more), its status if it ended, and whether its
+/// timeout ended it.
+pub(super) struct Quiet {
+    pub output: Vec<u8>,
+    pub more: bool,
+    pub status: Option<i64>,
+    pub timed_out: bool,
+}
+
 /// One probe's result: when it ran, its exit code (-1 if it timed out or could not run),
 /// and what it wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,14 +297,24 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             lock(&self.health).remove(id);
             return;
         }
-        let status = {
+        let (was, status) = {
             let mut health = lock(&self.health);
             let Some(state) = health.get_mut(id) else {
                 return;
             };
+            let was = state.status;
             state.record(cfg, probe, since);
-            state.status
+            (was, state.status)
         };
+        // moby daemon/health.go, handleProbeResult: a change of status is an event.
+        if status != was {
+            let named = match status {
+                Status::Starting => "starting",
+                Status::Healthy => "healthy",
+                Status::Unhealthy => "unhealthy",
+            };
+            self.container_event(id, format!("health_status: {named}"), &[]);
+        }
         self.due_after(id, interval(cfg, self.since_start(id), status));
     }
 
@@ -303,21 +330,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             exit_code: -1,
             output: why,
         };
-        let pieces = (|| -> std::io::Result<_> {
-            let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
-            let (out, into) = std::io::pipe()?;
-            let null = std::fs::File::open("/dev/null")?;
-            let held = theirs.try_clone()?;
-            Ok((ours, theirs, out, into, null, held))
-        })();
-        let (ours, theirs, mut out, into, null, held) = match pieces {
-            Ok(p) => p,
-            Err(e) => return failed(format!("starting the health check: {e}")),
-        };
-        {
-            // Taken out of `runs` before the inbox is locked (commands.rs, exec).
-            let (base, socket, inbox) = match lock(&self.runs).get(id) {
-                Some(RunState::Tracked(run)) => (run.base.clone(), run.socket.clone(), run.inbox.clone()),
+        let spec = {
+            let base = match lock(&self.runs).get(id) {
+                Some(RunState::Tracked(run)) => run.base.clone(),
                 _ => return failed("the container is not running".into()),
             };
             let base = &base.options;
@@ -331,39 +346,127 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 interactive: false,
                 tty: None,
             };
-            let spec = match crate::spec::spec(&options, |_| None) {
+            match crate::spec::spec(&options, |_| None) {
                 Ok(spec) => spec,
                 Err(e) => return failed(e),
+            }
+        };
+        let timeout = timeout(cfg);
+        let quiet = match self.exec_quietly(id, &spec, Some(argv), MAX_OUTPUT, timeout) {
+            Ok(q) => q,
+            Err(e) => return failed(format!("starting the health check: {e}")),
+        };
+        let said = kept_output(&quiet.output, quiet.more);
+        match (quiet.timed_out, quiet.status) {
+            (true, _) => {
+                let limit = shards_cmdline::gotime::format_duration(
+                    i64::try_from(timeout.as_nanos()).unwrap_or(i64::MAX),
+                );
+                failed(if said.is_empty() {
+                    format!("Health check exceeded timeout ({limit})")
+                } else {
+                    format!("Health check exceeded timeout ({limit}): {said}")
+                })
+            }
+            (false, Some(code)) => Probe {
+                start_ns,
+                end_ns: crate::spec::now(),
+                exit_code: code,
+                output: said,
+            },
+            (false, None) => failed("the container's microVM ended the check".into()),
+        }
+    }
+
+    /// An exec of `spec` in container `id`, beside its workload, without stdin or a
+    /// terminal: its stdout and stderr together, the first `limit` bytes of them kept;
+    /// killed once `timeout` has passed, then waited for, so that none outlives its
+    /// asker. An error if it could not be sent. A command (`argv`) has its exec events,
+    /// as a health probe has dockerd's; init's own work has none.
+    pub(super) fn exec_quietly(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        argv: Option<&[String]>,
+        limit: usize,
+        timeout: Duration,
+    ) -> std::io::Result<Quiet> {
+        let mut output = Vec::with_capacity(limit.min(1 << 16));
+        let mut more = false;
+        let ended = self.exec_streamed(id, spec, argv, Some(timeout), &mut |chunk| {
+            let room = limit.saturating_sub(output.len());
+            output.extend_from_slice(chunk.get(..room.min(chunk.len())).unwrap_or_default());
+            more |= chunk.len() > room;
+            true
+        })?;
+        Ok(Quiet {
+            output,
+            more,
+            status: ended.status,
+            timed_out: ended.timed_out,
+        })
+    }
+
+    /// [`exec_quietly`](Self::exec_quietly), its output handed to `sink` as it comes,
+    /// unlimited; killed, then waited for, once `timeout` (if any) has passed or `sink`
+    /// wants no more.
+    pub(super) fn exec_streamed(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        argv: Option<&[String]>,
+        timeout: Option<Duration>,
+        sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
+    ) -> std::io::Result<Ended> {
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        let (mut out, into) = std::io::pipe()?;
+        let null = std::fs::File::open("/dev/null")?;
+        let held = theirs.try_clone()?;
+        {
+            // Taken out of `runs` before the inbox is locked (commands.rs, exec).
+            let (socket, inbox) = match lock(&self.runs).get(id) {
+                Some(RunState::Tracked(run)) => (run.socket.clone(), run.inbox.clone()),
+                _ => return Err(std::io::Error::other("the container is not running")),
             };
             let number = self.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let mut payload = Vec::with_capacity(9 + spec.encoded_len().unwrap_or(0));
             payload.extend_from_slice(&number.to_be_bytes());
             payload.push(0);
             spec.encode_into(&mut payload);
-            lock(&inbox).execs_in_flight.push((number, held));
+            let exec_id = argv.and_then(|argv| self.exec_events(id, argv));
+            {
+                let mut inbox = lock(&inbox);
+                inbox.execs_in_flight.push((number, held));
+                if let Some(exec_id) = exec_id {
+                    inbox.exec_ids.push((number, exec_id));
+                }
+            }
             let fds = [theirs.as_fd(), null.as_fd(), into.as_fd(), into.as_fd()];
             if let Err(e) = socket.send(shards_ipc::kind::EXEC_RUN, &payload, &fds) {
-                lock(&inbox).execs_in_flight.retain(|(n, _)| *n != number);
-                return failed(format!("starting the health check: {e}"));
+                let mut held = lock(&inbox);
+                held.execs_in_flight.retain(|(n, _)| *n != number);
+                held.exec_ids.retain(|(n, _)| *n != number);
+                return Err(e);
             }
         }
         // The VM holds the rest: its end sees the output end.
         drop((theirs, into, null));
-        let timeout = timeout(cfg);
-        std::thread::scope(|scope| {
-            let output = scope.spawn(move || {
-                let mut kept = Vec::with_capacity(MAX_OUTPUT);
-                let mut buf = [0u8; 4096];
-                let mut more = false;
+        let kill = |conn: &std::os::unix::net::UnixStream| {
+            let _ = shards_ipc::send(conn, shards_ipc::kind::SIGNAL, &9u32.to_be_bytes(), &[]);
+        };
+        Ok(std::thread::scope(|scope| {
+            let control = &ours;
+            let reader = scope.spawn(move || {
+                let mut buf = [0u8; 16 << 10];
                 while let Ok(n @ 1..) = out.read(&mut buf) {
-                    let room = MAX_OUTPUT.saturating_sub(kept.len());
-                    let chunk = buf.get(..n).unwrap_or_default();
-                    kept.extend_from_slice(chunk.get(..room.min(n)).unwrap_or_default());
-                    more |= n > room;
+                    if !sink(buf.get(..n).unwrap_or_default()) {
+                        // Nobody wants the rest: the exec goes, and its output with it.
+                        kill(control);
+                        break;
+                    }
                 }
-                (kept, more)
             });
-            let _ = ours.set_read_timeout(Some(timeout));
+            let _ = ours.set_read_timeout(timeout);
             let mut timed_out = false;
             let status = loop {
                 match shards_ipc::recv(&ours) {
@@ -378,37 +481,16 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                             ) =>
                     {
-                        // Past its timeout: killed, then waited for, so that no probe
-                        // outlives its check.
                         timed_out = true;
-                        let _ = shards_ipc::send(&ours, shards_ipc::kind::SIGNAL, &9u32.to_be_bytes(), &[]);
+                        kill(&ours);
                         let _ = ours.set_read_timeout(None);
                     }
                     Ok(None) | Err(_) => break None,
                 }
             };
-            let (kept, more) = output.join().unwrap_or_default();
-            let said = kept_output(&kept, more);
-            match (timed_out, status) {
-                (true, _) => {
-                    let limit = shards_cmdline::gotime::format_duration(
-                        i64::try_from(timeout.as_nanos()).unwrap_or(i64::MAX),
-                    );
-                    failed(if said.is_empty() {
-                        format!("Health check exceeded timeout ({limit})")
-                    } else {
-                        format!("Health check exceeded timeout ({limit}): {said}")
-                    })
-                }
-                (false, Some(code)) => Probe {
-                    start_ns,
-                    end_ns: crate::spec::now(),
-                    exit_code: code,
-                    output: said,
-                },
-                (false, None) => failed("the container's microVM ended the check".into()),
-            }
-        })
+            let _ = reader.join();
+            Ended { status, timed_out }
+        }))
     }
 }
 

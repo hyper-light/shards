@@ -1,0 +1,20 @@
+[package]
+name = "shards-archive"
+version = "0.1.0"
+description = "Tar archives of files as moby/go-archive makes and unpacks them"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"

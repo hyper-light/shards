@@ -27,6 +27,24 @@ pub fn show(sheet: &Sheet, live: &mut shards_tui::frame::Frame) {
         "history" => history(&mut page, &p, sheet),
         "df" => disk(&mut page, &p, sheet),
         "prune" => prune(&mut page, &p, sheet),
+        "top" => top(&mut page, &p, sheet),
+        "info" => info(&mut page, &p, sheet),
+        "events" => {
+            // Drawn as they come; a page that ends ends with its stream.
+            events(&mut page, &p, sheet);
+            page.write_part(&p, &mut std::io::stdout().lock());
+            return;
+        }
+        "diff" => {
+            // Drawn as it comes: the page ends with its last sheet.
+            let end = diff(&mut page, &p, sheet);
+            if end {
+                page.write(&p, &mut std::io::stdout().lock());
+            } else {
+                page.write_part(&p, &mut std::io::stdout().lock());
+            }
+            return;
+        }
         "stats" => {
             stats(&mut page, &p, sheet);
             page.draw(&p, live, &mut std::io::stdout().lock());
@@ -118,8 +136,8 @@ impl Cell {
 
 /// A column: its heading, whether its cells stand to the right, and how much it
 /// matters when the terminal is narrow (higher stays longer).
-struct Column {
-    heading: &'static str,
+struct Column<'a> {
+    heading: &'a str,
     right: bool,
     keep: u8,
 }
@@ -127,7 +145,7 @@ struct Column {
 /// `rows` in `columns`, each as wide as its widest cell or heading, two cells apart,
 /// headings in the eyebrow's capitals over their cells; a marker cell, two wide, before
 /// each row. Columns that matter least give way first until the table fits `cols`.
-fn table(page: &mut Page, p: &Paint, cols: usize, columns: &[Column], rows: &[(Cell, Vec<Cell>)]) {
+fn table(page: &mut Page, p: &Paint, cols: usize, columns: &[Column<'_>], rows: &[(Cell, Vec<Cell>)]) {
     let mut widths: Vec<usize> = columns
         .iter()
         .enumerate()
@@ -833,6 +851,280 @@ fn disk(page: &mut Page, p: &Paint, sheet: &Sheet) {
                     ),
                 ],
             )
+        })
+        .collect();
+    table(page, p, cols, &columns, &rows);
+}
+
+/// `shards diff`, a sheet at a time as the changes come: the head with the first, each
+/// change a row (added sage, changed amber, deleted rose), its directory faint before
+/// its name; the counts with the last. Whether this sheet was the last.
+fn diff(page: &mut Page, p: &Paint, sheet: &Sheet) -> bool {
+    let cols = look::width();
+    let mut end = false;
+    for i in 0..sheet.records.len() {
+        match sheet.get(i, "kind") {
+            Some("head") => {
+                let name = sheet.get(i, "name").unwrap_or("");
+                look::head(
+                    page,
+                    p,
+                    cols,
+                    "diff",
+                    &[(
+                        tokens::MUTED,
+                        false,
+                        format!("what {name} changed of its image's files"),
+                    )],
+                );
+                page.blank();
+            }
+            Some("end") => {
+                let n = |k: &str| sheet.get(i, k).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+                let (a, c, d) = (n("added"), n("changed"), n("deleted"));
+                if a + c + d == 0 {
+                    page.line().pad(4).put(p, tokens::MUTED, "Nothing changed.");
+                } else {
+                    page.blank();
+                    let l = page.line();
+                    l.pad(4);
+                    l.put(p, tokens::SAGE, &format!("{a} added"));
+                    l.put(p, tokens::SUBTLE, " · ");
+                    l.put(p, tokens::AMBER, &format!("{c} changed"));
+                    l.put(p, tokens::SUBTLE, " · ");
+                    l.put(p, tokens::ROSE, &format!("{d} deleted"));
+                }
+                end = true;
+            }
+            _ => {
+                let (Some(change), Some(path)) = (sheet.get(i, "change"), sheet.get(i, "path")) else {
+                    continue;
+                };
+                let c = match change {
+                    "A" => tokens::SAGE,
+                    "D" => tokens::ROSE,
+                    _ => tokens::AMBER,
+                };
+                let (dir, name) = match path.rfind('/') {
+                    Some(at) => path.split_at(at + 1),
+                    None => ("", path),
+                };
+                let l = page.line();
+                l.pad(2).put(p, c, "● ").put(p, c, change).pad(2);
+                let room = cols.saturating_sub(l.w);
+                let dir = layout::clip(dir, room.saturating_sub(name.chars().count()));
+                l.put(p, tokens::FAINT, &dir);
+                l.bold(p, true).put(p, tokens::BRIGHT, name).bold(p, false);
+            }
+        }
+    }
+    end
+}
+
+/// `shards events`, a sheet an event as they happen: the head first, then each event a
+/// row: its time, its type, what happened and to what, coloured by what it was.
+fn events(page: &mut Page, p: &Paint, sheet: &Sheet) {
+    let cols = look::width();
+    for i in 0..sheet.records.len() {
+        if sheet.get(i, "kind") == Some("head") {
+            let live = sheet.get(i, "live") == Some("true");
+            look::head(
+                page,
+                p,
+                cols,
+                "events",
+                &[(
+                    tokens::MUTED,
+                    false,
+                    if live {
+                        "what happens to microVMs and images, as it happens".into()
+                    } else {
+                        "what happened to microVMs and images".to_string()
+                    },
+                )],
+            );
+            page.blank();
+            continue;
+        }
+        let get = |k: &str| sheet.get(i, k).unwrap_or("");
+        let action = get("action");
+        let verb = action.split(':').next().unwrap_or(action);
+        let c = match verb {
+            "create" | "start" | "unpause" | "pull" | "load" | "tag" => tokens::SAGE,
+            "die" if get("exitCode") != "0" => tokens::ROSE,
+            "kill" | "oom" => tokens::ROSE,
+            "stop" | "die" | "pause" => tokens::AMBER,
+            "exec_create" | "exec_start" | "exec_die" | "top" | "health_status" => tokens::LAVENDER,
+            "push" | "save" => tokens::TEAL,
+            _ => tokens::FAINT,
+        };
+        // The time of day, to the millisecond.
+        let time = get("time");
+        let clock = time.get(11..23).unwrap_or(time);
+        let who = match get("name") {
+            "" => get("id").get(..12).unwrap_or(get("id")),
+            n => n,
+        };
+        let l = page.line();
+        l.pad(2).put(p, c, "● ").put(p, tokens::SUBTLE, clock).pad(2);
+        l.put(p, tokens::MUTED, &format!("{:<9}", get("type"))).pad(1);
+        l.put(p, c, &format!("{:<12}", verb)).pad(1);
+        l.bold(p, true).put(p, tokens::BRIGHT, who).bold(p, false);
+        let mut said = Vec::new();
+        if let Some(rest) = action.split_once(": ").map(|(_, r)| r) {
+            said.push(rest.trim_end().to_string());
+        }
+        for (k, shown) in [
+            ("image", ""),
+            ("exitCode", "exit "),
+            ("signal", "signal "),
+            ("oldName", "was "),
+        ] {
+            let v = get(k);
+            if !v.is_empty() && !(k == "image" && v == who) {
+                said.push(format!("{shown}{v}"));
+            }
+        }
+        if !said.is_empty() {
+            let room = cols.saturating_sub(l.w + 2);
+            l.pad(2)
+                .put(p, tokens::MUTED, &layout::clip(&said.join(" · "), room));
+        }
+    }
+}
+
+/// `shards info`: what shards is, holds and runs on, a section a heading, every fact a
+/// row, its key in one column and its value in the next.
+fn info(page: &mut Page, p: &Paint, sheet: &Sheet) {
+    let cols = look::width();
+    look::head(page, p, cols, "info", &[]);
+    let n = sheet.records.len();
+    let key_w = (0..n)
+        .map(|i| sheet.get(i, "key").unwrap_or("").chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut section = "";
+    for i in 0..n {
+        let s = sheet.get(i, "section").unwrap_or("");
+        if s != section {
+            section = s;
+            page.blank();
+            look::heading(page, p, s);
+        }
+        let key = sheet.get(i, "key").unwrap_or("");
+        let l = page.line();
+        l.pad(4).put(p, tokens::MUTED, key);
+        l.pad(key_w - key.chars().count() + 3);
+        let room = cols.saturating_sub(l.w);
+        l.put(
+            p,
+            tokens::BRIGHT,
+            &layout::clip(sheet.get(i, "value").unwrap_or(""), room),
+        );
+    }
+}
+
+/// `shards top`: a microVM's processes, in ps's columns as asked for; each marked by its
+/// state where ps shows it (running sage, asleep faint, stopped amber, a zombie rose),
+/// and its command indented under its parent's where ps shows both.
+fn top(page: &mut Page, p: &Paint, sheet: &Sheet) {
+    let cols = look::width();
+    let head = (0..sheet.records.len()).find(|&i| sheet.get(i, "kind") == Some("head"));
+    let titles: Vec<&str> = head
+        .and_then(|h| sheet.get(h, "titles"))
+        .unwrap_or("")
+        .split('\t')
+        .collect();
+    let name = head.and_then(|h| sheet.get(h, "name")).unwrap_or("");
+    let processes: Vec<Vec<&str>> = (0..sheet.records.len())
+        .filter_map(|i| sheet.get(i, "fields"))
+        .map(|f| f.split('\t').collect())
+        .collect();
+    let n = processes.len();
+    look::head(
+        page,
+        p,
+        cols,
+        "top",
+        &[(
+            tokens::MUTED,
+            false,
+            format!("{n} {} in {name}", if n == 1 { "process" } else { "processes" }),
+        )],
+    );
+    page.blank();
+    let at = |name: &str| titles.iter().position(|t| *t == name);
+    let state = at("STAT").or_else(|| at("S"));
+    let (pid, ppid) = (at("PID"), at("PPID"));
+    // The command: the last column, when ps ends with one.
+    let command = titles
+        .last()
+        .filter(|t| matches!(**t, "CMD" | "COMMAND" | "ARGS"))
+        .map(|_| titles.len() - 1);
+    // How deep each process is under the others shown, by its parent.
+    let depth = |row: &Vec<&str>| -> usize {
+        let (Some(pid), Some(ppid)) = (pid, ppid) else {
+            return 0;
+        };
+        let mut depth = 0;
+        let mut parent = row.get(ppid).copied();
+        while let Some(up) = parent {
+            match processes.iter().find(|r| r.get(pid).copied() == Some(up)) {
+                Some(r) if depth < 16 => {
+                    depth += 1;
+                    parent = r.get(ppid).copied();
+                }
+                _ => break,
+            }
+        }
+        depth
+    };
+    let columns: Vec<Column<'_>> = titles
+        .iter()
+        .enumerate()
+        .map(|(i, t)| Column {
+            heading: t,
+            right: false,
+            // The command stays longest, then the PID.
+            keep: if Some(i) == command {
+                9
+            } else if Some(i) == pid {
+                8
+            } else {
+                u8::try_from(titles.len().saturating_sub(i)).unwrap_or(1).min(7)
+            },
+        })
+        .collect();
+    let rows: Vec<(Cell, Vec<Cell>)> = processes
+        .iter()
+        .map(|row| {
+            let s = state.and_then(|i| row.get(i)).and_then(|s| s.chars().next());
+            let marker = match s {
+                Some('R') => tokens::SAGE,
+                Some('Z') => tokens::ROSE,
+                Some('T' | 't') => tokens::AMBER,
+                _ => tokens::FAINT,
+            };
+            let deep = depth(row);
+            let cells = row
+                .iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    if Some(i) == command {
+                        let indent = if deep > 0 {
+                            format!("{}└ ", "  ".repeat(deep - 1))
+                        } else {
+                            String::new()
+                        };
+                        Cell::new(format!("{indent}{f}"), tokens::BRIGHT)
+                    } else if Some(i) == pid {
+                        Cell::new(*f, tokens::FOREGROUND).bold()
+                    } else {
+                        Cell::new(*f, tokens::MUTED)
+                    }
+                })
+                .collect();
+            (Cell::new(if state.is_some() { "●" } else { "" }, marker), cells)
         })
         .collect();
     table(page, p, cols, &columns, &rows);

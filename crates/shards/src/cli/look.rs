@@ -82,6 +82,18 @@ impl Page {
         frame.end(width(), out);
     }
 
+    /// Writes the page as part of one that goes on: no empty line after it.
+    pub(super) fn write_part(self, p: &Paint, out: &mut impl std::io::Write) {
+        let mut text = String::new();
+        for mut l in self.lines {
+            p.reset(&mut l.s);
+            text.push_str(&l.s);
+            text.push('\n');
+        }
+        let _ = out.write_all(text.as_bytes());
+        let _ = out.flush();
+    }
+
     pub(super) fn write(self, p: &Paint, out: &mut impl std::io::Write) {
         let mut text = String::new();
         for mut l in self.lines {

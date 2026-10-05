@@ -1,0 +1,34 @@
+-ef
+-e
+-f
+-F
+-l
+-ly
+-lf
+-j
+-ej
+aux
+u
+x
+ax
+v
+j
+l
+s
+-o pid,user,args
+-o pid,ppid,pgid,sid,tty,tpgid,stat,etime,time,comm
+-o pid,pcpu,pmem,rss,vsz,nlwp,ni,pri,psr,wchan,args
+-o pid,user:20,uid,gid,group,euser,ruser,suser,fuser,egroup,rgroup
+-o pid,lstart,start,stime,etimes,cputime,bsdtime
+-o pid,cmd
+-o pid,command
+-o pid,ucmd
+-o pid,f,s,c,class,rtprio,policy
+-o pid,sz,rsz,vsize,trs,drs
+-O tty
+-o pid=PROCESS,args=WHAT
+-o pid,%cpu,%mem,stat,wchan:30
+--format pid,args
+o pid,args
+-o pid,comm:8,args:12
+-o pid -o args

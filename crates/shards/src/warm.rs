@@ -338,7 +338,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From) {
                 if let Some(number) = message.payload.first_chunk::<8>() {
                     let _ = shards_ipc::send(conn, kind::EXEC_TAKEN, number, &[]);
                 }
-                if let Err(e) = exec_request(message, to) {
+                if let Err(e) = exec_request(message, to, conn.try_clone().ok()) {
                     let _ = writeln!(io::stderr(), "shards: an exec: {e}");
                 }
             }
@@ -356,12 +356,18 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From) {
 }
 
 /// Starts the exec the daemon's `EXEC_RUN` asks for (workload::exec): its flags and spec,
-/// with its client's connection, stdin, stdout and stderr.
-fn exec_request(message: shards_ipc::Message, to: &'static ToGuest) -> Result<(), String> {
-    let (_, rest) = message
+/// with its client's connection, stdin, stdout and stderr; the daemon's connection hears
+/// of its end.
+fn exec_request(
+    message: shards_ipc::Message,
+    to: &'static ToGuest,
+    daemon: Option<UnixStream>,
+) -> Result<(), String> {
+    let (number, rest) = message
         .payload
         .split_first_chunk::<8>()
         .ok_or("an exec without its number")?;
+    let number = u64::from_be_bytes(*number);
     let (flags, spec) = rest.split_first().ok_or("an empty exec")?;
     let spec = Spec::decode(spec).ok_or("a malformed exec")?;
     let mut fds = message.fds.into_iter();
@@ -376,6 +382,8 @@ fn exec_request(message: shards_ipc::Message, to: &'static ToGuest) -> Result<()
             spec,
             interactive: flags & shards_ipc::EXEC_INTERACTIVE != 0,
             detached: flags & shards_ipc::EXEC_DETACHED != 0,
+            number,
+            daemon,
             client: UnixStream::from(client),
             stdin: File::from(stdin),
             stdout: File::from(stdout),

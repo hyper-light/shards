@@ -351,6 +351,207 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
 }
 
 #[test]
+fn top_lists_a_microvms_processes_as_docker_top_does() {
+    let Some((home, image)) = home("containers-top") else {
+        return;
+    };
+    let mut sleeper = start(&home, &image, &["--name", "listed"], &["sleep"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let top = shards(&["top", "listed"]);
+    assert_eq!(top.status, Some(0), "{top}");
+    let mut lines = top.stdout.lines();
+    // docker/cli's tabwriter: each title at least 20 wide (top.go).
+    assert_eq!(
+        lines.next(),
+        Some(
+            "UID                 PID                 PPID                C                   STIME               TTY                 TIME                CMD"
+        ),
+        "{top}"
+    );
+    let rows: Vec<Vec<&str>> = lines.map(|l| l.split_whitespace().collect()).collect();
+    // The workload, as the image's user named in its own /etc/passwd, with its
+    // argument; nothing of init's.
+    assert!(
+        rows.iter()
+            .any(|r| r.first() == Some(&"app") && r.last() == Some(&"sleep")),
+        "{top}"
+    );
+    assert!(!top.stdout.contains("shards-init"), "{top}");
+    let chosen = shards(&["top", "listed", "-o", "pid,args"]);
+    assert!(
+        chosen.stdout.starts_with("PID                 COMMAND\n"),
+        "{chosen}"
+    );
+    let refused = shards(&["top", "listed", "-o", "user=PID"]);
+    assert_eq!(
+        (refused.status, refused.stderr.as_str()),
+        (
+            Some(1),
+            "Error response from daemon: specifying \"user=PID\" is not allowed\n"
+        ),
+        "{refused}"
+    );
+    assert_eq!(shards(&["pause", "listed"]).status, Some(0));
+    let paused = shards(&["top", "listed"]);
+    assert!(paused.stderr.contains("is paused"), "{paused}");
+    assert_eq!(shards(&["unpause", "listed"]).status, Some(0));
+    assert_eq!(shards(&["stop", "listed"]).status, Some(0));
+    exit(&mut sleeper);
+    let ended = shards(&["top", "listed"]);
+    assert!(ended.stderr.ends_with("is not running\n"), "{ended}");
+}
+
+#[test]
+fn diff_shows_what_a_microvm_changed_as_docker_diff_does() {
+    let Some((home, image)) = home("containers-diff") else {
+        return;
+    };
+    let mut sleeper = start(&home, &image, &["--name", "changed"], &["sleep"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    // Nothing yet: what init makes of every container is not the container's change.
+    let fresh = shards(&["diff", "changed"]);
+    assert_eq!((fresh.status, fresh.stdout.as_str()), (Some(0), ""), "{fresh}");
+    let changed = shards(&[
+        "exec",
+        "-u",
+        "0",
+        "changed",
+        "/bin/testguest",
+        "fs",
+        "mkdir:/new",
+        "write:/new/f=x",
+        "write:/etc/passwd=root:x:0:0::/:/bin/sh",
+        "rm:/etc/group",
+        "chmod:700:/home",
+        "write:/etc/hosts=elsewhere",
+    ]);
+    assert_eq!(changed.status, Some(0), "{changed}");
+    let diff = shards(&["diff", "changed"]);
+    // A parent of a change is changed; /etc/hosts is init's, as Docker's init layer's.
+    assert_eq!(
+        (diff.status, diff.stdout.as_str()),
+        (
+            Some(0),
+            "C /etc\nD /etc/group\nC /etc/passwd\nC /home\nA /new\nA /new/f\n"
+        ),
+        "{diff}"
+    );
+    assert_eq!(shards(&["stop", "changed"]).status, Some(0));
+    exit(&mut sleeper);
+    let ended = shards(&["diff", "changed"]);
+    assert!(ended.stderr.contains("is not running"), "{ended}");
+}
+
+#[test]
+fn events_tell_a_microvms_life_as_docker_events_does() {
+    let Some((home, image)) = home("containers-events") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+    // A listener, which hears renames as they happen.
+    let mut live = Command::new(common::shards())
+        .args(["events", "--since", &since, "--filter", "event=rename"])
+        .env("SHARDS_HOME", &*home)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut sleeper = start(&home, &image, &["--name", "lived"], &["sleep"]);
+    for step in [
+        &["pause", "lived"][..],
+        &["unpause", "lived"],
+        &["rename", "lived", "lived2"],
+        &["stop", "lived2"],
+    ] {
+        assert_eq!(shards(step).status, Some(0), "{step:?}");
+    }
+    exit(&mut sleeper);
+    assert_eq!(shards(&["rm", "lived2"]).status, Some(0));
+    // Past: only what had happened is shown, and the command ends.
+    let until = format!(
+        "{:.9}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+    );
+    let past = shards(&[
+        "events",
+        "--since",
+        &since,
+        "--until",
+        &until,
+        "--filter",
+        "type=container",
+    ]);
+    assert_eq!(past.status, Some(0), "{past}");
+    // Each line: time, type, action, ID, attributes.
+    let actions: Vec<&str> = past.stdout.lines().filter_map(|l| l.split(' ').nth(2)).collect();
+    assert_eq!(
+        actions,
+        [
+            "create", "start", "pause", "unpause", "rename", "kill", "die", "stop", "destroy"
+        ],
+        "{past}"
+    );
+    assert!(past.stdout.contains("rename"), "{past}");
+    assert!(past.stdout.contains("name=lived2, oldName=/lived)"), "{past}");
+    assert!(
+        past.stdout.contains("kill ") && past.stdout.contains("signal=15"),
+        "{past}"
+    );
+    assert!(past.stdout.contains("exitCode=143"), "{past}");
+    let json = shards(&[
+        "events",
+        "--since",
+        &since,
+        "--until",
+        &until,
+        "--format",
+        "json",
+        "--filter",
+        "event=destroy",
+    ]);
+    assert!(
+        json.stdout
+            .starts_with("{\"Type\":\"container\",\"Action\":\"destroy\",\"Actor\":{\"ID\":"),
+        "{json}"
+    );
+    let templated = shards(&[
+        "events",
+        "--since",
+        &since,
+        "--until",
+        &until,
+        "--filter",
+        "event=rename",
+        "--format",
+        "{{.Action}} {{.Actor.Attributes.name}} {{index .Actor.Attributes \"oldName\" | upper}}",
+    ]);
+    assert_eq!(templated.stdout, "rename lived2 /LIVED\n", "{templated}");
+    let bad = shards(&["events", "--format", "{{.Nope"]);
+    assert_eq!(bad.status, Some(64), "{bad}");
+    assert!(
+        bad.stderr.starts_with("Error parsing format: template: :1: "),
+        "{bad}"
+    );
+    let mut line = String::new();
+    BufReader::new(live.stdout.as_mut().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert!(
+        line.contains(" container rename ") && line.contains("name=lived2"),
+        "{line}"
+    );
+    let _ = live.kill();
+    let _ = live.wait();
+}
+
+#[test]
 fn rm_refuses_a_running_container_unless_forced() {
     let Some((home, image)) = home("containers-force") else {
         return;

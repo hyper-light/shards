@@ -226,6 +226,15 @@ impl Reference {
         format!("{}/{}", self.domain, self.path)
     }
 
+    /// `FamiliarName`: the name alone as users write it, `alpine` for
+    /// `docker.io/library/alpine:3.20`.
+    pub fn familiar_name(&self) -> String {
+        let mut name = self.clone();
+        name.tag = None;
+        name.digest = None;
+        name.familiar()
+    }
+
     /// `FamiliarString`: the name as users write it, `alpine:3.20` for
     /// `docker.io/library/alpine:3.20`.
     pub fn familiar(&self) -> String {

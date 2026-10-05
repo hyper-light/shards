@@ -444,6 +444,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     &limits,
                 )
             });
+            // moby daemon/containerd/image_exporter.go: the image's digest, named so too.
+            self.image_event(&image.target.digest, &image.target.digest, "load");
             if image.dangling {
                 reply.out(&shown);
             } else {

@@ -158,6 +158,9 @@ pub mod kind {
     /// [`Sheet`](super::Sheet) of records, for the client to lay out as its own page,
     /// where a client that is not on a terminal gets `docker`'s text.
     pub const SHEET: u8 = 30;
+    /// Warm VM → daemon: the `EXEC_RUN` numbered so (a big-endian u64) has ended, with
+    /// the status after it (a byte), for its `exec_die` event.
+    pub const EXEC_ENDED: u8 = 31;
 }
 
 /// An `EXEC_RUN` flag: the command reads the client's stdin (`-i`).

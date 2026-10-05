@@ -431,7 +431,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             shards_image::save::save(&store, &asked, w).map_err(|e| e.to_string())
         });
         match written {
-            Ok(()) => 0,
+            Ok(()) => {
+                // moby daemon/containerd/image_exporter.go: each image's digest, named so.
+                for image in read.values() {
+                    self.image_event(&image.target.digest, &image.target.digest, "save");
+                }
+                0
+            }
             Err(e) => refuse(&format!("Error response from daemon: {e}")),
         }
     }

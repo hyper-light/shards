@@ -1,0 +1,13 @@
+UID        PID  PPID  C    SZ   RSS PSR STIME TTY          TIME CMD
+root       197     1  0   558  1108   7 06:49 ?        00:00:00 sleep 1000
+root       198     1  0   558  1100   9 06:49 ?        00:00:00 sleep 1001
+averyve+   199     1  0   558  1100  10 06:49 ?        00:00:00 sleep 1002
+4321       200     1  0   558  1104  14 06:49 ?        00:00:00 sleep 1003
+root       201     1  0   558  1100   3 06:49 ?        00:00:00 sleep 1004
+root       202     1  0   567  1472   4 06:49 ?        00:00:00 script -qfc sleep 1005 /dev/null
+root       203     1 64   558  1108   6 06:49 ?        00:00:02 sleep 1006
+root       204     1  0   583  1392  12 06:49 ?        00:00:00 sh -c sleep 1007; : an arg with  spaces tab.here
+root       207   201  0     0     0  15 06:49 ?        00:00:00 [sleep] <defunct>
+root       208   204  0   558  1100   2 06:49 ?        00:00:00 sleep 1007
+root       209   202  0   583  1392   5 06:49 pts/0    00:00:00 sh -c sleep 1005
+root       210   209  0   558  1104   1 06:49 pts/0    00:00:00 sleep 1005

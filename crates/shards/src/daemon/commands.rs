@@ -13,9 +13,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use shards_cmdline::commands::{
-    self, CONTAINER_INSPECT, CONTAINER_PRUNE, HISTORY, IMAGE_INSPECT, IMAGE_PRUNE, IMAGES, KILL, LOAD, LOGS,
-    PAUSE, PORT, PS, PULL, PUSH, RENAME, RM, RMI, SAVE, STATS, STOP, SYSTEM_DF, SYSTEM_PRUNE, TAG, UNPAUSE,
-    WAIT,
+    self, CONTAINER_INSPECT, CONTAINER_PRUNE, DIFF, EVENTS, HISTORY, IMAGE_INSPECT, IMAGE_PRUNE, IMAGES,
+    INFO, KILL, LOAD, LOGS, PAUSE, PORT, PS, PULL, PUSH, RENAME, RM, RMI, SAVE, STATS, STOP, SYSTEM_DF,
+    SYSTEM_PRUNE, TAG, TOP, UNPAUSE, WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
@@ -323,14 +323,37 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 ));
             }
         };
-        lock(&inbox).execs_in_flight.push((number, held));
+        let exec_id = self.exec_events(&id, &options.argv);
+        {
+            let mut inbox = lock(&inbox);
+            inbox.execs_in_flight.push((number, held));
+            if let Some(exec_id) = exec_id {
+                inbox.exec_ids.push((number, exec_id));
+            }
+        }
         let fds = [conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
         if let Err(e) = socket.send(kind::EXEC_RUN, &payload, &fds) {
-            lock(&inbox).execs_in_flight.retain(|(n, _)| *n != number);
+            let mut held = lock(&inbox);
+            held.execs_in_flight.retain(|(n, _)| *n != number);
+            held.exec_ids.retain(|(n, _)| *n != number);
+            drop(held);
             refuse(&format!(
                 "Error response from daemon: the container's microVM: {e}"
             ));
         }
+    }
+
+    /// Logs exec `argv`'s creation and start in container `id` as dockerd does (moby
+    /// daemon/exec.go: `exec_create: ENTRYPOINT ARGS`, then `exec_start`, each with its
+    /// ID), and returns the ID, for its `exec_die`; none if no ID could be made.
+    pub(super) fn exec_events(&self, id: &str, argv: &[String]) -> Option<String> {
+        let exec_id = crate::containers::new_id().ok()?;
+        let (entry, args) = argv.split_first().map_or(("", &[][..]), |(e, a)| (e.as_str(), a));
+        let line = format!("{entry} {}", args.join(" "));
+        for action in ["exec_create", "exec_start"] {
+            self.container_event(id, format!("{action}: {line}"), &[("execID", exec_id.clone())]);
+        }
+        Some(exec_id)
     }
 
     /// Runs container command `argv` for a client, answering on `reply`, and returns its
@@ -342,7 +365,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             return 1;
         };
         let rest = argv.get(named..).unwrap_or_default();
-        let parsed = match flags::parse(command, path, rest, &|_, value| Ok(value.to_string())) {
+        let parsed = match flags::parse(command, path, rest, &flags::value) {
             Outcome::Run(parsed) => parsed,
             // The client answers these itself; this is what it would have said.
             Outcome::Help { .. } => {
@@ -392,6 +415,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.prune(true, true, parsed.bool("all"), asker, reply)
         } else if std::ptr::eq(command, &SYSTEM_DF) {
             self.system_df(asker, reply)
+        } else if std::ptr::eq(command, &INFO) {
+            self.info(asker, reply)
+        } else if std::ptr::eq(command, &EVENTS) {
+            self.events(&parsed, asker, reply)
+        } else if std::ptr::eq(command, &DIFF) {
+            self.diff(&parsed.args, asker.styled(), reply)
+        } else if std::ptr::eq(command, &TOP) {
+            self.top(&parsed, asker, reply)
         } else if std::ptr::eq(command, &PAUSE) {
             self.pause(&parsed, true, asker.styled(), reply)
         } else if std::ptr::eq(command, &UNPAUSE) {
@@ -416,6 +447,164 @@ impl<D: crate::containers::Disk> Daemon<D> {
             reply.err(&format!("shards: {path} is not a container command"));
             1
         }
+    }
+
+    /// `shards diff CONTAINER` (moby daemon/changes.go, ContainerChanges): what the
+    /// microVM changed of its image's files, as its init finds them (init changes.rs),
+    /// one `KIND PATH` a line as docker/cli prints them (diff.go). Its writable layer
+    /// lives with it, so a microVM that has ended has none to show, where dockerd keeps a
+    /// stopped container's.
+    fn diff(&self, args: &[String], styled: bool, reply: &Reply<'_>) -> u8 {
+        let Some(given) = args.first() else {
+            return 1;
+        };
+        let refuse = |said: String| {
+            reply.err(&format!("Error response from daemon: {said}"));
+            1
+        };
+        let id = match self.resolve(given) {
+            Ok(id) => id,
+            Err(e) => {
+                reply.err(&e);
+                return 1;
+            }
+        };
+        self.await_start(&id);
+        if !self.running(&id) {
+            return refuse(format!(
+                "container {id} is not running: a microVM's changes end with it"
+            ));
+        }
+        if lock(&self.paused).contains(&id) {
+            return refuse(format!(
+                "container {id} is paused: its changes can be read once it is unpaused"
+            ));
+        }
+        let spec = shards_abi::run::Spec {
+            builtin: shards_abi::run::builtin::CHANGES,
+            ..Default::default()
+        };
+        // As they come: a microVM's changes may be many.
+        let ended = if styled {
+            let mut page = DiffPage::default();
+            let mut head = Some(given.clone());
+            let ended = self.exec_streamed(&id, &spec, None, None, &mut |chunk| {
+                let rows = page.take(chunk);
+                let mut sheet = shards_ipc::Sheet::new("diff");
+                if let Some(name) = head.take() {
+                    sheet.record(&[("kind", "head".into()), ("name", name)]);
+                }
+                for (kind, path) in rows {
+                    sheet.record(&[("change", kind), ("path", path)]);
+                }
+                reply.sheet_taken(&sheet)
+            });
+            let mut sheet = shards_ipc::Sheet::new("diff");
+            let [a, c, d] = page.counts;
+            sheet.record(&[
+                ("kind", "end".into()),
+                ("added", a.to_string()),
+                ("changed", c.to_string()),
+                ("deleted", d.to_string()),
+            ]);
+            if ended.as_ref().is_ok_and(|e| e.status == Some(0)) {
+                reply.sheet(&sheet);
+            }
+            ended
+        } else {
+            self.exec_streamed(&id, &spec, None, None, &mut |chunk| {
+                reply.bytes(LOG_STDOUT, chunk).is_ok()
+            })
+        };
+        match ended {
+            Ok(e) if e.status == Some(0) => 0,
+            Ok(_) => refuse(format!("container {id}: its changes could not all be read")),
+            Err(e) => refuse(format!("container {id}: reading its changes: {e}")),
+        }
+    }
+
+    /// `shards top CONTAINER [ps OPTIONS]` (moby daemon/top_unix.go, ContainerTop): the
+    /// microVM's processes as procps's `ps` lays them out with the options given (`-ef`
+    /// if none), from what its init reads of them in `/proc` (daemon/top.rs), printed as
+    /// docker/cli prints them (top.go: a tabwriter of minimum width 20, padding 3). Users
+    /// and groups are named as the microVM's own `/etc/passwd` and `/etc/group` name
+    /// them, where dockerd names them as its host does. A paused microVM cannot be read,
+    /// where dockerd's ps reads a frozen cgroup's processes: it says so.
+    fn top(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
+        let Some((given, options)) = parsed.args.split_first() else {
+            return 1;
+        };
+        let refuse = |said: String| {
+            reply.err(&format!("Error response from daemon: {said}"));
+            1
+        };
+        // As the client sends them (one query value, joined by spaces) and dockerd splits
+        // them again, on each space.
+        let joined = options.join(" ");
+        let joined = match (joined.is_empty(), asker.styled()) {
+            (false, _) => joined,
+            // On a colour terminal, more than `-ef` says: each one's state, its share of
+            // a CPU, its memory and how long it has run, under its parent.
+            (true, true) => "-o pid,ppid,user,stat,%cpu,rss,etime,args".to_string(),
+            (true, false) => "-ef".to_string(),
+        };
+        if let Err(e) = ps_args_allowed(&joined) {
+            return refuse(e);
+        }
+        let id = match self.resolve(given) {
+            Ok(id) => id,
+            Err(e) => {
+                reply.err(&e);
+                return 1;
+            }
+        };
+        self.await_start(&id);
+        if !self.running(&id) {
+            return refuse(format!("container {id} is not running"));
+        }
+        if lock(&self.paused).contains(&id) {
+            return refuse(format!(
+                "container {id} is paused: its processes can be listed once it is unpaused"
+            ));
+        }
+        let spec = shards_abi::run::Spec {
+            builtin: shards_abi::run::builtin::PROCESSES,
+            ..Default::default()
+        };
+        let quiet = match self.exec_quietly(&id, &spec, None, TOP_LIMIT, super::TAKE_TIMEOUT) {
+            Ok(q) if q.status == Some(0) && !q.more => q,
+            Ok(_) => return refuse(format!("container {id}: its processes could not be read")),
+            Err(e) => return refuse(format!("container {id}: reading its processes: {e}")),
+        };
+        let args: Vec<&str> = joined.split(' ').collect();
+        let listed =
+            super::top::ps(&quiet.output, &args, asker.utc_offset).and_then(|out| super::top::table(&out));
+        let table = match listed {
+            Ok(t) => t,
+            Err(e) => return refuse(e),
+        };
+        self.container_event(&id, "top", &[]);
+        if asker.styled() {
+            let mut sheet = shards_ipc::Sheet::new("top");
+            sheet.record(&[
+                ("kind", "head".into()),
+                ("name", given.clone()),
+                ("titles", table.titles.join("\t")),
+            ]);
+            for p in &table.processes {
+                sheet.record(&[("fields", p.join("\t"))]);
+            }
+            reply.sheet(&sheet);
+            return 0;
+        }
+        let rows: Vec<Vec<String>> = std::iter::once(table.titles).chain(table.processes).collect();
+        let mut text = String::new();
+        for line in tabulate_with(&rows, 20, asker.east_asian) {
+            text.push_str(&line);
+            text.push('\n');
+        }
+        let _ = reply.bytes(LOG_STDOUT, text.as_bytes());
+        0
     }
 
     /// `shards stats [CONTAINER...]` (docker/cli cli/command/container/stats.go): what each
@@ -581,7 +770,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 );
             }
         };
-        {
+        let old = {
             let mut registry = lock(&self.containers);
             let Some(old) = registry.get(&id).map(|c| c.name.clone()) else {
                 return refuse(format!("No such container: {given}"));
@@ -598,8 +787,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
             if let Err(e) = registry.rename(&id, &new) {
                 return refuse(e.to_string());
             }
-        }
+            old
+        };
         self.record_soon(&id, Vec::new());
+        // dockerd's names begin with `/` (rename.go: `oldName = ctr.Name`).
+        self.container_event(&id, "rename", &[("oldName", format!("/{old}"))]);
         0
     }
 
@@ -767,6 +959,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
             _ => return false,
         };
         let sent = socket.send(kind::SIGNAL, &linux.to_be_bytes(), &[]).is_ok();
+        if sent {
+            self.container_event(id, "kill", &[("signal", linux.to_string())]);
+        }
         if lock(&self.paused).contains(id) {
             let own = lock(&self.containers).made(id).and_then(|c| c.stop_signal);
             if linux == 9 || own.is_none_or(|s| s == i64::from(linux)) {
@@ -822,7 +1017,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     };
                     return Step::Now(match frozen {
                         Ok(()) => {
-                            lock(&self.paused).insert(id);
+                            lock(&self.paused).insert(id.clone());
+                            self.container_event(&id, "pause", &[]);
                             Ok(true)
                         }
                         Err(e) => Err(format!(
@@ -836,6 +1032,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     )));
                 }
                 Step::Now(if self.thaw(&id) {
+                    self.container_event(&id, "unpause", &[]);
                     Ok(true)
                 } else {
                     Err(format!(
@@ -1306,11 +1503,18 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 // No signal Linux has: killed, after 2 s.
                 let (linux, grace) = linux.map_or((9, Some(UNSENT_WAIT)), |l| (l, grace));
                 let unheard = cannot("tried to kill container, but did not receive an exit event");
+                let stopped = id.clone();
                 Step::End {
                     id,
                     linux,
                     grace,
-                    then: Box::new(move |ended| if ended { Ok(true) } else { Err(unheard) }),
+                    then: Box::new(move |ended| {
+                        if !ended {
+                            return Err(unheard);
+                        }
+                        self.container_event(&stopped, "stop", &[]);
+                        Ok(true)
+                    }),
                 }
             },
             reply,
@@ -1738,6 +1942,54 @@ impl Show<'_, '_> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+
+    #[test]
+    fn top_refuses_pid_headers_on_other_fields_as_dockerd_does() {
+        // moby daemon/top_unix_test.go, TestContainerTopValidatePSArgs, and the regexp's
+        // backtracking.
+        for ok in [
+            "-ef",
+            "-o pid=PID",
+            "-o pid=PID,user=USER",
+            "-o pid=",
+            "pid=PID",
+            "-o  pid= PID",
+        ] {
+            assert_eq!(ps_args_allowed(ok), Ok(()), "{ok}");
+        }
+        // TestContainerTopValidatePSArgs's own, at the pinned moby.
+        for (args, refused) in [
+            ("ae -o uid=PID", true),
+            ("ae -o \"uid= PID\"", true),
+            ("ae -o \"uid=\u{2003}PID\"", false),
+            ("ae o uid=PID", true),
+            ("aeo uid=PID", true),
+            ("ae -O uid=PID", true),
+            ("ae -o pid=PID2 -o uid=PID", true),
+            ("ae -o pid=PID", false),
+            ("ae -o pid=PID -o uid=PIDX", true),
+            ("aeo pid=PID", false),
+            ("ae", false),
+            ("", false),
+        ] {
+            assert_eq!(ps_args_allowed(args).is_err(), refused, "{args}");
+        }
+        for (bad, said) in [
+            (
+                "-o pid=PID,user=PID",
+                r#"specifying "pid=PID,user=PID" is not allowed"#,
+            ),
+            ("-o user=PID", r#"specifying "user=PID" is not allowed"#),
+            ("-o user= PID", r#"specifying "user=PID" is not allowed"#),
+            ("-o x=PIDy=z", r#"specifying "x=PIDy=z" is not allowed"#),
+            (
+                "-ef -o pid=PID -o user=PIDS",
+                r#"specifying "user=PIDS" is not allowed"#,
+            ),
+        ] {
+            assert_eq!(ps_args_allowed(bad), Err(said.to_string()), "{bad}");
+        }
+    }
 
     #[test]
     fn memory_is_shown_as_go_units_shows_it() {
@@ -2209,7 +2461,7 @@ struct Sampled {
 }
 
 /// go-units' BytesSize (`%.4g` and binary units), as `stats` shows memory: 1.5MiB, 256MiB.
-fn binary_size(n: u64) -> String {
+pub(super) fn binary_size(n: u64) -> String {
     const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
     #[allow(clippy::cast_precision_loss)]
     let mut size = n as f64;
@@ -2295,23 +2547,33 @@ fn status(
 /// spaces; docker/cli cli/command/formatter/tabwriter): each column but the last is as
 /// wide as its widest cell plus 3, and at least 10, in go-runewidth's columns.
 pub(super) fn tabulate<const N: usize>(rows: &[[String; N]], east_asian: bool) -> Vec<String> {
+    tabulate_with(rows, 10, east_asian)
+}
+
+/// [`tabulate`], with columns at least `min` wide, for rows of any one length.
+pub(super) fn tabulate_with<R: AsRef<[String]>>(rows: &[R], min: usize, east_asian: bool) -> Vec<String> {
     let cell_width = |cell: &str| width::string_width(cell, east_asian);
-    let mut widths = [10usize; N];
+    let mut widths: Vec<usize> = Vec::new();
     for row in rows {
-        for (w, cell) in widths.iter_mut().zip(row.iter()) {
-            *w = (*w).max(cell_width(cell) + 3);
+        for (i, cell) in row.as_ref().iter().enumerate() {
+            let w = (cell_width(cell) + 3).max(min);
+            match widths.get_mut(i) {
+                Some(have) => *have = (*have).max(w),
+                None => widths.push(w),
+            }
         }
     }
     rows.iter()
         .map(|row| {
+            let row = row.as_ref();
             let mut line = String::new();
             for (i, cell) in row.iter().enumerate() {
                 line.push_str(cell);
-                if i + 1 < N {
+                if i + 1 < row.len() {
                     let pad = widths
                         .get(i)
                         .copied()
-                        .unwrap_or(10)
+                        .unwrap_or(min)
                         .saturating_sub(cell_width(cell));
                     line.extend(std::iter::repeat_n(' ', pad));
                 }
@@ -2319,6 +2581,88 @@ pub(super) fn tabulate<const N: usize>(rows: &[[String; N]], east_asian: bool) -
             line
         })
         .collect()
+}
+
+/// `diff`'s lines, taken whole from the pieces they come in, and counted by kind (added,
+/// changed, deleted), for a client on a colour terminal.
+#[derive(Default)]
+struct DiffPage {
+    partial: Vec<u8>,
+    counts: [u64; 3],
+}
+
+impl DiffPage {
+    /// The whole lines `chunk` ends, each its kind and path.
+    fn take(&mut self, chunk: &[u8]) -> Vec<(String, String)> {
+        self.partial.extend_from_slice(chunk);
+        let Some(last) = self.partial.iter().rposition(|&b| b == b'\n') else {
+            return Vec::new();
+        };
+        let whole: Vec<u8> = self.partial.drain(..=last).collect();
+        whole
+            .split(|&b| b == b'\n')
+            .filter_map(|line| {
+                let (&[kind, _], path) = line.split_first_chunk::<2>()?;
+                let at = match kind {
+                    b'A' => 0,
+                    b'C' => 1,
+                    _ => 2,
+                };
+                if let Some(n) = self.counts.get_mut(at) {
+                    *n += 1;
+                }
+                Some((
+                    char::from(kind).to_string(),
+                    String::from_utf8_lossy(path).into_owned(),
+                ))
+            })
+            .collect()
+    }
+}
+
+/// The most of a microVM's process dump `top` takes: some 2 KiB a process.
+const TOP_LIMIT: usize = 16 << 20;
+
+/// dockerd's check of `top`'s ps options (top_unix.go, validatePSArgs): over each match
+/// of `\s+([^\s]*)=\s*(PID[^\s]*)`, a field headed `PID…` must be `pid`, which dockerd
+/// finds its processes by.
+fn ps_args_allowed(args: &str) -> Result<(), String> {
+    let space = |c: char| matches!(c, '\t' | '\n' | '\x0c' | '\r' | ' ');
+    let mut rest = args;
+    // Each match begins at a run of spaces; matches do not overlap.
+    while let Some(at) = rest.find(space) {
+        let after = rest.get(at..).unwrap_or_default().trim_start_matches(space);
+        let word_end = after.find(space).unwrap_or(after.len());
+        let word = after.get(..word_end).unwrap_or_default();
+        // `[^\s]*=` takes as much of the word as leaves a value naming PID: the last `=`
+        // that does; one ending the word may have its value after spaces.
+        let found = word.rmatch_indices('=').find_map(|(eq, _)| {
+            let key = word.get(..eq).unwrap_or_default();
+            let value = word.get(eq + 1..).unwrap_or_default();
+            if value.starts_with("PID") {
+                return Some((key, value, word_end));
+            }
+            if !value.is_empty() {
+                return None;
+            }
+            let tail = after.get(word_end..).unwrap_or_default();
+            let next = tail.trim_start_matches(space);
+            let value = next
+                .get(..next.find(space).unwrap_or(next.len()))
+                .unwrap_or_default();
+            value
+                .starts_with("PID")
+                .then(|| (key, value, after.len() - next.len() + value.len()))
+        });
+        match found {
+            Some((key, value, _)) if key != "pid" => {
+                return Err(format!("specifying \"{key}={value}\" is not allowed"));
+            }
+            Some((_, _, end)) => rest = after.get(end..).unwrap_or_default(),
+            None => rest = after.get(word_end..).unwrap_or_default(),
+        }
+    }
+    Ok(())
 }
 
 /// Who asked for a container command, and what of theirs shapes the answer.

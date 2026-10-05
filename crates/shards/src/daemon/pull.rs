@@ -23,6 +23,19 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         let (status, _) = self.cancellable(asker.client, reply.0, |cancel| {
             crate::pull::command(parsed, &self.home, &env, &out, Some(cancel))
         });
+        // moby daemon/containerd/image_pull.go: the reference pulled, named without its
+        // tag.
+        if status == 0
+            && let Some(given) = parsed.args.first()
+            && let Ok(r) = shards_image::reference::Reference::parse_normalized(given)
+        {
+            let r = if parsed.bool("all-tags") {
+                r
+            } else {
+                r.tag_name_only()
+            };
+            self.image_event(&r.familiar(), &r.familiar_name(), "pull");
+        }
         status
     }
 }

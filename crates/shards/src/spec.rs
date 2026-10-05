@@ -90,6 +90,7 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
         // A run on a network gets its resolvers from the daemon as it is handed over.
         resolv: None,
         stdin: o.interactive,
+        builtin: 0,
     };
     fits(&spec)?;
     Ok(spec)

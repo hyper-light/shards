@@ -412,6 +412,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         });
         match found {
             Ok(id) => {
+                // moby daemon/containerd/image_tag.go: the image's digest, named as tagged.
+                self.image_event(&id, &tagged.familiar(), "tag");
                 if styled {
                     let mut sheet = shards_ipc::Sheet::new("tag");
                     sheet.record(&[
@@ -484,6 +486,12 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     }
                 }
             }
+            // What its untag events name it by (image_delete.go): the image's digest.
+            let target = store
+                .as_ref()
+                .and_then(|s| s.named().ok())
+                .and_then(|images| resolve(&images, given).ok().map(|i| i.id.to_string()))
+                .unwrap_or_default();
             let removed = match &store {
                 None => Err(super::rmi::Refused {
                     said: format!("Error response from daemon: {}", not_found(given)),
@@ -509,14 +517,17 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     for r in removed {
                         match r {
                             Removed::Untagged(name) if styled => {
+                                self.image_event(&target, &name, "untag");
                                 unpublish(&name);
                                 sheet.record(&[("given", given.clone()), ("untagged", name)]);
                             }
                             Removed::Untagged(name) => {
+                                self.image_event(&target, &name, "untag");
                                 unpublish(&name);
                                 reply.out(&format!("Untagged: {name}"));
                             }
                             Removed::Deleted(id) => {
+                                self.image_event(&id, &id, "delete");
                                 if styled {
                                     let freed = sizes.iter().find(|(i, _)| *i == id).map_or(0, |(_, n)| *n);
                                     sheet.record(&[

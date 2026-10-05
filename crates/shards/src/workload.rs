@@ -617,6 +617,9 @@ pub struct ExecRequest {
     pub spec: Spec,
     pub interactive: bool,
     pub detached: bool,
+    /// The daemon's number for it, and its connection, told of its end (`EXEC_ENDED`).
+    pub number: u64,
+    pub daemon: Option<UnixStream>,
     pub client: UnixStream,
     pub stdin: fs::File,
     pub stdout: fs::File,
@@ -632,16 +635,19 @@ pub fn exec(to: &'static ToGuest, req: ExecRequest) -> Result<(), String> {
         .name("exec".into())
         .spawn(move || {
             let mut req = req;
-            let status = match exec_session(to, &mut req) {
-                Ok(Some(status)) => Some(status),
-                Ok(None) => None,
+            let (status, answered) = match exec_session(to, &mut req) {
+                Ok(ended) => ended,
                 Err(e) => {
                     let _ = writeln!(req.stderr, "Error response from daemon: {e}");
-                    Some(1)
+                    (Some(1), false)
                 }
             };
-            if let Some(status) = status {
+            if let (Some(status), false) = (status, answered) {
                 let _ = shards_ipc::send(&req.client, shards_ipc::kind::EXIT, &[status], &[]);
+            }
+            if let (Some(status), Some(daemon)) = (status, &req.daemon) {
+                let ended = [&req.number.to_be_bytes()[..], &[status]].concat();
+                let _ = shards_ipc::send(daemon, shards_ipc::kind::EXEC_ENDED, &ended, &[]);
             }
         })
         .map(drop)
@@ -668,7 +674,9 @@ fn exec_frame(token: &[u8; run::TOKEN], id: u32, spec: &Spec) -> Result<Vec<u8>,
 /// One exec, from asking the guest for it to its status. `None` once a detached exec's
 /// client has been told it started; what never started is said on `req.stderr`.
 #[cfg(unix)]
-fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<Option<u8>, String> {
+/// Its status, if it ended, and whether its client was answered already: a detached one is
+/// once it starts, then followed to its end, its output going nowhere.
+fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<(Option<u8>, bool), String> {
     let mut token = [0u8; run::TOKEN];
     shards_vmm::platform::fill_random(&mut token).map_err(|e| format!("an exec's token: {e}"))?;
     let id = NEXT_EXEC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -727,6 +735,7 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<Option<u8
     }
     let mut frame = Vec::new();
     let mut not_started: Option<(u8, String)> = None;
+    let mut answered = false;
     let mut conn = io::BufReader::with_capacity(run::BUFFERED, &conn);
     loop {
         let mut h = [0u8; run::HEADER];
@@ -744,7 +753,7 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<Option<u8
         match which {
             kind::STARTED if req.detached => {
                 let _ = shards_ipc::send(&req.client, shards_ipc::kind::EXIT, &[0], &[]);
-                return Ok(None);
+                answered = true;
             }
             kind::STARTED => {}
             // A detached exec's output goes nowhere, as `docker exec -d`'s does.
@@ -762,27 +771,30 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<Option<u8
             kind::EXIT => {
                 let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;
                 let status = u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX);
-                return Ok(Some(match not_started {
-                    None => status,
-                    Some((run::exec_failed::DAEMON, why)) => {
-                        let _ = writeln!(req.stderr, "Error response from daemon: {why}");
-                        1
-                    }
-                    Some((_, why)) => {
-                        // dockerd's code for what the runtime could not start (moby
-                        // daemon/errors.go), in runc's words.
-                        let (_, code) = shards_cmdline::commands::start_failed(&why);
-                        let said = if why == "Cwd must be an absolute path" {
-                            format!("OCI runtime exec failed: exec failed: {why}")
-                        } else {
-                            format!(
-                                "OCI runtime exec failed: exec failed: unable to start container process: {why}"
-                            )
-                        };
-                        let _ = writeln!(req.stderr, "{said}");
-                        code
-                    }
-                }));
+                return Ok((
+                    Some(match not_started {
+                        None => status,
+                        Some((run::exec_failed::DAEMON, why)) => {
+                            let _ = writeln!(req.stderr, "Error response from daemon: {why}");
+                            1
+                        }
+                        Some((_, why)) => {
+                            // dockerd's code for what the runtime could not start (moby
+                            // daemon/errors.go), in runc's words.
+                            let (_, code) = shards_cmdline::commands::start_failed(&why);
+                            let said = if why == "Cwd must be an absolute path" {
+                                format!("OCI runtime exec failed: exec failed: {why}")
+                            } else {
+                                format!(
+                                    "OCI runtime exec failed: exec failed: unable to start container process: {why}"
+                                )
+                            };
+                            let _ = writeln!(req.stderr, "{said}");
+                            code
+                        }
+                    }),
+                    answered,
+                ));
             }
             _ => return Err(format!("the guest sent an unknown frame kind {which}")),
         }

@@ -68,6 +68,10 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("rename", Thing::Vm | Thing::Container) => &["rename"],
         ("stats" | "watch", Thing::Vm | Thing::Container) => &["stats"],
         ("pause" | "freeze", Thing::Vm | Thing::Container) => &["pause"],
+        ("top", Thing::Vm | Thing::Container) => &["top"],
+        ("diff" | "changes", Thing::Vm | Thing::Container) => &["diff"],
+        ("events" | "watch", Thing::System) => &["events"],
+        ("inspect", Thing::System) => &["info"],
         ("unpause" | "resume" | "thaw", Thing::Vm | Thing::Container) => &["unpause"],
         ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect"],
         ("run", Thing::Vm | Thing::Container) => &["run"],
@@ -112,6 +116,18 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "inspect",
+        "diff",
+        "vm",
+        "Show what a microVM changed of its image's files",
+    ),
+    (
+        "inspect",
+        "events",
+        "system",
+        "Watch what happens to microVMs and images, as it happens",
+    ),
+    (
+        "inspect",
         "history",
         "image",
         "Show how an image's layers were made",
@@ -119,8 +135,8 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "inspect",
         "inspect",
-        "vm | image | disk | guest",
-        "Show a microVM, an image, disk use, or the guest",
+        "vm | image | disk | guest | system",
+        "Show a microVM, an image, disk use, the guest, or shards itself",
     ),
     ("inspect", "list", "vm | image", "List microVMs, or images"),
     ("inspect", "logs", "vm", "Show what a microVM's command printed"),
@@ -130,6 +146,7 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "vm",
         "Watch what microVMs take of the host, live",
     ),
+    ("inspect", "top", "vm", "Show a microVM's processes"),
     (
         "manage",
         "configure",
@@ -211,6 +228,18 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "inspect",
+        "diff",
+        "vm NAME",
+        "Show what a microVM changed of its image's files",
+    ),
+    (
+        "inspect",
+        "events",
+        "system",
+        "Watch what happens to microVMs and images, as it happens",
+    ),
+    (
+        "inspect",
         "history",
         "image NAME",
         "Show how an image's layers were made",
@@ -230,6 +259,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     (
         "inspect",
         "inspect",
+        "system",
+        "Show what shards is, holds and runs on",
+    ),
+    (
+        "inspect",
+        "inspect",
         "vm | image NAME",
         "Show what a microVM runs, or an image's documents",
     ),
@@ -245,6 +280,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "stats",
         "vm [NAME]",
         "Watch what microVMs take of the host, live",
+    ),
+    (
+        "inspect",
+        "top",
+        "vm NAME [ps OPTIONS]",
+        "Show a microVM's processes, as ps lays them out",
     ),
     (
         "manage",

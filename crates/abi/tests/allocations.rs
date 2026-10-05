@@ -67,6 +67,7 @@ fn launch() -> Spec {
         tty: Some(Size { rows: 24, cols: 80 }),
         resolv: None,
         stdin: true,
+        builtin: 0,
     }
 }
 

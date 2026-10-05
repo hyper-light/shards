@@ -1,0 +1,13 @@
+  PID %CPU %MEM   RSS    VSZ NLWP  NI PRI PSR WCHAN  COMMAND
+  197  0.0  0.0  1108   2232    1   0  19   7 hrtime sleep 1000
+  198  0.0  0.0  1100   2232    1   5  14   9 hrtime sleep 1001
+  199  0.0  0.0  1100   2232    1   0  19  10 hrtime sleep 1002
+  200  0.0  0.0  1104   2232    1   0  19  14 hrtime sleep 1003
+  201  0.0  0.0  1100   2232    1   0  19   3 hrtime sleep 1004
+  202  0.0  0.0  1472   2268    1   0  19   4 do_sys script -qfc sleep 1005 /dev/null
+  203 64.8  0.0  1108   2232    1   0  19   6 hrtime sleep 1006
+  204  0.0  0.0  1392   2332    1   0  19  12 do_wai sh -c sleep 1007; : an arg with  spaces tab.here
+  207  0.0  0.0     0      0    1   0  19  15 -      [sleep] <defunct>
+  208  0.0  0.0  1100   2232    1   0  19   2 hrtime sleep 1007
+  209  0.0  0.0  1392   2332    1   0  19   5 do_wai sh -c sleep 1005
+  210  0.0  0.0  1104   2232    1   0  19   1 hrtime sleep 1005

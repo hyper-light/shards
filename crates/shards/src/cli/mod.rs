@@ -166,7 +166,7 @@ fn container(
         Ok(argv) => argv,
         Err(e) => return failed(&e),
     };
-    let parsed = match read(command, path, &argv, &|_, value| Ok(value.to_string())) {
+    let parsed = match read(command, path, &argv, &flags::value) {
         Ok(parsed) => parsed,
         Err(answered) => return answered,
     };

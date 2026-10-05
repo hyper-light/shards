@@ -1,0 +1,5576 @@
+{
+ "go": "go1.26.1",
+ "docker_cli": "v29.8.1",
+ "data": {
+  "container": {
+   "$object": "Container",
+   "ID": "abc123def456",
+   "Names": [
+    "web",
+    "app"
+   ],
+   "Labels": {
+    "com.docker.compose.project": "proj",
+    "env": "prod"
+   }
+  },
+  "header": {
+   "$strmap": {
+    "ID": "CONTAINER ID",
+    "Names": "NAMES",
+    "Image": "IMAGE"
+   }
+  },
+  "int": 3,
+  "list": [
+   "x",
+   "y"
+  ],
+  "m": {
+   "str": "hello",
+   "empty": "",
+   "int": 42,
+   "neg": -7,
+   "zero": 0,
+   "n5": 5,
+   "float": 3.5,
+   "fint": 2.0,
+   "big": 1e21,
+   "small": 0.000001234,
+   "t": true,
+   "f": false,
+   "null": null,
+   "list": [
+    "a",
+    "b",
+    "c"
+   ],
+   "ints": [
+    1,
+    2,
+    3
+   ],
+   "emptylist": [],
+   "mixed": [
+    1,
+    "two",
+    3.5,
+    true,
+    null,
+    {
+     "k": "v"
+    },
+    [
+     1,
+     2
+    ]
+   ],
+   "map": {
+    "b": 2,
+    "a": 1,
+    "c": 3
+   },
+   "emptymap": {},
+   "nested": {
+    "inner": {
+     "deep": "value"
+    },
+    "list": [
+     {
+      "name": "x"
+     },
+     {
+      "name": "y"
+     }
+    ],
+    "null": null
+   },
+   "u": {
+    "$uint": 7
+   },
+   "strs": {
+    "$strings": [
+     "x",
+     "y",
+     "z"
+    ]
+   },
+   "labels": {
+    "$strmap": {
+     "com.example.a": "1",
+     "b": "two",
+     "empty": ""
+    }
+   },
+   "html": "<a href=\"x\">&'</a>",
+   "unicode": "héllo wörld ñ 日本",
+   "spaces": "  padded  ",
+   "multi": "line1\nline2\ttab",
+   "csv": "a,b,,c",
+   "with-dash": "dash",
+   "person": {
+    "$object": "Person",
+    "Name": "Ann",
+    "Age": 30,
+    "Tags": [
+     "admin",
+     "dev"
+    ],
+    "Meta": {
+     "team": "core"
+    }
+   },
+   "container": {
+    "$object": "Container",
+    "ID": "abc123def456",
+    "Names": [
+     "web",
+     "app"
+    ],
+    "Labels": {
+     "com.docker.compose.project": "proj",
+     "env": "prod"
+    }
+   },
+   "people": [
+    {
+     "$object": "Person",
+     "Name": "Ann",
+     "Age": 30,
+     "Tags": [
+      "admin",
+      "dev"
+     ],
+     "Meta": {
+      "team": "core"
+     }
+    },
+    {
+     "$object": "Person",
+     "Name": "Bob",
+     "Age": 5,
+     "Tags": [],
+     "Meta": {}
+    }
+   ]
+  },
+  "nil": null,
+  "person": {
+   "$object": "Person",
+   "Name": "Ann",
+   "Age": 30,
+   "Tags": [
+    "admin",
+    "dev"
+   ],
+   "Meta": {
+    "team": "core"
+   }
+  },
+  "str": "just a string"
+ },
+ "cases": [
+  {
+   "data": "m",
+   "template": "",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "plain text",
+   "output": "plain text"
+  },
+  {
+   "data": "m",
+   "template": "unicode ✓ 日本",
+   "output": "unicode ✓ 日本"
+  },
+  {
+   "data": "m",
+   "template": "{{/* comment */}}x",
+   "output": "x"
+  },
+  {
+   "data": "m",
+   "template": "a {{- /* c */ -}} b",
+   "output": "ab"
+  },
+  {
+   "data": "m",
+   "template": "{{\"str\"}}",
+   "output": "str"
+  },
+  {
+   "data": "m",
+   "template": "{{`raw`}}",
+   "output": "raw"
+  },
+  {
+   "data": "m",
+   "template": "{{`multi\nline`}}",
+   "output": "multi\nline"
+  },
+  {
+   "data": "m",
+   "template": "{{\"\\t\\\"quoted\\\"\"}}",
+   "output": "\t\"quoted\""
+  },
+  {
+   "data": "m",
+   "template": "{{\"é\\U0001F600\\x41\\101\"}}",
+   "output": "é😀AA"
+  },
+  {
+   "data": "m",
+   "template": "{{\"\\q\"}}",
+   "output": "",
+   "error": "template: :1: invalid syntax"
+  },
+  {
+   "data": "m",
+   "template": "{{1}}",
+   "output": "1"
+  },
+  {
+   "data": "m",
+   "template": "{{-1}}",
+   "output": "-1"
+  },
+  {
+   "data": "m",
+   "template": "{{+5}}",
+   "output": "5"
+  },
+  {
+   "data": "m",
+   "template": "{{-0}}",
+   "output": "0"
+  },
+  {
+   "data": "m",
+   "template": "{{1.5}}",
+   "output": "1.5"
+  },
+  {
+   "data": "m",
+   "template": "{{1.0}}",
+   "output": "1"
+  },
+  {
+   "data": "m",
+   "template": "{{.5}}",
+   "output": "0.5"
+  },
+  {
+   "data": "m",
+   "template": "{{1e3}}",
+   "output": "1000"
+  },
+  {
+   "data": "m",
+   "template": "{{3.0e0}}",
+   "output": "3"
+  },
+  {
+   "data": "m",
+   "template": "{{0x1F}}",
+   "output": "31"
+  },
+  {
+   "data": "m",
+   "template": "{{0X1f}}",
+   "output": "31"
+  },
+  {
+   "data": "m",
+   "template": "{{0o17}}",
+   "output": "15"
+  },
+  {
+   "data": "m",
+   "template": "{{017}}",
+   "output": "15"
+  },
+  {
+   "data": "m",
+   "template": "{{0b101}}",
+   "output": "5"
+  },
+  {
+   "data": "m",
+   "template": "{{1_000_000}}",
+   "output": "1000000"
+  },
+  {
+   "data": "m",
+   "template": "{{0_1}}",
+   "output": "1"
+  },
+  {
+   "data": "m",
+   "template": "{{0x1p4}}",
+   "output": "16"
+  },
+  {
+   "data": "m",
+   "template": "{{'a'}}",
+   "output": "97"
+  },
+  {
+   "data": "m",
+   "template": "{{'\\n'}}",
+   "output": "10"
+  },
+  {
+   "data": "m",
+   "template": "{{'\\x41'}}",
+   "output": "65"
+  },
+  {
+   "data": "m",
+   "template": "{{'é'}}",
+   "output": "233"
+  },
+  {
+   "data": "m",
+   "template": "{{'ab'}}",
+   "output": "",
+   "error": "template: :1: malformed character constant: 'ab'"
+  },
+  {
+   "data": "m",
+   "template": "{{''}}",
+   "output": "",
+   "error": "template: :1: invalid syntax"
+  },
+  {
+   "data": "m",
+   "template": "{{true}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{false}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{nil}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <nil>: nil is not a command"
+  },
+  {
+   "data": "m",
+   "template": "{{9223372036854775807}}",
+   "output": "9223372036854775807"
+  },
+  {
+   "data": "m",
+   "template": "{{9223372036854775808}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <9223372036854775808>: 9223372036854775808 overflows int"
+  },
+  {
+   "data": "m",
+   "template": "{{-9223372036854775808}}",
+   "output": "-9223372036854775808"
+  },
+  {
+   "data": "m",
+   "template": "{{18446744073709551616}}",
+   "output": "",
+   "error": "template: :1: integer overflow: \"18446744073709551616\""
+  },
+  {
+   "data": "m",
+   "template": "{{0x7fffffffffffffff}}",
+   "output": "9223372036854775807"
+  },
+  {
+   "data": "m",
+   "template": "{{1e400}}",
+   "output": "",
+   "error": "template: :1: illegal number syntax: \"1e400\""
+  },
+  {
+   "data": "m",
+   "template": "{{089}}",
+   "output": "",
+   "error": "template: :1: integer overflow: \"089\""
+  },
+  {
+   "data": "m",
+   "template": "{{0x}}",
+   "output": "",
+   "error": "template: :1: illegal number syntax: \"0x\""
+  },
+  {
+   "data": "m",
+   "template": "{{1.2.3}}",
+   "output": "",
+   "error": "template: :1: unexpected \".3\" in operand"
+  },
+  {
+   "data": "m",
+   "template": "{{3x}}",
+   "output": "",
+   "error": "template: :1: bad number syntax: \"3x\""
+  },
+  {
+   "data": "m",
+   "template": "{{1_}}",
+   "output": "",
+   "error": "template: :1: illegal number syntax: \"1_\""
+  },
+  {
+   "data": "m",
+   "template": "{{_1}}",
+   "output": "",
+   "error": "template: :1: function \"_1\" not defined"
+  },
+  {
+   "data": "m",
+   "template": "a  {{- .str -}}  b",
+   "output": "ahellob"
+  },
+  {
+   "data": "m",
+   "template": "a\n{{- .str}}\n b",
+   "output": "ahello\n b"
+  },
+  {
+   "data": "m",
+   "template": "{{- .str}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{.str -}}\n\n",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{ .str }}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{- 3 -}}",
+   "output": "3"
+  },
+  {
+   "data": "m",
+   "template": "x {{-3}}",
+   "output": "x -3"
+  },
+  {
+   "data": "m",
+   "template": "{{3 -}} x",
+   "output": "3x"
+  },
+  {
+   "data": "m",
+   "template": "a \t\n{{- /* c */}} b",
+   "output": "a b"
+  },
+  {
+   "data": "m",
+   "template": "{{/* c */ -}}\n\n b",
+   "output": "b"
+  },
+  {
+   "data": "m",
+   "template": "{{-/* c */}}",
+   "output": "",
+   "error": "template: :1: illegal number syntax: \"-\""
+  },
+  {
+   "data": "m",
+   "template": "{{.str}}{{.str}}",
+   "output": "hellohello"
+  },
+  {
+   "data": "m",
+   "template": "{{.str}} and {{.int}}",
+   "output": "hello and 42"
+  },
+  {
+   "data": "m",
+   "template": "{{.str}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{.Str}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{.missing}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{.null}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{.nested.inner.deep}}",
+   "output": "value"
+  },
+  {
+   "data": "m",
+   "template": "{{.nested.missing.deep}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{.nested.null}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{.null.x}}",
+   "output": "",
+   "error": "template: :1:7: executing \"\" at <.null.x>: nil pointer evaluating interface {}.x"
+  },
+  {
+   "data": "m",
+   "template": "{{.nested.null.x}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.nested.null.x>: nil pointer evaluating interface {}.x"
+  },
+  {
+   "data": "m",
+   "template": "{{.str.x}}",
+   "output": "",
+   "error": "template: :1:6: executing \"\" at <.str.x>: can't evaluate field x in type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{.list.x}}",
+   "output": "",
+   "error": "template: :1:7: executing \"\" at <.list.x>: can't evaluate field x in type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{.int.x}}",
+   "output": "",
+   "error": "template: :1:6: executing \"\" at <.int.x>: can't evaluate field x in type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{.u.x}}",
+   "output": "",
+   "error": "template: :1:4: executing \"\" at <.u.x>: can't evaluate field x in type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{.labels.b}}",
+   "output": "two"
+  },
+  {
+   "data": "m",
+   "template": "{{.labels.zz}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{.labels.zz.x}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{.map}}",
+   "output": "map[a:1 b:2 c:3]"
+  },
+  {
+   "data": "m",
+   "template": "{{.list}}",
+   "output": "[a b c]"
+  },
+  {
+   "data": "m",
+   "template": "{{.ints}}",
+   "output": "[1 2 3]"
+  },
+  {
+   "data": "m",
+   "template": "{{.mixed}}",
+   "output": "[1 two 3.5 true <nil> map[k:v] [1 2]]"
+  },
+  {
+   "data": "m",
+   "template": "{{.emptylist}}",
+   "output": "[]"
+  },
+  {
+   "data": "m",
+   "template": "{{.emptymap}}",
+   "output": "map[]"
+  },
+  {
+   "data": "m",
+   "template": "{{.nested}}",
+   "output": "map[inner:map[deep:value] list:[map[name:x] map[name:y]] null:<nil>]"
+  },
+  {
+   "data": "m",
+   "template": "{{.nested.list}}",
+   "output": "[map[name:x] map[name:y]]"
+  },
+  {
+   "data": "m",
+   "template": "{{.float}}",
+   "output": "3.5"
+  },
+  {
+   "data": "m",
+   "template": "{{.fint}}",
+   "output": "2"
+  },
+  {
+   "data": "m",
+   "template": "{{.big}}",
+   "output": "1e+21"
+  },
+  {
+   "data": "m",
+   "template": "{{.small}}",
+   "output": "1.234e-06"
+  },
+  {
+   "data": "m",
+   "template": "{{.neg}}",
+   "output": "-7"
+  },
+  {
+   "data": "m",
+   "template": "{{.u}}",
+   "output": "7"
+  },
+  {
+   "data": "m",
+   "template": "{{.strs}}",
+   "output": "[x y z]"
+  },
+  {
+   "data": "m",
+   "template": "{{.labels}}",
+   "output": "map[b:two com.example.a:1 empty:]"
+  },
+  {
+   "data": "m",
+   "template": "{{.t}} {{.f}}",
+   "output": "true false"
+  },
+  {
+   "data": "m",
+   "template": "{{.html}}",
+   "output": "<a href=\"x\">&'</a>"
+  },
+  {
+   "data": "m",
+   "template": "{{.multi}}",
+   "output": "line1\nline2\ttab"
+  },
+  {
+   "data": "m",
+   "template": "{{.with-dash}}",
+   "output": "",
+   "error": "template: :1: bad character U+002D '-'"
+  },
+  {
+   "data": "m",
+   "template": "{{.str.x.y}}",
+   "output": "",
+   "error": "template: :1:6: executing \"\" at <.str.x.y>: can't evaluate field x in type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{(.nested).inner.deep}}",
+   "output": "value"
+  },
+  {
+   "data": "m",
+   "template": "{{(index .nested \"inner\").deep}}",
+   "output": "value"
+  },
+  {
+   "data": "m",
+   "template": "{{(len .list)}}",
+   "output": "3"
+  },
+  {
+   "data": "m",
+   "template": "{{(1)}}",
+   "output": "1"
+  },
+  {
+   "data": "m",
+   "template": "{{(.missing).x}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{(nil).x}}",
+   "output": "",
+   "error": "template: :1:3: executing \"\" at <nil>: nil is not a command"
+  },
+  {
+   "data": "m",
+   "template": "{{nil.x}}",
+   "output": "",
+   "error": "template: :1: unexpected . after term \"nil\""
+  },
+  {
+   "data": "m",
+   "template": "{{\"s\".x}}",
+   "output": "",
+   "error": "template: :1: unexpected . after term \"\\\"s\\\"\""
+  },
+  {
+   "data": "m",
+   "template": "{{1.x}}",
+   "output": "",
+   "error": "template: :1: bad number syntax: \"1.x\""
+  },
+  {
+   "data": "m",
+   "template": "{{..x}}",
+   "output": "",
+   "error": "template: :1: unexpected . after term \".\""
+  },
+  {
+   "data": "m",
+   "template": "{{.str|printf \"%s!\"}}",
+   "output": "hello!"
+  },
+  {
+   "data": "m",
+   "template": "{{\"a\" | printf \"%s-%s\" \"b\"}}",
+   "output": "b-a"
+  },
+  {
+   "data": "m",
+   "template": "{{.list | len}}",
+   "output": "3"
+  },
+  {
+   "data": "m",
+   "template": "{{3 | 4}}",
+   "output": "",
+   "error": "template: :1: non executable command in pipeline stage 2"
+  },
+  {
+   "data": "m",
+   "template": "{{. | \"x\"}}",
+   "output": "",
+   "error": "template: :1: non executable command in pipeline stage 2"
+  },
+  {
+   "data": "m",
+   "template": "{{. | .str}}",
+   "output": "",
+   "error": "template: :1:6: executing \"\" at <.str>: str is not a method but has arguments"
+  },
+  {
+   "data": "m",
+   "template": "{{.str 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <.str>: str is not a method but has arguments"
+  },
+  {
+   "data": "m",
+   "template": "{{1 2}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <1>: can't give argument to non-function 1"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := 1}}{{$x 2}}",
+   "output": "",
+   "error": "template: :1:13: executing \"\" at <$x>: can't give argument to non-function $x"
+  },
+  {
+   "data": "m",
+   "template": "{{(1) 2}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <(1) 2>: can't give argument to non-function 1"
+  },
+  {
+   "data": "m",
+   "template": "{{(.list) 2}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <(.list) 2>: can't give argument to non-function .list"
+  },
+  {
+   "data": "m",
+   "template": "{{.missing 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <.missing>: missing is not a method but has arguments"
+  },
+  {
+   "data": "m",
+   "template": "{{.list | .x}}",
+   "output": "",
+   "error": "template: :1:10: executing \"\" at <.x>: x is not a method but has arguments"
+  },
+  {
+   "data": "m",
+   "template": "{{.nested.inner | .deep}}",
+   "output": "",
+   "error": "template: :1:18: executing \"\" at <.deep>: deep is not a method but has arguments"
+  },
+  {
+   "data": "m",
+   "template": "{{len .list | printf \"%d items\"}}",
+   "output": "3 items"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := 1}}{{$x}}",
+   "output": "1"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := .str}}{{$x = \"new\"}}{{$x}}",
+   "output": "new"
+  },
+  {
+   "data": "m",
+   "template": "{{$.str}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{with .nested}}{{$.str}}{{end}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := 1}}{{if true}}{{$x := 2}}{{$x}}{{end}}{{$x}}",
+   "output": "21"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := 1}}{{if true}}{{$x = 2}}{{end}}{{$x}}",
+   "output": "2"
+  },
+  {
+   "data": "m",
+   "template": "{{$y}}",
+   "output": "",
+   "error": "template: :1: undefined variable \"$y\""
+  },
+  {
+   "data": "m",
+   "template": "{{$x = 1}}",
+   "output": "",
+   "error": "template: :1:7: executing \"\" at <1>: undefined variable: $x"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := 1}}{{$x.y}}",
+   "output": "",
+   "error": "template: :1:15: executing \"\" at <$x.y>: can't evaluate field y in type int"
+  },
+  {
+   "data": "m",
+   "template": "{{$p := .person}}{{$p.Name}}",
+   "output": "Ann"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := .missing}}{{$x}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := .null}}{{$x.y}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := .missing}}{{$x.y}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := 3}}{{range $x = .ints}}{{$x}}{{end}}{{$x}}",
+   "output": "1233"
+  },
+  {
+   "data": "m",
+   "template": "{{$x, $y := 1}}",
+   "output": "",
+   "error": "template: :1: too many declarations in command"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := 1}}{{$x := 2}}{{$x}}",
+   "output": "2"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := .nested}}{{$x.inner.deep}}",
+   "output": "value"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := .str}}{{len $x}}",
+   "output": "5"
+  },
+  {
+   "data": "m",
+   "template": "{{$ := 1}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{$x:=1}}{{$x}}",
+   "output": "1"
+  },
+  {
+   "data": "m",
+   "template": "{{$x :=}}",
+   "output": "",
+   "error": "template: :1: missing value for command"
+  },
+  {
+   "data": "m",
+   "template": "{{:}}",
+   "output": "",
+   "error": "template: :1: expected :="
+  },
+  {
+   "data": "m",
+   "template": "{{$x := 1 | printf \"%d!\"}}{{$x}}",
+   "output": "1!"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := 1}}{{range .list}}{{$x}}{{end}}",
+   "output": "111"
+  },
+  {
+   "data": "m",
+   "template": "{{range .list}}{{$y := .}}{{end}}{{$y}}",
+   "output": "",
+   "error": "template: :1: undefined variable \"$y\""
+  },
+  {
+   "data": "m",
+   "template": "{{if .t}}yes{{else}}no{{end}}",
+   "output": "yes"
+  },
+  {
+   "data": "m",
+   "template": "{{if .f}}yes{{else}}no{{end}}",
+   "output": "no"
+  },
+  {
+   "data": "m",
+   "template": "{{if .empty}}yes{{else}}no{{end}}",
+   "output": "no"
+  },
+  {
+   "data": "m",
+   "template": "{{if .str}}yes{{else}}no{{end}}",
+   "output": "yes"
+  },
+  {
+   "data": "m",
+   "template": "{{if .zero}}yes{{else}}no{{end}}",
+   "output": "no"
+  },
+  {
+   "data": "m",
+   "template": "{{if .int}}yes{{else}}no{{end}}",
+   "output": "yes"
+  },
+  {
+   "data": "m",
+   "template": "{{if .float}}yes{{else}}no{{end}}",
+   "output": "yes"
+  },
+  {
+   "data": "m",
+   "template": "{{if .neg}}yes{{else}}no{{end}}",
+   "output": "yes"
+  },
+  {
+   "data": "m",
+   "template": "{{if .emptylist}}yes{{else}}no{{end}}",
+   "output": "no"
+  },
+  {
+   "data": "m",
+   "template": "{{if .list}}yes{{else}}no{{end}}",
+   "output": "yes"
+  },
+  {
+   "data": "m",
+   "template": "{{if .emptymap}}yes{{else}}no{{end}}",
+   "output": "no"
+  },
+  {
+   "data": "m",
+   "template": "{{if .map}}yes{{else}}no{{end}}",
+   "output": "yes"
+  },
+  {
+   "data": "m",
+   "template": "{{if .null}}yes{{else}}no{{end}}",
+   "output": "no"
+  },
+  {
+   "data": "m",
+   "template": "{{if .missing}}yes{{else}}no{{end}}",
+   "output": "no"
+  },
+  {
+   "data": "m",
+   "template": "{{if .person}}yes{{else}}no{{end}}",
+   "output": "yes"
+  },
+  {
+   "data": "m",
+   "template": "{{if .container}}yes{{else}}no{{end}}",
+   "output": "yes"
+  },
+  {
+   "data": "m",
+   "template": "{{if .u}}yes{{else}}no{{end}}",
+   "output": "yes"
+  },
+  {
+   "data": "m",
+   "template": "{{if 0.0}}yes{{else}}no{{end}}",
+   "output": "no"
+  },
+  {
+   "data": "m",
+   "template": "{{if nil}}yes{{else}}no{{end}}",
+   "output": "",
+   "error": "template: :1:5: executing \"\" at <nil>: nil is not a command"
+  },
+  {
+   "data": "m",
+   "template": "{{if .labels.empty}}yes{{else}}no{{end}}",
+   "output": "no"
+  },
+  {
+   "data": "m",
+   "template": "{{if .null.x}}y{{end}}",
+   "output": "",
+   "error": "template: :1:10: executing \"\" at <.null.x>: nil pointer evaluating interface {}.x"
+  },
+  {
+   "data": "m",
+   "template": "{{if and .t .f}}y{{else}}n{{end}}",
+   "output": "n"
+  },
+  {
+   "data": "m",
+   "template": "{{if or .f .str}}y{{end}}",
+   "output": "y"
+  },
+  {
+   "data": "m",
+   "template": "{{if not .f}}y{{end}}",
+   "output": "y"
+  },
+  {
+   "data": "m",
+   "template": "{{if .f}}a{{else if .zero}}b{{else if .int}}c{{else}}d{{end}}",
+   "output": "c"
+  },
+  {
+   "data": "m",
+   "template": "{{if .f}}a{{else if .zero}}b{{end}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{if eq .str \"hello\" \"x\"}}y{{end}}",
+   "output": "y"
+  },
+  {
+   "data": "m",
+   "template": "{{if}}",
+   "output": "",
+   "error": "template: :1: missing value for if"
+  },
+  {
+   "data": "m",
+   "template": "{{if .t}}x",
+   "output": "",
+   "error": "template: :1: unexpected EOF"
+  },
+  {
+   "data": "m",
+   "template": "{{else}}",
+   "output": "",
+   "error": "template: :1: unexpected {{else}}"
+  },
+  {
+   "data": "m",
+   "template": "{{end}}",
+   "output": "",
+   "error": "template: :1: unexpected {{end}}"
+  },
+  {
+   "data": "m",
+   "template": "{{if .t}}a{{else}}b{{else}}c{{end}}",
+   "output": "",
+   "error": "template: :1: expected end; found {{else}}"
+  },
+  {
+   "data": "m",
+   "template": "{{if 1}}{{else if}}{{end}}",
+   "output": "",
+   "error": "template: :1: missing value for if"
+  },
+  {
+   "data": "m",
+   "template": "{{if .t}}{{$v := 1}}{{end}}{{$v}}",
+   "output": "",
+   "error": "template: :1: undefined variable \"$v\""
+  },
+  {
+   "data": "m",
+   "template": "{{if $v := .str}}{{$v}}{{end}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{if 1 2}}{{end}}",
+   "output": "",
+   "error": "template: :1:5: executing \"\" at <1>: can't give argument to non-function 1"
+  },
+  {
+   "data": "m",
+   "template": "{{with .str}}{{.}}{{end}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{with .missing}}x{{else}}none{{end}}",
+   "output": "none"
+  },
+  {
+   "data": "m",
+   "template": "{{with .nested.inner}}{{.deep}}{{end}}",
+   "output": "value"
+  },
+  {
+   "data": "m",
+   "template": "{{with $x := .str}}{{$x}}{{.}}{{end}}",
+   "output": "hellohello"
+  },
+  {
+   "data": "m",
+   "template": "{{with .f}}a{{else with .str}}{{.}}{{end}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{with .zero}}{{else with .emptylist}}{{else}}nothing{{end}}",
+   "output": "nothing"
+  },
+  {
+   "data": "m",
+   "template": "{{with}}{{end}}",
+   "output": "",
+   "error": "template: :1: missing value for with"
+  },
+  {
+   "data": "m",
+   "template": "{{with .null}}x{{else}}{{.str}}{{end}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{with .person}}{{.Name}} is {{.Age}}{{end}}",
+   "output": "Ann is 30"
+  },
+  {
+   "data": "m",
+   "template": "{{with .list}}{{index . 0}}{{end}}",
+   "output": "a"
+  },
+  {
+   "data": "m",
+   "template": "{{with 0}}{{end}}after",
+   "output": "after"
+  },
+  {
+   "data": "m",
+   "template": "{{range .list}}[{{.}}]{{end}}",
+   "output": "[a][b][c]"
+  },
+  {
+   "data": "m",
+   "template": "{{range .ints}}{{.}},{{end}}",
+   "output": "1,2,3,"
+  },
+  {
+   "data": "m",
+   "template": "{{range .emptylist}}x{{else}}empty{{end}}",
+   "output": "empty"
+  },
+  {
+   "data": "m",
+   "template": "{{range .map}}{{.}}{{end}}",
+   "output": "123"
+  },
+  {
+   "data": "m",
+   "template": "{{range $k, $v := .map}}{{$k}}={{$v}};{{end}}",
+   "output": "a=1;b=2;c=3;"
+  },
+  {
+   "data": "m",
+   "template": "{{range .emptymap}}x{{else}}none{{end}}",
+   "output": "none"
+  },
+  {
+   "data": "m",
+   "template": "{{range .mixed}}[{{.}}]{{end}}",
+   "output": "[1][two][3.5][true][<no value>][map[k:v]][[1 2]]"
+  },
+  {
+   "data": "m",
+   "template": "{{range .mixed}}{{.k}}{{end}}",
+   "output": "",
+   "error": "template: :1:18: executing \"\" at <.k>: can't evaluate field k in type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{range .strs}}{{.x}}{{end}}",
+   "output": "",
+   "error": "template: :1:17: executing \"\" at <.x>: can't evaluate field x in type string"
+  },
+  {
+   "data": "m",
+   "template": "{{range .str}}{{end}}",
+   "output": "",
+   "error": "template: :1:8: executing \"\" at <.str>: range can't iterate over hello"
+  },
+  {
+   "data": "m",
+   "template": "{{range .n5}}{{.}}{{end}}",
+   "output": "01234"
+  },
+  {
+   "data": "m",
+   "template": "{{range 3}}{{.}}{{end}}",
+   "output": "012"
+  },
+  {
+   "data": "m",
+   "template": "{{range 0}}x{{else}}empty{{end}}",
+   "output": "empty"
+  },
+  {
+   "data": "m",
+   "template": "{{range -2}}x{{else}}neg{{end}}",
+   "output": "neg"
+  },
+  {
+   "data": "m",
+   "template": "{{range $i, $v := 3}}{{end}}",
+   "output": "",
+   "error": "template: :1:18: executing \"\" at <3>: can't use 3 to iterate over more than one variable"
+  },
+  {
+   "data": "m",
+   "template": "{{range $v := 3}}{{$v}}{{end}}",
+   "output": "012"
+  },
+  {
+   "data": "m",
+   "template": "{{range .u}}{{.}} {{end}}",
+   "output": "0 1 2 3 4 5 6 "
+  },
+  {
+   "data": "m",
+   "template": "{{range .missing}}x{{else}}none{{end}}",
+   "output": "none"
+  },
+  {
+   "data": "m",
+   "template": "{{range .null}}x{{else}}none{{end}}",
+   "output": "none"
+  },
+  {
+   "data": "m",
+   "template": "{{range .t}}{{end}}",
+   "output": "",
+   "error": "template: :1:8: executing \"\" at <.t>: range can't iterate over true"
+  },
+  {
+   "data": "m",
+   "template": "{{range .float}}{{end}}",
+   "output": "",
+   "error": "template: :1:8: executing \"\" at <.float>: range can't iterate over 3.5"
+  },
+  {
+   "data": "m",
+   "template": "{{range .person}}{{end}}",
+   "output": "",
+   "error": "template: :1:8: executing \"\" at <.person>: range can't iterate over {Ann 30 [admin dev] map[team:core]}"
+  },
+  {
+   "data": "m",
+   "template": "{{range .labels}}{{.}};{{end}}",
+   "output": "two;1;;"
+  },
+  {
+   "data": "m",
+   "template": "{{range $k, $v := .labels}}{{$k}}:{{$v}} {{end}}",
+   "output": "b:two com.example.a:1 empty: "
+  },
+  {
+   "data": "m",
+   "template": "{{range $i, $v := .list}}{{$i}}:{{$v}} {{end}}",
+   "output": "0:a 1:b 2:c "
+  },
+  {
+   "data": "m",
+   "template": "{{range $v := .list}}{{$v}}{{end}}",
+   "output": "abc"
+  },
+  {
+   "data": "m",
+   "template": "{{range $i, $e := .nested.list}}{{$i}}{{$e.name}}{{end}}",
+   "output": "0x1y"
+  },
+  {
+   "data": "m",
+   "template": "{{range .ints}}{{if eq . 2}}{{break}}{{end}}{{.}}{{end}}",
+   "output": "1"
+  },
+  {
+   "data": "m",
+   "template": "{{range .ints}}{{if eq . 2}}{{continue}}{{end}}{{.}}{{end}}",
+   "output": "13"
+  },
+  {
+   "data": "m",
+   "template": "{{range .list}}{{range $.ints}}{{if eq . 2}}{{break}}{{end}}{{.}}{{end}}{{.}};{{end}}",
+   "output": "1a;1b;1c;"
+  },
+  {
+   "data": "m",
+   "template": "{{break}}",
+   "output": "",
+   "error": "template: :1: {{break}} outside {{range}}"
+  },
+  {
+   "data": "m",
+   "template": "{{continue}}",
+   "output": "",
+   "error": "template: :1: {{continue}} outside {{range}}"
+  },
+  {
+   "data": "m",
+   "template": "{{range .ints}}{{break 1}}{{end}}",
+   "output": "",
+   "error": "template: :1: unexpected \"1\" in {{break}}"
+  },
+  {
+   "data": "m",
+   "template": "{{if .t}}{{break}}{{end}}",
+   "output": "",
+   "error": "template: :1: {{break}} outside {{range}}"
+  },
+  {
+   "data": "m",
+   "template": "{{range .list}}{{with .}}{{continue}}{{end}}x{{end}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{range .ints}}{{$.n5}}{{end}}",
+   "output": "555"
+  },
+  {
+   "data": "m",
+   "template": "{{range}}{{end}}",
+   "output": "",
+   "error": "template: :1: missing value for range"
+  },
+  {
+   "data": "m",
+   "template": "{{range $a, $b, $c := .list}}{{end}}",
+   "output": "",
+   "error": "template: :1: too many declarations in range"
+  },
+  {
+   "data": "m",
+   "template": "{{range $i, := .list}}{{end}}",
+   "output": "",
+   "error": "template: :1: range can only initialize variables"
+  },
+  {
+   "data": "m",
+   "template": "{{range $i, $v := .list}}{{$i}}{{end}}{{$i}}",
+   "output": "",
+   "error": "template: :1: undefined variable \"$i\""
+  },
+  {
+   "data": "m",
+   "template": "{{$i := 9}}{{range $i = .list}}{{end}}{{$i}}",
+   "output": "c"
+  },
+  {
+   "data": "m",
+   "template": "{{$i := 0}}{{$v := 0}}{{range $i, $v = .ints}}{{end}}{{$i}}{{$v}}",
+   "output": "23"
+  },
+  {
+   "data": "m",
+   "template": "{{range .list}}{{else}}{{else}}{{end}}",
+   "output": "",
+   "error": "template: :1: expected end; found {{else}}"
+  },
+  {
+   "data": "m",
+   "template": "{{range .people}}{{.Name}},{{end}}",
+   "output": "Ann,Bob,"
+  },
+  {
+   "data": "m",
+   "template": "{{range .people}}{{.Greet \"hey\"}};{{end}}",
+   "output": "hey, Ann;hey, Bob;"
+  },
+  {
+   "data": "m",
+   "template": "{{range $i, $p := .people}}{{$i}}{{$p.Age}}{{end}}",
+   "output": "03015"
+  },
+  {
+   "data": "m",
+   "template": "{{range .nested}}{{.}};{{end}}",
+   "output": "map[deep:value];[map[name:x] map[name:y]];<no value>;"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"T\"}}hi {{.}}{{end}}{{template \"T\" .str}}",
+   "output": "hi hello"
+  },
+  {
+   "data": "m",
+   "template": "{{template \"T\"}}",
+   "output": "",
+   "error": "template: :1:11: executing \"\" at <{{template \"T\"}}>: template \"T\" not defined"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"T\"}}{{.}}{{end}}{{template \"T\"}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{block \"B\" .str}}[{{.}}]{{end}}",
+   "output": "[hello]"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"a\"}}A{{end}}{{define \"a\"}}B{{end}}",
+   "output": "",
+   "error": "template: :1: template: multiple definition of template \"a\""
+  },
+  {
+   "data": "m",
+   "template": "{{define \"a\"}}A{{end}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{define \"a\"}}  {{end}}{{define \"a\"}}B{{end}}{{template \"a\"}}",
+   "output": "B"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := 1}}{{define \"T\"}}{{$x}}{{end}}",
+   "output": "",
+   "error": "template: :1: undefined variable \"$x\""
+  },
+  {
+   "data": "m",
+   "template": "{{define \"T\"}}{{$}}{{end}}{{template \"T\" .int}}",
+   "output": "42"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"r\"}}{{if .}}{{len .}}{{template \"r\" (slice . 1)}}{{end}}{{end}}{{template \"r\" .list}}",
+   "output": "321"
+  },
+  {
+   "data": "m",
+   "template": "{{define}}",
+   "output": "",
+   "error": "template: :1: unexpected \"}}\" in define clause"
+  },
+  {
+   "data": "m",
+   "template": "{{define 1}}{{end}}",
+   "output": "",
+   "error": "template: :1: unexpected \"1\" in define clause"
+  },
+  {
+   "data": "m",
+   "template": "{{template .str}}",
+   "output": "",
+   "error": "template: :1: unexpected \".str\" in template clause"
+  },
+  {
+   "data": "m",
+   "template": "{{template}}",
+   "output": "",
+   "error": "template: :1: unexpected \"}}\" in template clause"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"x\"}}",
+   "output": "",
+   "error": "template: :1: unexpected EOF"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"T\"}}{{.y.z}}{{end}}{{template \"T\" .nested}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"T\"}}{{.str.x}}{{end}}{{template \"T\" .}}",
+   "output": "",
+   "error": "template: :1:20: executing \"T\" at <.str.x>: can't evaluate field x in type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{template \"T\" .}}{{define \"T\"}}late{{end}}",
+   "output": "late"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"T\" }}ok{{end}}{{template \"T\" }}",
+   "output": "ok"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"T\"}}{{.}}{{end}}{{template \"T\" 1 | printf \"%d!\"}}",
+   "output": "1!"
+  },
+  {
+   "data": "m",
+   "template": "{{template \"T\" .str .int}}",
+   "output": "",
+   "error": "template: :1:11: executing \"\" at <{{template \"T\" .str .int}}>: template \"T\" not defined"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"T\"}}{{break}}{{end}}",
+   "output": "",
+   "error": "template: :1: {{break}} outside {{range}}"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"T\"}}{{else}}{{end}}",
+   "output": "",
+   "error": "template: :1: unexpected {{else}} in define clause"
+  },
+  {
+   "data": "m",
+   "template": "{{block \"B\"}}{{end}}",
+   "output": "",
+   "error": "template: :1: missing value for block clause"
+  },
+  {
+   "data": "m",
+   "template": "{{block \"B\" .}}{{.str}}{{end}}{{define \"B\"}}override{{end}}",
+   "output": "",
+   "error": "template: :1: template: multiple definition of template \"B\""
+  },
+  {
+   "data": "m",
+   "template": "{{define \"B\"}}first{{end}}{{block \"B\" .}}second{{end}}",
+   "output": "",
+   "error": "template: :1: template: multiple definition of template \"B\""
+  },
+  {
+   "data": "m",
+   "template": "{{define \"a\"}}{{template \"b\" .}}{{end}}{{define \"b\"}}B{{.int}}{{end}}{{template \"a\" .}}",
+   "output": "B42"
+  },
+  {
+   "data": "m",
+   "template": "{{define `raw`}}R{{end}}{{template `raw`}}",
+   "output": "R"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"T\"}}{{.missing.x}}{{end}}{{template \"T\" .}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{template \"T\" $x := 1}}",
+   "output": "",
+   "error": "template: :1:11: executing \"\" at <{{template \"T\" $x := 1}}>: template \"T\" not defined"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"T\"}}{{template \"T\" .}}{{end}}{{template \"T\" .}}",
+   "output": "",
+   "error": "template: :1:25: executing \"T\" at <{{template \"T\" .}}>: exceeded maximum template depth (100000)"
+  },
+  {
+   "data": "m",
+   "template": "{{and 1 2}}",
+   "output": "2"
+  },
+  {
+   "data": "m",
+   "template": "{{and 0 2}}",
+   "output": "0"
+  },
+  {
+   "data": "m",
+   "template": "{{and 1 \"\"}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{or 0 \"\" .str}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{or 0 \"\"}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{or}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <or>: wrong number of args for or: want at least 1 got 0"
+  },
+  {
+   "data": "m",
+   "template": "{{and}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <and>: wrong number of args for and: want at least 1 got 0"
+  },
+  {
+   "data": "m",
+   "template": "{{and .missing 1}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{or .missing .null}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{not 0}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{not .list}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{not}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <not>: wrong number of args for not: want 1 got 0"
+  },
+  {
+   "data": "m",
+   "template": "{{not 1 2}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <not>: wrong number of args for not: want 1 got 2"
+  },
+  {
+   "data": "m",
+   "template": "{{.f | and 1}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{.t | or 0}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{.t | and 1}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{and 1 .null.x}}",
+   "output": "",
+   "error": "template: :1:13: executing \"\" at <.null.x>: nil pointer evaluating interface {}.x"
+  },
+  {
+   "data": "m",
+   "template": "{{or 1 .null.x}}",
+   "output": "1"
+  },
+  {
+   "data": "m",
+   "template": "{{and .str .list .map}}",
+   "output": "map[a:1 b:2 c:3]"
+  },
+  {
+   "data": "m",
+   "template": "{{or .emptylist .emptymap .person}}",
+   "output": "{Ann 30 [admin dev] map[team:core]}"
+  },
+  {
+   "data": "m",
+   "template": "{{not .null}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{and nil 1}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{len .list}}",
+   "output": "3"
+  },
+  {
+   "data": "m",
+   "template": "{{len .map}}",
+   "output": "3"
+  },
+  {
+   "data": "m",
+   "template": "{{len .str}}",
+   "output": "5"
+  },
+  {
+   "data": "m",
+   "template": "{{len .unicode}}",
+   "output": "23"
+  },
+  {
+   "data": "m",
+   "template": "{{len .emptylist}}",
+   "output": "0"
+  },
+  {
+   "data": "m",
+   "template": "{{len .int}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <len .int>: error calling len: len of type int"
+  },
+  {
+   "data": "m",
+   "template": "{{len .missing}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <len .missing>: error calling len: reflect: call of reflect.Value.Type on zero Value"
+  },
+  {
+   "data": "m",
+   "template": "{{len .null}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <len .null>: error calling len: len of nil pointer"
+  },
+  {
+   "data": "m",
+   "template": "{{len nil}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <len nil>: error calling len: reflect: call of reflect.Value.Type on zero Value"
+  },
+  {
+   "data": "m",
+   "template": "{{len .person}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <len .person>: error calling len: len of type oracle.Person"
+  },
+  {
+   "data": "m",
+   "template": "{{len .strs}}",
+   "output": "3"
+  },
+  {
+   "data": "m",
+   "template": "{{len .labels}}",
+   "output": "3"
+  },
+  {
+   "data": "m",
+   "template": "{{len}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <len>: wrong number of args for len: want 1 got 0"
+  },
+  {
+   "data": "m",
+   "template": "{{len 1 2}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <len>: wrong number of args for len: want 1 got 2"
+  },
+  {
+   "data": "m",
+   "template": "{{len \"abc\"}}",
+   "output": "3"
+  },
+  {
+   "data": "m",
+   "template": "{{len .container}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <len .container>: error calling len: len of type oracle.Container"
+  },
+  {
+   "data": "m",
+   "template": "{{index .list 1}}",
+   "output": "b"
+  },
+  {
+   "data": "m",
+   "template": "{{index .list 5}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .list 5>: error calling index: index out of range: 5"
+  },
+  {
+   "data": "m",
+   "template": "{{index .list 3}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .list 3>: error calling index: reflect: slice index out of range"
+  },
+  {
+   "data": "m",
+   "template": "{{index .list -1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .list -1>: error calling index: index out of range: -1"
+  },
+  {
+   "data": "m",
+   "template": "{{index .map \"a\"}}",
+   "output": "1"
+  },
+  {
+   "data": "m",
+   "template": "{{index .map \"zz\"}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{index .labels \"zz\"}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{index .labels \"b\"}}",
+   "output": "two"
+  },
+  {
+   "data": "m",
+   "template": "{{index .labels \"com.example.a\"}}",
+   "output": "1"
+  },
+  {
+   "data": "m",
+   "template": "{{index .nested \"list\" 1 \"name\"}}",
+   "output": "y"
+  },
+  {
+   "data": "m",
+   "template": "{{index .str 1}}",
+   "output": "101"
+  },
+  {
+   "data": "m",
+   "template": "{{index .int 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .int 1>: error calling index: can't index item of type int"
+  },
+  {
+   "data": "m",
+   "template": "{{index .list \"a\"}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .list \"a\">: error calling index: cannot index slice/array with type string"
+  },
+  {
+   "data": "m",
+   "template": "{{index .map 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .map 1>: error calling index: value has type int; should be string"
+  },
+  {
+   "data": "m",
+   "template": "{{index .missing 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .missing 1>: error calling index: index of untyped nil"
+  },
+  {
+   "data": "m",
+   "template": "{{index .list}}",
+   "output": "[a b c]"
+  },
+  {
+   "data": "m",
+   "template": "{{index .mixed 4 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .mixed 4 1>: error calling index: index of nil pointer"
+  },
+  {
+   "data": "m",
+   "template": "{{index .list .u}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .list .u>: error calling index: index out of range: 7"
+  },
+  {
+   "data": "m",
+   "template": "{{index .map nil}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .map nil>: error calling index: value is nil; should be of type string"
+  },
+  {
+   "data": "m",
+   "template": "{{index .list 1.0}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .list 1.0>: error calling index: cannot index slice/array with type float64"
+  },
+  {
+   "data": "m",
+   "template": "{{index .mixed 6 1}}",
+   "output": "2"
+  },
+  {
+   "data": "m",
+   "template": "{{index .mixed 5 \"k\"}}",
+   "output": "v"
+  },
+  {
+   "data": "m",
+   "template": "{{index}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index>: wrong number of args for index: want at least 1 got 0"
+  },
+  {
+   "data": "m",
+   "template": "{{index .person 0}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .person 0>: error calling index: can't index item of type oracle.Person"
+  },
+  {
+   "data": "m",
+   "template": "{{index .strs 2}}",
+   "output": "z"
+  },
+  {
+   "data": "m",
+   "template": "{{index . \"with-dash\"}}",
+   "output": "dash"
+  },
+  {
+   "data": "m",
+   "template": "{{index .null 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .null 1>: error calling index: index of untyped nil"
+  },
+  {
+   "data": "m",
+   "template": "{{index .list .int}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .list .int>: error calling index: index out of range: 42"
+  },
+  {
+   "data": "m",
+   "template": "{{index .nested \"null\" \"x\"}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .nested \"null\" \"x\">: error calling index: index of nil pointer"
+  },
+  {
+   "data": "m",
+   "template": "{{index .ints 0 | printf \"%T\"}}",
+   "output": "int"
+  },
+  {
+   "data": "m",
+   "template": "{{index .str 1 | printf \"%T\"}}",
+   "output": "uint8"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .list 1}}",
+   "output": "[b c]"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .list 1 2}}",
+   "output": "[b]"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .list}}",
+   "output": "[a b c]"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .str 1 3}}",
+   "output": "el"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .str 1 2 3}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <slice .str 1 2 3>: error calling slice: cannot 3-index slice a string"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .list 0 1 2}}",
+   "output": "[a]"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .list 2 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <slice .list 2 1>: error calling slice: invalid slice index: 2 > 1"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .list 0 4}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <slice .list 0 4>: error calling slice: index out of range: 4"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .list 0 3}}",
+   "output": "[a b c]"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .int 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <slice .int 1>: error calling slice: can't slice item of type int"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .missing}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <slice .missing>: error calling slice: slice of untyped nil"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .list 1 2 3 4}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <slice .list 1 2 3 4>: error calling slice: too many slice indexes: 4"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .list .u}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <slice .list .u>: error calling slice: cannot index slice/array with type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .list 1 2 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <slice .list 1 2 1>: error calling slice: invalid slice index: 2 > 1"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .strs 1}}",
+   "output": "[y z]"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .unicode 0 2}}",
+   "output": "h\ufffd"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .str -1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <slice .str -1>: error calling slice: index out of range: -1"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .str \"a\"}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <slice .str \"a\">: error calling slice: cannot index slice/array with type string"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .null}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <slice .null>: error calling slice: slice of untyped nil"
+  },
+  {
+   "data": "m",
+   "template": "{{print 1 2 \"a\" \"b\" 3}}",
+   "output": "1 2ab3"
+  },
+  {
+   "data": "m",
+   "template": "{{print}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{println 1 \"a\"}}",
+   "output": "1 a\n"
+  },
+  {
+   "data": "m",
+   "template": "{{print .null}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "m",
+   "template": "{{print .missing}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "m",
+   "template": "{{print .list .map}}",
+   "output": "[a b c] map[a:1 b:2 c:3]"
+  },
+  {
+   "data": "m",
+   "template": "{{print .person}}",
+   "output": "{Ann 30 [admin dev] map[team:core]}"
+  },
+  {
+   "data": "m",
+   "template": "{{print .str .int .float .t}}",
+   "output": "hello42 3.5 true"
+  },
+  {
+   "data": "m",
+   "template": "{{print 1.5 2}}",
+   "output": "1.5 2"
+  },
+  {
+   "data": "m",
+   "template": "{{println}}",
+   "output": "\n"
+  },
+  {
+   "data": "m",
+   "template": "{{print .mixed}}",
+   "output": "[1 two 3.5 true <nil> map[k:v] [1 2]]"
+  },
+  {
+   "data": "m",
+   "template": "{{print .nested}}",
+   "output": "map[inner:map[deep:value] list:[map[name:x] map[name:y]] null:<nil>]"
+  },
+  {
+   "data": "m",
+   "template": "{{print nil}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "m",
+   "template": "{{print .labels .strs .u}}",
+   "output": "map[b:two com.example.a:1 empty:] [x y z] 7"
+  },
+  {
+   "data": "m",
+   "template": "{{println .null .missing}}",
+   "output": "<nil> <nil>\n"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%d\" .int}}",
+   "output": "42"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%5d|%-5d|%05d\" 42 42 42}}",
+   "output": "   42|42   |00042"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%x %X %o %b %c %U %q\" 255 255 8 5 65 9731 65}}",
+   "output": "ff FF 10 101 A U+2603 'A'"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#x %#o %#U %#b %#X\" 255 8 9731 5 255}}",
+   "output": "0xff 010 U+2603 '☃' 0b101 0XFF"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%+d % d %+d\" 5 5 -5}}",
+   "output": "+5  5 -5"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%s|%10s|%-10s|%.2s|\" .str .str .str .str}}",
+   "output": "hello|     hello|hello     |he|"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%q\" .html}}",
+   "output": "\"<a href=\\\"x\\\">&'</a>\""
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#q\" .str}}",
+   "output": "`hello`"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#q\" .multi}}",
+   "output": "\"line1\\nline2\\ttab\""
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%+q\" .unicode}}",
+   "output": "\"h\\u00e9llo w\\u00f6rld \\u00f1 \\u65e5\\u672c\""
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%q\" .unicode}}",
+   "output": "\"héllo wörld ñ 日本\""
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%x\" .str}}",
+   "output": "68656c6c6f"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"% x\" .str}}",
+   "output": "68 65 6c 6c 6f"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#X\" .str}}",
+   "output": "0X68656C6C6F"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%# x\" .str}}",
+   "output": "0x68 0x65 0x6c 0x6c 0x6f"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v %v %v %v\" .float .fint .big .small}}",
+   "output": "3.5 2 1e+21 1.234e-06"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%f %.2f %8.3f %-8.1f|\" .float .float .float .float}}",
+   "output": "3.500000 3.50    3.500 3.5     |"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%e %E %.3e\" 1234.5678 0.000123 .float}}",
+   "output": "1.234568e+03 1.230000E-04 3.500e+00"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%g %G %.3g %g\" 1234.5678 1e-7 3.14159 100000000.0}}",
+   "output": "1234.5678 1E-07 3.14 1e+08"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%t %t\" .t .f}}",
+   "output": "true false"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" .list}}",
+   "output": "[a b c]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%q\" .list}}",
+   "output": "[\"a\" \"b\" \"c\"]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%d\" .ints}}",
+   "output": "[1 2 3]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" .map}}",
+   "output": "map[a:1 b:2 c:3]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#v\" .map}}",
+   "output": "map[string]interface {}{\"a\":1, \"b\":2, \"c\":3}"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#v\" .list}}",
+   "output": "[]interface {}{\"a\", \"b\", \"c\"}"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#v\" .str}}",
+   "output": "\"hello\""
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#v\" .u}}",
+   "output": "0x7"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#v\" .int}}",
+   "output": "42"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#v\" .mixed}}",
+   "output": "[]interface {}{1, \"two\", 3.5, true, interface {}(nil), map[string]interface {}{\"k\":\"v\"}, []interface {}{1, 2}}"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#v\" .float}}",
+   "output": "3.5"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#v\" .strs}}",
+   "output": "[]string{\"x\", \"y\", \"z\"}"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#v\" .labels}}",
+   "output": "map[string]string{\"b\":\"two\", \"com.example.a\":\"1\", \"empty\":\"\"}"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%T %T %T %T %T %T\" .str .int .float .list .map .null}}",
+   "output": "string int float64 []interface {} map[string]interface {} <nil>"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%T\" .person}}",
+   "output": "oracle.Person"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%T\" .labels}}",
+   "output": "map[string]string"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%T\" .container}}",
+   "output": "*oracle.Container"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%T\" .u}}",
+   "output": "uint"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%T\" .strs}}",
+   "output": "[]string"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%T\" .missing}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%d\" .str}}",
+   "output": "%!d(string=hello)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%s\" .int}}",
+   "output": "%!s(int=42)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%d %d\" 1}}",
+   "output": "1 %!d(MISSING)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%d\" 1 2}}",
+   "output": "1%!(EXTRA int=2)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%!\" 1}}",
+   "output": "%!!(int=1)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%\"}}",
+   "output": "%!(NOVERB)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%[2]d %[1]d\" 1 2}}",
+   "output": "2 1"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%[3]d\" 1 2}}",
+   "output": "%!d(BADINDEX)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%[0]d\" 1}}",
+   "output": "%!d(BADINDEX)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%[1]d %d\" 1 2}}",
+   "output": "1 2"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%*d\" 5 42}}",
+   "output": "   42"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%-*d|\" 5 42}}",
+   "output": "42   |"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%.*f\" 2 3.14159}}",
+   "output": "3.14"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%*d\" \"x\" 42}}",
+   "output": "%!(BADWIDTH)42"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%.*d\" \"x\" 42}}",
+   "output": "%!(BADPREC)42"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" nil}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%d\" nil}}",
+   "output": "%!d(<nil>)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%s\" .missing}}",
+   "output": "%!s(<nil>)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%s\" .null}}",
+   "output": "%!s(<nil>)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%5t|%-7v|\" true false}}",
+   "output": " true|false  |"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%08.3f|%+.2f|% .2f\" 3.14159 3.14159 3.14159}}",
+   "output": "0003.142|+3.14| 3.14"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%x\" -255}}",
+   "output": "-ff"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%c%c\" 72 105}}",
+   "output": "Hi"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%q\" 'x'}}",
+   "output": "'x'"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" 'x'}}",
+   "output": "120"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%U\" 0x1F600}}",
+   "output": "U+1F600"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%06.2f\" -1.5}}",
+   "output": "-01.50"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%10.4v|\" .str}}",
+   "output": "      hell|"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%-20s|\" .unicode}}",
+   "output": "héllo wörld ñ 日本    |"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%5.1q\" .str}}",
+   "output": "  \"h\""
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%%\"}}",
+   "output": "%"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%d%%\" 50}}",
+   "output": "50%"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" .person}}",
+   "output": "{Ann 30 [admin dev] map[team:core]}"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%s\" .strs}}",
+   "output": "[x y z]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" .labels}}",
+   "output": "map[b:two com.example.a:1 empty:]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%w\" 1}}",
+   "output": "%!w(int=1)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%e\" 0.0}}",
+   "output": "0.000000e+00"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%g\" 0.0}}",
+   "output": "0"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%.0f %.0f %.0f\" 0.5 1.5 2.5}}",
+   "output": "0 2 2"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%5.2s|\" \"日本語\"}}",
+   "output": "   日本|"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%b\" 1.0}}",
+   "output": "4503599627370496p-52"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" 1e100}}",
+   "output": "1e+100"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" 123456789.0}}",
+   "output": "1.23456789e+08"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" 0.1}}",
+   "output": "0.1"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%.3v\" 3.14159}}",
+   "output": "3.14"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#g\" 1.0}}",
+   "output": "1.00000"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%+v\" 1.5}}",
+   "output": "1.5"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%o %O\" 8 8}}",
+   "output": "10 0o10"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%.3d\" 7}}",
+   "output": "007"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%.0d|\" 0}}",
+   "output": "|"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%5.0d|\" 0}}",
+   "output": "     |"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%x\" .ints}}",
+   "output": "[1 2 3]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%5v\" .ints}}",
+   "output": "[    1     2     3]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%-4d|\" .ints}}",
+   "output": "[1    2    3   ]|"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%s\" .t}}",
+   "output": "%!s(bool=true)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%d\" .float}}",
+   "output": "%!d(float64=3.5)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%f\" .int}}",
+   "output": "%!f(int=42)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%c\" .str}}",
+   "output": "%!c(string=hello)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v %v\" .neg .u}}",
+   "output": "-7 7"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%08d\" -42}}",
+   "output": "-0000042"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%-08d|\" 42}}",
+   "output": "42      |"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%+08d\" 42}}",
+   "output": "+0000042"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"% 8d\" 42}}",
+   "output": "      42"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#8x\" 255}}",
+   "output": "    0xff"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%010.3f\" -3.14159}}",
+   "output": "-00003.142"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%-10.3e|\" 1234.5}}",
+   "output": "1.234e+03 |"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%G\" 1e-10}}",
+   "output": "1E-10"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%.10g\" 1.0}}",
+   "output": "1"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%.1e\" 9.96}}",
+   "output": "1.0e+01"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%5c|\" 65}}",
+   "output": "    A|"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%-5q|\" 65}}",
+   "output": "'A'  |"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%.2x\" .str}}",
+   "output": "6865"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%10x|\" .str}}",
+   "output": "68656c6c6f|"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#v\" .null}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" .emptylist}}",
+   "output": "[]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" .emptymap}}",
+   "output": "map[]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%t\" 1}}",
+   "output": "%!t(int=1)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%s\" 'a'}}",
+   "output": "%!s(int=97)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%U\" -1}}",
+   "output": "U+FFFFFFFFFFFFFFFF"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%c\" 1114112}}",
+   "output": "�"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%x\" 18446744073709551615}}",
+   "output": "",
+   "error": "template: :1:14: executing \"\" at <18446744073709551615>: 18446744073709551615 overflows int"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v %d\" .u .u}}",
+   "output": "7 7"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#v\" .t}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%6.2f%%\" 12.345}}",
+   "output": " 12.35%"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%s %s\" .str}}",
+   "output": "hello %!s(MISSING)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%[2]*[1]d\" 42 6}}",
+   "output": "    42"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%[1]*d\" 3 4}}",
+   "output": "  4"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%.[2]d\" 7 2}}",
+   "output": "2"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%3[1]d\" 1}}",
+   "output": "  1"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%-+5d|\" 3}}",
+   "output": "+3   |"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%T\" 1.5}}",
+   "output": "float64"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" .nested.null}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%q\" .multi}}",
+   "output": "\"line1\\nline2\\ttab\""
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%x\" \"\"}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%5x|\" \"\"}}",
+   "output": "     |"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%.0s|\" .str}}",
+   "output": "|"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%e\" 1e21}}",
+   "output": "1.000000e+21"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%f\" 1e21}}",
+   "output": "1000000000000000000000.000000"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%g\" 1e21}}",
+   "output": "1e+21"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" 1e20}}",
+   "output": "1e+20"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" 1e-5}}",
+   "output": "1e-05"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" 0.0001}}",
+   "output": "0.0001"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" -0.0}}",
+   "output": "-0"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%.2g\" 0.000012345}}",
+   "output": "1.2e-05"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%8.2e|\" -0.000123}}",
+   "output": "-1.23e-04|"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%+.1e\" 5.0}}",
+   "output": "+5.0e+00"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#.0f\" 3.0}}",
+   "output": "3."
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#.0e\" 3.0}}",
+   "output": "3.e+00"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%#x\" .str}}",
+   "output": "0x68656c6c6f"
+  },
+  {
+   "data": "m",
+   "template": "{{printf 3}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <3>: expected string; found 3"
+  },
+  {
+   "data": "m",
+   "template": "{{printf}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <printf>: wrong number of args for printf: want at least 1 got 0"
+  },
+  {
+   "data": "m",
+   "template": "{{printf .int}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.int>: wrong type for value; expected string; got int"
+  },
+  {
+   "data": "m",
+   "template": "{{1 | printf}}",
+   "output": "",
+   "error": "template: :1:6: executing \"\" at <printf>: wrong type for value; expected string; got int"
+  },
+  {
+   "data": "m",
+   "template": "{{printf .missing}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.missing>: invalid value; expected string"
+  },
+  {
+   "data": "m",
+   "template": "{{printf nil}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <nil>: cannot assign nil to string"
+  },
+  {
+   "data": "m",
+   "template": "{{html .html}}",
+   "output": "&lt;a href=&#34;x&#34;&gt;&amp;&#39;&lt;/a&gt;"
+  },
+  {
+   "data": "m",
+   "template": "{{js .html}}",
+   "output": "\\u003Ca href\\u003D\\\"x\\\"\\u003E\\u0026\\'\\u003C/a\\u003E"
+  },
+  {
+   "data": "m",
+   "template": "{{urlquery .html}}",
+   "output": "%3Ca+href%3D%22x%22%3E%26%27%3C%2Fa%3E"
+  },
+  {
+   "data": "m",
+   "template": "{{urlquery \"a b&c=d/é~_.-\"}}",
+   "output": "a+b%26c%3Dd%2F%C3%A9~_.-"
+  },
+  {
+   "data": "m",
+   "template": "{{html 1 2}}",
+   "output": "1 2"
+  },
+  {
+   "data": "m",
+   "template": "{{html .missing}}",
+   "output": "&lt;no value&gt;"
+  },
+  {
+   "data": "m",
+   "template": "{{js \"a\\nb\u2028\\t\\u0001\"}}",
+   "output": "a\\u000Ab\\u2028\\u0009\\u0001"
+  },
+  {
+   "data": "m",
+   "template": "{{js .unicode}}",
+   "output": "héllo wörld ñ 日本"
+  },
+  {
+   "data": "m",
+   "template": "{{html \"\\x00\"}}",
+   "output": "�"
+  },
+  {
+   "data": "m",
+   "template": "{{.html | html}}",
+   "output": "&lt;a href=&#34;x&#34;&gt;&amp;&#39;&lt;/a&gt;"
+  },
+  {
+   "data": "m",
+   "template": "{{urlquery .missing 1}}",
+   "output": "%3Cno+value%3E1"
+  },
+  {
+   "data": "m",
+   "template": "{{html}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{js .list}}",
+   "output": "[a b c]"
+  },
+  {
+   "data": "m",
+   "template": "{{urlquery .map}}",
+   "output": "map%5Ba%3A1+b%3A2+c%3A3%5D"
+  },
+  {
+   "data": "m",
+   "template": "{{js \"</script>\"}}",
+   "output": "\\u003C/script\\u003E"
+  },
+  {
+   "data": "m",
+   "template": "{{html \"a\" \"b\"}}",
+   "output": "ab"
+  },
+  {
+   "data": "m",
+   "template": "{{html \"a\" 1}}",
+   "output": "a1"
+  },
+  {
+   "data": "m",
+   "template": "{{js \"'\\\"\\\\=\"}}",
+   "output": "\\'\\\"\\\\\\u003D"
+  },
+  {
+   "data": "m",
+   "template": "{{html .person}}",
+   "output": "{Ann 30 [admin dev] map[team:core]}"
+  },
+  {
+   "data": "m",
+   "template": "{{urlquery .null}}",
+   "output": "%3Cno+value%3E"
+  },
+  {
+   "data": "m",
+   "template": "{{eq 1 1}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{eq 1 2}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .str \"hello\"}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .int 42}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{eq 1 2 3 1}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .u 7}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .int .u}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{eq 1 \"1\"}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <eq 1 \"1\">: error calling eq: incompatible types for comparison: int and string"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .missing 1}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .missing .null}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .null nil}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .list .list}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <eq .list .list>: error calling eq: non-comparable type [a b c]: []interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .list .map}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <eq .list .map>: error calling eq: non-comparable types [a b c]: []interface {}, map[string]interface {}: map[a:1 b:2 c:3]"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .float 3.5}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .fint 2}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <eq .fint 2>: error calling eq: incompatible types for comparison: float64 and int"
+  },
+  {
+   "data": "m",
+   "template": "{{eq 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <eq 1>: error calling eq: missing argument for comparison"
+  },
+  {
+   "data": "m",
+   "template": "{{eq}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <eq>: wrong number of args for eq: want at least 1 got 0"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .t true}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .container .container}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .list nil}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{eq 1 .list}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <eq 1 .list>: error calling eq: incompatible types for comparison: int and []interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .neg .u}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .map .map}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <eq .map .map>: error calling eq: non-comparable type map[a:%!s(int=1) b:%!s(int=2) c:%!s(int=3)]: map[string]interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{eq \"a\" \"b\" \"a\"}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{eq 1 2 \"x\"}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <eq 1 2 \"x\">: error calling eq: incompatible types for comparison: int and string"
+  },
+  {
+   "data": "m",
+   "template": "{{eq 1 1 \"x\"}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .strs .list}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <eq .strs .list>: error calling eq: non-comparable type [a b c]: []interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{ne 1 2}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{ne \"a\" \"a\"}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{ne 1 \"a\"}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <ne 1 \"a\">: error calling ne: incompatible types for comparison: int and string"
+  },
+  {
+   "data": "m",
+   "template": "{{ne 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <ne>: wrong number of args for ne: want 2 got 1"
+  },
+  {
+   "data": "m",
+   "template": "{{ne .missing .missing}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{lt 1 2}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{lt 2 1}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{lt \"a\" \"b\"}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{lt 1.5 2.5}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{lt .u 10}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{lt -1 .u}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{lt .u -1}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{lt .t .f}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <lt .t .f>: error calling lt: invalid type for comparison"
+  },
+  {
+   "data": "m",
+   "template": "{{lt .list 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <lt .list 1>: error calling lt: invalid type for comparison"
+  },
+  {
+   "data": "m",
+   "template": "{{lt 1 \"a\"}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <lt 1 \"a\">: error calling lt: incompatible types for comparison: int and string"
+  },
+  {
+   "data": "m",
+   "template": "{{lt .missing 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <lt .missing 1>: error calling lt: invalid type for comparison"
+  },
+  {
+   "data": "m",
+   "template": "{{lt 1 .missing}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <lt 1 .missing>: error calling lt: invalid type for comparison"
+  },
+  {
+   "data": "m",
+   "template": "{{lt 1.5 2}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <lt 1.5 2>: error calling lt: incompatible types for comparison: float64 and int"
+  },
+  {
+   "data": "m",
+   "template": "{{le 2 2}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{le 3 2}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{le \"b\" \"a\"}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{le .t .t}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <le .t .t>: error calling le: invalid type for comparison"
+  },
+  {
+   "data": "m",
+   "template": "{{gt 3 2}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{gt 2 3}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{gt .int .u}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{ge 2 2}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{ge 1 2}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{ge .float .fint}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{lt 1 2 3}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <lt>: wrong number of args for lt: want 2 got 3"
+  },
+  {
+   "data": "m",
+   "template": "{{lt 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <lt>: wrong number of args for lt: want 2 got 1"
+  },
+  {
+   "data": "m",
+   "template": "{{lt \"B\" \"a\"}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{lt \"é\" \"z\"}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{call .str}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <call .str>: error calling call: non-function .str of type string"
+  },
+  {
+   "data": "m",
+   "template": "{{call .missing}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <call .missing>: error calling call: call of nil"
+  },
+  {
+   "data": "m",
+   "template": "{{call}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <call>: wrong number of args for call: want at least 1 got 0"
+  },
+  {
+   "data": "m",
+   "template": "{{.str | call}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <call>: error calling call: non-function hello of type string"
+  },
+  {
+   "data": "m",
+   "template": "{{call .person}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <call .person>: error calling call: non-function .person of type oracle.Person"
+  },
+  {
+   "data": "m",
+   "template": "{{call .null 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <call .null 1>: error calling call: call of nil"
+  },
+  {
+   "data": "m",
+   "template": "{{json .}}",
+   "output": "{\"big\":1e+21,\"container\":{},\"csv\":\"a,b,,c\",\"empty\":\"\",\"emptylist\":[],\"emptymap\":{},\"f\":false,\"fint\":2,\"float\":3.5,\"html\":\"<a href=\\\"x\\\">&'</a>\",\"int\":42,\"ints\":[1,2,3],\"labels\":{\"b\":\"two\",\"com.example.a\":\"1\",\"empty\":\"\"},\"list\":[\"a\",\"b\",\"c\"],\"map\":{\"a\":1,\"b\":2,\"c\":3},\"mixed\":[1,\"two\",3.5,true,null,{\"k\":\"v\"},[1,2]],\"multi\":\"line1\\nline2\\ttab\",\"n5\":5,\"neg\":-7,\"nested\":{\"inner\":{\"deep\":\"value\"},\"list\":[{\"name\":\"x\"},{\"name\":\"y\"}],\"null\":null},\"null\":null,\"people\":[{\"Name\":\"Ann\",\"Age\":30,\"Tags\":[\"admin\",\"dev\"],\"Meta\":{\"team\":\"core\"}},{\"Name\":\"Bob\",\"Age\":5,\"Tags\":[],\"Meta\":{}}],\"person\":{\"Name\":\"Ann\",\"Age\":30,\"Tags\":[\"admin\",\"dev\"],\"Meta\":{\"team\":\"core\"}},\"small\":0.000001234,\"spaces\":\"  padded  \",\"str\":\"hello\",\"strs\":[\"x\",\"y\",\"z\"],\"t\":true,\"u\":7,\"unicode\":\"héllo wörld ñ 日本\",\"with-dash\":\"dash\",\"zero\":0}"
+  },
+  {
+   "data": "m",
+   "template": "{{json .str}}",
+   "output": "\"hello\""
+  },
+  {
+   "data": "m",
+   "template": "{{json .html}}",
+   "output": "\"<a href=\\\"x\\\">&'</a>\""
+  },
+  {
+   "data": "m",
+   "template": "{{json .list}}",
+   "output": "[\"a\",\"b\",\"c\"]"
+  },
+  {
+   "data": "m",
+   "template": "{{json .map}}",
+   "output": "{\"a\":1,\"b\":2,\"c\":3}"
+  },
+  {
+   "data": "m",
+   "template": "{{json .null}}",
+   "output": "null"
+  },
+  {
+   "data": "m",
+   "template": "{{json .missing}}",
+   "output": "null"
+  },
+  {
+   "data": "m",
+   "template": "{{json .float}}",
+   "output": "3.5"
+  },
+  {
+   "data": "m",
+   "template": "{{json .big}}",
+   "output": "1e+21"
+  },
+  {
+   "data": "m",
+   "template": "{{json .small}}",
+   "output": "0.000001234"
+  },
+  {
+   "data": "m",
+   "template": "{{json .fint}}",
+   "output": "2"
+  },
+  {
+   "data": "m",
+   "template": "{{json .person}}",
+   "output": "{\"Name\":\"Ann\",\"Age\":30,\"Tags\":[\"admin\",\"dev\"],\"Meta\":{\"team\":\"core\"}}"
+  },
+  {
+   "data": "m",
+   "template": "{{json .container}}",
+   "output": "{}"
+  },
+  {
+   "data": "m",
+   "template": "{{json .labels}}",
+   "output": "{\"b\":\"two\",\"com.example.a\":\"1\",\"empty\":\"\"}"
+  },
+  {
+   "data": "m",
+   "template": "{{json .multi}}",
+   "output": "\"line1\\nline2\\ttab\""
+  },
+  {
+   "data": "m",
+   "template": "{{json \"\u2028\u2029\\x01\\x7f\"}}",
+   "output": "\"\\u2028\\u2029\\u0001\""
+  },
+  {
+   "data": "m",
+   "template": "{{json 1e-7}}",
+   "output": "1e-7"
+  },
+  {
+   "data": "m",
+   "template": "{{json 123456789012345678.0}}",
+   "output": "123456789012345680"
+  },
+  {
+   "data": "m",
+   "template": "{{json .u}}",
+   "output": "7"
+  },
+  {
+   "data": "m",
+   "template": "{{json}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <json>: wrong number of args for json: want 1 got 0"
+  },
+  {
+   "data": "m",
+   "template": "{{json .strs}}",
+   "output": "[\"x\",\"y\",\"z\"]"
+  },
+  {
+   "data": "m",
+   "template": "{{json .mixed}}",
+   "output": "[1,\"two\",3.5,true,null,{\"k\":\"v\"},[1,2]]"
+  },
+  {
+   "data": "m",
+   "template": "{{json .neg}}",
+   "output": "-7"
+  },
+  {
+   "data": "m",
+   "template": "{{json .unicode}}",
+   "output": "\"héllo wörld ñ 日本\""
+  },
+  {
+   "data": "m",
+   "template": "{{json 0.000001}}",
+   "output": "0.000001"
+  },
+  {
+   "data": "m",
+   "template": "{{json 1e20}}",
+   "output": "100000000000000000000"
+  },
+  {
+   "data": "m",
+   "template": "{{json -0.0}}",
+   "output": "-0"
+  },
+  {
+   "data": "m",
+   "template": "{{json .people}}",
+   "output": "[{\"Name\":\"Ann\",\"Age\":30,\"Tags\":[\"admin\",\"dev\"],\"Meta\":{\"team\":\"core\"}},{\"Name\":\"Bob\",\"Age\":5,\"Tags\":[],\"Meta\":{}}]"
+  },
+  {
+   "data": "m",
+   "template": "{{json .emptymap}}",
+   "output": "{}"
+  },
+  {
+   "data": "m",
+   "template": "{{json .emptylist}}",
+   "output": "[]"
+  },
+  {
+   "data": "m",
+   "template": "{{json .t}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{json 1 2}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <json>: wrong number of args for json: want 1 got 2"
+  },
+  {
+   "data": "m",
+   "template": "{{.list | json}}",
+   "output": "[\"a\",\"b\",\"c\"]"
+  },
+  {
+   "data": "m",
+   "template": "{{json \"\\b\\f\\n\\r\\t\\\\\\\"\"}}",
+   "output": "\"\\b\\f\\n\\r\\t\\\\\\\"\""
+  },
+  {
+   "data": "m",
+   "template": "{{split .csv \",\"}}",
+   "output": "[a b  c]"
+  },
+  {
+   "data": "m",
+   "template": "{{split .str \"\"}}",
+   "output": "[h e l l o]"
+  },
+  {
+   "data": "m",
+   "template": "{{split \"\" \",\"}}",
+   "output": "[]"
+  },
+  {
+   "data": "m",
+   "template": "{{split .str}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <split>: wrong number of args for split: want 2 got 1"
+  },
+  {
+   "data": "m",
+   "template": "{{split .int \",\"}}",
+   "output": "",
+   "error": "template: :1:8: executing \"\" at <.int>: wrong type for value; expected string; got int"
+  },
+  {
+   "data": "m",
+   "template": "{{index (split .csv \",\") 1}}",
+   "output": "b"
+  },
+  {
+   "data": "m",
+   "template": "{{len (split .csv \",\")}}",
+   "output": "4"
+  },
+  {
+   "data": "m",
+   "template": "{{range split .csv \",\"}}[{{.}}]{{end}}",
+   "output": "[a][b][][c]"
+  },
+  {
+   "data": "m",
+   "template": "{{split .unicode \"\"}}",
+   "output": "[h é l l o   w ö r l d   ñ   日 本]"
+  },
+  {
+   "data": "m",
+   "template": "{{split .csv \",,\"}}",
+   "output": "[a,b c]"
+  },
+  {
+   "data": "m",
+   "template": "{{split .missing \",\"}}",
+   "output": "",
+   "error": "template: :1:8: executing \"\" at <.missing>: invalid value; expected string"
+  },
+  {
+   "data": "m",
+   "template": "{{split .str \"l\" | len}}",
+   "output": "3"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%T\" (split .csv \",\")}}",
+   "output": "[]string"
+  },
+  {
+   "data": "m",
+   "template": "{{\",\" | split .csv}}",
+   "output": "[a b  c]"
+  },
+  {
+   "data": "m",
+   "template": "{{join .list \", \"}}",
+   "output": "a, b, c"
+  },
+  {
+   "data": "m",
+   "template": "{{join .strs \"-\"}}",
+   "output": "x-y-z"
+  },
+  {
+   "data": "m",
+   "template": "{{join .ints \"+\"}}",
+   "output": "1+2+3"
+  },
+  {
+   "data": "m",
+   "template": "{{join .map \",\"}}",
+   "output": "1,2,3"
+  },
+  {
+   "data": "m",
+   "template": "{{join .mixed \"|\"}}",
+   "output": "1|two|3.5|true|<nil>|map[k:v]|[1 2]"
+  },
+  {
+   "data": "m",
+   "template": "{{join .missing \",\"}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{join .str \",\"}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <join .str \",\">: error calling join: expected slice, got string"
+  },
+  {
+   "data": "m",
+   "template": "{{join .labels \",\"}}",
+   "output": ",1,two"
+  },
+  {
+   "data": "m",
+   "template": "{{join (split .csv \",\") \"/\"}}",
+   "output": "a/b//c"
+  },
+  {
+   "data": "m",
+   "template": "{{join .emptylist \",\"}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{join .list}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <join>: wrong number of args for join: want 2 got 1"
+  },
+  {
+   "data": "m",
+   "template": "{{join .list 1}}",
+   "output": "",
+   "error": "template: :1:13: executing \"\" at <1>: expected string; found 1"
+  },
+  {
+   "data": "m",
+   "template": "{{join .null \",\"}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{join .int \",\"}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <join .int \",\">: error calling join: expected slice, got int"
+  },
+  {
+   "data": "m",
+   "template": "{{join .people \";\"}}",
+   "output": "{Ann 30 [admin dev] map[team:core]};{Bob 5 [] map[]}"
+  },
+  {
+   "data": "m",
+   "template": "{{join .nested \",\"}}",
+   "output": "<nil>,[map[name:x] map[name:y]],map[deep:value]"
+  },
+  {
+   "data": "m",
+   "template": "{{join .person \",\"}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <join .person \",\">: error calling join: expected slice, got oracle.Person"
+  },
+  {
+   "data": "m",
+   "template": "{{title .str}}",
+   "output": "Hello"
+  },
+  {
+   "data": "m",
+   "template": "{{title \"hello wORLD-foo_bar baz.qux 3d x'y\"}}",
+   "output": "Hello WORLD-Foo_bar Baz.Qux 3d X'Y"
+  },
+  {
+   "data": "m",
+   "template": "{{title .unicode}}",
+   "output": "Héllo Wörld Ñ 日本"
+  },
+  {
+   "data": "m",
+   "template": "{{lower \"HeLLo ÀÉ\"}}",
+   "output": "hello àé"
+  },
+  {
+   "data": "m",
+   "template": "{{upper .unicode}}",
+   "output": "HÉLLO WÖRLD Ñ 日本"
+  },
+  {
+   "data": "m",
+   "template": "{{upper \"ß\"}}",
+   "output": "ß"
+  },
+  {
+   "data": "m",
+   "template": "{{lower .int}}",
+   "output": "",
+   "error": "template: :1:8: executing \"\" at <.int>: wrong type for value; expected string; got int"
+  },
+  {
+   "data": "m",
+   "template": "{{upper}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <upper>: wrong number of args for upper: want 1 got 0"
+  },
+  {
+   "data": "m",
+   "template": "{{title .missing}}",
+   "output": "",
+   "error": "template: :1:8: executing \"\" at <.missing>: invalid value; expected string"
+  },
+  {
+   "data": "m",
+   "template": "{{lower \"İ\"}}",
+   "output": "i"
+  },
+  {
+   "data": "m",
+   "template": "{{upper \"ǆ\"}}",
+   "output": "Ǆ"
+  },
+  {
+   "data": "m",
+   "template": "{{title \"ǆa\"}}",
+   "output": "ǅa"
+  },
+  {
+   "data": "m",
+   "template": "{{.str | upper}}",
+   "output": "HELLO"
+  },
+  {
+   "data": "m",
+   "template": "{{title \"_a b\"}}",
+   "output": "_a B"
+  },
+  {
+   "data": "m",
+   "template": "{{title \"élan vital\"}}",
+   "output": "Élan Vital"
+  },
+  {
+   "data": "m",
+   "template": "{{pad .str 2 3}}|",
+   "output": "  hello   |"
+  },
+  {
+   "data": "m",
+   "template": "{{pad .empty 2 3}}|",
+   "output": "|"
+  },
+  {
+   "data": "m",
+   "template": "{{pad .str 0 0}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{pad .str -1 0}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <pad .str -1 0>: error calling pad: strings: negative Repeat count"
+  },
+  {
+   "data": "m",
+   "template": "{{pad .str 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <pad>: wrong number of args for pad: want 3 got 2"
+  },
+  {
+   "data": "m",
+   "template": "{{pad .str \"a\" 1}}",
+   "output": "",
+   "error": "template: :1:11: executing \"\" at <\"a\">: expected integer; found \"a\""
+  },
+  {
+   "data": "m",
+   "template": "{{pad .int 1 1}}",
+   "output": "",
+   "error": "template: :1:6: executing \"\" at <.int>: wrong type for value; expected string; got int"
+  },
+  {
+   "data": "m",
+   "template": "{{pad .str 1 .int}}|",
+   "output": " hello                                          |"
+  },
+  {
+   "data": "m",
+   "template": "{{pad .str 1 .u}}",
+   "output": "",
+   "error": "template: :1:13: executing \"\" at <.u>: wrong type for value; expected int; got uint"
+  },
+  {
+   "data": "m",
+   "template": "{{truncate .str 3}}",
+   "output": "hel"
+  },
+  {
+   "data": "m",
+   "template": "{{truncate .str 10}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{truncate .str 5}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{truncate .str 0}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{truncate .str -1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <truncate .str -1>: error calling truncate: runtime error: slice bounds out of range [:-1]"
+  },
+  {
+   "data": "m",
+   "template": "{{truncate .unicode 2}}",
+   "output": "h\ufffd"
+  },
+  {
+   "data": "m",
+   "template": "{{truncate .str 2.0}}",
+   "output": "he"
+  },
+  {
+   "data": "m",
+   "template": "{{truncate .str 2.5}}",
+   "output": "",
+   "error": "template: :1:16: executing \"\" at <2.5>: expected integer; found 2.5"
+  },
+  {
+   "data": "m",
+   "template": "{{truncate .str .int}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{truncate .str .u}}",
+   "output": "",
+   "error": "template: :1:16: executing \"\" at <.u>: wrong type for value; expected int; got uint"
+  },
+  {
+   "data": "m",
+   "template": "{{truncate .missing 3}}",
+   "output": "",
+   "error": "template: :1:11: executing \"\" at <.missing>: invalid value; expected string"
+  },
+  {
+   "data": "m",
+   "template": "{{truncate .str}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <truncate>: wrong number of args for truncate: want 2 got 1"
+  },
+  {
+   "data": "m",
+   "template": "{{truncate \"日本\" 3}}",
+   "output": "日"
+  },
+  {
+   "data": "m",
+   "template": "{{.str | truncate 2}}",
+   "output": "",
+   "error": "template: :1:18: executing \"\" at <2>: expected string; found 2"
+  },
+  {
+   "data": "m",
+   "template": "{{\"abcdef\" | truncate 2}}",
+   "output": "",
+   "error": "template: :1:22: executing \"\" at <2>: expected string; found 2"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Name}}",
+   "output": "Ann"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Age}}",
+   "output": "30"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Tags}}",
+   "output": "[admin dev]"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Meta}}",
+   "output": "map[team:core]"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Meta.team}}",
+   "output": "core"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Missing}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.person.Missing>: can't evaluate field Missing in type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Greet \"Hi\"}}",
+   "output": "Hi, Ann"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Greet}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.person.Greet>: wrong number of args for Greet: want 1 got 0"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Greet 1}}",
+   "output": "",
+   "error": "template: :1:16: executing \"\" at <1>: expected string; found 1"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Greet .int}}",
+   "output": "",
+   "error": "template: :1:16: executing \"\" at <.int>: wrong type for value; expected string; got int"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Sum 2 3}}",
+   "output": "5"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Sum 2 \"x\"}}",
+   "output": "",
+   "error": "template: :1:16: executing \"\" at <\"x\">: expected integer; found \"x\""
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Fail}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.person.Fail>: error calling Fail: person failed"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Label \"team\"}}",
+   "output": "core"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Scale 1.5}}",
+   "output": "45"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Scale 2}}",
+   "output": "60"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Older 18}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Older -1}}",
+   "output": "",
+   "error": "template: :1:16: executing \"\" at <-1>: expected unsigned integer; found -1"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Pick true}}",
+   "output": "yes"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Pick 1}}",
+   "output": "",
+   "error": "template: :1:15: executing \"\" at <1>: expected bool; found 1"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind .str}}",
+   "output": "string"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind nil}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind .missing}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind 1.5}}",
+   "output": "float64"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind .list}}",
+   "output": "[]interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind .null}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Name \"x\"}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.person.Name>: Name has arguments but cannot be invoked as function"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Initial}}",
+   "output": "A"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Name.x}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.person.Name.x>: can't evaluate field x in type string"
+  },
+  {
+   "data": "m",
+   "template": "{{\"Yo\" | .person.Greet}}",
+   "output": "Yo, Ann"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Greet \"a\" | printf \"%q\"}}",
+   "output": "\"a, Ann\""
+  },
+  {
+   "data": "m",
+   "template": "{{.person}}",
+   "output": "{Ann 30 [admin dev] map[team:core]}"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Sum 1 2 3}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.person.Sum>: wrong number of args for Sum: want 2 got 3"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Fail | printf \"%q\"}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.person.Fail>: error calling Fail: person failed"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Greet .missing}}",
+   "output": "",
+   "error": "template: :1:16: executing \"\" at <.missing>: invalid value; expected string"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Greet nil}}",
+   "output": "",
+   "error": "template: :1:16: executing \"\" at <nil>: cannot assign nil to string"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Tags.x}}",
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.person.Tags.x>: can't evaluate field x in type []string"
+  },
+  {
+   "data": "m",
+   "template": "{{index .person.Tags 1}}",
+   "output": "dev"
+  },
+  {
+   "data": "m",
+   "template": "{{len .person.Meta}}",
+   "output": "1"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Older .u}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Scale .float}}",
+   "output": "105"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Sum .int .neg}}",
+   "output": "35"
+  },
+  {
+   "data": "m",
+   "template": "{{.person | .Name}}",
+   "output": "",
+   "error": "template: :1:12: executing \"\" at <.Name>: Name is not a method but has arguments"
+  },
+  {
+   "data": "m",
+   "template": "{{with .person}}{{.Sum 1 1}}{{end}}",
+   "output": "2"
+  },
+  {
+   "data": "m",
+   "template": "{{.container.ID}}",
+   "output": "abc123def456"
+  },
+  {
+   "data": "m",
+   "template": "{{.container.Names}}",
+   "output": "web,app"
+  },
+  {
+   "data": "m",
+   "template": "{{.container.Label \"env\"}}",
+   "output": "prod"
+  },
+  {
+   "data": "m",
+   "template": "{{.container.Label \"none\"}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{.container.Labels}}",
+   "output": "com.docker.compose.project=proj,env=prod"
+  },
+  {
+   "data": "m",
+   "template": "{{.container.Nope}}",
+   "output": "",
+   "error": "template: :1:12: executing \"\" at <.container.Nope>: can't evaluate field Nope in type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{.container.ID 1}}",
+   "output": "",
+   "error": "template: :1:12: executing \"\" at <.container.ID>: wrong number of args for ID: want 0 got 1"
+  },
+  {
+   "data": "m",
+   "template": "{{.container.Label}}",
+   "output": "",
+   "error": "template: :1:12: executing \"\" at <.container.Label>: wrong number of args for Label: want 1 got 0"
+  },
+  {
+   "data": "m",
+   "template": "{{.container.ID | printf \"%.4s\"}}",
+   "output": "abc1"
+  },
+  {
+   "data": "m",
+   "template": "{{.container.Label .str}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{.container.ID.x}}",
+   "output": "",
+   "error": "template: :1:12: executing \"\" at <.container.ID.x>: can't evaluate field x in type string"
+  },
+  {
+   "data": "person",
+   "template": "{{.Name}}",
+   "output": "Ann"
+  },
+  {
+   "data": "person",
+   "template": "{{.Missing}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <.Missing>: can't evaluate field Missing in type oracle.Person"
+  },
+  {
+   "data": "person",
+   "template": "{{.Greet \"Hey\"}}",
+   "output": "Hey, Ann"
+  },
+  {
+   "data": "person",
+   "template": "{{.}}",
+   "output": "{Ann 30 [admin dev] map[team:core]}"
+  },
+  {
+   "data": "person",
+   "template": "{{.Tags}}",
+   "output": "[admin dev]"
+  },
+  {
+   "data": "person",
+   "template": "{{json .}}",
+   "output": "{\"Name\":\"Ann\",\"Age\":30,\"Tags\":[\"admin\",\"dev\"],\"Meta\":{\"team\":\"core\"}}"
+  },
+  {
+   "data": "person",
+   "template": "{{.Name.x}}",
+   "output": "",
+   "error": "template: :1:7: executing \"\" at <.Name.x>: can't evaluate field x in type string"
+  },
+  {
+   "data": "person",
+   "template": "{{range .Tags}}<{{.}}>{{end}}",
+   "output": "<admin><dev>"
+  },
+  {
+   "data": "person",
+   "template": "{{.Meta.team}}",
+   "output": "core"
+  },
+  {
+   "data": "person",
+   "template": "{{.Meta.none}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "person",
+   "template": "{{index .Meta \"team\"}}",
+   "output": "core"
+  },
+  {
+   "data": "person",
+   "template": "{{.Age | printf \"%03d\"}}",
+   "output": "030"
+  },
+  {
+   "data": "container",
+   "template": "{{.ID}}\t{{.Names}}",
+   "output": "abc123def456\tweb,app"
+  },
+  {
+   "data": "container",
+   "template": "table {{.ID}}\\t{{.Label \"com.docker.compose.project\"}}",
+   "output": "table abc123def456\\tproj"
+  },
+  {
+   "data": "container",
+   "template": "{{.Label}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <.Label>: wrong number of args for Label: want 1 got 0"
+  },
+  {
+   "data": "container",
+   "template": "{{.ID | printf \"%.4s\"}}",
+   "output": "abc1"
+  },
+  {
+   "data": "container",
+   "template": "{{.Labels | split \",\"}}",
+   "output": "[,]"
+  },
+  {
+   "data": "container",
+   "template": "{{range split .Labels \",\"}}[{{.}}]{{end}}",
+   "output": "[com.docker.compose.project=proj][env=prod]"
+  },
+  {
+   "data": "container",
+   "template": "{{.}}",
+   "output": "{abc123def456 [web app] map[com.docker.compose.project:proj env:prod]}"
+  },
+  {
+   "data": "container",
+   "template": "{{json .}}",
+   "output": "{}"
+  },
+  {
+   "data": "container",
+   "template": "{{.Missing}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <.Missing>: can't evaluate field Missing in type *oracle.Container"
+  },
+  {
+   "data": "container",
+   "template": "{{truncate .ID 6}}",
+   "output": "abc123"
+  },
+  {
+   "data": "container",
+   "template": "{{upper .Names}}",
+   "output": "WEB,APP"
+  },
+  {
+   "data": "container",
+   "template": "{{pad .ID 1 1}}|",
+   "output": " abc123def456 |"
+  },
+  {
+   "data": "container",
+   "template": "{{.ID.x}}",
+   "output": "",
+   "error": "template: :1:5: executing \"\" at <.ID.x>: can't evaluate field x in type string"
+  },
+  {
+   "data": "container",
+   "template": "{{if eq (.Label \"env\") \"prod\"}}P{{end}}",
+   "output": "P"
+  },
+  {
+   "data": "container",
+   "template": "{{.Label \"env\" | len}}",
+   "output": "4"
+  },
+  {
+   "data": "nil",
+   "template": "{{.}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "nil",
+   "template": "{{.x}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "nil",
+   "template": "{{.x.y}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "nil",
+   "template": "{{len .}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <len .>: error calling len: reflect: call of reflect.Value.Type on zero Value"
+  },
+  {
+   "data": "nil",
+   "template": "{{json .}}",
+   "output": "null"
+  },
+  {
+   "data": "nil",
+   "template": "{{range .}}x{{else}}e{{end}}",
+   "output": "e"
+  },
+  {
+   "data": "nil",
+   "template": "{{if .}}t{{else}}f{{end}}",
+   "output": "f"
+  },
+  {
+   "data": "nil",
+   "template": "{{$}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "nil",
+   "template": "{{index . 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index . 1>: error calling index: index of untyped nil"
+  },
+  {
+   "data": "nil",
+   "template": "{{printf \"%v\" .}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "nil",
+   "template": "{{with .}}x{{else}}none{{end}}",
+   "output": "none"
+  },
+  {
+   "data": "nil",
+   "template": "{{print .}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "nil",
+   "template": "{{eq . nil}}",
+   "output": "true"
+  },
+  {
+   "data": "nil",
+   "template": "{{and . 1}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "nil",
+   "template": "{{slice .}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <slice .>: error calling slice: slice of untyped nil"
+  },
+  {
+   "data": "nil",
+   "template": "{{call .}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <call .>: error calling call: call of nil"
+  },
+  {
+   "data": "nil",
+   "template": "{{.x 1}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "nil",
+   "template": "{{$.x}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "nil",
+   "template": "{{join . \",\"}}",
+   "output": ""
+  },
+  {
+   "data": "list",
+   "template": "{{.}}",
+   "output": "[x y]"
+  },
+  {
+   "data": "list",
+   "template": "{{index . 0}}",
+   "output": "x"
+  },
+  {
+   "data": "list",
+   "template": "{{.x}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <.x>: can't evaluate field x in type []interface {}"
+  },
+  {
+   "data": "list",
+   "template": "{{range .}}{{.}}{{end}}",
+   "output": "xy"
+  },
+  {
+   "data": "list",
+   "template": "{{len .}}",
+   "output": "2"
+  },
+  {
+   "data": "list",
+   "template": "{{json .}}",
+   "output": "[\"x\",\"y\"]"
+  },
+  {
+   "data": "list",
+   "template": "{{slice . 1}}",
+   "output": "[y]"
+  },
+  {
+   "data": "list",
+   "template": "{{range $i, $e := .}}{{$i}}{{$e}}{{end}}",
+   "output": "0x1y"
+  },
+  {
+   "data": "list",
+   "template": "{{.x.y}}",
+   "output": "",
+   "error": "template: :1:4: executing \"\" at <.x.y>: can't evaluate field x in type []interface {}"
+  },
+  {
+   "data": "int",
+   "template": "{{.}}",
+   "output": "3"
+  },
+  {
+   "data": "int",
+   "template": "{{range .}}{{.}}{{end}}",
+   "output": "012"
+  },
+  {
+   "data": "int",
+   "template": "{{.x}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <.x>: can't evaluate field x in type int"
+  },
+  {
+   "data": "int",
+   "template": "{{if eq . 3}}three{{end}}",
+   "output": "three"
+  },
+  {
+   "data": "int",
+   "template": "{{json .}}",
+   "output": "3"
+  },
+  {
+   "data": "int",
+   "template": "{{printf \"%T\" .}}",
+   "output": "int"
+  },
+  {
+   "data": "int",
+   "template": "{{range $i, $v := .}}{{end}}",
+   "output": "",
+   "error": "template: :1:18: executing \"\" at <.>: can't use 3 to iterate over more than one variable"
+  },
+  {
+   "data": "int",
+   "template": "{{lt . 4}}",
+   "output": "true"
+  },
+  {
+   "data": "str",
+   "template": "{{.}}",
+   "output": "just a string"
+  },
+  {
+   "data": "str",
+   "template": "{{len .}}",
+   "output": "13"
+  },
+  {
+   "data": "str",
+   "template": "{{.Foo}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <.Foo>: can't evaluate field Foo in type string"
+  },
+  {
+   "data": "str",
+   "template": "{{upper .}}",
+   "output": "JUST A STRING"
+  },
+  {
+   "data": "str",
+   "template": "{{split . \" \"}}",
+   "output": "[just a string]"
+  },
+  {
+   "data": "str",
+   "template": "{{index . 0}}",
+   "output": "106"
+  },
+  {
+   "data": "str",
+   "template": "{{slice . 5}}",
+   "output": "a string"
+  },
+  {
+   "data": "str",
+   "template": "{{range .}}{{end}}",
+   "output": "",
+   "error": "template: :1:8: executing \"\" at <.>: range can't iterate over just a string"
+  },
+  {
+   "data": "str",
+   "template": "{{json .}}",
+   "output": "\"just a string\""
+  },
+  {
+   "data": "m",
+   "template": "line1\nline2 {{.null.x}}\n{{.str.x}}",
+   "output": "line1\nline2 ",
+   "error": "template: :2:13: executing \"\" at <.null.x>: nil pointer evaluating interface {}.x"
+  },
+  {
+   "data": "m",
+   "template": "{{if .t}}\n  {{.str.y}}\n{{end}}",
+   "output": "\n  ",
+   "error": "template: :2:8: executing \"\" at <.str.y>: can't evaluate field y in type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "\n\n{{printf}}",
+   "output": "\n\n",
+   "error": "template: :3:2: executing \"\" at <printf>: wrong number of args for printf: want at least 1 got 0"
+  },
+  {
+   "data": "m",
+   "template": "{{.str}}{{.int.x}}",
+   "output": "hello",
+   "error": "template: :1:14: executing \"\" at <.int.x>: can't evaluate field x in type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "x\n{{template \"nope\"}}",
+   "output": "x\n",
+   "error": "template: :2:11: executing \"\" at <{{template \"nope\"}}>: template \"nope\" not defined"
+  },
+  {
+   "data": "m",
+   "template": "{{.str\n.x}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <.str>: str is not a method but has arguments"
+  },
+  {
+   "data": "m",
+   "template": "{{if .t}}\n{{.str",
+   "output": "",
+   "error": "template: :2: unclosed action"
+  },
+  {
+   "data": "m",
+   "template": "a\n{{.str\nb}}",
+   "output": "",
+   "error": "template: :3: function \"b\" not defined"
+  },
+  {
+   "data": "m",
+   "template": "{{/* unclosed",
+   "output": "",
+   "error": "template: :1: unclosed comment"
+  },
+  {
+   "data": "m",
+   "template": "{{/* c */ x}}",
+   "output": "",
+   "error": "template: :1: comment ends before closing delimiter"
+  },
+  {
+   "data": "m",
+   "template": "a\n{{/* c\n */ .str}}",
+   "output": "",
+   "error": "template: :2: comment ends before closing delimiter"
+  },
+  {
+   "data": "m",
+   "template": "{{\n.str\n}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{.str\n| printf \"%d\"}}",
+   "output": "%!d(string=hello)"
+  },
+  {
+   "data": "m",
+   "template": "{{(.str\n}}",
+   "output": "",
+   "error": "template: :2: unclosed left paren in action started at :1"
+  },
+  {
+   "data": "m",
+   "template": "x\n\ny{{\"abc\n\"}}",
+   "output": "",
+   "error": "template: :3: unterminated quoted string"
+  },
+  {
+   "data": "m",
+   "template": "{{\"unterminated}}",
+   "output": "",
+   "error": "template: :1: unterminated quoted string"
+  },
+  {
+   "data": "m",
+   "template": "{{'a}}",
+   "output": "",
+   "error": "template: :1: unterminated character constant"
+  },
+  {
+   "data": "m",
+   "template": "{{`raw}}",
+   "output": "",
+   "error": "template: :1: unterminated raw quoted string"
+  },
+  {
+   "data": "m",
+   "template": "{{(.str}}",
+   "output": "",
+   "error": "template: :1: unclosed left paren"
+  },
+  {
+   "data": "m",
+   "template": "{{.str)}}",
+   "output": "",
+   "error": "template: :1: unexpected right paren"
+  },
+  {
+   "data": "m",
+   "template": "{{nofunc}}",
+   "output": "",
+   "error": "template: :1: function \"nofunc\" not defined"
+  },
+  {
+   "data": "m",
+   "template": "{{.str|}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{|.str}}",
+   "output": "",
+   "error": "template: :1: unexpected \"|\" in command"
+  },
+  {
+   "data": "m",
+   "template": "{{.a-b}}",
+   "output": "",
+   "error": "template: :1: bad character U+002D '-'"
+  },
+  {
+   "data": "m",
+   "template": "{{@}}",
+   "output": "",
+   "error": "template: :1: unexpected \"@\" in command"
+  },
+  {
+   "data": "m",
+   "template": "{{é}}",
+   "output": "",
+   "error": "template: :1: function \"é\" not defined"
+  },
+  {
+   "data": "m",
+   "template": "{{€}}",
+   "output": "",
+   "error": "template: :1: unrecognized character in action: U+20AC '€'"
+  },
+  {
+   "data": "m",
+   "template": "{{",
+   "output": "",
+   "error": "template: :1: unclosed action"
+  },
+  {
+   "data": "m",
+   "template": "{{.str",
+   "output": "",
+   "error": "template: :1: unclosed action"
+  },
+  {
+   "data": "m",
+   "template": "{{.str}",
+   "output": "",
+   "error": "template: :1: bad character U+007D '}'"
+  },
+  {
+   "data": "m",
+   "template": "{{.str}}}}",
+   "output": "hello}}"
+  },
+  {
+   "data": "m",
+   "template": "}}",
+   "output": "}}"
+  },
+  {
+   "data": "m",
+   "template": "{{{{.str}}",
+   "output": "",
+   "error": "template: :1: unexpected \"{\" in command"
+  },
+  {
+   "data": "m",
+   "template": "{{.str .}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <.str>: str is not a method but has arguments"
+  },
+  {
+   "data": "m",
+   "template": "{{$x:=}}",
+   "output": "",
+   "error": "template: :1: missing value for command"
+  },
+  {
+   "data": "m",
+   "template": "{{range .list}}\n{{.y}}{{end}}",
+   "output": "\n",
+   "error": "template: :2:2: executing \"\" at <.y>: can't evaluate field y in type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{.str|printf \"%d\"|len}}",
+   "output": "17"
+  },
+  {
+   "data": "m",
+   "template": "{{ .str | printf \"%s\" | printf \"%q\" }}",
+   "output": "\"hello\""
+  },
+  {
+   "data": "m",
+   "template": "{{define \"T\"}}\n{{.x.y}}\n{{end}}{{template \"T\" .str}}",
+   "output": "\n",
+   "error": "template: :2:4: executing \"T\" at <.x.y>: can't evaluate field x in type string"
+  },
+  {
+   "data": "m",
+   "template": "{{with .list}}\n\t{{index . 9}}{{end}}",
+   "output": "\n\t",
+   "error": "template: :2:3: executing \"\" at <index . 9>: error calling index: index out of range: 9"
+  },
+  {
+   "data": "m",
+   "template": "{{.\u0001}}",
+   "output": "",
+   "error": "template: :1: bad character U+0001"
+  },
+  {
+   "data": "m",
+   "template": "{{.str\t}}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{.str -}}{{- .int}}",
+   "output": "hello42"
+  },
+  {
+   "data": "m",
+   "template": "{{- -}}",
+   "output": "",
+   "error": "template: :1: illegal number syntax: \"-\""
+  },
+  {
+   "data": "m",
+   "template": "{{ - }}",
+   "output": "",
+   "error": "template: :1: illegal number syntax: \"-\""
+  },
+  {
+   "data": "m",
+   "template": "{{-}}",
+   "output": "",
+   "error": "template: :1: illegal number syntax: \"-\""
+  },
+  {
+   "data": "m",
+   "template": "{{.str }}",
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{print -}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{with $x := .missing}}{{else}}[{{$x}}]{{end}}",
+   "output": "[<no value>]"
+  },
+  {
+   "data": "m",
+   "template": "{{range $i, $e := .emptylist}}{{else}}[{{$i}}]{{end}}",
+   "output": "[[]]"
+  },
+  {
+   "data": "m",
+   "template": "{{if $x := 0}}{{else}}{{$x}}{{end}}",
+   "output": "0"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := 0}}{{range .ints}}{{$x = .}}{{end}}{{$x}}",
+   "output": "3"
+  },
+  {
+   "data": "m",
+   "template": "{{with $x := 1}}{{$x = 2}}{{$x}}{{end}}",
+   "output": "2"
+  },
+  {
+   "data": "m",
+   "template": "{{define \"T\"}}{{.}}{{end}}{{$x := 5}}{{template \"T\" $x}}",
+   "output": "5"
+  },
+  {
+   "data": "m",
+   "template": "{{1 | .person.Sum 2}}",
+   "output": "3"
+  },
+  {
+   "data": "m",
+   "template": "{{\"x\" | .person.Sum 2}}",
+   "output": "",
+   "error": "template: :1:20: executing \"\" at <2>: wrong type for value; expected int; got string"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Sum 1 2 | .person.Sum 3}}",
+   "output": "6"
+  },
+  {
+   "data": "m",
+   "template": "{{or 1 | not}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Sum (len .list) 1}}",
+   "output": "4"
+  },
+  {
+   "data": "m",
+   "template": "{{(.person.Greet \"x\") | len}}",
+   "output": "6"
+  },
+  {
+   "data": "m",
+   "template": "{{range $i, $e := .people}}{{$e.Sum $i 1}}{{end}}",
+   "output": "12"
+  },
+  {
+   "data": "m",
+   "template": "{{$x := .person}}{{$x.Greet \"a\"}}",
+   "output": "a, Ann"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind .}}",
+   "output": "map[string]interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind 'a'}}",
+   "output": "int"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind 1}}",
+   "output": "int"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind true}}",
+   "output": "bool"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind \"s\"}}",
+   "output": "string"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind .u}}",
+   "output": "uint"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind .person}}",
+   "output": "oracle.Person"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind .container}}",
+   "output": "*oracle.Container"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind .labels}}",
+   "output": "map[string]string"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind .strs}}",
+   "output": "[]string"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Older 'a'}}",
+   "output": "false"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Scale 'a'}}",
+   "output": "2910"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Older 1.0}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Older 0x10}}",
+   "output": "true"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Sum 1e2 1}}",
+   "output": "101"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Sum 9223372036854775808 1}}",
+   "output": "",
+   "error": "template: :1:14: executing \"\" at <9223372036854775808>: expected integer; found 9223372036854775808"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Scale true}}",
+   "output": "",
+   "error": "template: :1:16: executing \"\" at <true>: expected float; found true"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Pick .t}}",
+   "output": "yes"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Pick .null}}",
+   "output": "",
+   "error": "template: :1:15: executing \"\" at <.null>: wrong type for value; expected bool; got interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Greet .null}}",
+   "output": "",
+   "error": "template: :1:16: executing \"\" at <.null>: wrong type for value; expected string; got interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind (index .mixed 4)}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Kind .nested.null}}",
+   "output": "<nil>"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%d\" 1e3}}",
+   "output": "%!d(float64=1000)"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%s\" 0x10}}",
+   "output": "%!s(int=16)"
+  },
+  {
+   "data": "m",
+   "template": "{{len \"日本\"}}",
+   "output": "6"
+  },
+  {
+   "data": "m",
+   "template": "{{slice \"日本\" 1}}",
+   "output": "\ufffd\ufffd本"
+  },
+  {
+   "data": "m",
+   "template": "{{index .labels \"com.example.a\" | printf \"%q\"}}",
+   "output": "\"1\""
+  },
+  {
+   "data": "m",
+   "template": "{{0.1}}",
+   "output": "0.1"
+  },
+  {
+   "data": "m",
+   "template": "{{1e-7}}",
+   "output": "1e-07"
+  },
+  {
+   "data": "m",
+   "template": "{{100000000.0}}",
+   "output": "1e+08"
+  },
+  {
+   "data": "m",
+   "template": "{{123456.0}}",
+   "output": "123456"
+  },
+  {
+   "data": "m",
+   "template": "{{1e6}}",
+   "output": "1e+06"
+  },
+  {
+   "data": "m",
+   "template": "{{-2.5}}",
+   "output": "-2.5"
+  },
+  {
+   "data": "m",
+   "template": "{{0x1.8p1}}",
+   "output": "3"
+  },
+  {
+   "data": "m",
+   "template": "{{1e21}}",
+   "output": "1e+21"
+  },
+  {
+   "data": "m",
+   "template": "{{1e20}}",
+   "output": "1e+20"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" 100000000000000000000.0}}",
+   "output": "1e+20"
+  },
+  {
+   "data": "m",
+   "template": "{{\"{{\"}}",
+   "output": "{{"
+  },
+  {
+   "data": "m",
+   "template": "{{\"}}\"}}",
+   "output": "}}"
+  },
+  {
+   "data": "m",
+   "template": "{{print \"}}\" \"{{\"}}",
+   "output": "}}{{"
+  },
+  {
+   "data": "m",
+   "template": "{{()}}",
+   "output": "",
+   "error": "template: :1: missing value for parenthesized pipeline"
+  },
+  {
+   "data": "m",
+   "template": "{{1\"long string literal\"}}",
+   "output": "",
+   "error": "template: :1: unexpected \"\\\"long stri\"... in operand"
+  },
+  {
+   "data": "m",
+   "template": "{{if .t}}{{end}}{{end}}",
+   "output": "",
+   "error": "template: :1: unexpected {{end}}"
+  },
+  {
+   "data": "m",
+   "template": "{{block \"x\" .}}",
+   "output": "",
+   "error": "template: :1: unexpected EOF"
+  },
+  {
+   "data": "m",
+   "template": "a\n  {{- /* x */ -}}\n  b",
+   "output": "ab"
+  },
+  {
+   "data": "m",
+   "template": "{{.str}}{{/* a */}}{{/* b */}}{{.int}}",
+   "output": "hello42"
+  },
+  {
+   "data": "m",
+   "template": "{{ /* not a comment */ }}",
+   "output": "",
+   "error": "template: :1: unexpected \"/\" in command"
+  },
+  {
+   "data": "m",
+   "template": "{{/**/}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{/*\n*/}}",
+   "output": ""
+  },
+  {
+   "data": "m",
+   "template": "{{.héllo}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{.日本}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{$é := 1}}{{$é}}",
+   "output": "1"
+  },
+  {
+   "data": "m",
+   "template": "{{.x_y}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{._}}",
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{$_ := 2}}{{$_}}",
+   "output": "2"
+  },
+  {
+   "data": "m",
+   "template": "{{index .map \"a\" | printf \"%T\"}}",
+   "output": "int"
+  },
+  {
+   "data": "m",
+   "template": "{{.map.a | printf \"%T\"}}",
+   "output": "int"
+  },
+  {
+   "data": "m",
+   "template": "{{range .map}}{{printf \"%T\" .}}{{end}}",
+   "output": "intintint"
+  },
+  {
+   "data": "m",
+   "template": "{{range $k, $v := .map}}{{printf \"%T\" $k}}{{end}}",
+   "output": "stringstringstring"
+  },
+  {
+   "data": "m",
+   "template": "{{range $i, $v := .list}}{{printf \"%T\" $i}}{{end}}",
+   "output": "intintint"
+  },
+  {
+   "data": "m",
+   "template": "{{range 2}}{{printf \"%T\" .}}{{end}}",
+   "output": "intint"
+  },
+  {
+   "data": "m",
+   "template": "{{range .u}}{{printf \"%T\" .}}{{end}}",
+   "output": "uintuintuintuintuintuintuint"
+  },
+  {
+   "data": "m",
+   "template": "{{len .list | printf \"%T\"}}",
+   "output": "int"
+  },
+  {
+   "data": "m",
+   "template": "{{eq .int 42 | printf \"%T\"}}",
+   "output": "bool"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v|%s|%d\" .labels .labels .labels}}",
+   "output": "map[b:two com.example.a:1 empty:]|map[b:two com.example.a:1 empty:]|map[%!d(string=b):%!d(string=two) %!d(string=com.example.a):%!d(string=1) %!d(string=empty):%!d(string=)]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%x\" .list}}",
+   "output": "[61 62 63]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%q\" .map}}",
+   "output": "map[\"a\":'\\x01' \"b\":'\\x02' \"c\":'\\x03']"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%5.1f\" .mixed}}",
+   "output": "[%!f(int=    1) %!f(string=    t)   3.5 %!f(bool= true) <nil> map[%!f(string=    k):%!f(string=    v)] [%!f(int=    1) %!f(int=    2)]]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" .nested.list}}",
+   "output": "[map[name:x] map[name:y]]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%+v\" .person}}",
+   "output": "{Name:Ann Age:30 Tags:[admin dev] Meta:map[team:core]}"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%s\" .person}}",
+   "output": "{Ann %!s(int=30) [admin dev] map[team:core]}"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" .people}}",
+   "output": "[{Ann 30 [admin dev] map[team:core]} {Bob 5 [] map[]}]"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%v\" .container}}",
+   "output": "&{abc123def456 [web app] map[com.docker.compose.project:proj env:prod]}"
+  },
+  {
+   "data": "m",
+   "template": "{{print .container}}",
+   "output": "&{abc123def456 [web app] map[com.docker.compose.project:proj env:prod]}"
+  },
+  {
+   "data": "m",
+   "template": "{{.container}}",
+   "output": "{abc123def456 [web app] map[com.docker.compose.project:proj env:prod]}"
+  },
+  {
+   "data": "m",
+   "template": "{{html .container}}",
+   "output": "{abc123def456 [web app] map[com.docker.compose.project:proj env:prod]}"
+  },
+  {
+   "data": "m",
+   "template": "{{range .container}}{{end}}",
+   "output": "",
+   "error": "template: :1:8: executing \"\" at <.container>: range can't iterate over {abc123def456 [web app] map[com.docker.compose.project:proj env:prod]}"
+  },
+  {
+   "data": "m",
+   "template": "{{index .container 1}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <index .container 1>: error calling index: can't index item of type oracle.Container"
+  },
+  {
+   "data": "m",
+   "template": "{{slice .container}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <slice .container>: error calling slice: can't slice item of type oracle.Container"
+  },
+  {
+   "data": "m",
+   "template": "{{join .container \",\"}}",
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <join .container \",\">: error calling join: expected slice, got *oracle.Container"
+  },
+  {
+   "data": "m",
+   "template": "{{printf \"%T\" .container.ID}}",
+   "output": "string"
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Initial | printf \"%q\"}}",
+   "output": "\"A\""
+  },
+  {
+   "name": "mytmpl",
+   "data": "m",
+   "template": "{{.str.x}}",
+   "output": "",
+   "error": "template: mytmpl:1:6: executing \"mytmpl\" at <.str.x>: can't evaluate field x in type interface {}"
+  },
+  {
+   "name": "mytmpl",
+   "data": "m",
+   "template": "{{define \"inner\"}}{{.y.z}}{{end}}{{template \"inner\" .str}}",
+   "output": "",
+   "error": "template: mytmpl:1:22: executing \"inner\" at <.y.z>: can't evaluate field y in type string"
+  },
+  {
+   "name": "mytmpl",
+   "data": "m",
+   "template": "{{.str",
+   "output": "",
+   "error": "template: mytmpl:1: unclosed action"
+  },
+  {
+   "name": "mytmpl",
+   "data": "m",
+   "template": "{{define \"mytmpl\"}}X{{end}}",
+   "output": "X"
+  },
+  {
+   "name": "mytmpl",
+   "data": "m",
+   "template": "{{define \"mytmpl\"}}X{{end}}main",
+   "output": "",
+   "error": "template: mytmpl:1: template: multiple definition of template \"mytmpl\""
+  },
+  {
+   "name": "mytmpl",
+   "data": "m",
+   "template": "{{define \"mytmpl\"}}X{{end}}  ",
+   "output": "X"
+  },
+  {
+   "name": "a%b",
+   "data": "m",
+   "template": "{{.str.x}}",
+   "output": "",
+   "error": "template: a%!b(string=x):1:6: executing \"a%b\" at <.str.x>: can't evaluate field interface {} in type %!s(MISSING)"
+  },
+  {
+   "name": "a%b",
+   "data": "m",
+   "template": "{{.str",
+   "output": "",
+   "error": "template: a{0 110 %!b(string=unclosed action) 1}:1: %!s(MISSING)"
+  },
+  {
+   "data": "header",
+   "template": "{{.ID}}\t{{.Names}}",
+   "header": true,
+   "output": "CONTAINER ID\tNAMES"
+  },
+  {
+   "data": "header",
+   "template": "{{json .ID}}",
+   "header": true,
+   "output": "CONTAINER ID"
+  },
+  {
+   "data": "header",
+   "template": "{{upper .Names}}",
+   "header": true,
+   "output": "NAMES"
+  },
+  {
+   "data": "header",
+   "template": "{{truncate .ID 3}}",
+   "header": true,
+   "output": "CONTAINER ID"
+  },
+  {
+   "data": "header",
+   "template": "{{split .ID \",\"}}",
+   "header": true,
+   "output": "CONTAINER ID"
+  },
+  {
+   "data": "header",
+   "template": "{{join .ID \",\"}}",
+   "header": true,
+   "output": "CONTAINER ID"
+  },
+  {
+   "data": "header",
+   "template": "{{pad .ID 1 1}}|",
+   "header": true,
+   "output": " CONTAINER ID |"
+  },
+  {
+   "data": "header",
+   "template": "{{title .Image}}",
+   "header": true,
+   "output": "IMAGE"
+  },
+  {
+   "data": "header",
+   "template": "{{.Label \"x\"}}",
+   "header": true,
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <.Label>: Label is not a method but has arguments"
+  },
+  {
+   "data": "header",
+   "template": "{{.Missing}}",
+   "header": true,
+   "output": "<no value>"
+  },
+  {
+   "data": "header",
+   "template": "{{json 1}}",
+   "header": true,
+   "output": "",
+   "error": "template: :1:7: executing \"\" at <1>: expected string; found 1"
+  },
+  {
+   "data": "header",
+   "template": "{{lower .Image}}",
+   "header": true,
+   "output": "IMAGE"
+  },
+  {
+   "data": "header",
+   "template": "{{printf \"%-20s|\" .ID}}",
+   "header": true,
+   "output": "CONTAINER ID        |"
+  },
+  {
+   "data": "header",
+   "template": "{{json .Missing}}",
+   "header": true,
+   "output": "",
+   "error": "template: :1:7: executing \"\" at <.Missing>: invalid value; expected string"
+  },
+  {
+   "data": "header",
+   "template": "{{truncate .ID}}",
+   "header": true,
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <truncate>: wrong number of args for truncate: want 2 got 1"
+  },
+  {
+   "data": "header",
+   "template": "{{len .ID}}",
+   "header": true,
+   "output": "12"
+  },
+  {
+   "data": "header",
+   "template": "{{split .ID}}",
+   "header": true,
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <split>: wrong number of args for split: want 2 got 1"
+  },
+  {
+   "data": "header",
+   "template": "{{json .}}",
+   "header": true,
+   "output": "",
+   "error": "template: :1:7: executing \"\" at <.>: wrong type for value; expected string; got map[string]string"
+  }
+ ]
+}

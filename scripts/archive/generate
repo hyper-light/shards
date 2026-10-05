@@ -1,0 +1,41 @@
+#!/bin/sh
+# Regenerates crates/archive/testdata/answers.json, pack/, unpack/ and rebase/: what
+# moby/go-archive v0.3.3 and Go's archive/tar make of testdata/cases.json (oracle/main.go),
+# then runs shards-archive's oracle test against them (crates/archive/tests/oracle.rs).
+#
+# Both run as root in a privileged Linux container (Docker's), on an ext4 volume: the
+# fixture trees have owners, setuid bits, devices and security.capability, which only
+# root can make, and unpacking applies them. The test is built for the host's
+# architecture as a static musl binary, so it runs there as it does in a guest; hosts
+# without root run the cases that need none.
+#
+#   scripts/archive/generate
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+data="$root/crates/archive/testdata"
+image=debian@sha256:f37a335e82bca302e955fa39f9dfe28f1be618f016f8a2b56318e5a5111afc26
+
+case $(uname -m) in
+arm64 | aarch64) arch=aarch64 goarch=arm64 ;;
+x86_64 | amd64) arch=x86_64 goarch=amd64 ;;
+*) echo "unknown architecture $(uname -m)" >&2; exit 1 ;;
+esac
+
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+(cd "$here/oracle" && GOOS=linux GOARCH="$goarch" CGO_ENABLED=0 go build -o "$out/oracle" .)
+# The rustup proxy, without the DYLD_* that keep rust-lld from loading libLLVM.
+test=$(env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+	cargo test --quiet --manifest-path "$root/Cargo.toml" -p shards-archive --test oracle \
+	--no-run --target "$arch-unknown-linux-musl" --message-format=json |
+	sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -n 1)
+cp "$test" "$out/oracle-test"
+
+docker run --rm --privileged --platform "linux/$goarch" \
+	-v "$out:/oracle:ro" -v "$data:/data" --mount type=volume,dst=/work "$image" \
+	sh -c 'mkdir -p /work/go /work/rust && /oracle/oracle /data /work/go &&
+		TMPDIR=/work/rust SHARDS_ARCHIVE_ROOT=1 SHARDS_ARCHIVE_TESTDATA=/data \
+		/oracle/oracle-test --test-threads=1'
+echo "wrote $data"

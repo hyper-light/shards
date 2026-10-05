@@ -15,7 +15,7 @@ fn validate(flag: &Flag, value: &str) -> Result<String, String> {
         return shards_cmdline::network::attachment(value).map(|_| value.to_string());
     }
     if flag.name != "env" {
-        return Ok(value.to_string());
+        return shards_cmdline::flags::value(flag, value);
     }
     let (key, has_value) = match value.split_once('=') {
         Some((k, _)) => (k, true),

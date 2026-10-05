@@ -206,6 +206,10 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         0,
         "lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work,volatile",
     )?;
+    // Kept for `diff` (changes.rs), which compares the layers the root hides.
+    if let Err(e) = crate::changes::keep("/lower", "/rw/upper") {
+        let _ = writeln!(io::stderr(), "shards-init: keeping the layers for diff: {e}");
+    }
     // The initramfs cannot be unmounted, so the new root moves over it
     // (Documentation/filesystems/ramfs-rootfs-initramfs.rst).
     chdir_chroot("/newroot", false)?;
@@ -947,6 +951,55 @@ struct Exec {
     ended: bool,
 }
 
+/// One of init's own for an exec ([`Spec::builtin`]), done in a child of init's, so that
+/// the relay goes on, its output on a pipe as a command's: what is asked for on stdout,
+/// status 0; why it could not be had on stderr, status 1.
+fn builtin(kind: u8) -> Result<Started, Failure> {
+    let (stdout_r, stdout_w) = pipe()?;
+    let (stderr_r, stderr_w) = pipe()?;
+    // SAFETY: init is single-threaded, so its child may run anything.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(setup_failed(format!("fork: {}", io::Error::last_os_error())));
+    }
+    if pid == 0 {
+        drop((stdout_r, stderr_r));
+        let mut out = io::BufWriter::new(File::from(stdout_w));
+        let done = match kind {
+            run::builtin::PROCESSES => out.write_all(&crate::procs::dump()),
+            run::builtin::CHANGES => crate::changes::write(&mut out),
+            other => Err(io::Error::other(format!("no built-in {other}"))),
+        }
+        .and_then(|()| out.flush());
+        let code = match done {
+            Ok(()) => 0,
+            Err(e) => {
+                let _ = writeln!(File::from(stderr_w), "{e}");
+                1
+            }
+        };
+        // SAFETY: _exit(2) ends the child without running init's exit paths.
+        unsafe { libc::_exit(code) }
+    }
+    drop((stdout_w, stderr_w));
+    Ok(Started {
+        pid,
+        tty: false,
+        stdin: None,
+        stdout: Some(stdout_r),
+        stderr: Some(stderr_r),
+    })
+}
+
+/// An exec started: its process and init's ends of its stdio.
+struct Started {
+    pid: libc::pid_t,
+    tty: bool,
+    stdin: Option<OwnedFd>,
+    stdout: Option<OwnedFd>,
+    stderr: Option<OwnedFd>,
+}
+
 impl Exec {
     /// Starts the command a host's [`kind::EXEC`] frame asks for, unless the workload
     /// has ended (`running`), and dials its connection. Without a connection, the exec's
@@ -977,8 +1030,18 @@ impl Exec {
         };
         exec.to_conn
             .extend(&[&run::header(kind::HELLO, run::TOKEN as u32), token]);
-        let started = if running {
-            Standby::fork().and_then(|standby| standby.launch(&spec, true))
+        let started = if spec.builtin != 0 && running {
+            builtin(spec.builtin)
+        } else if running {
+            Standby::fork()
+                .and_then(|standby| standby.launch(&spec, true))
+                .map(|w| Started {
+                    pid: w.pid,
+                    tty: w.tty,
+                    stdin: w.stdin,
+                    stdout: w.stdout,
+                    stderr: w.stderr,
+                })
         } else {
             Err(setup_failed("the container's main process has exited"))
         };

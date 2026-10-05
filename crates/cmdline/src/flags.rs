@@ -574,6 +574,20 @@ fn read(
     Ok(())
 }
 
+/// A value of a flag that takes many, as docker/cli's option type for it takes it: a
+/// filter (opts.FilterOpt.Set) is `name=value`, its name lowered and both trimmed, or
+/// empty; others are as given.
+pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
+    // An empty filter is no filter (opts.FilterOpt.Set): kept empty, and skipped.
+    if flag.kind != Kind::Many("filter") || value.is_empty() {
+        return Ok(value.to_string());
+    }
+    let Some((name, val)) = value.split_once('=') else {
+        return Err("bad format of filter (expected name=value)".into());
+    };
+    Ok(format!("{}={}", name.trim().to_lowercase(), val.trim()))
+}
+
 /// pflag's parseLongArg: `--name`, `--name=value`, or `--name value`.
 fn read_long(
     parsed: &mut Parsed,

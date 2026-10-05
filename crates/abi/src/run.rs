@@ -119,6 +119,18 @@ pub struct Spec {
     /// and without a terminal, its stdin is `/dev/null`, as Docker gives a container's
     /// and an exec's (measured: Docker 29.3.1, `readlink /proc/self/fd/0`).
     pub stdin: bool,
+    /// Not a command but one of shards-init's own ([`builtin`]), answered on the exec's
+    /// stdout as a command's output would be, with `argv` its arguments; 0 for a command.
+    pub builtin: u8,
+}
+
+/// What shards-init does itself for an exec ([`Spec::builtin`]).
+pub mod builtin {
+    /// The guest's processes as `/proc` has them, for `shards top` (init procs.rs).
+    pub const PROCESSES: u8 = 1;
+    /// What the container changed of its image's files, for `shards diff` (init
+    /// changes.rs).
+    pub const CHANGES: u8 = 2;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as
@@ -149,7 +161,7 @@ impl Spec {
     /// Lists are a big-endian u32 count, then their strings; each string is a big-endian
     /// u32 length, then its bytes. Then the optional sections, each a tag and what it
     /// holds, in order: a terminal, 1 and its size; resolv.conf, 2 and its bytes; stdin
-    /// read, 3 alone.
+    /// read, 3 alone; a built-in, 4 and its kind.
     ///
     /// Callers see [`encoded_len`](Spec::encoded_len) within [`MAX_PAYLOAD`] first: past
     /// it, a length would not fit its u32.
@@ -183,6 +195,9 @@ impl Spec {
         if self.stdin {
             out.push(3);
         }
+        if self.builtin != 0 {
+            out.extend_from_slice(&[4, self.builtin]);
+        }
     }
 
     /// The bytes [`encode`](Spec::encode) writes, or `None` past `usize`: measured without
@@ -202,7 +217,8 @@ impl Spec {
         };
         n.checked_add(if self.tty.is_some() { 5 } else { 0 })?
             .checked_add(resolv)?
-            .checked_add(usize::from(self.stdin))
+            .checked_add(usize::from(self.stdin))?
+            .checked_add(if self.builtin != 0 { 2 } else { 0 })
     }
 
     /// The spec in `bytes`, or `None` unless they hold exactly one.
@@ -217,9 +233,11 @@ impl Spec {
             tty: None,
             resolv: None,
             stdin: false,
+            builtin: 0,
         };
         let mut spec = spec;
-        // Optional sections, each once, in order: 1 a terminal, 2 resolv.conf, 3 stdin.
+        // Optional sections, each once, in order: 1 a terminal, 2 resolv.conf, 3 stdin, 4
+        // a built-in.
         let mut last = 0u8;
         while let Some(tag) = r.take(1).and_then(|t| t.first().copied()) {
             if tag <= last {
@@ -230,6 +248,7 @@ impl Spec {
                 1 => spec.tty = Some(Size::decode(r.take(4)?)?),
                 2 => spec.resolv = Some(r.bytes()?),
                 3 => spec.stdin = true,
+                4 => spec.builtin = r.take(1)?.first().copied().filter(|&b| b != 0)?,
                 _ => return None,
             }
         }
@@ -298,26 +317,29 @@ mod tests {
             tty: Some(Size { rows: 24, cols: 300 }),
             resolv: Some(b"nameserver 192.168.1.1\n".to_vec()),
             stdin: true,
+            builtin: builtin::CHANGES,
         };
         let bytes = spec.encode();
         assert_eq!(bytes.len(), spec.encoded_len().unwrap());
         assert_eq!(Spec::decode(&bytes), Some(spec.clone()));
         // Its length measured as written, whichever optional sections it has (review 1.20).
-        for sections in 0..8u8 {
+        for sections in 0..16u8 {
             let some = Spec {
                 tty: (sections & 1 != 0).then_some(Size { rows: 1, cols: 2 }),
                 resolv: (sections & 2 != 0).then(|| b"nameserver 10.0.0.1\n".to_vec()),
                 stdin: sections & 4 != 0,
+                builtin: if sections & 8 != 0 { builtin::PROCESSES } else { 0 },
                 ..spec.clone()
             };
             let written = some.encode();
-            assert_eq!(written.len(), some.encoded_len().unwrap(), "{sections:03b}");
-            assert_eq!(Spec::decode(&written), Some(some), "{sections:03b}");
+            assert_eq!(written.len(), some.encoded_len().unwrap(), "{sections:04b}");
+            assert_eq!(Spec::decode(&written), Some(some), "{sections:04b}");
         }
         let piped = Spec {
             tty: None,
             resolv: None,
             stdin: false,
+            builtin: 0,
             ..spec.clone()
         };
         let without = piped.encode();
@@ -325,14 +347,21 @@ mod tests {
         let tty_only = Spec {
             resolv: None,
             stdin: false,
+            builtin: 0,
             ..spec.clone()
         };
         let with_tty = tty_only.encode();
         let closed = Spec {
             stdin: false,
+            builtin: 0,
             ..spec.clone()
         };
         let without_stdin = closed.encode();
+        let commanded = Spec {
+            builtin: 0,
+            ..spec.clone()
+        };
+        let without_builtin = commanded.encode();
         assert_eq!(Spec::decode(&Spec::default().encode()), Some(Spec::default()));
         let reading = Spec {
             stdin: true,
@@ -340,7 +369,8 @@ mod tests {
         };
         assert_eq!(Spec::decode(&reading.encode()), Some(reading));
         // Frames carry their length, so only a spec cut where a section ends reads as one:
-        // without its optional sections, with its terminal alone, or without stdin.
+        // without its optional sections, with its terminal alone, without stdin, or without
+        // its built-in.
         for cut in 0..bytes.len() {
             let expected = if cut == without.len() {
                 Some(piped.clone())
@@ -348,6 +378,8 @@ mod tests {
                 Some(tty_only.clone())
             } else if cut == without_stdin.len() {
                 Some(closed.clone())
+            } else if cut == without_builtin.len() {
+                Some(commanded.clone())
             } else {
                 None
             };
@@ -360,6 +392,9 @@ mod tests {
         let mut bad_tty = Spec::default().encode();
         bad_tty.push(2);
         assert_eq!(Spec::decode(&bad_tty), None, "not a terminal");
+        let mut no_builtin = Spec::default().encode();
+        no_builtin.extend([4, 0]);
+        assert_eq!(Spec::decode(&no_builtin), None, "a built-in of no kind");
         let mut disordered = Spec::default().encode();
         disordered.extend([3, 1, 0, 24, 1, 44]);
         assert_eq!(Spec::decode(&disordered), None, "stdin before a terminal");

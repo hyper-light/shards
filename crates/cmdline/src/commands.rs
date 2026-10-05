@@ -683,6 +683,72 @@ pub static UNPAUSE: Command = Command {
     error_prefix: "",
 };
 
+/// `shards top` (docker/cli cli/command/container/top.go): ps's options follow the
+/// container, as they are.
+pub static TOP: Command = Command {
+    usage: "CONTAINER [ps OPTIONS]",
+    about: "Display the running processes of a container",
+    aliases: "shards container top, shards top",
+    args: Args::AtLeast(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: false,
+    error_prefix: "",
+};
+
+/// `shards diff` (docker/cli cli/command/container/diff.go).
+pub static DIFF: Command = Command {
+    usage: "CONTAINER",
+    about: "Inspect changes to files or directories on a container's filesystem",
+    aliases: "shards container diff, shards diff",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards events` (docker/cli cli/command/system/events.go).
+pub static EVENTS: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Get real time events from the server",
+    aliases: "shards system events, shards events",
+    args: Args::None,
+    flags: &[
+        Flag::many(
+            "filter",
+            Some(b'f'),
+            "filter",
+            "Filter output based on conditions provided",
+        ),
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
+        HELP,
+        Flag::string("since", None, "", "Show all events created since timestamp"),
+        Flag::string("until", None, "", "Stream events until this timestamp"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards info` (docker/cli cli/command/system/info.go).
+pub static INFO: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Display system-wide information",
+    aliases: "shards system info, shards info",
+    args: Args::None,
+    flags: &[HELP],
+    unserved: "\
+format f s - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards port`.
 pub static PORT: Command = Command {
     usage: "CONTAINER [PRIVATE_PORT[/PROTO]]",
@@ -979,6 +1045,14 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["system", "df", ..] => (&SYSTEM_DF, "shards system df", 2),
         ["stats", ..] => (&STATS, "shards stats", 1),
         ["pause", ..] => (&PAUSE, "shards pause", 1),
+        ["top", ..] => (&TOP, "shards top", 1),
+        ["diff", ..] => (&DIFF, "shards diff", 1),
+        ["events", ..] => (&EVENTS, "shards events", 1),
+        ["info", ..] => (&INFO, "shards info", 1),
+        ["system", "info", ..] => (&INFO, "shards system info", 2),
+        ["system", "events", ..] => (&EVENTS, "shards system events", 2),
+        ["container", "diff", ..] => (&DIFF, "shards container diff", 2),
+        ["container", "top", ..] => (&TOP, "shards container top", 2),
         ["container", "pause", ..] => (&PAUSE, "shards container pause", 2),
         ["unpause", ..] => (&UNPAUSE, "shards unpause", 1),
         ["container", "unpause", ..] => (&UNPAUSE, "shards container unpause", 2),

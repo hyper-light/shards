@@ -437,7 +437,7 @@ fn builder_memory_mib() -> u64 {
 
 /// The host's physical memory, in bytes.
 #[cfg(unix)]
-fn host_memory() -> Option<u64> {
+pub(crate) fn host_memory() -> Option<u64> {
     // SAFETY: sysconf(3) with constant arguments.
     let (pages, size) = unsafe {
         (
@@ -450,7 +450,7 @@ fn host_memory() -> Option<u64> {
 
 /// Where shards starts no builder yet (`builder::Builder`), nothing asks.
 #[cfg(not(unix))]
-fn host_memory() -> Option<u64> {
+pub(crate) fn host_memory() -> Option<u64> {
     None
 }
 

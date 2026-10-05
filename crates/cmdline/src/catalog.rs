@@ -71,7 +71,10 @@ pub static TOP: &[Group] = &[
     Group {
         heading: "Commands",
         entries: &[
+            of("diff", &commands::DIFF),
+            of("events", &commands::EVENTS),
             of("history", &commands::HISTORY),
+            of("info", &commands::INFO),
             of("kill", &commands::KILL),
             of("load", &commands::LOAD),
             of("logs", &commands::LOGS),
@@ -84,6 +87,7 @@ pub static TOP: &[Group] = &[
             of("stats", &commands::STATS),
             of("stop", &commands::STOP),
             of("tag", &commands::TAG),
+            of("top", &commands::TOP),
             of("unpause", &commands::UNPAUSE),
             of("wait", &commands::WAIT),
         ],
@@ -96,6 +100,7 @@ pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
         "container",
         "Manage containers",
         &[
+            of("diff", &commands::DIFF),
             of("exec", &commands::EXEC),
             of("kill", &commands::KILL),
             of("logs", &commands::LOGS),
@@ -107,6 +112,7 @@ pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
             of("run", &commands::RUN),
             of("stats", &commands::STATS),
             of("stop", &commands::STOP),
+            of("top", &commands::TOP),
             of("unpause", &commands::UNPAUSE),
             of("wait", &commands::WAIT),
         ],
