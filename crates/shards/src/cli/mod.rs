@@ -69,6 +69,14 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
     #[cfg(unix)]
     if let [action] = text.as_slice()
         && shards_cmdline::grammar::is_action(action)
+        && !shards_cmdline::commands::find(&[action.as_str()]).is_some_and(|(c, _, _)| {
+            matches!(
+                c.args,
+                shards_cmdline::flags::Args::Any
+                    | shards_cmdline::flags::Args::None
+                    | shards_cmdline::flags::Args::AtMost(_)
+            )
+        })
         && look::styled_quiet()
     {
         return action_help(action);

@@ -74,6 +74,13 @@ pub fn main() -> ! {
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
         "hold" => hold(arg(1)),
         "udp-echo" => udp_echo(arg(1), arg(2).parse().unwrap_or(1)),
+        "spin" => {
+            let _ = writeln!(io::stdout(), "ready");
+            let mut n = 0u64;
+            loop {
+                n = std::hint::black_box(n.wrapping_add(1));
+            }
+        }
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {

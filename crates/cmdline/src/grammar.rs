@@ -66,6 +66,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("prune", Thing::Image) => &["image", "prune"],
         ("prune", Thing::System) => &["system", "prune"],
         ("rename", Thing::Vm | Thing::Container) => &["rename"],
+        ("stats" | "watch", Thing::Vm | Thing::Container) => &["stats"],
         ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect"],
         ("run", Thing::Vm | Thing::Container) => &["run"],
         ("restore", Thing::Vm) => &["restore"],
@@ -121,6 +122,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ),
     ("inspect", "list", "vm | image", "List microVMs, or images"),
     ("inspect", "logs", "vm", "Show what a microVM's command printed"),
+    (
+        "inspect",
+        "stats",
+        "vm",
+        "Watch what microVMs take of the host, live",
+    ),
     (
         "manage",
         "configure",
@@ -282,6 +289,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     ),
     ("images", "push", "image NAME", "Upload an image to a registry"),
     ("images", "save", "image NAME", "Save images to a tar archive"),
+    (
+        "inspect",
+        "stats",
+        "vm [NAME]",
+        "Watch what microVMs take of the host, live",
+    ),
 ];
 
 /// Whether `word` is an action of shards' grammar.

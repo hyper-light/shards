@@ -241,6 +241,58 @@ fn stop_and_kill_signal_the_command() {
 }
 
 #[test]
+fn stats_measures_each_microvm_from_its_vm_process() {
+    let Some((home, image)) = home("containers-stats") else {
+        return;
+    };
+    let mut spinner = start(&home, &image, &["--name", "spinner"], &["spin"]);
+    let mut sleeper = start(&home, &image, &["--name", "sleeper"], &["sleep"]);
+    let stats = shards_in(&home, &["stats", "--no-stream"]);
+    assert_eq!(stats.status, Some(0), "{stats}");
+    let mut lines = stats.stdout.lines();
+    assert_eq!(
+        lines.next(),
+        Some("CONTAINER ID   NAME      CPU %     MEM USAGE / LIMIT   MEM %     NET I/O   BLOCK I/O   PIDS"),
+        "{stats}"
+    );
+    // Each row: its name, its share of a CPU, and its memory against the microVM's.
+    let row = |name: &str| -> (f64, String) {
+        let line = stats
+            .stdout
+            .lines()
+            .find(|l| l.split_whitespace().nth(1) == Some(name))
+            .unwrap();
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let cpu = fields[2].trim_end_matches('%').parse().unwrap();
+        assert_eq!(
+            (&fields[4..6], &fields[7..]),
+            (&["/", "256MiB"][..], &["--", "--", "--"][..]),
+            "{line}"
+        );
+        (cpu, fields[3].to_string())
+    };
+    let (spinning, held) = row("spinner");
+    let (sleeping, _) = row("sleeper");
+    // A guest spinning one vCPU keeps its VM process at most of a CPU; one asleep, at
+    // little.
+    assert!(spinning > 50.0 && sleeping < 10.0, "{stats}");
+    assert!(held.ends_with("MiB"), "{stats}");
+    let named = shards_in(&home, &["stats", "--no-stream", "sleeper"]);
+    assert_eq!(named.stdout.lines().count(), 2, "{named}");
+    let missing = shards_in(&home, &["stats", "--no-stream", "nobody"]);
+    assert_eq!(
+        (missing.status, missing.stderr.as_str()),
+        (Some(1), "Error response from daemon: No such container: nobody\n"),
+        "{missing}"
+    );
+    for name in ["spinner", "sleeper"] {
+        assert_eq!(shards_in(&home, &["rm", "-f", name]).status, Some(0));
+    }
+    exit(&mut spinner);
+    exit(&mut sleeper);
+}
+
+#[test]
 fn rm_refuses_a_running_container_unless_forced() {
     let Some((home, image)) = home("containers-force") else {
         return;

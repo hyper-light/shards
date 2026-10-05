@@ -80,6 +80,7 @@ pub static TOP: &[Group] = &[
             of("rm", &commands::RM),
             of("rmi", &commands::RMI),
             of("save", &commands::SAVE),
+            of("stats", &commands::STATS),
             of("stop", &commands::STOP),
             of("tag", &commands::TAG),
             of("wait", &commands::WAIT),

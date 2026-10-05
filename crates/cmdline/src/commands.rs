@@ -496,6 +496,32 @@ volumes - b - -",
     error_prefix: "",
 };
 
+/// `shards stats` (docker/cli cli/command/container/stats.go).
+pub static STATS: Command = Command {
+    usage: "[OPTIONS] [CONTAINER...]",
+    about: "Display a live stream of container(s) resource usage statistics",
+    aliases: "shards container stats, shards stats",
+    args: Args::Any,
+    flags: &[
+        Flag::bool(
+            "all",
+            Some(b'a'),
+            "Show all containers (default shows just running)",
+        ),
+        HELP,
+        Flag::bool(
+            "no-stream",
+            None,
+            "Disable streaming stats and only pull the first result",
+        ),
+        Flag::bool("no-trunc", None, "Do not truncate output"),
+    ],
+    unserved: "\
+format - s - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards save`.
 pub static SAVE: Command = Command {
     usage: "[OPTIONS] IMAGE [IMAGE...]",
@@ -927,6 +953,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["image", "inspect", ..] => (&IMAGE_INSPECT, "shards image inspect", 2),
         ["history", ..] => (&HISTORY, "shards history", 1),
         ["system", "df", ..] => (&SYSTEM_DF, "shards system df", 2),
+        ["stats", ..] => (&STATS, "shards stats", 1),
+        ["container", "stats", ..] => (&STATS, "shards container stats", 2),
         ["system", "prune", ..] => (&SYSTEM_PRUNE, "shards system prune", 2),
         ["container", "prune", ..] => (&CONTAINER_PRUNE, "shards container prune", 2),
         ["image", "prune", ..] => (&IMAGE_PRUNE, "shards image prune", 2),

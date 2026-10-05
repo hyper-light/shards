@@ -259,6 +259,8 @@ fn answer<'s>(
     let error_paint = crate::cli::look::styled_err();
     let mut errors: Vec<u8> = Vec::new();
     let mut paged = false;
+    // A page redrawn in place as the daemon sends it again (`stats`).
+    let mut live = shards_tui::frame::Frame::new();
     let pass = |display: &Option<std::sync::mpsc::Sender<Shown>>, shown: Shown| match (display, shown) {
         (Some(tx), shown) => {
             let _ = tx.send(shown);
@@ -303,7 +305,7 @@ fn answer<'s>(
             }
             Ok(Some(m)) if m.kind == kind::SHEET => {
                 if let Some(sheet) = shards_ipc::Sheet::decode(&m.payload) {
-                    crate::cli::screens::show(&sheet);
+                    crate::cli::screens::show(&sheet, &mut live);
                     paged = true;
                 }
             }

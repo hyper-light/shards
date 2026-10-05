@@ -69,6 +69,19 @@ impl Page {
         self.lines.push(Line::default());
     }
 
+    /// Draws the page over the last one drawn into `frame`, in place: a page that changes
+    /// as it is watched (`stats`).
+    pub(super) fn draw(self, p: &Paint, frame: &mut shards_tui::frame::Frame, out: &mut impl std::io::Write) {
+        frame.begin();
+        for mut l in self.lines {
+            p.reset(&mut l.s);
+            frame.put(&l.s, l.w);
+        }
+        // Every screen ends with an empty line.
+        frame.put("", 0);
+        frame.end(width(), out);
+    }
+
     pub(super) fn write(self, p: &Paint, out: &mut impl std::io::Write) {
         let mut text = String::new();
         for mut l in self.lines {

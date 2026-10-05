@@ -10,8 +10,9 @@ use shards_tui::tokens::{self, Paint};
 
 use super::look::{self, Page};
 
-/// Draws `sheet`'s page on stdout.
-pub fn show(sheet: &Sheet) {
+/// Draws `sheet`'s page on stdout; a page that is watched as it changes, over the last one
+/// drawn into `live`.
+pub fn show(sheet: &Sheet, live: &mut shards_tui::frame::Frame) {
     let Some(p) = look::styled() else {
         return;
     };
@@ -26,6 +27,11 @@ pub fn show(sheet: &Sheet) {
         "history" => history(&mut page, &p, sheet),
         "df" => disk(&mut page, &p, sheet),
         "prune" => prune(&mut page, &p, sheet),
+        "stats" => {
+            stats(&mut page, &p, sheet);
+            page.draw(&p, live, &mut std::io::stdout().lock());
+            return;
+        }
         "json" => {
             json(&p, sheet.get(0, "text").unwrap_or(""));
             return;
@@ -821,6 +827,108 @@ fn disk(page: &mut Page, p: &Paint, sheet: &Sheet) {
                         if free > 0 { text::bytes(free) } else { "—".into() },
                         if free > 0 { tokens::AMBER } else { tokens::FAINT },
                     ),
+                ],
+            )
+        })
+        .collect();
+    table(page, p, cols, &columns, &rows);
+}
+
+/// `shards stats`: what each microVM takes of the host, redrawn each second: its share of
+/// a CPU and its memory against what it was given, each with a bar.
+fn stats(page: &mut Page, p: &Paint, sheet: &Sheet) {
+    let cols = look::width();
+    let n = sheet.records.len();
+    let num = |i: usize, k: &str| sheet.get(i, k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+    let cpu: f64 = (0..n).map(|i| num(i, "cpu")).sum();
+    look::head(
+        page,
+        p,
+        cols,
+        "stats",
+        &[(
+            tokens::MUTED,
+            false,
+            format!(
+                "{n} {} · {cpu:.1}% of a CPU · every second",
+                if n == 1 { "microVM" } else { "microVMs" }
+            ),
+        )],
+    );
+    page.blank();
+    if n == 0 {
+        let l = page.line();
+        l.pad(4).put(p, tokens::MUTED, "Nothing running. ");
+        l.put(p, tokens::TEAL, "shards run vm IMAGE");
+        l.put(p, tokens::MUTED, " starts a microVM from an image.");
+        return;
+    }
+    let columns = [
+        Column {
+            heading: "MICROVM",
+            right: false,
+            keep: 9,
+        },
+        Column {
+            heading: "ID",
+            right: false,
+            keep: 4,
+        },
+        Column {
+            heading: "CPU",
+            right: false,
+            keep: 8,
+        },
+        Column {
+            heading: "MEMORY",
+            right: false,
+            keep: 7,
+        },
+    ];
+    let cpu_w = (0..n)
+        .map(|i| format!("{:.2}%", num(i, "cpu")).len())
+        .max()
+        .unwrap_or(0);
+    let mem_w = (0..n)
+        .map(|i| {
+            format!(
+                "{} / {}",
+                sheet.get(i, "mem").unwrap_or(""),
+                sheet.get(i, "limit").unwrap_or("")
+            )
+            .chars()
+            .count()
+        })
+        .max()
+        .unwrap_or(0);
+    let rows: Vec<(Cell, Vec<Cell>)> = (0..n)
+        .map(|i| {
+            let mut used = Cell::new(
+                format!("{:<cpu_w$}", format!("{:.2}%", num(i, "cpu"))),
+                tokens::TEAL,
+            );
+            used.bar = Some((12, (num(i, "cpu") / 100.0).clamp(0.0, 1.0)));
+            let held = format!(
+                "{} / {}",
+                sheet.get(i, "mem").unwrap_or(""),
+                sheet.get(i, "limit").unwrap_or("")
+            );
+            let mut memory = Cell::new(format!("{held:<mem_w$}"), tokens::LAVENDER);
+            memory.bar = Some((12, (num(i, "share") / 100.0).clamp(0.0, 1.0)));
+            (
+                Cell::new(
+                    "●",
+                    if sheet.get(i, "running") == Some("true") {
+                        tokens::SAGE
+                    } else {
+                        tokens::FAINT
+                    },
+                ),
+                vec![
+                    Cell::new(sheet.get(i, "name").unwrap_or(""), tokens::BRIGHT).bold(),
+                    Cell::new(sheet.get(i, "id").unwrap_or(""), tokens::SUBTLE),
+                    used,
+                    memory,
                 ],
             )
         })

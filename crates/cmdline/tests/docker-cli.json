@@ -1,6 +1,53 @@
 [
   {
     "argv": [
+      "stats",
+      "--help"
+    ],
+    "stdout": "Usage:  shards stats [OPTIONS] [CONTAINER...]\n\nDisplay a live stream of container(s) resource usage statistics\n\nAliases:\n  shards container stats, shards stats\n\nOptions:\n  -a, --all         Show all containers (default shows just running)\n      --no-stream   Disable streaming stats and only pull the first result\n      --no-trunc    Do not truncate output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stats",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards stats [OPTIONS] [CONTAINER...]\n\nDisplay a live stream of container(s) resource usage statistics\n\nAliases:\n  shards container stats, shards stats\n\nOptions:\n  -a, --all         Show all containers (default shows just running)\n      --no-stream   Disable streaming stats and only pull the first result\n      --no-trunc    Do not truncate output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stats",
+      "--nope"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards stats [OPTIONS] [CONTAINER...]\n\nRun 'shards stats --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "stats",
+      "--format",
+      "x"
+    ],
+    "stdout": "RUN --format=x\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "stats",
+      "--help"
+    ],
+    "stdout": "Usage:  shards container stats [OPTIONS] [CONTAINER...]\n\nDisplay a live stream of container(s) resource usage statistics\n\nAliases:\n  shards container stats, shards stats\n\nOptions:\n  -a, --all         Show all containers (default shows just running)\n      --no-stream   Disable streaming stats and only pull the first result\n      --no-trunc    Do not truncate output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "run"
     ],
     "stdout": "",

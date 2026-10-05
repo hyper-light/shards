@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use shards_cmdline::commands::{
     self, CONTAINER_INSPECT, CONTAINER_PRUNE, HISTORY, IMAGE_INSPECT, IMAGE_PRUNE, IMAGES, KILL, LOAD, LOGS,
-    PORT, PS, PULL, PUSH, RENAME, RM, RMI, SAVE, STOP, SYSTEM_DF, SYSTEM_PRUNE, TAG, WAIT,
+    PORT, PS, PULL, PUSH, RENAME, RM, RMI, SAVE, STATS, STOP, SYSTEM_DF, SYSTEM_PRUNE, TAG, WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
@@ -82,6 +82,11 @@ impl Reply<'_> {
     /// (`kind::SHEET`).
     pub(super) fn sheet(&self, sheet: &shards_ipc::Sheet) {
         let _ = shards_ipc::send(self.0, kind::SHEET, &sheet.encode(), &[]);
+    }
+
+    /// [`sheet`](Self::sheet), saying whether the client took it: one that has gone, did not.
+    pub(super) fn sheet_taken(&self, sheet: &shards_ipc::Sheet) -> bool {
+        shards_ipc::send(self.0, kind::SHEET, &sheet.encode(), &[]).is_ok()
     }
 
     /// A step of a pull, for a client on a colour terminal to show (`kind::PROGRESS`).
@@ -381,6 +386,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.prune(true, true, parsed.bool("all"), asker, reply)
         } else if std::ptr::eq(command, &SYSTEM_DF) {
             self.system_df(asker, reply)
+        } else if std::ptr::eq(command, &STATS) {
+            self.stats(&parsed, asker, reply)
         } else if std::ptr::eq(command, &RENAME) {
             self.rename(&parsed.args, reply)
         } else if std::ptr::eq(command, &HISTORY) {
@@ -398,6 +405,142 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else {
             reply.err(&format!("shards: {path} is not a container command"));
             1
+        }
+    }
+
+    /// `shards stats [CONTAINER...]` (docker/cli cli/command/container/stats.go): what each
+    /// microVM takes of the host, measured from its VM process each second: CPU as the
+    /// share of one CPU its process had over the second, memory as its resident size
+    /// against the microVM's. Streamed until the client goes, or once with `--no-stream`.
+    /// What only the guest knows (network and block I/O, PIDs) is `--`, as docker/cli
+    /// shows what it lacks.
+    fn stats(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
+        let limit = shards_vmm::vm::MEMORY_MIB.saturating_mul(1 << 20);
+        let all = parsed.bool("all");
+        let trunc = !parsed.bool("no-trunc");
+        // Those named, each found as every command finds one; else every one listed.
+        let mut named = Vec::new();
+        for given in &parsed.args {
+            match self.resolve_held(lock(&self.containers), given).1 {
+                Ok(id) => named.push(id),
+                Err(said) => {
+                    reply.err(&said);
+                    return 1;
+                }
+            }
+        }
+        // Each one shown: its ID, name and, while it runs, its VM process.
+        let targets = || -> Vec<(String, String, Option<u32>)> {
+            let runs = lock(&self.runs);
+            let mut list: Vec<&Container> = Vec::new();
+            let containers = lock(&self.containers);
+            for c in containers.all() {
+                let running = c.state == Life::Running;
+                if (named.is_empty() && (all || running)) || named.contains(&c.id) {
+                    list.push(c);
+                }
+            }
+            list.sort_by_key(|c| std::cmp::Reverse(c.created));
+            list.iter()
+                .map(|c| {
+                    let pid = match runs.get(&c.id) {
+                        Some(RunState::Tracked(t)) => Some(t.vm.id()),
+                        _ => None,
+                    };
+                    (c.id.clone(), c.name.clone(), pid)
+                })
+                .collect()
+        };
+        let mut last: std::collections::HashMap<String, (u64, Instant)> = std::collections::HashMap::new();
+        let mut sample = || -> Vec<Sampled> {
+            targets()
+                .into_iter()
+                .map(|(id, name, pid)| {
+                    let Some(u) = pid.and_then(|p| shards_vmm::platform::process_usage(p).ok()) else {
+                        return Sampled { id, name, used: None };
+                    };
+                    let now = Instant::now();
+                    let cpu = match last.insert(id.clone(), (u.cpu_ns, now)) {
+                        Some((before, at)) => {
+                            #[allow(clippy::cast_precision_loss)]
+                            let share = u.cpu_ns.saturating_sub(before) as f64
+                                / now.duration_since(at).as_nanos().max(1) as f64;
+                            share * 100.0
+                        }
+                        None => 0.0,
+                    };
+                    Sampled {
+                        id,
+                        name,
+                        used: Some((cpu, u.resident)),
+                    }
+                })
+                .collect()
+        };
+        // The first sample is a baseline: CPU is measured over the second after it.
+        sample();
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            let rows = sample();
+            #[allow(clippy::cast_precision_loss)]
+            let share = |mem: u64| mem as f64 / limit.max(1) as f64 * 100.0;
+            let taken = if asker.styled() {
+                let mut sheet = shards_ipc::Sheet::new("stats");
+                for Sampled { id, name, used } in &rows {
+                    let (cpu, mem) = used.unwrap_or_default();
+                    sheet.record(&[
+                        ("running", used.is_some().to_string()),
+                        ("id", id.get(..12).unwrap_or(id).to_string()),
+                        ("name", name.clone()),
+                        ("cpu", format!("{cpu:.2}")),
+                        ("mem", binary_size(mem)),
+                        ("limit", binary_size(limit)),
+                        ("share", format!("{:.2}", share(mem))),
+                    ]);
+                }
+                reply.sheet_taken(&sheet)
+            } else {
+                let mut table = vec![[
+                    "CONTAINER ID".to_string(),
+                    "NAME".into(),
+                    "CPU %".into(),
+                    "MEM USAGE / LIMIT".into(),
+                    "MEM %".into(),
+                    "NET I/O".into(),
+                    "BLOCK I/O".into(),
+                    "PIDS".into(),
+                ]];
+                for Sampled { id, name, used } in &rows {
+                    let (cpu, mem) = used.unwrap_or_default();
+                    table.push([
+                        if trunc {
+                            id.get(..12).unwrap_or(id).to_string()
+                        } else {
+                            id.clone()
+                        },
+                        name.clone(),
+                        format!("{cpu:.2}%"),
+                        format!("{} / {}", binary_size(mem), binary_size(limit)),
+                        format!("{:.2}%", share(mem)),
+                        "--".into(),
+                        "--".into(),
+                        "--".into(),
+                    ]);
+                }
+                let mut text = String::new();
+                // On a terminal each table replaces the last, as docker/cli clears it.
+                if asker.terminal && !parsed.bool("no-stream") {
+                    text.push_str("\x1b[2J\x1b[H");
+                }
+                for line in tabulate(&table, asker.east_asian) {
+                    text.push_str(&line);
+                    text.push('\n');
+                }
+                reply.bytes(LOG_STDOUT, text.as_bytes()).is_ok()
+            };
+            if !taken || parsed.bool("no-stream") {
+                return 0;
+            }
         }
     }
 
@@ -1493,6 +1636,18 @@ impl Show<'_, '_> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+
+    #[test]
+    fn memory_is_shown_as_go_units_shows_it() {
+        // go-units BytesSize: %.4g of binary units.
+        assert_eq!(binary_size(0), "0B");
+        assert_eq!(binary_size(1023), "1023B");
+        assert_eq!(binary_size(1536), "1.5KiB");
+        assert_eq!(binary_size(256 << 20), "256MiB");
+        assert_eq!(binary_size(12_345_678), "11.77MiB");
+        assert_eq!(binary_size(1 << 30), "1GiB");
+    }
+
     use super::*;
 
     /// `logs` gathers output into messages of one stream, sent as one fills past a chunk
@@ -1941,6 +2096,43 @@ fn image(stored: &str, trunc: bool) -> String {
         }
         Err(_) => stored.to_string(),
     }
+}
+
+/// A microVM `stats` sampled: its ID and name, and while it runs, its share of a CPU in
+/// percent and its resident bytes.
+struct Sampled {
+    id: String,
+    name: String,
+    used: Option<(f64, u64)>,
+}
+
+/// go-units' BytesSize (`%.4g` and binary units), as `stats` shows memory: 1.5MiB, 256MiB.
+fn binary_size(n: u64) -> String {
+    const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+    #[allow(clippy::cast_precision_loss)]
+    let mut size = n as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit + 1 < UNITS.len() {
+        size /= 1024.0;
+        unit += 1;
+    }
+    // Four significant digits, trailing zeros dropped.
+    let digits = if size >= 1000.0 {
+        0
+    } else if size >= 100.0 {
+        1
+    } else if size >= 10.0 {
+        2
+    } else {
+        3
+    };
+    let shown = format!("{size:.digits$}");
+    let shown = if shown.contains('.') {
+        shown.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        shown
+    };
+    format!("{shown}{}", UNITS.get(unit).unwrap_or(&""))
 }
 
 /// A duration in nanoseconds, in words, as go-units v0.5.0 `HumanDuration` puts it.

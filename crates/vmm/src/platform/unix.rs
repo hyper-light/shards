@@ -1168,3 +1168,99 @@ impl FileWatch {
         }
     }
 }
+
+/// What a process uses of the host: its resident memory, in bytes, and the CPU time it
+/// has had, user and system together, in nanoseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Usage {
+    pub resident: u64,
+    pub cpu_ns: u64,
+}
+
+/// [`Usage`] of process `pid`, as the kernel keeps it: macOS's proc_pidinfo
+/// (PROC_PIDTASKINFO), its times in Mach absolute-time units converted by the timebase;
+/// Linux's /proc/PID/stat (utime, stime, in clock ticks) and /proc/PID/statm (resident
+/// pages).
+pub fn process_usage(pid: u32) -> io::Result<Usage> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: a zeroed proc_taskinfo is a valid out-parameter, which proc_pidinfo
+        // fills up to its size.
+        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_taskinfo>()).unwrap_or(0);
+        let pid = libc::c_int::try_from(pid).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // SAFETY: proc_pidinfo(3) writes at most `size` bytes into `info`.
+        let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTASKINFO, 0, (&raw mut info).cast(), size) };
+        if got != size {
+            return Err(io::Error::last_os_error());
+        }
+        // <mach/mach_time.h>'s, bound here: libc's binding is deprecated in favour of a
+        // crate, the call itself is not.
+        #[repr(C)]
+        struct Timebase {
+            numer: u32,
+            denom: u32,
+        }
+        unsafe extern "C" {
+            fn mach_timebase_info(info: *mut Timebase) -> libc::c_int;
+        }
+        let mut base = Timebase { numer: 0, denom: 0 };
+        // SAFETY: mach_timebase_info(3) fills `base`.
+        unsafe { mach_timebase_info(&raw mut base) };
+        let ticks = u128::from(info.pti_total_user) + u128::from(info.pti_total_system);
+        let ns = if base.denom == 0 {
+            ticks
+        } else {
+            ticks * u128::from(base.numer) / u128::from(base.denom)
+        };
+        Ok(Usage {
+            resident: info.pti_resident_size,
+            cpu_ns: u64::try_from(ns).unwrap_or(u64::MAX),
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+        // Fields after the command, which may hold spaces, in parentheses.
+        let rest = stat.rsplit_once(')').map(|(_, r)| r).unwrap_or_default();
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        let tick = |i: usize| fields.get(i).and_then(|f| f.parse::<u64>().ok()).unwrap_or(0);
+        // utime and stime are the stat line's 14th and 15th fields: 12th and 13th after
+        // the command.
+        let ticks = tick(11).saturating_add(tick(12));
+        // SAFETY: sysconf(3) reads a constant.
+        let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
+            .unwrap_or(100)
+            .max(1);
+        let statm = std::fs::read_to_string(format!("/proc/{pid}/statm"))?;
+        let pages: u64 = statm
+            .split_whitespace()
+            .nth(1)
+            .and_then(|f| f.parse().ok())
+            .unwrap_or(0);
+        Ok(Usage {
+            resident: pages.saturating_mul(page_size()? as u64),
+            cpu_ns: ticks.saturating_mul(1_000_000_000 / hz),
+        })
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    #[test]
+    fn a_process_is_measured_as_it_runs() {
+        let me = std::process::id();
+        let before = process_usage(me).unwrap();
+        // Some CPU time, spent here.
+        let mut x = 0u64;
+        for i in 0..50_000_000u64 {
+            x = x.wrapping_add(i * i);
+        }
+        assert!(x > 0);
+        let after = process_usage(me).unwrap();
+        assert!(after.resident > 0);
+        assert!(after.cpu_ns > before.cpu_ns, "{before:?} {after:?}");
+    }
+}

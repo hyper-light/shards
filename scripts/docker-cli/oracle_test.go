@@ -57,10 +57,17 @@ var served = map[string][]string{
 	"push":          {"all-tags", "disable-content-trust", "help", "quiet"},
 	"image push":    {"all-tags", "disable-content-trust", "help", "quiet"},
 	"exec": {"detach", "detach-keys", "env", "help", "interactive", "tty", "user", "workdir"},
+	"stats":           {"all", "help", "no-stream", "no-trunc"},
+	"container stats": {"all", "help", "no-stream", "no-trunc"},
 }
 
 // The command lines asked, each the words after `shards`.
 var cases = [][]string{
+	{"stats", "--help"},
+	{"stats", "-h"},
+	{"stats", "--nope"},
+	{"stats", "--format", "x"},
+	{"container", "stats", "--help"},
 	{"run"},
 	{"run", "--help"},
 	{"run", "-h"},

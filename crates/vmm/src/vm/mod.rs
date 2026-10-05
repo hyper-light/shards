@@ -276,8 +276,11 @@ impl VsockHost {
     }
 }
 
+/// The memory a VM has unless it is given more or less, in MiB.
+pub const MEMORY_MIB: u64 = 256;
+
 impl Config {
-    /// A VM with shards' defaults: 1 CPU, 256 MiB, and a console on stdout.
+    /// A VM with shards' defaults: 1 CPU, [`MEMORY_MIB`], and a console on stdout.
     pub fn new(kernel: PathBuf, init: Option<PathBuf>) -> Config {
         Config {
             kernel,
@@ -285,7 +288,7 @@ impl Config {
             init,
             cmdline: "console=ttyS0 earlycon panic=-1".into(),
             vcpus: 1,
-            memory_mib: 256,
+            memory_mib: MEMORY_MIB,
             console: Console::Stdout,
             disks: Vec::new(),
             snapshot: None,
