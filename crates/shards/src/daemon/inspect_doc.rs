@@ -185,7 +185,8 @@ pub(super) fn document(f: &Facts<'_>) -> Value {
         .field("LogPath", s(&f.log_path))
         .field("Name", s(&format!("/{}", c.name)))
         .field("RestartCount", int(0))
-        .field("Driver", s("overlayfs"))
+        // As `info` names them: each image a microVM's read-only EROFS disk.
+        .field("Driver", s("erofs"))
         .field("Platform", s("linux"))
         .field("MountLabel", s(""))
         .field("ProcessLabel", s(""))
@@ -213,7 +214,7 @@ pub(super) fn document(f: &Facts<'_>) -> Value {
                             Some("Snapshot"),
                             true,
                             Struct::pointer("storage.RootFSStorageSnapshot")
-                                .tagged("Name", Some("Name"), true, s("overlayfs"))
+                                .tagged("Name", Some("Name"), true, s("erofs"))
                                 .value(),
                         )
                         .value(),
@@ -509,7 +510,7 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field(
             "LogConfig",
             Struct::new("container.LogConfig")
-                .field("Type", s("json-file"))
+                .field("Type", s("shards"))
                 .field("Config", Value::string_map(Vec::<(String, String)>::new()))
                 .value(),
         )
@@ -1049,6 +1050,10 @@ mod tests {
             // A microVM has no runc, and no sandbox or endpoint IDs of libnetwork's; its
             // address on the bridge is the same in every guest.
             d["HostConfig"]["Runtime"] = json!("shards");
+            // Its storage and log are shards' own, as `info` names them.
+            d["Driver"] = json!("erofs");
+            d["Storage"]["RootFS"]["Snapshot"]["Name"] = json!("erofs");
+            d["HostConfig"]["LogConfig"]["Type"] = json!("shards");
             d["NetworkSettings"]["SandboxID"] = json!("");
             d["NetworkSettings"]["SandboxKey"] = json!("");
             if let Some(nets) = d["NetworkSettings"]["Networks"].as_object_mut() {

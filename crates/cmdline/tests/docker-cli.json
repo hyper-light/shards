@@ -283,7 +283,7 @@
       "info",
       "--help"
     ],
-    "stdout": "Usage:  shards info [OPTIONS]\n\nDisplay system-wide information\n\nAliases:\n  shards system info, shards info\n",
+    "stdout": "Usage:  shards info [OPTIONS]\n\nDisplay system-wide information\n\nAliases:\n  shards system info, shards info\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n",
     "stderr": "",
     "status": 0
   },
@@ -302,9 +302,70 @@
       "info",
       "-h"
     ],
-    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards system info [OPTIONS]\n\nDisplay system-wide information\n\nAliases:\n  shards system info, shards info\n",
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards system info [OPTIONS]\n\nDisplay system-wide information\n\nAliases:\n  shards system info, shards info\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n",
     "stderr": "",
     "status": 0
+  },
+  {
+    "argv": [
+      "info",
+      "--help"
+    ],
+    "stdout": "Usage:  shards info [OPTIONS]\n\nDisplay system-wide information\n\nAliases:\n  shards system info, shards info\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "info",
+      "-f",
+      "{{.ID}}"
+    ],
+    "stdout": "RUN --format={{.ID}}\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "system",
+      "info",
+      "--format=json"
+    ],
+    "stdout": "RUN --format=json\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "system",
+      "df",
+      "--help"
+    ],
+    "stdout": "Usage:  shards system df [OPTIONS]\n\nShow docker disk usage\n\nOptions:\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -v, --verbose         Show detailed information on space usage\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "system",
+      "df",
+      "-v",
+      "--format",
+      "{{.Type}}"
+    ],
+    "stdout": "RUN --format={{.Type}} --verbose=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "system",
+      "df",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards system df' accepts no arguments\n\nUsage:  shards system df [OPTIONS]\n\nRun 'shards system df --help' for more information\n",
+    "status": 1
   },
   {
     "argv": [

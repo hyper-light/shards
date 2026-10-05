@@ -420,13 +420,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &SYSTEM_PRUNE) {
             self.prune(true, true, &parsed, asker, reply)
         } else if std::ptr::eq(command, &SYSTEM_DF) {
-            self.system_df(asker, reply)
+            self.system_df(&parsed, asker, reply)
         } else if std::ptr::eq(command, &COMMIT) {
             self.commit_image(&parsed, asker, reply)
         } else if std::ptr::eq(command, &EXPORT) {
             self.export(&parsed.args, asker, reply)
         } else if std::ptr::eq(command, &INFO) {
-            self.info(asker, reply)
+            self.info(&parsed, asker, reply)
         } else if std::ptr::eq(command, &EVENTS) {
             self.events(&parsed, asker, reply)
         } else if std::ptr::eq(command, &DIFF) {
@@ -1927,10 +1927,24 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
         // Anywhere else, the rows, which the client lays out as the CLI does
         // (cli/listing.rs): in its clock and zone, with its `--format`.
-        let rows: Vec<serde_json::Value> = list
-            .iter()
-            .zip(&listed)
-            .map(|(c, l)| {
+        drop(health);
+        let rows = self.container_rows(&list);
+        let mut sheet = shards_ipc::Sheet::new("ps-rows");
+        sheet.record(&[("rows", serde_json::Value::Array(rows).to_string())]);
+        reply.sheet(&sheet);
+        let _ = (trunc, east_asian);
+        0
+    }
+
+    /// Containers `list` as rows for a client to lay out (cli/listing.rs): what dockerd's
+    /// container list says of each, its status as of now.
+    pub(super) fn container_rows(&self, list: &[Container]) -> Vec<serde_json::Value> {
+        let at = now();
+        let removing = lock(&self.removing).clone();
+        let paused = lock(&self.paused).clone();
+        let health = lock(&self.health);
+        list.iter()
+            .map(|c| {
                 let ports: Vec<serde_json::Value> = if c.state == Life::Running {
                     c.ports
                         .iter()
@@ -1952,29 +1966,25 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     Life::Created => "created",
                     _ => "exited",
                 };
+                let checked = health.get(&c.id).map(|h| h.status);
                 serde_json::json!({
                     "id": c.id,
                     "name": c.name,
                     "image": c.image,
                     "image_id": c.image_id.clone().unwrap_or_default(),
-                    "command": l.command,
+                    "command": command_line(&c.command),
                     "created": i64::try_from(c.created / 1_000_000_000).unwrap_or(0),
                     "ports": ports,
                     "state": state,
-                    "status": l.status,
-                    "health": health.get(&c.id).map_or("", |h| match h.status {
+                    "status": status(c, at, checked, removing.contains(&c.id), paused.contains(&c.id)),
+                    "health": checked.map_or("", |s| match s {
                         super::health::Status::Starting => "starting",
                         super::health::Status::Healthy => "healthy",
                         super::health::Status::Unhealthy => "unhealthy",
                     }),
                 })
             })
-            .collect();
-        let mut sheet = shards_ipc::Sheet::new("ps-rows");
-        sheet.record(&[("rows", serde_json::Value::Array(rows).to_string())]);
-        reply.sheet(&sheet);
-        let _ = (trunc, east_asian);
-        0
+            .collect()
     }
 
     /// `shards logs [-f] [-t] [--details] [--tail N] [--since T] [--until T]`: a

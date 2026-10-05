@@ -16,6 +16,8 @@ pub struct Asked {
     pub digests: bool,
     /// `history --human`.
     pub human: bool,
+    /// `system df -v`.
+    pub verbose: bool,
 }
 
 static ASKED: OnceLock<Asked> = OnceLock::new();
@@ -166,9 +168,83 @@ pub fn render(sheet: &shards_ipc::Sheet, asked: &Asked, clock: &Clock<'_>) -> Re
             };
             format::history::write(&ctx, asked.human, &steps, &mut out)?;
         }
+        "df-rows" => {
+            let items = |k: &str| -> Vec<serde_json::Value> {
+                rows.get(k)
+                    .and_then(|u| u.get("items"))
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            let kind = |k: &str| counts(&rows, k);
+            let (it, ia, is, ir) = kind("images");
+            let (ct, ca, cs, cr) = kind("containers");
+            let (vt, va, vs, vr) = kind("volumes");
+            let (bt, ba, bs, br) = kind("build_cache");
+            let du = format::disk::DiskUsage {
+                images: format::disk::Usage {
+                    total_count: it,
+                    active_count: ia,
+                    total_size: is,
+                    reclaimable: ir,
+                    items: items("images").iter().map(image).collect(),
+                },
+                containers: format::disk::Usage {
+                    total_count: ct,
+                    active_count: ca,
+                    total_size: cs,
+                    reclaimable: cr,
+                    items: items("containers")
+                        .iter()
+                        .map(|r| format::container::Container {
+                            size_rw: r.get("size").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                            ..container(r)
+                        })
+                        .collect(),
+                },
+                volumes: format::disk::Usage {
+                    total_count: vt,
+                    active_count: va,
+                    total_size: vs,
+                    reclaimable: vr,
+                    items: Vec::new(),
+                },
+                build_cache: format::disk::Usage {
+                    total_count: bt,
+                    active_count: ba,
+                    total_size: bs,
+                    reclaimable: br,
+                    items: Vec::new(),
+                },
+            };
+            // runDiskUsage: `table` where no format is given.
+            let source = if asked.format.is_empty() {
+                format::TABLE
+            } else {
+                &asked.format
+            };
+            let ctx = Context {
+                format: &format::disk::format(source, asked.verbose),
+                trunc: false,
+                east_asian: shards_cmdline::width::east_asian(|name| std::env::var(name).ok()),
+                clock,
+            };
+            format::disk::write(&ctx, asked.verbose, &du, &mut out)?;
+        }
         _ => return Ok(None),
     }
     Ok(Some(out))
+}
+
+/// A kind's counts in a `df-rows` sheet: total, active, size and reclaimable.
+fn counts(rows: &serde_json::Value, kind: &str) -> (i64, i64, i64, i64) {
+    let n = |f: &str| {
+        rows.get(kind)
+            .and_then(|u| u.get(f))
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0)
+    };
+    (n("total"), n("active"), n("size"), n("reclaimable"))
 }
 
 /// An image from the daemon's row.
@@ -193,7 +269,11 @@ fn image(row: &serde_json::Value) -> format::image::Image {
         repo_digests: list("digests"),
         created: int("created"),
         size: int("size"),
-        shared_size: -1,
+        // What another image holds too, where the daemon worked it out (`system df -v`).
+        shared_size: row
+            .get("shared")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(-1),
         containers: int("containers"),
     }
 }

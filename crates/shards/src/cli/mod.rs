@@ -211,6 +211,7 @@ fn container(
             trunc: !parsed.bool("no-trunc"),
             digests: false,
             human: false,
+            verbose: false,
         });
     }
     #[cfg(unix)]
@@ -221,6 +222,15 @@ fn container(
             trunc: !parsed.bool("no-trunc"),
             digests: parsed.bool("digests"),
             human: false,
+            verbose: false,
+        });
+    }
+    #[cfg(unix)]
+    if std::ptr::eq(command, &shards_cmdline::commands::SYSTEM_DF) {
+        listing::ask(listing::Asked {
+            format: parsed.string("format").to_string(),
+            verbose: parsed.bool("verbose"),
+            ..listing::Asked::default()
         });
     }
     #[cfg(unix)]
@@ -231,6 +241,7 @@ fn container(
             trunc: !parsed.bool("no-trunc"),
             digests: false,
             human: parsed.bool("human"),
+            verbose: false,
         });
     }
     // A prune asks first, as the Docker CLI does, unless forced: on a colour terminal in

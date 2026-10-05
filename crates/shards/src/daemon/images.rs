@@ -608,6 +608,9 @@ fn reference_matches(patterns: &[&str], r: &shards_image::reference::Reference) 
     false
 }
 
+/// An image's ID, its blobs (digest and size), and its root filesystem's chain and size.
+type Holds = (String, Vec<(String, i64)>, Option<(String, i64)>);
+
 /// Bytes as the API counts them.
 fn size(n: u64) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
@@ -1031,11 +1034,100 @@ fn on_disk(dir: &std::path::Path) -> u64 {
 }
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// What of each image's bytes another image holds too (dockerd's computeSharedSize,
+    /// daemon/containerd/image_list.go): its manifest's config and layers that another
+    /// image's manifest names, and its root filesystem where another's has the same
+    /// layers, it being one file a chain.
+    fn shared_sizes(&self) -> std::collections::HashMap<String, i64> {
+        use std::collections::HashMap;
+        let Ok(Some(store)) = self.store() else {
+            return HashMap::new();
+        };
+        let images = store.images().unwrap_or_default();
+        let read = |d: &shards_image::reference::Digest| -> Option<serde_json::Value> {
+            serde_json::from_slice(&std::fs::read(store.blob_path(d)).ok()?).ok()
+        };
+        // Each image's blobs (digest, size) and its root filesystem's chain and size.
+        let parts: Vec<Holds> = images
+            .iter()
+            .map(|img| {
+                let mut blobs = Vec::new();
+                let manifest = read(&img.manifest);
+                if let Some(m) = &manifest {
+                    let mut add = |d: &serde_json::Value| {
+                        if let (Some(digest), Some(size)) = (
+                            d.get("digest").and_then(serde_json::Value::as_str),
+                            d.get("size").and_then(serde_json::Value::as_i64),
+                        ) {
+                            blobs.push((digest.to_owned(), size));
+                        }
+                    };
+                    if let Some(c) = m.get("config") {
+                        add(c);
+                    }
+                    for l in m
+                        .get("layers")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        add(l);
+                    }
+                }
+                let ours = img.manifests.iter().find(|m| m.digest == img.manifest);
+                let chain = img
+                    .config
+                    .as_deref()
+                    .and_then(|c| serde_json::from_slice::<serde_json::Value>(c).ok())
+                    .and_then(|c| c.pointer("/rootfs/diff_ids").map(ToString::to_string))
+                    .zip(ours.map(|m| i64::try_from(m.unpacked).unwrap_or(i64::MAX)));
+                (img.id.to_string(), blobs, chain)
+            })
+            .collect();
+        let mut blob_count: HashMap<&str, usize> = HashMap::new();
+        let mut chain_count: HashMap<&str, usize> = HashMap::new();
+        for (_, blobs, chain) in &parts {
+            let mut seen = std::collections::HashSet::new();
+            for (d, _) in blobs {
+                if seen.insert(d.as_str()) {
+                    *blob_count.entry(d).or_default() += 1;
+                }
+            }
+            if let Some((c, _)) = chain {
+                *chain_count.entry(c).or_default() += 1;
+            }
+        }
+        parts
+            .iter()
+            .map(|(id, blobs, chain)| {
+                let mut seen = std::collections::HashSet::new();
+                let mut shared: i64 = blobs
+                    .iter()
+                    .filter(|(d, _)| {
+                        seen.insert(d.as_str()) && blob_count.get(d.as_str()).copied().unwrap_or(0) > 1
+                    })
+                    .map(|(_, n)| *n)
+                    .sum();
+                if let Some((c, n)) = chain
+                    && chain_count.get(c.as_str()).copied().unwrap_or(0) > 1
+                {
+                    shared = shared.saturating_add(*n);
+                }
+                (id.clone(), shared)
+            })
+            .collect()
+    }
+
     /// `shards system df` (docker/cli formatter/disk_usage.go): images, containers, local
     /// volumes and the build cache, each its count, how many are in use, its size, and
     /// what removing the unused would free. A colour terminal also hears of the microVMs'
     /// templates, which only shards has.
-    pub(super) fn system_df(&self, asker: &super::commands::Asker, reply: &super::commands::Reply<'_>) -> u8 {
+    pub(super) fn system_df(
+        &self,
+        parsed: &shards_cmdline::flags::Parsed,
+        asker: &super::commands::Asker,
+        reply: &super::commands::Reply<'_>,
+    ) -> u8 {
         let images = self
             .listed(
                 &Filters::default(),
@@ -1071,71 +1163,62 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .map(|d| d.flatten().count())
             .unwrap_or(0);
         let t_size = i64::try_from(on_disk(&templates)).unwrap_or(i64::MAX);
-        if asker.styled() {
-            let mut sheet = shards_ipc::Sheet::new("df");
-            for (kind, total, active, bytes, freeable) in [
-                ("images", img_total, img_active, img_size, img_free),
-                ("microVMs", c_total, c_active, c_size, c_free),
-                ("templates", t_total, t_total, t_size, 0),
-            ] {
-                sheet.record(&[
-                    ("kind", kind.into()),
-                    ("total", total.to_string()),
-                    ("active", active.to_string()),
-                    ("size", bytes.to_string()),
-                    ("reclaimable", freeable.to_string()),
-                ]);
+        let (format, verbose) = (parsed.string("format"), parsed.bool("verbose"));
+        if !asker.styled() || !format.is_empty() || verbose {
+            // The usage, which the client lays out as docker/cli's DiskUsageContext does
+            // (cli/listing.rs): each kind's counts and sizes, and with `-v` each one.
+            let mut kept: Vec<crate::containers::Container> =
+                super::lock(&self.containers).all().cloned().collect();
+            kept.sort_by_key(|c| std::cmp::Reverse(c.created));
+            let mut items = self.container_rows(&kept);
+            // SizeRw: what it keeps of its own, its writable layer and log.
+            for (row, c) in items.iter_mut().zip(&kept) {
+                let bytes = on_disk(&self.home.join("containers").join(&c.id));
+                row["size"] = serde_json::json!(i64::try_from(bytes).unwrap_or(i64::MAX));
             }
+            let shared = if verbose {
+                self.shared_sizes()
+            } else {
+                Default::default()
+            };
+            let image_rows: Vec<serde_json::Value> = images
+                .iter()
+                .map(|i| {
+                    serde_json::json!({
+                        "id": i.id, "tags": i.tags, "digests": i.digests, "created": i.created,
+                        "size": i.size, "containers": i.containers,
+                        "shared": shared.get(&i.id).copied().unwrap_or(-1),
+                    })
+                })
+                .collect();
+            let kind = |total: usize, active: usize, size: i64, free: i64, items: Vec<serde_json::Value>| serde_json::json!({"total": total, "active": active, "size": size, "reclaimable": free, "items": items});
+            let rows = serde_json::json!({
+                "images": kind(img_total, img_active, img_size, img_free, image_rows),
+                "containers": kind(c_total, c_active, c_size, c_free, items),
+                "volumes": kind(0, 0, 0, 0, Vec::new()),
+                "build_cache": kind(0, 0, 0, 0, Vec::new()),
+            });
+            let mut sheet = shards_ipc::Sheet::new("df-rows");
+            sheet.record(&[("rows", rows.to_string())]);
             reply.sheet(&sheet);
             return 0;
         }
-        let free = |f: i64, all: i64| {
-            if all <= 0 {
-                human_size(0)
-            } else {
-                format!("{} ({}%)", human_size(f), f * 100 / all)
-            }
-        };
-        let rows = [
-            [
-                "TYPE".to_string(),
-                "TOTAL".into(),
-                "ACTIVE".into(),
-                "SIZE".into(),
-                "RECLAIMABLE".into(),
-            ],
-            [
-                "Images".into(),
-                img_total.to_string(),
-                img_active.to_string(),
-                human_size(img_size),
-                free(img_free, img_size),
-            ],
-            [
-                "Containers".into(),
-                c_total.to_string(),
-                c_active.to_string(),
-                human_size(c_size),
-                free(c_free, c_size),
-            ],
-            [
-                "Local Volumes".into(),
-                "0".into(),
-                "0".into(),
-                human_size(0),
-                human_size(0),
-            ],
-            [
-                "Build Cache".into(),
-                "0".into(),
-                "0".into(),
-                human_size(0),
-                human_size(0),
-            ],
-        ];
-        for line in super::commands::tabulate(&rows, asker.east_asian) {
-            reply.out(&line);
+        // A colour terminal's page: shards' templates too, which only it has.
+        let mut sheet = shards_ipc::Sheet::new("df");
+        for (kind, total, active, bytes, freeable) in [
+            ("images", img_total, img_active, img_size, img_free),
+            ("microVMs", c_total, c_active, c_size, c_free),
+            ("templates", t_total, t_total, t_size, 0),
+        ] {
+            sheet.record(&[
+                ("kind", kind.into()),
+                ("total", total.to_string()),
+                ("active", active.to_string()),
+                ("size", bytes.to_string()),
+                ("reclaimable", freeable.to_string()),
+            ]);
         }
+        reply.sheet(&sheet);
         0
     }
 }

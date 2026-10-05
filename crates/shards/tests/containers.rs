@@ -1181,6 +1181,61 @@ fn inspect_answers_as_docker_inspect_does() {
 }
 
 #[test]
+fn info_and_disk_usage_format_as_docker_does() {
+    let Some((home, image)) = home("containers-info-df") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    assert_eq!(
+        run_in(&home, &image, &["--name", "kept"], &["exit", "0"]).status,
+        Some(0)
+    );
+    let info = shards(&[
+        "info",
+        "-f",
+        "{{.Containers}} {{.ContainersStopped}} {{.Images}} {{.Driver}} {{.ClientInfo.Context}}",
+    ]);
+    assert_eq!(
+        (info.status, info.stdout.as_str()),
+        (Some(0), "1 1 1 erofs default\n"),
+        "{info}"
+    );
+    let json = shards(&["system", "info", "--format", "json"]);
+    let doc: serde_json::Value = serde_json::from_str(&json.stdout).unwrap();
+    assert_eq!(doc["Swarm"]["LocalNodeState"], "inactive", "{json}");
+    assert_eq!(doc["ServerVersion"], doc["ClientInfo"]["Version"], "{json}");
+    let bad = shards(&["info", "-f", "{{.Nope"]);
+    assert_eq!(bad.status, Some(64), "{bad}");
+    // docker/cli's DiskUsageContext: the summary table, a template, and -v's tables.
+    let df = shards(&["system", "df"]);
+    let lines: Vec<&str> = df.stdout.lines().collect();
+    assert!(
+        lines[0].starts_with("TYPE ") && lines[0].ends_with("RECLAIMABLE"),
+        "{df}"
+    );
+    assert!(
+        lines[1].starts_with("Images ") && lines[2].starts_with("Containers "),
+        "{df}"
+    );
+    assert!(
+        lines[3].starts_with("Local Volumes ") && lines[4].starts_with("Build Cache "),
+        "{df}"
+    );
+    let types = shards(&["system", "df", "--format", "{{.Type}}:{{.TotalCount}}"]);
+    assert_eq!(
+        types.stdout, "Images:1\nContainers:1\nLocal Volumes:0\nBuild Cache:0\n",
+        "{types}"
+    );
+    let verbose = shards(&["system", "df", "-v"]);
+    assert!(verbose.stdout.starts_with("Images space usage:\n"), "{verbose}");
+    assert!(
+        verbose.stdout.contains("\nContainers space usage:\n"),
+        "{verbose}"
+    );
+    assert!(verbose.stdout.contains(" kept\n"), "{verbose}");
+}
+
+#[test]
 fn ps_lists_containers_as_docker_ps_does() {
     let Some((home, image)) = home("containers-ps") else {
         return;

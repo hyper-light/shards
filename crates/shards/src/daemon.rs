@@ -4534,6 +4534,7 @@ mod tests {
             trunc: !args.contains(&"--no-trunc"),
             digests: args.contains(&"--digests"),
             human: !args.contains(&"--human=false") && !args.contains(&"-H=false"),
+            verbose: args.iter().any(|a| matches!(*a, "-v" | "--verbose")),
         };
         let clock = shards_cmdline::format::Clock {
             now: i128::try_from(containers::now()).unwrap(),

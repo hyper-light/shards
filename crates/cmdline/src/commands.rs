@@ -797,10 +797,17 @@ pub static SYSTEM_DF: Command = Command {
     about: "Show docker disk usage",
     aliases: "",
     args: Args::None,
-    flags: &[HELP],
-    unserved: "\
-format - s - -\n\
-verbose v b - -",
+    flags: &[
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
+        HELP,
+        Flag::bool("verbose", Some(b'v'), "Show detailed information on space usage"),
+    ],
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -1125,9 +1132,8 @@ pub static INFO: Command = Command {
     about: "Display system-wide information",
     aliases: "shards system info, shards info",
     args: Args::None,
-    flags: &[HELP],
-    unserved: "\
-format f s - -",
+    flags: &[Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP), HELP],
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
