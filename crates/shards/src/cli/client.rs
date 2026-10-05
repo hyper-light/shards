@@ -254,6 +254,11 @@ fn answer<'s>(
     use crate::cli::show::{self, Shown};
     let mut display: Option<std::sync::mpsc::Sender<Shown>> = None;
     let mut refused = false;
+    // On a colour terminal the daemon's errors are gathered, and shown in a panel at the
+    // end: under the page drawn, if one was, or under the head.
+    let error_paint = crate::cli::look::styled_err();
+    let mut errors: Vec<u8> = Vec::new();
+    let mut paged = false;
     let pass = |display: &Option<std::sync::mpsc::Sender<Shown>>, shown: Shown| match (display, shown) {
         (Some(tx), shown) => {
             let _ = tx.send(shown);
@@ -299,13 +304,27 @@ fn answer<'s>(
             Ok(Some(m)) if m.kind == kind::SHEET => {
                 if let Some(sheet) = shards_ipc::Sheet::decode(&m.payload) {
                     crate::cli::screens::show(&sheet);
+                    paged = true;
                 }
             }
             Ok(Some(m)) if m.kind == kind::OUT => pass(&display, Shown::Out(m.payload)),
+            Ok(Some(m)) if m.kind == kind::ERR && error_paint.is_some() => {
+                errors.extend_from_slice(&m.payload);
+            }
             Ok(Some(m)) if m.kind == kind::ERR => pass(&display, Shown::Err(m.payload)),
             Ok(Some(m)) if m.kind == kind::END => {
                 // The display ends with the channel, and the scope waits for it.
+                paged |= display.is_some();
                 drop(display);
+                if let (Some(p), false) = (&error_paint, errors.is_empty()) {
+                    let text = String::from_utf8_lossy(&errors);
+                    let said: Vec<&str> = text
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .map(|l| l.strip_prefix("Error response from daemon: ").unwrap_or(l))
+                        .collect();
+                    crate::cli::look::panel(p, &said.join("\n"), !paged);
+                }
                 return Some(m.payload.first().copied().unwrap_or(1));
             }
             Ok(Some(m)) if m.kind == kind::RESTART => return None,

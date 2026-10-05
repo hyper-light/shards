@@ -502,6 +502,25 @@ pub(crate) fn started(p: &Paint, id: &str, image: &str, name: Option<&str>, out:
     page.write(p, out);
 }
 
+/// What the daemon said went wrong, in a panel on stderr; under the head, unless a page
+/// was drawn above it.
+pub(crate) fn panel(p: &Paint, message: &str, with_head: bool) {
+    if with_head {
+        error(p, "shards", message, &[]);
+        return;
+    }
+    let cols = match super::terminal::size(2).1 {
+        0 => 80,
+        w => usize::from(w),
+    };
+    let mut text = String::from("\n");
+    for (s, _) in shards_tui::panel::error(p, cols, "", message, &[]) {
+        text.push_str(&s);
+        text.push_str("\x1b[0m\n");
+    }
+    let _ = std::io::stderr().write_all(text.as_bytes());
+}
+
 /// An error, in a panel on stderr: `title` the command it came from, `message` what
 /// happened, and `hints` what to do.
 pub fn error(p: &Paint, title: &str, message: &str, hints: &[&str]) {
