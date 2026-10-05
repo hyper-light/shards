@@ -1,7 +1,9 @@
 #!/bin/sh
 # Regenerates crates/seccomp/testdata/: what Docker's own toolchain makes of each seccomp
 # case in crates/seccomp/testdata/cases.json, for shards' compiler (crates/seccomp) to be
-# held to decision for decision, and libseccomp's syscall tables, which it reads names by.
+# held to decision for decision, and libseccomp's syscall tables as it resolves them; and
+# crates/seccomp/data/, the tables themselves (syscalls.csv, and pnr.csv, the numbers it
+# gives syscalls an architecture lacks), which crates/seccomp reads names by.
 #
 # Docker Desktop 4.x runs containers with runc v1.3.4 linked with libseccomp 2.5.4 (`runc
 # --version` in its VM, 2026-10-05), and dockerd docker-v29.8.1 resolves profiles with
@@ -37,4 +39,6 @@ done
 for f in "$out"/oracle-*.json "$out"/syscalls-*.json; do
 	[ -e "$f" ] && cp "$f" "$data/"
 done
+mkdir -p "$root/crates/seccomp/data"
+cp "$out/syscalls.csv" "$out/pnr.csv" "$root/crates/seccomp/data/"
 echo "wrote $data"

@@ -37,3 +37,4 @@ jobs:
           path: |
             crates/seccomp/testdata/oracle-*.json
             crates/seccomp/testdata/syscalls-*.json
+            crates/seccomp/data/*.csv

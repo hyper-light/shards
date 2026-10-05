@@ -26,5 +26,10 @@ go mod edit -replace "github.com/opencontainers/runc=/tmp/runc"
 GOFLAGS=-mod=mod go mod tidy >/dev/null 2>&1
 CGO_ENABLED=1 PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
 	go build -tags seccomp -o /tmp/oracle-bin .
+# libseccomp's own tables, which crates/seccomp resolves names by: each syscall's number
+# on each architecture, and the pseudo-syscall numbers of those an architecture lacks.
+cp "/tmp/libseccomp-$libseccomp/src/syscalls.csv" /work/syscalls.csv
+grep -E '^#define __PNR_[a-z0-9_]+[[:space:]]+-[0-9]+' "/tmp/libseccomp-$libseccomp/include/seccomp-syscalls.h" \
+	| awk '{ sub("__PNR_", "", $2); print $2 "," $3 }' > /work/pnr.csv
 /tmp/oracle-bin "$arch" "/tmp/libseccomp-$libseccomp/src/syscalls.csv" /work/cases.json \
 	"/work/oracle-$arch.json" "/work/syscalls-$arch.json"
