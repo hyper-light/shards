@@ -32,6 +32,7 @@ shards-build = { path = "../build" }
 shards-cmdline = { path = "../cmdline" }
 shards-dockerfile = { path = "../dockerfile" }
 shards-image = { path = "../image" }
+regex = "1"
 shards-ipc = { path = "../ipc" }
 shards-tui = { path = "../tui" }
 shards-registry = { path = "../registry" }

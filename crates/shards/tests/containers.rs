@@ -835,6 +835,172 @@ fn rm_refuses_a_running_container_unless_forced() {
 }
 
 #[test]
+fn ps_filters_microvms_as_dockerd_filters_containers() {
+    let Some((home, image)) = home("containers-ps-filter") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    assert_eq!(
+        run_in(&home, &image, &["--name", "zero"], &["exit", "0"]).status,
+        Some(0)
+    );
+    assert_eq!(
+        run_in(&home, &image, &["--name", "three"], &["exit", "3"]).status,
+        Some(3)
+    );
+    let mut sleeper = start(&home, &image, &["--name", "up"], &["sleep"]);
+    let names = |filters: &[&str]| {
+        let mut args = vec!["ps", "--format", "{{.Names}}"];
+        args.extend_from_slice(filters);
+        let listed = shards(&args);
+        assert_eq!(listed.status, Some(0), "{listed}");
+        listed.stdout
+    };
+    // A status lists stopped ones without -a; an exit code does not.
+    assert_eq!(names(&["-f", "status=exited"]), "three\nzero\n");
+    assert_eq!(names(&["-f", "exited=3"]), "");
+    assert_eq!(names(&["-a", "-f", "exited=3"]), "three\n");
+    // Names as regular expressions, IDs by a prefix.
+    assert_eq!(names(&["-a", "-f", "name=^[tu]"]), "up\nthree\n");
+    let id = shards(&["ps", "-aq", "--no-trunc", "-f", "name=zero"]).stdout;
+    assert_eq!(
+        names(&["-a", "-f", &format!("id={}", id.get(..12).unwrap())]),
+        "zero\n"
+    );
+    // Before and since, by name or ID.
+    assert_eq!(names(&["-a", "-f", "before=three"]), "zero\n");
+    assert_eq!(
+        names(&["-a", "-f", &format!("since={}", id.trim())]),
+        "up\nthree\n"
+    );
+    assert_eq!(
+        names(&["-a", "-f", "health=none", "-f", "status=running"]),
+        "up\n"
+    );
+    // Its image, and images made from it.
+    let committed = shards(&["commit", "zero", "test/child:1"]);
+    assert_eq!(committed.status, Some(0), "{committed}");
+    assert_eq!(
+        run_in(&home, "test/child:1", &["--name", "kid"], &["exit", "0"]).status,
+        Some(0)
+    );
+    assert_eq!(
+        names(&["-a", "-f", &format!("ancestor={image}")]),
+        "kid\nup\nthree\nzero\n"
+    );
+    assert_eq!(names(&["-a", "-f", "ancestor=test/child:1"]), "kid\n");
+    assert_eq!(names(&["-a", "-f", "ancestor=nothing:here"]), "");
+    // Refused in dockerd's words.
+    for (filter, said) in [
+        ("bogus=1", "invalid filter 'bogus'"),
+        (
+            "status=gone",
+            "invalid filter 'status=gone': invalid value for state (gone): must be one of created, running, paused, restarting, removing, exited, dead",
+        ),
+        (
+            "exited=x",
+            "invalid filter 'exited=x': strconv.Atoi: parsing \"x\": invalid syntax",
+        ),
+        ("before=nobody", "No such container: nobody"),
+        ("publish=1:2", "filter for 'publish' should not contain ':': 1:2"),
+    ] {
+        let refused = shards(&["ps", "-f", filter]);
+        assert_eq!(
+            (refused.status, refused.stderr.as_str()),
+            (Some(1), format!("Error response from daemon: {said}\n").as_str()),
+            "{refused}"
+        );
+    }
+    assert_eq!(shards(&["rm", "-f", "up"]).status, Some(0));
+    exit(&mut sleeper);
+}
+
+#[test]
+fn images_and_prunes_filter_as_dockerd_does() {
+    let Some((home, image)) = home("containers-image-filter") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    assert_eq!(
+        run_in(&home, &image, &["--name", "maker"], &["exit", "0"]).status,
+        Some(0)
+    );
+    let committed = shards(&["commit", "-c", "LABEL tier=web", "maker", "test/labelled:1"]);
+    assert_eq!(committed.status, Some(0), "{committed}");
+    let listed = |filters: &[&str]| {
+        let mut args = vec!["images", "--format", "{{.Repository}}:{{.Tag}}"];
+        args.extend_from_slice(filters);
+        let out = shards(&args);
+        assert_eq!(out.status, Some(0), "{out}");
+        out.stdout
+    };
+    assert_eq!(listed(&["-f", "label=tier=web"]), "test/labelled:1\n");
+    assert_eq!(listed(&["-f", "label=tier"]), "test/labelled:1\n");
+    assert!(!listed(&["-f", "label!=tier"]).contains("labelled"));
+    assert_eq!(listed(&["-f", "reference=test/*"]), "test/labelled:1\n");
+    assert_eq!(listed(&["test/labelled"]), "test/labelled:1\n");
+    assert_eq!(
+        listed(&["-f", "reference=docker.io/test/labelled"]),
+        "test/labelled:1\n"
+    );
+    // The test image says no time it was made: dockerd then filters nothing by it.
+    assert!(listed(&["-f", &format!("since={image}")]).starts_with("test/labelled:1\n"));
+    assert!(!listed(&["-f", "before=test/labelled:1"]).contains("labelled"));
+    assert_eq!(listed(&["-f", "until=1h"]), "");
+    assert_eq!(listed(&["-f", "dangling=true"]), "");
+    for (filter, said) in [
+        ("bogus=1", "invalid filter 'bogus'"),
+        ("before=nothing:here", "No such image: nothing:here"),
+        ("dangling=maybe", "invalid filter 'dangling=[maybe]'"),
+        (
+            "until=x",
+            "invalid value for 'until' filter: failed to parse value as time or duration: invalid seconds \"x\": invalid syntax",
+        ),
+    ] {
+        let refused = shards(&["images", "-f", filter]);
+        assert_eq!(
+            (refused.status, refused.stderr.as_str()),
+            (Some(1), format!("Error response from daemon: {said}\n").as_str()),
+            "{refused}"
+        );
+    }
+    // Prunes, filtered: nothing older than an hour, nothing labelled.
+    let young = shards(&["container", "prune", "-f", "--filter", "until=1h"]);
+    assert_eq!(young.stdout, "Total reclaimed space: 0B\n", "{young}");
+    let unlabelled = shards(&["container", "prune", "-f", "--filter", "label=x"]);
+    assert_eq!(unlabelled.stdout, "Total reclaimed space: 0B\n", "{unlabelled}");
+    let twice = shards(&[
+        "container",
+        "prune",
+        "-f",
+        "--filter",
+        "until=1h",
+        "--filter",
+        "until=2h",
+    ]);
+    assert_eq!(
+        twice.stderr, "Error response from daemon: more than one until filter specified\n",
+        "{twice}"
+    );
+    let wrong = shards(&["system", "prune", "-f", "--filter", "dangling=true"]);
+    assert_eq!(
+        wrong.stderr, "Error response from daemon: invalid filter 'dangling'\n",
+        "{wrong}"
+    );
+    let stopped = shards(&["container", "prune", "-f"]);
+    assert!(stopped.stdout.starts_with("Deleted Containers:\n"), "{stopped}");
+    // Every unused image the label names, and no other.
+    let pruned = shards(&["image", "prune", "-af", "--filter", "label=tier=web"]);
+    assert_eq!(pruned.status, Some(0), "{pruned}");
+    assert!(pruned.stdout.contains("untagged: test/labelled:1\n"), "{pruned}");
+    assert_eq!(listed(&["-f", "reference=test/*"]), "");
+    assert!(
+        listed(&[]).lines().count() >= 1,
+        "the image it was made from stays"
+    );
+}
+
+#[test]
 fn ps_lists_containers_as_docker_ps_does() {
     let Some((home, image)) = home("containers-ps") else {
         return;
@@ -2417,22 +2583,23 @@ fn images_lists_what_was_pulled_as_docker_images_does() {
     assert_eq!(shards(&["rm", "-f", "user"]).status, Some(0));
     // The daemon has had its collection, due since the pull, by now: still all seven.
     assert_eq!(count(), 7);
-    // A pattern, matched as Go's path.Match matches the familiar name, with its tag or
-    // without, and never the whole one (distribution's FamiliarMatch).
+    // A pattern, matched as Go's path.Match matches the name familiar or whole, with its
+    // tag or without (docker-v29.8.1 setupFilters; 29.3.1 matched the familiar alone).
     let none = shards(&["images", "nothing"]);
     assert_eq!(none.stdout.lines().count(), 1, "{none}");
     let some = shards(&["image", "ls", "127.0.0.1:*/test/*"]);
     assert_eq!(some.stdout, listed.stdout, "{some}");
     // `*` stops at `/`: no name of it is one segment.
     assert_eq!(shards(&["image", "list", "*:v1"]).stdout.lines().count(), 1);
-    // On Docker Hub the familiar name is the short one (measured, Docker 29.3.1).
+    // On Docker Hub the familiar name is the short one, the whole one the long; a middle
+    // one is neither.
     assert_eq!(shards(&["tag", &image, "hubbish:1"]).status, Some(0));
     for (pattern, rows) in [
         ("hubbish", 2),
         ("hubbish:1", 2),
         ("hub*", 2),
-        ("docker.io/library/hubbish", 1),
-        ("docker.io/library/hubbish:1", 1),
+        ("docker.io/library/hubbish", 2),
+        ("docker.io/library/hubbish:1", 2),
         ("library/hubbish", 1),
     ] {
         let listed = shards(&["images", pattern]);

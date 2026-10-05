@@ -832,6 +832,7 @@ dependencies = [
  "bzip2",
  "libc",
  "lzma-rust2",
+ "regex",
  "ruzstd",
  "serde",
  "serde_json",

@@ -189,7 +189,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Some(r) => r.to_string(),
             None => format!("{}{manifest_digest}", shards_image::store::DANGLING),
         };
-        if let Err(e) = store.tag(&tag, &desc, &manifest_digest, &contents) {
+        // Its parent recorded as dockerd labels it (image_builder.go), for `ancestor`.
+        if let Err(e) = store.tag_child(&tag, &desc, &manifest_digest, &contents, &base.id) {
             return refuse(e.to_string());
         }
         let _ = config_digest;

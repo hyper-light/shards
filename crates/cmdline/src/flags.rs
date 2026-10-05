@@ -369,6 +369,8 @@ impl Parsed {
                         shown.sort_unstable();
                         format!("[{}]", shown.join(" "))
                     }
+                    // FilterOpt prints its map as JSON, its names and values sorted.
+                    Some(Value::Many(v)) if matches!(f.kind, Kind::Many("filter")) => filter_json(v),
                     Some(Value::Many(v)) => format!("[{}]", v.join(" ")),
                     None => String::new(),
                 };
@@ -572,6 +574,48 @@ fn read(
         }
     }
     Ok(())
+}
+
+/// FilterOpt.String: the filters `given` (`name=value` each, as [`value`] keeps them)
+/// as `json.Marshal` writes their `map[string]map[string]bool`; nothing for none.
+fn filter_json(given: &[String]) -> String {
+    let mut by_name: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> = Default::default();
+    for f in given {
+        if let Some((name, value)) = f.split_once('=') {
+            by_name.entry(name).or_default().insert(value);
+        }
+    }
+    if by_name.is_empty() {
+        return String::new();
+    }
+    let fields: Vec<String> = by_name
+        .iter()
+        .map(|(name, values)| {
+            let values: Vec<String> = values.iter().map(|v| format!("{}:true", go_json(v))).collect();
+            format!("{}:{{{}}}", go_json(name), values.join(","))
+        })
+        .collect();
+    format!("{{{}}}", fields.join(","))
+}
+
+/// `s` as Go's encoding/json writes a string: HTML's `<`, `>` and `&` escaped, and the
+/// line and paragraph separators.
+fn go_json(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '<' | '>' | '&' | '\u{2028}' | '\u{2029}' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// A value of a flag that takes many, as docker/cli's option type for it takes it: a

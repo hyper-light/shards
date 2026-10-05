@@ -308,6 +308,73 @@
   },
   {
     "argv": [
+      "container",
+      "prune",
+      "--help"
+    ],
+    "stdout": "Usage:  shards container prune [OPTIONS]\n\nRemove all stopped containers\n\nOptions:\n      --filter filter   Provide filter values (e.g. \"until=\u003ctimestamp\u003e\")\n  -f, --force           Do not prompt for confirmation\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "prune",
+      "-f",
+      "--filter",
+      "until=1h"
+    ],
+    "stdout": "RUN --filter={\"until\":{\"1h\":true}} --force=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "prune",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards image prune [OPTIONS]\n\nRemove unused images\n\nOptions:\n  -a, --all             Remove all unused images, not just dangling ones\n      --filter filter   Provide filter values (e.g. \"until=\u003ctimestamp\u003e\")\n  -f, --force           Do not prompt for confirmation\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "prune",
+      "-af",
+      "--filter",
+      "label=a",
+      "--filter",
+      "label!=b"
+    ],
+    "stdout": "RUN --all=true --filter={\"label\":{\"a\":true},\"label!\":{\"b\":true}} --force=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "system",
+      "prune",
+      "--help"
+    ],
+    "stdout": "Usage:  shards system prune [OPTIONS]\n\nRemove unused data\n\nOptions:\n  -a, --all             Remove all unused images not just dangling ones\n      --filter filter   Provide filter values (e.g. \"label=\u003ckey\u003e=\u003cvalue\u003e\")\n  -f, --force           Do not prompt for confirmation\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "system",
+      "prune",
+      "--filter",
+      "nope"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nope\" for \"--filter\" flag: bad format of filter (expected name=value)\n\nUsage:  shards system prune [OPTIONS]\n\nRun 'shards system prune --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
       "start"
     ],
     "stdout": "",
@@ -806,7 +873,7 @@
       "ls",
       "--help"
     ],
-    "stdout": "Usage:  shards image ls [OPTIONS] [REPOSITORY[:TAG]]\n\nList images\n\nAliases:\n  shards image ls, shards image list, shards images\n\nOptions:\n  -a, --all             Show all images (default hides intermediate and\n                        dangling images)\n      --digests         Show digests\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only show image IDs\n      --tree            List multi-platform images as a tree (EXPERIMENTAL)\n",
+    "stdout": "Usage:  shards image ls [OPTIONS] [REPOSITORY[:TAG]]\n\nList images\n\nAliases:\n  shards image ls, shards image list, shards images\n\nOptions:\n  -a, --all             Show all images (default hides intermediate and\n                        dangling images)\n      --digests         Show digests\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only show image IDs\n      --tree            List multi-platform images as a tree (EXPERIMENTAL)\n",
     "stderr": "",
     "status": 0
   },
@@ -1167,7 +1234,7 @@
       "images",
       "--help"
     ],
-    "stdout": "Usage:  shards images [OPTIONS] [REPOSITORY[:TAG]]\n\nList images\n\nAliases:\n  shards image ls, shards image list, shards images\n\nOptions:\n  -a, --all             Show all images (default hides intermediate and\n                        dangling images)\n      --digests         Show digests\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only show image IDs\n      --tree            List multi-platform images as a tree (EXPERIMENTAL)\n",
+    "stdout": "Usage:  shards images [OPTIONS] [REPOSITORY[:TAG]]\n\nList images\n\nAliases:\n  shards image ls, shards image list, shards images\n\nOptions:\n  -a, --all             Show all images (default hides intermediate and\n                        dangling images)\n      --digests         Show digests\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only show image IDs\n      --tree            List multi-platform images as a tree (EXPERIMENTAL)\n",
     "stderr": "",
     "status": 0
   },
@@ -1204,6 +1271,28 @@
     "stdout": "RUN --format=x\n",
     "stderr": "",
     "status": 0
+  },
+  {
+    "argv": [
+      "images",
+      "-f",
+      "dangling=true",
+      "-f",
+      "reference=alp*"
+    ],
+    "stdout": "RUN --filter={\"dangling\":{\"true\":true},\"reference\":{\"alp*\":true}}\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "images",
+      "--filter",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"-f, --filter\" flag: bad format of filter (expected name=value)\n\nUsage:  shards images [OPTIONS] [REPOSITORY[:TAG]]\n\nRun 'shards images --help' for more information\n",
+    "status": 125
   },
   {
     "argv": [
@@ -1729,7 +1818,7 @@
       "ps",
       "--help"
     ],
-    "stdout": "Usage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -n, --last int        Show n last created containers (includes all\n                        states) (default -1)\n  -l, --latest          Show the latest created container (includes all\n                        states)\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only display container IDs\n",
+    "stdout": "Usage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -n, --last int        Show n last created containers (includes all\n                        states) (default -1)\n  -l, --latest          Show the latest created container (includes all\n                        states)\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only display container IDs\n",
     "stderr": "",
     "status": 0
   },
@@ -1738,7 +1827,7 @@
       "ps",
       "-h"
     ],
-    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -n, --last int        Show n last created containers (includes all\n                        states) (default -1)\n  -l, --latest          Show the latest created container (includes all\n                        states)\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only display container IDs\n",
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -n, --last int        Show n last created containers (includes all\n                        states) (default -1)\n  -l, --latest          Show the latest created container (includes all\n                        states)\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only display container IDs\n",
     "stderr": "",
     "status": 0
   },
@@ -1748,7 +1837,7 @@
       "-h",
       "extra"
     ],
-    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -n, --last int        Show n last created containers (includes all\n                        states) (default -1)\n  -l, --latest          Show the latest created container (includes all\n                        states)\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only display container IDs\n",
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -n, --last int        Show n last created containers (includes all\n                        states) (default -1)\n  -l, --latest          Show the latest created container (includes all\n                        states)\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only display container IDs\n",
     "stderr": "",
     "status": 0
   },
@@ -1797,6 +1886,54 @@
       "-n=3"
     ],
     "stdout": "RUN --last=3\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-f",
+      "nope"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nope\" for \"-f, --filter\" flag: bad format of filter (expected name=value)\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "--filter",
+      "status=exited",
+      "-q"
+    ],
+    "stdout": "RUN --filter={\"status\":{\"exited\":true}} --quiet=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-f",
+      "name=a",
+      "-f",
+      "label=x=1"
+    ],
+    "stdout": "RUN --filter={\"label\":{\"x=1\":true},\"name\":{\"a\":true}}\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-f",
+      " Name = b\u003c\u0026\u003e ",
+      "-f",
+      "name=a",
+      "-f",
+      "",
+      "-a"
+    ],
+    "stdout": "RUN --all=true --filter={\"name\":{\"a\":true,\"b\\u003c\\u0026\\u003e\":true}}\n",
     "stderr": "",
     "status": 0
   },
@@ -2059,7 +2196,7 @@
       "list",
       "--help"
     ],
-    "stdout": "Usage:  shards container ls [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -n, --last int        Show n last created containers (includes all\n                        states) (default -1)\n  -l, --latest          Show the latest created container (includes all\n                        states)\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only display container IDs\n",
+    "stdout": "Usage:  shards container ls [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -n, --last int        Show n last created containers (includes all\n                        states) (default -1)\n  -l, --latest          Show the latest created container (includes all\n                        states)\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only display container IDs\n",
     "stderr": "",
     "status": 0
   },

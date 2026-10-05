@@ -599,6 +599,12 @@ pub static PS: Command = Command {
             Some(b'a'),
             "Show all containers (default shows just running)",
         ),
+        Flag::many(
+            "filter",
+            Some(b'f'),
+            "filter",
+            "Filter output based on conditions provided",
+        ),
         Flag::string(
             "format",
             None,
@@ -621,7 +627,6 @@ pub static PS: Command = Command {
         Flag::bool("quiet", Some(b'q'), "Only display container IDs"),
     ],
     unserved: "\
-filter f m - -\n\
 size s b false -",
     interspersed: true,
     error_prefix: "",
@@ -640,6 +645,12 @@ pub static IMAGES: Command = Command {
             "Show all images (default hides intermediate and dangling images)",
         ),
         Flag::bool("digests", None, "Show digests"),
+        Flag::many(
+            "filter",
+            Some(b'f'),
+            "filter",
+            "Filter output based on conditions provided",
+        ),
         Flag::string(
             "format",
             None,
@@ -655,8 +666,7 @@ pub static IMAGES: Command = Command {
             "List multi-platform images as a tree (EXPERIMENTAL)",
         ),
     ],
-    unserved: "\
-filter f m - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -772,11 +782,16 @@ pub static CONTAINER_PRUNE: Command = Command {
     aliases: "",
     args: Args::None,
     flags: &[
+        Flag::many(
+            "filter",
+            None,
+            "filter",
+            "Provide filter values (e.g. \"until=<timestamp>\")",
+        ),
         Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
         HELP,
     ],
-    unserved: "\
-filter - s - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -793,11 +808,16 @@ pub static IMAGE_PRUNE: Command = Command {
             Some(b'a'),
             "Remove all unused images, not just dangling ones",
         ),
+        Flag::many(
+            "filter",
+            None,
+            "filter",
+            "Provide filter values (e.g. \"until=<timestamp>\")",
+        ),
         Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
         HELP,
     ],
-    unserved: "\
-filter - s - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -814,11 +834,16 @@ pub static SYSTEM_PRUNE: Command = Command {
             Some(b'a'),
             "Remove all unused images not just dangling ones",
         ),
+        Flag::many(
+            "filter",
+            None,
+            "filter",
+            "Provide filter values (e.g. \"label=<key>=<value>\")",
+        ),
         Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
         HELP,
     ],
     unserved: "\
-filter - s - -\n\
 volumes - b - -",
     interspersed: true,
     error_prefix: "",

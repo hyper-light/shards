@@ -217,6 +217,14 @@ impl Partial {
     }
 }
 
+/// Where a record's image came from: the repository it was pulled from, or the image
+/// it was made from.
+#[derive(Default)]
+struct Origin<'a> {
+    source: Option<&'a str>,
+    parent: Option<&'a Digest>,
+}
+
 /// What `refs/` records for a reference: the manifest it names, by the descriptor it was
 /// chosen by, so that finding the image again checks what pulling it checked; and what
 /// the reference resolved to, an index or the manifest itself, as Docker reports it.
@@ -235,6 +243,11 @@ struct Tag {
     /// registry, for a pull; by an archive's index, annotations and all, for a load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     target: Option<Descriptor>,
+    /// The image it was made from, for one `commit` made: dockerd's
+    /// `org.mobyproject.image.parent` label (daemon/containerd/image_builder.go), which
+    /// `ps --filter ancestor` follows to an image's children.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
 }
 
 /// An image as the store's records name it, before anything of it is read: what they
@@ -249,6 +262,11 @@ pub struct Named {
     pub tagged_at: Option<std::time::SystemTime>,
     pub sources: Vec<String>,
     pub targets: BTreeMap<String, Descriptor>,
+    /// The image it was made from, where a record says.
+    pub parent: Option<Digest>,
+    /// When each reference's record was written: when the name came to name this image,
+    /// as containerd's `CreatedAt` for it (a name given another image is a new record).
+    pub tagged: BTreeMap<String, std::time::SystemTime>,
 }
 
 /// An image the store's references name: what they resolved to (its ID, as dockerd's
@@ -269,6 +287,8 @@ pub struct Image {
     pub sources: Vec<String>,
     /// What each reference resolved to as its record describes it, where it does.
     pub targets: BTreeMap<String, Descriptor>,
+    /// The image it was made from, for one `commit` made.
+    pub parent: Option<Digest>,
     pub created: Option<String>,
     pub manifests: Vec<ImageManifest>,
     pub content: u64,
@@ -1134,7 +1154,23 @@ impl Store {
         resolved: &Digest,
         contents: &[Digest],
     ) -> Result<(), Error> {
-        self.record(reference, manifest, resolved, None, contents, None)
+        self.record(reference, manifest, resolved, None, contents, Origin::default())
+    }
+
+    /// [`tag`](Self::tag), for an image made from image `parent` (`commit`).
+    pub fn tag_child(
+        &self,
+        reference: &str,
+        manifest: &Descriptor,
+        resolved: &Digest,
+        contents: &[Digest],
+        parent: &Digest,
+    ) -> Result<(), Error> {
+        let origin = Origin {
+            source: None,
+            parent: Some(parent),
+        };
+        self.record(reference, manifest, resolved, None, contents, origin)
     }
 
     /// [`tag`](Self::tag), with what `reference` resolved to described as `target` says
@@ -1148,7 +1184,8 @@ impl Store {
         source: Option<&str>,
     ) -> Result<(), Error> {
         let resolved = target.digest()?;
-        self.record(reference, manifest, &resolved, Some(target), contents, source)
+        let origin = Origin { source, parent: None };
+        self.record(reference, manifest, &resolved, Some(target), contents, origin)
     }
 
     fn record(
@@ -1158,7 +1195,7 @@ impl Store {
         resolved: &Digest,
         target: Option<&Descriptor>,
         contents: &[Digest],
-        source: Option<&str>,
+        origin: Origin<'_>,
     ) -> Result<(), Error> {
         let mut dirs: Vec<PathBuf> = contents
             .iter()
@@ -1174,8 +1211,9 @@ impl Store {
             reference: reference.to_string(),
             manifest: manifest.clone(),
             resolved: Some(resolved.to_string()),
-            source: source.map(String::from),
+            source: origin.source.map(String::from),
             target: target.cloned(),
+            parent: origin.parent.map(Digest::to_string),
         })
     }
 
@@ -1316,6 +1354,8 @@ impl Store {
                     tagged_at: None,
                     sources: Vec::new(),
                     targets: BTreeMap::new(),
+                    parent: None,
+                    tagged: BTreeMap::new(),
                 });
                 images.len() - 1
             });
@@ -1323,8 +1363,14 @@ impl Store {
                 continue;
             };
             image.tagged_at = image.tagged_at.max(tagged_at);
+            if let Some(at) = tagged_at {
+                image.tagged.insert(tag.reference.clone(), at);
+            }
             if let Some(target) = tag.target {
                 image.targets.insert(tag.reference.clone(), target);
+            }
+            if image.parent.is_none() {
+                image.parent = tag.parent.as_deref().and_then(|p| Digest::parse(p).ok());
             }
             if let Some(source) = tag.source
                 && !image.sources.contains(&source)
@@ -1353,6 +1399,7 @@ impl Store {
         image.tagged_at = named.tagged_at;
         image.sources.clone_from(&named.sources);
         image.targets.clone_from(&named.targets);
+        image.parent.clone_from(&named.parent);
         Ok(image)
     }
 
@@ -1465,6 +1512,7 @@ impl Store {
             tagged_at: None,
             sources: Vec::new(),
             targets: BTreeMap::new(),
+            parent: None,
             created,
             content: manifests.iter().fold(0, |sum, m| sum.saturating_add(m.content)),
             unpacked: manifests.iter().fold(0, |sum, m| sum.saturating_add(m.unpacked)),

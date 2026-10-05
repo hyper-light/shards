@@ -31,6 +31,15 @@ type duration struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// What dockerd makes of a filter's time (daemon timestamp.Parse: `images --filter
+// until`, the prunes' `until`), at the instant in a zone, as seconds.nanoseconds.
+type parsed struct {
+	Value  string `json:"value"`
+	Offset int    `json:"offset"`
+	Result string `json:"result,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
 type unix struct {
 	Value string `json:"value"`
 	Ns    *int64 `json:"ns,omitempty"`
@@ -90,6 +99,21 @@ func main() {
 			sinces = append(sinces, s)
 		}
 	}
+	var parses []parsed
+	for _, zone := range zones {
+		reference := now.In(zone)
+		_, offset := reference.Zone()
+		for _, v := range append(values, timestamps...) {
+			t, err := daemon.Parse(v, reference)
+			p := parsed{Value: v, Offset: offset}
+			if err != nil {
+				p.Error = err.Error()
+			} else {
+				p.Result = fmt.Sprintf("%d.%09d", t.Unix(), t.Nanosecond())
+			}
+			parses = append(parses, p)
+		}
+	}
 	var unixes []unix
 	for _, v := range timestamps {
 		t, err := daemon.ParseUnixTimestamp(v)
@@ -118,7 +142,7 @@ func main() {
 		durations = append(durations, duration{Value: "", Ns: ns, Shown: time.Duration(ns).String()})
 	}
 	out, err := json.MarshalIndent(map[string]any{
-		"now_ns": now.UnixNano(), "since": sinces, "unix": unixes, "durations": durations,
+		"now_ns": now.UnixNano(), "since": sinces, "parse": parses, "unix": unixes, "durations": durations,
 	}, "", "  ")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

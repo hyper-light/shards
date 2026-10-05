@@ -47,6 +47,7 @@ mod inspect;
 mod load;
 mod logs;
 mod network;
+mod ps;
 mod publish;
 mod pull;
 mod push;

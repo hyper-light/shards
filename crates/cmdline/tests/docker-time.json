@@ -622,6 +622,1218 @@
     }
   ],
   "now_ns": 1790679937123456789,
+  "parse": [
+    {
+      "value": "10m",
+      "offset": -18000,
+      "result": "1790679337.123456789"
+    },
+    {
+      "value": "1h30m",
+      "offset": -18000,
+      "result": "1790674537.123456789"
+    },
+    {
+      "value": "1.5h",
+      "offset": -18000,
+      "result": "1790674537.123456789"
+    },
+    {
+      "value": ".5s",
+      "offset": -18000,
+      "result": "1790679936.623456789"
+    },
+    {
+      "value": "5.s",
+      "offset": -18000,
+      "result": "1790679932.123456789"
+    },
+    {
+      "value": "-10m",
+      "offset": -18000,
+      "result": "1790680537.123456789"
+    },
+    {
+      "value": "+10m",
+      "offset": -18000,
+      "result": "1790679337.123456789"
+    },
+    {
+      "value": "0",
+      "offset": -18000,
+      "result": "0.000000000"
+    },
+    {
+      "value": "0s",
+      "offset": -18000,
+      "result": "1790679937.123456789"
+    },
+    {
+      "value": "-0",
+      "offset": -18000,
+      "result": "1790679937.123456789"
+    },
+    {
+      "value": "1us",
+      "offset": -18000,
+      "result": "1790679937.123455789"
+    },
+    {
+      "value": "1µs",
+      "offset": -18000,
+      "result": "1790679937.123455789"
+    },
+    {
+      "value": "1μs",
+      "offset": -18000,
+      "result": "1790679937.123455789"
+    },
+    {
+      "value": "3ns",
+      "offset": -18000,
+      "result": "1790679937.123456786"
+    },
+    {
+      "value": "300ms",
+      "offset": -18000,
+      "result": "1790679936.823456789"
+    },
+    {
+      "value": "1h1h",
+      "offset": -18000,
+      "result": "1790672737.123456789"
+    },
+    {
+      "value": "",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: value is empty"
+    },
+    {
+      "value": "h",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"h\": invalid syntax"
+    },
+    {
+      "value": "1",
+      "offset": -18000,
+      "result": "1.000000000"
+    },
+    {
+      "value": "1x",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"1x\": invalid syntax"
+    },
+    {
+      "value": "1.2.3s",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: invalid character '.' at position 1"
+    },
+    {
+      "value": "9223372036854775807ns",
+      "offset": -18000,
+      "result": "-7432692100.268680982"
+    },
+    {
+      "value": "9223372036854775808ns",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"9223372036854775808ns\": invalid syntax"
+    },
+    {
+      "value": "2562047h47m16.854775807s",
+      "offset": -18000,
+      "result": "-7432692100.268680982"
+    },
+    {
+      "value": "2562047h47m16.854775808s",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"2562047h47m16\": invalid syntax"
+    },
+    {
+      "value": "-2562047h47m16.854775808s",
+      "offset": -18000,
+      "result": "-7432692100.268680981"
+    },
+    {
+      "value": "1.0000000000000000000001s",
+      "offset": -18000,
+      "result": "1790679936.123456789"
+    },
+    {
+      "value": "0.1h",
+      "offset": -18000,
+      "result": "1790679577.123456789"
+    },
+    {
+      "value": "1.123456789123h",
+      "offset": -18000,
+      "result": "1790675892.679015947"
+    },
+    {
+      "value": ".s",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"\": invalid syntax"
+    },
+    {
+      "value": "-.s",
+      "offset": -18000,
+      "error": "parsing time \"-.s\" as \"2006-01-02T15:04:05.999999999\": cannot parse \"-.s\" as \"2006\""
+    },
+    {
+      "value": "1e9s",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"1e9s\": invalid syntax"
+    },
+    {
+      "value": "1 s",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"1 s\": invalid syntax"
+    },
+    {
+      "value": "2013-01-02T13:23:37Z",
+      "offset": -18000,
+      "result": "1357133017.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37",
+      "offset": -18000,
+      "result": "1357151017.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37.123456789Z",
+      "offset": -18000,
+      "result": "1357133017.123456789"
+    },
+    {
+      "value": "2013-01-02T13:23:37.1Z",
+      "offset": -18000,
+      "result": "1357133017.100000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37,5Z",
+      "offset": -18000,
+      "result": "1357133017.500000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37.123456789",
+      "offset": -18000,
+      "result": "1357151017.123456789"
+    },
+    {
+      "value": "2013-01-02T13:23:37.1234567891234Z",
+      "offset": -18000,
+      "result": "1357133017.123456789"
+    },
+    {
+      "value": "2013-01-02T13",
+      "offset": -18000,
+      "result": "1357149600.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23",
+      "offset": -18000,
+      "result": "1357150980.000000000"
+    },
+    {
+      "value": "2013-01-02T13Z",
+      "offset": -18000,
+      "result": "1357131600.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23Z",
+      "offset": -18000,
+      "result": "1357132980.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37+01:00",
+      "offset": -18000,
+      "result": "1357129417.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37-05:30",
+      "offset": -18000,
+      "result": "1357152817.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23+01:00",
+      "offset": -18000,
+      "result": "1357129380.000000000"
+    },
+    {
+      "value": "2013-01-02T13+01:00",
+      "offset": -18000,
+      "result": "1357128000.000000000"
+    },
+    {
+      "value": "2013-01-02",
+      "offset": -18000,
+      "result": "1357102800.000000000"
+    },
+    {
+      "value": "2013-01-02Z",
+      "offset": -18000,
+      "result": "1357084800.000000000"
+    },
+    {
+      "value": "2013-01-02+01:00",
+      "offset": -18000,
+      "result": "1357081200.000000000"
+    },
+    {
+      "value": "2013-01-02-05:00",
+      "offset": -18000,
+      "result": "1357102800.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37z",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:23:37z\" as \"2006-01-02T15:04:05Z07:00\": cannot parse \"z\" as \"Z07:00\""
+    },
+    {
+      "value": "2013-01-02t13:23:37Z",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02t13:23:37Z\" as \"2006-01-02Z07:00\": cannot parse \"t13:23:37Z\" as \"Z07:00\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.5",
+      "offset": -18000,
+      "result": "1357151017.500000000"
+    },
+    {
+      "value": "2013-13-02",
+      "offset": -18000,
+      "error": "parsing time \"2013-13-02\": month out of range"
+    },
+    {
+      "value": "2013-00-02",
+      "offset": -18000,
+      "error": "parsing time \"2013-00-02\": month out of range"
+    },
+    {
+      "value": "2013-02-30",
+      "offset": -18000,
+      "error": "parsing time \"2013-02-30\": day out of range"
+    },
+    {
+      "value": "2013-01-02T24:00:00Z",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T24:00:00Z\": hour out of range"
+    },
+    {
+      "value": "2013-01-02T13:60:00Z",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:60:00Z\": minute out of range"
+    },
+    {
+      "value": "2013-01-02T13:23:60Z",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:23:60Z\": second out of range"
+    },
+    {
+      "value": "2013-01-02T13:23:37+25:00",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:23:37+25:00\": time zone offset hour out of range"
+    },
+    {
+      "value": "2013-01-02T13:23:37+01:61",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:23:37+01:61\": time zone offset minute out of range"
+    },
+    {
+      "value": "2013-01-02T13:23:37*01:00",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:23:37*01:00\": extra text: \"*01:00\""
+    },
+    {
+      "value": "2013-01-02T13:23:37+0100",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:23:37+0100\" as \"2006-01-02T15:04Z07:00\": cannot parse \":37+0100\" as \"Z07:00\""
+    },
+    {
+      "value": "2013-01-02T1:23:37Z",
+      "offset": -18000,
+      "result": "1357089817.000000000"
+    },
+    {
+      "value": "2013-1-02",
+      "offset": -18000,
+      "error": "parsing time \"2013-1-02\" as \"2006-01-02\": cannot parse \"1-02\" as \"01\""
+    },
+    {
+      "value": "13-01-02",
+      "offset": -18000,
+      "error": "parsing time \"13-01-02\" as \"2006-01-02\": cannot parse \"13-01-02\" as \"2006\""
+    },
+    {
+      "value": "2013/01/02",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"2013/01/02\": invalid syntax"
+    },
+    {
+      "value": "2013-01-02T13:23:37Zextra",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:23:37Zextra\": extra text: \"extra\""
+    },
+    {
+      "value": "2013-01-02x",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02x\": extra text: \"x\""
+    },
+    {
+      "value": "2013-01-02T13:23:37 ",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:23:37 \": extra text: \" \""
+    },
+    {
+      "value": "-x",
+      "offset": -18000,
+      "error": "parsing time \"-x\" as \"2006-01-02\": cannot parse \"-x\" as \"2006\""
+    },
+    {
+      "value": "x",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"x\": invalid syntax"
+    },
+    {
+      "value": "Z",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"Z\": invalid syntax"
+    },
+    {
+      "value": "T",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"T\": invalid syntax"
+    },
+    {
+      "value": "2013-01-02T",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T\" as \"2006-01-02T15\": cannot parse \"\" as \"15\""
+    },
+    {
+      "value": "2013-01-02T13:",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:\" as \"2006-01-02T15:04\": cannot parse \"\" as \"04\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.Z",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:23:37.Z\" as \"2006-01-02T15:04:05.999999999Z07:00\": cannot parse \".Z\" as \"Z07:00\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:23:37.\": extra text: \".\""
+    },
+    {
+      "value": "２０１３-01-02",
+      "offset": -18000,
+      "error": "parsing time \"\\xef\\xbc\\x92\\xef\\xbc\\x90\\xef\\xbc\\x91\\xef\\xbc\\x93-01-02\" as \"2006-01-02\": cannot parse \"\\xef\\xbc\\x92\\xef\\xbc\\x90\\xef\\xbc\\x91\\xef\\xbc\\x93-01-02\" as \"2006\""
+    },
+    {
+      "value": "2013-01-02T13:23:37é",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:23:37\\xc3\\xa9\": extra text: \"\\xc3\\xa9\""
+    },
+    {
+      "value": "2013-01-02T13:23:37\"x",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:23:37\\\"x\": extra text: \"\\\"x\""
+    },
+    {
+      "value": "2013-01-02T13:23:37\\x",
+      "offset": -18000,
+      "error": "parsing time \"2013-01-02T13:23:37\\\\x\": extra text: \"\\\\x\""
+    },
+    {
+      "value": "2024-02-29",
+      "offset": -18000,
+      "result": "1709182800.000000000"
+    },
+    {
+      "value": "2023-02-29",
+      "offset": -18000,
+      "error": "parsing time \"2023-02-29\": day out of range"
+    },
+    {
+      "value": "0000-01-01",
+      "offset": -18000,
+      "result": "-62167201200.000000000"
+    },
+    {
+      "value": "9999-12-31T23:59:59Z",
+      "offset": -18000,
+      "result": "253402300799.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37.999999999999Z",
+      "offset": -18000,
+      "result": "1357133017.999999999"
+    },
+    {
+      "value": "2013-01-02T13:23:37.123-01:00",
+      "offset": -18000,
+      "result": "1357136617.123000000"
+    },
+    {
+      "value": "1600000000",
+      "offset": -18000,
+      "result": "1600000000.000000000"
+    },
+    {
+      "value": "1600000000.5",
+      "offset": -18000,
+      "result": "1600000000.500000000"
+    },
+    {
+      "value": "1600000000.123456789",
+      "offset": -18000,
+      "result": "1600000000.123456789"
+    },
+    {
+      "value": "1.+5",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: invalid character '+' at position 0"
+    },
+    {
+      "value": "1.2.3",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: invalid character '.' at position 1"
+    },
+    {
+      "value": "+5",
+      "offset": -18000,
+      "result": "5.000000000"
+    },
+    {
+      "value": "-5",
+      "offset": -18000,
+      "error": "parsing time \"-5\" as \"2006-01-02\": cannot parse \"-5\" as \"2006\""
+    },
+    {
+      "value": "1e9",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"1e9\": invalid syntax"
+    },
+    {
+      "value": "99999999999999999999",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"99999999999999999999\": value out of range"
+    },
+    {
+      "value": "1.99999999999999999999",
+      "offset": -18000,
+      "result": "1.999999999"
+    },
+    {
+      "value": "1.-5",
+      "offset": -18000,
+      "error": "parsing time \"1.-5\" as \"2006-01-02T15:04:05.999999999\": cannot parse \"1.-5\" as \"2006\""
+    },
+    {
+      "value": "",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: value is empty"
+    },
+    {
+      "value": "0",
+      "offset": -18000,
+      "result": "0.000000000"
+    },
+    {
+      "value": "5",
+      "offset": -18000,
+      "result": "5.000000000"
+    },
+    {
+      "value": "-5",
+      "offset": -18000,
+      "error": "parsing time \"-5\" as \"2006-01-02\": cannot parse \"-5\" as \"2006\""
+    },
+    {
+      "value": "+5",
+      "offset": -18000,
+      "result": "5.000000000"
+    },
+    {
+      "value": "1600000000.5",
+      "offset": -18000,
+      "result": "1600000000.500000000"
+    },
+    {
+      "value": "1600000000.000000001",
+      "offset": -18000,
+      "result": "1600000000.000000001"
+    },
+    {
+      "value": "1.123456789012345678901",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: length 21 exceeds maximum 20"
+    },
+    {
+      "value": "1.12345678901234567890",
+      "offset": -18000,
+      "result": "1.123456789"
+    },
+    {
+      "value": "1.+5",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: invalid character '+' at position 0"
+    },
+    {
+      "value": "1.-5",
+      "offset": -18000,
+      "error": "parsing time \"1.-5\" as \"2006-01-02T15:04:05.999999999\": cannot parse \"1.-5\" as \"2006\""
+    },
+    {
+      "value": "1.5x",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: invalid character 'x' at position 1"
+    },
+    {
+      "value": "x",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"x\": invalid syntax"
+    },
+    {
+      "value": "1.",
+      "offset": -18000,
+      "result": "1.000000000"
+    },
+    {
+      "value": "99999999999999999999",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"99999999999999999999\": value out of range"
+    },
+    {
+      "value": "1.0",
+      "offset": -18000,
+      "result": "1.000000000"
+    },
+    {
+      "value": "1.000000000",
+      "offset": -18000,
+      "result": "1.000000000"
+    },
+    {
+      "value": "1.00000000000",
+      "offset": -18000,
+      "result": "1.000000000"
+    },
+    {
+      "value": ".5",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid seconds \"\": invalid syntax"
+    },
+    {
+      "value": "1.é",
+      "offset": -18000,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: invalid character 'Ã' at position 0"
+    },
+    {
+      "value": "10m",
+      "offset": 19800,
+      "result": "1790679337.123456789"
+    },
+    {
+      "value": "1h30m",
+      "offset": 19800,
+      "result": "1790674537.123456789"
+    },
+    {
+      "value": "1.5h",
+      "offset": 19800,
+      "result": "1790674537.123456789"
+    },
+    {
+      "value": ".5s",
+      "offset": 19800,
+      "result": "1790679936.623456789"
+    },
+    {
+      "value": "5.s",
+      "offset": 19800,
+      "result": "1790679932.123456789"
+    },
+    {
+      "value": "-10m",
+      "offset": 19800,
+      "result": "1790680537.123456789"
+    },
+    {
+      "value": "+10m",
+      "offset": 19800,
+      "result": "1790679337.123456789"
+    },
+    {
+      "value": "0",
+      "offset": 19800,
+      "result": "0.000000000"
+    },
+    {
+      "value": "0s",
+      "offset": 19800,
+      "result": "1790679937.123456789"
+    },
+    {
+      "value": "-0",
+      "offset": 19800,
+      "result": "1790679937.123456789"
+    },
+    {
+      "value": "1us",
+      "offset": 19800,
+      "result": "1790679937.123455789"
+    },
+    {
+      "value": "1µs",
+      "offset": 19800,
+      "result": "1790679937.123455789"
+    },
+    {
+      "value": "1μs",
+      "offset": 19800,
+      "result": "1790679937.123455789"
+    },
+    {
+      "value": "3ns",
+      "offset": 19800,
+      "result": "1790679937.123456786"
+    },
+    {
+      "value": "300ms",
+      "offset": 19800,
+      "result": "1790679936.823456789"
+    },
+    {
+      "value": "1h1h",
+      "offset": 19800,
+      "result": "1790672737.123456789"
+    },
+    {
+      "value": "",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: value is empty"
+    },
+    {
+      "value": "h",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"h\": invalid syntax"
+    },
+    {
+      "value": "1",
+      "offset": 19800,
+      "result": "1.000000000"
+    },
+    {
+      "value": "1x",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"1x\": invalid syntax"
+    },
+    {
+      "value": "1.2.3s",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: invalid character '.' at position 1"
+    },
+    {
+      "value": "9223372036854775807ns",
+      "offset": 19800,
+      "result": "-7432692100.268680982"
+    },
+    {
+      "value": "9223372036854775808ns",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"9223372036854775808ns\": invalid syntax"
+    },
+    {
+      "value": "2562047h47m16.854775807s",
+      "offset": 19800,
+      "result": "-7432692100.268680982"
+    },
+    {
+      "value": "2562047h47m16.854775808s",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"2562047h47m16\": invalid syntax"
+    },
+    {
+      "value": "-2562047h47m16.854775808s",
+      "offset": 19800,
+      "result": "-7432692100.268680981"
+    },
+    {
+      "value": "1.0000000000000000000001s",
+      "offset": 19800,
+      "result": "1790679936.123456789"
+    },
+    {
+      "value": "0.1h",
+      "offset": 19800,
+      "result": "1790679577.123456789"
+    },
+    {
+      "value": "1.123456789123h",
+      "offset": 19800,
+      "result": "1790675892.679015947"
+    },
+    {
+      "value": ".s",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"\": invalid syntax"
+    },
+    {
+      "value": "-.s",
+      "offset": 19800,
+      "error": "parsing time \"-.s\" as \"2006-01-02T15:04:05.999999999\": cannot parse \"-.s\" as \"2006\""
+    },
+    {
+      "value": "1e9s",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"1e9s\": invalid syntax"
+    },
+    {
+      "value": "1 s",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"1 s\": invalid syntax"
+    },
+    {
+      "value": "2013-01-02T13:23:37Z",
+      "offset": 19800,
+      "result": "1357133017.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37",
+      "offset": 19800,
+      "result": "1357113217.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37.123456789Z",
+      "offset": 19800,
+      "result": "1357133017.123456789"
+    },
+    {
+      "value": "2013-01-02T13:23:37.1Z",
+      "offset": 19800,
+      "result": "1357133017.100000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37,5Z",
+      "offset": 19800,
+      "result": "1357133017.500000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37.123456789",
+      "offset": 19800,
+      "result": "1357113217.123456789"
+    },
+    {
+      "value": "2013-01-02T13:23:37.1234567891234Z",
+      "offset": 19800,
+      "result": "1357133017.123456789"
+    },
+    {
+      "value": "2013-01-02T13",
+      "offset": 19800,
+      "result": "1357111800.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23",
+      "offset": 19800,
+      "result": "1357113180.000000000"
+    },
+    {
+      "value": "2013-01-02T13Z",
+      "offset": 19800,
+      "result": "1357131600.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23Z",
+      "offset": 19800,
+      "result": "1357132980.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37+01:00",
+      "offset": 19800,
+      "result": "1357129417.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37-05:30",
+      "offset": 19800,
+      "result": "1357152817.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23+01:00",
+      "offset": 19800,
+      "result": "1357129380.000000000"
+    },
+    {
+      "value": "2013-01-02T13+01:00",
+      "offset": 19800,
+      "result": "1357128000.000000000"
+    },
+    {
+      "value": "2013-01-02",
+      "offset": 19800,
+      "result": "1357065000.000000000"
+    },
+    {
+      "value": "2013-01-02Z",
+      "offset": 19800,
+      "result": "1357084800.000000000"
+    },
+    {
+      "value": "2013-01-02+01:00",
+      "offset": 19800,
+      "result": "1357081200.000000000"
+    },
+    {
+      "value": "2013-01-02-05:00",
+      "offset": 19800,
+      "result": "1357102800.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37z",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:23:37z\" as \"2006-01-02T15:04:05Z07:00\": cannot parse \"z\" as \"Z07:00\""
+    },
+    {
+      "value": "2013-01-02t13:23:37Z",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02t13:23:37Z\" as \"2006-01-02Z07:00\": cannot parse \"t13:23:37Z\" as \"Z07:00\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.5",
+      "offset": 19800,
+      "result": "1357113217.500000000"
+    },
+    {
+      "value": "2013-13-02",
+      "offset": 19800,
+      "error": "parsing time \"2013-13-02\": month out of range"
+    },
+    {
+      "value": "2013-00-02",
+      "offset": 19800,
+      "error": "parsing time \"2013-00-02\": month out of range"
+    },
+    {
+      "value": "2013-02-30",
+      "offset": 19800,
+      "error": "parsing time \"2013-02-30\": day out of range"
+    },
+    {
+      "value": "2013-01-02T24:00:00Z",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T24:00:00Z\": hour out of range"
+    },
+    {
+      "value": "2013-01-02T13:60:00Z",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:60:00Z\": minute out of range"
+    },
+    {
+      "value": "2013-01-02T13:23:60Z",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:23:60Z\": second out of range"
+    },
+    {
+      "value": "2013-01-02T13:23:37+25:00",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:23:37+25:00\": time zone offset hour out of range"
+    },
+    {
+      "value": "2013-01-02T13:23:37+01:61",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:23:37+01:61\": time zone offset minute out of range"
+    },
+    {
+      "value": "2013-01-02T13:23:37*01:00",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:23:37*01:00\": extra text: \"*01:00\""
+    },
+    {
+      "value": "2013-01-02T13:23:37+0100",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:23:37+0100\" as \"2006-01-02T15:04Z07:00\": cannot parse \":37+0100\" as \"Z07:00\""
+    },
+    {
+      "value": "2013-01-02T1:23:37Z",
+      "offset": 19800,
+      "result": "1357089817.000000000"
+    },
+    {
+      "value": "2013-1-02",
+      "offset": 19800,
+      "error": "parsing time \"2013-1-02\" as \"2006-01-02\": cannot parse \"1-02\" as \"01\""
+    },
+    {
+      "value": "13-01-02",
+      "offset": 19800,
+      "error": "parsing time \"13-01-02\" as \"2006-01-02\": cannot parse \"13-01-02\" as \"2006\""
+    },
+    {
+      "value": "2013/01/02",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"2013/01/02\": invalid syntax"
+    },
+    {
+      "value": "2013-01-02T13:23:37Zextra",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:23:37Zextra\": extra text: \"extra\""
+    },
+    {
+      "value": "2013-01-02x",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02x\": extra text: \"x\""
+    },
+    {
+      "value": "2013-01-02T13:23:37 ",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:23:37 \": extra text: \" \""
+    },
+    {
+      "value": "-x",
+      "offset": 19800,
+      "error": "parsing time \"-x\" as \"2006-01-02\": cannot parse \"-x\" as \"2006\""
+    },
+    {
+      "value": "x",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"x\": invalid syntax"
+    },
+    {
+      "value": "Z",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"Z\": invalid syntax"
+    },
+    {
+      "value": "T",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"T\": invalid syntax"
+    },
+    {
+      "value": "2013-01-02T",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T\" as \"2006-01-02T15\": cannot parse \"\" as \"15\""
+    },
+    {
+      "value": "2013-01-02T13:",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:\" as \"2006-01-02T15:04\": cannot parse \"\" as \"04\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.Z",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:23:37.Z\" as \"2006-01-02T15:04:05.999999999Z07:00\": cannot parse \".Z\" as \"Z07:00\""
+    },
+    {
+      "value": "2013-01-02T13:23:37.",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:23:37.\": extra text: \".\""
+    },
+    {
+      "value": "２０１３-01-02",
+      "offset": 19800,
+      "error": "parsing time \"\\xef\\xbc\\x92\\xef\\xbc\\x90\\xef\\xbc\\x91\\xef\\xbc\\x93-01-02\" as \"2006-01-02\": cannot parse \"\\xef\\xbc\\x92\\xef\\xbc\\x90\\xef\\xbc\\x91\\xef\\xbc\\x93-01-02\" as \"2006\""
+    },
+    {
+      "value": "2013-01-02T13:23:37é",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:23:37\\xc3\\xa9\": extra text: \"\\xc3\\xa9\""
+    },
+    {
+      "value": "2013-01-02T13:23:37\"x",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:23:37\\\"x\": extra text: \"\\\"x\""
+    },
+    {
+      "value": "2013-01-02T13:23:37\\x",
+      "offset": 19800,
+      "error": "parsing time \"2013-01-02T13:23:37\\\\x\": extra text: \"\\\\x\""
+    },
+    {
+      "value": "2024-02-29",
+      "offset": 19800,
+      "result": "1709145000.000000000"
+    },
+    {
+      "value": "2023-02-29",
+      "offset": 19800,
+      "error": "parsing time \"2023-02-29\": day out of range"
+    },
+    {
+      "value": "0000-01-01",
+      "offset": 19800,
+      "result": "-62167239000.000000000"
+    },
+    {
+      "value": "9999-12-31T23:59:59Z",
+      "offset": 19800,
+      "result": "253402300799.000000000"
+    },
+    {
+      "value": "2013-01-02T13:23:37.999999999999Z",
+      "offset": 19800,
+      "result": "1357133017.999999999"
+    },
+    {
+      "value": "2013-01-02T13:23:37.123-01:00",
+      "offset": 19800,
+      "result": "1357136617.123000000"
+    },
+    {
+      "value": "1600000000",
+      "offset": 19800,
+      "result": "1600000000.000000000"
+    },
+    {
+      "value": "1600000000.5",
+      "offset": 19800,
+      "result": "1600000000.500000000"
+    },
+    {
+      "value": "1600000000.123456789",
+      "offset": 19800,
+      "result": "1600000000.123456789"
+    },
+    {
+      "value": "1.+5",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: invalid character '+' at position 0"
+    },
+    {
+      "value": "1.2.3",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: invalid character '.' at position 1"
+    },
+    {
+      "value": "+5",
+      "offset": 19800,
+      "result": "5.000000000"
+    },
+    {
+      "value": "-5",
+      "offset": 19800,
+      "error": "parsing time \"-5\" as \"2006-01-02\": cannot parse \"-5\" as \"2006\""
+    },
+    {
+      "value": "1e9",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"1e9\": invalid syntax"
+    },
+    {
+      "value": "99999999999999999999",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"99999999999999999999\": value out of range"
+    },
+    {
+      "value": "1.99999999999999999999",
+      "offset": 19800,
+      "result": "1.999999999"
+    },
+    {
+      "value": "1.-5",
+      "offset": 19800,
+      "error": "parsing time \"1.-5\" as \"2006-01-02T15:04:05.999999999\": cannot parse \"1.-5\" as \"2006\""
+    },
+    {
+      "value": "",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: value is empty"
+    },
+    {
+      "value": "0",
+      "offset": 19800,
+      "result": "0.000000000"
+    },
+    {
+      "value": "5",
+      "offset": 19800,
+      "result": "5.000000000"
+    },
+    {
+      "value": "-5",
+      "offset": 19800,
+      "error": "parsing time \"-5\" as \"2006-01-02\": cannot parse \"-5\" as \"2006\""
+    },
+    {
+      "value": "+5",
+      "offset": 19800,
+      "result": "5.000000000"
+    },
+    {
+      "value": "1600000000.5",
+      "offset": 19800,
+      "result": "1600000000.500000000"
+    },
+    {
+      "value": "1600000000.000000001",
+      "offset": 19800,
+      "result": "1600000000.000000001"
+    },
+    {
+      "value": "1.123456789012345678901",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: length 21 exceeds maximum 20"
+    },
+    {
+      "value": "1.12345678901234567890",
+      "offset": 19800,
+      "result": "1.123456789"
+    },
+    {
+      "value": "1.+5",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: invalid character '+' at position 0"
+    },
+    {
+      "value": "1.-5",
+      "offset": 19800,
+      "error": "parsing time \"1.-5\" as \"2006-01-02T15:04:05.999999999\": cannot parse \"1.-5\" as \"2006\""
+    },
+    {
+      "value": "1.5x",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: invalid character 'x' at position 1"
+    },
+    {
+      "value": "x",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"x\": invalid syntax"
+    },
+    {
+      "value": "1.",
+      "offset": 19800,
+      "result": "1.000000000"
+    },
+    {
+      "value": "99999999999999999999",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"99999999999999999999\": value out of range"
+    },
+    {
+      "value": "1.0",
+      "offset": 19800,
+      "result": "1.000000000"
+    },
+    {
+      "value": "1.000000000",
+      "offset": 19800,
+      "result": "1.000000000"
+    },
+    {
+      "value": "1.00000000000",
+      "offset": 19800,
+      "result": "1.000000000"
+    },
+    {
+      "value": ".5",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid seconds \"\": invalid syntax"
+    },
+    {
+      "value": "1.é",
+      "offset": 19800,
+      "error": "failed to parse value as time or duration: invalid nanoseconds: invalid character 'Ã' at position 0"
+    }
+  ],
   "since": [
     {
       "value": "10m",

@@ -11,6 +11,8 @@
 
 use shards_cmdline::width;
 
+use super::filters::Filters;
+
 /// A manifest of an image, as dockerd's containerd store lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Manifest {
@@ -141,13 +143,25 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 return 1;
             }
         }
-        let images = match self.listed(parsed.args.first().map(String::as_str), parsed.bool("all")) {
+        // runImages: the name given is one more reference filter.
+        let mut given = parsed.many("filter").to_vec();
+        if let Some(name) = parsed.args.first().filter(|n| !n.is_empty()) {
+            given.push(format!("reference={name}"));
+        }
+        let filters = Filters::from_flags(&given);
+        let all = parsed.bool("all");
+        let mut images = match self.listed(&filters, all, i128::from(asker.now), i64::from(asker.utc_offset))
+        {
             Ok(images) => images,
             Err(e) => {
                 reply.err(&format!("Error response from daemon: {e}"));
                 return 1;
             }
         };
+        // The CLI drops the dangling ones unless asked for them.
+        if !all && (!filters.contains("dangling") || filters.get("dangling").any(|v| v == "false")) {
+            images.retain(|i| !i.tags.is_empty());
+        }
         let formatted = !parsed.string("format").is_empty();
         // A colour terminal gets shards' page: the images as records.
         if asker.styled() && !quiet && !no_trunc && !digests && !expanded && !formatted {
@@ -270,15 +284,28 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         sheet
     }
 
-    /// The store's images as dockerd lists them, those with a reference `pattern` matches
-    /// alone, named by those references alone; dangling ones, kept for a container with
-    /// no name of their own, only with `all`.
-    fn listed(&self, pattern: Option<&str>, all: bool) -> Result<Vec<Summary>, String> {
+    /// The store's images as dockerd lists them (moby daemon/containerd/image_list.go,
+    /// Images and setupFilters): each name's record kept where every filter takes it,
+    /// an image listed by the names kept, and a dangling one by none; with `all`, the
+    /// dangling images another was made from as well. `now` and `offset` read a time in
+    /// `until` as the asker's clock and zone.
+    fn listed(&self, filters: &Filters, all: bool, now: i128, offset: i64) -> Result<Vec<Summary>, String> {
         use shards_image::reference::Reference;
+        filters.validate(&IMAGE_FILTERS)?;
         let Some(store) = self.store()? else {
             return Ok(Vec::new());
         };
-        let stored = store.images().map_err(|e| e.to_string())?;
+        let named = store.named().map_err(|e| e.to_string())?;
+        let filter = RecordFilter::new(&store, &named, filters, now, offset)?;
+        // The images others were made from, hidden while dangling unless `all`.
+        let parents: std::collections::HashSet<String> = if all {
+            Default::default()
+        } else {
+            named
+                .iter()
+                .filter_map(|n| n.parent.as_ref().map(ToString::to_string))
+                .collect()
+        };
         // Each container's image, counted by ID.
         let mut users: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         for c in super::lock(&self.containers).all() {
@@ -286,37 +313,41 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 *users.entry(id.clone()).or_default() += 1;
             }
         }
-        let mut images = Vec::with_capacity(stored.len());
-        for img in stored {
-            let (mut tags, mut digests) = (Vec::new(), Vec::new());
-            for name in &img.references {
-                // A dangling image's name is not one of its names.
-                if name.starts_with(super::rmi::DANGLING) {
+        let mut images = Vec::with_capacity(named.len());
+        for n in &named {
+            let id = n.id.to_string();
+            let mut read = Read::default();
+            let (mut kept, mut tags, mut digests) = (false, Vec::new(), Vec::new());
+            for name in &n.references {
+                let is_dangling = name.starts_with(super::rmi::DANGLING);
+                if is_dangling && parents.contains(&id) {
+                    continue;
+                }
+                if !filter.keeps(&store, n, name, &mut read)? {
+                    continue;
+                }
+                kept = true;
+                if is_dangling {
                     continue;
                 }
                 let Ok(r) = Reference::parse_normalized(name) else {
                     continue;
                 };
-                if let Some(p) = pattern
-                    && !matches(p, &r)
-                {
-                    continue;
-                }
                 // Every name is one of its RepoTags, by digest too, as dockerd lists them
                 // (tagsByDigest); the table shows only those with a tag.
                 tags.push(r.familiar());
                 let mut bare = r;
                 bare.tag = None;
                 bare.digest = None;
-                let digested = format!("{}@{}", bare.familiar(), img.id);
+                let digested = format!("{}@{}", bare.familiar(), n.id);
                 if !digests.contains(&digested) {
                     digests.push(digested);
                 }
             }
-            if (pattern.is_some() || !all) && digests.is_empty() {
+            if !kept {
                 continue;
             }
-            let id = img.id.to_string();
+            let img = read.image(&store, n)?;
             let containers = users.get(&id).copied().unwrap_or(0);
             let created = img
                 .created
@@ -324,7 +355,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 .and_then(|c| shards_dockerfile::go::parse_rfc3339(c.as_bytes()).ok())
                 .map_or(0, |t| t.unix().0);
             images.push(Summary {
-                manifests: manifests(&img, containers),
+                manifests: manifests(img, containers),
                 id,
                 tags,
                 digests,
@@ -337,6 +368,244 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         images.sort_by_key(|i| std::cmp::Reverse(i.created));
         Ok(images)
     }
+}
+
+/// An image read once, for the filters and the listing that may each want it.
+#[derive(Default)]
+struct Read {
+    image: Option<shards_image::store::Image>,
+}
+
+impl Read {
+    fn image(
+        &mut self,
+        store: &shards_image::store::Store,
+        n: &shards_image::store::Named,
+    ) -> Result<&shards_image::store::Image, String> {
+        if self.image.is_none() {
+            self.image = Some(store.image(n).map_err(|e| e.to_string())?);
+        }
+        self.image
+            .as_ref()
+            .ok_or_else(|| "an image read and lost".to_string())
+    }
+
+    fn created(
+        &mut self,
+        store: &shards_image::store::Store,
+        n: &shards_image::store::Named,
+    ) -> Result<Option<i128>, String> {
+        Ok(self.image(store, n)?.created.as_deref().and_then(created_ns))
+    }
+}
+
+/// What an image record must be to be listed or pruned (setupFilters): each filter's
+/// values, read once.
+struct RecordFilter {
+    before: Vec<i128>,
+    since: Vec<i128>,
+    until: Vec<i128>,
+    checks: Vec<LabelCheck>,
+    dangling: Option<bool>,
+    references: Vec<String>,
+}
+
+impl RecordFilter {
+    fn new(
+        store: &shards_image::store::Store,
+        named: &[shards_image::store::Named],
+        filters: &Filters,
+        now: i128,
+        offset: i64,
+    ) -> Result<RecordFilter, String> {
+        let at = |given: &str| Read::default().created(store, resolve(named, given)?);
+        let mut before = Vec::new();
+        for value in filters.get("before") {
+            before.extend(at(value)?);
+        }
+        let mut since = Vec::new();
+        for value in filters.get("since") {
+            since.extend(at(value)?);
+        }
+        let mut until = Vec::new();
+        for value in filters.get("until") {
+            let t = shards_cmdline::gotime::parse_timestamp(value, now, offset)
+                .map_err(|e| format!("invalid value for 'until' filter: {e}"))?;
+            until.push(t);
+        }
+        let dangling = if filters.contains("dangling") {
+            Some(filters.bool_or("dangling", false)?)
+        } else {
+            None
+        };
+        Ok(RecordFilter {
+            before,
+            since,
+            until,
+            checks: label_checks(filters)?,
+            dangling,
+            references: filters.get("reference").map(str::to_string).collect(),
+        })
+    }
+
+    /// Whether image `n`'s record `name` passes every filter.
+    fn keeps(
+        &self,
+        store: &shards_image::store::Store,
+        n: &shards_image::store::Named,
+        name: &str,
+        read: &mut Read,
+    ) -> Result<bool, String> {
+        if !self.before.is_empty() || !self.since.is_empty() {
+            let at = read.created(store, n)?;
+            if !self.before.iter().all(|b| at.is_some_and(|c| c < *b))
+                || !self.since.iter().all(|s| at.is_some_and(|c| c > *s))
+            {
+                return Ok(false);
+            }
+        }
+        if !self.until.is_empty() {
+            let tagged = n.tagged.get(name).map(|t| system_ns(*t));
+            if !self.until.iter().all(|u| tagged.is_some_and(|t| t < *u)) {
+                return Ok(false);
+            }
+        }
+        if !self.checks.is_empty() && !labels_match(store, read.image(store, n)?, &self.checks) {
+            return Ok(false);
+        }
+        if self
+            .dangling
+            .is_some_and(|d| d != name.starts_with(super::rmi::DANGLING))
+        {
+            return Ok(false);
+        }
+        if !self.references.is_empty() {
+            let patterns: Vec<&str> = self.references.iter().map(String::as_str).collect();
+            let parsed = shards_image::reference::Reference::parse_normalized(name);
+            if !parsed.is_ok_and(|r| reference_matches(&patterns, &r)) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
+/// The filters dockerd takes for images (acceptedImageFilterTags).
+const IMAGE_FILTERS: [&str; 7] = [
+    "dangling",
+    "label",
+    "label!",
+    "before",
+    "since",
+    "reference",
+    "until",
+];
+
+/// A config's `created` in nanoseconds since the epoch.
+fn created_ns(created: &str) -> Option<i128> {
+    let (s, n) = shards_dockerfile::go::parse_rfc3339(created.as_bytes())
+        .ok()?
+        .unix();
+    Some(i128::from(s) * 1_000_000_000 + i128::from(n))
+}
+
+fn system_ns(t: std::time::SystemTime) -> i128 {
+    match t.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => i128::try_from(d.as_nanos()).unwrap_or(i128::MAX),
+        Err(e) => -i128::try_from(e.duration().as_nanos()).unwrap_or(i128::MAX),
+    }
+}
+
+/// A label filter: its key, the value it wants (none: only that it is there), and
+/// whether it wants the opposite (setupLabelFilter's labelCheck).
+struct LabelCheck {
+    key: String,
+    value: Option<String>,
+    negate: bool,
+}
+
+/// `label` and `label!`'s checks: `KEY`, `KEY=VALUE`, or `KEY!=VALUE`, each checked as
+/// containerd checks a label's size.
+fn label_checks(filters: &Filters) -> Result<Vec<LabelCheck>, String> {
+    let mut checks = Vec::new();
+    for (name, negated) in [("label", false), ("label!", true)] {
+        for given in filters.get(name) {
+            let (k, v) = match given.split_once('=') {
+                Some((k, v)) => (k, Some(v)),
+                None => (given, None),
+            };
+            let total = k.len() + v.map_or(0, str::len);
+            if total > 4096 {
+                let shown = k.get(..64).unwrap_or(k);
+                return Err(format!(
+                    "label key and value length ({total} bytes) greater than maximum size (4096 bytes), key: {shown}: invalid argument"
+                ));
+            }
+            let (key, negate) = match k.strip_suffix('!') {
+                Some(k) => (k, !negated),
+                None => (k, negated),
+            };
+            checks.push(LabelCheck {
+                key: key.to_string(),
+                value: v.map(str::to_string),
+                negate,
+            });
+        }
+    }
+    Ok(checks)
+}
+
+/// Whether a config of `image` here, past attestations, passes every check.
+fn labels_match(
+    store: &shards_image::store::Store,
+    image: &shards_image::store::Image,
+    checks: &[LabelCheck],
+) -> bool {
+    let read = |digest: &str| -> Option<serde_json::Value> {
+        let d = shards_image::reference::Digest::parse(digest).ok()?;
+        serde_json::from_slice(&std::fs::read(store.blob_path(&d)).ok()?).ok()
+    };
+    image.manifests.iter().filter(|m| !m.attestation).any(|m| {
+        let Some(config) = read(&m.digest.to_string())
+            .and_then(|manifest| manifest.pointer("/config/digest")?.as_str().map(str::to_string))
+            .and_then(|digest| read(&digest))
+        else {
+            return false;
+        };
+        let labels = config
+            .pointer("/config/Labels")
+            .and_then(serde_json::Value::as_object);
+        checks.iter().all(|check| {
+            let value = labels.and_then(|l| l.get(&check.key));
+            match (&check.value, value) {
+                (None, v) => v.is_some() != check.negate,
+                (Some(_), None) => check.negate,
+                (Some(want), Some(v)) => (v.as_str() == Some(want.as_str())) != check.negate,
+            }
+        })
+    })
+}
+
+/// The reference filter (setupFilters): a pattern, as Go's path.Match reads it, that
+/// matches `r` familiar, familiar without its tag, canonical with `latest` where it names
+/// no tag, or canonical without; a pattern Go cannot read fails the name at once.
+fn reference_matches(patterns: &[&str], r: &shards_image::reference::Reference) -> bool {
+    let targets = [
+        r.familiar(),
+        r.familiar_name(),
+        r.clone().tag_name_only().to_string(),
+        r.name(),
+    ];
+    for pattern in patterns {
+        for target in &targets {
+            match shards_dockerfile::glob::filepath_match(pattern.as_bytes(), target.as_bytes()) {
+                Ok(true) => return true,
+                Ok(false) => {}
+                Err(_) => return false,
+            }
+        }
+    }
+    false
 }
 
 /// Bytes as the API counts them.
@@ -767,7 +1036,14 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// what removing the unused would free. A colour terminal also hears of the microVMs'
     /// templates, which only shards has.
     pub(super) fn system_df(&self, asker: &super::commands::Asker, reply: &super::commands::Reply<'_>) -> u8 {
-        let images = self.listed(None, false).unwrap_or_default();
+        let images = self
+            .listed(
+                &Filters::default(),
+                false,
+                i128::from(asker.now),
+                i64::from(asker.utc_offset),
+            )
+            .unwrap_or_default();
         let (img_total, img_active) = (images.len(), images.iter().filter(|i| i.containers > 0).count());
         let img_size: i64 = images.iter().map(|i| i.size).sum();
         let img_free: i64 = images.iter().filter(|i| i.containers == 0).map(|i| i.size).sum();
@@ -879,23 +1155,56 @@ fn human_size4(size: i64) -> String {
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
     /// `shards prune vm`, `prune image` and `prune system` (docker/cli container/prune.go,
-    /// image/prune.go, system/prune.go; the confirmation is the client's): the stopped
-    /// microVMs, with `containers`; the dangling images, or with `all` every image no
-    /// microVM was made from, with `images`; then what was reclaimed, as the CLI says it.
+    /// image/prune.go, system/prune.go; the confirmation is the client's), as dockerd
+    /// prunes (moby daemon/prune.go, ContainerPrune; daemon/containerd/image_prune.go,
+    /// ImagePrune): the stopped microVMs `--filter` keeps, with `containers`; the image
+    /// names it keeps, dangling ones only unless `all`, with `images`; then what was
+    /// reclaimed, as the CLI says it. Where dockerd would delete the last name of an
+    /// image a stopped container was made from by a name since given to another, shards
+    /// keeps it: a stopped microVM starts again from its image (D37).
     pub(super) fn prune(
         &self,
         images: bool,
         containers: bool,
-        all: bool,
+        parsed: &shards_cmdline::flags::Parsed,
         asker: &super::commands::Asker,
         reply: &super::commands::Reply<'_>,
     ) -> u8 {
+        let refuse = |e: String| {
+            reply.err(&format!("Error response from daemon: {e}"));
+            1
+        };
+        let (now, offset) = (i128::from(asker.now), i64::from(asker.utc_offset));
+        let given = parsed.many("filter");
         let mut reclaimed: i64 = 0;
         let mut removed_vms: Vec<(String, String)> = Vec::new();
         if containers {
+            let filters = Filters::from_flags(given);
+            if let Err(e) = filters.validate(&["label", "label!", "until"]) {
+                return refuse(e);
+            }
+            // getUntilFromPruneFilters: one time at most.
+            let until: Vec<&str> = filters.get("until").collect();
+            if until.len() > 1 {
+                return refuse("more than one until filter specified".into());
+            }
+            let until = match until
+                .first()
+                .map(|u| shards_cmdline::gotime::parse_timestamp(u, now, offset))
+            {
+                Some(Err(e)) => return refuse(e),
+                Some(Ok(t)) => Some(t),
+                None => None,
+            };
+            // matchLabels, over a microVM's labels: none yet, as `--label` is unserved.
+            let labels = std::collections::BTreeMap::new();
+            let labelled = filters.kv("label", &labels)
+                && !(filters.contains("label!") && filters.kv("label!", &labels));
             let stopped: Vec<(String, String)> = super::lock(&self.containers)
                 .all()
                 .filter(|c| c.state != crate::containers::State::Running)
+                .filter(|c| until.is_none_or(|u| i128::try_from(c.created).is_ok_and(|at| at <= u)))
+                .filter(|_| labelled)
                 .map(|c| (c.id.clone(), c.name.clone()))
                 .collect();
             for (id, name) in stopped {
@@ -932,35 +1241,89 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     self.0.alias(name, existing).map_err(|e| e.to_string())
                 }
             }
+            // The CLI asks for the dangling ones alone unless `all` (image/prune.go).
+            let mut with_dangling = given.to_vec();
+            with_dangling.push(format!("dangling={}", !parsed.bool("all")));
+            let filters = Filters::from_flags(&with_dangling);
+            if let Err(e) = filters.validate(&["dangling", "label", "label!", "until"]) {
+                return refuse(e);
+            }
+            let dangling_only = match filters.bool_or("dangling", true) {
+                Ok(d) => d,
+                Err(e) => return refuse(e),
+            };
+            // Its dangling values are Del'd before the rest are set up.
+            let rest = filters.without("dangling");
+            let named = match store.named() {
+                Ok(n) => n,
+                Err(e) => return refuse(e.to_string()),
+            };
+            let filter = match RecordFilter::new(&store, &named, &rest, now, offset) {
+                Ok(f) => f,
+                Err(e) => return refuse(e),
+            };
             let sizes: Vec<(String, u64)> = store
                 .images()
                 .unwrap_or_default()
                 .into_iter()
                 .map(|i| (i.id.to_string(), i.content.saturating_add(i.unpacked)))
                 .collect();
-            let users = super::rmi::users(super::lock(&self.containers).all());
-            let used = |id: &str| users.iter().any(|u| u.image.as_deref() == Some(id));
-            // Each image to go, by a name that reaches it: its dangling record, or, with
-            // `all`, its ID.
-            let mut doomed: Vec<String> = Vec::new();
-            for (name, id) in store.references().unwrap_or_default() {
-                let id = id.to_string();
-                if used(&id) {
-                    continue;
-                }
-                let dangling = name.starts_with(super::rmi::DANGLING);
-                if (dangling || all) && !doomed.iter().any(|d| d == &id || d == &name) {
-                    doomed.push(if all { id } else { name });
+            // pruneUnused: each record the filters keep, by name, its image's records
+            // counted.
+            let mut names: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            let mut doomed: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+            for n in &named {
+                let mut read = Read::default();
+                for name in &n.references {
+                    *names.entry(n.id.to_string()).or_default() += 1;
+                    if (!dangling_only || name.starts_with(super::rmi::DANGLING))
+                        && filter.keeps(&store, n, name, &mut read).unwrap_or(false)
+                    {
+                        doomed.insert(name.clone(), n.id.to_string());
+                    }
                 }
             }
-            for given in doomed {
+            // filterImagesUsedByContainers: a container's dangling image and the name it
+            // was made by stay, and an image it named by ID or digest is used.
+            let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for c in super::lock(&self.containers).all() {
+                let Some(id) = &c.image_id else {
+                    continue;
+                };
+                doomed.remove(&format!("{}{id}", super::rmi::DANGLING));
+                let normalized = format!("sha256:{}", c.image.strip_prefix("sha256:").unwrap_or(&c.image));
+                if id.starts_with(&normalized) || c.image.ends_with(&format!("@{id}")) {
+                    used.insert(id.clone());
+                }
+                if let Ok(r) = shards_image::reference::Reference::parse_normalized(&c.image) {
+                    let tagged = r.clone().tag_name_only();
+                    doomed.remove(&tagged.to_string());
+                    if tagged.digest.is_some() && tagged.tag.is_some() {
+                        let mut bare = tagged;
+                        bare.digest = None;
+                        doomed.remove(&bare.to_string());
+                    }
+                }
+            }
+            let mut pruned: Vec<String> = Vec::new();
+            for (name, id) in &doomed {
+                let left = names.entry(id.clone()).or_default();
+                if *left > 1 {
+                    *left -= 1;
+                } else if used.contains(id) {
+                    continue;
+                }
+                pruned.push(name.clone());
+            }
+            let users = super::rmi::users(super::lock(&self.containers).all());
+            for given in pruned {
                 let records: Vec<Record> = store
                     .references()
                     .unwrap_or_default()
                     .into_iter()
                     .map(|(name, id)| Record { name, id })
                     .collect();
-                if let Ok(removed) = super::rmi::delete(&mut Store(&store), &records, &users, &given, true) {
+                if let Ok(removed) = super::rmi::delete(&mut Store(&store), &records, &users, &given, false) {
                     for r in removed {
                         if let super::rmi::Removed::Deleted(id) = &r {
                             let freed = sizes.iter().find(|(i, _)| i == id).map_or(0, |(_, n)| *n);
@@ -1089,20 +1452,6 @@ pub(super) fn truncated_id(given: &str) -> Option<&str> {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
     .then_some(id)
-}
-
-/// The reference filter (moby daemon/containerd/image_list.go, distribution's
-/// FamiliarMatch): `pattern`, as Go's path.Match reads it, matches `r` familiar, with its
-/// tag or digest or without them, never by its whole name (measured, Docker 29.3.1:
-/// `docker.io/library/busybox` matches nothing). A pattern Go cannot read matches nothing;
-/// in dockerd it may make the others fail too, as its map orders them, 9 runs in 10.
-fn matches(pattern: &str, r: &shards_image::reference::Reference) -> bool {
-    let mut bare = r.clone();
-    bare.tag = None;
-    bare.digest = None;
-    [r.familiar(), bare.familiar()]
-        .iter()
-        .any(|t| shards_dockerfile::glob::filepath_match(pattern.as_bytes(), t.as_bytes()) == Ok(true))
 }
 
 // The tree view (tree.go).
@@ -1551,6 +1900,7 @@ mod tests {
             tagged_at: None,
             sources: Vec::new(),
             targets: std::collections::BTreeMap::new(),
+            parent: None,
             created: None,
             manifests: Vec::new(),
             content: 0,
@@ -1567,7 +1917,36 @@ mod tests {
             tagged_at: None,
             sources: Vec::new(),
             targets: std::collections::BTreeMap::new(),
+            parent: None,
+            tagged: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// The reference filter as docker-v29.8.1's setupFilters matches: familiar and
+    /// canonical, with and without the tag; a pattern Go cannot read fails the name.
+    #[test]
+    fn references_match_as_dockerd_matches_them() {
+        let r = shards_image::reference::Reference::parse_normalized("alpine:3.22").unwrap();
+        for pattern in [
+            "alpine",
+            "alpine:3.22",
+            "alp*",
+            "docker.io/library/alpine",
+            "docker.io/library/alpine:3.22",
+            "*/*/alpine",
+        ] {
+            assert!(reference_matches(&[pattern], &r), "{pattern}");
+        }
+        for pattern in ["alpine:latest", "library/alpine", "busybox"] {
+            assert!(!reference_matches(&[pattern], &r), "{pattern}");
+        }
+        let bare = shards_image::reference::Reference::parse_normalized("alpine").unwrap();
+        assert!(reference_matches(&["docker.io/library/alpine:latest"], &bare));
+        assert!(
+            !reference_matches(&["[", "alpine"], &r),
+            "a bad pattern first fails it"
+        );
+        assert!(reference_matches(&["alpine", "["], &r));
     }
 
     /// A manifest is in use while a container runs it, and a run uses the image's

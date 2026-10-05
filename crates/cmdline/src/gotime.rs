@@ -548,6 +548,30 @@ pub fn get_timestamp(value: &str, now: i128, offset: i64) -> Result<String, Stri
         // Go negates the duration as an int64, wrapping.
         return Ok((now + i128::from(d.wrapping_neg())).div_euclid(NS).to_string());
     }
+    let (layout, in_location) = layout_for(value);
+    match parse(layout, value.as_bytes(), if in_location { offset } else { 0 }) {
+        Ok(ns) => Ok(format!("{}.{:09}", ns.div_euclid(NS), ns.rem_euclid(NS))),
+        // With a `-`, it was probably meant for a time.
+        Err(e) if value.contains('-') => Err(e),
+        Err(_) => {
+            let (s, n) = match value.split_once('.') {
+                Some((s, n)) => (s, Some(n)),
+                None => (value, None),
+            };
+            if parse_int10(s).is_err() || n.is_some_and(|n| parse_int10(n).is_err()) {
+                return Err(format!(
+                    "failed to parse value as time or duration: {}",
+                    go::quote(value)
+                ));
+            }
+            Ok(value.to_string())
+        }
+    }
+}
+
+/// The layout GetTimestamp and dockerd's Parse read `value` by, and whether in the
+/// local zone: none of `zZ+` and not three `-`s.
+fn layout_for(value: &str) -> (&'static Layout, bool) {
     let in_location = !value.contains(['z', 'Z', '+']) && value.matches('-').count() != 3;
     let layout = if value.contains('.') {
         if in_location {
@@ -574,23 +598,26 @@ pub fn get_timestamp(value: &str, now: i128, offset: i64) -> Result<String, Stri
     } else {
         &DATE_ZONE
     };
+    (layout, in_location)
+}
+
+/// What dockerd makes of a filter's time `value` at `now` (nanoseconds since the epoch)
+/// in a zone `offset` seconds east of UTC (moby daemon/internal/timestamp, Parse): a
+/// duration back from now, a time, or a Unix timestamp; nanoseconds since the epoch.
+pub fn parse_timestamp(value: &str, now: i128, offset: i64) -> Result<i128, String> {
+    if value.trim().is_empty() {
+        return Err("failed to parse value as time or duration: value is empty".into());
+    }
+    if value != "0"
+        && let Some(d) = parse_duration(value)
+    {
+        return Ok(now + i128::from(d.wrapping_neg()));
+    }
+    let (layout, in_location) = layout_for(value);
     match parse(layout, value.as_bytes(), if in_location { offset } else { 0 }) {
-        Ok(ns) => Ok(format!("{}.{:09}", ns.div_euclid(NS), ns.rem_euclid(NS))),
-        // With a `-`, it was probably meant for a time.
+        Ok(ns) => Ok(ns),
         Err(e) if value.contains('-') => Err(e),
-        Err(_) => {
-            let (s, n) = match value.split_once('.') {
-                Some((s, n)) => (s, Some(n)),
-                None => (value, None),
-            };
-            if parse_int10(s).is_err() || n.is_some_and(|n| parse_int10(n).is_err()) {
-                return Err(format!(
-                    "failed to parse value as time or duration: {}",
-                    go::quote(value)
-                ));
-            }
-            Ok(value.to_string())
-        }
+        Err(_) => unix_ns(value).map_err(|e| format!("failed to parse value as time or duration: {e}")),
     }
 }
 
@@ -600,33 +627,39 @@ pub fn parse_unix_timestamp(value: &str) -> Result<Option<i128>, String> {
     if value.is_empty() {
         return Ok(None);
     }
-    let invalid = |why: String| format!("invalid timestamp {}: {why}", go::quote(value));
+    unix_ns(value)
+        .map(Some)
+        .map_err(|why| format!("invalid timestamp {}: {why}", go::quote(value)))
+}
+
+/// parseTimestamp: seconds, and perhaps a fraction of up to 20 digits, of which 9 count;
+/// in nanoseconds.
+fn unix_ns(value: &str) -> Result<i128, String> {
     let (s, n) = match value.split_once('.') {
         Some((s, n)) => (s, Some(n)),
         None => (value, None),
     };
-    let seconds =
-        parse_int10(s).map_err(|e| invalid(format!("invalid seconds {}: {}", go::quote(s), e.reason())))?;
+    let seconds = parse_int10(s).map_err(|e| format!("invalid seconds {}: {}", go::quote(s), e.reason()))?;
     let seconds = i128::from(seconds) * NS;
     let Some(n) = n.filter(|n| !matches!(*n, "" | "000000000" | "0")) else {
-        return Ok(Some(seconds));
+        return Ok(seconds);
     };
     if n.len() > 20 {
-        return Err(invalid(format!(
+        return Err(format!(
             "invalid nanoseconds: length {} exceeds maximum 20",
             n.len()
-        )));
+        ));
     }
     if let Some((at, c)) = n.bytes().enumerate().find(|(_, c)| !c.is_ascii_digit()) {
-        return Err(invalid(format!(
+        return Err(format!(
             "invalid nanoseconds: invalid character {} at position {at}",
             go::quote_rune(char::from(c))
-        )));
+        ));
     }
     let nine: i128 = n
         .bytes()
         .chain(std::iter::repeat(b'0'))
         .take(9)
         .fold(0, |ns, c| ns * 10 + i128::from(c - b'0'));
-    Ok(Some(seconds + nine))
+    Ok(seconds + nine)
 }

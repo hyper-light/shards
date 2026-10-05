@@ -1416,6 +1416,22 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   after, typed input is echoed and read, a resize reaches the command, ^C interrupts
   it (130), and both detach keys leave it running.
 
+- **Filters** (`daemon/ps.rs`, `daemon/images.rs`, `daemon/filters.rs`). `ps`, `images`
+  and the prunes take `--filter` as dockerd does at docker-v29.8.1 (moby list.go,
+  containerd image_list.go and image_prune.go, prune.go), names and statuses as regular
+  expressions (RE2, as Go's), times by dockerd's own reading (`gotime::parse_timestamp`,
+  held to moby's code by the docker-time oracle), and image names as 29.8.1 matches them:
+  familiar or whole, with or without the tag (29.3.1 matched the familiar alone).
+  `commit` records the image a commit was made from, as dockerd's
+  `org.mobyproject.image.parent` label, for `ancestor` and for hiding an image's dangling
+  parents. Two differences, each to keep what dockerd risks: each filter's expressions
+  are compiled once for a list, where dockerd compiles them for each container; and
+  `image prune` never deletes the last name of an image a microVM was made from, which
+  dockerd does when that microVM named it by a name since given to another (a stopped
+  microVM starts again from its image, D37). Filters that need what shards does not have
+  yet (labels, volumes, networks) match no microVM. Tests:
+  `ps_filters_microvms_as_dockerd_filters_containers`,
+  `images_and_prunes_filter_as_dockerd_does`.
 ### Shipping the guest (D28)
 
 `shards run IMAGE` works on first use: with no guest recorded and none named, a run boots

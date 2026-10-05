@@ -1,9 +1,10 @@
-//! shards reads `logs --since` and `--until` as the Docker client and dockerd do: every
-//! answer in docker-time.json (scripts/docker-cli/time), shards gives byte for byte.
+//! shards reads `logs --since` and `--until`, and filters' times, as the Docker client
+//! and dockerd do: every answer in docker-time.json (scripts/docker-cli/time), shards
+//! gives byte for byte.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use shards_cmdline::gotime::{get_timestamp, parse_unix_timestamp};
+use shards_cmdline::gotime::{get_timestamp, parse_timestamp, parse_unix_timestamp};
 
 #[test]
 fn timestamps_are_read_as_the_docker_client_and_dockerd_read_them() {
@@ -20,6 +21,24 @@ fn timestamps_are_read_as_the_docker_client_and_dockerd_read_them() {
             (None, None) => Ok(String::new()),
         };
         assert_eq!(get_timestamp(value, now, offset), want, "{value:?} at {offset}");
+    }
+    let parses = golden["parse"].as_array().unwrap();
+    assert!(parses.len() > 150);
+    for case in parses {
+        let value = case["value"].as_str().unwrap();
+        let offset = case["offset"].as_i64().unwrap();
+        let got = parse_timestamp(value, now, offset).map(|ns| {
+            format!(
+                "{}.{:09}",
+                ns.div_euclid(1_000_000_000),
+                ns.rem_euclid(1_000_000_000)
+            )
+        });
+        let want = match (case.get("result"), case.get("error")) {
+            (Some(r), _) => Ok(r.as_str().unwrap().to_string()),
+            (_, e) => Err(e.and_then(|e| e.as_str()).unwrap_or_default().to_string()),
+        };
+        assert_eq!(got, want, "{value:?} at {offset}");
     }
     for case in golden["unix"].as_array().unwrap() {
         let value = case["value"].as_str().unwrap();

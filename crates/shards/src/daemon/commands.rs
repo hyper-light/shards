@@ -414,11 +414,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &IMAGE_INSPECT) {
             self.image_inspect(&parsed.args, asker.styled(), reply)
         } else if std::ptr::eq(command, &CONTAINER_PRUNE) {
-            self.prune(false, true, false, asker, reply)
+            self.prune(false, true, &parsed, asker, reply)
         } else if std::ptr::eq(command, &IMAGE_PRUNE) {
-            self.prune(true, false, parsed.bool("all"), asker, reply)
+            self.prune(true, false, &parsed, asker, reply)
         } else if std::ptr::eq(command, &SYSTEM_PRUNE) {
-            self.prune(true, true, parsed.bool("all"), asker, reply)
+            self.prune(true, true, &parsed, asker, reply)
         } else if std::ptr::eq(command, &SYSTEM_DF) {
             self.system_df(asker, reply)
         } else if std::ptr::eq(command, &COMMIT) {
@@ -1846,21 +1846,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// last `-n` made (`-l`: one); newest first; with `-q` their IDs alone.
     fn ps(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
         let east_asian = asker.east_asian;
-        // `-l` is `-n 1`, unless `-n` says otherwise (docker/cli list.go).
-        let last = match parsed.int("last") {
-            -1 if parsed.bool("latest") => 1,
-            n => n,
-        };
-        let last = usize::try_from(last).ok().filter(|&n| n > 0);
-        let all = parsed.bool("all") || last.is_some();
         let trunc = !parsed.bool("no-trunc");
-        let mut list: Vec<Container> = lock(&self.containers)
-            .all()
-            .filter(|c| all || c.state == Life::Running)
-            .cloned()
-            .collect();
-        list.sort_by_key(|c| std::cmp::Reverse(c.created));
-        list.truncate(last.unwrap_or(usize::MAX));
+        let (list, all) = match self.ps_listing(parsed) {
+            Ok(l) => (l.containers, l.all),
+            Err(e) => {
+                reply.err(&format!("Error response from daemon: {e}"));
+                return 1;
+            }
+        };
         let at = now();
         let removing = lock(&self.removing).clone();
         let paused = lock(&self.paused).clone();
