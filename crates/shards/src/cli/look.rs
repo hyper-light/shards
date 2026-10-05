@@ -309,12 +309,6 @@ pub fn top(p: &Paint, out: &mut impl std::io::Write) {
             }
         }
     }
-    page.blank();
-    let l = page.line();
-    l.pad(2).put(p, tokens::TEAL, "shards ACTION");
-    l.put(p, tokens::SUBTLE, " shows what an action takes; ");
-    l.put(p, tokens::TEAL, "shards ACTION THING --help");
-    l.put(p, tokens::SUBTLE, " its options.");
     page.write(p, out);
 }
 
@@ -336,11 +330,6 @@ pub fn management(p: &Paint, name: &str, out: &mut impl std::io::Write) -> bool 
     usage(&mut page, p, cols, &format!("shards {name} COMMAND"));
     heading(&mut page, p, "commands");
     entries(&mut page, p, cols, list);
-    page.blank();
-    let l = page.line();
-    l.pad(2).put(p, tokens::SUBTLE, "Run ");
-    l.put(p, tokens::TEAL, &format!("shards {name} COMMAND --help"));
-    l.put(p, tokens::SUBTLE, " for more on a command.");
     page.write(p, out);
     true
 }

@@ -451,6 +451,20 @@ impl Registry {
         Ok(())
     }
 
+    /// Names the container in sight with `id` `name` instead: its old name free at once,
+    /// the new one held; its record is behind until it is written.
+    pub fn rename(&mut self, id: &str, name: &str) -> io::Result<()> {
+        let c = self
+            .by_id
+            .get_mut(id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no record of the container"))?;
+        self.by_name.remove(&c.name);
+        c.name = name.to_string();
+        self.by_name.insert(name.to_string(), id.to_string());
+        self.behind.insert(id.to_string());
+        Ok(())
+    }
+
     /// [`change`](Self::change), its record written at once: as the registry opens. An
     /// error says the record could not be written, and is behind.
     pub fn update(&mut self, disk: &dyn Disk, id: &str, f: impl FnOnce(&mut Container)) -> io::Result<()> {

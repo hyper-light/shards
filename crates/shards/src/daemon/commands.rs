@@ -13,8 +13,8 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use shards_cmdline::commands::{
-    self, CONTAINER_INSPECT, HISTORY, IMAGE_INSPECT, IMAGES, KILL, LOAD, LOGS, PORT, PS, PULL, PUSH, RM, RMI,
-    SAVE, STOP, TAG, WAIT,
+    self, CONTAINER_INSPECT, HISTORY, IMAGE_INSPECT, IMAGES, KILL, LOAD, LOGS, PORT, PS, PULL, PUSH, RENAME,
+    RM, RMI, SAVE, STOP, TAG, WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
@@ -373,6 +373,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.rmi(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &IMAGE_INSPECT) {
             self.image_inspect(&parsed.args, asker.styled(), reply)
+        } else if std::ptr::eq(command, &RENAME) {
+            self.rename(&parsed.args, reply)
         } else if std::ptr::eq(command, &HISTORY) {
             self.history(&parsed, asker, reply)
         } else if std::ptr::eq(command, &CONTAINER_INSPECT) {
@@ -389,6 +391,55 @@ impl<D: crate::containers::Disk> Daemon<D> {
             reply.err(&format!("shards: {path} is not a container command"));
             1
         }
+    }
+
+    /// `shards rename CONTAINER NEW_NAME` (moby daemon/rename.go, ContainerRename): the
+    /// new name checked as a new container's is, refused if it is the old one or held; the
+    /// old one free at once; the record written soon.
+    fn rename(&self, args: &[String], reply: &Reply<'_>) -> u8 {
+        let (Some(given), Some(new)) = (args.first(), args.get(1)) else {
+            return 1;
+        };
+        let refuse = |said: String| {
+            reply.err(&format!("Error response from daemon: {said}"));
+            1
+        };
+        if !crate::containers::valid_name(new) {
+            return refuse(format!(
+                "Invalid container name ({new}), only [a-zA-Z0-9][a-zA-Z0-9_.-] are allowed"
+            ));
+        }
+        let new = new.strip_prefix('/').unwrap_or(new).to_string();
+        let id = match self.resolve(given) {
+            Ok(id) => id,
+            Err(e) => {
+                return refuse(
+                    e.strip_prefix("Error response from daemon: ")
+                        .unwrap_or(&e)
+                        .to_string(),
+                );
+            }
+        };
+        {
+            let mut registry = lock(&self.containers);
+            let Some(old) = registry.get(&id).map(|c| c.name.clone()) else {
+                return refuse(format!("No such container: {given}"));
+            };
+            if old == new {
+                return refuse("Renaming a container with the same name as its current name".into());
+            }
+            if let Some(holder) = registry.name_taken(&new) {
+                let holder = holder.id.clone();
+                return refuse(format!(
+                    "Error when allocating new name: Conflict. The container name \"/{new}\" is already in use by container \"{holder}\". You have to remove (or rename) that container to be able to reuse that name."
+                ));
+            }
+            if let Err(e) = registry.rename(&id, &new) {
+                return refuse(e.to_string());
+            }
+        }
+        self.record_soon(&id, Vec::new());
+        0
     }
 
     /// `shards port CONTAINER [PORT]` (docker/cli cli/command/container/port.go): each

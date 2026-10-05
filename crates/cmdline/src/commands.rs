@@ -410,6 +410,18 @@ platform - s - -",
     error_prefix: "",
 };
 
+/// `shards rename` (docker/cli cli/command/container/rename.go).
+pub static RENAME: Command = Command {
+    usage: "CONTAINER NEW_NAME",
+    about: "Rename a container",
+    aliases: "shards container rename, shards rename",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards save`.
 pub static SAVE: Command = Command {
     usage: "[OPTIONS] IMAGE [IMAGE...]",
@@ -840,6 +852,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["image", "tag", ..] => (&TAG, "shards image tag", 2),
         ["image", "inspect", ..] => (&IMAGE_INSPECT, "shards image inspect", 2),
         ["history", ..] => (&HISTORY, "shards history", 1),
+        ["rename", ..] => (&RENAME, "shards rename", 1),
+        ["container", "rename", ..] => (&RENAME, "shards container rename", 2),
         ["image", "history", ..] => (&HISTORY, "shards image history", 2),
         ["container", "inspect", ..] => (&CONTAINER_INSPECT, "shards container inspect", 2),
         ["image", "ls" | "list", ..] => (&IMAGES, "shards image ls", 2),

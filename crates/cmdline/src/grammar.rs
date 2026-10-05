@@ -55,6 +55,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("remove" | "rm" | "delete" | "rmi", Thing::Image) => &["rmi", "--vms"],
         ("inspect", Thing::Image) => &["image", "inspect"],
         ("history", Thing::Image) => &["history"],
+        ("rename", Thing::Vm | Thing::Container) => &["rename"],
         ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect"],
         ("run", Thing::Vm | Thing::Container) => &["run"],
         ("restore", Thing::Vm) => &["restore"],
@@ -144,6 +145,7 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "Choose the kernel and shards-init runs boot",
     ),
     ("manage", "kill", "vm NAME", "Kill microVMs"),
+    ("manage", "rename", "vm NAME NEW_NAME", "Name a microVM again"),
     (
         "manage",
         "remove",
