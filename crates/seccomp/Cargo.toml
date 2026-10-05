@@ -1,0 +1,15 @@
+[package]
+name = "shards-seccomp"
+version = "0.1.0"
+description = "Docker's seccomp profiles, resolved and compiled to BPF as dockerd, runc and libseccomp make them"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = "1"
+serde_json = "1"
+
+[lints]
+workspace = true

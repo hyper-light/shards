@@ -4054,3 +4054,49 @@ revision before comparing a changed API/implementation.
   deadline would both cut off legitimate loads and lock what it cut off. shards cuts no
   upload off: each name's requests go on a thread of their own, so a stuck one holds up
   that name alone, and a microVM the engine holds already is not sent again (D41).
+
+### M119. Which syscalls Docker's default seccomp profile allows that Docker's runc refuses
+
+- **Question.** Docker's default profile (moby/profiles seccomp v0.2.3) names syscalls
+  newer than the syscall tables of the libseccomp Docker's runc links. Does a container
+  get them?
+- **Method.** On Docker Desktop 29.3.1 (runc v1.3.4, which reports libseccomp 2.5.4;
+  its VM's kernel 6.12.76-linuxkit, arm64), `python:3.12-alpine` called each of the 16
+  syscalls the profile names and libseccomp 2.5.4's release tables (Linux 5.17's) lack,
+  by its Linux 6.18 number, with invalid arguments (`syscall(nr, -1, 0, …)`), under the
+  default profile and under `--security-opt seccomp=unconfined`
+  (`scripts/seccomp/generate`'s oracle predicts the same profile's program). 2026-10-05.
+- **Results.** Under the default profile `listmount`, `statmount`, `mseal`,
+  `lsm_get_self_attr`, `lsm_list_modules` and `lsm_set_self_attr` returned ENOSYS, where
+  unconfined the kernel answered (EFAULT or EINVAL): the kernel has them, Docker's filter
+  refuses them. `cachestat`, `fchmodat2` and the futex2 calls answered alike either way,
+  so Docker Desktop's libseccomp knows more than the 2.5.4 release (whose program, from the
+  oracle, refuses from 450 up). The rest returned ENOSYS either way: 6.12 has none of them.
+  The lsm calls are allowed only with CAP_SYS_ADMIN, so a container without it is refused
+  them by the profile itself; the other three are allowed outright.
+- **Consequence.** Docker's filter means what its runtime's libseccomp knows, which differs
+  from build to build. shards reads a profile's names by the guest kernel's own tables
+  (crates/seccomp, data/linux.csv of Linux 6.18.48), so that a profile means what it
+  says on the kernel it runs (D42).
+
+### M120. What shards' seccomp program costs, against runc's
+
+- **Method.** `cargo test -p shards-seccomp --release -- --ignored --nocapture
+  measure_programs` (crates/seccomp/src/oracle.rs): Docker's default profile with
+  Docker's default capabilities, compiled by shards and as runc v1.3.4 with libseccomp
+  2.5.4 loads it (testdata/oracle-*.json); each program's length, and the instructions
+  each runs for every syscall of the guest kernel's tables with zero arguments, by the
+  crate's BPF interpreter. Revision e1f416d plus the D42 work, 2026-10-05.
+- **Results.**
+
+  | ABI | n | shards len | runc len | shards mean / p50 / p90 / p99 / max | runc mean / p50 / p90 / p99 / max |
+  |---|---:|---:|---:|---|---|
+  | x86_64 | 383 | 397 | 1238 | 11.7 / 12 / 12 / 12 / 20 | 20.5 / 21 / 23 / 23 / 31 |
+  | x86 | 459 | 397 | 1238 | 12.5 / 12 / 13 / 13 / 18 | 21.1 / 22 / 23 / 23 / 29 |
+  | aarch64 | 325 | 252 | 805 | 10.2 / 10 / 11 / 11 / 19 | 18.0 / 19 / 20 / 20 / 28 |
+  | arm | 422 | 252 | 805 | 12.3 / 12 / 13 / 13 / 18 | 20.8 / 21 / 22 / 22 / 27 |
+
+- **Consequence.** A third of the program, and 43% fewer instructions per syscall at the
+  median: each ABI's numbers as ranges of one decision found by a binary search, and
+  identical decisions shared. Counts, not time: the guest's time per syscall under each
+  is to be measured in a VM.
