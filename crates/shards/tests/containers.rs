@@ -293,6 +293,64 @@ fn stats_measures_each_microvm_from_its_vm_process() {
 }
 
 #[test]
+fn pause_freezes_a_microvm_until_unpause_or_stop() {
+    let Some((home, image)) = home("containers-pause") else {
+        return;
+    };
+    let mut spinner = start(&home, &image, &["--name", "frozen"], &["spin"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    // Its share of a CPU, as `stats` measures it over a second.
+    let cpu = || -> f64 {
+        let stats = shards(&["stats", "--no-stream", "frozen"]);
+        let line = stats.stdout.lines().nth(1).unwrap().to_string();
+        line.split_whitespace()
+            .nth(2)
+            .unwrap()
+            .trim_end_matches('%')
+            .parse()
+            .unwrap()
+    };
+    let paused = shards(&["pause", "frozen"]);
+    assert_eq!(
+        (paused.status, paused.stdout.as_str()),
+        (Some(0), "frozen\n"),
+        "{paused}"
+    );
+    let again = shards(&["pause", "frozen"]);
+    assert_eq!(again.status, Some(1));
+    assert!(again.stderr.ends_with("is already paused\n"), "{again}");
+    assert!(cpu() < 5.0, "a frozen microVM spun");
+    let ps = shards(&["ps"]);
+    assert!(ps.stdout.contains(" (Paused) "), "{ps}");
+    let inspected = shards(&["container", "inspect", "frozen"]);
+    assert!(inspected.stdout.contains(r#""Status": "paused""#), "{inspected}");
+    let rm = shards(&["rm", "frozen"]);
+    assert!(
+        rm.stderr
+            .ends_with("container is paused and must be unpaused first\n"),
+        "{rm}"
+    );
+    let unpaused = shards(&["unpause", "frozen"]);
+    assert_eq!(
+        (unpaused.status, unpaused.stdout.as_str()),
+        (Some(0), "frozen\n"),
+        "{unpaused}"
+    );
+    assert!(cpu() > 50.0, "a resumed microVM did not run");
+    let not = shards(&["unpause", "frozen"]);
+    assert!(not.stderr.ends_with("is not paused\n"), "{not}");
+    // A stop lets a frozen microVM go on to hear its signal, as dockerd's does.
+    assert_eq!(shards(&["pause", "frozen"]).status, Some(0));
+    let stopped = shards(&["stop", "-t", "5", "frozen"]);
+    assert_eq!(
+        (stopped.status, stopped.stdout.as_str()),
+        (Some(0), "frozen\n"),
+        "{stopped}"
+    );
+    assert_eq!(exit(&mut spinner), Some(128 + 15));
+}
+
+#[test]
 fn rm_refuses_a_running_container_unless_forced() {
     let Some((home, image)) = home("containers-force") else {
         return;

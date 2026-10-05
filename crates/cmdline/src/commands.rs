@@ -659,6 +659,30 @@ pub static WAIT: Command = Command {
     error_prefix: "",
 };
 
+/// `shards pause` (docker/cli cli/command/container/pause.go).
+pub static PAUSE: Command = Command {
+    usage: "CONTAINER [CONTAINER...]",
+    about: "Pause all processes within one or more containers",
+    aliases: "shards container pause, shards pause",
+    args: Args::AtLeast(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards unpause` (docker/cli cli/command/container/unpause.go).
+pub static UNPAUSE: Command = Command {
+    usage: "CONTAINER [CONTAINER...]",
+    about: "Unpause all processes within one or more containers",
+    aliases: "shards container unpause, shards unpause",
+    args: Args::AtLeast(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards port`.
 pub static PORT: Command = Command {
     usage: "CONTAINER [PRIVATE_PORT[/PROTO]]",
@@ -954,6 +978,10 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["history", ..] => (&HISTORY, "shards history", 1),
         ["system", "df", ..] => (&SYSTEM_DF, "shards system df", 2),
         ["stats", ..] => (&STATS, "shards stats", 1),
+        ["pause", ..] => (&PAUSE, "shards pause", 1),
+        ["container", "pause", ..] => (&PAUSE, "shards container pause", 2),
+        ["unpause", ..] => (&UNPAUSE, "shards unpause", 1),
+        ["container", "unpause", ..] => (&UNPAUSE, "shards container unpause", 2),
         ["container", "stats", ..] => (&STATS, "shards container stats", 2),
         ["system", "prune", ..] => (&SYSTEM_PRUNE, "shards system prune", 2),
         ["container", "prune", ..] => (&CONTAINER_PRUNE, "shards container prune", 2),

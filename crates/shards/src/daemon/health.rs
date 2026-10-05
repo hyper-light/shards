@@ -254,6 +254,12 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 continue;
             };
             let next = interval(&cfg, self.since_start(&id), Status::Starting);
+            // A frozen microVM is not probed: dockerd stops its monitor while a container
+            // is paused (moby daemon/health.go, updateHealthMonitor).
+            if lock(&self.paused).contains(&id) {
+                self.due_after(&id, next);
+                continue;
+            }
             let watched = id.clone();
             if let Err(e) = std::thread::Builder::new()
                 .name("probe".into())

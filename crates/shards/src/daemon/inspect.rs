@@ -456,7 +456,10 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     .ok_or_else(|| format!("No such container: {given}"))
             });
             match found {
-                Ok(c) => documents.push(container_document(&c, &self.home)),
+                Ok(c) => {
+                    let paused = super::lock(&self.paused).contains(&c.id);
+                    documents.push(container_document(&c, paused, &self.home));
+                }
                 Err(e) => errors.push(e),
             }
         }
@@ -492,7 +495,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
 /// A container record's document, compact, in the order of Docker's
 /// ContainerJSONBase where shards keeps the field, then `MicroVM`.
-fn container_document(c: &crate::containers::Container, home: &std::path::Path) -> String {
+fn container_document(c: &crate::containers::Container, paused: bool, home: &std::path::Path) -> String {
     use crate::containers::State;
     let time = |ns: Option<u128>| -> serde_json::Value {
         match ns {
@@ -505,6 +508,7 @@ fn container_document(c: &crate::containers::Container, home: &std::path::Path) 
         }
     };
     let status = match c.state {
+        State::Running if paused => "paused",
         State::Running => "running",
         State::Created => "created",
         State::Exited => "exited",
@@ -530,7 +534,7 @@ fn container_document(c: &crate::containers::Container, home: &std::path::Path) 
         "State": {
             "Status": status,
             "Running": c.state == State::Running,
-            "Paused": false,
+            "Paused": paused,
             "Restarting": false,
             "OOMKilled": false,
             "Dead": false,

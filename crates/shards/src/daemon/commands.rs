@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 
 use shards_cmdline::commands::{
     self, CONTAINER_INSPECT, CONTAINER_PRUNE, HISTORY, IMAGE_INSPECT, IMAGE_PRUNE, IMAGES, KILL, LOAD, LOGS,
-    PORT, PS, PULL, PUSH, RENAME, RM, RMI, SAVE, STATS, STOP, SYSTEM_DF, SYSTEM_PRUNE, TAG, WAIT,
+    PAUSE, PORT, PS, PULL, PUSH, RENAME, RM, RMI, SAVE, STATS, STOP, SYSTEM_DF, SYSTEM_PRUNE, TAG, UNPAUSE,
+    WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
@@ -265,6 +266,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
         self.await_start(&id);
         // What the exec needs of the run, taken out of `runs` before its inbox is locked:
         // its follower holds the inbox while it ends the run, which takes `runs`.
+        if lock(&self.paused).contains(&id) {
+            return refuse(&format!(
+                "Error response from daemon: Container {id} is paused, unpause the container before exec"
+            ));
+        }
         let (base, socket, inbox) = match lock(&self.runs).get(&id) {
             Some(RunState::Tracked(run)) => (run.base.clone(), run.socket.clone(), run.inbox.clone()),
             _ => {
@@ -386,6 +392,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.prune(true, true, parsed.bool("all"), asker, reply)
         } else if std::ptr::eq(command, &SYSTEM_DF) {
             self.system_df(asker, reply)
+        } else if std::ptr::eq(command, &PAUSE) {
+            self.pause(&parsed, true, asker.styled(), reply)
+        } else if std::ptr::eq(command, &UNPAUSE) {
+            self.pause(&parsed, false, asker.styled(), reply)
         } else if std::ptr::eq(command, &STATS) {
             self.stats(&parsed, asker, reply)
         } else if std::ptr::eq(command, &RENAME) {
@@ -746,13 +756,95 @@ impl<D: crate::containers::Disk> Daemon<D> {
 
     /// Sends Linux signal `linux` to the command of the container with `id`; whether it
     /// could.
+    ///
+    /// A paused container is let go on once sent SIGKILL or its own stop signal, as
+    /// dockerd resumes one (moby daemon/kill.go, killWithSignal): the signal waits in its
+    /// socket and is read as it runs again. Other signals wait for `unpause`.
     fn signal(&self, id: &str, linux: u32) -> bool {
         // Sent once the runs' lock is let go of: no send waits under it.
         let socket = match lock(&self.runs).get(id) {
             Some(RunState::Tracked(t)) => t.socket.clone(),
             _ => return false,
         };
-        socket.send(kind::SIGNAL, &linux.to_be_bytes(), &[]).is_ok()
+        let sent = socket.send(kind::SIGNAL, &linux.to_be_bytes(), &[]).is_ok();
+        if lock(&self.paused).contains(id) {
+            let own = lock(&self.containers).made(id).and_then(|c| c.stop_signal);
+            if linux == 9 || own.is_none_or(|s| s == i64::from(linux)) {
+                self.thaw(id);
+            }
+        }
+        sent
+    }
+
+    /// Lets paused container `id`'s VM go on (SIGCONT); whether it could.
+    fn thaw(&self, id: &str) -> bool {
+        let resumed = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(t)) => t.vm.kill(libc::SIGCONT).is_ok(),
+            _ => false,
+        };
+        lock(&self.paused).remove(id);
+        resumed
+    }
+
+    /// `shards pause` and `unpause` (moby daemon/pause.go, unpause.go): each running
+    /// container's whole microVM frozen where it is, its vCPUs and devices alike, by
+    /// stopping its VM process (SIGSTOP), as dockerd freezes a container's cgroup; or let
+    /// go on (SIGCONT). A frozen microVM takes no CPU, keeps its memory, and hears what it
+    /// is sent once it goes on. Answers as the CLI does (pause.go): each name done, then
+    /// the errors.
+    fn pause(&self, parsed: &Parsed, freeze: bool, styled: bool, reply: &Reply<'_>) -> u8 {
+        let args = self.by_image(&parsed.args, true);
+        self.each(
+            if freeze { "pause" } else { "unpause" },
+            styled,
+            &args,
+            &|reference| {
+                let id = match self.resolve(reference.trim()) {
+                    Ok(id) => id,
+                    Err(e) => return Step::Now(Err(e)),
+                };
+                self.await_start(&id);
+                if !self.running(&id) {
+                    return Step::Now(Err(format!(
+                        "Error response from daemon: container {id} is not running"
+                    )));
+                }
+                let paused = lock(&self.paused).contains(&id);
+                if freeze {
+                    if paused {
+                        return Step::Now(Err(format!(
+                            "Error response from daemon: container {id} is already paused"
+                        )));
+                    }
+                    let frozen = match lock(&self.runs).get(&id) {
+                        Some(RunState::Tracked(t)) => t.vm.kill(libc::SIGSTOP),
+                        _ => Err(io::Error::from(io::ErrorKind::NotFound)),
+                    };
+                    return Step::Now(match frozen {
+                        Ok(()) => {
+                            lock(&self.paused).insert(id);
+                            Ok(true)
+                        }
+                        Err(e) => Err(format!(
+                            "Error response from daemon: cannot pause container {id}: {e}"
+                        )),
+                    });
+                }
+                if !paused {
+                    return Step::Now(Err(format!(
+                        "Error response from daemon: Container {id} is not paused"
+                    )));
+                }
+                Step::Now(if self.thaw(&id) {
+                    Ok(true)
+                } else {
+                    Err(format!(
+                        "Error response from daemon: Cannot unpause container {id}: it is not running"
+                    ))
+                })
+            },
+            reply,
+        )
     }
 
     /// Runs `op` for each of `args`, in their order, then ends every container the steps
@@ -1129,6 +1221,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     return Step::Now(finish(None));
                 }
                 if self.running(&id) {
+                    if !force && lock(&self.paused).contains(&id) {
+                        lock(&self.removing).remove(&id);
+                        return Step::Now(Err(cannot(
+                            &reference,
+                            "container is paused and must be unpaused first",
+                        )));
+                    }
                     if !force {
                         lock(&self.removing).remove(&id);
                         return Step::Now(Err(cannot(
@@ -1324,6 +1423,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         list.truncate(last.unwrap_or(usize::MAX));
         let at = now();
         let removing = lock(&self.removing).clone();
+        let paused = lock(&self.paused).clone();
         let health = lock(&self.health);
         let listed: Vec<Listed> = list
             .iter()
@@ -1337,6 +1437,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     at,
                     health.get(&c.id).map(|h| h.status),
                     removing.contains(&c.id),
+                    paused.contains(&c.id),
                 ),
                 // dockerd lists ports while a container runs.
                 ports: if c.state == Life::Running {
@@ -1370,6 +1471,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             ]);
             for (c, l) in list.iter().zip(&listed) {
                 let state = match c.state {
+                    Life::Running if paused.contains(&c.id) => "paused",
                     Life::Running => "running",
                     Life::Created => "created",
                     _ => "exited",
@@ -2159,10 +2261,20 @@ pub(super) fn human_duration(ns: u128) -> String {
 /// A container's status as dockerd words it (moby daemon/container/state.go): up for how
 /// long, with its health if it has a check; else being removed, if it is; or exited with
 /// what status how long ago, or created and never started.
-fn status(c: &Container, at: u128, health: Option<super::health::Status>, removing: bool) -> String {
+fn status(
+    c: &Container,
+    at: u128,
+    health: Option<super::health::Status>,
+    removing: bool,
+    paused: bool,
+) -> String {
     match (c.state, c.started, c.finished) {
         (Life::Running, Some(started), _) => {
             let up = human_duration(at.saturating_sub(started));
+            // moby daemon/container/state.go, String: paused before healthy.
+            if paused {
+                return format!("Up {up} (Paused)");
+            }
             match health {
                 Some(h) => format!("Up {up} ({})", h.shown()),
                 None => format!("Up {up}"),

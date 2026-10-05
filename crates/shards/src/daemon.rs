@@ -564,6 +564,9 @@ struct Daemon<D: Disk = Real> {
     ports_freed: Condvar,
     /// The containers `shards rm` is removing.
     removing: Mutex<HashSet<String>>,
+    /// The containers `shards pause` froze: their VM processes stopped (SIGSTOP), until
+    /// `unpause`, or a stop or kill, lets them go on.
+    paused: Mutex<HashSet<String>>,
     /// A container's ID, directory and log, made ahead of the run that takes them.
     spare: Mutex<Spare>,
     /// Numbers the templates a run saves before they become the template.
@@ -1073,6 +1076,7 @@ impl<D: Disk> Daemon<D> {
             ports_held: Mutex::default(),
             ports_freed: Condvar::new(),
             removing: Mutex::default(),
+            paused: Mutex::default(),
             spare: Mutex::default(),
             saved: AtomicU64::new(0),
             collecting: Collecting {
@@ -2534,6 +2538,7 @@ impl<D: Disk> Daemon<D> {
             });
             lock(&self.runs).remove(id);
             lock(&self.health).remove(id);
+            lock(&self.paused).remove(id);
             self.resolved.notify_all();
             for waiter in lock(&self.waiters).remove(id).unwrap_or_default() {
                 waiter.hear(status);

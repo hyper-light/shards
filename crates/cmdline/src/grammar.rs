@@ -67,6 +67,8 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("prune", Thing::System) => &["system", "prune"],
         ("rename", Thing::Vm | Thing::Container) => &["rename"],
         ("stats" | "watch", Thing::Vm | Thing::Container) => &["stats"],
+        ("pause" | "freeze", Thing::Vm | Thing::Container) => &["pause"],
+        ("unpause" | "resume" | "thaw", Thing::Vm | Thing::Container) => &["unpause"],
         ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect"],
         ("run", Thing::Vm | Thing::Container) => &["run"],
         ("restore", Thing::Vm) => &["restore"],
@@ -135,6 +137,7 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "Choose the kernel and shards-init runs boot",
     ),
     ("manage", "kill", "vm", "Kill microVMs"),
+    ("manage", "pause", "vm", "Freeze microVMs where they are"),
     (
         "manage",
         "prune",
@@ -155,6 +158,7 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "Stop microVMs, or the daemon and its runs",
     ),
     ("manage", "tag", "image", "Name an image again"),
+    ("manage", "unpause", "vm", "Let frozen microVMs run on"),
     (
         "images",
         "build",
@@ -237,12 +241,24 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "Show what a microVM's command printed",
     ),
     (
+        "inspect",
+        "stats",
+        "vm [NAME]",
+        "Watch what microVMs take of the host, live",
+    ),
+    (
         "manage",
         "configure",
         "guest --kernel FILE --init FILE",
         "Choose the kernel and shards-init runs boot",
     ),
     ("manage", "kill", "vm NAME", "Kill microVMs"),
+    (
+        "manage",
+        "pause",
+        "vm NAME",
+        "Freeze microVMs where they are: every vCPU and device, at no CPU",
+    ),
     (
         "manage",
         "prune",
@@ -270,6 +286,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     ),
     ("manage", "tag", "image SOURCE TARGET", "Name an image again"),
     (
+        "manage",
+        "unpause",
+        "vm NAME",
+        "Let frozen microVMs run on from where they were",
+    ),
+    (
         "images",
         "build",
         "image PATH",
@@ -289,12 +311,6 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     ),
     ("images", "push", "image NAME", "Upload an image to a registry"),
     ("images", "save", "image NAME", "Save images to a tar archive"),
-    (
-        "inspect",
-        "stats",
-        "vm [NAME]",
-        "Watch what microVMs take of the host, live",
-    ),
 ];
 
 /// Whether `word` is an action of shards' grammar.

@@ -437,12 +437,14 @@ fn ps(page: &mut Page, p: &Paint, sheet: &Sheet) {
             // Running, sage; created, lavender; ended well, grey; ended badly, rose.
             let (glyph, c) = match state {
                 "running" => ("●", tokens::SAGE),
+                "paused" => ("●", tokens::AMBER),
                 "created" => ("●", tokens::LAVENDER),
                 _ if failed => ("●", tokens::ROSE),
                 _ => ("●", tokens::FAINT),
             };
             let status_c = match state {
                 "running" => tokens::SAGE,
+                "paused" => tokens::AMBER,
                 _ if failed => tokens::ROSE,
                 _ => tokens::MUTED,
             };
@@ -470,6 +472,8 @@ fn ended(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let done = match verb {
         "rm" => "removed",
         "kill" => "killed",
+        "pause" => "paused",
+        "unpause" => "resumed",
         _ => "stopped",
     };
     let rows: Vec<usize> = (0..sheet.records.len())

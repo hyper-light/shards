@@ -48,6 +48,71 @@
   },
   {
     "argv": [
+      "pause"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards pause' requires at least 1 argument\n\nUsage:  shards pause CONTAINER [CONTAINER...]\n\nSee 'shards pause --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "pause",
+      "--help"
+    ],
+    "stdout": "Usage:  shards pause CONTAINER [CONTAINER...]\n\nPause all processes within one or more containers\n\nAliases:\n  shards container pause, shards pause\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "pause",
+      "--nope",
+      "a"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards pause CONTAINER [CONTAINER...]\n\nRun 'shards pause --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "pause",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container pause CONTAINER [CONTAINER...]\n\nPause all processes within one or more containers\n\nAliases:\n  shards container pause, shards pause\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "unpause"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards unpause' requires at least 1 argument\n\nUsage:  shards unpause CONTAINER [CONTAINER...]\n\nSee 'shards unpause --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "unpause",
+      "--help"
+    ],
+    "stdout": "Usage:  shards unpause CONTAINER [CONTAINER...]\n\nUnpause all processes within one or more containers\n\nAliases:\n  shards container unpause, shards unpause\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "unpause",
+      "a",
+      "--nope"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards container unpause CONTAINER [CONTAINER...]\n\nRun 'shards container unpause --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
       "run"
     ],
     "stdout": "",
