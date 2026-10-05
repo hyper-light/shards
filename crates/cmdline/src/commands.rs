@@ -437,6 +437,65 @@ verbose v b - -",
     error_prefix: "",
 };
 
+/// `shards container prune` (docker/cli cli/command/container/prune.go).
+pub static CONTAINER_PRUNE: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Remove all stopped containers",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
+        HELP,
+    ],
+    unserved: "\
+filter - s - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards image prune` (docker/cli cli/command/image/prune.go).
+pub static IMAGE_PRUNE: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Remove unused images",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::bool(
+            "all",
+            Some(b'a'),
+            "Remove all unused images, not just dangling ones",
+        ),
+        Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
+        HELP,
+    ],
+    unserved: "\
+filter - s - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards system prune` (docker/cli cli/command/system/prune.go).
+pub static SYSTEM_PRUNE: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Remove unused data",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::bool(
+            "all",
+            Some(b'a'),
+            "Remove all unused images not just dangling ones",
+        ),
+        Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
+        HELP,
+    ],
+    unserved: "\
+filter - s - -\n\
+volumes - b - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards save`.
 pub static SAVE: Command = Command {
     usage: "[OPTIONS] IMAGE [IMAGE...]",
@@ -868,6 +927,9 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["image", "inspect", ..] => (&IMAGE_INSPECT, "shards image inspect", 2),
         ["history", ..] => (&HISTORY, "shards history", 1),
         ["system", "df", ..] => (&SYSTEM_DF, "shards system df", 2),
+        ["system", "prune", ..] => (&SYSTEM_PRUNE, "shards system prune", 2),
+        ["container", "prune", ..] => (&CONTAINER_PRUNE, "shards container prune", 2),
+        ["image", "prune", ..] => (&IMAGE_PRUNE, "shards image prune", 2),
         ["rename", ..] => (&RENAME, "shards rename", 1),
         ["container", "rename", ..] => (&RENAME, "shards container rename", 2),
         ["image", "history", ..] => (&HISTORY, "shards image history", 2),

@@ -24,6 +24,8 @@ pub enum Thing {
     Guest,
     /// What shards takes on disk.
     Disk,
+    /// All of shards' own: what prune system clears.
+    System,
 }
 
 impl Thing {
@@ -35,6 +37,7 @@ impl Thing {
             "daemon" => Some(Thing::Daemon),
             "guest" => Some(Thing::Guest),
             "disk" => Some(Thing::Disk),
+            "system" => Some(Thing::System),
             _ => None,
         }
     }
@@ -47,7 +50,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
     // `shards image ls` is `shards ls image`: Docker's management form, turned round.
     let (action, thing, rest) = match (Thing::of(first), second) {
         (Some(thing @ (Thing::Image | Thing::Container)), Some(action)) => (action, thing, args.get(2..)?),
-        (Some(Thing::Vm | Thing::Daemon | Thing::Guest | Thing::Disk), _) => return None,
+        (Some(Thing::Vm | Thing::Daemon | Thing::Guest | Thing::Disk | Thing::System), _) => return None,
         _ => (first, Thing::of(second?)?, args.get(2..)?),
     };
     let said: &[&str] = match (action, thing) {
@@ -59,6 +62,9 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("inspect", Thing::Image) => &["image", "inspect"],
         ("history", Thing::Image) => &["history"],
         ("inspect", Thing::Disk) => &["system", "df"],
+        ("prune", Thing::Vm | Thing::Container) => &["container", "prune"],
+        ("prune", Thing::Image) => &["image", "prune"],
+        ("prune", Thing::System) => &["system", "prune"],
         ("rename", Thing::Vm | Thing::Container) => &["rename"],
         ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect"],
         ("run", Thing::Vm | Thing::Container) => &["run"],
@@ -89,9 +95,84 @@ fn once(action: &str, rest: &[String]) -> Vec<String> {
 /// The sections shards' help lists its actions in, by what they are for, in order.
 pub static SECTIONS: &[&str] = &["run", "inspect", "manage", "images"];
 
-/// The actions shards' grammar has, for its help: the section each is listed in, the
-/// action, the things it takes (those that take the same, together), and what it does.
+/// The actions shards' grammar has, for its help: a line each, its section, the action,
+/// the things it acts on, and what it does. How each thing is given is on the action's
+/// own page ([`USES`]).
 pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
+    ("run", "exec", "vm", "Run a command in a running microVM"),
+    ("run", "restore", "vm", "Resume a microVM from a snapshot"),
+    (
+        "run",
+        "run",
+        "vm | daemon",
+        "Run a command in a new microVM, or the daemon that serves them",
+    ),
+    (
+        "inspect",
+        "history",
+        "image",
+        "Show how an image's layers were made",
+    ),
+    (
+        "inspect",
+        "inspect",
+        "vm | image | disk | guest",
+        "Show a microVM, an image, disk use, or the guest",
+    ),
+    ("inspect", "list", "vm | image", "List microVMs, or images"),
+    ("inspect", "logs", "vm", "Show what a microVM's command printed"),
+    (
+        "manage",
+        "configure",
+        "guest",
+        "Choose the kernel and shards-init runs boot",
+    ),
+    ("manage", "kill", "vm", "Kill microVMs"),
+    (
+        "manage",
+        "prune",
+        "vm | image | system",
+        "Remove stopped microVMs, unused images, or both",
+    ),
+    (
+        "manage",
+        "remove",
+        "vm | image",
+        "Remove microVMs, or images with their stopped microVMs",
+    ),
+    ("manage", "rename", "vm", "Name a microVM again"),
+    (
+        "manage",
+        "stop",
+        "vm | daemon",
+        "Stop microVMs, or the daemon and its runs",
+    ),
+    ("manage", "tag", "image", "Name an image again"),
+    (
+        "images",
+        "build",
+        "image",
+        "Build an image from a Dockerfile or Agentfile, and make it a microVM",
+    ),
+    (
+        "images",
+        "load",
+        "image",
+        "Load images from a tar archive or stdin",
+    ),
+    (
+        "images",
+        "pull",
+        "image",
+        "Download an image, and make it a microVM",
+    ),
+    ("images", "push", "image", "Upload an image to a registry"),
+    ("images", "save", "image", "Save images to a tar archive"),
+];
+
+/// Each way an action is said, for its own page (`shards run`): its section, the action,
+/// what it takes, and what it does.
+pub static USES: &[(&str, &str, &str, &str)] = &[
     (
         "run",
         "exec",
@@ -155,6 +236,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "Choose the kernel and shards-init runs boot",
     ),
     ("manage", "kill", "vm NAME", "Kill microVMs"),
+    (
+        "manage",
+        "prune",
+        "vm | image | system",
+        "Remove stopped microVMs, unused images, or both",
+    ),
     (
         "manage",
         "remove",
@@ -287,7 +374,10 @@ mod sorted {
             assert_eq!(rows, sorted, "{section}");
         }
         assert!(ACTIONS.iter().all(|r| SECTIONS.contains(&r.0)));
+        // An action a line, and each of its ways said on its page.
         let mut seen = std::collections::HashSet::new();
-        assert!(ACTIONS.iter().all(|r| seen.insert((r.1, r.2))));
+        assert!(ACTIONS.iter().all(|r| seen.insert(r.1)));
+        assert!(USES.iter().all(|u| ACTIONS.iter().any(|a| a.1 == u.1)));
+        assert!(ACTIONS.iter().all(|a| USES.iter().any(|u| u.1 == a.1)));
     }
 }

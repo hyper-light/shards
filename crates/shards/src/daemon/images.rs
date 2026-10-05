@@ -863,6 +863,156 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 }
 
+/// go-units' HumanSize: four significant digits, as prune reports what it reclaimed.
+fn human_size4(size: i64) -> String {
+    const UNITS: [&str; 9] = ["B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
+    #[allow(clippy::cast_precision_loss)]
+    let mut size = size as f64;
+    let mut unit = 0;
+    while size >= 1000.0 && unit < UNITS.len() - 1 {
+        size /= 1000.0;
+        unit += 1;
+    }
+    format!("{}{}", go_g(size, 4), UNITS.get(unit).unwrap_or(&""))
+}
+
+impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// `shards prune vm`, `prune image` and `prune system` (docker/cli container/prune.go,
+    /// image/prune.go, system/prune.go; the confirmation is the client's): the stopped
+    /// microVMs, with `containers`; the dangling images, or with `all` every image no
+    /// microVM was made from, with `images`; then what was reclaimed, as the CLI says it.
+    pub(super) fn prune(
+        &self,
+        images: bool,
+        containers: bool,
+        all: bool,
+        asker: &super::commands::Asker,
+        reply: &super::commands::Reply<'_>,
+    ) -> u8 {
+        let mut reclaimed: i64 = 0;
+        let mut removed_vms: Vec<(String, String)> = Vec::new();
+        if containers {
+            let stopped: Vec<(String, String)> = super::lock(&self.containers)
+                .all()
+                .filter(|c| c.state != crate::containers::State::Running)
+                .map(|c| (c.id.clone(), c.name.clone()))
+                .collect();
+            for (id, name) in stopped {
+                if !super::lock(&self.removing).insert(id.clone()) {
+                    continue;
+                }
+                let bytes = on_disk(&self.home.join("containers").join(&id));
+                let taken = super::lock(&self.containers).take_out(&id);
+                let gone = match taken {
+                    Some(removal) => {
+                        self.set_aside(&removal).is_ok() && {
+                            let _ = self.complete(&removal);
+                            true
+                        }
+                    }
+                    None => false,
+                };
+                super::lock(&self.removing).remove(&id);
+                if gone {
+                    reclaimed = reclaimed.saturating_add(i64::try_from(bytes).unwrap_or(i64::MAX));
+                    removed_vms.push((id, name));
+                }
+            }
+        }
+        let mut removed_images: Vec<super::rmi::Removed> = Vec::new();
+        if images && let Ok(Some(store)) = self.store() {
+            use super::rmi::{Record, Records};
+            struct Store<'s>(&'s shards_image::store::Store);
+            impl Records for Store<'_> {
+                fn untag(&mut self, name: &str) -> Result<(), String> {
+                    self.0.untag(name).map_err(|e| e.to_string())
+                }
+                fn alias(&mut self, name: &str, existing: &str) -> Result<(), String> {
+                    self.0.alias(name, existing).map_err(|e| e.to_string())
+                }
+            }
+            let sizes: Vec<(String, u64)> = store
+                .images()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|i| (i.id.to_string(), i.content.saturating_add(i.unpacked)))
+                .collect();
+            let users = super::rmi::users(super::lock(&self.containers).all());
+            let used = |id: &str| users.iter().any(|u| u.image.as_deref() == Some(id));
+            // Each image to go, by a name that reaches it: its dangling record, or, with
+            // `all`, its ID.
+            let mut doomed: Vec<String> = Vec::new();
+            for (name, id) in store.references().unwrap_or_default() {
+                let id = id.to_string();
+                if used(&id) {
+                    continue;
+                }
+                let dangling = name.starts_with(super::rmi::DANGLING);
+                if (dangling || all) && !doomed.iter().any(|d| d == &id || d == &name) {
+                    doomed.push(if all { id } else { name });
+                }
+            }
+            for given in doomed {
+                let records: Vec<Record> = store
+                    .references()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(name, id)| Record { name, id })
+                    .collect();
+                if let Ok(removed) = super::rmi::delete(&mut Store(&store), &records, &users, &given, true) {
+                    for r in removed {
+                        if let super::rmi::Removed::Deleted(id) = &r {
+                            let freed = sizes.iter().find(|(i, _)| i == id).map_or(0, |(_, n)| *n);
+                            reclaimed = reclaimed.saturating_add(i64::try_from(freed).unwrap_or(i64::MAX));
+                            self.collect_soon();
+                        }
+                        removed_images.push(r);
+                    }
+                }
+            }
+        }
+        if asker.styled() {
+            let mut sheet = shards_ipc::Sheet::new("prune");
+            sheet.record(&[("kind", "head".into()), ("reclaimed", reclaimed.to_string())]);
+            for (id, name) in &removed_vms {
+                sheet.record(&[("vm", name.clone()), ("id", truncate_id(id).to_string())]);
+            }
+            for r in &removed_images {
+                match r {
+                    super::rmi::Removed::Untagged(n) => sheet.record(&[("untagged", n.clone())]),
+                    super::rmi::Removed::Deleted(d) => {
+                        sheet.record(&[("deleted", truncate_id(d).to_string())])
+                    }
+                }
+            }
+            reply.sheet(&sheet);
+            return 0;
+        }
+        let mut text = String::new();
+        if !removed_vms.is_empty() {
+            text.push_str("Deleted Containers:\n");
+            for (id, _) in &removed_vms {
+                text.push_str(id);
+                text.push('\n');
+            }
+            text.push('\n');
+        }
+        if !removed_images.is_empty() {
+            text.push_str("Deleted Images:\n");
+            for r in &removed_images {
+                match r {
+                    super::rmi::Removed::Untagged(n) => text.push_str(&format!("untagged: {n}\n")),
+                    super::rmi::Removed::Deleted(d) => text.push_str(&format!("deleted: {d}\n")),
+                }
+            }
+            text.push('\n');
+        }
+        text.push_str(&format!("Total reclaimed space: {}\n", human_size4(reclaimed)));
+        let _ = reply.bytes(crate::spec::LOG_STDOUT, text.as_bytes());
+        0
+    }
+}
+
 /// The microVM a name made, gone from the machine's local image store with the name.
 fn unpublish(name: &str) {
     if std::env::var("SHARDS_LOCAL_STORE").is_ok_and(|v| v == "none") {

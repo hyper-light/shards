@@ -163,6 +163,20 @@ fn container(
         Err(answered) => return answered,
     };
     let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    // A prune asks first, as the Docker CLI does, unless forced: on a colour terminal in
+    // shards' look, elsewhere in the CLI's words.
+    if let Some(warning) = prune_warning(command, &parsed) {
+        #[cfg(unix)]
+        let asked = match look::styled() {
+            Some(p) => look::confirm(&p, &look_name(path), &prune_items(command, &parsed)),
+            None => confirmed(&warning),
+        };
+        #[cfg(not(unix))]
+        let asked = confirmed(&warning);
+        if !asked {
+            return ExitCode::SUCCESS;
+        }
+    }
     #[cfg(unix)]
     {
         // `save` writes where the client says, opened here, before the client moves to
@@ -271,7 +285,7 @@ fn container(
 
 /// The help of one of shards' own actions: what it does to each thing it takes.
 fn action_help(action: &str) -> ExitCode {
-    let rows: Vec<(&str, &str)> = shards_cmdline::grammar::ACTIONS
+    let rows: Vec<(&str, &str)> = shards_cmdline::grammar::USES
         .iter()
         .filter(|(_, a, _, _)| *a == action)
         .map(|(_, _, takes, about)| (*takes, *about))
@@ -329,6 +343,85 @@ fn unknown(text: &str) -> ExitCode {
     }
     let _ = writeln!(std::io::stderr(), "{text}");
     ExitCode::FAILURE
+}
+
+/// What a prune warns of before it removes anything, as docker/cli words it
+/// (container/prune.go, image/prune.go, system/prune.go); none if it is forced or is no
+/// prune.
+fn prune_warning(command: &'static Command, parsed: &Parsed) -> Option<String> {
+    use shards_cmdline::commands::{CONTAINER_PRUNE, IMAGE_PRUNE, SYSTEM_PRUNE};
+    if parsed.bool("force") {
+        return None;
+    }
+    let all = std::ptr::eq(command, &IMAGE_PRUNE) || std::ptr::eq(command, &SYSTEM_PRUNE);
+    let all = all && parsed.bool("all");
+    let ask = "Are you sure you want to continue? [y/N] ";
+    if std::ptr::eq(command, &CONTAINER_PRUNE) {
+        Some(format!(
+            "WARNING! This will remove all stopped containers.\n{ask}"
+        ))
+    } else if std::ptr::eq(command, &IMAGE_PRUNE) {
+        Some(if all {
+            format!(
+                "WARNING! This will remove all images without at least one container associated to them.\n{ask}"
+            )
+        } else {
+            format!("WARNING! This will remove all dangling images.\n{ask}")
+        })
+    } else if std::ptr::eq(command, &SYSTEM_PRUNE) {
+        let (images, cache) = if all {
+            (
+                "all images without at least one container associated to them",
+                "all build cache",
+            )
+        } else {
+            ("all dangling images", "unused build cache")
+        };
+        Some(format!(
+            "WARNING! This will remove:\n  - all stopped containers\n  - all networks not used by at least one container\n  - {images}\n  - {cache}\n\n{ask}"
+        ))
+    } else {
+        None
+    }
+}
+
+/// A page's name for the command `path` names: `prune image` for `shards image prune`.
+fn look_name(path: &str) -> String {
+    let words: Vec<&str> = path.split(' ').skip(1).collect();
+    match words.as_slice() {
+        ["container", "prune"] => "prune vm".into(),
+        [thing, "prune"] => format!("prune {thing}"),
+        _ => words.join(" "),
+    }
+}
+
+/// What a prune removes, in shards' words, for its page.
+fn prune_items(command: &'static Command, parsed: &Parsed) -> Vec<&'static str> {
+    use shards_cmdline::commands::{CONTAINER_PRUNE, IMAGE_PRUNE};
+    let images = if parsed.bool("all") {
+        "every image no microVM was made from"
+    } else {
+        "every dangling image: those no name reaches"
+    };
+    if std::ptr::eq(command, &CONTAINER_PRUNE) {
+        vec!["every stopped microVM"]
+    } else if std::ptr::eq(command, &IMAGE_PRUNE) {
+        vec![images]
+    } else {
+        vec!["every stopped microVM", images]
+    }
+}
+
+/// Whether, asked `question` on stdout, stdin answers yes (`y`, as docker/cli's
+/// PromptForConfirmation takes it, in either case).
+fn confirmed(question: &str) -> bool {
+    let _ = std::io::stdout().write_all(question.as_bytes());
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+    answer.trim().eq_ignore_ascii_case("y")
 }
 
 /// Reads `argv` for `command`, which `path` names; or answers its `--help` or its

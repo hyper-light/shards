@@ -13,8 +13,8 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use shards_cmdline::commands::{
-    self, CONTAINER_INSPECT, HISTORY, IMAGE_INSPECT, IMAGES, KILL, LOAD, LOGS, PORT, PS, PULL, PUSH, RENAME,
-    RM, RMI, SAVE, STOP, SYSTEM_DF, TAG, WAIT,
+    self, CONTAINER_INSPECT, CONTAINER_PRUNE, HISTORY, IMAGE_INSPECT, IMAGE_PRUNE, IMAGES, KILL, LOAD, LOGS,
+    PORT, PS, PULL, PUSH, RENAME, RM, RMI, SAVE, STOP, SYSTEM_DF, SYSTEM_PRUNE, TAG, WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
@@ -373,6 +373,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.rmi(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &IMAGE_INSPECT) {
             self.image_inspect(&parsed.args, asker.styled(), reply)
+        } else if std::ptr::eq(command, &CONTAINER_PRUNE) {
+            self.prune(false, true, false, asker, reply)
+        } else if std::ptr::eq(command, &IMAGE_PRUNE) {
+            self.prune(true, false, parsed.bool("all"), asker, reply)
+        } else if std::ptr::eq(command, &SYSTEM_PRUNE) {
+            self.prune(true, true, parsed.bool("all"), asker, reply)
         } else if std::ptr::eq(command, &SYSTEM_DF) {
             self.system_df(asker, reply)
         } else if std::ptr::eq(command, &RENAME) {

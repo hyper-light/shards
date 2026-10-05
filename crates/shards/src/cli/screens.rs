@@ -25,6 +25,7 @@ pub fn show(sheet: &Sheet) {
         "port" => port(&mut page, &p, sheet),
         "history" => history(&mut page, &p, sheet),
         "df" => disk(&mut page, &p, sheet),
+        "prune" => prune(&mut page, &p, sheet),
         "json" => {
             json(&p, sheet.get(0, "text").unwrap_or(""));
             return;
@@ -825,6 +826,61 @@ fn disk(page: &mut Page, p: &Paint, sheet: &Sheet) {
         })
         .collect();
     table(page, p, cols, &columns, &rows);
+}
+
+/// `shards prune ...`: the microVMs and images removed, and what that freed.
+fn prune(page: &mut Page, p: &Paint, sheet: &Sheet) {
+    let cols = look::width();
+    let n = sheet.records.len();
+    let freed = sheet
+        .get(0, "reclaimed")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let vms = (0..n).filter(|&i| sheet.get(i, "vm").is_some()).count();
+    let images = (0..n).filter(|&i| sheet.get(i, "deleted").is_some()).count();
+    look::head(
+        page,
+        p,
+        cols,
+        "prune",
+        &[(
+            tokens::MUTED,
+            false,
+            format!(
+                "{vms} {} · {images} {} · {} freed",
+                if vms == 1 { "microVM" } else { "microVMs" },
+                if images == 1 { "image" } else { "images" },
+                text::bytes(freed)
+            ),
+        )],
+    );
+    page.blank();
+    if vms + images == 0 {
+        page.line().pad(4).put(p, tokens::MUTED, "Nothing to remove.");
+        return;
+    }
+    for i in (0..n).filter(|&i| sheet.get(i, "kind").is_none()) {
+        let l = page.line();
+        if let Some(name) = sheet.get(i, "vm") {
+            l.pad(4)
+                .put(p, tokens::SAGE, "● ")
+                .put(p, tokens::FOREGROUND, name);
+            l.pad(2)
+                .put(p, tokens::SUBTLE, sheet.get(i, "id").unwrap_or(""))
+                .pad(2)
+                .put(p, tokens::MUTED, "microVM removed");
+        } else if let Some(name) = sheet.get(i, "untagged") {
+            l.pad(6)
+                .put(p, tokens::SUBTLE, "untagged ")
+                .put(p, tokens::FOREGROUND, name);
+        } else if let Some(id) = sheet.get(i, "deleted") {
+            l.pad(4)
+                .put(p, tokens::SAGE, "● ")
+                .put(p, tokens::FOREGROUND, id)
+                .pad(2)
+                .put(p, tokens::MUTED, "image removed");
+        }
+    }
 }
 
 /// `shards tag`: the new name, and the image it names.

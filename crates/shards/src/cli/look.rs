@@ -166,7 +166,27 @@ pub(super) fn width() -> usize {
 
 /// The head: the mark, where there is room, beside the brand and `name` in tracked
 /// capitals, then `lines` under them.
+/// Whether this process has drawn its head already: a page after it (a prune's results,
+/// below its question) shows its lines alone, under it.
+static HEADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub(super) fn head(page: &mut Page, p: &Paint, cols: usize, name: &str, lines: &[(Rgb, bool, String)]) {
+    if HEADED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        page.blank();
+        for (c, bold, words) in lines {
+            for (i, part) in layout::wrap(words, cols.saturating_sub(5))
+                .into_iter()
+                .enumerate()
+            {
+                page.line()
+                    .pad(4)
+                    .bold(p, *bold && i == 0)
+                    .put(p, *c, &part)
+                    .bold(p, false);
+            }
+        }
+        return;
+    }
     let with_mark = cols >= 56;
     let mut mark = Canvas::new(8, 4);
     if with_mark {
@@ -670,6 +690,57 @@ pub(crate) fn panel(p: &Paint, message: &str, with_head: bool) {
     let _ = std::io::stderr().write_all(text.as_bytes());
 }
 
+/// A question before something is removed: the head, what will go, then `Continue? [y/N]`
+/// on stdout; whether stdin answers yes (`y`, in either case).
+pub(crate) fn confirm(p: &Paint, name: &str, items: &[&str]) -> bool {
+    let cols = width();
+    let mut page = Page::new();
+    head(
+        &mut page,
+        p,
+        cols,
+        name,
+        &[(tokens::MUTED, false, "This removes, for good:".to_string())],
+    );
+    page.blank();
+    for item in items {
+        page.line()
+            .pad(4)
+            .put(p, tokens::AMBER, "● ")
+            .put(p, tokens::FOREGROUND, item);
+    }
+    page.blank();
+    let mut text = String::new();
+    for mut l in page.lines {
+        p.reset(&mut l.s);
+        text.push_str(&l.s);
+        text.push('\n');
+    }
+    let mut ask = Line::default();
+    ask.pad(4)
+        .bold(p, true)
+        .put(p, tokens::BRIGHT, "Continue?")
+        .bold(p, false);
+    ask.put(p, tokens::SUBTLE, " [y/N] ");
+    p.reset(&mut ask.s);
+    text.push_str(&ask.s);
+    let _ = std::io::stdout().write_all(text.as_bytes());
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+    let yes = answer.trim().eq_ignore_ascii_case("y");
+    if !yes {
+        // Nothing done, said so, and the screen ends as every screen does.
+        let mut l = Line::default();
+        l.pad(4).put(p, tokens::MUTED, "Nothing removed.");
+        p.reset(&mut l.s);
+        let _ = std::io::stdout().write_all(format!("\n{}\n\n", l.s).as_bytes());
+    }
+    yes
+}
+
 /// An error, in a panel on stderr: `title` the command it came from, `message` what
 /// happened, and `hints` what to do.
 pub fn error(p: &Paint, title: &str, message: &str, hints: &[&str]) {
@@ -724,8 +795,8 @@ mod tests {
         let mut out = Vec::new();
         top(&p, &mut out);
         let text = seen(&out);
-        for (_, action, takes, _) in shards_cmdline::grammar::ACTIONS {
-            assert!(text.contains(&format!("{action} {takes}")), "{action} {takes}");
+        for (_, action, things, _) in shards_cmdline::grammar::ACTIONS {
+            assert!(text.contains(&format!("{action} {things}")), "{action} {things}");
         }
         assert!(text.contains("S H A R D S"));
         let mut out = Vec::new();
