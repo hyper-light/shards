@@ -248,6 +248,12 @@ impl<D: Disk> Daemon<D> {
         super::inspect::inspected(parsed.string("format"), &documents, errors, asker.styled(), reply)
     }
 
+    /// Volume `name`'s document, for the top-level `inspect`.
+    pub(super) fn volume_doc(&self, name: &str, offset: i64) -> Option<Value> {
+        let v = Store::new(&self.home).get(name)?;
+        Some(self.volume_value(&v, offset, None))
+    }
+
     /// `shards volume rm NAME...` (VolumesService.Remove): each removed said by its name;
     /// one a container mounts is refused, with the containers, `-f` or not, as dockerd
     /// refuses it; with `-f`, one not there is no error.

@@ -743,7 +743,7 @@ fn serve_workload(
                                 working_set.as_ref(),
                             );
                         };
-                        let saved = || crate::warm::layer_saved(&link);
+                        let saved = |used| crate::warm::layer_saved(&link, used);
                         let ask = || {
                             // A template this VM saved is in place before the daemon hears the
                             // VM is ready, and settles it: its commit runs as the guest does.

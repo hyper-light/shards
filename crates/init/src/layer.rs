@@ -46,6 +46,12 @@ pub fn apply(conn: &File, first: u32) -> io::Result<()> {
 /// Sends the container's writable layer on `conn` as [`kind::LAYER`] frames, then an
 /// empty one.
 pub fn save(conn: &File) -> io::Result<()> {
+    // What it uses first, while its files are as they will be packed.
+    if let Some(used) = crate::changes::upper().and_then(|u| usage(std::path::Path::new(&u)).ok()) {
+        let mut c = conn;
+        c.write_all(&run::header(kind::USAGE, 8))?;
+        c.write_all(&used.to_be_bytes())?;
+    }
     let mut out = Sender {
         conn,
         buf: Vec::with_capacity(CHUNK),
@@ -55,6 +61,29 @@ pub fn save(conn: &File) -> io::Result<()> {
     // The end, whether or not all of it was sent: the host keeps only a whole one.
     send(conn, &[])?;
     packed
+}
+
+/// The disk the tree at `root` uses, as continuity's DiskUsage counts it (containerd's
+/// snapshot Usage, which dockerd's SizeRw is): each inode's blocks once, directories and
+/// `root` itself among them.
+pub fn usage(root: &std::path::Path) -> io::Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+    let mut seen = std::collections::HashSet::new();
+    let mut total = 0u64;
+    let mut stack = vec![(root.to_path_buf(), std::fs::metadata(root)?)];
+    while let Some((path, meta)) = stack.pop() {
+        if seen.insert((meta.dev(), meta.ino())) {
+            total = total.saturating_add(meta.blocks().saturating_mul(512));
+        }
+        if meta.is_dir() {
+            for e in std::fs::read_dir(&path)? {
+                let e = e?;
+                let m = std::fs::symlink_metadata(e.path())?;
+                stack.push((e.path(), m));
+            }
+        }
+    }
+    Ok(total)
 }
 
 /// Writes the container's writable layer to `out`, as an OCI layer: what init made of

@@ -1366,6 +1366,10 @@ fn builtin(kind: u8, args: &[Vec<u8>]) -> Result<Started, Failure> {
             run::builtin::CHANGES => crate::changes::write(&mut out),
             run::builtin::EXPORT => export(&mut out),
             run::builtin::CGROUP => write_cgroup(args).map_err(io::Error::other),
+            run::builtin::SIZE => crate::changes::upper()
+                .ok_or_else(|| io::Error::other("the writable layer was not kept"))
+                .and_then(|u| crate::layer::usage(std::path::Path::new(&u)))
+                .and_then(|n| write!(out, "{n}")),
             run::builtin::LAYER => {
                 // Paused as dockerd pauses a container it commits (moby daemon/commit.go):
                 // every process but init and this one stopped, then let go on.

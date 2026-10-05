@@ -517,8 +517,14 @@ pub fn finish(
 }
 
 /// Tells the daemon the container's writable layer is whole where it asked for it.
-pub fn layer_saved(link: &Link) {
-    let _ = shards_ipc::send(&link.daemon, kind::LAYER_SAVED, &[], &[]);
+pub fn layer_saved(link: &Link, used: Option<u64>) {
+    let payload = used.map(u64::to_be_bytes);
+    let _ = shards_ipc::send(
+        &link.daemon,
+        kind::LAYER_SAVED,
+        payload.as_ref().map_or(&[][..], |p| p),
+        &[],
+    );
 }
 
 /// Stops using the client's stdio: this process's standard descriptors become `null`.

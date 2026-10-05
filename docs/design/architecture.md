@@ -2376,6 +2376,14 @@ CLI's, held to Docker Engine 29.3.1's.
   real-time CPU controller to write them to.
 - inspect's raw-JSON fallback (a template Docker's typed struct cannot answer) decodes
   numbers as encoding/json's Number, which prints its digits and encodes as a number.
+- **Sizes** (`ps --size`, `inspect --size`; list.go asks for them too where a format
+  shows `.Size`): SizeRw is the disk the writable layer uses, counted as containerd's
+  snapshots count it for Docker 29 (continuity DiskUsage: each inode's blocks once,
+  directories too): by an init built-in while the microVM runs (`builtin::SIZE`), and as
+  its last run left it after, which init counts as it saves the layer (`kind::USAGE`).
+  SizeRootFs adds the image's root filesystem as it is on the host (its EROFS disk). The
+  numbers are the guest filesystem's blocks, not Docker Desktop's ext4's: the same writes
+  measured 16 kB in a microVM and 8 kB under Docker 29.3.1.
 
 ## 4. Start path (≤ 5 ms budget)
 

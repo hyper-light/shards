@@ -88,6 +88,10 @@ pub mod kind {
     /// cgroup for want of memory (its `memory.events` counts an `oom_kill`), as
     /// containerd tells dockerd of an OOM.
     pub const OOM: u8 = 28;
+    /// Guest to host, after [`SAVE`] and before the [`LAYER`] frames: the disk its
+    /// writable layer uses (a big-endian u64), counted as containerd's snapshots count
+    /// it, for inspect's SizeRw once it has stopped.
+    pub const USAGE: u8 = 29;
 }
 
 /// Why an exec did not start, as its [`kind::SYSTEM_ERR`] says first: the runtime could
@@ -228,6 +232,8 @@ pub mod builtin {
     /// Each argument a `FILE=VALUE` written to the workload's cgroup, as its limits are
     /// as it starts: `shards update` of a running container (moby daemon/update.go).
     pub const CGROUP: u8 = 9;
+    /// The disk the writable layer uses, in decimal: inspect's and `ps -s`'s SizeRw.
+    pub const SIZE: u8 = 10;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

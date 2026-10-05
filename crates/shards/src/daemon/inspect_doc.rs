@@ -76,6 +76,8 @@ pub(super) struct Facts<'a> {
     pub log_path: String,
     /// Its place on the bridge, while it runs there.
     pub net: Option<Net>,
+    /// With `--size`: SizeRw and SizeRootFs.
+    pub size: Option<(i64, i64)>,
 }
 
 fn s(v: &str) -> Value {
@@ -224,8 +226,18 @@ pub(super) fn document(f: &Facts<'_>) -> Value {
                 )
                 .value(),
         )
-        .tagged("SizeRw", Some("SizeRw"), true, Struct::nil("int64"))
-        .tagged("SizeRootFs", Some("SizeRootFs"), true, Struct::nil("int64"))
+        .tagged(
+            "SizeRw",
+            Some("SizeRw"),
+            true,
+            f.size.map_or_else(|| Struct::nil("int64"), |(rw, _)| int(rw)),
+        )
+        .tagged(
+            "SizeRootFs",
+            Some("SizeRootFs"),
+            true,
+            f.size.map_or_else(|| Struct::nil("int64"), |(_, root)| int(root)),
+        )
         .field("Mounts", mount_points(c))
         .field("Config", config.2)
         .field("NetworkSettings", network_settings(f, run))
@@ -1261,6 +1273,7 @@ mod tests {
                     max: run.restart_policy.1,
                     ..Default::default()
                 },
+                size_rw: None,
             };
             let manifest = &want["ImageManifestDescriptor"];
             let facts = Facts {
@@ -1274,6 +1287,7 @@ mod tests {
                 exec_ids: Vec::new(),
                 log_path: String::new(),
                 net: None,
+                size: None,
             };
             let mut got: serde_json::Value = serde_json::from_str(&json(&document(&facts))).unwrap();
             let mut want = want.clone();

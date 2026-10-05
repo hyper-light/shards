@@ -2437,6 +2437,7 @@ impl<D: Disk> Daemon<D> {
                 max: run.restart_policy.1,
                 ..Default::default()
             },
+            size_rw: None,
         });
         self.event_for(id, &name, &run.image, "create", &[]);
         // Its run is owned from the moment the container is visible.
@@ -2907,7 +2908,18 @@ impl<D: Disk> Daemon<D> {
                         inbox.execs_in_flight.retain(|(held, _)| *held != n);
                     }
                 }
-                kind::LAYER_SAVED => self.settle_layer(id, inbox, true),
+                kind::LAYER_SAVED => {
+                    self.settle_layer(id, inbox, true);
+                    if let Ok(used) = <[u8; 8]>::try_from(m.payload.as_slice()) {
+                        let used = u64::from_be_bytes(used);
+                        if lock(&self.containers)
+                            .change(id, |c| c.size_rw = Some(used))
+                            .is_ok()
+                        {
+                            self.record_soon(id, Vec::new());
+                        }
+                    }
+                }
                 kind::EXEC_ENDED => {
                     if let Some((n, &[status])) = m.payload.split_first_chunk::<8>()
                         && let Some(at) = inbox
@@ -4826,6 +4838,7 @@ mod tests {
             digests: args.contains(&"--digests"),
             human: !args.contains(&"--human=false") && !args.contains(&"-H=false"),
             verbose: args.iter().any(|a| matches!(*a, "-v" | "--verbose")),
+            size: args.iter().any(|a| matches!(*a, "-s" | "--size")),
         };
         let clock = shards_cmdline::format::Clock {
             now: i128::try_from(containers::now()).unwrap(),

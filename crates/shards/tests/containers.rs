@@ -5352,3 +5352,40 @@ fn update_changes_limits_of_running_microvms_as_docker_update_does() {
         "2000000000\n"
     );
 }
+
+/// `ps --size` and `inspect --size`: the disk a microVM's writable layer uses, from its
+/// guest while it runs and as its last run left it after, and with its image's root.
+#[cfg(unix)]
+#[test]
+fn sizes_are_listed_as_docker_ps_and_inspect_list_them() {
+    let Some((home, image)) = home("containers-sizes") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let mut held = start(&home, &image, &["--name", "sized", "-u", "0"], &["sleep"]);
+    let wrote = shards(&["exec", "sized", "/bin/testguest", "fs", "write:/big=0123456789"]);
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    let sizes = |args: &[&str]| -> (i64, i64) {
+        let mut all = vec!["inspect"];
+        all.extend(args);
+        all.extend(["-f", "{{.SizeRw}} {{.SizeRootFs}}", "sized"]);
+        let out = shards(&all).stdout;
+        let mut n = out.split_whitespace().map(|w| w.parse::<i64>().unwrap());
+        (n.next().unwrap(), n.next().unwrap())
+    };
+    let (rw, root) = sizes(&["-s"]);
+    assert!(rw > 0 && root > rw, "{rw} {root}");
+    assert_eq!(
+        shards(&["inspect", "-f", "{{.SizeRw}}", "sized"]).stdout,
+        "<nil>\n",
+        "only with --size"
+    );
+    let listed = shards(&["ps", "-s", "--format", "{{.Names}} {{.Size}}"]).stdout;
+    assert!(
+        listed.starts_with("sized ") && listed.contains(" (virtual "),
+        "{listed}"
+    );
+    assert_eq!(shards(&["stop", "-t", "0", "sized"]).status, Some(0));
+    let _ = exit(&mut held);
+    assert_eq!(sizes(&["-s"]), (rw, root), "as its last run left it");
+}

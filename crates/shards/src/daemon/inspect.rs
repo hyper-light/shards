@@ -447,7 +447,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     .ok_or_else(|| format!("No such container: {given}"))
             });
             match found {
-                Ok(c) => documents.push(self.container_value(&c)),
+                Ok(c) => documents.push(self.container_value(&c, parsed.bool("size"))),
                 Err(e) if e.starts_with("Error response") => errors.push(e),
                 Err(e) => errors.push(format!("Error response from daemon: {e}")),
             }
@@ -457,7 +457,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
     /// Container `c`'s InspectResponse, from its record, its request, its image and its
     /// VM (inspect_doc.rs).
-    fn container_value(&self, c: &crate::containers::Container) -> shards_template::Value {
+    fn container_value(&self, c: &crate::containers::Container, sized: bool) -> shards_template::Value {
         use super::inspect_doc::{Facts, Health, Net, document};
         let dir = super::lock(&self.containers).dir(&c.id);
         let request = std::fs::read(dir.join(super::REQUEST))
@@ -510,7 +510,46 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             exec_ids,
             log_path: dir.join("log").display().to_string(),
             net,
+            size: sized.then(|| self.container_sizes(c)),
         })
+    }
+
+    /// Container `c`'s SizeRw and SizeRootFs, as containerd's snapshots count them for
+    /// dockerd: the disk its writable layer uses, from its guest while it runs, else as
+    /// its last run left it; and that with its image's root filesystem.
+    pub(super) fn container_sizes(&self, c: &crate::containers::Container) -> (i64, i64) {
+        let running =
+            matches!(super::lock(&self.runs).get(&c.id), Some(super::RunState::Tracked(t)) if !t.visit);
+        let rw = if running {
+            let spec = shards_abi::run::Spec {
+                builtin: shards_abi::run::builtin::SIZE,
+                ..Default::default()
+            };
+            self.exec_quietly(&c.id, &spec, None, 64, super::TAKE_TIMEOUT)
+                .ok()
+                .filter(|q| q.status == Some(0))
+                .and_then(|q| String::from_utf8_lossy(&q.output).trim().parse::<u64>().ok())
+        } else {
+            // As its last run left it, once its VM has saved its layer and said so.
+            self.await_settled(&c.id);
+            super::lock(&self.containers).get(&c.id).and_then(|c| c.size_rw)
+        }
+        .unwrap_or(0);
+        let image = c
+            .image_id
+            .as_deref()
+            .and_then(|id| {
+                let store = self.store().ok().flatten()?;
+                let found = store
+                    .images()
+                    .ok()?
+                    .into_iter()
+                    .find(|i| i.id.to_string() == id)?;
+                Some(found.unpacked)
+            })
+            .unwrap_or(0);
+        let rw = i64::try_from(rw).unwrap_or(i64::MAX);
+        (rw, rw.saturating_add(i64::try_from(image).unwrap_or(i64::MAX)))
     }
 
     /// Image `id`'s config (its `config`), and the descriptor of its manifest for this
@@ -575,9 +614,10 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     pub(super) fn inspect_any(
         &self,
         parsed: &shards_cmdline::flags::Parsed,
-        styled: bool,
+        asker: &super::commands::Asker,
         reply: &super::commands::Reply<'_>,
     ) -> u8 {
+        let styled = asker.styled();
         let kind = parsed.string("type");
         let all = TYPES.map(|t| format!("\"{t}\"")).join(", ");
         if parsed.changed("type") && kind.is_empty() {
@@ -600,7 +640,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                             .ok_or_else(|| format!("No such container: {given}"))
                     });
                     match c {
-                        Ok(c) => return Ok(self.container_value(&c)),
+                        Ok(c) => return Ok(self.container_value(&c, parsed.bool("size"))),
                         Err(e) if !any => return Err(daemon_said(&e)),
                         Err(_) => {}
                     }
@@ -611,6 +651,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                         Err(e) if !any => return Err(daemon_said(&e)),
                         Err(_) => {}
                     }
+                }
+                if (any || kind == "volume")
+                    && let Some(d) = self.volume_doc(given, i64::from(asker.utc_offset))
+                {
+                    return Ok(d);
                 }
                 // shards' networks have no documents yet: said so, not that they are not.
                 if (any || kind == "network") && matches!(given.as_str(), "bridge" | "none") {

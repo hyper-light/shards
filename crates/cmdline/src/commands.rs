@@ -662,10 +662,14 @@ pub static INSPECT: Command = Command {
     flags: &[
         Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP),
         HELP,
+        Flag::bool(
+            "size",
+            Some(b's'),
+            "Display total file sizes if the type is container",
+        ),
         Flag::string("type", None, "", "Only inspect objects of the given type"),
     ],
-    unserved: "\
-size s b - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -840,9 +844,9 @@ pub static PS: Command = Command {
         ),
         Flag::bool("no-trunc", None, "Don't truncate output"),
         Flag::bool("quiet", Some(b'q'), "Only display container IDs"),
+        Flag::bool("size", Some(b's'), "Display total file sizes"),
     ],
-    unserved: "\
-size s b false -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -924,9 +928,12 @@ pub static CONTAINER_INSPECT: Command = Command {
     about: "Display detailed information on one or more containers",
     aliases: "",
     args: Args::AtLeast(1),
-    flags: &[Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP), HELP],
-    unserved: "\
-size s b - -",
+    flags: &[
+        Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP),
+        HELP,
+        Flag::bool("size", Some(b's'), "Display total file sizes"),
+    ],
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };

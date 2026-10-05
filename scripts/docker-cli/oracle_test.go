@@ -26,8 +26,8 @@ import (
 // The flags shards serves, by command; the rest are hidden, as shards hides them.
 var served = map[string][]string{
 	"run": {"add-host", "blkio-weight", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "network", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "shm-size", "sig-proxy", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
-	"ps":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet"},
-	"ls":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet"},
+	"ps":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet", "size"},
+	"ls":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet", "size"},
 	"wait": {"help"},
 	"logs": {"details", "follow", "help", "since", "tail", "timestamps", "until"},
 	"rm":   {"force", "help", "volumes"},
@@ -69,7 +69,7 @@ var served = map[string][]string{
 	"info":              {"format", "help"},
 	// `container inspect` (and the top-level inspect, whose own flags shards does not
 	// serve yet).
-	"inspect": {"format", "help", "type"},
+	"inspect": {"format", "help", "size", "type"},
 	// `container prune` and `system prune`, which share the name.
 	"prune":             {"all", "filter", "force", "help", "volumes"},
 	"image prune":       {"all", "filter", "force", "help"},

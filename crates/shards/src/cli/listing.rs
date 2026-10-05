@@ -18,6 +18,8 @@ pub struct Asked {
     pub human: bool,
     /// `system df -v`.
     pub verbose: bool,
+    /// `ps --size`.
+    pub size: bool,
 }
 
 static ASKED: OnceLock<Asked> = OnceLock::new();
@@ -100,7 +102,7 @@ pub fn render(sheet: &shards_ipc::Sheet, asked: &Asked, clock: &Clock<'_>) -> Re
                 .map(container)
                 .collect();
             let ctx = Context {
-                format: &format::container::format(&asked.format, asked.quiet, false),
+                format: &format::container::format(&asked.format, asked.quiet, asked.size),
                 trunc: asked.trunc,
                 east_asian: shards_cmdline::width::east_asian(|name| std::env::var(name).ok()),
                 clock,
@@ -387,6 +389,14 @@ fn container(row: &serde_json::Value) -> format::container::Container {
                     .collect()
             })
             .unwrap_or_default(),
+        size_rw: row
+            .get("size_rw")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
+        size_root_fs: row
+            .get("size_root_fs")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
         ..Default::default()
     }
 }

@@ -68,6 +68,9 @@ pub struct Container {
     /// Its restart policy, and where its restarts are (moby restartmanager).
     #[serde(default)]
     pub restart: Restart,
+    /// The disk its writable layer used in its guest as its last run ended (SizeRw).
+    #[serde(default)]
+    pub size_rw: Option<u64>,
 }
 
 /// A container's restart policy (HostConfig.RestartPolicy) and what its restart manager
@@ -725,6 +728,7 @@ mod tests {
             oom_killed: false,
             mounts: Vec::new(),
             restart: Default::default(),
+            size_rw: None,
         }
     }
 

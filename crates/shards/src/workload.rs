@@ -110,7 +110,7 @@ pub struct Asked<'a> {
     /// nothing it does not need.
     pub told: Option<&'a Told<'a>>,
     /// Told the layer is saved whole.
-    pub saved: Option<&'a (dyn Fn() + Sync)>,
+    pub saved: Option<&'a (dyn Fn(Option<u64>) + Sync)>,
 }
 
 /// What hears how a served command ended (`Asked::told`).
@@ -337,9 +337,9 @@ pub fn serve(
     // once its end is told, so that nothing waits for them that does not need them.
     if let (Ok(_), Some(out)) = (&status, layer_out) {
         match receive_layer(&mut conn, out) {
-            Ok(()) => {
+            Ok(used) => {
                 if let Some(saved) = saved {
-                    saved();
+                    saved(used);
                 }
             }
             Err(e) => shards_vmm::debug!("saving the container's files: {e}"),
@@ -490,18 +490,26 @@ fn send_layer(conn: &mut UnixStream, mut layer: fs::File) -> io::Result<()> {
 /// [`kind::LAYER`] frames to `out` until the empty one; an error if it did not come
 /// whole.
 #[cfg(unix)]
-fn receive_layer(conn: &mut UnixStream, mut out: fs::File) -> io::Result<()> {
+fn receive_layer(conn: &mut UnixStream, mut out: fs::File) -> io::Result<Option<u64>> {
     send(conn, kind::SAVE, &[])?;
     let mut frame = Vec::new();
+    let mut used = None;
     loop {
         let mut h = [0u8; run::HEADER];
         conn.read_exact(&mut h)?;
         let len = match run::parse_header(h) {
             Some((kind::LAYER, len)) => len as usize,
+            // What the layer uses, before it (kind::USAGE).
+            Some((kind::USAGE, 8)) if used.is_none() => {
+                let mut n = [0u8; 8];
+                conn.read_exact(&mut n)?;
+                used = Some(u64::from_be_bytes(n));
+                continue;
+            }
             _ => return Err(io::Error::other("the guest sent another frame amid its files")),
         };
         if len == 0 {
-            return out.sync_all();
+            return out.sync_all().map(|()| used);
         }
         frame.resize(len, 0);
         conn.read_exact(&mut frame)?;

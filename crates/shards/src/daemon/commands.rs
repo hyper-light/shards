@@ -450,7 +450,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &HISTORY) {
             self.history(&parsed, asker, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::INSPECT) {
-            self.inspect_any(&parsed, asker.styled(), reply)
+            self.inspect_any(&parsed, asker, reply)
         } else if std::ptr::eq(command, &CONTAINER_INSPECT) {
             self.container_inspect(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &SAVE) {
@@ -1988,7 +1988,23 @@ impl<D: crate::containers::Disk> Daemon<D> {
         // Anywhere else, the rows, which the client lays out as the CLI does
         // (cli/listing.rs): in its clock and zone, with its `--format`.
         drop(health);
-        let rows = self.container_rows(&list);
+        let mut rows = self.container_rows(&list);
+        // Sizes where `--size` asks, or a format shows them unless `-q` (list.go,
+        // buildContainerListOptions).
+        let format = parsed.string("format");
+        let clock = shards_cmdline::format::Clock {
+            now: 0,
+            zone: &shards_cmdline::format::utc,
+        };
+        let shown =
+            !format.is_empty() && shards_cmdline::format::container::check(format, &clock).unwrap_or(false);
+        if parsed.bool("size") || (shown && !parsed.bool("quiet")) {
+            for (row, c) in rows.iter_mut().zip(&list) {
+                let (rw, root) = self.container_sizes(c);
+                row["size_rw"] = serde_json::json!(rw);
+                row["size_root_fs"] = serde_json::json!(root);
+            }
+        }
         let mut sheet = shards_ipc::Sheet::new("ps-rows");
         sheet.record(&[("rows", serde_json::Value::Array(rows).to_string())]);
         reply.sheet(&sheet);

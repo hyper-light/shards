@@ -211,9 +211,8 @@ fn container(
             format,
             quiet: parsed.bool("quiet"),
             trunc: !parsed.bool("no-trunc"),
-            digests: false,
-            human: false,
-            verbose: false,
+            size: parsed.bool("size"),
+            ..listing::Asked::default()
         });
     }
     #[cfg(unix)]
@@ -225,6 +224,7 @@ fn container(
             digests: parsed.bool("digests"),
             human: false,
             verbose: false,
+            size: false,
         });
     }
     #[cfg(unix)]
@@ -294,6 +294,7 @@ fn container(
             digests: false,
             human: parsed.bool("human"),
             verbose: false,
+            size: false,
         });
     }
     // A prune asks first, as the Docker CLI does, unless forced: on a colour terminal in

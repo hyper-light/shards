@@ -166,7 +166,8 @@ pub mod kind {
     /// the status after it (a byte), for its `exec_die` event.
     pub const EXEC_ENDED: u8 = 31;
     /// Warm VM → daemon, before `DONE`: the container's writable layer is whole where
-    /// `RUN_LAYER_OUT` said to write it.
+    /// `RUN_LAYER_OUT` said to write it; with the disk it used in the guest (a big-endian
+    /// u64), where the guest said.
     pub const LAYER_SAVED: u8 = 32;
     /// Warm VM → daemon, before DONE: the guest killed a process of the command for want
     /// of memory (shards_abi::run::kind::OOM).
