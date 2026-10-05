@@ -512,7 +512,7 @@ fn host_config(f: &Facts<'_>) -> Value {
     };
     Struct::pointer("container.HostConfig")
         .field("Binds", Value::NilList(Kind::String))
-        .field("ContainerIDFile", s(""))
+        .field("ContainerIDFile", s(&run.cidfile))
         .field(
             "LogConfig",
             Struct::new("container.LogConfig")

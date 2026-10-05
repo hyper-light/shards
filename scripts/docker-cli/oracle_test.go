@@ -25,7 +25,7 @@ import (
 
 // The flags shards serves, by command; the rest are hidden, as shards hides them.
 var served = map[string][]string{
-	"run": {"add-host", "detach", "detach-keys", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "name", "net", "network", "no-healthcheck", "publish", "publish-all", "pull", "rm", "stop-signal", "stop-timeout", "tty", "user", "workdir"},
+	"run": {"add-host", "cidfile", "detach", "detach-keys", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "name", "net", "network", "no-healthcheck", "platform", "publish", "publish-all", "pull", "quiet", "rm", "sig-proxy", "stop-signal", "stop-timeout", "tty", "user", "workdir"},
 	"ps":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet"},
 	"ls":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet"},
 	"wait": {"help"},
@@ -73,7 +73,7 @@ var served = map[string][]string{
 	// `container prune` and `system prune`, which share the name.
 	"prune":             {"all", "filter", "force", "help"},
 	"image prune":       {"all", "filter", "force", "help"},
-	"create": {"add-host", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "name", "net", "network", "no-healthcheck", "publish", "publish-all", "pull", "rm", "stop-signal", "stop-timeout", "tty", "user", "workdir"},
+	"create": {"add-host", "cidfile", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "name", "net", "network", "no-healthcheck", "platform", "publish", "publish-all", "pull", "quiet", "rm", "stop-signal", "stop-timeout", "tty", "user", "workdir"},
 	"container create": {
 		"disable-content-trust", "entrypoint", "env", "help",
 		"hostname", "init", "interactive", "kernel-memory", "name", "net", "network", "pull",
@@ -186,6 +186,9 @@ var cases = [][]string{
 	{"run", "--add-host", "a:nope", "alpine"},
 	{"run", "--domainname", "example.org", "--expose", "80", "--expose", "7000-7002/udp", "alpine"},
 	{"run", "--env-file", "a.env", "alpine"},
+	{"run", "-q", "--sig-proxy=false", "--cidfile", "/tmp/cid", "--platform", "linux/amd64", "alpine"},
+	{"run", "--sig-proxy", "x", "alpine"},
+	{"create", "-q", "--cidfile", "c", "--platform", "arm64", "alpine"},
 	{"run", "--help"},
 	{"run", "-h"},
 	{"run", "--nope", "alpine"},

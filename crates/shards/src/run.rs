@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest as _, Sha256};
 use shards_abi::run::Spec;
 use shards_image::oci::RunConfig;
-use shards_image::platform;
 use shards_image::reference::Reference;
 use shards_image::store::Lease;
 use shards_ipc::{Pull, Run};
@@ -107,6 +106,15 @@ pub fn prepare(
     say: &(dyn Fn(&str) + Sync),
     cancel: &Cancel,
 ) -> Result<Prepared, String> {
+    // `-q`: what a pull says goes unsaid (docker/cli create.go pullImage); errors do not.
+    let quiet = |line: &str| {
+        if !request.quiet {
+            say(line);
+        }
+    };
+    let say: &(dyn Fn(&str) + Sync) = &quiet;
+    // `--platform`'s image, else the best this host's microVMs run.
+    let targets = crate::pull::targets(&request.platform)?;
     let boot = match (&request.kernel, &request.init) {
         (Some(kernel), Some(init)) => {
             Boot::Given(Config::new(PathBuf::from(kernel), Some(PathBuf::from(init))))
@@ -128,7 +136,7 @@ pub fn prepare(
         Pull::Always => None,
         Pull::Missing | Pull::Never => {
             let limits = crate::pull::limits()?;
-            match local(&store, &reference, &platform::guest(), &limits) {
+            match local(&store, &reference, &targets, &limits) {
                 // A stored copy that has changed is fetched again, as a pull mends it.
                 Err(e) if e.kind() == ErrorKind::Changed && asked.pull == Pull::Missing => {
                     say(&format!("{e}; pulling '{}' again", reference.familiar()));
@@ -167,7 +175,7 @@ pub fn prepare(
             let (pulled, _) = crate::pull::fetch(
                 home,
                 &reference,
-                &platform::guest(),
+                &targets,
                 &report,
                 &say,
                 Some(cancel),

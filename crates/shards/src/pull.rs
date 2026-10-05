@@ -368,7 +368,7 @@ fn shown(event: &Event<'_>, arrived: &Mutex<HashMap<String, (u64, Option<Instant
 /// specifier of an OS or an architecture alone takes the rest from our guests' platform,
 /// where the CLI takes it from the machine it runs on: a client on macOS would otherwise
 /// ask for `darwin` images, which no Linux daemon has.
-fn targets(given: &str) -> Result<Vec<Target>, String> {
+pub(crate) fn targets(given: &str) -> Result<Vec<Target>, String> {
     if given.is_empty() {
         return Ok(image_platform::guest());
     }

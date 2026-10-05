@@ -148,6 +148,15 @@ pub static RUN: Command = Command {
         Flag::many("dns-option", None, "list", "Set DNS options"),
         Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
         Flag::string("domainname", None, "", "Container NIS domain name"),
+        Flag::string("cidfile", None, "", "Write the container ID to the file"),
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Set platform if server is multi-platform capable",
+        ),
+        Flag::bool("quiet", Some(b'q'), "Suppress the pull output"),
+        Flag::bool("sig-proxy", None, "Proxy received signals to the process").defaulting("true"),
         Flag::many(
             "env-file",
             None,
@@ -172,7 +181,6 @@ cap-add - m - -\n\
 cap-drop - m - -\n\
 cgroup-parent - s - -\n\
 cgroupns - s - -\n\
-cidfile - s - -\n\
 cpu-count - i 0 -\n\
 cpu-percent - i 0 -\n\
 cpu-period - i 0 -\n\
@@ -213,15 +221,12 @@ oom-kill-disable - b false -\n\
 oom-score-adj - i 0 -\n\
 pid - s - -\n\
 pids-limit - i 0 -\n\
-platform - s - -\n\
 privileged - b false -\n\
-quiet q b false -\n\
 read-only - b false -\n\
 restart - s no -\n\
 runtime - s - -\n\
 security-opt - m - -\n\
 shm-size - s 0 -\n\
-sig-proxy - b true -\n\
 storage-opt - m - -\n\
 sysctl - m - -\n\
 tmpfs - m - -\n\
@@ -366,6 +371,14 @@ pub static CREATE: Command = Command {
         Flag::many("dns-option", None, "list", "Set DNS options"),
         Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
         Flag::string("domainname", None, "", "Container NIS domain name"),
+        Flag::string("cidfile", None, "", "Write the container ID to the file"),
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Set platform if server is multi-platform capable",
+        ),
+        Flag::bool("quiet", Some(b'q'), "Suppress the pull output"),
         Flag::many(
             "env-file",
             None,
@@ -390,7 +403,6 @@ cap-add - m - -\n\
 cap-drop - m - -\n\
 cgroup-parent - s - -\n\
 cgroupns - s - -\n\
-cidfile - s - -\n\
 cpu-count - i 0 -\n\
 cpu-percent - i 0 -\n\
 cpu-period - i 0 -\n\
@@ -431,9 +443,7 @@ oom-kill-disable - b false -\n\
 oom-score-adj - i 0 -\n\
 pid - s - -\n\
 pids-limit - i 0 -\n\
-platform - s - -\n\
 privileged - b false -\n\
-quiet q b false -\n\
 read-only - b false -\n\
 restart - s no -\n\
 runtime - s - -\n\

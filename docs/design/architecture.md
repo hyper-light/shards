@@ -1461,6 +1461,19 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   `label`/`label!` and inspect. The request carries the new fields in an extension
   section after the daemon identity, so a request of an older client still decodes.
   Test: `run_labels_names_and_resolves_as_docker_run_does`.
+- **CID files, quiet pulls, platforms and signals** (`cli/request.rs` `before_create`,
+  `CidFile`; `run.rs` `prepare`). `run` and `create` take `--cidfile`, `-q`,
+  `--platform` (its default DOCKER_DEFAULT_PLATFORM) and, `run` alone, `--sig-proxy`,
+  as docker/cli v29.8.1 does (create.go createContainer, cidFile, run.go toStatusError):
+  the CID file is refused if it exists, made before the request, written with the ID the
+  daemon sends as the microVM is made (`CREATED`'s payload), and removed if none came;
+  `run`'s errors exit 125, or 127 and 126 as their words say. `--platform` is read as
+  containerd's `platforms.Parse` reads it and goes to the daemon, which looks for and
+  pulls that platform's image, so `linux/386` on an amd64 host runs the 386 image. One
+  difference: a platform this host's microVMs cannot run is refused before anything is
+  pulled. Docker pulls it and then fails as it starts, or runs it under emulation, which
+  a microVM, running its own kernel on the host's CPU, has none of. Test:
+  `run_writes_cidfiles_pulls_quietly_and_keeps_signals_as_docker_run_does`.
 ### Shipping the guest (D28)
 
 `shards run IMAGE` works on first use: with no guest recorded and none named, a run boots

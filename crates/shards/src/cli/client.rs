@@ -37,20 +37,28 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 /// `detach_keys` under `-it`. Every path the request holds is absolute by now
 /// (request.rs), since this process makes the home its working directory, where the
 /// daemon's socket is (`shards_ipc::SOCKET`). The terminal is back as it was when this
-/// returns.
-pub fn run(home: &Path, daemon: &Path, request: &Run, detach_keys: &[u8]) -> ExitCode {
+/// returns. Signals go on to the command with `sig_proxy` (`--sig-proxy`), and the
+/// container's ID into `cid` once it is made (`--cidfile`).
+pub fn run(
+    home: &Path,
+    daemon: &Path,
+    request: &Run,
+    detach_keys: &[u8],
+    sig_proxy: bool,
+    cid: &mut Option<crate::cli::request::CidFile>,
+) -> ExitCode {
     let asked = Attached {
         kind: kind::START,
         payload: request.encode(),
         interactive: request.interactive,
         detach: request.detach,
         tty: request.tty.is_some(),
-        proxies_signals: true,
+        proxies_signals: sig_proxy,
         card: request
             .detach
             .then(|| (request.image.clone(), request.name.clone())),
     };
-    let code = serve(home, daemon, &asked, detach_keys);
+    let code = serve(home, daemon, &asked, detach_keys, cid);
     terminal::restore();
     code
 }
@@ -68,7 +76,7 @@ pub fn exec(home: &Path, daemon: &Path, request: &shards_ipc::Exec, detach_keys:
         proxies_signals: false,
         card: None,
     };
-    let code = serve(home, daemon, &asked, detach_keys);
+    let code = serve(home, daemon, &asked, detach_keys, &mut None);
     terminal::restore();
     code
 }
@@ -86,7 +94,13 @@ struct Attached {
     card: Option<(String, Option<String>)>,
 }
 
-fn serve(home: &Path, daemon: &Path, request: &Attached, detach_keys: &[u8]) -> ExitCode {
+fn serve(
+    home: &Path,
+    daemon: &Path,
+    request: &Attached,
+    detach_keys: &[u8],
+    cid: &mut Option<crate::cli::request::CidFile>,
+) -> ExitCode {
     // Before any thread starts, none of which may use a relative path meanwhile.
     let mut started = match enter(home, daemon) {
         Ok(started) => started,
@@ -168,7 +182,13 @@ fn serve(home: &Path, daemon: &Path, request: &Attached, detach_keys: &[u8]) -> 
         }
         loop {
             match shards_ipc::recv(&conn) {
+                // Made: its ID, for `--cidfile`.
                 Ok(Some(m)) if m.kind == kind::CREATED => {
+                    if let Some(cid) = cid
+                        && let Err(e) = cid.write(&String::from_utf8_lossy(&m.payload))
+                    {
+                        return failed(&e);
+                    }
                     if let Err(e) = attach() {
                         return failed(&e);
                     }

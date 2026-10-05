@@ -1287,6 +1287,165 @@ fn run_labels_names_and_resolves_as_docker_run_does() {
     assert_eq!(left.stdout, "flagged\n", "{left}");
 }
 
+/// `--cidfile`, `-q`, `--platform` and `--sig-proxy`, as docker run and create take them:
+/// the ID written once the microVM is made, and the file left alone or removed as
+/// docker/cli's cidFile does; a pull said nothing of; the platform read as containerd
+/// reads it, and one this host's microVMs cannot run refused before anything is pulled;
+/// signals kept from the command.
+#[test]
+fn run_writes_cidfiles_pulls_quietly_and_keeps_signals_as_docker_run_does() {
+    let Some((home, image)) = home("containers-cidfile") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let cid = home.join("run.cid");
+    let cid_arg = cid.to_str().unwrap();
+    let ran = run_in(
+        &home,
+        &image,
+        &["--cidfile", cid_arg, "--name", "cided"],
+        &["exit", "0"],
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let id = shards(&[
+        "inspect",
+        "-f",
+        "{{.Id}} {{.HostConfig.ContainerIDFile}}",
+        "cided",
+    ]);
+    assert_eq!(
+        id.stdout,
+        format!("{} {cid_arg}\n", std::fs::read_to_string(&cid).unwrap()),
+        "{id}"
+    );
+    // One there already is the other container's: left as it is.
+    let again = run_in(&home, &image, &["--cidfile", cid_arg], &["exit", "0"]);
+    assert_eq!(
+        (again.status, again.stderr.as_str()),
+        (
+            Some(125),
+            format!(
+                "shards: container ID file found, make sure the other container isn't running or delete {cid_arg}\n\nRun 'shards run --help' for more information\n"
+            )
+            .as_str()
+        ),
+        "{again}"
+    );
+    assert_eq!(std::fs::read_to_string(&cid).unwrap().len(), 64);
+    // A directory that is not there: toStatusError's 127.
+    let lost = home.join("nowhere/x.cid");
+    let missing = run_in(
+        &home,
+        &image,
+        &["--cidfile", lost.to_str().unwrap()],
+        &["exit", "0"],
+    );
+    assert_eq!(missing.status, Some(127), "{missing}");
+    assert!(
+        missing.stderr.starts_with(&format!(
+            "shards: failed to create the container ID file: open {}: no such file or directory\n",
+            lost.display()
+        )),
+        "{missing}"
+    );
+    // No container, no ID: the file goes.
+    let unmade = home.join("unmade.cid");
+    let none = shards(&[
+        "run",
+        "--pull",
+        "never",
+        "--cidfile",
+        unmade.to_str().unwrap(),
+        "nosuch/image",
+    ]);
+    assert_eq!(none.status, Some(125), "{none}");
+    assert!(!unmade.exists(), "{none}");
+    // `create` writes it too, and says the same ID.
+    let made = home.join("create.cid");
+    let created = shards(&[
+        "create",
+        "--pull",
+        "never",
+        "--cidfile",
+        made.to_str().unwrap(),
+        &image,
+    ]);
+    assert_eq!(created.status, Some(0), "{created}");
+    assert_eq!(
+        created.stdout,
+        format!("{}\n", std::fs::read_to_string(&made).unwrap())
+    );
+    let refused = shards(&[
+        "create",
+        "--pull",
+        "never",
+        "--cidfile",
+        made.to_str().unwrap(),
+        &image,
+    ]);
+    assert_eq!(
+        (refused.status, refused.stderr.as_str()),
+        (
+            Some(1),
+            format!(
+                "container ID file found, make sure the other container isn't running or delete {}\n",
+                made.display()
+            )
+            .as_str()
+        ),
+        "{refused}"
+    );
+    // This host's platform, however it is spelled, runs; another is refused, and a
+    // specifier containerd cannot read is said as it says it.
+    let (ours, other) = if std::env::consts::ARCH == "aarch64" {
+        ("linux/arm64/v8", "linux/amd64")
+    } else {
+        ("linux/amd64", "linux/arm64")
+    };
+    let native = run_in(&home, &image, &["--platform", ours], &["exit", "0"]);
+    assert_eq!(native.status, Some(0), "{native}");
+    let foreign = run_in(&home, &image, &["--platform", other], &["exit", "0"]);
+    assert_eq!(foreign.status, Some(125), "{foreign}");
+    assert!(
+        foreign
+            .stderr
+            .starts_with("shards: this host's microVMs run linux/"),
+        "{foreign}"
+    );
+    assert!(foreign.stderr.contains(&format!(", not {other}\n")), "{foreign}");
+    let unread = run_in(&home, &image, &["--platform", "nope"], &["exit", "0"]);
+    assert_eq!(unread.status, Some(125), "{unread}");
+    assert!(
+        unread
+            .stderr
+            .starts_with("shards: \"nope\": unknown operating system or architecture: invalid argument\n"),
+        "{unread}"
+    );
+    // `-q`: an image not yet here is pulled without a word.
+    let (fresh, _) = served();
+    let quiet = shards(&["run", "-q", &fresh, "exit", "0"]);
+    assert_eq!(quiet.status, Some(0), "{quiet}");
+    assert!(
+        !quiet.stderr.contains("Unable to find image") && !quiet.stderr.contains("Pulling from"),
+        "{quiet}"
+    );
+    // `--sig-proxy=false`: the client's SIGTERM ends the client, and the command runs on.
+    let mut kept = start(
+        &home,
+        &image,
+        &["--sig-proxy=false", "--name", "unproxied"],
+        &["sleep"],
+    );
+    let pid = libc::pid_t::try_from(kept.id()).unwrap();
+    // SAFETY: kill(2) of the client this test started, not yet waited for.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+    assert_eq!(exit(&mut kept), None);
+    let state = shards(&["inspect", "-f", "{{.State.Status}}", "unproxied"]);
+    assert_eq!(state.stdout, "running\n", "{state}");
+    let removed = shards(&["rm", "-f", "unproxied"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
 #[test]
 fn info_and_disk_usage_format_as_docker_does() {
     let Some((home, image)) = home("containers-info-df") else {

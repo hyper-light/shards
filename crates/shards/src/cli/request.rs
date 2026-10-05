@@ -58,12 +58,25 @@ pub fn run(path: &str, args: &[OsString]) -> ExitCode {
             Err(e) => return refuse(&format!("invalid detach keys ({keys}): {e}")),
         }
     };
+    let mut cid = match before_create(&request) {
+        Ok(cid) => cid,
+        Err(e) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "shards: {e}\n\nRun 'shards run --help' for more information"
+            );
+            return ExitCode::from(run_status(&e));
+        }
+    };
+    let sig_proxy = parsed.bool("sig-proxy");
     match resolve(&mut request) {
         #[cfg(unix)]
-        Ok((home, daemon)) => crate::cli::client::run(&home, &daemon, &request, &detach_keys),
+        Ok((home, daemon)) => {
+            crate::cli::client::run(&home, &daemon, &request, &detach_keys, sig_proxy, &mut cid)
+        }
         #[cfg(not(unix))]
         Ok(_) => {
-            let _ = detach_keys;
+            let _ = (detach_keys, sig_proxy, &mut cid);
             crate::cli::failed(
                 "running a command needs the daemon, which needs Unix sockets, which shards does not support on this platform yet",
             )
@@ -99,7 +112,12 @@ pub fn create(path: &str, args: &[OsString]) -> ExitCode {
     };
     request.create = true;
     request.detach = true;
-    send(&mut request, term::DETACH_KEYS)
+    // A plain error, as runCreate returns createContainer's (docker/cli create.go).
+    let mut cid = match before_create(&request) {
+        Ok(cid) => cid,
+        Err(e) => return refuse(&e),
+    };
+    send(&mut request, term::DETACH_KEYS, &mut cid)
 }
 
 /// Starts the containers the command line `args` names, the words after `path` (`shards
@@ -136,7 +154,7 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
             tty: std::io::stdout().is_terminal().then(stdout_size),
             ..Run::default()
         };
-        return send(&mut request, &detach_keys);
+        return send(&mut request, &detach_keys, &mut None);
     }
     // startContainersWithoutAttachments: each named as it starts, the others' errors
     // said, and their names after.
@@ -147,7 +165,7 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
             detach: true,
             ..Run::default()
         };
-        if send(&mut request, &detach_keys) != ExitCode::SUCCESS {
+        if send(&mut request, &detach_keys, &mut None) != ExitCode::SUCCESS {
             failed.push(container.as_str());
         }
     }
@@ -185,7 +203,7 @@ pub fn restart(path: &str, args: &[OsString]) -> ExitCode {
             stop_timeout: timeout,
             ..Run::default()
         };
-        if send(&mut request, term::DETACH_KEYS) != ExitCode::SUCCESS {
+        if send(&mut request, term::DETACH_KEYS, &mut None) != ExitCode::SUCCESS {
             status = ExitCode::FAILURE;
         }
     }
@@ -193,13 +211,13 @@ pub fn restart(path: &str, args: &[OsString]) -> ExitCode {
 }
 
 /// Sends `request` to the daemon as a run, answered as one.
-fn send(request: &mut Run, detach_keys: &[u8]) -> ExitCode {
+fn send(request: &mut Run, detach_keys: &[u8], cid: &mut Option<CidFile>) -> ExitCode {
     match resolve(request) {
         #[cfg(unix)]
-        Ok((home, daemon)) => crate::cli::client::run(&home, &daemon, request, detach_keys),
+        Ok((home, daemon)) => crate::cli::client::run(&home, &daemon, request, detach_keys, true, cid),
         #[cfg(not(unix))]
         Ok(_) => {
-            let _ = detach_keys;
+            let _ = (detach_keys, cid);
             crate::cli::failed(
                 "running a command needs the daemon, which needs Unix sockets, which shards does not support on this platform yet",
             )
@@ -410,8 +428,132 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
             .collect(),
         publish_all: parsed.bool("publish-all"),
         registry_env: shards_ipc::registry_env(),
+        cidfile: match parsed.string("cidfile") {
+            "" => String::new(),
+            path => std::path::absolute(path)
+                .map_err(|e| format!("failed to create the container ID file: {e}"))?
+                .to_string_lossy()
+                .into_owned(),
+        },
+        quiet: parsed.bool("quiet"),
+        // The flag's default is DOCKER_DEFAULT_PLATFORM (docker/cli run.go, create.go).
+        platform: if parsed.changed("platform") {
+            parsed.string("platform").to_string()
+        } else {
+            std::env::var("DOCKER_DEFAULT_PLATFORM").unwrap_or_default()
+        },
         ..Run::default()
     })
+}
+
+/// What `createContainer` checks and makes before it asks for the container (docker/cli
+/// create.go): the platform, read as containerd reads it, and then the CID file. A
+/// platform that parses but that this host's microVMs cannot run is refused here, before
+/// anything is pulled: Docker would pull it and fail as it starts, or start it under
+/// emulation, which a microVM has none of.
+fn before_create(request: &Run) -> Result<Option<CidFile>, String> {
+    if !request.platform.is_empty() {
+        let wanted = crate::pull::targets(&request.platform)?;
+        let runs = shards_image::platform::guest();
+        if let Some(other) = wanted.iter().find(|t| !runs.contains(t)) {
+            let name = |t: &shards_image::platform::Target| {
+                [t.os.as_str(), t.architecture.as_str(), t.variant.as_str()]
+                    .iter()
+                    .filter(|p| !p.is_empty())
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("/")
+            };
+            let ours: Vec<String> = runs.iter().map(name).collect();
+            return Err(format!(
+                "this host's microVMs run {}, not {}",
+                ours.join(" and "),
+                name(other)
+            ));
+        }
+    }
+    if request.cidfile.is_empty() {
+        return Ok(None);
+    }
+    CidFile::new(&request.cidfile).map(Some)
+}
+
+/// `--cidfile`'s file, as docker/cli's cidFile keeps it: made before the container, its ID
+/// written once there is one, and removed if none was.
+pub(crate) struct CidFile {
+    path: PathBuf,
+    file: Option<std::fs::File>,
+    written: bool,
+}
+
+impl CidFile {
+    fn new(path: &str) -> Result<CidFile, String> {
+        if std::fs::metadata(path).is_ok() {
+            return Err(format!(
+                "container ID file found, make sure the other container isn't running or delete {path}"
+            ));
+        }
+        let file = std::fs::File::create(path).map_err(|e| {
+            format!(
+                "failed to create the container ID file: open {path}: {}",
+                go_errno(&e)
+            )
+        })?;
+        Ok(CidFile {
+            path: PathBuf::from(path),
+            file: Some(file),
+            written: false,
+        })
+    }
+
+    /// Writes the container's ID, once.
+    #[cfg(unix)]
+    pub(crate) fn write(&mut self, id: &str) -> Result<(), String> {
+        let (Some(file), false) = (&mut self.file, self.written) else {
+            return Ok(());
+        };
+        file.write_all(id.as_bytes()).map_err(|e| {
+            format!(
+                "failed to write the container ID ({id}) to file: write {}: {}",
+                self.path.display(),
+                go_errno(&e)
+            )
+        })?;
+        self.written = true;
+        Ok(())
+    }
+}
+
+impl Drop for CidFile {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        if !self.written {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// The status `docker run` exits with for an error before its container runs
+/// (docker/cli run.go toStatusError): 127 for what was not found, 126 for what may not be
+/// run, else 125.
+fn run_status(error: &str) -> u8 {
+    if [
+        "executable file not found",
+        "no such file or directory",
+        "system cannot find the file specified",
+    ]
+    .iter()
+    .any(|s| error.contains(s))
+    {
+        127
+    } else if ["permission denied", "is a directory"]
+        .iter()
+        .any(|s| error.contains(s))
+    {
+        126
+    } else {
+        NOT_RUN
+    }
 }
 
 /// The request `args` (`run`'s words) make, as `run` makes it: for tests that hold what a

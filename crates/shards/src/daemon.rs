@@ -1802,13 +1802,15 @@ impl<D: Disk> Daemon<D> {
             lock(&self.runs).remove(&id);
             self.record_arrival(threads, &id);
             self.await_arrival(&id);
+            let _ = shards_ipc::send(conn, kind::CREATED, id.as_bytes(), &[]);
             let _ = shards_ipc::send(conn, kind::OUT, format!("{id}\n").as_bytes(), &[]);
             let _ = shards_ipc::send(conn, kind::EXIT, &[0], &[]);
             self.make_spare();
             return None;
         }
-        // From here, its client passes signals on to the command.
-        let _ = shards_ipc::send(conn, kind::CREATED, &[], &[]);
+        // From here, its client passes signals on to the command; it has the ID for
+        // `--cidfile`.
+        let _ = shards_ipc::send(conn, kind::CREATED, id.as_bytes(), &[]);
         if let Some(e) = unbound {
             start = network::Start::Fails(format!(
                 "failed to set up container networking: driver failed programming external connectivity on endpoint {name} ({id}): {e}"

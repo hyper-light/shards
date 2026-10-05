@@ -149,7 +149,8 @@ pub mod kind {
     /// Daemon → client: the run's container is made. Until then, a signal that would end
     /// the client ends it, and with it the run, as one ends the Docker CLI's request until
     /// `ContainerCreate` returns (docker/cli cmd/docker/docker.go, notifyContext); from
-    /// then on, the client passes signals on to the command.
+    /// then on, the client passes signals on to the command. Its payload is the
+    /// container's ID.
     pub const CREATED: u8 = 28;
     /// Daemon → client on a colour terminal: how a pull goes, one
     /// [`Progress`](super::Progress) a message, for the client to show as it likes, where
@@ -394,6 +395,12 @@ pub struct Run {
     pub dns_options: Vec<String>,
     /// `--domainname`.
     pub domainname: String,
+    /// `--cidfile`: the file its client writes the container's ID to, absolute.
+    pub cidfile: String,
+    /// `-q`: a pull says nothing.
+    pub quiet: bool,
+    /// `--platform`, as given (or DOCKER_DEFAULT_PLATFORM): the image's to run.
+    pub platform: String,
 }
 
 /// A health check as a run sets it, or as an image's merged with a run's: its test
@@ -573,6 +580,30 @@ impl Run {
                     vec![self.domainname.clone()]
                 },
             ),
+            (
+                "cidfile",
+                if self.cidfile.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.cidfile.clone()]
+                },
+            ),
+            (
+                "quiet",
+                if self.quiet {
+                    vec![String::new()]
+                } else {
+                    Vec::new()
+                },
+            ),
+            (
+                "platform",
+                if self.platform.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.platform.clone()]
+                },
+            ),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -687,6 +718,9 @@ impl Run {
                     "dns-search" => run.dns_search = values,
                     "dns-options" => run.dns_options = values,
                     "domainname" => run.domainname = values.into_iter().next().unwrap_or_default(),
+                    "cidfile" => run.cidfile = values.into_iter().next().unwrap_or_default(),
+                    "quiet" => run.quiet = true,
+                    "platform" => run.platform = values.into_iter().next().unwrap_or_default(),
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1161,6 +1195,9 @@ mod tests {
             dns_search: vec!["example.com".into()],
             dns_options: vec!["ndots:2".into()],
             domainname: "example.org".into(),
+            cidfile: "/tmp/cid".into(),
+            quiet: true,
+            platform: "linux/386".into(),
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -1175,6 +1212,9 @@ mod tests {
             dns_search: Vec::new(),
             dns_options: Vec::new(),
             domainname: String::new(),
+            cidfile: String::new(),
+            quiet: false,
+            platform: String::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;
