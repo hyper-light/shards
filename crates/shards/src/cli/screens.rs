@@ -78,10 +78,138 @@ fn home_relative(path: &str) -> String {
     }
 }
 
-/// `shards images`: the store's totals, then each image a row: whether it boots here,
-/// its name, ID and age, its layers, its microVM's disk drawn against the largest, and
-/// its platform; the columns giving way, least needed first, where the terminal is
-/// narrow.
+/// A cell of a table: its text, its colour, and whether it is bold.
+struct Cell {
+    text: String,
+    color: tokens::Rgb,
+    bold: bool,
+    /// Drawn after the text, in the cell's room: a bar of so many cells, and its share.
+    bar: Option<(usize, f64)>,
+}
+
+impl Cell {
+    fn new(text: impl Into<String>, color: tokens::Rgb) -> Cell {
+        Cell {
+            text: text.into(),
+            color,
+            bold: false,
+            bar: None,
+        }
+    }
+
+    fn bold(mut self) -> Cell {
+        self.bold = true;
+        self
+    }
+
+    fn width(&self) -> usize {
+        self.text.chars().count() + self.bar.map_or(0, |(w, _)| 1 + w)
+    }
+}
+
+/// A column: its heading, whether its cells stand to the right, and how much it
+/// matters when the terminal is narrow (higher stays longer).
+struct Column {
+    heading: &'static str,
+    right: bool,
+    keep: u8,
+}
+
+/// `rows` in `columns`, each as wide as its widest cell or heading, two cells apart,
+/// headings in the eyebrow's capitals over their cells; a marker cell, two wide, before
+/// each row. Columns that matter least give way first until the table fits `cols`.
+fn table(page: &mut Page, p: &Paint, cols: usize, columns: &[Column], rows: &[(Cell, Vec<Cell>)]) {
+    let mut widths: Vec<usize> = columns
+        .iter()
+        .enumerate()
+        .map(|(c, col)| {
+            rows.iter()
+                .filter_map(|(_, cells)| cells.get(c).map(Cell::width))
+                .max()
+                .unwrap_or(0)
+                .max(col.heading.len())
+        })
+        .collect();
+    let mut shown: Vec<bool> = vec![true; columns.len()];
+    let used = |shown: &[bool], widths: &[usize]| -> usize {
+        4 + 2
+            + shown
+                .iter()
+                .zip(widths)
+                .filter(|(s, _)| **s)
+                .map(|(_, w)| w + 2)
+                .sum::<usize>()
+    };
+    while used(&shown, &widths) > cols {
+        // The least kept column still shown goes; the first, the name, never does.
+        let drop = (1..columns.len())
+            .filter(|&c| shown.get(c).copied().unwrap_or(false))
+            .min_by_key(|&c| (columns.get(c).map_or(0, |col| col.keep), std::cmp::Reverse(c)));
+        match drop {
+            Some(c) => {
+                if let Some(s) = shown.get_mut(c) {
+                    *s = false;
+                }
+            }
+            None => {
+                // Only the first is left: it narrows to what there is.
+                if let Some(w) = widths.first_mut() {
+                    *w = cols.saturating_sub(4 + 2 + 2).max(4);
+                }
+                break;
+            }
+        }
+    }
+    let cell_out = |l: &mut look::Line, cell: &Cell, w: usize, right: bool| {
+        let text = layout::clip(&cell.text, w.saturating_sub(cell.bar.map_or(0, |(b, _)| b + 1)));
+        let n = text.chars().count() + cell.bar.map_or(0, |(b, _)| b + 1);
+        if right {
+            l.pad(w.saturating_sub(n));
+        }
+        l.bold(p, cell.bold).put(p, cell.color, &text).bold(p, false);
+        if let Some((bw, share)) = cell.bar {
+            l.pad(1);
+            let filled = ((share.clamp(0.0, 1.0) * bw as f64).round() as usize).clamp(1, bw);
+            bar::draw(&mut l.s, p, filled, Fill::Done, 0.0, 0.0);
+            l.w += filled;
+            l.pad(bw - filled);
+        }
+        if !right {
+            l.pad(w.saturating_sub(n));
+        }
+        l.pad(2);
+    };
+    {
+        let l = page.line();
+        l.pad(6);
+        for (c, col) in columns.iter().enumerate() {
+            if !shown.get(c).copied().unwrap_or(false) {
+                continue;
+            }
+            let w = widths.get(c).copied().unwrap_or(0);
+            let heading = Cell::new(col.heading, tokens::EYEBROW);
+            cell_out(l, &heading, w, col.right);
+        }
+    }
+    for (marker, cells) in rows {
+        let l = page.line();
+        l.pad(4)
+            .put(p, marker.color, &marker.text)
+            .pad(2usize.saturating_sub(marker.text.chars().count()));
+        for (c, cell) in cells.iter().enumerate() {
+            if !shown.get(c).copied().unwrap_or(false) {
+                continue;
+            }
+            let w = widths.get(c).copied().unwrap_or(0);
+            cell_out(l, cell, w, columns.get(c).is_some_and(|col| col.right));
+        }
+    }
+}
+
+/// `shards images`: the store's totals, then each image a row: what it is (a microVM, or
+/// an image stored for another platform), its name, ID and age, its layers, its size
+/// (a microVM's disk, else its layers) drawn against the largest, its platform, and the
+/// microVMs it runs as.
 fn images(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let cols = look::width();
     let head = (0..sheet.records.len()).find(|&i| sheet.get(i, "kind") == Some("head"));
@@ -111,136 +239,117 @@ fn images(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let rows: Vec<usize> = (0..sheet.records.len())
         .filter(|&i| sheet.get(i, "kind").is_none())
         .collect();
+    page.blank();
     if rows.is_empty() {
-        page.blank();
         let l = page.line();
         l.pad(4).put(p, tokens::MUTED, "No images yet. ");
         l.put(p, tokens::TEAL, "shards pull IMAGE");
         l.put(p, tokens::MUTED, " brings one, and makes it a microVM.");
         return;
     }
-    let name = |i: usize| -> String {
-        let repo = sheet.get(i, "repo").unwrap_or("<none>");
-        match sheet.get(i, "tag").filter(|t| *t != "<none>") {
-            Some(tag) => format!("{repo}:{tag}"),
-            None => repo.to_string(),
-        }
+    let size = |i: usize| match num(i, "disk") {
+        0 => num(i, "content"),
+        d => d,
     };
-    let name_w = rows
+    let largest = rows.iter().map(|&i| size(i)).max().unwrap_or(0).max(1);
+    // Every size as wide as the widest, so the bars after them start together.
+    let size_w = rows
         .iter()
-        .map(|&i| name(i).chars().count())
+        .map(|&i| text::bytes(size(i)).len())
         .max()
-        .unwrap_or(0)
-        .clamp(5, 40);
-    let largest = rows.iter().map(|&i| num(i, "disk")).max().unwrap_or(0).max(1);
-    // Columns: (header, width), and whether each fits.
-    const ID: usize = 12;
-    const AGE: usize = 14;
-    const LAYERS: usize = 6;
-    const SIZE: usize = 8;
-    let platform_w = rows
+        .unwrap_or(0);
+    let columns = [
+        Column {
+            heading: "NAME",
+            right: false,
+            keep: 9,
+        },
+        Column {
+            heading: "TYPE",
+            right: false,
+            keep: 8,
+        },
+        Column {
+            heading: "ID",
+            right: false,
+            keep: 5,
+        },
+        Column {
+            heading: "CREATED",
+            right: false,
+            keep: 3,
+        },
+        Column {
+            heading: "LAYERS",
+            right: false,
+            keep: 2,
+        },
+        Column {
+            heading: "SIZE",
+            right: false,
+            keep: 7,
+        },
+        Column {
+            heading: "PLATFORM",
+            right: false,
+            keep: 1,
+        },
+        Column {
+            heading: "RUNNING",
+            right: false,
+            keep: 6,
+        },
+    ];
+    let table_rows: Vec<(Cell, Vec<Cell>)> = rows
         .iter()
-        .map(|&i| sheet.get(i, "platform").unwrap_or("").len())
-        .max()
-        .unwrap_or(0)
-        .max(8);
-    let fixed = 6 + name_w + 2 + ID + 2 + AGE;
-    let with_layers = cols >= fixed + 2 + LAYERS + 2 + SIZE;
-    let with_platform = cols >= fixed + 2 + LAYERS + 2 + SIZE + 2 + 10 + 2 + platform_w;
-    let bar_w = cols
-        .saturating_sub(
-            fixed + 2 + LAYERS + 2 + SIZE + 2 + if with_platform { 2 + platform_w } else { 0 } + 2,
-        )
-        .min(24);
-    let with_bar = with_layers && bar_w >= 6;
-    page.blank();
-    {
-        let l = page.line();
-        l.pad(6);
-        let h = |l: &mut look::Line, w: usize, words: &str| {
-            l.put(p, tokens::EYEBROW, &words.to_uppercase())
-                .pad(w.saturating_sub(words.len()) + 2);
-        };
-        h(l, name_w, "image");
-        h(l, ID, "id");
-        h(l, AGE, "created");
-        if with_layers {
-            l.put(p, tokens::EYEBROW, "LAYERS").pad(2);
-            if with_bar {
-                h(l, bar_w, "microvm disk");
-            } else {
-                l.pad(2);
-            }
-            l.pad(SIZE + 2);
-        }
-        if with_platform {
-            l.put(p, tokens::EYEBROW, "PLATFORM");
-        }
-    }
-    for (k, &i) in rows.iter().enumerate() {
-        let disk = num(i, "disk");
-        let in_use = num(i, "in_use");
-        let l = page.line();
-        l.pad(4);
-        // Ready to boot, sage; stored for another platform, grey.
-        let (glyph, c) = if disk > 0 {
-            ("◆", tokens::SAGE)
-        } else {
-            ("◇", tokens::SUBTLE)
-        };
-        l.put(p, c, glyph).pad(1);
-        let shown = layout::clip(&name(i), name_w);
-        let n = shown.chars().count();
-        l.bold(p, true).put(p, tokens::BRIGHT, &shown).bold(p, false);
-        l.pad(name_w - n + 2);
-        l.put(p, tokens::SUBTLE, sheet.get(i, "id").unwrap_or("")).pad(2);
-        let age = ago(sheet.get(i, "created").and_then(|c| c.parse().ok()).unwrap_or(0));
-        let a = layout::clip(&age, AGE);
-        l.put(p, tokens::MUTED, &a).pad(AGE - a.chars().count() + 2);
-        if with_layers {
-            let layers = num(i, "layers").to_string();
-            l.pad(LAYERS - layers.len().min(LAYERS))
-                .put(p, tokens::FOREGROUND, &layers)
-                .pad(2);
-            if with_bar {
-                let w = ((disk as f64 / largest as f64) * bar_w as f64).round().max(1.0) as usize;
-                if disk > 0 {
-                    bar::draw(&mut l.s, p, w, Fill::Done, 0.0, k as f64 * 0.37);
-                    l.w += w;
+        .map(|&i| {
+            let vm = num(i, "disk") > 0;
+            let name = {
+                let repo = sheet.get(i, "repo").unwrap_or("<none>");
+                match sheet.get(i, "tag").filter(|t| *t != "<none>") {
+                    Some(tag) => format!("{repo}:{tag}"),
+                    None => repo.to_string(),
                 }
-                l.pad(bar_w - w.min(bar_w) + 2);
-            } else {
-                l.pad(2);
-            }
-            let size = if disk > 0 {
-                text::bytes(disk)
-            } else {
-                "stored".into()
             };
-            l.pad(SIZE.saturating_sub(size.len()))
-                .put(
-                    p,
-                    if disk > 0 {
-                        tokens::LAVENDER
-                    } else {
-                        tokens::SUBTLE
-                    },
-                    &size,
-                )
-                .pad(2);
-        }
-        if with_platform {
-            l.put(p, tokens::MUTED, sheet.get(i, "platform").unwrap_or(""));
-        }
-        if in_use > 0 {
-            l.pad(2).put(p, tokens::AMBER, &format!("● {in_use} running"));
-        }
-    }
+            let running = num(i, "in_use");
+            let marker = if vm {
+                Cell::new("◆", tokens::SAGE)
+            } else {
+                Cell::new("◇", tokens::SUBTLE)
+            };
+            let mut size_cell = Cell::new(
+                format!("{:<size_w$}", text::bytes(size(i))),
+                if vm { tokens::LAVENDER } else { tokens::MUTED },
+            );
+            size_cell.bar = Some((8, size(i) as f64 / largest as f64));
+            let cells = vec![
+                Cell::new(name, tokens::BRIGHT).bold(),
+                Cell::new(
+                    if vm { "microVM" } else { "image" },
+                    if vm { tokens::SAGE } else { tokens::MUTED },
+                ),
+                Cell::new(sheet.get(i, "id").unwrap_or(""), tokens::SUBTLE),
+                Cell::new(
+                    ago(sheet.get(i, "created").and_then(|c| c.parse().ok()).unwrap_or(0)),
+                    tokens::MUTED,
+                ),
+                Cell::new(num(i, "layers").to_string(), tokens::FOREGROUND),
+                size_cell,
+                Cell::new(sheet.get(i, "platform").unwrap_or(""), tokens::MUTED),
+                if running > 0 {
+                    Cell::new(running.to_string(), tokens::AMBER)
+                } else {
+                    Cell::new("—", tokens::FAINT)
+                },
+            ];
+            (marker, cells)
+        })
+        .collect();
+    table(page, p, cols, &columns, &table_rows);
 }
 
-/// `shards ps`: how many run, then each microVM a row: its state, name and ID, image,
-/// how it stands, its ports and what it runs; the columns giving way, least needed
-/// first, where the terminal is narrow.
+/// `shards ps`: how many run, then each microVM a row: its name, ID, image, how it
+/// stands, its ports and what it runs.
 fn ps(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let cols = look::width();
     let head = (0..sheet.records.len()).find(|&i| sheet.get(i, "kind") == Some("head"));
@@ -271,85 +380,68 @@ fn ps(page: &mut Page, p: &Paint, sheet: &Sheet) {
         l.put(p, tokens::MUTED, " starts a microVM from an image.");
         return;
     }
-    let width = |k: &str, least: usize, most: usize| -> usize {
-        rows.iter()
-            .map(|&i| sheet.get(i, k).unwrap_or("").chars().count())
-            .max()
-            .unwrap_or(0)
-            .clamp(least, most)
-    };
-    let (name_w, image_w, status_w, ports_w) = (
-        width("name", 4, 28),
-        width("image", 5, 32),
-        width("status", 6, 28),
-        width("ports", 0, 34),
-    );
-    const ID: usize = 12;
-    let fixed = 6 + name_w + 2 + ID + 2 + image_w + 2 + status_w;
-    let with_ports = ports_w > 0 && cols >= fixed + 2 + ports_w;
-    let command_w = cols.saturating_sub(fixed + if with_ports { 2 + ports_w } else { 0 } + 2);
-    let with_command = command_w >= 10;
-    {
-        let l = page.line();
-        l.pad(6);
-        for (words, w) in [
-            ("microvm", name_w),
-            ("id", ID),
-            ("image", image_w),
-            ("status", status_w),
-        ] {
-            l.put(p, tokens::EYEBROW, &words.to_uppercase())
-                .pad(w.saturating_sub(words.len()) + 2);
-        }
-        if with_ports {
-            l.put(p, tokens::EYEBROW, "PORTS")
-                .pad(ports_w.saturating_sub(5) + 2);
-        }
-        if with_command {
-            l.put(p, tokens::EYEBROW, "RUNS");
-        }
-    }
-    for &i in &rows {
-        let state = sheet.get(i, "state").unwrap_or("");
-        let failed = state == "exited" && sheet.get(i, "exit").is_some_and(|e| e != "0" && !e.is_empty());
-        // Running, sage; created, lavender; ended well, grey; ended badly, rose.
-        let (glyph, c) = match state {
-            "running" => ("●", tokens::SAGE),
-            "created" => ("◌", tokens::LAVENDER),
-            _ if failed => ("○", tokens::ROSE),
-            _ => ("○", tokens::SUBTLE),
-        };
-        let cell = |l: &mut look::Line, text: &str, w: usize, c| {
-            let shown = layout::clip(text, w);
-            let n = shown.chars().count();
-            l.put(p, c, &shown).pad(w - n.min(w) + 2);
-        };
-        let l = page.line();
-        l.pad(4).put(p, c, glyph).pad(1);
-        l.bold(p, true);
-        cell(l, sheet.get(i, "name").unwrap_or(""), name_w, tokens::BRIGHT);
-        l.bold(p, false);
-        cell(l, sheet.get(i, "id").unwrap_or(""), ID, tokens::SUBTLE);
-        cell(
-            l,
-            sheet.get(i, "image").unwrap_or(""),
-            image_w,
-            tokens::FOREGROUND,
-        );
-        let status_c = match state {
-            "running" => tokens::SAGE,
-            _ if failed => tokens::ROSE,
-            _ => tokens::MUTED,
-        };
-        cell(l, sheet.get(i, "status").unwrap_or(""), status_w, status_c);
-        if with_ports {
-            cell(l, sheet.get(i, "ports").unwrap_or(""), ports_w, tokens::TEAL);
-        }
-        if with_command {
+    let columns = [
+        Column {
+            heading: "MICROVM",
+            right: false,
+            keep: 9,
+        },
+        Column {
+            heading: "ID",
+            right: false,
+            keep: 4,
+        },
+        Column {
+            heading: "IMAGE",
+            right: false,
+            keep: 8,
+        },
+        Column {
+            heading: "STATUS",
+            right: false,
+            keep: 7,
+        },
+        Column {
+            heading: "PORTS",
+            right: false,
+            keep: 5,
+        },
+        Column {
+            heading: "RUNS",
+            right: false,
+            keep: 2,
+        },
+    ];
+    let table_rows: Vec<(Cell, Vec<Cell>)> = rows
+        .iter()
+        .map(|&i| {
+            let state = sheet.get(i, "state").unwrap_or("");
+            let failed = state == "exited" && sheet.get(i, "exit").is_some_and(|e| e != "0" && !e.is_empty());
+            // Running, sage; created, lavender; ended well, grey; ended badly, rose.
+            let (glyph, c) = match state {
+                "running" => ("●", tokens::SAGE),
+                "created" => ("◌", tokens::LAVENDER),
+                _ if failed => ("○", tokens::ROSE),
+                _ => ("○", tokens::SUBTLE),
+            };
+            let status_c = match state {
+                "running" => tokens::SAGE,
+                _ if failed => tokens::ROSE,
+                _ => tokens::MUTED,
+            };
             let command = sheet.get(i, "command").unwrap_or("").trim_matches('"');
-            l.put(p, tokens::MUTED, &layout::clip(command, command_w));
-        }
-    }
+            let cells = vec![
+                Cell::new(sheet.get(i, "name").unwrap_or(""), tokens::BRIGHT).bold(),
+                Cell::new(sheet.get(i, "id").unwrap_or(""), tokens::SUBTLE),
+                Cell::new(sheet.get(i, "image").unwrap_or(""), tokens::FOREGROUND),
+                Cell::new(look::ours(sheet.get(i, "status").unwrap_or("")), status_c),
+                Cell::new(sheet.get(i, "ports").unwrap_or(""), tokens::TEAL),
+                Cell::new(layout::clip(command, 40), tokens::MUTED),
+            ];
+            (Cell::new(glyph, c), cells)
+        })
+        .collect();
+    table(page, p, cols, &columns, &table_rows);
 }
 
 /// `shards stop`, `kill` and `rm`: what became of each microVM named, how it ended and
@@ -493,7 +585,7 @@ fn rmi(page: &mut Page, p: &Paint, sheet: &Sheet) {
             l.put(p, tokens::ROSE, "○ ")
                 .put(p, tokens::BRIGHT, sheet.get(i, "given").unwrap_or(""));
             let room = cols.saturating_sub(l.w + 2);
-            l.pad(2).put(p, tokens::ROSE, &layout::clip(e, room));
+            l.pad(2).put(p, tokens::ROSE, &layout::clip(&look::ours(e), room));
         }
     }
 }

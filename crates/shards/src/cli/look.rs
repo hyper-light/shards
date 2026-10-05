@@ -587,9 +587,18 @@ pub(crate) fn usage_page(name: &str, text: &str) -> bool {
     true
 }
 
+/// `text` in shards' words: what Docker's text calls a container is a microVM here.
+pub(crate) fn ours(text: &str) -> String {
+    text.replace("containers", "microVMs")
+        .replace("Containers", "MicroVMs")
+        .replace("container", "microVM")
+        .replace("Container", "MicroVM")
+}
+
 /// What the daemon said went wrong, in a panel on stderr; under the head, unless a page
 /// was drawn above it.
 pub(crate) fn panel(p: &Paint, message: &str, with_head: bool) {
+    let message = &ours(message);
     if with_head {
         error(p, "shards", message, &[]);
         return;
