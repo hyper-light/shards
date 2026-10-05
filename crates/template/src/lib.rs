@@ -32,6 +32,7 @@ pub use value::{Kind, Object, Value};
 pub struct Template {
     name: String,
     set: exec::Set,
+    missing_key_error: bool,
 }
 
 impl Template {
@@ -49,7 +50,18 @@ impl Template {
                 text: text.to_owned(),
                 parse_name: name.to_owned(),
             },
+            missing_key_error: false,
         })
+    }
+
+    /// The template with `missingkey=error` (Go's `Option`): a map's missing key is an
+    /// error, `map has no entry for key "K"`, where it otherwise reads as no value.
+    #[must_use]
+    pub fn missing_key_error(&self) -> Template {
+        Template {
+            missing_key_error: true,
+            ..self.clone()
+        }
     }
 
     /// The template's name.
@@ -67,14 +79,14 @@ impl Template {
     /// Runs the template against `data`, writing to `out`; on an error, what Go would
     /// have written before it stays written.
     pub fn execute_into(&self, data: &Value, out: &mut String) -> Result<(), String> {
-        exec::execute(&self.set, &self.name, data, false, out)
+        exec::execute(&self.set, &self.name, data, false, self.missing_key_error, out)
     }
 
     /// Runs the template against a table's header, as docker/cli's formatter does with
     /// `tmpl.Funcs(templates.HeaderFunctions).Execute(…)`: `json`, `split`, `join`,
     /// `title`, `lower`, `upper` and `truncate` return their first argument unchanged.
     pub fn execute_header_into(&self, data: &Value, out: &mut String) -> Result<(), String> {
-        exec::execute(&self.set, &self.name, data, true, out)
+        exec::execute(&self.set, &self.name, data, true, self.missing_key_error, out)
     }
 }
 

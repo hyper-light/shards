@@ -296,6 +296,7 @@ fn templates_run_as_go_runs_them() {
         let text = case["template"].as_str().unwrap();
         let name = case.get("name").and_then(|n| n.as_str()).unwrap_or("");
         let header = case.get("header").and_then(|h| h.as_bool()).unwrap_or(false);
+        let missing_key = case.get("missingkey").and_then(|h| h.as_bool()).unwrap_or(false);
         let want_out = case["output"].as_str().unwrap();
         let want_err = case.get("error").and_then(|e| e.as_str());
         let value = &data[case["data"].as_str().unwrap()];
@@ -303,6 +304,7 @@ fn templates_run_as_go_runs_them() {
         let got_err = match Template::parse(name, text) {
             Err(e) => Some(e),
             Ok(t) => {
+                let t = if missing_key { t.missing_key_error() } else { t };
                 let r = if header {
                     t.execute_header_into(value, &mut out)
                 } else {

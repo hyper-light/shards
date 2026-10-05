@@ -175,6 +175,9 @@ type oracleCase struct {
 	Data     string `json:"data"`
 	Template string `json:"template"`
 	Header   bool   `json:"header,omitempty"`
+	// Run with Option("missingkey=error"), as docker/cli's inspect falls back to the
+	// raw document (cli/command/inspect/inspector.go, tryRawInspectFallback).
+	MissingKey bool `json:"missingkey,omitempty"`
 	Output   string `json:"output"`
 	Error    string `json:"error,omitempty"`
 }
@@ -190,6 +193,12 @@ func add(d string, ts ...string) {
 func named(name, d string, ts ...string) {
 	for _, t := range ts {
 		cases = append(cases, oracleCase{Name: name, Data: d, Template: t})
+	}
+}
+
+func missingKey(d string, ts ...string) {
+	for _, t := range ts {
+		cases = append(cases, oracleCase{Data: d, Template: t, MissingKey: true})
 	}
 }
 
@@ -446,6 +455,11 @@ func corpus() {
 	named("mytmpl", "m", "{{.str.x}}", `{{define "inner"}}{{.y.z}}{{end}}{{template "inner" .str}}`, "{{.str",
 		`{{define "mytmpl"}}X{{end}}`, `{{define "mytmpl"}}X{{end}}main`, `{{define "mytmpl"}}X{{end}}  `)
 	named("a%b", "m", "{{.str.x}}", "{{.str")
+	// missingkey=error, as inspect's raw fallback runs a template.
+	missingKey("m", "{{.str}}", "{{.nope}}", "{{.nested.inner.deep}}", "{{.nested.inner.nope}}",
+		"{{.null}}", "{{.null.x}}", "{{index . \"nope\"}}", "{{range .nested.list}}{{.name}}{{.age}}{{end}}",
+		"{{.labels.nope}}", "{{.person.Nope}}", "{{with .nope}}x{{end}}", "{{if .nope}}x{{end}}")
+	missingKey("person", "{{.Name}}", "{{.Meta.nope}}", "{{.Nope}}")
 	// Table headers, as docker/cli's formatter runs them.
 	header("header", "{{.ID}}\t{{.Names}}", "{{json .ID}}", "{{upper .Names}}", "{{truncate .ID 3}}", `{{split .ID ","}}`,
 		`{{join .ID ","}}`, "{{pad .ID 1 1}}|", "{{title .Image}}", `{{.Label "x"}}`, "{{.Missing}}", "{{json 1}}",
@@ -480,6 +494,9 @@ func TestShardsTemplate(t *testing.T) {
 		}
 		if c.Header {
 			tmpl = tmpl.Funcs(templates.HeaderFunctions)
+		}
+		if c.MissingKey {
+			tmpl = tmpl.Option("missingkey=error")
 		}
 		var buf bytes.Buffer
 		if err := tmpl.Execute(&buf, values[c.Data]); err != nil {

@@ -5459,6 +5459,106 @@
    "error": "template: a{0 110 %!b(string=unclosed action) 1}:1: %!s(MISSING)"
   },
   {
+   "data": "m",
+   "template": "{{.str}}",
+   "missingkey": true,
+   "output": "hello"
+  },
+  {
+   "data": "m",
+   "template": "{{.nope}}",
+   "missingkey": true,
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <.nope>: map has no entry for key \"nope\""
+  },
+  {
+   "data": "m",
+   "template": "{{.nested.inner.deep}}",
+   "missingkey": true,
+   "output": "value"
+  },
+  {
+   "data": "m",
+   "template": "{{.nested.inner.nope}}",
+   "missingkey": true,
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.nested.inner.nope>: map has no entry for key \"nope\""
+  },
+  {
+   "data": "m",
+   "template": "{{.null}}",
+   "missingkey": true,
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{.null.x}}",
+   "missingkey": true,
+   "output": "",
+   "error": "template: :1:7: executing \"\" at <.null.x>: nil pointer evaluating interface {}.x"
+  },
+  {
+   "data": "m",
+   "template": "{{index . \"nope\"}}",
+   "missingkey": true,
+   "output": "<no value>"
+  },
+  {
+   "data": "m",
+   "template": "{{range .nested.list}}{{.name}}{{.age}}{{end}}",
+   "missingkey": true,
+   "output": "x",
+   "error": "template: :1:33: executing \"\" at <.age>: map has no entry for key \"age\""
+  },
+  {
+   "data": "m",
+   "template": "{{.labels.nope}}",
+   "missingkey": true,
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.labels.nope>: map has no entry for key \"nope\""
+  },
+  {
+   "data": "m",
+   "template": "{{.person.Nope}}",
+   "missingkey": true,
+   "output": "",
+   "error": "template: :1:9: executing \"\" at <.person.Nope>: can't evaluate field Nope in type interface {}"
+  },
+  {
+   "data": "m",
+   "template": "{{with .nope}}x{{end}}",
+   "missingkey": true,
+   "output": "",
+   "error": "template: :1:7: executing \"\" at <.nope>: map has no entry for key \"nope\""
+  },
+  {
+   "data": "m",
+   "template": "{{if .nope}}x{{end}}",
+   "missingkey": true,
+   "output": "",
+   "error": "template: :1:5: executing \"\" at <.nope>: map has no entry for key \"nope\""
+  },
+  {
+   "data": "person",
+   "template": "{{.Name}}",
+   "missingkey": true,
+   "output": "Ann"
+  },
+  {
+   "data": "person",
+   "template": "{{.Meta.nope}}",
+   "missingkey": true,
+   "output": "",
+   "error": "template: :1:7: executing \"\" at <.Meta.nope>: map has no entry for key \"nope\""
+  },
+  {
+   "data": "person",
+   "template": "{{.Nope}}",
+   "missingkey": true,
+   "output": "",
+   "error": "template: :1:2: executing \"\" at <.Nope>: can't evaluate field Nope in type oracle.Person"
+  },
+  {
    "data": "header",
    "template": "{{.ID}}\t{{.Names}}",
    "header": true,

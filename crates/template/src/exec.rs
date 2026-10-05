@@ -98,6 +98,8 @@ pub(crate) struct State<'t, 'd, 'o> {
     vars: Vec<(&'t str, R<'d>)>,
     depth: usize,
     header: bool,
+    /// `missingkey=error`: a map's missing key is an error, not `<no value>`.
+    missing_key_error: bool,
 }
 
 /// Runs the template `name` of the set against `data`, writing to `out`.
@@ -106,6 +108,7 @@ pub(crate) fn execute(
     name: &str,
     data: &Value,
     header: bool,
+    missing_key_error: bool,
     out: &mut String,
 ) -> Result<(), String> {
     let dot = if data.is_nil() {
@@ -121,6 +124,7 @@ pub(crate) fn execute(
         vars: vec![("$", dot.clone())],
         depth: 0,
         header,
+        missing_key_error,
     };
     let Some(root) = set.trees.get(name) else {
         return Err(s.err(format!(
@@ -592,7 +596,13 @@ impl<'t, 'd> State<'t, 'd, '_> {
                     if has_args {
                         return self.errorf(format!("{name} is not a method but has arguments"));
                     }
-                    return Ok(child(v, Key::Name(name)).map_or(R::Invalid, |e| R::elem(*kind, e)));
+                    return match child(v, Key::Name(name)) {
+                        Some(e) => Ok(R::elem(*kind, e)),
+                        None if self.missing_key_error => {
+                            self.errorf(format!("map has no entry for key {}", strconv::quote(name)))
+                        }
+                        None => Ok(R::Invalid),
+                    };
                 }
                 _ => {}
             }
