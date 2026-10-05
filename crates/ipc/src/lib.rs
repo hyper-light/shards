@@ -479,6 +479,8 @@ pub struct Resources {
     pub cpuset_mems: String,
     /// `--pids-limit`.
     pub pids_limit: i64,
+    /// `--blkio-weight`: 10 to 1000, 0 for none.
+    pub blkio_weight: u16,
 }
 
 impl Resources {
@@ -498,6 +500,7 @@ impl Resources {
         int("cpu-period", self.cpu_period);
         int("cpu-quota", self.cpu_quota);
         int("pids-limit", self.pids_limit);
+        int("blkio-weight", i64::from(self.blkio_weight));
         if let Some(s) = self.memory_swappiness {
             out.push(format!("memory-swappiness={s}"));
         }
@@ -531,6 +534,7 @@ impl Resources {
                 "cpu-period" => r.cpu_period = int()?,
                 "cpu-quota" => r.cpu_quota = int()?,
                 "pids-limit" => r.pids_limit = int()?,
+                "blkio-weight" => r.blkio_weight = value.parse().ok()?,
                 "memory-swappiness" => r.memory_swappiness = Some(int()?),
                 "oom-kill-disable" => r.oom_kill_disable = value == "true",
                 "cpuset-cpus" => r.cpuset_cpus = value.to_string(),
@@ -1432,6 +1436,7 @@ mod tests {
                 cpuset_cpus: "0-1".into(),
                 cpuset_mems: "0".into(),
                 pids_limit: -1,
+                blkio_weight: 300,
             },
             read_only: true,
             tmpfs: vec!["/run:size=1m".into(), "/tmp".into()],

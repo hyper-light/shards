@@ -666,6 +666,9 @@ pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
         ("memory-swap", Kind::Value("bytes")) if value == "-1" => Ok(value.to_string()),
         (_, Kind::Value("bytes")) => crate::resources::ram_in_bytes(value).map(|n| n.to_string()),
         (_, Kind::Value("decimal")) => crate::resources::parse_cpus(value).map(|n| n.to_string()),
+        (_, Kind::Value("uint16")) => crate::go::parse_uint_bits(value, 16)
+            .map(|n| n.to_string())
+            .map_err(|e| e.to_string()),
         ("label", Kind::Many("list")) => validate_label(value),
         ("dns", Kind::Many("list")) => validate_ip(value),
         ("dns-search", Kind::Many("list")) => validate_dns_search(value),

@@ -197,6 +197,20 @@ pub fn parse_int10(s: &str) -> Result<i64, NumError> {
     })
 }
 
+/// `s` read as `strconv.ParseUint(s, 0, bits)` reads it, as pflag reads a `uint16` flag.
+pub fn parse_uint_bits(s: &str, bits: u32) -> Result<u64, NumError> {
+    let fail = |range| NumError {
+        func: "ParseUint",
+        text: s.to_string(),
+        range,
+    };
+    match parse_uint(s) {
+        Ok(n) if bits >= 64 || n < (1u64 << bits) => Ok(n),
+        Ok(_) | Err(true) => Err(fail(true)),
+        Err(false) => Err(fail(false)),
+    }
+}
+
 /// Go's `ParseUint(s, 0, 64)`: the number, or whether it failed by overflow (`true`)
 /// rather than syntax.
 fn parse_uint(s: &str) -> Result<u64, bool> {

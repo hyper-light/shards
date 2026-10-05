@@ -57,6 +57,7 @@ mod refill;
 mod restart;
 mod rmi;
 mod top;
+mod update;
 mod visit;
 mod volume;
 use crate::run::{Boot, Prepared};
@@ -1797,7 +1798,7 @@ impl<D: Disk> Daemon<D> {
         let name = match made {
             // A new container's warnings, as the CLI prints ContainerCreate's.
             Ok(name) if again.is_none() => {
-                let warned = crate::resources::verify(&run.resources, crate::resources::host_cpus());
+                let warned = crate::resources::verify(&run.resources, crate::resources::host_cpus(), false);
                 for w in warned.unwrap_or_default() {
                     say(&format!("WARNING: {w}"));
                 }
@@ -2346,7 +2347,7 @@ impl<D: Disk> Daemon<D> {
         }
         // Its resources (verifyPlatformContainerResources), whose warnings it says once
         // it is made.
-        crate::resources::verify(&run.resources, crate::resources::host_cpus())?;
+        crate::resources::verify(&run.resources, crate::resources::host_cpus(), false)?;
         crate::setup::verify(run)?;
         validate_restart_policy(&run.restart_policy)?;
         // A name held by a container that ended with `--rm`, its end not yet taken or its
@@ -4199,7 +4200,7 @@ fn again_as(stored: Run, client: &Run, id: &str) -> Run {
 /// ValidateRestartPolicy (moby api/types/container/hostconfig.go): a known policy's name,
 /// a retry count only `on-failure`'s and never negative; none given passes, as from a CLI
 /// before dockerd v25.
-fn validate_restart_policy((name, max): &(String, i64)) -> Result<(), String> {
+pub(super) fn validate_restart_policy((name, max): &(String, i64)) -> Result<(), String> {
     match name.as_str() {
         "always" | "unless-stopped" | "no" if *max != 0 => {
             let mut msg =

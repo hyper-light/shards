@@ -763,13 +763,33 @@ pub(super) fn inspected(
 
 /// A JSON value as json.Decoder with UseNumber decodes it into `any`: numbers as
 /// json.Number, which prints as the number's text.
+/// encoding/json's Number, which the raw document's numbers decode to (UseNumber): a
+/// string to fmt, its digits as they are to encoding/json.
+#[derive(Debug)]
+struct JsonNumber(String);
+
+impl shards_template::Object for JsonNumber {
+    fn type_name(&self) -> &str {
+        "json.Number"
+    }
+
+    fn format(&self, out: &mut String) {
+        out.push_str(&self.0);
+    }
+
+    fn json(&self, out: &mut String) -> Result<(), String> {
+        out.push_str(&self.0);
+        Ok(())
+    }
+}
+
 fn raw_value(v: &serde_json::Value) -> shards_template::Value {
     use serde_json::Value as J;
     use shards_template::Value;
     match v {
         J::Null => Value::Nil,
         J::Bool(b) => Value::Bool(*b),
-        J::Number(n) => Value::String(n.to_string()),
+        J::Number(n) => Value::object(JsonNumber(n.to_string())),
         J::String(s) => Value::String(s.clone()),
         J::Array(l) => Value::list(l.iter().map(raw_value).collect()),
         J::Object(m) => Value::map(m.iter().map(|(k, v)| (k.clone(), raw_value(v))).collect()),

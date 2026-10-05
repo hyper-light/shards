@@ -5240,3 +5240,115 @@ fn restart_policies_start_containers_again_as_dockerd_does() {
         Some(0)
     );
 }
+
+/// `update`, as `docker update` takes it: a running microVM's limits written to its
+/// workload's cgroup as it runs, and kept; dockerd's refusals; the restart policy.
+#[cfg(unix)]
+#[test]
+fn update_changes_limits_of_running_microvms_as_docker_update_does() {
+    let Some((home, image)) = home("containers-update") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let mut held = start(&home, &image, &["--name", "held"], &["sleep"]);
+    let id = shards(&["inspect", "-f", "{{.Id}}", "held"])
+        .stdout
+        .trim()
+        .to_string();
+    let refused = shards(&["update", "-m", "64m", "held"]);
+    assert_eq!(
+        (refused.status, refused.stderr),
+        (
+            Some(1),
+            format!(
+                "Error response from daemon: Cannot update container {id}: Memory limit should be smaller than already set memoryswap limit, update the memoryswap at the same time\n"
+            )
+        )
+    );
+    let updated = shards(&[
+        "update",
+        "-m",
+        "64m",
+        "--memory-swap",
+        "128m",
+        "--cpus",
+        "1.5",
+        "--pids-limit",
+        "50",
+        "--blkio-weight",
+        "300",
+        "--restart",
+        "always",
+        "held",
+    ]);
+    assert_eq!(
+        (updated.status, updated.stdout.as_str()),
+        (Some(0), "held\n"),
+        "{updated}"
+    );
+    let read = shards(&[
+        "exec",
+        "held",
+        "/bin/testguest",
+        "stat",
+        "/sys/fs/cgroup/memory.max",
+        "/sys/fs/cgroup/memory.swap.max",
+        "/sys/fs/cgroup/cpu.max",
+        "/sys/fs/cgroup/pids.max",
+    ]);
+    let values: Vec<&str> = read.stdout.lines().filter_map(|l| l.strip_prefix("= ")).collect();
+    assert_eq!(
+        values,
+        ["67108864\\n", "67108864\\n", "150000 100000\\n", "50\\n"],
+        "{read}"
+    );
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}} {{.HostConfig.BlkioWeight}} {{.HostConfig.RestartPolicy.Name}}",
+        "held",
+    ]);
+    assert_eq!(
+        shown.stdout, "67108864 134217728 1500000000 50 300 always\n",
+        "{shown}"
+    );
+    for (args, said) in [
+        (
+            &["--cpu-period", "50000", "held"][..],
+            format!(
+                "Error response from daemon: Cannot update container {id}: Conflicting options: CPU Period cannot be updated as NanoCPUs has already been set\n"
+            ),
+        ),
+        (
+            &["-m", "1m", "held"][..],
+            "Error response from daemon: Minimum memory limit allowed is 6MB\n".to_string(),
+        ),
+        (
+            &["--blkio-weight", "5", "held"][..],
+            "Error response from daemon: Range of blkio weight is from 10 to 1000\n".to_string(),
+        ),
+        (
+            &["--cpus", "1", "nope"][..],
+            "Error response from daemon: No such container: nope\n".to_string(),
+        ),
+    ] {
+        let mut all = vec!["update"];
+        all.extend(args);
+        let out = shards(&all);
+        assert_eq!((out.status, out.stderr), (Some(1), said), "{args:?}");
+    }
+    let bare = shards(&["update", "held"]);
+    assert_eq!(
+        bare.stderr,
+        "you must provide one or more flags when using this command\n"
+    );
+    assert_eq!(shards(&["rm", "-f", "held"]).status, Some(0));
+    let _ = exit(&mut held);
+    // On a stopped container the record changes, for its next start.
+    assert_eq!(shards(&["create", "--name", "made", &image]).status, Some(0));
+    assert_eq!(shards(&["update", "--cpus", "2", "made"]).stdout, "made\n");
+    assert_eq!(
+        shards(&["inspect", "-f", "{{.HostConfig.NanoCpus}}", "made"]).stdout,
+        "2000000000\n"
+    );
+}

@@ -409,6 +409,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         cpuset_cpus: parsed.string("cpuset-cpus").to_string(),
         cpuset_mems: parsed.string("cpuset-mems").to_string(),
         pids_limit: parsed.int("pids-limit"),
+        blkio_weight: parsed.string("blkio-weight").parse().unwrap_or(0),
     };
     let (cap_add, cap_drop) = effective_caps(parsed.many("cap-add"), parsed.many("cap-drop"));
     let (binds, volumes, mounts) = volumes(parsed)?;

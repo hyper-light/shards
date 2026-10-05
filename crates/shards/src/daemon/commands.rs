@@ -461,6 +461,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.pull(&parsed, asker, reply)
         } else if std::ptr::eq(command, &PUSH) {
             self.push(&parsed, asker, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::UPDATE) {
+            self.update(&parsed, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_CREATE) {
             self.volume_create(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_LS) {

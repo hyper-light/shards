@@ -225,6 +225,9 @@ pub mod builtin {
     /// its files there for the builtins above, until it is killed: the daemon's visit to
     /// a stopped container (D37).
     pub const HOLD: u8 = 8;
+    /// Each argument a `FILE=VALUE` written to the workload's cgroup, as its limits are
+    /// as it starts: `shards update` of a running container (moby daemon/update.go).
+    pub const CGROUP: u8 = 9;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

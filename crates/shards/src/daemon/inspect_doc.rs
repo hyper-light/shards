@@ -783,7 +783,7 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("Memory", int(res.memory))
         .tagged("NanoCPUs", Some("NanoCpus"), false, int(res.nano_cpus))
         .field("CgroupParent", s(""))
-        .field("BlkioWeight", Value::Uint(0))
+        .field("BlkioWeight", Value::Uint(u64::from(res.blkio_weight)))
         .field("BlkioWeightDevice", empty())
         .field("BlkioDeviceReadBps", empty())
         .field("BlkioDeviceWriteBps", empty())

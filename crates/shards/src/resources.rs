@@ -30,7 +30,9 @@ pub fn host_cpus() -> usize {
 /// nodes (one, node 0); dockerd checks it against the host's CPUs
 /// (pkg/sysinfo/cgroup2_linux.go parses `info.Cpus` into `MemSets`), and runc then fails
 /// to write a node that is not there as the container starts.
-pub fn verify(r: &Resources, cpus: usize) -> Result<Vec<String>, String> {
+/// `update` checks what an update asks for, which may give swap alone (dockerd's
+/// update flag).
+pub fn verify(r: &Resources, cpus: usize, update: bool) -> Result<Vec<String>, String> {
     let mut warnings = Vec::new();
     if r.memory != 0 && r.memory < MIN_MEMORY {
         return Err("Minimum memory limit allowed is 6MB".into());
@@ -38,7 +40,7 @@ pub fn verify(r: &Resources, cpus: usize) -> Result<Vec<String>, String> {
     if r.memory > 0 && r.memory_swap > 0 && r.memory_swap < r.memory {
         return Err("Minimum memoryswap limit should be larger than memory limit, see usage".into());
     }
-    if r.memory == 0 && r.memory_swap > 0 {
+    if r.memory == 0 && r.memory_swap > 0 && !update {
         return Err("You should always set the Memory limit when using Memoryswap limit, see usage".into());
     }
     if r.memory_swappiness.is_some() {
@@ -100,6 +102,11 @@ pub fn verify(r: &Resources, cpus: usize) -> Result<Vec<String>, String> {
             "invalid CPU shares ({}): value must be a positive integer",
             r.cpu_shares
         ));
+    }
+    // verifyPlatformContainerResources: a weight in range; the guest kernel has BFQ and
+    // io.cost, so it is kept.
+    if r.blkio_weight > 0 && !(10..=1000).contains(&r.blkio_weight) {
+        return Err("Range of blkio weight is from 10 to 1000".into());
     }
     Ok(warnings)
 }
@@ -190,7 +197,7 @@ fn cpu_weight(shares: u64) -> u64 {
 }
 
 /// The workload's cgroup settings, `FILE=VALUE`, as runc's fs2 Manager.Set writes them,
-/// in its order: pids, memory, cpu, cpuset.
+/// in its order: pids, memory, io, cpu, cpuset.
 pub fn cgroup(r: &Resources) -> Vec<Vec<u8>> {
     let mut out: Vec<String> = Vec::new();
     // getPidsLimit: none for 0 or less, which the API takes as unset.
@@ -212,6 +219,11 @@ pub fn cgroup(r: &Resources) -> Vec<Vec<u8>> {
         if r.memory_reservation > 0 {
             out.push(format!("memory.low={}", r.memory_reservation));
         }
+    }
+    // setIo: BFQ's weight as given, where the guest has BFQ; init writes io.weight's
+    // scale where it has io.cost alone.
+    if r.blkio_weight != 0 {
+        out.push(format!("io.bfq.weight={}", r.blkio_weight));
     }
     let weight = cpu_weight(u64::try_from(r.cpu_shares).unwrap_or(0));
     if weight != 0 {
@@ -323,13 +335,13 @@ mod tests {
             ..r()
         };
         assert_eq!(
-            verify(&swappy, 18),
+            verify(&swappy, 18, false),
             Ok(vec![
                 "Your kernel does not support memory swappiness capabilities or the cgroup is not mounted. Memory swappiness discarded.".to_string(),
                 "Your kernel does not support OomKillDisable. OomKillDisable discarded.".to_string(),
             ])
         );
-        let refused = |r: Resources| verify(&r, 18).unwrap_err();
+        let refused = |r: Resources| verify(&r, 18, false).unwrap_err();
         assert_eq!(
             refused(Resources {
                 nano_cpus: 99_000_000_000,
@@ -385,7 +397,8 @@ mod tests {
                     cpuset_cpus: "03,1-3".into(),
                     ..r()
                 },
-                18
+                18,
+                false
             ),
             Ok(Vec::new())
         );

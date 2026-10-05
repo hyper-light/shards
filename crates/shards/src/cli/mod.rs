@@ -250,6 +250,19 @@ fn container(
         );
         return ExitCode::FAILURE;
     }
+    // `update` with no flag: the CLI's own refusal (container/update.go, NFlag).
+    if std::ptr::eq(command, &shards_cmdline::commands::UPDATE)
+        && !command.flags.iter().any(|f| parsed.changed(f.name))
+        && !["cpu-rt-period", "cpu-rt-runtime"]
+            .iter()
+            .any(|f| parsed.changed(f))
+    {
+        let _ = writeln!(
+            std::io::stderr(),
+            "you must provide one or more flags when using this command"
+        );
+        return ExitCode::FAILURE;
+    }
     // `volume prune --all` and a filter `all` both: the CLI's own refusal (volume/prune.go).
     if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_PRUNE)
         && parsed.bool("all")

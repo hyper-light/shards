@@ -205,6 +205,12 @@ pub static RUN: Command = Command {
             "0",
             "Limit CPU CFS (Completely Fair Scheduler) quota",
         ),
+        Flag::value(
+            "blkio-weight",
+            None,
+            "uint16",
+            "Block IO (relative weight), between 10 and 1000, or 0 to disable (default 0)",
+        ),
         Flag::int("cpu-shares", Some(b'c'), "0", "CPU shares (relative weight)"),
         Flag::value("cpus", None, "decimal", "Number of CPUs"),
         Flag::string(
@@ -266,7 +272,6 @@ pub static RUN: Command = Command {
     unserved: "\
 annotation - m - -\n\
 attach a m - -\n\
-blkio-weight - s 0 -\n\
 blkio-weight-device - m - -\n\
 cgroup-parent - s - -\n\
 cgroupns - s - -\n\
@@ -492,6 +497,12 @@ pub static CREATE: Command = Command {
             "0",
             "Limit CPU CFS (Completely Fair Scheduler) quota",
         ),
+        Flag::value(
+            "blkio-weight",
+            None,
+            "uint16",
+            "Block IO (relative weight), between 10 and 1000, or 0 to disable (default 0)",
+        ),
         Flag::int("cpu-shares", Some(b'c'), "0", "CPU shares (relative weight)"),
         Flag::value("cpus", None, "decimal", "Number of CPUs"),
         Flag::string(
@@ -552,7 +563,6 @@ pub static CREATE: Command = Command {
     unserved: "\
 annotation - m - -\n\
 attach a m - -\n\
-blkio-weight - s 0 -\n\
 blkio-weight-device - m - -\n\
 cgroup-parent - s - -\n\
 cgroupns - s - -\n\
@@ -1028,6 +1038,78 @@ pub static IMAGE_PRUNE: Command = Command {
         HELP,
     ],
     unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards update` (docker/cli cli/command/container/update.go): a running container's
+/// limits change as it runs.
+pub static UPDATE: Command = Command {
+    usage: "[OPTIONS] CONTAINER [CONTAINER...]",
+    about: "Update configuration of one or more containers",
+    aliases: "shards container update, shards update",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::value(
+            "blkio-weight",
+            None,
+            "uint16",
+            "Block IO (relative weight), between 10 and 1000, or 0 to disable (default 0)",
+        ),
+        Flag::int(
+            "cpu-period",
+            None,
+            "0",
+            "Limit CPU CFS (Completely Fair Scheduler) period",
+        ),
+        Flag::int(
+            "cpu-quota",
+            None,
+            "0",
+            "Limit CPU CFS (Completely Fair Scheduler) quota",
+        ),
+        Flag::int("cpu-shares", Some(b'c'), "0", "CPU shares (relative weight)"),
+        Flag::value("cpus", None, "decimal", "Number of CPUs"),
+        Flag::string(
+            "cpuset-cpus",
+            None,
+            "",
+            "CPUs in which to allow execution (0-3, 0,1)",
+        ),
+        Flag::string(
+            "cpuset-mems",
+            None,
+            "",
+            "MEMs in which to allow execution (0-3, 0,1)",
+        ),
+        HELP,
+        // Kernels no longer have the limit; the flag only says so.
+        Flag::value("kernel-memory", None, "bytes", "Kernel memory limit (deprecated)")
+            .deprecated("and no longer supported by the kernel"),
+        Flag::value("memory", Some(b'm'), "bytes", "Memory limit"),
+        Flag::value("memory-reservation", None, "bytes", "Memory soft limit"),
+        Flag::value(
+            "memory-swap",
+            None,
+            "bytes",
+            "Swap limit equal to memory plus swap: -1 to enable unlimited swap",
+        ),
+        Flag::int(
+            "pids-limit",
+            None,
+            "0",
+            "Tune container pids limit (set -1 for unlimited)",
+        ),
+        Flag::string(
+            "restart",
+            None,
+            "",
+            "Restart policy to apply when a container exits",
+        ),
+    ],
+    unserved: "\
+cpu-rt-period - i 0 -
+cpu-rt-runtime - i 0 -",
     interspersed: true,
     error_prefix: "",
 };
@@ -1770,6 +1852,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["container", "inspect", ..] => (&CONTAINER_INSPECT, "shards container inspect", 2),
         ["image", "ls" | "list", ..] => (&IMAGES, "shards image ls", 2),
         ["container", "port", ..] => (&PORT, "shards container port", 2),
+        ["update", ..] => (&UPDATE, "shards update", 1),
+        ["container", "update", ..] => (&UPDATE, "shards container update", 2),
         ["volume", "create", ..] => (&VOLUME_CREATE, "shards volume create", 2),
         ["volume", "ls" | "list", ..] => (&VOLUME_LS, "shards volume ls", 2),
         ["volume", "inspect", ..] => (&VOLUME_INSPECT, "shards volume inspect", 2),

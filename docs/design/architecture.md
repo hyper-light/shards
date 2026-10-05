@@ -2354,6 +2354,29 @@ monitor.go handleContainerExit; `daemon/restart.rs`):
   says, as dockerd's restore does: shards' daemon starts with the first command, so they
   start with it.
 
+### Updates (D40)
+
+`shards update` is `docker update` (docker/cli container/update.go; moby docker-v29.8.1
+daemon/update.go and container UpdateContainer, `daemon/update.rs`): what is asked
+checked as at create (verifyContainerSettings with its `update` flag: swap alone
+passes), merged into what the container has with dockerd's refusals (Nano CPUs against a
+set CFS period or quota and the reverse; a memory limit over the swap kept, which for a
+container made without one is none, as Docker refuses it; a restart policy beside
+`--rm`), kept with its request, and written to a running workload's cgroup at once by an
+init built-in (`builtin::CGROUP`, the writes runc's fs2 makes as it starts). A limit the
+guest refuses changes nothing. Its words and its order of output are dockerd's and the
+CLI's, held to Docker Engine 29.3.1's.
+
+- `--blkio-weight` (run, create, update) is BFQ's weight where the guest kernel has BFQ,
+  else `io.weight` on io.cost's scale (ConvertBlkIOToIOWeightValue), as runc writes it.
+  The guest kernel has both; Docker Desktop's VM has neither and refuses the update.
+- A microVM's memory is sized as it starts (PM M117): a limit raised past it binds at the
+  VM's size until its next start. Open: resizing the guest (balloon or memory hotplug).
+- `--cpu-rt-period` and `--cpu-rt-runtime` parse, and are not served: cgroup v2 has no
+  real-time CPU controller to write them to.
+- inspect's raw-JSON fallback (a template Docker's typed struct cannot answer) decodes
+  numbers as encoding/json's Number, which prints its digits and encodes as a number.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

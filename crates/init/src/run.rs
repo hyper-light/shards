@@ -423,6 +423,12 @@ fn oom_killed() -> bool {
 /// Sets the workload's limits, each `FILE=VALUE` of [`Spec::cgroup`], as runc's cgroups
 /// WriteFile does, and in its words when the kernel refuses one.
 fn limit(cgroup: &[Vec<u8>]) -> Result<(), Failure> {
+    write_cgroup(cgroup).map_err(setup_failed)
+}
+
+/// Writes each `FILE=VALUE` of `cgroup` to the workload's cgroup, as runc's fs2 writes
+/// them; what failed, in runc's words.
+pub fn write_cgroup(cgroup: &[Vec<u8>]) -> Result<(), String> {
     for entry in cgroup {
         let text = String::from_utf8_lossy(entry);
         let (file, value) = text
@@ -432,19 +438,31 @@ fn limit(cgroup: &[Vec<u8>]) -> Result<(), Failure> {
                     && f.bytes()
                         .all(|b| b.is_ascii_lowercase() || b == b'.' || b == b'_')
             })
-            .ok_or_else(|| setup_failed(format!("a cgroup setting of no file: {text:?}")))?;
+            .ok_or_else(|| format!("a cgroup setting of no file: {text:?}"))?;
+        // runc's setIo: BFQ's weight where the kernel has it, else io.weight's scale
+        // (ConvertBlkIOToIOWeightValue).
+        let converted;
+        let (file, value) = if file == "io.bfq.weight"
+            && std::fs::metadata(format!("{WORKLOAD_CGROUP}/io.bfq.weight")).is_err()
+        {
+            let weight: u64 = value.parse().unwrap_or(0);
+            converted = (1 + weight.saturating_sub(10) * 9999 / 990).to_string();
+            ("io.weight", converted.as_str())
+        } else {
+            (file, value)
+        };
         let path = format!("{WORKLOAD_CGROUP}/{file}");
         let shown = format!("/sys/fs/cgroup/{file}");
         let mut f = std::fs::OpenOptions::new()
             .write(true)
             .open(&path)
-            .map_err(|e| setup_failed(format!("open {shown}: {}", go_error(&e))))?;
+            .map_err(|e| format!("open {shown}: {}", go_error(&e)))?;
         f.write_all(value.as_bytes()).map_err(|e| {
-            setup_failed(format!(
+            format!(
                 "failed to write {}: write {shown}: {}",
                 shards_cmdline::go::quote(value),
                 go_error(&e)
-            ))
+            )
         })?;
     }
     Ok(())
@@ -1347,6 +1365,7 @@ fn builtin(kind: u8, args: &[Vec<u8>]) -> Result<Started, Failure> {
             run::builtin::PROCESSES => out.write_all(&crate::procs::dump()),
             run::builtin::CHANGES => crate::changes::write(&mut out),
             run::builtin::EXPORT => export(&mut out),
+            run::builtin::CGROUP => write_cgroup(args).map_err(io::Error::other),
             run::builtin::LAYER => {
                 // Paused as dockerd pauses a container it commits (moby daemon/commit.go):
                 // every process but init and this one stopped, then let go on.
