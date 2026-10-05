@@ -115,6 +115,10 @@ pub struct Request {
     pub timing: bool,
     /// The container's log, if its output is kept.
     pub log: Option<workload::Logger>,
+    /// The container's writable layer from before, to put back (D37); and where its
+    /// layer goes once it stops, for a container that stays.
+    pub layer_in: Option<File>,
+    pub layer_out: Option<File>,
 }
 
 /// Tells the daemon this VM is ready, then waits for its request, and tells the daemon it
@@ -142,9 +146,13 @@ pub fn receive(
     let (size, rest) = rest
         .split_first_chunk::<8>()
         .ok_or("a request without its log's retention")?;
-    let (files, spec) = rest
+    let (files, rest) = rest
         .split_first_chunk::<8>()
         .ok_or("a request without its log's retention")?;
+    let (first, spec) = rest
+        .split_first_chunk::<8>()
+        .ok_or("a request without its log's segment")?;
+    let first = u64::from_be_bytes(*first);
     let retention = crate::spec::LogRetention {
         size: u64::from_be_bytes(*size),
         files: u64::from_be_bytes(*files),
@@ -190,9 +198,19 @@ pub fn receive(
             .map_err(|e| format!("the daemon's connection: {e}"))?;
         let next = segments_from(asker, answers);
         Some(
-            workload::Logger::new(log, index, retention, next)
+            workload::Logger::new(log, index, first, retention, next)
                 .map_err(|e| format!("the container's log: {e}"))?,
         )
+    } else {
+        None
+    };
+    let layer_in = if flags & shards_ipc::RUN_LAYER_IN != 0 {
+        Some(File::from(next()?))
+    } else {
+        None
+    };
+    let layer_out = if flags & shards_ipc::RUN_LAYER_OUT != 0 {
+        Some(File::from(next()?))
     } else {
         None
     };
@@ -253,6 +271,8 @@ pub fn receive(
         interactive: flags & shards_ipc::RUN_INTERACTIVE != 0,
         timing: flags & shards_ipc::RUN_TIMING != 0,
         log,
+        layer_in,
+        layer_out,
     })
 }
 
@@ -456,6 +476,11 @@ pub fn finish(
     }
 }
 
+/// Tells the daemon the container's writable layer is whole where it asked for it.
+pub fn layer_saved(link: &Link) {
+    let _ = shards_ipc::send(&link.daemon, kind::LAYER_SAVED, &[], &[]);
+}
+
 /// Stops using the client's stdio: this process's standard descriptors become `null`.
 fn let_go(null: &File) {
     for target in [0, 1, 2] {
@@ -494,6 +519,8 @@ mod tests {
                 let mut payload = vec![shards_ipc::RUN_DETACHED | shards_ipc::RUN_LOG];
                 payload.extend(1u64.to_be_bytes());
                 payload.extend(1u64.to_be_bytes());
+                // Its log's first segment.
+                payload.extend(0u64.to_be_bytes());
                 Spec::default().encode_into(&mut payload);
                 shards_ipc::send(&daemon, kind::RUN, &payload, &fds).unwrap();
                 receiving.join().unwrap().err()

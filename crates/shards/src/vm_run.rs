@@ -670,6 +670,10 @@ fn serve_workload(
                                 interactive,
                                 log: None,
                                 started: None,
+                                layer_in: None,
+                                layer_out: None,
+                                told: None,
+                                saved: None,
                             })
                         };
                         let request = if hold || SEAL.get().is_some() {
@@ -686,11 +690,42 @@ fn serve_workload(
                         )
                     }
                     Command::Warm(link) => {
-                        let client = std::sync::OnceLock::new();
+                        let client: std::sync::OnceLock<Option<std::os::unix::net::UnixStream>> =
+                            std::sync::OnceLock::new();
                         let started = || {
                             crate::warm::started(&link);
                             end_recording_in(&stopper, RECORD_FOR);
                         };
+                        // The daemon and the client hear how the command ended as soon as it
+                        // has, before its layer is saved (D37): once, here or after.
+                        let finished = std::sync::atomic::AtomicBool::new(false);
+                        let finish = |served: &Result<workload::Ended, String>| {
+                            if finished.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                return;
+                            }
+                            let Some(connection) = client.get() else {
+                                return;
+                            };
+                            let timing = timing
+                                .asked
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                                .then(|| timing_json(&stopper, Some(timing)));
+                            // What the run touched goes to the daemon with its end, for the
+                            // template it was restored from, which no VM writes (D30). A
+                            // failure costs later runs their prefetch, and nothing else.
+                            let working_set = stopper.take_working_set().unwrap_or_else(|e| {
+                                shards_vmm::debug!("{e}");
+                                None
+                            });
+                            crate::warm::finish(
+                                &link,
+                                connection.as_ref(),
+                                served,
+                                timing.as_deref(),
+                                working_set.as_ref(),
+                            );
+                        };
+                        let saved = || crate::warm::layer_saved(&link);
                         let ask = || {
                             // A template this VM saved is in place before the daemon hears the
                             // VM is ready, and settles it: its commit runs as the guest does.
@@ -712,6 +747,10 @@ fn serve_workload(
                                 interactive: request.interactive,
                                 log: request.log,
                                 started: Some(&started),
+                                layer_in: request.layer_in,
+                                layer_out: request.layer_out,
+                                told: Some(&finish),
+                                saved: Some(&saved),
                             })
                         };
                         let served = workload::serve(
@@ -722,27 +761,11 @@ fn serve_workload(
                             timing,
                             &guest_abi,
                         );
-                        // Some once the request came: its client, if it has one.
+                        // Some once the request came: its client, if it has one. A run that
+                        // failed before its end was told is told now.
                         match client.get() {
-                            Some(connection) => {
-                                let timing = timing
-                                    .asked
-                                    .load(std::sync::atomic::Ordering::Relaxed)
-                                    .then(|| timing_json(&stopper, Some(timing)));
-                                // What the run touched goes to the daemon with its end, for the
-                                // template it was restored from, which no VM writes (D30). A
-                                // failure costs later runs their prefetch, and nothing else.
-                                let working_set = stopper.take_working_set().unwrap_or_else(|e| {
-                                    shards_vmm::debug!("{e}");
-                                    None
-                                });
-                                crate::warm::finish(
-                                    &link,
-                                    connection.as_ref(),
-                                    &served,
-                                    timing.as_deref(),
-                                    working_set.as_ref(),
-                                );
+                            Some(_) => {
+                                finish(&served);
                                 (served, true)
                             }
                             // The daemon went without a request: nobody will ever send one.

@@ -597,6 +597,61 @@ fn export_writes_a_microvms_files_as_a_tar_archive() {
 }
 
 #[test]
+fn start_runs_a_stopped_microvm_again_over_its_own_files() {
+    let Some((home, image)) = home("containers-start") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    // Each run adds a line to a file of its own, and removes one of the image's.
+    let first = run_in(
+        &home,
+        &image,
+        &["--name", "again", "-u", "0"],
+        &["fs", "write:/etc/variant=x", "rm:/etc/group", "mkdir:/made"],
+    );
+    assert_eq!(first.status, Some(0), "{first}");
+    let started = shards(&["start", "again"]);
+    assert_eq!(
+        (started.status, started.stdout.as_str()),
+        (Some(0), "again\n"),
+        "{started}"
+    );
+    let waited = shards(&["wait", "again"]);
+    // Its later runs find /etc/group gone, as its first left it.
+    assert_eq!(waited.stdout, "1\n", "{waited}");
+    let attached = shards(&["start", "-a", "again"]);
+    assert_eq!(attached.status, Some(1), "{attached}");
+    assert!(
+        attached.stderr.contains("rm:/etc/group: No such file"),
+        "{attached}"
+    );
+    // Made, not started; then started.
+    let made = shards(&["create", "--name", "later", &image, "sleep"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let ps = shards(&["ps", "-a", "--format", "{{.Names}} {{.State}}"]);
+    assert!(ps.stdout.contains("later created\n"), "{ps}");
+    assert_eq!(shards(&["start", "later"]).stdout, "later\n");
+    let restarted = shards(&["restart", "-t", "1", "later"]);
+    assert_eq!(
+        (restarted.status, restarted.stdout.as_str()),
+        (Some(0), "later\n"),
+        "{restarted}"
+    );
+    let ps = shards(&["ps", "--format", "{{.Names}} {{.State}}"]);
+    assert_eq!(ps.stdout, "later running\n", "{ps}");
+    let missing = shards(&["start", "nobody"]);
+    assert_eq!(
+        (missing.status, missing.stderr.as_str()),
+        (
+            Some(1),
+            "Error response from daemon: No such container: nobody\nfailed to start containers: nobody\n"
+        ),
+        "{missing}"
+    );
+    assert_eq!(shards(&["rm", "-f", "later"]).status, Some(0));
+}
+
+#[test]
 fn rm_refuses_a_running_container_unless_forced() {
     let Some((home, image)) = home("containers-force") else {
         return;

@@ -132,6 +132,18 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         ["run", ..] => request::run("shards run", args.get(1..).unwrap_or_default()),
         ["container", "run", ..] => request::run("shards container run", args.get(2..).unwrap_or_default()),
         ["exec", ..] => request::exec("shards exec", args.get(1..).unwrap_or_default()),
+        ["create", ..] => request::create("shards create", args.get(1..).unwrap_or_default()),
+        ["container", "create", ..] => {
+            request::create("shards container create", args.get(2..).unwrap_or_default())
+        }
+        ["start", ..] => request::start("shards start", args.get(1..).unwrap_or_default()),
+        ["container", "start", ..] => {
+            request::start("shards container start", args.get(2..).unwrap_or_default())
+        }
+        ["restart", ..] => request::restart("shards restart", args.get(1..).unwrap_or_default()),
+        ["container", "restart", ..] => {
+            request::restart("shards container restart", args.get(2..).unwrap_or_default())
+        }
         ["container", "exec", ..] => {
             request::exec("shards container exec", args.get(2..).unwrap_or_default())
         }

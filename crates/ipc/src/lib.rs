@@ -48,8 +48,9 @@ pub mod kind {
     /// Warm VM → daemon: the guest is connected and waiting for its command.
     pub const READY: u8 = 1;
     /// Daemon → warm VM: [`RUN_INTERACTIVE`](super::RUN_INTERACTIVE) flags, the most
-    /// bytes a segment of the container's log holds and the most segments it keeps (each
-    /// a big-endian u64), then the command (`shards_abi::run::Spec`). Descriptors: the
+    /// bytes a segment of the container's log holds, the most segments it keeps, and the
+    /// segment the run's log starts in (each a big-endian u64), then the command
+    /// (`shards_abi::run::Spec`). Descriptors: the
     /// client's connection, then its stdin, stdout and stderr, then with
     /// [`RUN_LOG`](super::RUN_LOG) the container's directory, where its log is. With
     /// [`RUN_DETACHED`](super::RUN_DETACHED), only the command's stdin and the directory.
@@ -161,6 +162,9 @@ pub mod kind {
     /// Warm VM → daemon: the `EXEC_RUN` numbered so (a big-endian u64) has ended, with
     /// the status after it (a byte), for its `exec_die` event.
     pub const EXEC_ENDED: u8 = 31;
+    /// Warm VM → daemon, before `DONE`: the container's writable layer is whole where
+    /// `RUN_LAYER_OUT` said to write it.
+    pub const LAYER_SAVED: u8 = 32;
 }
 
 /// An `EXEC_RUN` flag: the command reads the client's stdin (`-i`).
@@ -367,6 +371,15 @@ pub struct Run {
     pub publish_all: bool,
     /// The client's [`REGISTRY_ENV`], for the image's pull.
     pub registry_env: Vec<String>,
+    /// `shards start`: the container, as given, to run again as it was made, its
+    /// writable layer put back (D37); the rest of this request says only how its client
+    /// attaches.
+    pub again: Option<String>,
+    /// `shards create`: the container is made, and not started.
+    pub create: bool,
+    /// `shards restart`: with `again`, the container is stopped first if it runs, by
+    /// `stop_signal` and `stop_timeout` where given, else as it stops.
+    pub restart: bool,
     /// The daemon binary this client would start.
     pub daemon: Identity,
 }
@@ -527,6 +540,9 @@ impl Run {
         }
         w.push(u8::from(self.publish_all));
         put_list(&mut w, &self.registry_env);
+        put_opt(&mut w, self.again.as_deref());
+        w.push(u8::from(self.create));
+        w.push(u8::from(self.restart));
         put_identity(&mut w, &self.daemon);
         w
     }
@@ -609,6 +625,9 @@ impl Run {
             },
             publish_all: r.flag()?,
             registry_env: r.list()?,
+            again: r.opt()?,
+            create: r.flag()?,
+            restart: r.flag()?,
             daemon: r.identity()?,
         };
         r.0.is_empty().then_some(run)
@@ -750,6 +769,12 @@ pub const RUN_DETACHED: u8 = 8;
 /// A `kind::RUN` flag: the run publishes ports, which close before its end is told
 /// (`kind::UNPUBLISH`).
 pub const RUN_PUBLISHED: u8 = 16;
+/// A `kind::RUN` flag: a stopped container's writable layer comes with the run, read
+/// from a descriptor after the log's, to put back before the command runs (D37).
+pub const RUN_LAYER_IN: u8 = 32;
+/// A `kind::RUN` flag: the container stays once it stops, and its writable layer goes to
+/// a descriptor after those, told by `kind::LAYER_SAVED` once whole.
+pub const RUN_LAYER_OUT: u8 = 64;
 
 /// The largest payload a message may carry.
 pub const MAX_PAYLOAD: usize = 1 << 20;
@@ -1049,6 +1074,9 @@ mod tests {
             ],
             publish_all: true,
             registry_env: vec!["DOCKER_CONFIG=/d".into(), "PATH=/bin".into()],
+            again: Some("web".into()),
+            create: true,
+            restart: true,
             health: Some(Health {
                 test: vec!["CMD-SHELL".into(), "true".into()],
                 interval: 1,

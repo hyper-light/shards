@@ -102,7 +102,20 @@ pub struct Asked<'a> {
     pub interactive: bool,
     pub log: Option<Logger>,
     pub started: Option<&'a (dyn Fn() + Sync)>,
+    /// The container's writable layer from before, to put back before the command runs
+    /// (D37); and where its layer goes once it stops.
+    pub layer_in: Option<fs::File>,
+    pub layer_out: Option<fs::File>,
+    /// Told how the command ended, before its layer is saved: a run's client waits for
+    /// nothing it does not need.
+    pub told: Option<&'a Told<'a>>,
+    /// Told the layer is saved whole.
+    pub saved: Option<&'a (dyn Fn() + Sync)>,
 }
+
+/// What hears how a served command ended (`Asked::told`).
+#[cfg(unix)]
+pub type Told<'a> = dyn Fn(&Result<Ended, String>) + Sync + 'a;
 
 /// How a served command ended: its exit status, and if it never ran, why not, in the
 /// guest's words.
@@ -154,11 +167,13 @@ impl std::fmt::Debug for Logger {
 
 #[cfg(unix)]
 impl Logger {
-    /// Writes a container's log from its first segment, `log` and `index`, which its
-    /// daemon made with the container, going on in the segments `next` makes.
+    /// Writes a container's log from its segment `seq`, `log` and `index`, which its
+    /// daemon made with the container (or its newest, for one started again), going on in
+    /// the segments `next` makes.
     pub fn new(
         log: fs::File,
         index: fs::File,
+        seq: u64,
         retention: LogRetention,
         next: NextSegment,
     ) -> io::Result<Logger> {
@@ -172,7 +187,7 @@ impl Logger {
         Ok(Logger {
             next,
             retention,
-            seq: 0,
+            seq,
             log,
             index,
             logged,
@@ -250,12 +265,20 @@ pub fn serve(
         interactive,
         log,
         started,
+        layer_in,
+        layer_out,
+        told,
+        saved,
     } = match request {
         Request::Now { spec, interactive } => Asked {
             spec,
             interactive,
             log: None,
             started: None,
+            layer_in: None,
+            layer_out: None,
+            told: None,
+            saved: None,
         },
         Request::Later(ask) => ask()?,
     };
@@ -268,6 +291,9 @@ pub fn serve(
              shards speaks {:016x}): boot the shards-init built with this shards",
             shards_abi::IDENTITY
         ));
+    }
+    if let Some(layer) = layer_in {
+        send_layer(&mut conn, layer).map_err(|e| format!("sending the container's files: {e}"))?;
     }
     send(&mut conn, kind::SPEC, &spec.encode()).map_err(|e| format!("sending the command: {e}"))?;
     if interactive {
@@ -302,6 +328,21 @@ pub fn serve(
         .map_err(|e| format!("signal connection: {e}"))?;
     let mut log = log;
     let status = relay(&mut conn, timing, log.as_mut(), started);
+    if let Some(told) = told {
+        told(&status);
+    }
+    // A container that stays keeps its files, as they are now its command has ended:
+    // once its end is told, so that nothing waits for them that does not need them.
+    if let (Ok(_), Some(out)) = (&status, layer_out) {
+        match receive_layer(&mut conn, out) {
+            Ok(()) => {
+                if let Some(saved) = saved {
+                    saved();
+                }
+            }
+            Err(e) => shards_vmm::debug!("saving the container's files: {e}"),
+        }
+    }
     {
         let mut state = lock(to);
         *state = Signals::default();
@@ -425,6 +466,42 @@ fn write_parts(mut w: impl Write, mut rest: &mut [io::IoSlice<'_>]) -> io::Resul
         }
     }
     Ok(())
+}
+
+/// Sends `layer` as [`kind::LAYER`] frames, then an empty one.
+#[cfg(unix)]
+fn send_layer(conn: &mut UnixStream, mut layer: fs::File) -> io::Result<()> {
+    let mut buf = vec![0u8; run::CHUNK];
+    loop {
+        let n = layer.read(&mut buf)?;
+        send(conn, kind::LAYER, buf.get(..n).unwrap_or_default())?;
+        if n == 0 {
+            return Ok(());
+        }
+    }
+}
+
+/// Asks the guest for the container's writable layer ([`kind::SAVE`]) and writes its
+/// [`kind::LAYER`] frames to `out` until the empty one; an error if it did not come
+/// whole.
+#[cfg(unix)]
+fn receive_layer(conn: &mut UnixStream, mut out: fs::File) -> io::Result<()> {
+    send(conn, kind::SAVE, &[])?;
+    let mut frame = Vec::new();
+    loop {
+        let mut h = [0u8; run::HEADER];
+        conn.read_exact(&mut h)?;
+        let len = match run::parse_header(h) {
+            Some((kind::LAYER, len)) => len as usize,
+            _ => return Err(io::Error::other("the guest sent another frame amid its files")),
+        };
+        if len == 0 {
+            return out.sync_all();
+        }
+        frame.resize(len, 0);
+        conn.read_exact(&mut frame)?;
+        out.write_all(&frame)?;
+    }
 }
 
 #[cfg(unix)]
@@ -1070,7 +1147,7 @@ mod tests {
             size: u64::MAX,
             files: 1,
         };
-        let mut logger = Logger::new(append(&log), append(&index), keep, in_dir(&dir, keep)).unwrap();
+        let mut logger = Logger::new(append(&log), append(&index), 0, keep, in_dir(&dir, keep)).unwrap();
         logger.keep(LOG_STDOUT, b"a\n");
         logger.keep(LOG_STDERR, b"b");
         logger.keep(LOG_STDOUT, b"");
@@ -1089,7 +1166,7 @@ mod tests {
             } else {
                 (append(&log), fs::File::open(&index).unwrap())
             };
-            let mut logger = Logger::new(l, i, keep, in_dir(&dir, keep)).unwrap();
+            let mut logger = Logger::new(l, i, 0, keep, in_dir(&dir, keep)).unwrap();
             logger.keep(LOG_STDOUT, b"lost\n");
             assert_eq!(logger.lost(), 5, "{broken}");
             assert_eq!(
@@ -1099,7 +1176,7 @@ mod tests {
             );
             assert_eq!(fs::read(&index).unwrap(), entries, "{broken}: an entry left");
         }
-        let mut logger = Logger::new(append(&log), append(&index), keep, in_dir(&dir, keep)).unwrap();
+        let mut logger = Logger::new(append(&log), append(&index), 0, keep, in_dir(&dir, keep)).unwrap();
         logger.keep(LOG_STDOUT, b"c\n");
         assert_eq!(fs::read(&index).unwrap().len(), 24);
         assert_eq!(
@@ -1120,7 +1197,7 @@ mod tests {
         let retention = LogRetention { size: 64, files: 3 };
         let first = || (append(&dir.join("log")), append(&dir.join("log.idx")));
         let (log, index) = first();
-        let mut logger = Logger::new(log, index, retention, in_dir(&dir, retention)).unwrap();
+        let mut logger = Logger::new(log, index, 0, retention, in_dir(&dir, retention)).unwrap();
         // A first record past a segment's size is the first segment's, not an empty one's
         // successor's.
         logger.keep(LOG_STDOUT, &[b'_'; 70]);
@@ -1129,7 +1206,7 @@ mod tests {
         fs::remove_file(dir.join("log")).unwrap();
         fs::remove_file(dir.join("log.idx")).unwrap();
         let (log, index) = first();
-        let mut logger = Logger::new(log, index, retention, in_dir(&dir, retention)).unwrap();
+        let mut logger = Logger::new(log, index, 0, retention, in_dir(&dir, retention)).unwrap();
         // 13 + 20 bytes a record: one a segment, since a second would pass 64.
         for i in 0..10u8 {
             logger.keep(LOG_STDOUT, &[b'a' + i; 20]);

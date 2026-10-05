@@ -73,6 +73,9 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("events" | "watch", Thing::System) => &["events"],
         ("inspect", Thing::System) => &["info"],
         ("export", Thing::Vm | Thing::Container) => &["export"],
+        ("start", Thing::Vm | Thing::Container) => &["start"],
+        ("restart", Thing::Vm | Thing::Container) => &["restart"],
+        ("create" | "make", Thing::Vm | Thing::Container) => &["create"],
         ("unpause" | "resume" | "thaw", Thing::Vm | Thing::Container) => &["unpause"],
         ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect"],
         ("run", Thing::Vm | Thing::Container) => &["run"],
@@ -107,13 +110,21 @@ pub static SECTIONS: &[&str] = &["run", "inspect", "manage", "images"];
 /// the things it acts on, and what it does. How each thing is given is on the action's
 /// own page ([`USES`]).
 pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
+    ("run", "create", "vm", "Make a microVM without starting it"),
     ("run", "exec", "vm", "Run a command in a running microVM"),
+    ("run", "restart", "vm", "Stop microVMs, and start them again"),
     ("run", "restore", "vm", "Resume a microVM from a snapshot"),
     (
         "run",
         "run",
         "vm | daemon",
         "Run a command in a new microVM, or the daemon that serves them",
+    ),
+    (
+        "run",
+        "start",
+        "vm",
+        "Start stopped microVMs again, their files as they left them",
     ),
     (
         "inspect",
@@ -210,9 +221,21 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
 pub static USES: &[(&str, &str, &str, &str)] = &[
     (
         "run",
+        "create",
+        "vm IMAGE [COMMAND]",
+        "Make a microVM from an image, without starting it",
+    ),
+    (
+        "run",
         "exec",
         "vm NAME COMMAND",
         "Run a command in a running microVM",
+    ),
+    (
+        "run",
+        "restart",
+        "vm NAME",
+        "Stop microVMs: their stop signal, then SIGKILL; and start them again",
     ),
     ("run", "restore", "vm DIR", "Resume a microVM from a snapshot"),
     (
@@ -232,6 +255,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "run",
         "vm IMAGE",
         "Run a command in a new microVM made from an image",
+    ),
+    (
+        "run",
+        "start",
+        "vm NAME",
+        "Start stopped microVMs again, their files as they left them",
     ),
     (
         "inspect",

@@ -97,6 +97,12 @@ pub fn main(device: &str, template: bool) -> ! {
         }
     };
     let _ = send(&conn, kind::EXIT, &status.to_be_bytes());
+    // The host may ask for the container's writable layer, to keep (layer.rs).
+    if asked_to_save(&conn)
+        && let Err(e) = crate::layer::save(&conn)
+    {
+        let _ = writeln!(io::stderr(), "shards-init: saving the container's files: {e}");
+    }
     // The host closes the connection once it has the status. Powering off before then
     // could lose the frame on its way out.
     let _ = shutdown_and_wait(&conn);
@@ -495,6 +501,34 @@ pub(crate) fn send(conn: &File, kind: u8, payload: &[u8]) -> io::Result<()> {
 }
 
 /// Half-closes the connection and waits, at most two seconds, for the host to close it.
+/// Whether the host, after the exit status, asks for the writable layer
+/// ([`kind::SAVE`]) rather than closing the connection. What it still sends of the
+/// workload's stdin is passed over.
+fn asked_to_save(conn: &File) -> bool {
+    let mut r = conn;
+    let mut h = [0u8; run::HEADER];
+    let mut skip = vec![0u8; CHUNK];
+    loop {
+        if r.read_exact(&mut h).is_err() {
+            return false;
+        }
+        match run::parse_header(h) {
+            Some((kind::SAVE, _)) => return true,
+            Some((_, len)) => {
+                let mut left = len as usize;
+                while left > 0 {
+                    let n = left.min(skip.len());
+                    if r.read_exact(skip.get_mut(..n).unwrap_or_default()).is_err() {
+                        return false;
+                    }
+                    left -= n;
+                }
+            }
+            None => return false,
+        }
+    }
+}
+
 fn shutdown_and_wait(conn: &File) -> io::Result<()> {
     // SAFETY: shutdown(2) on our own socket.
     unsafe { libc::shutdown(conn.as_raw_fd(), libc::SHUT_WR) };
@@ -515,11 +549,19 @@ fn shutdown_and_wait(conn: &File) -> io::Result<()> {
     }
 }
 
+/// The workload the host sends; first, if it sends one, the container's writable layer
+/// from before, put over the root (layer.rs).
 fn receive(conn: &File) -> Result<Spec, Failure> {
     let mut r = conn;
     let mut h = [0u8; run::HEADER];
     r.read_exact(&mut h)
         .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
+    if let Some((kind::LAYER, first)) = run::parse_header(h) {
+        crate::layer::apply(conn, first)
+            .map_err(|e| setup_failed(format!("putting back the container's files: {e}")))?;
+        r.read_exact(&mut h)
+            .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
+    }
     let len = match run::parse_header(h) {
         Some((kind::SPEC, len)) => len,
         _ => return Err(setup_failed("the host sent no workload")),

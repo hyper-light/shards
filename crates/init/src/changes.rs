@@ -57,6 +57,13 @@ pub fn keep(lower: &str, upper: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Where the writable layer kept by [`keep`] is reached, whatever the root.
+pub fn upper() -> Option<String> {
+    LAYERS
+        .get()
+        .map(|(_, upper)| format!("/proc/self/fd/{}", upper.as_raw_fd()))
+}
+
 /// A change: its kind and path.
 type Change = (u8, Vec<u8>);
 

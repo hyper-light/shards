@@ -89,6 +89,25 @@ const DEFAULT_IDLE: Duration = Duration::from_secs(900);
 const DEFAULT_KEEP: Duration = Duration::from_secs(600);
 /// Warm VMs a run may try: one can end while it waits, or before it has taken the run.
 const HANDOFF_TRIES: usize = 3;
+/// A stopped container's writable layer, in its directory (D37): kept whole, and being
+/// written as its microVM stops.
+pub(super) const LAYER: &str = "layer.tar";
+/// The request a container was made by, in its directory, for `shards start`.
+const REQUEST: &str = "request";
+const LAYER_NEW: &str = "layer.new";
+
+/// A new file for a container's layer to be written to, in place of any half-written
+/// one: only this user's.
+fn open_layer(at: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(at)
+}
+
 /// How long a warm VM may take to say it has taken a run: it does so right after it
 /// receives one.
 const TAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -300,6 +319,11 @@ struct Keep<'a> {
     /// Its published ports' host sockets: sent to its VM's network process, and held
     /// until that process has them (M24).
     published: Vec<publish::Listener>,
+    /// The name a detached client gave the container it started again, said once its
+    /// command starts, as `docker start` says it.
+    named: Option<String>,
+    /// Its VM saves its writable layer as it stops (`RUN_LAYER_OUT`).
+    layer_pending: bool,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -369,6 +393,10 @@ struct Inbox {
     execs_in_flight: Vec<(u64, UnixStream)>,
     /// Execs that have events, by number: each one's ID, for its `exec_die`.
     exec_ids: Vec<(u64, String)>,
+    /// The container's writable layer is still to come, after its end (D37).
+    layer_pending: bool,
+    /// [`Keep::named`].
+    named: Option<String>,
     /// What has come of the VM's next message: a VM that stops partway through one holds
     /// up no reader (`take_messages`).
     incoming: shards_ipc::Incoming,
@@ -572,6 +600,10 @@ struct Daemon<D: Disk = Real> {
     removing: Mutex<HashSet<String>>,
     /// What has happened, for `shards events`.
     events: events::Events,
+    /// Containers whose writable layer their stopped VM is still saving (D37), and when
+    /// one is no more.
+    settling: Mutex<HashSet<String>>,
+    settled: Condvar,
     /// The containers `shards pause` froze: their VM processes stopped (SIGSTOP), until
     /// `unpause`, or a stop or kill, lets them go on.
     paused: Mutex<HashSet<String>>,
@@ -1086,6 +1118,8 @@ impl<D: Disk> Daemon<D> {
             removing: Mutex::default(),
             paused: Mutex::default(),
             events: events::Events::default(),
+            settling: Mutex::default(),
+            settled: Condvar::new(),
             spare: Mutex::default(),
             saved: AtomicU64::new(0),
             collecting: Collecting {
@@ -1567,6 +1601,34 @@ impl<D: Disk> Daemon<D> {
             let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
             return None;
         }
+        // `shards start`: the container as it was made, attached as this client asks
+        // (D37). One running already is left so, and named, as `docker start` names it.
+        let mut again = None;
+        if let Some(given) = run.again.clone() {
+            if run.restart
+                && let Err(e) = self.stop_for_restart(&given, run.stop_signal.as_deref(), run.stop_timeout)
+            {
+                say(&e);
+                let _ = shards_ipc::send(conn, kind::EXIT, &[1], &[]);
+                return None;
+            }
+            match self.again(&given) {
+                Ok(Some((id, log, stored))) => {
+                    run = again_as(stored, &run, &id);
+                    again = Some((given, id, log));
+                }
+                Ok(None) => {
+                    let _ = shards_ipc::send(conn, kind::OUT, format!("{given}\n").as_bytes(), &[]);
+                    let _ = shards_ipc::send(conn, kind::EXIT, &[0], &[]);
+                    return None;
+                }
+                Err(e) => {
+                    say(&e);
+                    let _ = shards_ipc::send(conn, kind::EXIT, &[1], &[]);
+                    return None;
+                }
+            }
+        }
         // Its networks as dockerd checks them before it makes the container; what fails
         // as it starts fails once the container is made.
         let mut start = match network::check(&run, self.bridge, |name| self.resolve(name).is_ok()) {
@@ -1578,11 +1640,24 @@ impl<D: Disk> Daemon<D> {
         };
         // The container's ID first: it names the command's host unless the run does
         // (moby daemon/container.go).
-        let (id, container_log) = match self.new_container() {
-            Ok(new) => new,
-            Err(e) => {
-                refuse(&e);
-                return None;
+        let (again, id, container_log) = match again {
+            Some((given, id, log)) => (Some(given), id, log),
+            None => match self.new_container() {
+                Ok((id, log)) => (None, id, log),
+                Err(e) => {
+                    refuse(&e);
+                    return None;
+                }
+            },
+        };
+        // What a run that does not start leaves: a new container's directory goes, and a
+        // spare is made; a container started again only waits no more to be (`again`).
+        let abandon = |id: &str| {
+            if again.is_some() {
+                lock(&self.runs).remove(id);
+            } else {
+                self.discard(id);
+                self.make_spare();
             }
         };
         if run.hostname.is_none() {
@@ -1601,8 +1676,7 @@ impl<D: Disk> Daemon<D> {
             crate::run::prepare(&run, &self.home, &heard, cancel)
         });
         if gone {
-            self.discard(&id);
-            self.make_spare();
+            abandon(&id);
             return None;
         }
         let mut prepared = match prepared {
@@ -1613,8 +1687,7 @@ impl<D: Disk> Daemon<D> {
                 } else {
                     &e
                 });
-                self.discard(&id);
-                self.make_spare();
+                abandon(&id);
                 return None;
             }
         };
@@ -1628,8 +1701,7 @@ impl<D: Disk> Daemon<D> {
         ));
         if let Err(e) = crate::spec::fits(&prepared.spec) {
             refuse(&e);
-            self.discard(&id);
-            self.make_spare();
+            abandon(&id);
             return None;
         }
         // Its published ports, bound now so that its record lists them; a binding that
@@ -1640,8 +1712,7 @@ impl<D: Disk> Daemon<D> {
             network::Start::Attach(network::Net::Bridge) => {
                 if let Some(e) = publish::unsupported(&bindings) {
                     refuse(&e);
-                    self.discard(&id);
-                    self.make_spare();
+                    abandon(&id);
                     return None;
                 }
                 publish::bind(&bindings, &alone, publish::v6_listenable(), |at, proto| {
@@ -1659,16 +1730,54 @@ impl<D: Disk> Daemon<D> {
         };
         // The run's container, before anything starts: its name must be free. Its record
         // is written while a VM is found for it.
-        let name = match self.create(&run, &prepared, &id, ports) {
+        let made = match &again {
+            // Its record stays, with the ports it has now.
+            Some(_) => {
+                let mut registry = lock(&self.containers);
+                let name = registry.get(&id).map(|c| c.name.clone()).unwrap_or_default();
+                match registry.change(&id, |c| {
+                    c.ports = ports;
+                    c.exit_code = None;
+                }) {
+                    Ok(()) => Ok(name),
+                    Err(e) => Err(format!("container {id}: {e}")),
+                }
+            }
+            None => self.create(&run, &prepared, &id, ports),
+        };
+        let name = match made {
             Ok(name) => name,
             Err(e) => {
                 self.free_ports(Some(&id), None);
                 refuse(&e);
-                self.discard(&id);
-                self.make_spare();
+                abandon(&id);
                 return None;
             }
         };
+        // A new container keeps the request it was made by, for `shards start` (D37).
+        if again.is_none() {
+            let dir = lock(&self.containers).dir(&id);
+            let mut kept = run.clone();
+            kept.detach = false;
+            kept.create = false;
+            if let Err(e) = std::fs::write(dir.join(REQUEST), kept.encode()) {
+                log(format!(
+                    "container {id}: keeping its request: {e}; it cannot be started again"
+                ));
+            }
+        }
+        // `shards create`: made, not started, its ports not yet bound (moby
+        // daemon/create.go makes no network endpoint).
+        if run.create {
+            self.free_ports(Some(&id), None);
+            lock(&self.runs).remove(&id);
+            self.record_arrival(threads, &id);
+            self.await_arrival(&id);
+            let _ = shards_ipc::send(conn, kind::OUT, format!("{id}\n").as_bytes(), &[]);
+            let _ = shards_ipc::send(conn, kind::EXIT, &[0], &[]);
+            self.make_spare();
+            return None;
+        }
         // From here, its client passes signals on to the command.
         let _ = shards_ipc::send(conn, kind::CREATED, &[], &[]);
         if let Some(e) = unbound {
@@ -1676,11 +1785,18 @@ impl<D: Disk> Daemon<D> {
                 "failed to set up container networking: driver failed programming external connectivity on endpoint {name} ({id}): {e}"
             ));
         }
-        self.record_arrival(threads, &id);
-        // `docker run -d` prints the ID once the container exists, before it starts.
-        if run.detach {
-            self.await_arrival(&id);
-            let _ = shards_ipc::send(conn, kind::OUT, format!("{id}\n").as_bytes(), &[]);
+        match &again {
+            // `docker start` names what it started, once it has (container/start.go).
+            Some(_) => self.record_soon(&id, Vec::new()),
+            None => {
+                self.record_arrival(threads, &id);
+                // `docker run -d` prints the ID once the container exists, before it
+                // starts.
+                if run.detach {
+                    self.await_arrival(&id);
+                    let _ = shards_ipc::send(conn, kind::OUT, format!("{id}\n").as_bytes(), &[]);
+                }
+            }
         }
         let mut flags = shards_ipc::RUN_LOG;
         if prepared.interactive {
@@ -1700,11 +1816,41 @@ impl<D: Disk> Daemon<D> {
             vec![conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()]
         };
         fds.extend([container_log.log.as_fd(), container_log.index.as_fd()]);
-        // The flags, the retention's two u64s, then the spec, in one allocation (audit D10).
-        let mut payload = Vec::with_capacity(17 + prepared.spec.encoded_len().unwrap_or(0));
+        // A container that stays keeps its writable layer once it stops (D37): written
+        // beside its log, and kept once whole (`run_ended`).
+        let layer_out = if run.remove {
+            None
+        } else {
+            let at = lock(&self.containers).dir(&id).join(LAYER_NEW);
+            match open_layer(&at) {
+                Ok(file) => Some(file),
+                Err(e) => {
+                    log(format!(
+                        "container {id}: its writable layer will not be kept: {e}"
+                    ));
+                    None
+                }
+            }
+        };
+        // What it changed before, to put back (D37).
+        let layer_in = again
+            .as_ref()
+            .and_then(|_| File::open(lock(&self.containers).dir(&id).join(LAYER)).ok());
+        if let Some(file) = &layer_in {
+            flags |= shards_ipc::RUN_LAYER_IN;
+            fds.push(file.as_fd());
+        }
+        if let Some(file) = &layer_out {
+            flags |= shards_ipc::RUN_LAYER_OUT;
+            fds.push(file.as_fd());
+        }
+        // The flags, the retention's two u64s, the log's segment, then the spec, in one
+        // allocation (audit D10).
+        let mut payload = Vec::with_capacity(25 + prepared.spec.encoded_len().unwrap_or(0));
         payload.push(flags);
         payload.extend(self.logs.size.to_be_bytes());
         payload.extend(self.logs.files.to_be_bytes());
+        payload.extend(container_log.seq.to_be_bytes());
         prepared.spec.encode_into(&mut payload);
         let detached = run.detach.then_some(conn);
         let started = self.start_run(
@@ -1717,6 +1863,8 @@ impl<D: Disk> Daemon<D> {
                 options: prepared.options.clone(),
                 health: prepared.health.clone().map(|h| (h, prepared.shell.clone())),
                 published,
+                named: again.clone().filter(|_| run.detach),
+                layer_pending: layer_out.is_some(),
             },
             || self.warm_for(threads, &prepared, &start, &say),
         );
@@ -1900,6 +2048,54 @@ impl<D: Disk> Daemon<D> {
                 .wait_timeout(held, left)
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
+        }
+    }
+
+    /// Container `given`, to be started again (`shards start`): its ID, its log's newest
+    /// segment, and the request it was made by; none if it runs, or is starting, already.
+    /// From here until its run is handed over or abandoned, it is starting.
+    fn again(&self, given: &str) -> Result<Option<(String, Log, Run)>, String> {
+        let id = self.resolve(given)?;
+        if lock(&self.removing).contains(&id) {
+            return Err(
+                "Error response from daemon: container is marked for removal and cannot be started".into(),
+            );
+        }
+        {
+            let mut runs = lock(&self.runs);
+            if runs.contains_key(&id) {
+                return Ok(None);
+            }
+            runs.insert(id.clone(), RunState::Pending { cancelled: false });
+        }
+        // Its files as its last run left them, once its VM has saved them.
+        {
+            let mut settling = lock(&self.settling);
+            while settling.contains(&id) {
+                settling = self
+                    .settled
+                    .wait(settling)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+        let dir = lock(&self.containers).dir(&id);
+        let found = std::fs::read(dir.join(REQUEST))
+            .ok()
+            .and_then(|b| Run::decode(&b))
+            .ok_or_else(|| {
+                format!("Error response from daemon: container {id} was not made to be started again")
+            })
+            .and_then(|stored| {
+                newest_log(&dir)
+                    .map(|log| (stored, log))
+                    .map_err(|e| format!("Error response from daemon: container {id}: its log: {e}"))
+            });
+        match found {
+            Ok((stored, log)) => Ok(Some((id, log, stored))),
+            Err(e) => {
+                lock(&self.runs).remove(&id);
+                Err(e)
+            }
         }
     }
 
@@ -2339,7 +2535,12 @@ impl<D: Disk> Daemon<D> {
             options,
             health,
             published,
+            named,
+            layer_pending,
         } = keep;
+        if layer_pending {
+            lock(&self.settling).insert(id.to_string());
+        }
         // Its ports are held until its VM's network process has gone, which frees them:
         // with the daemon's copies, if that process did not say it had them.
         if let Some(h) = lock(&self.ports_held).iter_mut().find(|h| h.container == id) {
@@ -2366,6 +2567,8 @@ impl<D: Disk> Daemon<D> {
             segment: 0,
             execs_in_flight: Vec::new(),
             exec_ids: Vec::new(),
+            layer_pending,
+            named,
             incoming: shards_ipc::Incoming::default(),
         }));
         let tracked = Tracked {
@@ -2401,14 +2604,20 @@ impl<D: Disk> Daemon<D> {
     /// ended.
     fn take_messages(&self, id: &str, inbox: &Mutex<Inbox>) -> bool {
         let mut guard = lock(inbox);
-        while !guard.ended {
+        // Followed past its end while its writable layer is still to come (D37).
+        while !guard.ended || guard.layer_pending {
             let inbox = &mut *guard;
             let m = match inbox.incoming.take(&inbox.socket.stream) {
                 Ok(shards_ipc::Took::Message(m)) => m,
                 // What has come of the next is kept for the rest.
                 Ok(shards_ipc::Took::Partial) => break,
                 Ok(shards_ipc::Took::Ended) | Err(_) => {
-                    self.run_ended(id, inbox, None);
+                    if !inbox.ended {
+                        self.run_ended(id, inbox, None);
+                    }
+                    if inbox.layer_pending {
+                        self.settle_layer(id, inbox, false);
+                    }
                     continue;
                 }
             };
@@ -2427,6 +2636,7 @@ impl<D: Disk> Daemon<D> {
                         inbox.execs_in_flight.retain(|(held, _)| *held != n);
                     }
                 }
+                kind::LAYER_SAVED => self.settle_layer(id, inbox, true),
                 kind::EXEC_ENDED => {
                     if let Some((n, &[status])) = m.payload.split_first_chunk::<8>()
                         && let Some(at) = inbox
@@ -2446,7 +2656,26 @@ impl<D: Disk> Daemon<D> {
                 _ => {}
             }
         }
-        guard.ended
+        guard.ended && !guard.layer_pending
+    }
+
+    /// Container `id`'s writable layer, as its VM left it (D37): kept if it came `whole`;
+    /// else what came of it goes, and the layer it had before stays.
+    fn settle_layer(&self, id: &str, inbox: &mut Inbox, whole: bool) {
+        inbox.layer_pending = false;
+        let (new, kept) = (inbox.container.join(LAYER_NEW), inbox.container.join(LAYER));
+        let settled = if whole {
+            std::fs::rename(&new, &kept)
+        } else {
+            std::fs::remove_file(&new)
+        };
+        if let Err(e) = settled
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            log(format!("container {id}: its writable layer: {e}"));
+        }
+        lock(&self.settling).remove(id);
+        self.settled.notify_all();
     }
 
     /// Has the log segment run `id`'s VM asks for made, the one after the last asked for,
@@ -2553,6 +2782,11 @@ impl<D: Disk> Daemon<D> {
         let told: Vec<UnixStream> = inbox.detached.take().into_iter().collect();
         if changed.is_ok() {
             self.container_event(id, "start", &[]);
+        }
+        if let Some(name) = inbox.named.take() {
+            for client in &told {
+                let _ = shards_ipc::send(client, kind::OUT, format!("{name}\n").as_bytes(), &[]);
+            }
         }
         match changed {
             Ok(()) => self.record_soon(id, told),
@@ -3580,6 +3814,50 @@ fn taken(vm: &UnixStream) -> Result<(), Untaken> {
 struct Log {
     log: File,
     index: File,
+    /// Its segment's number: 0 for a new container's.
+    seq: u64,
+}
+
+/// The newest segment of the log in container directory `dir`, to go on writing: the
+/// last whose index is there (segments.rs).
+fn newest_log(dir: &Path) -> io::Result<Log> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut seq = 0;
+    while dir.join(log_segment(seq + 1).1).exists() {
+        seq += 1;
+    }
+    let (log, index) = log_segment(seq);
+    let open = |name: String| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(dir.join(name))
+    };
+    Ok(Log {
+        log: open(log)?,
+        index: open(index)?,
+        seq,
+    })
+}
+
+/// The request container `id` was made by, as a client asks to start it again: attached
+/// as that client asks, its stdin only if it was made to read one, never pulled (moby
+/// daemon/start.go; docker/cli container/start.go).
+fn again_as(stored: Run, client: &Run, id: &str) -> Run {
+    Run {
+        detach: client.detach,
+        interactive: stored.interactive && client.interactive,
+        tty: stored.tty.map(|made| client.tty.unwrap_or(made)),
+        timing: client.timing,
+        pull: shards_ipc::Pull::Never,
+        registry_env: client.registry_env.clone(),
+        daemon: client.daemon,
+        again: Some(id.to_string()),
+        create: false,
+        restart: false,
+        ..stored
+    }
 }
 
 /// A new container's directory `dir`, with its log's first segment and that segment's
@@ -3602,6 +3880,7 @@ fn new_log(dir: &Path) -> io::Result<Log> {
     Ok(Log {
         log,
         index: made(index)?,
+        seq: 0,
     })
 }
 
@@ -4039,6 +4318,8 @@ mod tests {
                         options: crate::spec::Options::default(),
                         health: None,
                         published: Vec::new(),
+                        named: None,
+                        layer_pending: false,
                     },
                     acquire,
                 )?;
@@ -5863,6 +6144,8 @@ mod tests {
                 options: crate::spec::Options::default(),
                 health: None,
                 published: Vec::new(),
+                named: None,
+                layer_pending: false,
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);

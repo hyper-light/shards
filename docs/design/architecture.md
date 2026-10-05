@@ -2047,6 +2047,37 @@ one CLI.
   E2E runs the one binary placed alone, its VMs from what it carries; `apple::tests`,
   the verifier against rustls-platform-verifier over eleven chains.
 
+### A container's files outlive its microVM (D37)
+
+A Docker container keeps its writable layer when it stops: `docker start` runs its
+command again over the files it left, and `diff`, `export`, `cp` and `commit` read them.
+A microVM's writable layer is the upper directory of its root's overlay, in guest memory,
+gone with the VM. So a container that stays (not `--rm`) keeps it on the host:
+
+- **Saved as it stops.** After the command's status, the host asks init for the layer
+  (`kind::SAVE`); init packs the upper directory as go-archive packs one
+  (`WhiteoutFormat::Overlay`: whiteouts become `.wh.` entries, opaque directories
+  `.wh..wh..opq`), without what init makes of every container (its mounts, `/etc`'s files),
+  and sends it as `kind::LAYER` frames. The VM process writes it to a file the daemon
+  opened in the container's directory (`layer.new`), and says so (`LAYER_SAVED`); the
+  daemon keeps it as `layer.tar` only whole. That is an OCI image layer of the container's
+  changes, which `commit` takes as it is.
+- **After the end is told.** Saving before the run's end cost an empty layer 29 ms at p50
+  and a 4 MiB one 155 ms; told first, the empty layer costs nothing measurable and the
+  4 MiB one 6.5 ms at p50, from the save running beside the next run [PM M115]. Only what
+  reads the layer waits for it (`start`, until the daemon has it settled).
+- **Put back as it starts.** `shards start` sends the request the container was made by
+  (kept as `request` beside its log), and the daemon hands the VM its layer
+  (`RUN_LAYER_IN`), which init applies over the image's root before the command, as
+  go-archive's ApplyLayer does; its log goes on from its newest segment. `restart` stops
+  it first; `create` makes it, and starts nothing.
+- Open: keeping the layer on the host from the start (a disk under the overlay) would
+  cost a stop nothing and let `diff`, `export` and `cp` read a stopped container's files
+  without a VM; to be measured against this.
+- **Tests:** `start_runs_a_stopped_microvm_again_over_its_own_files` (files and
+  deletions survive, `create`, `restart`, errors); shards-archive's oracle for the
+  layer's form against go-archive on overlayfs.
+
 ### Agentfiles: a Dockerfile and shards' directives (D35)
 
 An Agentfile is a Dockerfile with the directives docs/architecture/AGENTFILE_ARCH.md

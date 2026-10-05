@@ -11,6 +11,8 @@ mod frames;
 #[cfg(target_os = "linux")]
 mod inroot;
 #[cfg(target_os = "linux")]
+mod layer;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 mod net;

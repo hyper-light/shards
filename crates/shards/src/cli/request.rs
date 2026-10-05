@@ -75,6 +75,142 @@ pub fn run(path: &str, args: &[OsString]) -> ExitCode {
     }
 }
 
+/// Makes a container as the command line `args` says, the words after `path` (`shards
+/// create`), as `docker create` makes one: as `run` would, and not started; its ID said.
+pub fn create(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::cli::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let parsed = match crate::cli::read(&shards_cmdline::commands::CREATE, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    let mut request = match request(&parsed) {
+        Ok(request) => request,
+        Err(e) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "shards: {e}\n\nRun 'shards create --help' for more information"
+            );
+            return ExitCode::from(NOT_RUN);
+        }
+    };
+    request.create = true;
+    request.detach = true;
+    send(&mut request, term::DETACH_KEYS)
+}
+
+/// Starts the containers the command line `args` names, the words after `path` (`shards
+/// start`), as `docker start` does (docker/cli container/start.go): each run again as it
+/// was made, its files as it left them (D37), named once it is; with `-a` or `-i`, one,
+/// attached.
+pub fn start(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::cli::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let parsed = match crate::cli::read(&shards_cmdline::commands::START, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    let keys = parsed.string("detach-keys");
+    let detach_keys = if keys.is_empty() {
+        term::DETACH_KEYS.to_vec()
+    } else {
+        match term::to_bytes(keys) {
+            Ok(bytes) => bytes,
+            Err(e) => return refuse(&format!("invalid detach keys ({keys}): {e}")),
+        }
+    };
+    let (attach, interactive) = (parsed.bool("attach"), parsed.bool("interactive"));
+    if attach || interactive {
+        if parsed.args.len() > 1 {
+            return refuse("you cannot start and attach multiple containers at once");
+        }
+        let mut request = Run {
+            again: parsed.args.first().cloned(),
+            interactive,
+            tty: std::io::stdout().is_terminal().then(stdout_size),
+            ..Run::default()
+        };
+        return send(&mut request, &detach_keys);
+    }
+    // startContainersWithoutAttachments: each named as it starts, the others' errors
+    // said, and their names after.
+    let mut failed = Vec::new();
+    for container in &parsed.args {
+        let mut request = Run {
+            again: Some(container.clone()),
+            detach: true,
+            ..Run::default()
+        };
+        if send(&mut request, &detach_keys) != ExitCode::SUCCESS {
+            failed.push(container.as_str());
+        }
+    }
+    if failed.is_empty() {
+        return ExitCode::SUCCESS;
+    }
+    refuse(&format!("failed to start containers: {}", failed.join(", ")))
+}
+
+/// Restarts the containers the command line `args` names, the words after `path`
+/// (`shards restart`), as `docker restart` does (docker/cli container/restart.go): each
+/// stopped, by `-s` and `-t` where given, then started again, and named.
+pub fn restart(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::cli::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let parsed = match crate::cli::read(&shards_cmdline::commands::RESTART, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    if parsed.changed("time") && parsed.changed("timeout") {
+        return refuse("conflicting options: cannot specify both --timeout and --time");
+    }
+    let signal = parsed.string("signal");
+    let timeout = (parsed.changed("timeout") || parsed.changed("time")).then(|| parsed.int("timeout"));
+    let mut status = ExitCode::SUCCESS;
+    for container in &parsed.args {
+        let mut request = Run {
+            again: Some(container.clone()),
+            restart: true,
+            detach: true,
+            stop_signal: (!signal.is_empty()).then(|| signal.to_string()),
+            stop_timeout: timeout,
+            ..Run::default()
+        };
+        if send(&mut request, term::DETACH_KEYS) != ExitCode::SUCCESS {
+            status = ExitCode::FAILURE;
+        }
+    }
+    status
+}
+
+/// Sends `request` to the daemon as a run, answered as one.
+fn send(request: &mut Run, detach_keys: &[u8]) -> ExitCode {
+    match resolve(request) {
+        #[cfg(unix)]
+        Ok((home, daemon)) => crate::cli::client::run(&home, &daemon, request, detach_keys),
+        #[cfg(not(unix))]
+        Ok(_) => {
+            let _ = detach_keys;
+            crate::cli::failed(
+                "running a command needs the daemon, which needs Unix sockets, which shards does not support on this platform yet",
+            )
+        }
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "shards: {e}");
+            ExitCode::from(NOT_RUN)
+        }
+    }
+}
+
 /// Runs the command line `args`, the words after `path` (`shards exec`), as `docker exec`
 /// runs it: in a running container, attached unless `-d` (docker/cli
 /// cli/command/container/exec.go).

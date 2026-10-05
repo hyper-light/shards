@@ -71,6 +71,7 @@ pub static TOP: &[Group] = &[
     Group {
         heading: "Commands",
         entries: &[
+            of("create", &commands::CREATE),
             of("diff", &commands::DIFF),
             of("events", &commands::EVENTS),
             of("export", &commands::EXPORT),
@@ -82,9 +83,11 @@ pub static TOP: &[Group] = &[
             of("pause", &commands::PAUSE),
             of("port", &commands::PORT),
             of("rename", &commands::RENAME),
+            of("restart", &commands::RESTART),
             of("rm", &commands::RM),
             of("rmi", &commands::RMI),
             of("save", &commands::SAVE),
+            of("start", &commands::START),
             of("stats", &commands::STATS),
             of("stop", &commands::STOP),
             of("tag", &commands::TAG),
@@ -101,6 +104,7 @@ pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
         "container",
         "Manage containers",
         &[
+            of("create", &commands::CREATE),
             of("diff", &commands::DIFF),
             of("exec", &commands::EXEC),
             of("export", &commands::EXPORT),
@@ -110,8 +114,10 @@ pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
             of("pause", &commands::PAUSE),
             of("port", &commands::PORT),
             of("rename", &commands::RENAME),
+            of("restart", &commands::RESTART),
             of("rm", &commands::RM),
             of("run", &commands::RUN),
+            of("start", &commands::START),
             of("stats", &commands::STATS),
             of("stop", &commands::STOP),
             of("top", &commands::TOP),

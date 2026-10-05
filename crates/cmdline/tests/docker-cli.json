@@ -308,6 +308,124 @@
   },
   {
     "argv": [
+      "start"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards start' requires at least 1 argument\n\nUsage:  shards start [OPTIONS] CONTAINER [CONTAINER...]\n\nSee 'shards start --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "start",
+      "--help"
+    ],
+    "stdout": "Usage:  shards start [OPTIONS] CONTAINER [CONTAINER...]\n\nStart one or more stopped containers\n\nAliases:\n  shards container start, shards start\n\nOptions:\n  -a, --attach               Attach STDOUT/STDERR and forward signals\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n  -i, --interactive          Attach container's STDIN\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "start",
+      "-a",
+      "--nope",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards start [OPTIONS] CONTAINER [CONTAINER...]\n\nRun 'shards start --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "start",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container start [OPTIONS] CONTAINER [CONTAINER...]\n\nStart one or more stopped containers\n\nAliases:\n  shards container start, shards start\n\nOptions:\n  -a, --attach               Attach STDOUT/STDERR and forward signals\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n  -i, --interactive          Attach container's STDIN\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "restart",
+      "--help"
+    ],
+    "stdout": "Usage:  shards restart [OPTIONS] CONTAINER [CONTAINER...]\n\nRestart one or more containers\n\nAliases:\n  shards container restart, shards restart\n\nOptions:\n  -s, --signal string   Signal to send to the container\n  -t, --timeout int     Seconds to wait before killing the container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "restart",
+      "-t",
+      "x",
+      "a"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"-t, --timeout\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards restart [OPTIONS] CONTAINER [CONTAINER...]\n\nRun 'shards restart --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "restart",
+      "--time",
+      "1",
+      "--timeout",
+      "2",
+      "a"
+    ],
+    "stdout": "Flag --time has been deprecated, use --timeout instead\nRUN --time=2 --timeout=2 \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "restart",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container restart [OPTIONS] CONTAINER [CONTAINER...]\n\nRestart one or more containers\n\nAliases:\n  shards container restart, shards restart\n\nOptions:\n  -s, --signal string   Signal to send to the container\n  -t, --timeout int     Seconds to wait before killing the container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create",
+      "--help"
+    ],
+    "stdout": "Usage:  shards create [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate a new container\n\nAliases:\n  shards container create, shards create\n\nOptions:\n      --entrypoint string                Overwrite the default ENTRYPOINT\n                                         of the image\n  -e, --env list                         Set environment variables\n      --health-cmd string                Command to run to check health\n      --health-interval duration         Time between running the check\n                                         (ms|s|m|h) (default 0s)\n      --health-retries int               Consecutive failures needed to\n                                         report unhealthy\n      --health-start-interval duration   Time between running the check\n                                         during the start period\n                                         (ms|s|m|h) (default 0s)\n      --health-start-period duration     Start period for the container\n                                         to initialize before starting\n                                         health-retries countdown\n                                         (ms|s|m|h) (default 0s)\n      --health-timeout duration          Maximum time to allow one check\n                                         to run (ms|s|m|h) (default 0s)\n      --help                             Print usage\n  -h, --hostname string                  Container host name\n      --init                             Run an init inside the container\n                                         that forwards signals and reaps\n                                         processes\n  -i, --interactive                      Keep STDIN open even if not attached\n      --name string                      Assign a name to the container\n      --network network                  Connect a container to a network\n      --no-healthcheck                   Disable any container-specified\n                                         HEALTHCHECK\n  -p, --publish list                     Publish a container's port(s) to\n                                         the host\n  -P, --publish-all                      Publish all exposed ports to\n                                         random ports\n      --pull string                      Pull image before creating\n                                         (\"always\", \"missing\", \"never\")\n                                         (default \"missing\")\n      --rm                               Automatically remove the\n                                         container and its associated\n                                         anonymous volumes when it exits\n      --stop-signal string               Signal to stop the container\n      --stop-timeout int                 Timeout (in seconds) to stop a\n                                         container\n  -t, --tty                              Allocate a pseudo-TTY\n  -u, --user string                      Username or UID (format:\n                                         \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n  -w, --workdir string                   Working directory inside the\n                                         container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards create' requires at least 1 argument\n\nUsage:  shards create [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nSee 'shards create --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "create",
+      "-d",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "unknown shorthand flag: 'd' in -d\n\nUsage:  shards create [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards create --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "create",
+      "-h"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: 'h' in -h\n\nUsage:  shards container create [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards container create --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
       "run"
     ],
     "stdout": "",

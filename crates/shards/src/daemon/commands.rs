@@ -1578,6 +1578,43 @@ impl<D: crate::containers::Disk> Daemon<D> {
         )
     }
 
+    /// Stops container `given` if it runs, for `restart` (moby daemon/restart.go,
+    /// containerRestart: containerStop first): by `signal` and `timeout` where given,
+    /// else as it stops; its ID, or what dockerd says.
+    pub(super) fn stop_for_restart(
+        &self,
+        given: &str,
+        signal: Option<&str>,
+        timeout: Option<i64>,
+    ) -> Result<String, String> {
+        let id = self.resolve(given)?;
+        self.await_start(&id);
+        if !self.running(&id) {
+            return Ok(id);
+        }
+        let cannot =
+            |why: &str| format!("Error response from daemon: Cannot restart container {given}: {why}");
+        let (own_signal, own_grace) = self.own_stop(&id);
+        let grace = timeout.map_or(own_grace, grace_of);
+        let linux = match signal {
+            None => own_signal,
+            Some(s) => match parse_signal(s) {
+                Ok(n) => u32::try_from(n).ok().filter(|n| (1..=64).contains(n)),
+                Err(e) => return Err(cannot(&e)),
+            },
+        };
+        let (linux, grace) = linux.map_or((9, Some(UNSENT_WAIT)), |l| (l, grace));
+        let mut ended = false;
+        self.end_all(vec![(0, id.clone(), linux, grace)], &mut |_, e, _| ended = e);
+        if !ended {
+            return Err(cannot(
+                "tried to kill container, but did not receive an exit event",
+            ));
+        }
+        self.container_event(&id, "stop", &[]);
+        Ok(id)
+    }
+
     /// The stop container `id` asks for when nothing else is told, as dockerd reads it
     /// (moby daemon/stop.go, container.StopSignal and StopTimeout): its stop signal, else
     /// SIGTERM, `None` where Linux has no signal of its number; and how long its command

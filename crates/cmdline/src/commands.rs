@@ -220,6 +220,259 @@ volumes-from - m - -",
     error_prefix: "",
 };
 
+/// `shards create` (docker/cli cli/command/container/create.go): `run`'s container flags,
+/// without what only `run` has.
+pub static CREATE: Command = Command {
+    usage: "[OPTIONS] IMAGE [COMMAND] [ARG...]",
+    about: "Create a new container",
+    aliases: "shards container create, shards create",
+    args: Args::AtLeast(1),
+    flags: &[
+        // Content trust is gone from the CLI; the flag only says so.
+        Flag::bool(
+            "disable-content-trust",
+            None,
+            "Skip image verification (deprecated)",
+        )
+        .defaulting("true")
+        .deprecated("support for docker content trust was removed"),
+        Flag::string(
+            "entrypoint",
+            None,
+            "",
+            "Overwrite the default ENTRYPOINT of the image",
+        ),
+        Flag::many("env", Some(b'e'), "list", "Set environment variables"),
+        Flag::string("health-cmd", None, "", "Command to run to check health"),
+        Flag::duration(
+            "health-interval",
+            None,
+            "Time between running the check (ms|s|m|h) (default 0s)",
+        ),
+        Flag::int(
+            "health-retries",
+            None,
+            "0",
+            "Consecutive failures needed to report unhealthy",
+        ),
+        Flag::duration(
+            "health-start-interval",
+            None,
+            "Time between running the check during the start period (ms|s|m|h) (default 0s)",
+        ),
+        Flag::duration(
+            "health-start-period",
+            None,
+            "Start period for the container to initialize before starting health-retries countdown (ms|s|m|h) (default 0s)",
+        ),
+        Flag::duration(
+            "health-timeout",
+            None,
+            "Maximum time to allow one check to run (ms|s|m|h) (default 0s)",
+        ),
+        Flag::bool("help", None, "Print usage"),
+        Flag::string("hostname", Some(b'h'), "", "Container host name"),
+        // shards-init is every guest's PID 1, and does what docker-init does: it forwards
+        // signals to the command and reaps orphans.
+        Flag::bool(
+            "init",
+            None,
+            "Run an init inside the container that forwards signals and reaps processes",
+        ),
+        Flag::bool("interactive", Some(b'i'), "Keep STDIN open even if not attached"),
+        // Kernels no longer have the limit; the flag only says so.
+        Flag::string("kernel-memory", None, "0", "Kernel memory limit (deprecated)")
+            .deprecated("and no longer supported by the kernel"),
+        Flag::string("name", None, "", "Assign a name to the container"),
+        // One value, `--net` and `--network` alike (docker/cli opts.go addFlags).
+        Flag::many("net", None, "network", "Connect a container to a network")
+            .sharing("network")
+            .hidden(),
+        Flag::many("network", None, "network", "Connect a container to a network"),
+        Flag::bool(
+            "no-healthcheck",
+            None,
+            "Disable any container-specified HEALTHCHECK",
+        ),
+        Flag::many(
+            "publish",
+            Some(b'p'),
+            "list",
+            "Publish a container's port(s) to the host",
+        ),
+        Flag::bool(
+            "publish-all",
+            Some(b'P'),
+            "Publish all exposed ports to random ports",
+        ),
+        Flag::string(
+            "pull",
+            None,
+            "missing",
+            "Pull image before creating (\"always\", \"missing\", \"never\")",
+        ),
+        Flag::bool(
+            "rm",
+            None,
+            "Automatically remove the container and its associated anonymous volumes when it exits",
+        ),
+        Flag::string("stop-signal", None, "", "Signal to stop the container"),
+        Flag::int(
+            "stop-timeout",
+            None,
+            "0",
+            "Timeout (in seconds) to stop a container",
+        ),
+        Flag::bool("tty", Some(b't'), "Allocate a pseudo-TTY"),
+        Flag::string(
+            "user",
+            Some(b'u'),
+            "",
+            "Username or UID (format: <name|uid>[:<group|gid>])",
+        ),
+        Flag::string(
+            "workdir",
+            Some(b'w'),
+            "",
+            "Working directory inside the container",
+        ),
+    ],
+    unserved: "\
+add-host - m - -\n\
+annotation - m - -\n\
+attach a m - -\n\
+blkio-weight - s 0 -\n\
+blkio-weight-device - m - -\n\
+cap-add - m - -\n\
+cap-drop - m - -\n\
+cgroup-parent - s - -\n\
+cgroupns - s - -\n\
+cidfile - s - -\n\
+cpu-count - i 0 -\n\
+cpu-percent - i 0 -\n\
+cpu-period - i 0 -\n\
+cpu-quota - i 0 -\n\
+cpu-rt-period - i 0 -\n\
+cpu-rt-runtime - i 0 -\n\
+cpu-shares c i 0 -\n\
+cpus - s - -\n\
+cpuset-cpus - s - -\n\
+cpuset-mems - s - -\n\
+device - m - -\n\
+device-cgroup-rule - m - -\n\
+device-read-bps - m - -\n\
+device-read-iops - m - -\n\
+device-write-bps - m - -\n\
+device-write-iops - m - -\n\
+dns - m - -\n\
+dns-opt - m - dns-option\n\
+dns-option - m - -\n\
+dns-search - m - -\n\
+domainname - s - -\n\
+env-file - m - -\n\
+expose - m - -\n\
+gpus - m - -\n\
+group-add - m - -\n\
+io-maxbandwidth - s 0 -\n\
+io-maxiops - s 0 -\n\
+ip - s <nil> -\n\
+ip6 - s <nil> -\n\
+ipc - s - -\n\
+isolation - s - -\n\
+label l m - -\n\
+label-file - m - -\n\
+link - m - -\n\
+link-local-ip - m - -\n\
+log-driver - s - -\n\
+log-opt - m - -\n\
+mac-address - s - -\n\
+memory m s 0 -\n\
+memory-reservation - s 0 -\n\
+memory-swap - s 0 -\n\
+memory-swappiness - i -1 -\n\
+mount - m - -\n\
+net-alias - m - network-alias\n\
+network-alias - m - -\n\
+oom-kill-disable - b false -\n\
+oom-score-adj - i 0 -\n\
+pid - s - -\n\
+pids-limit - i 0 -\n\
+platform - s - -\n\
+privileged - b false -\n\
+quiet q b false -\n\
+read-only - b false -\n\
+restart - s no -\n\
+runtime - s - -\n\
+security-opt - m - -\n\
+shm-size - s 0 -\n\
+storage-opt - m - -\n\
+sysctl - m - -\n\
+tmpfs - m - -\n\
+ulimit - m - -\n\
+umask - s - -\n\
+use-api-socket - b false -\n\
+userns - s - -\n\
+uts - s - -\n\
+volume v m - -\n\
+volume-driver - s - -\n\
+volumes-from - m - -",
+    interspersed: false,
+    error_prefix: "",
+};
+
+/// `shards start` (docker/cli cli/command/container/start.go).
+pub static START: Command = Command {
+    usage: "[OPTIONS] CONTAINER [CONTAINER...]",
+    about: "Start one or more stopped containers",
+    aliases: "shards container start, shards start",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::bool("attach", Some(b'a'), "Attach STDOUT/STDERR and forward signals"),
+        Flag::string(
+            "detach-keys",
+            None,
+            "",
+            "Override the key sequence for detaching a container",
+        ),
+        HELP,
+        Flag::bool("interactive", Some(b'i'), "Attach container's STDIN"),
+    ],
+    unserved: "\
+checkpoint - s - -\n\
+checkpoint-dir - s - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards restart` (docker/cli cli/command/container/restart.go).
+pub static RESTART: Command = Command {
+    usage: "[OPTIONS] CONTAINER [CONTAINER...]",
+    about: "Restart one or more containers",
+    aliases: "shards container restart, shards restart",
+    args: Args::AtLeast(1),
+    flags: &[
+        HELP,
+        Flag::string("signal", Some(b's'), "", "Signal to send to the container"),
+        Flag::int(
+            "time",
+            None,
+            "0",
+            "Seconds to wait before killing the container (deprecated: use --timeout)",
+        )
+        .sharing("timeout")
+        .deprecated("use --timeout instead"),
+        Flag::int(
+            "timeout",
+            Some(b't'),
+            "0",
+            "Seconds to wait before killing the container",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// A container that did not start, as dockerd takes it (moby daemon/errors.go,
 /// setExitCodeFromError): what dockerd then says, which it amends for directories, and
 /// the exit code the container keeps: 126 when the command could not be invoked, 127
@@ -1078,6 +1331,12 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["top", ..] => (&TOP, "shards top", 1),
         ["diff", ..] => (&DIFF, "shards diff", 1),
         ["events", ..] => (&EVENTS, "shards events", 1),
+        ["start", ..] => (&START, "shards start", 1),
+        ["container", "start", ..] => (&START, "shards container start", 2),
+        ["restart", ..] => (&RESTART, "shards restart", 1),
+        ["container", "restart", ..] => (&RESTART, "shards container restart", 2),
+        ["create", ..] => (&CREATE, "shards create", 1),
+        ["container", "create", ..] => (&CREATE, "shards container create", 2),
         ["info", ..] => (&INFO, "shards info", 1),
         ["export", ..] => (&EXPORT, "shards export", 1),
         ["container", "export", ..] => (&EXPORT, "shards container export", 2),

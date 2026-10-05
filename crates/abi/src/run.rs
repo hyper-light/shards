@@ -75,6 +75,15 @@ pub mod kind {
     /// host fails that exec with them, rather than wait for a connection that will not
     /// come.
     pub const EXEC_FAILED: u8 = 25;
+    /// Either way, on the workload's connection: a piece of a container's writable layer,
+    /// a tar archive of its changes in the OCI image layer form (`.wh.` whiteouts); an
+    /// empty frame ends it. Host to guest before [`SPEC`]: a stopped container's layer, to
+    /// put over the image before the command runs again. Guest to host after [`SAVE`]: the
+    /// layer as the container left it.
+    pub const LAYER: u8 = 26;
+    /// Host to guest, after [`EXIT`]: send the container's writable layer as [`LAYER`]
+    /// frames, then wait to be powered off.
+    pub const SAVE: u8 = 27;
 }
 
 /// Why an exec did not start, as its [`kind::SYSTEM_ERR`] says first: the runtime could

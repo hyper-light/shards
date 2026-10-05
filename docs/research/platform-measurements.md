@@ -3943,3 +3943,26 @@ revision before comparing a changed API/implementation.
   blob's first asked of the URL the registry redirected it to (fetch.rs). The download no
   longer bounds a large pull: unpacking its largest layer does, after the layer has
   arrived. Next: unpack a layer as its bytes arrive in order, not after.
+
+### M115. What keeping a container's writable layer costs a run
+
+- **Question.** A container that stays keeps its writable layer once its microVM stops
+  (D37): init packs its overlay upper directory as an OCI layer, sent to the host on the
+  run's connection. What does that add to `shards run`?
+- **Method.** `docs/research/measurements/layer-save/ab.py`: `shards run alpine` of a
+  command that writes `size` bytes into the root (0, and 4 MiB), with `--rm` (no layer
+  saved) and without (layer saved), interleaved, 50 each after one warm-up each. Apple M5
+  Max, macOS 26.4.1, 2026-10-05, at load averages of 3 to 7 from other work on the host.
+- **Results** (ms, n 50 each).
+  - Saved before the run's end was told (the first build): 0 bytes, `--rm` p50 9.45, p90
+    14.13, p99 18.89; kept p50 38.93, p90 52.64, p99 63.86. 4 MiB: `--rm` p50 17.97, p99
+    78.95; kept p50 173.44, p90 207.96, p99 314.68.
+  - Saved after it (the end told to the daemon and the client first, the layer after;
+    `shards start` waits for it): 0 bytes, `--rm` p50 12.31, p90 22.28, p99 25.31; kept
+    p50 12.78, p90 21.29, p99 30.99. 4 MiB: `--rm` p50 17.19, p90 26.48, p99 31.07; kept
+    p50 23.69, p90 35.01, p99 65.98.
+- **Consequence.** The layer is saved after the run's end is told. What it still costs is
+  the save's work beside the next run: 4 MiB of changes moved over the run's connection
+  at 64 KiB a frame. A writable layer kept on the host from the start (a disk of its own
+  under the overlay) would cost a stop nothing; to be measured against this.
+
