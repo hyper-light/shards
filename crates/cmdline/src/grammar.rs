@@ -145,13 +145,13 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "Choose the kernel and shards-init runs boot",
     ),
     ("manage", "kill", "vm NAME", "Kill microVMs"),
-    ("manage", "rename", "vm NAME NEW_NAME", "Name a microVM again"),
     (
         "manage",
         "remove",
         "vm | image NAME",
         "Remove microVMs, or images with their stopped microVMs",
     ),
+    ("manage", "rename", "vm NAME NEW_NAME", "Name a microVM again"),
     (
         "manage",
         "stop",

@@ -76,6 +76,8 @@ impl Page {
             text.push_str(&l.s);
             text.push('\n');
         }
+        // Every screen ends with an empty line.
+        text.push('\n');
         let _ = out.write_all(text.as_bytes());
         let _ = out.flush();
     }
@@ -664,6 +666,7 @@ pub(crate) fn panel(p: &Paint, message: &str, with_head: bool) {
         text.push_str(&s);
         text.push_str("\x1b[0m\n");
     }
+    text.push('\n');
     let _ = std::io::stderr().write_all(text.as_bytes());
 }
 
@@ -691,6 +694,7 @@ pub fn error(p: &Paint, title: &str, message: &str, hints: &[&str]) {
         text.push_str(&s);
         text.push_str("\x1b[0m\n");
     }
+    text.push('\n');
     let _ = std::io::stderr().write_all(text.as_bytes());
 }
 

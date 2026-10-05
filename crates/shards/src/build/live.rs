@@ -124,6 +124,8 @@ impl Live {
         self.draw();
         if self.finished {
             self.frame.leave();
+            // Every screen ends with an empty line.
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), b"\n");
         }
     }
 
@@ -147,6 +149,7 @@ impl Live {
     pub(super) fn leave(&mut self) {
         self.draw();
         self.frame.leave();
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), b"\n");
     }
 
     fn draw(&mut self) {

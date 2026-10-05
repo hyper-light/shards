@@ -882,7 +882,8 @@ mod tests {
         let mut out = Vec::new();
         page.write(&Paint::new(true), &mut out);
         let text = String::from_utf8(out).unwrap();
-        let lines: Vec<String> = text.lines().map(seen).collect();
+        // The screen's last, empty line is no row.
+        let lines: Vec<String> = text.lines().map(seen).filter(|l| !l.trim().is_empty()).collect();
         let heads = starts(&lines[0]);
         let marker_at = lines[1].chars().position(|c| c != ' ').unwrap();
         for (r, line) in lines.iter().enumerate().skip(1) {

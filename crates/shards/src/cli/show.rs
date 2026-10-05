@@ -337,6 +337,9 @@ impl Pull {
         }
         self.draw(size(), out);
         self.leave();
+        // Every screen ends with an empty line.
+        let _ = out.write_all(b"\n");
+        let _ = out.flush();
     }
 
     /// The frame's lines, each with its visible width: never wider than `cols`, never

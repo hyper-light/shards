@@ -10,6 +10,11 @@
 
 use std::io::Write;
 
+/// What a frame's write begins and ends with: synchronized output on, the cursor hidden;
+/// then both undone.
+const BEGIN: &str = "\x1b[?2026h\x1b[?25l";
+const END: &str = "\x1b[?25h\x1b[?2026l";
+
 #[derive(Debug, Default)]
 pub struct Frame {
     /// The last frame's lines, as written, and each one's visible width.
@@ -98,7 +103,13 @@ impl Frame {
         }
         let written = self.buf.len();
         if written > 0 {
+            // One update: the terminal shows the frame whole (synchronized output, DEC
+            // mode 2026, which terminals without it ignore), and the cursor, moved over
+            // the lines redrawn, is hidden while it moves, so that it does not flash
+            // across them; shown again in the same write, so nothing is left hidden.
+            let _ = out.write_all(BEGIN.as_bytes());
             let _ = out.write_all(self.buf.as_bytes());
+            let _ = out.write_all(END.as_bytes());
             let _ = out.flush();
         }
         std::mem::swap(&mut self.drawn, &mut self.next);
@@ -126,7 +137,15 @@ mod tests {
         }
         let mut out = Vec::new();
         f.end(cols, &mut out);
-        String::from_utf8(out).unwrap()
+        let out = String::from_utf8(out).unwrap();
+        if out.is_empty() {
+            return out;
+        }
+        // Each write is one update, the cursor hidden through it.
+        out.strip_prefix(BEGIN)
+            .and_then(|o| o.strip_suffix(END))
+            .unwrap_or_else(|| panic!("{out:?}"))
+            .to_string()
     }
 
     #[test]
