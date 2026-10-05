@@ -813,6 +813,13 @@ mod tests {
             Progress::Bytes("sha256:aa".into(), u64::MAX),
             Progress::Verified("sha256:bb".into()),
             Progress::Building,
+            Progress::Unpacking(7),
+            Progress::Facts(vec![
+                ("id".into(), "sha256:dd".into()),
+                ("cmd".into(), "sh -c a=b".into()),
+                ("empty".into(), String::new()),
+            ]),
+            Progress::Facts(Vec::new()),
             Progress::Done {
                 digest: "sha256:cc".into(),
                 unchanged: true,
@@ -822,6 +829,12 @@ mod tests {
         for p in all {
             assert_eq!(Progress::decode(&p.encode()), Some(p));
         }
+        // A value's tabs and line ends are spaces: a fact is one field.
+        let said = Progress::Facts(vec![("cmd".into(), "a\tb\nc".into())]);
+        assert_eq!(
+            Progress::decode(&said.encode()),
+            Some(Progress::Facts(vec![("cmd".into(), "a b c".into())]))
+        );
         // What a newer daemon may say, and what no daemon says, are left alone.
         for unknown in [&b"glimmer\tx"[..], b"bytes\tsha256:aa\tmany", b"\xff", b""] {
             assert_eq!(Progress::decode(unknown), None);
@@ -1076,6 +1089,12 @@ pub enum Progress {
     Verified(String),
     /// The image is being made into a microVM's root filesystem.
     Building,
+    /// The layer at this index is being unpacked into it.
+    Unpacking(usize),
+    /// What there is to know of the image pulled, by name: its ID, platform, sizes, where
+    /// it is, what it runs. Sent before [`Progress::Done`]; a client shows the names it
+    /// knows.
+    Facts(Vec<(String, String)>),
     /// Pulled: what the reference resolved to, whether nothing was new, and whether the
     /// image is ready to boot here (an image of another platform is only stored).
     Done {
@@ -1103,6 +1122,25 @@ impl Progress {
             Progress::Bytes(d, n) => format!("bytes\t{d}\t{n}"),
             Progress::Verified(d) => format!("verified\t{d}"),
             Progress::Building => "building".to_string(),
+            Progress::Unpacking(i) => format!("unpacking\t{i}"),
+            Progress::Facts(facts) => {
+                let mut out = String::from("facts");
+                for (name, value) in facts {
+                    // A field each: a tab or a line end in a value is a space.
+                    let value: String = value
+                        .chars()
+                        .map(|c| {
+                            if c == '\t' || c == '\n' || c == '\r' {
+                                ' '
+                            } else {
+                                c
+                            }
+                        })
+                        .collect();
+                    out.push_str(&format!("\t{name}={value}"));
+                }
+                out
+            }
             Progress::Done {
                 digest,
                 unchanged,
@@ -1145,6 +1183,15 @@ impl Progress {
             }
             "verified" => Progress::Verified(next()?),
             "building" => Progress::Building,
+            "unpacking" => Progress::Unpacking(next()?.parse().ok()?),
+            "facts" => {
+                let mut facts = Vec::new();
+                while let Some(field) = next() {
+                    let (name, value) = field.split_once('=')?;
+                    facts.push((name.to_string(), value.to_string()));
+                }
+                Progress::Facts(facts)
+            }
             "done" => Progress::Done {
                 digest: next()?,
                 unchanged: next()? == "1",

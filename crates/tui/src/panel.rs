@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn a_panel_fits_every_width_and_keeps_every_word() {
-        let paint = Paint { truecolor: true };
+        let paint = Paint::new(true);
         let message = "failed to resolve reference \"localhost:5055/x:1\": not found";
         for width in [12usize, 29, 30, 50, 80, 200] {
             let lines = error(

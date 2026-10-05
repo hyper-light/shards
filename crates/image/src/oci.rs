@@ -132,6 +132,11 @@ pub struct RunConfig {
     /// Its `EXPOSE`d ports, `80/tcp` and the like: the keys of the config's object.
     #[serde(default, deserialize_with = "keys")]
     pub exposed_ports: Vec<String>,
+    /// Its `VOLUME`s: the keys of the config's object.
+    #[serde(default, deserialize_with = "keys")]
+    pub volumes: Vec<String>,
+    #[serde(default)]
+    pub labels: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// An object's keys, or none for `null`.

@@ -1,0 +1,240 @@
+//! The commands there are, as `shards --help` and the management commands' help list
+//! them: docker/cli's groups and words for the commands shards serves (cli/cobra.go's
+//! usage template, cobra's `rpad`), and shards' own after them.
+
+use std::fmt::Write as _;
+
+use crate::commands;
+use crate::flags::Command;
+
+/// A command as a list shows it: its name, and what it does.
+#[derive(Debug, Clone, Copy)]
+pub struct Entry {
+    pub name: &'static str,
+    pub about: &'static str,
+    /// Its own `--help`, where it has one here.
+    pub command: Option<&'static Command>,
+}
+
+/// A heading and what it lists.
+#[derive(Debug, Clone, Copy)]
+pub struct Group {
+    pub heading: &'static str,
+    pub entries: &'static [Entry],
+}
+
+const fn of(name: &'static str, command: &'static Command) -> Entry {
+    Entry {
+        name,
+        about: command.about,
+        command: Some(command),
+    }
+}
+
+const fn own(name: &'static str, about: &'static str) -> Entry {
+    Entry {
+        name,
+        about,
+        command: None,
+    }
+}
+
+/// `build`'s line as docker/cli's root lists it, which is the CLI's, not buildx's.
+const BUILD: Entry = Entry {
+    name: "build",
+    about: "Build an image from a Dockerfile",
+    command: Some(&commands::BUILD),
+};
+
+/// The root's groups, in docker/cli's order.
+pub static TOP: &[Group] = &[
+    Group {
+        heading: "Common Commands",
+        entries: &[
+            of("run", &commands::RUN),
+            of("exec", &commands::EXEC),
+            of("ps", &commands::PS),
+            BUILD,
+            of("pull", &commands::PULL),
+            of("push", &commands::PUSH),
+            of("images", &commands::IMAGES),
+            own("version", "Show the shards version information"),
+        ],
+    },
+    Group {
+        heading: "Management Commands",
+        entries: &[
+            own("container", "Manage containers"),
+            own("image", "Manage images"),
+        ],
+    },
+    Group {
+        heading: "Commands",
+        entries: &[
+            of("kill", &commands::KILL),
+            of("load", &commands::LOAD),
+            of("logs", &commands::LOGS),
+            of("port", &commands::PORT),
+            of("rm", &commands::RM),
+            of("rmi", &commands::RMI),
+            of("save", &commands::SAVE),
+            of("stop", &commands::STOP),
+            of("tag", &commands::TAG),
+            of("wait", &commands::WAIT),
+        ],
+    },
+    Group {
+        heading: "Shards Commands",
+        entries: &[
+            own(
+                "daemon",
+                "Serve runs from warm microVMs (the first run starts it)",
+            ),
+            own("guest", "Choose the kernel and shards-init that runs boot"),
+            own(
+                "vm",
+                "Boot a kernel, or resume a snapshot, in a microVM of its own",
+            ),
+        ],
+    },
+];
+
+/// The management commands: their name, what they do, and their commands.
+pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
+    (
+        "container",
+        "Manage containers",
+        &[
+            of("exec", &commands::EXEC),
+            of("kill", &commands::KILL),
+            of("logs", &commands::LOGS),
+            of("ls", &commands::PS),
+            of("port", &commands::PORT),
+            of("rm", &commands::RM),
+            of("run", &commands::RUN),
+            of("stop", &commands::STOP),
+            of("wait", &commands::WAIT),
+        ],
+    ),
+    (
+        "image",
+        "Manage images",
+        &[
+            BUILD,
+            of("inspect", &commands::IMAGE_INSPECT),
+            of("load", &commands::LOAD),
+            of("ls", &commands::IMAGES),
+            of("pull", &commands::PULL),
+            of("push", &commands::PUSH),
+            of("rm", &commands::RMI),
+            of("save", &commands::SAVE),
+            of("tag", &commands::TAG),
+        ],
+    ),
+    (
+        "vm",
+        "Boot a kernel, or resume a snapshot, in a microVM of its own",
+        &[
+            own("restore", "Resume a microVM from a snapshot"),
+            own("run", "Boot a kernel directly in a microVM"),
+        ],
+    ),
+];
+
+/// What the root says of shards, where docker/cli says "A self-sufficient runtime for
+/// containers".
+pub const ABOUT: &str = "Rootless microVMs for agents, built and run like containers";
+
+/// The management command `name`'s line and commands.
+pub fn management(name: &str) -> Option<(&'static str, &'static [Entry])> {
+    MANAGEMENT
+        .iter()
+        .find(|(n, _, _)| *n == name)
+        .map(|(_, about, entries)| (*about, *entries))
+}
+
+/// cobra's `rpad` of each name to the widest, at least 11 (its `NamePadding`).
+fn listed(text: &mut String, entries: &[Entry]) {
+    let pad = entries.iter().map(|e| e.name.len()).max().unwrap_or(0).max(11);
+    for e in entries {
+        let _ = writeln!(text, "  {:<pad$} {}", e.name, e.about);
+    }
+}
+
+/// `shards --help`, as docker/cli's root writes its own.
+pub fn top() -> String {
+    let mut text = format!("Usage:  shards COMMAND\n\n{ABOUT}\n");
+    for group in TOP {
+        let _ = writeln!(text, "\n{}:", group.heading);
+        listed(&mut text, group.entries);
+    }
+    text.push_str("\nRun 'shards COMMAND --help' for more information on a command.\n");
+    text
+}
+
+/// `shards NAME --help` of a management command, as docker/cli writes one.
+pub fn management_help(name: &str) -> Option<String> {
+    let (about, entries) = management(name)?;
+    let mut text = format!("Usage:  shards {name} COMMAND\n\n{about}\n\nCommands:\n");
+    listed(&mut text, entries);
+    let _ = writeln!(
+        text,
+        "\nRun 'shards {name} COMMAND --help' for more information on a command."
+    );
+    Some(text)
+}
+
+/// A command the root does not have, as docker/cli refuses one (exit status 1).
+pub fn unknown(words: &str) -> String {
+    format!("shards: unknown command: shards {words}\n\nRun 'shards --help' for more information")
+}
+
+/// A command a management command does not have, as docker/cli refuses one.
+pub fn unknown_in(name: &str, word: &str) -> String {
+    format!(
+        "shards: unknown command: shards {name} {word}\n\nUsage:  shards {name}\n\nRun 'shards {name} --help' for more information"
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_root_lists_as_docker_lists() {
+        let top = top();
+        assert!(top.starts_with("Usage:  shards COMMAND\n\n"));
+        // cobra's padding: names to 11, then a space.
+        assert!(
+            top.contains("\nCommon Commands:\n  run         Create and run a new container from an image\n")
+        );
+        assert!(top.contains("\n  build       Build an image from a Dockerfile\n"));
+        assert!(top.ends_with("\nRun 'shards COMMAND --help' for more information on a command.\n"));
+    }
+
+    #[test]
+    fn management_commands_list_their_own() {
+        let image = management_help("image").unwrap();
+        assert!(image.starts_with("Usage:  shards image COMMAND\n\nManage images\n\nCommands:\n  build "));
+        assert!(image.contains("\n  ls          List images\n"));
+        assert!(management_help("network").is_none());
+    }
+
+    #[test]
+    fn every_listed_command_is_one_shards_reads() {
+        for (name, _, entries) in MANAGEMENT {
+            for e in *entries {
+                // `run` and `exec` the command line reads before the rest (shards' cli).
+                if e.command.is_some() && *name != "vm" && !matches!(e.name, "run" | "exec") {
+                    let words = [*name, e.name];
+                    assert!(
+                        commands::find(&words).is_some() || commands::build(&words).is_some(),
+                        "{name} {}",
+                        e.name
+                    );
+                }
+            }
+        }
+    }
+}

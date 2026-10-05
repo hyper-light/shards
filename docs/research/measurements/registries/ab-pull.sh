@@ -1,7 +1,7 @@
 #!/bin/sh
 # ab-pull.sh OLD_BIN NEW_BIN HOMES ROUNDS REF...: ROUNDS rounds of cold pulls of each
-# REF by two builds of shards, which goes first alternating, each build with its own
-# home under HOMES (and so its own daemon). Prints per build and reference how many
+# REF by two builds of shards, which goes first alternating, each pull in a fresh home
+# under HOMES (and so its own daemon, stopped after it), so nothing is found stored. Prints per build and reference how many
 # pulls failed, and p50, p90 and max seconds of those that did not; the first lines of
 # each failure go to HOMES/failures.txt.
 set -u
@@ -16,19 +16,19 @@ while [ "$i" -lt "$rounds" ]; do
     for ref in "$@"; do
         for side in $order; do
             case $side in old) bin=$old ;; new) bin=$new ;; esac
-            export SHARDS_HOME="$homes/$side"
-            "$bin" rmi -f "$ref" >/dev/null 2>&1
+            export SHARDS_HOME="$homes/$side-$i-$(printf %s "$ref" | tr -c 'a-zA-Z0-9' _)"
+            mkdir -p "$SHARDS_HOME"
             start=$(python3 -c 'import time; print(time.time())')
             "$bin" pull -q "$ref" >"$homes/last" 2>&1
             code=$?
             secs=$(python3 -c "import time; print(f'{time.time() - $start:.2f}')")
             [ "$code" -eq 0 ] || { echo "$side $ref round $i:"; tail -2 "$homes/last"; } >>"$homes/failures.txt"
             echo "$side $ref $code $secs" >>"$homes/runs.txt"
+            "$bin" daemon stop >/dev/null 2>&1
         done
     done
     i=$((i + 1))
 done
-for side in old new; do SHARDS_HOME="$homes/$side" "$( [ $side = old ] && echo "$old" || echo "$new")" daemon stop >/dev/null 2>&1; done
 python3 - "$homes/runs.txt" <<'PY'
 import sys, collections
 runs = collections.defaultdict(list)

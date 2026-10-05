@@ -4,6 +4,9 @@ use std::fmt::Write as _;
 
 pub type Rgb = (u8, u8, u8);
 
+/// The page: the site's `--background`, which strokes' opacities are drawn over where
+/// the terminal does not say its own.
+pub const PAGE: Rgb = (0x08, 0x09, 0x0a);
 pub const FOREGROUND: Rgb = (0xed, 0xed, 0xee);
 /// The headline's highlight.
 pub const BRIGHT: Rgb = (0xf0, 0xf0, 0xef);
@@ -97,15 +100,44 @@ pub fn cycle(palette: &[Rgb], p: f64) -> Rgb {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Paint {
     pub truecolor: bool,
+    /// The terminal's background, which inks with an opacity are drawn over.
+    pub page: Rgb,
 }
 
 impl Paint {
+    /// Paint for a terminal that shows 24-bit colour or not, over the site's page until
+    /// the terminal says its own.
+    pub const fn new(truecolor: bool) -> Paint {
+        Paint {
+            truecolor,
+            page: PAGE,
+        }
+    }
+
+    /// `c` at `alpha` of 255 over the page, as the foreground.
+    pub fn fg_over(&self, out: &mut String, c: Rgb, alpha: u8) {
+        self.fg(out, mix(self.page, c, f64::from(alpha) / 255.0));
+    }
+
     pub fn fg(&self, out: &mut String, c: Rgb) {
         if self.truecolor {
             let _ = write!(out, "\x1b[38;2;{};{};{}m", c.0, c.1, c.2);
         } else {
             let _ = write!(out, "\x1b[38;5;{}m", xterm256(c));
         }
+    }
+
+    pub fn bg(&self, out: &mut String, c: Rgb) {
+        if self.truecolor {
+            let _ = write!(out, "\x1b[48;2;{};{};{}m", c.0, c.1, c.2);
+        } else {
+            let _ = write!(out, "\x1b[48;5;{}m", xterm256(c));
+        }
+    }
+
+    /// The terminal's own background again.
+    pub fn bg_default(&self, out: &mut String) {
+        out.push_str("\x1b[49m");
     }
 
     pub fn bold(&self, out: &mut String, on: bool) {
@@ -178,7 +210,7 @@ mod tests {
         assert_eq!(xterm256((255, 255, 255)), 231);
         assert!((232..=255).contains(&xterm256((0x08, 0x09, 0x0a))));
         let mut s = String::new();
-        Paint { truecolor: false }.fg(&mut s, SAGE);
+        Paint::new(false).fg(&mut s, SAGE);
         assert!(s.starts_with("\x1b[38;5;"));
     }
 }

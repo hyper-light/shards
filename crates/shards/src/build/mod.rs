@@ -537,6 +537,7 @@ impl Bases<'_> {
                     &|_| {},
                     None,
                     &|k| std::env::var(k).ok(),
+                    false,
                 )
                 .map_err(fail)?
                 .0

@@ -150,7 +150,11 @@ pub fn command(
                 match event {
                     Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
                     Event::Layer(d) => say(&format!("{}: Download complete", short(&d.to_string()))),
-                    Event::Manifest(..) | Event::Progress(..) | Event::Building | Event::Pulling => {}
+                    Event::Manifest(..)
+                    | Event::Progress(..)
+                    | Event::Building
+                    | Event::Unpacking(_)
+                    | Event::Pulling => {}
                 }
             };
             let pulling = |line: &str| {
@@ -163,7 +167,16 @@ pub fn command(
                     say(line);
                 }
             };
-            let pulled = fetch(home, reference, &targets, &report, &pulling, cancel, env);
+            let pulled = fetch(
+                home,
+                reference,
+                &targets,
+                &report,
+                &pulling,
+                cancel,
+                env,
+                parsed.bool("no-cache"),
+            );
             let (pulled, same) = match pulled {
                 Ok(p) => p,
                 Err(e) if all => {
@@ -177,6 +190,7 @@ pub fn command(
             // digest's content was all here.
             let up_to_date = same || (reference.digest.is_some() && !downloaded.load(Ordering::Relaxed));
             if let Some(progress) = show {
+                progress(&Progress::Facts(facts(home, reference, &pulled)));
                 progress(&Progress::Done {
                     digest: pulled.resolved.to_string(),
                     unchanged: up_to_date,
@@ -193,12 +207,82 @@ pub fn command(
         }
         0
     })();
-    if status == 0 {
-        // The CLI's last line, said even when quiet: the name pulled, a tag's or the
-        // repository's.
+    // The CLI's last line, said even when quiet: the name pulled, a tag's or the
+    // repository's. Shown, the steps end with it among the facts instead.
+    if status == 0 && show.is_none() {
         (out.out)(&named.to_string());
     }
     status
+}
+
+/// What there is to know of `pulled`, for a client on a terminal to show: its names,
+/// where and what it is, and what it runs.
+fn facts(home: &Path, reference: &Reference, pulled: &Pulled) -> Vec<(String, String)> {
+    let mut facts: Vec<(String, String)> = Vec::new();
+    let mut say = |name: &str, value: String| {
+        if !value.is_empty() {
+            facts.push((name.to_string(), value));
+        }
+    };
+    let config = &pulled.config;
+    say("reference", reference.to_string());
+    say("id", pulled.id.to_string());
+    say("digest", pulled.resolved.to_string());
+    say("manifest", pulled.manifest.to_string());
+    say(
+        "platform",
+        match config.variant.as_deref() {
+            Some(v) if !v.is_empty() => format!("{}/{}/{v}", config.os, config.architecture),
+            _ => format!("{}/{}", config.os, config.architecture),
+        },
+    );
+    say("platforms", pulled.platforms.join(" "));
+    say("created", config.created.clone().unwrap_or_default());
+    say("layers", pulled.layers.to_string());
+    say("compressed", pulled.compressed.to_string());
+    say("attestations", pulled.attestations.to_string());
+    if let Some(rootfs) = &pulled.rootfs {
+        say("rootfs", rootfs.display().to_string());
+        if let Ok(meta) = std::fs::metadata(rootfs) {
+            say("rootfs_bytes", meta.len().to_string());
+        }
+    }
+    say("store", home.join("images").display().to_string());
+    if let Ok((available, _)) = shards_vmm::platform::disk_space(home) {
+        say("free", available.to_string());
+    }
+    if let Some(run) = &config.config {
+        let words = |w: &Option<Vec<String>>| w.as_ref().map(|w| w.join(" ")).unwrap_or_default();
+        say("entrypoint", words(&run.entrypoint));
+        say("cmd", words(&run.cmd));
+        say("workdir", run.working_dir.clone().unwrap_or_default());
+        say("user", run.user.clone().unwrap_or_default());
+        say("ports", run.exposed_ports.join(" "));
+        say("volumes", run.volumes.join(" "));
+        say("env", run.env.as_ref().map(Vec::len).unwrap_or(0).to_string());
+        say("stop_signal", run.stop_signal.clone().unwrap_or_default());
+        if run
+            .healthcheck
+            .as_ref()
+            .is_some_and(|h| h.test.as_ref().is_some_and(|t| !t.is_empty()))
+        {
+            say("healthcheck", "yes".into());
+        }
+        // The OCI annotations an image's labels carry (image-spec annotations.md).
+        if let Some(labels) = &run.labels {
+            for (key, name) in [
+                ("org.opencontainers.image.title", "title"),
+                ("org.opencontainers.image.version", "version"),
+                ("org.opencontainers.image.source", "source"),
+                ("org.opencontainers.image.licenses", "licenses"),
+                ("org.opencontainers.image.revision", "revision"),
+                ("org.opencontainers.image.description", "description"),
+            ] {
+                say(name, labels.get(key).cloned().unwrap_or_default());
+            }
+        }
+    }
+    facts
 }
 
 /// A pull's event as a client on a terminal hears it, if it hears it now: a layer's
@@ -214,6 +298,7 @@ fn shown(event: &Event<'_>, arrived: &Mutex<HashMap<String, (u64, Option<Instant
                 .collect(),
         ),
         Event::Building => Progress::Building,
+        Event::Unpacking(i) => Progress::Unpacking(*i),
         Event::Pulling => return None,
         Event::Progress(d, n) => {
             let key = d.to_string();
@@ -286,8 +371,10 @@ pub fn registry_for_push(
 }
 
 /// Pulls `reference` into the store, until `cancel`, if given, is cancelled, with the
-/// credentials and certificates `env` finds. Returns the pull, and whether the reference
-/// already named the same manifest.
+/// credentials and certificates `env` finds; `fresh`, every layer fetched again and the
+/// root filesystem built again (`--no-cache`). Returns the pull, and whether the
+/// reference already named the same manifest.
+#[allow(clippy::too_many_arguments)]
 pub fn fetch(
     home: &Path,
     reference: &Reference,
@@ -296,6 +383,7 @@ pub fn fetch(
     say: &(dyn Fn(&str) + Sync),
     cancel: Option<&Cancel>,
     env: &dyn Fn(&str) -> Option<String>,
+    fresh: bool,
 ) -> Result<(Pulled, bool), String> {
     let store = store(home)?;
     let registry = registry(reference, cancel, env)?;
@@ -315,8 +403,8 @@ pub fn fetch(
         .map_err(|e| e.to_string())?;
     // Layers unpack without a cap, as Docker's do; each is checked against its DiffID.
     let limits = limits()?;
-    let pulled =
-        pull::pull(&registry, &store, reference, targets, &limits, &report).map_err(|e| e.to_string())?;
+    let pull = if fresh { pull::pull_again } else { pull::pull };
+    let pulled = pull(&registry, &store, reference, targets, &limits, &report).map_err(|e| e.to_string())?;
     let same = before.as_ref() == Some(&pulled.manifest);
     // What the reference named before may be needed by nothing now: the daemon collects
     // it (daemon.rs, `collect_garbage`).

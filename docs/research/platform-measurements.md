@@ -3903,3 +3903,40 @@ revision before comparing a changed API/implementation.
   1.1 ms of one. The binary's size costs 0.18 ms. `shards` links none: Apple's
   frameworks are looked up with `dlsym` when first called (D36), and the command and the
   daemon are one binary, 0.18 ms slower to launch than the command alone was.
+
+### M114. Pulling a 6 GB image: one connection, many, and what bounds it after
+
+- **Question.** A pull of nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04 (12 layers, the
+  largest 2.8 GB) took 118 to 163 s at about 46 MB/s, where the line carries more. What
+  holds it: one connection's rate, the redirect each request takes, or the build after?
+- **Method.** `docs/research/measurements/registries/`:
+  - `ranges.py`: the first 537 MB of that 2.8 GB layer from Docker Hub's CDN over 1, 2,
+    4, 8 and 16 ranged connections at once, 3 rounds in alternating order.
+  - `hops.py`: 30 ranged requests, kept alive, asked of Docker Hub (which redirects to
+    its CDN) and of the CDN's URL directly, in turn; time to the answer.
+  - `ab-pull.sh`: cold pulls of the image by b8fbb05 and by the change, 3 each, in turn,
+    fresh homes; and one traced pull of the change alone (its connections, rate each
+    second, each layer's end).
+  Apple M5 Max, macOS 26.4.1, home broadband, 2026-10-04.
+- **Results.**
+  - MB/s by connections (median of 3; each round): 1: 73 (49, 74, 73); 2: 80 (92, 80,
+    78); 4: 98 (94, 102, 98); 8: 90 (98, 90, 85); 16: 91 (95, 91, 91).
+  - Answer times, n=30: via the registry p50 151 ms, p90 170, max 303; the CDN's URL
+    directly p50 52, p90 70, max 314 (measured while another pull ran).
+  - Layers unpacked while the rest downloaded (pipelined, as the store's `ready` gate
+    allows): b8fbb05 124.0 s p50 and 163.1 max, the change 135.6 and 142.0: the same
+    within 3 runs, both at one connection's rate on the largest layer.
+  - With ranged fetching, the traced pull had every layer by 57.7 s, at 97 to 129 MB/s a
+    second once its connections had climbed to 16 (4, then 8 at +14%, then 16 at +49%,
+    each doubling kept for 10% or more). Its whole took 140.1 s: the rest was building the
+    root filesystem from the 2.8 GB layer, which starts only once that layer is whole.
+  - An A/B of 3 pulls each, run while the full test suite ran on the same machine:
+    b8fbb05 144.9 s p50, 165.0 max; the change 185.9 and 301.9. The suite's CPU load fell
+    on the change's unpacking; the download had halved. Not a fair comparison; recorded as
+    it ran.
+- **Consequence.** Layers are fetched over connections that grow while they pay (4,
+  doubling while a doubling brings 10% more, to 16), a large layer split between them as
+  they free up, each split only where its half outlasts a request, and ranges after a
+  blob's first asked of the URL the registry redirected it to (fetch.rs). The download no
+  longer bounds a large pull: unpacking its largest layer does, after the layer has
+  arrived. Next: unpack a layer as its bytes arrive in order, not after.

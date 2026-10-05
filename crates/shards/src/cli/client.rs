@@ -264,11 +264,11 @@ fn answer<'s>(
                 if display.is_none() && !refused {
                     let (tx, rx) = std::sync::mpsc::channel();
                     let env = |k: &str| std::env::var(k).ok();
-                    let pull = show::Pull::new(
-                        shards_tui::tokens_truecolor(&env),
-                        east_asian,
-                        shards_tui::motion::reduced(env),
-                    );
+                    let mut paint = shards_tui::tokens::Paint::new(shards_tui::tokens_truecolor(&env));
+                    if let Some(page) = crate::cli::terminal::background() {
+                        paint.page = page;
+                    }
+                    let pull = show::Pull::new(paint, east_asian, shards_tui::motion::reduced(env));
                     let started = std::thread::Builder::new()
                         .name("shards-show".into())
                         .spawn_scoped(scope, move || {

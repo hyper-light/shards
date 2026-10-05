@@ -2,6 +2,8 @@
 //! shards' commands read and answer as `docker`'s do (docs/design/architecture.md D27):
 //! - `buildflags`: what `build`'s `--secret`, `--allow` and `--ulimit` mean, as buildx
 //!   and BuildKit read them;
+//! - `catalog`: the commands there are, as the root's and management commands' help
+//!   list them;
 //! - `flags`: spf13/pflag's parsing, cobra's order of checks, and docker/cli's usage,
 //!   help and error texts;
 //! - `commands`: the commands, with docker/cli's flags and words;
@@ -18,6 +20,7 @@
 //! generated from them by scripts/docker-cli.
 
 pub mod buildflags;
+pub mod catalog;
 pub mod commands;
 pub mod flags;
 pub mod go;

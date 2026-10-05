@@ -2,15 +2,15 @@
 //! 1. resolve the reference;
 //! 2. choose the manifest for our guests' platform;
 //! 3. fetch the config and check its layers;
-//! 4. fetch the layers, three at a time;
+//! 4. fetch the layers, over as many connections as pay (fetch.rs);
 //! 5. build the image's root filesystem and record the reference.
 //!
 //! Nothing counts as pulled until every size and digest, and every layer's DiffID, has
 //! been checked. An image found in the store again is checked as its pull checked it.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::Ordering;
+use std::sync::{Condvar, Mutex, PoisonError};
 
 use shards_image::oci::{self, Descriptor, Document, ImageConfig, Manifest, Platform};
 use shards_image::platform::{self, Target};
@@ -20,8 +20,6 @@ use shards_image::store::{Held, Layer, Limits, Store};
 use crate::registry::Registry;
 use crate::{Error, ErrorKind};
 
-/// Layers fetched at once: dockerd's default `max-concurrent-downloads`.
-const CONCURRENT: usize = 3;
 /// The image configs a runnable image has (image-spec config.md; Docker's schema 2).
 const CONFIGS: [&str; 2] = [
     "application/vnd.oci.image.config.v1+json",
@@ -35,10 +33,19 @@ pub struct Pulled {
     pub resolved: Digest,
     /// The manifest for our guests' platform.
     pub manifest: Digest,
+    /// Its config's digest: the image's ID.
+    pub id: Digest,
     pub config: ImageConfig,
     /// The image's EROFS root filesystem, built when our guests run its platform: an
     /// image of another is stored for `push` and `save` alone.
     pub rootfs: Option<PathBuf>,
+    /// Its layers' count and compressed bytes.
+    pub layers: usize,
+    pub compressed: u64,
+    /// The platforms its index offers, `os/arch[/variant]`; none for a lone manifest.
+    pub platforms: Vec<String>,
+    /// The attestations kept with it: provenance and SBOMs.
+    pub attestations: usize,
 }
 
 /// What a pull reports as it goes.
@@ -54,6 +61,8 @@ pub enum Event<'a> {
     Layer(&'a Digest),
     /// The root filesystem is being built.
     Building,
+    /// The layer at this index is being unpacked into it.
+    Unpacking(usize),
     /// The manifest for our platform is known, and about to be fetched: where dockerd
     /// says it is pulling (daemon/containerd/image_pull.go, on the first manifest).
     Pulling,
@@ -69,7 +78,32 @@ pub fn pull(
     limits: &Limits,
     report: &(dyn Fn(Event<'_>) + Sync),
 ) -> Result<Pulled, Error> {
-    pulled(registry, store, reference, targets, limits, report).map_err(|e| {
+    pull_as(registry, store, reference, targets, limits, report, false)
+}
+
+/// [`pull`], every layer fetched again though stored, and the root filesystem built
+/// again in its place: `shards pull --no-cache`, which `docker pull` has not.
+pub fn pull_again(
+    registry: &Registry,
+    store: &Store,
+    reference: &Reference,
+    targets: &[Target],
+    limits: &Limits,
+    report: &(dyn Fn(Event<'_>) + Sync),
+) -> Result<Pulled, Error> {
+    pull_as(registry, store, reference, targets, limits, report, true)
+}
+
+fn pull_as(
+    registry: &Registry,
+    store: &Store,
+    reference: &Reference,
+    targets: &[Target],
+    limits: &Limits,
+    report: &(dyn Fn(Event<'_>) + Sync),
+    fresh: bool,
+) -> Result<Pulled, Error> {
+    pulled(registry, store, reference, targets, limits, report, fresh).map_err(|e| {
         // daemon/containerd/image_pull.go: a refused authorization in dockerd's own
         // words, but for want of basic credentials, which it leaves containerd's.
         if e.kind() == ErrorKind::Unauthorized && !e.to_string().contains("no basic auth credentials") {
@@ -95,6 +129,7 @@ fn pulled(
     targets: &[Target],
     limits: &Limits,
     report: &(dyn Fn(Event<'_>) + Sync),
+    fresh: bool,
 ) -> Result<Pulled, Error> {
     let name = reference.familiar();
     // What it writes is recorded only at its end: no collection runs meanwhile.
@@ -111,6 +146,7 @@ fn pulled(
     };
     // The attestations of the manifest chosen, as dockerd keeps them: provenance and SBOMs.
     let mut attestations: Vec<Descriptor> = Vec::new();
+    let mut platforms: Vec<String> = Vec::new();
     let pulling = std::sync::atomic::AtomicBool::new(false);
     let say_pulling = || {
         if !pulling.swap(true, Ordering::Relaxed) {
@@ -139,6 +175,16 @@ fn pulled(
                     ),
                 )
             })?;
+            platforms = index
+                .manifests
+                .iter()
+                .filter_map(|d| d.platform.as_ref())
+                .filter(|p| p.os != "unknown")
+                .map(|p| match &p.variant {
+                    Some(v) if !v.is_empty() => format!("{}/{}/{v}", p.os, p.architecture),
+                    _ => format!("{}/{}", p.os, p.architecture),
+                })
+                .collect();
             attestations = index
                 .manifests
                 .iter()
@@ -173,7 +219,11 @@ fn pulled(
     }
     report(Event::Manifest(&manifest_digest, &manifest.layers));
 
-    registry.fetch_blob(store, &manifest.config, limits, &|_| {})?;
+    if fresh {
+        registry.fetch_blob_again(store, &manifest.config, limits, &|_| {})?;
+    } else {
+        registry.fetch_blob(store, &manifest.config, limits, &|_| {})?;
+    }
     // A stored config that has changed is fetched again in its place.
     let config = match stored(store, &name, &manifest.config, oci::MAX_CONFIG) {
         Err(e) if e.kind() == ErrorKind::Changed => {
@@ -207,9 +257,9 @@ fn pulled(
             &platform::guest(),
         );
         let built = if ours {
-            build(registry, store, &manifest, &layers, limits, report).map(Some)
+            build(registry, store, &manifest, &layers, limits, report, fresh).map(Some)
         } else {
-            fetch_layers(registry, store, &manifest, limits, report).map(|()| None)
+            crate::fetch::layers(registry, store, &manifest, limits, report, &|_| {}, fresh).map(|()| None)
         };
         let attested = match attesting {
             Ok(thread) => thread
@@ -221,7 +271,8 @@ fn pulled(
         (built, attested)
     });
     let rootfs = rootfs?;
-    let mut contents = vec![manifest_digest.clone(), manifest.config.digest()?];
+    let id = manifest.config.digest()?;
+    let mut contents = vec![manifest_digest.clone(), id.clone()];
     contents.extend(layers.iter().map(|l| l.blob.clone()));
     contents.extend(attested?);
     store.tag_from(
@@ -234,13 +285,20 @@ fn pulled(
     Ok(Pulled {
         resolved,
         manifest: manifest_digest,
+        id,
         config,
         rootfs,
+        layers: manifest.layers.len(),
+        compressed,
+        platforms,
+        attestations: attestations.len(),
     })
 }
 
 /// Downloads the layers `manifest` names that are not here, and builds the image's root
-/// filesystem from `layers`.
+/// filesystem from `layers` as they come: each layer is unpacked once its blob is stored,
+/// while the rest download, so that a pull takes what the longer of the two does, not
+/// both (PM M114).
 fn build(
     registry: &Registry,
     store: &Store,
@@ -248,10 +306,69 @@ fn build(
     layers: &[Layer],
     limits: &Limits,
     report: &(dyn Fn(Event<'_>) + Sync),
+    fresh: bool,
 ) -> Result<PathBuf, Error> {
-    fetch_layers(registry, store, manifest, limits, report)?;
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Blob {
+        Coming,
+        Here,
+        Never,
+    }
+    let blobs = Mutex::new(vec![Blob::Coming; layers.len()]);
+    let arrived = Condvar::new();
+    let held = || blobs.lock().unwrap_or_else(PoisonError::into_inner);
+    let here = |i: usize| {
+        if let Some(b) = held().get_mut(i) {
+            *b = Blob::Here;
+        }
+        arrived.notify_all();
+    };
+    let ready = |i: usize| -> Result<(), shards_image::Error> {
+        let mut blobs = held();
+        loop {
+            match blobs.get(i) {
+                Some(Blob::Here) => {
+                    drop(blobs);
+                    report(Event::Unpacking(i));
+                    return Ok(());
+                }
+                Some(Blob::Coming) => blobs = arrived.wait(blobs).unwrap_or_else(PoisonError::into_inner),
+                Some(Blob::Never) | None => {
+                    return Err(std::io::Error::other("a layer was not fetched").into());
+                }
+            }
+        }
+    };
     report(Event::Building);
-    match store.rootfs(layers, limits) {
+    let rootfs = |ready: &(dyn Fn(usize) -> Result<(), shards_image::Error> + Sync)| {
+        if fresh {
+            store.rootfs_again_as_ready(layers, limits, ready)
+        } else {
+            store.rootfs_as_ready(layers, limits, ready)
+        }
+    };
+    let (fetched, built) = std::thread::scope(|scope| {
+        let building = std::thread::Builder::new()
+            .name("shards-rootfs".into())
+            .spawn_scoped(scope, || rootfs(&ready));
+        let fetched = crate::fetch::layers(registry, store, manifest, limits, report, &here, fresh);
+        // What will not come now: the build stops waiting for it.
+        for b in held().iter_mut().filter(|b| **b == Blob::Coming) {
+            *b = Blob::Never;
+        }
+        arrived.notify_all();
+        let built: Result<PathBuf, Error> = match building {
+            Ok(thread) => thread
+                .join()
+                .map_err(|_| Error::new("building the root filesystem failed"))
+                .and_then(|r| r.map_err(Error::from)),
+            // No thread to spare: built here, now that the layers are.
+            Err(_) => rootfs(&ready).map_err(Error::from),
+        };
+        (fetched, built)
+    });
+    fetched?;
+    match built {
         Ok(rootfs) => Ok(rootfs),
         Err(e) => {
             // A layer stored before that has changed since fails its DiffID, and would on
@@ -267,7 +384,7 @@ fn build(
                 }
             }
             if !mended {
-                return Err(e.into());
+                return Err(e);
             }
             Ok(store.rootfs(layers, limits)?)
         }
@@ -375,11 +492,20 @@ pub fn unpack(
     let config = stored(store, name, &manifest.config, oci::MAX_CONFIG)?;
     let (config, layers) = checked(name, manifest_desc, &manifest, &config, targets)?;
     let rootfs = store.rootfs(&layers, limits)?;
+    let compressed = manifest
+        .layers
+        .iter()
+        .try_fold(0u64, |n, l| l.size().map(|s| n.saturating_add(s)))?;
     Ok(Pulled {
         resolved,
         manifest: manifest_digest,
+        id: manifest.config.digest()?,
         config,
         rootfs: Some(rootfs),
+        layers: manifest.layers.len(),
+        compressed,
+        platforms: Vec::new(),
+        attestations: 0,
     })
 }
 
@@ -472,61 +598,6 @@ fn document(registry: &Registry, store: &Store, desc: &Descriptor) -> Result<Doc
     Ok(oci::parse_document(&bytes, &desc.media_type)?)
 }
 
-/// Fetches the layers, `CONCURRENT` at a time. The first failure stops the rest.
-fn fetch_layers(
-    registry: &Registry,
-    store: &Store,
-    manifest: &Manifest,
-    limits: &Limits,
-    report: &(dyn Fn(Event<'_>) + Sync),
-) -> Result<(), Error> {
-    let next = AtomicUsize::new(0);
-    let failed: Mutex<Option<Error>> = Mutex::new(None);
-    let stopped = || failed.lock().unwrap_or_else(PoisonError::into_inner).is_some();
-    let work = || {
-        while !stopped() {
-            let Some(layer) = manifest.layers.get(next.fetch_add(1, Ordering::Relaxed)) else {
-                return;
-            };
-            let fetched = layer.digest().map_err(Error::from).and_then(|digest| {
-                if store.has(&digest) {
-                    report(Event::Present(&digest));
-                    return Ok(());
-                }
-                registry.fetch_blob(store, layer, limits, &|n| report(Event::Progress(&digest, n)))?;
-                report(Event::Layer(&digest));
-                Ok(())
-            });
-            if let Err(e) = fetched {
-                failed
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .get_or_insert(e);
-            }
-        }
-    };
-    std::thread::scope(|scope| {
-        let mut started = 0;
-        for _ in 0..CONCURRENT.min(manifest.layers.len()) {
-            if std::thread::Builder::new()
-                .name("shards-pull".into())
-                .spawn_scoped(scope, work)
-                .is_ok()
-            {
-                started += 1;
-            }
-        }
-        // No thread to spare: fetch them here.
-        if started == 0 {
-            work();
-        }
-    });
-    match failed.into_inner().unwrap_or_else(PoisonError::into_inner) {
-        Some(e) => Err(e),
-        None => Ok(()),
-    }
-}
-
 /// The platforms wanted, for messages: `linux/arm64`.
 fn wanted(targets: &[Target]) -> String {
     targets
@@ -549,7 +620,7 @@ mod tests {
     use std::collections::HashMap;
     use std::io::Write as _;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU16};
+    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
 
     use sha2::{Digest as _, Sha256};
 
@@ -694,13 +765,31 @@ mod tests {
         fake_throttling(image, cut, 0, None)
     }
 
-    /// [`fake`], whose registry first answers `throttles` of its `/v2/` requests with a
-    /// 429, and `retry_after` if there is one.
+    /// What a fake's CDN waits on before it serves a blob: its digest, and a condition.
+    type Hold = (String, Box<dyn Fn() -> bool + Send + Sync>);
+
+    /// [`fake`], whose CDN holds `hold`'s blob until its condition holds (or 10 s pass).
+    fn fake_holding(image: Image, hold: Hold) -> Fake {
+        fake_with(image, None, 0, None, Some(hold))
+    }
+
     fn fake_throttling(
         image: Image,
         cut: Option<String>,
         throttles: usize,
         retry_after: Option<&'static str>,
+    ) -> Fake {
+        fake_with(image, cut, throttles, retry_after, None)
+    }
+
+    /// [`fake`], whose registry first answers `throttles` of its `/v2/` requests with a
+    /// 429, and `retry_after` if there is one.
+    fn fake_with(
+        image: Image,
+        cut: Option<String>,
+        throttles: usize,
+        retry_after: Option<&'static str>,
+        hold: Option<Hold>,
     ) -> Fake {
         let throttled = AtomicUsize::new(0);
         let blobs = image.blobs.clone();
@@ -714,18 +803,37 @@ mod tests {
             let Some(bytes) = blobs.get(digest) else {
                 return Some((http("404 Not Found", &[], b""), After::Keep));
             };
+            if let Some((held, until)) = &hold
+                && held == digest
+            {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while !until() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
             if cut.as_deref() == Some(digest) && !cut_done.swap(true, Ordering::SeqCst) {
                 let mut head = http("200 OK", &[], bytes);
                 head.truncate(head.len() - bytes.len() / 2);
                 return Some((head, After::Close));
             }
-            let from: usize = req
-                .header("range")
-                .and_then(|r| r.strip_prefix("bytes=")?.strip_suffix('-')?.parse().ok())
-                .unwrap_or(0);
-            if from > 0 {
-                let range = format!("bytes {from}-{}/{}", bytes.len() - 1, bytes.len());
-                let partial = http("206 Partial Content", &[("Content-Range", range)], &bytes[from..]);
+            // `bytes=from-` or `bytes=from-last`, as a CDN serves them.
+            let range = req.header("range").and_then(|r| {
+                let (from, last) = r.strip_prefix("bytes=")?.split_once('-')?;
+                let from: usize = from.parse().ok()?;
+                let last: usize = if last.is_empty() {
+                    bytes.len() - 1
+                } else {
+                    last.parse().ok()?
+                };
+                Some((from, last.min(bytes.len() - 1)))
+            });
+            if let Some((from, last)) = range {
+                let range = format!("bytes {from}-{last}/{}", bytes.len());
+                let partial = http(
+                    "206 Partial Content",
+                    &[("Content-Range", range)],
+                    &bytes[from..=last],
+                );
                 return Some((partial, After::Keep));
             }
             Some((http("200 OK", &[], bytes), After::Keep))
@@ -1147,6 +1255,56 @@ mod tests {
             )
         );
         assert_eq!(server.requests().len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A layer is unpacked as soon as it is stored, while the rest download: the CDN holds
+    /// the last layer until the first's decompressed archive is in the store's ingest
+    /// directory, which a pull that built only once all were here would never reach.
+    #[test]
+    fn layers_unpack_while_the_rest_download() {
+        let image = image(
+            "arm64",
+            &[("a", b"the first layer"), ("b", b"the last layer")],
+            true,
+        );
+        let (first, last) = (image.layers[0].clone(), image.layers[1].clone());
+        let mut first_tar = Vec::new();
+        std::io::Read::read_to_end(
+            &mut flate2::read::MultiGzDecoder::new(&image.blobs[&first][..]),
+            &mut first_tar,
+        )
+        .unwrap();
+        let root = temp("pipelined");
+        let store = Store::open(&root).unwrap();
+        let ingest = root.join("ingest");
+        let saw = Arc::new(AtomicBool::new(false));
+        let seen = saw.clone();
+        let fake = fake_holding(
+            image,
+            (
+                last,
+                Box::new(move || {
+                    let unpacked = std::fs::read_dir(&ingest)
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .any(|e| std::fs::read(e.path()).is_ok_and(|b| b == first_tar));
+                    if unpacked {
+                        seen.store(true, Ordering::SeqCst);
+                    }
+                    unpacked
+                }),
+            ),
+        );
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
+        let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
+        let pulled = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
+        assert!(pulled.rootfs.is_some());
+        assert!(
+            saw.load(Ordering::SeqCst),
+            "the first layer was not unpacked while the last downloaded"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

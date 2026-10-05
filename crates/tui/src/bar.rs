@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn a_bar_is_as_wide_as_it_is_asked_and_fills_as_it_goes() {
-        let paint = Paint { truecolor: true };
+        let paint = Paint::new(true);
         for width in [1usize, 7, 32] {
             for fill in [
                 Fill::Waiting,
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn a_finished_bar_holds_still() {
-        let paint = Paint { truecolor: true };
+        let paint = Paint::new(true);
         let (mut a, mut b) = (String::new(), String::new());
         draw(&mut a, &paint, 20, Fill::Done, 0.0, 0.0);
         draw(&mut b, &paint, 20, Fill::Done, 3.7, 0.0);

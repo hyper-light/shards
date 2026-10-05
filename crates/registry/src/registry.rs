@@ -48,8 +48,8 @@ const MAX_ERROR_BODY: u64 = 64000;
 const MAX_TAGS_PAGE: u64 = 4 << 20;
 /// A download that stops this many times in a row without progress fails, as
 /// containerd's `httpReadSeeker` gives up.
-const MAX_STALLS: usize = 3;
-const CHUNK: usize = 64 << 10;
+pub(crate) const MAX_STALLS: usize = 3;
+pub(crate) const CHUNK: usize = 64 << 10;
 
 /// A repository's registry, reached as containerd's default hosts reach it
 /// (`core/remotes/docker/registry.go`): Docker Hub at `registry-1.docker.io`, loopback
@@ -525,6 +525,40 @@ impl Registry {
             .ok_or_else(|| Error::new(format!("{digest}: gone from the store")))
     }
 
+    /// Where the blob `digest` is at this registry.
+    pub(crate) fn blob_url(&self, digest: &Digest) -> Result<Url, Error> {
+        self.base.join(&format!("blobs/{digest}"))
+    }
+
+    /// A GET of the bytes `lo..hi` of the blob at `url`, as it is stored: no encoding for
+    /// the transfer, whose range would not be one of the blob's. A 206 that says it holds
+    /// other bytes is refused; one that does not say is taken at its word, as a resumed
+    /// [`fetch_blob`](Self::fetch_blob) takes it. `url` is the registry's, or where it
+    /// redirected an earlier range of the blob.
+    pub(crate) fn get_range(
+        &self,
+        url: &Url,
+        media_type: &str,
+        lo: u64,
+        hi: u64,
+    ) -> Result<Response<'_>, Error> {
+        let range = format!("bytes={lo}-{}", hi.saturating_sub(1));
+        let accept = accept(media_type);
+        let headers = [
+            ("Accept", accept.as_str()),
+            ("Accept-Encoding", "identity"),
+            ("Range", range.as_str()),
+        ];
+        let (response, _) = self.request("GET", url, &headers)?;
+        if response.status == 206
+            && let Some(range) = response.header("content-range")
+            && !range.starts_with(&format!("bytes {lo}-"))
+        {
+            return Err(Error::new(format!("{url}: an unexpected range {range:?}")));
+        }
+        Ok(response)
+    }
+
     /// A blob by digest into the store, verified. An interrupted download resumes with
     /// `Range: bytes=<offset>-`, as containerd's resumes do. A server that ignores the
     /// range sends the whole blob, and the download starts over. `progress` is told the
@@ -758,7 +792,7 @@ fn unexpected(method: &str, mut response: Response) -> Error {
 
 /// A fetch's refusal, as containerd words it (`withErrorCheck`): a 404 is no content at
 /// `url`, the URL asked.
-fn not_fetched(response: Response, url: &Url) -> Error {
+pub(crate) fn not_fetched(response: Response, url: &Url) -> Error {
     if response.status == 404 {
         return Error::of(
             ErrorKind::NotFound,

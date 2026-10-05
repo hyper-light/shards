@@ -68,8 +68,9 @@ pub fn draw(canvas: &mut Canvas, t: f64) {
         polyline(canvas, facet.iter().map(&place), |_| Ink {
             rank: FACET,
             color: faint,
+            alpha: 255,
         });
-        polyline(canvas, tick.iter().map(&place), |_| Ink { rank: TICK, color });
+        polyline(canvas, tick.iter().map(&place), |_| Ink::solid(TICK, color));
         // The rim, closed, its glint where the circuit's dash is now.
         let rim: Vec<Pt> = outline.iter().chain(outline.first()).map(&place).collect();
         let length: f64 = rim
@@ -96,9 +97,10 @@ pub fn draw(canvas: &mut Canvas, t: f64) {
                     Ink {
                         rank: GLINT,
                         color: tokens::mix(color, tokens::BRIGHT, light),
+                        alpha: 255,
                     }
                 } else {
-                    Ink { rank: RIM, color }
+                    Ink::solid(RIM, color)
                 }
             });
             walked += span;
@@ -135,7 +137,7 @@ mod tests {
         (0..c.rows())
             .map(|r| {
                 let mut s = String::new();
-                c.row(r, &Paint { truecolor: true }, &mut s);
+                c.row(r, &Paint::new(true), &mut s);
                 // What a reader sees: the cells, without their colours.
                 let mut seen = String::new();
                 let mut esc = false;

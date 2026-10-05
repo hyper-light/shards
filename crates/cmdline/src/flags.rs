@@ -730,34 +730,68 @@ pub fn help(command: &Command, path: &str, columns: u16) -> String {
     text
 }
 
-/// pflag's FlagUsagesWrapped: a line per flag `--help` shows, in the order of their
-/// names, the usages aligned and wrapped at `columns`: `docker`'s flags, or shards' own.
-fn options(flags: &[Flag], extension: bool, columns: i64) -> String {
+/// A flag as `--help` shows it.
+#[derive(Debug, Clone)]
+pub struct Shown {
+    /// Its shorthand, where `--help` shows one.
+    pub short: Option<char>,
+    pub name: &'static str,
+    /// The name of its value: `string`, or what its usage marks with backquotes.
+    pub value: String,
+    /// What it does, its backquotes taken out.
+    pub usage: String,
+    /// Its default, as pflag prints it, where it is not its type's zero.
+    pub default: Option<String>,
+    pub deprecated: Option<&'static str>,
+}
+
+/// The flags `--help` shows, in the order of their names: `docker`'s, or shards' own.
+pub fn shown(flags: &[Flag], extension: bool) -> Vec<Shown> {
     let mut shown: Vec<&Flag> = flags
         .iter()
         .filter(|f| !f.hidden && f.extension == extension)
         .collect();
     shown.sort_by_key(|f| f.name);
+    shown
+        .into_iter()
+        .map(|f| {
+            let (value, usage) = unquote_usage(f);
+            Shown {
+                short: f.short.filter(|_| f.short_deprecated.is_none()).map(char::from),
+                name: f.name,
+                value,
+                usage,
+                default: (!f.default_is_zero()).then(|| {
+                    if f.kind == Kind::String {
+                        go::quote(f.default)
+                    } else {
+                        f.default.to_string()
+                    }
+                }),
+                deprecated: f.deprecated,
+            }
+        })
+        .collect()
+}
+
+/// pflag's FlagUsagesWrapped: a line per flag `--help` shows, in the order of their
+/// names, the usages aligned and wrapped at `columns`: `docker`'s flags, or shards' own.
+fn options(flags: &[Flag], extension: bool, columns: i64) -> String {
     let mut lines = Vec::new();
     let mut widest = 0;
-    for f in shown {
+    for f in shown(flags, extension) {
         let mut line = match f.short {
-            Some(s) if f.short_deprecated.is_none() => format!("  -{}, --{}", char::from(s), f.name),
-            _ => format!("      --{}", f.name),
+            Some(s) => format!("  -{s}, --{}", f.name),
+            None => format!("      --{}", f.name),
         };
-        let (type_name, usage) = unquote_usage(f);
-        if !type_name.is_empty() {
-            let _ = write!(line, " {type_name}");
+        if !f.value.is_empty() {
+            let _ = write!(line, " {}", f.value);
         }
         // pflag counts the separator it puts here.
         widest = widest.max(line.len() + 1);
-        let mut usage = usage;
-        if !f.default_is_zero() {
-            if f.kind == Kind::String {
-                let _ = write!(usage, " (default {})", go::quote(f.default));
-            } else {
-                let _ = write!(usage, " (default {})", f.default);
-            }
+        let mut usage = f.usage;
+        if let Some(default) = f.default {
+            let _ = write!(usage, " (default {default})");
         }
         if let Some(why) = f.deprecated {
             let _ = write!(usage, " (DEPRECATED: {why})");

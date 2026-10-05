@@ -9,6 +9,19 @@ use crate::tokens::{Paint, Rgb};
 pub struct Ink {
     pub rank: u8,
     pub color: Rgb,
+    /// Its opacity over the page, of 255.
+    pub alpha: u8,
+}
+
+impl Ink {
+    /// `color`, opaque.
+    pub const fn solid(rank: u8, color: Rgb) -> Ink {
+        Ink {
+            rank,
+            color,
+            alpha: 255,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -85,7 +98,7 @@ impl Canvas {
     /// ink; empty cells blank.
     pub fn row(&self, row: usize, paint: &Paint, out: &mut String) {
         let width = self.cols * 2;
-        let mut last: Option<Rgb> = None;
+        let mut last: Option<(Rgb, u8)> = None;
         for col in 0..self.cols {
             let mut bits = 0u32;
             let mut best: Option<Ink> = None;
@@ -102,9 +115,9 @@ impl Canvas {
             }
             match best {
                 Some(ink) if bits != 0 => {
-                    if last != Some(ink.color) {
-                        paint.fg(out, ink.color);
-                        last = Some(ink.color);
+                    if last != Some((ink.color, ink.alpha)) {
+                        paint.fg_over(out, ink.color, ink.alpha);
+                        last = Some((ink.color, ink.alpha));
                     }
                     out.push(char::from_u32(0x2800 + bits).unwrap_or(' '));
                 }
@@ -126,11 +139,12 @@ mod tests {
     const INK: Ink = Ink {
         rank: 1,
         color: (255, 255, 255),
+        alpha: 255,
     };
 
     fn text(c: &Canvas, row: usize) -> String {
         let mut s = String::new();
-        c.row(row, &Paint { truecolor: true }, &mut s);
+        c.row(row, &Paint::new(true), &mut s);
         s.split('m').next_back().unwrap_or_default().to_string()
     }
 
@@ -163,6 +177,7 @@ mod tests {
             Ink {
                 rank: 2,
                 color: (1, 2, 3),
+                alpha: 255,
             },
         );
         c.dot(
@@ -171,10 +186,11 @@ mod tests {
             Ink {
                 rank: 1,
                 color: (9, 9, 9),
+                alpha: 255,
             },
         );
         let mut s = String::new();
-        c.row(0, &Paint { truecolor: true }, &mut s);
+        c.row(0, &Paint::new(true), &mut s);
         assert!(s.contains("38;2;1;2;3"), "{s:?}");
     }
 }

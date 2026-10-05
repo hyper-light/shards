@@ -13,6 +13,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
+use std::sync::{Mutex, PoisonError};
 
 use sha2::{Digest as _, Sha256, Sha384, Sha512};
 
@@ -423,6 +424,190 @@ impl Download {
     }
 }
 
+/// A blob downloaded in ranges at once (shards_registry's ranged fetch): its file made
+/// at its full size, each range written where it belongs, from any thread, and the whole
+/// hashed once every range is in.
+///
+/// It goes on from the bytes in order an earlier download left ([`have`](Self::have)),
+/// and, given up, leaves the ones it has in order from the first, for the next to go on
+/// from as a [`Download`] would. While its file holds bytes out of order, a marker beside
+/// it says so: a download that finds the marker, where a process ended mid-way, starts
+/// the blob over.
+#[derive(Debug)]
+pub struct Ranged {
+    path: PathBuf,
+    file: File,
+    digest: Digest,
+    size: u64,
+    target: PathBuf,
+    room: Room,
+    /// The bytes in order an earlier download left.
+    have: u64,
+    /// The ranges written, in order, none touching another.
+    written: Mutex<Vec<(u64, u64)>>,
+    /// Committed, or given up and its file left as it should be.
+    done: bool,
+    /// Whether it replaces a stored copy (`pull --no-cache`).
+    replace: bool,
+}
+
+impl Ranged {
+    /// `bytes` written at `offset`, within the blob and the room the store has.
+    pub fn write_at(&self, offset: u64, bytes: &[u8]) -> Result<(), Error> {
+        let end = offset.checked_add(bytes.len() as u64).filter(|&e| e <= self.size);
+        if end.is_none() {
+            return bad(format!(
+                "{}: bytes past its {} at {offset}",
+                self.digest, self.size
+            ));
+        }
+        self.room.wrote(bytes.len())?;
+        write_all_at(&self.file, bytes, offset)?;
+        let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
+        insert(&mut written, (offset, offset + bytes.len() as u64));
+        Ok(())
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// The bytes in order from the first that an earlier download left: what is still to
+    /// be fetched starts there.
+    pub fn have(&self) -> u64 {
+        self.have
+    }
+
+    /// The bytes in order from the first that are here.
+    fn in_order(&self) -> u64 {
+        let written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut end = self.have;
+        for &(lo, hi) in written.iter() {
+            if lo > end {
+                break;
+            }
+            end = end.max(hi);
+        }
+        end
+    }
+
+    /// Checks the digest of what was written, then moves the blob into place, as
+    /// [`Download::commit`] does.
+    pub fn commit(mut self) -> Result<PathBuf, Error> {
+        if self.in_order() != self.size {
+            return bad(format!(
+                "{}: {} of its {} bytes",
+                self.digest,
+                self.in_order(),
+                self.size
+            ));
+        }
+        self.done = true;
+        let marker = marker(&self.path);
+        let mut hasher = Hasher::new(self.digest.algorithm());
+        let mut reader = BufReader::with_capacity(CHUNK, &self.file);
+        reader.rewind()?;
+        io::copy(&mut reader, &mut HashWriter(&mut hasher))?;
+        drop(reader);
+        let actual = hasher.finish();
+        if actual != self.digest {
+            // Gone before the lock is, so that no download waiting on it goes on from it.
+            let _ = fs::remove_file(&self.path);
+            let _ = fs::remove_file(&marker);
+            return bad(format!("{}: the content hashes to {actual}", self.digest));
+        }
+        sync_durable(&self.file)?;
+        if self.target.is_file() && !self.replace {
+            let _ = fs::remove_file(&self.path);
+        } else {
+            fs::rename(&self.path, &self.target)?;
+        }
+        let _ = fs::remove_file(&marker);
+        Ok(self.target.clone())
+    }
+}
+
+/// Given up: only the bytes in order from the first are left, for the next download to
+/// go on from, and the marker goes once they are all that is left.
+impl Drop for Ranged {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        let kept = self.file.set_len(self.in_order()).is_ok() && self.file.sync_data().is_ok();
+        if kept {
+            let _ = fs::remove_file(marker(&self.path));
+        }
+    }
+}
+
+/// `written`, with `range` in it: ranges that touch it are merged with it.
+fn insert(written: &mut Vec<(u64, u64)>, range: (u64, u64)) {
+    let (mut lo, mut hi) = range;
+    let first = written.partition_point(|&(_, h)| h < lo);
+    let mut last = first;
+    while let Some(&(l, h)) = written.get(last)
+        && l <= hi
+    {
+        lo = lo.min(l);
+        hi = hi.max(h);
+        last += 1;
+    }
+    written.splice(first..last, [(lo, hi)]);
+}
+
+/// The marker that says a partial download's bytes are out of order.
+fn marker(partial: &Path) -> PathBuf {
+    partial.with_extension("ranged")
+}
+
+/// A partial download a ranged one left out of order, as a process that ended mid-way
+/// leaves it, made empty, so that nothing goes on from it.
+fn unless_out_of_order(file: &File, partial: &Path) -> io::Result<()> {
+    let marker = marker(partial);
+    if marker.exists() {
+        file.set_len(0)?;
+        file.sync_data()?;
+        fs::remove_file(&marker)?;
+    }
+    Ok(())
+}
+
+/// What is written, hashed and dropped.
+struct HashWriter<'a>(&'a mut Hasher);
+
+impl Write for HashWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// `buf` written at `offset` of `file`, all of it.
+fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::FileExt::write_all_at(file, buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        let (mut buf, mut offset) = (buf, offset);
+        while !buf.is_empty() {
+            let n = std::os::windows::fs::FileExt::seek_write(file, buf, offset)?;
+            if n == 0 {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
+            buf = buf.get(n..).unwrap_or_default();
+            offset += n as u64;
+        }
+        Ok(())
+    }
+}
+
 impl Write for Partial {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self.file.as_mut() {
@@ -765,6 +950,98 @@ impl Store {
         self.download_as(digest, size, limits, true)
     }
 
+    /// A download of `digest`, `size` bytes, in ranges at once ([`Ranged`]), under the
+    /// same lock a [`Store::download`] of it takes; `None` if the blob is here.
+    pub fn download_ranged(
+        &self,
+        digest: &Digest,
+        size: u64,
+        limits: &Limits,
+    ) -> Result<Option<Ranged>, Error> {
+        self.download_ranged_as(digest, size, limits, false)
+    }
+
+    /// [`download_ranged`](Self::download_ranged), whether or not the blob is here, to
+    /// replace it: `pull --no-cache`.
+    pub fn download_ranged_again(
+        &self,
+        digest: &Digest,
+        size: u64,
+        limits: &Limits,
+    ) -> Result<Ranged, Error> {
+        self.download_ranged_as(digest, size, limits, true)?
+            .ok_or_else(|| Error(format!("{digest}: no download to replace it")))
+    }
+
+    fn download_ranged_as(
+        &self,
+        digest: &Digest,
+        size: u64,
+        limits: &Limits,
+        replace: bool,
+    ) -> Result<Option<Ranged>, Error> {
+        let ingest = self.root.join("ingest");
+        let path = ingest.join(format!("{}-{}.partial", digest.algorithm().name(), digest.hex()));
+        let file = loop {
+            let file = File::options()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)?;
+            file.lock()?;
+            if still_at(&file, &path)? {
+                break file;
+            }
+        };
+        if self.has(digest) && !replace {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            let _ = fs::remove_file(marker(&path));
+            return Ok(None);
+        }
+        unless_out_of_order(&file, &path)?;
+        if replace {
+            file.set_len(0)?;
+        }
+        // What an earlier download left in order, unless it is more than the blob.
+        let mut have = file.metadata()?.len();
+        if have > size {
+            file.set_len(0)?;
+            have = 0;
+        }
+        let left = size - have;
+        let free = match limits.keep_free {
+            0 => u64::MAX,
+            _ => (limits.available)(&ingest)?,
+        };
+        if free < limits.keep_free.saturating_add(left) {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                format!(
+                    "{digest}: {left} more bytes, with {free} free and {} to be left (SHARDS_KEEP_FREE)",
+                    limits.keep_free
+                ),
+            )
+            .into());
+        }
+        // The marker first, synced: the file is out of order once it is at its full size.
+        File::create(marker(&path))?.sync_all()?;
+        file.set_len(size)?;
+        Ok(Some(Ranged {
+            path,
+            file,
+            digest: digest.clone(),
+            size,
+            target: self.blob_path(digest),
+            room: Room::new(&ingest, limits)?,
+            have,
+            written: Mutex::new(Vec::new()),
+            done: false,
+            replace,
+        }))
+    }
+
     fn download_as(
         &self,
         digest: &Digest,
@@ -794,8 +1071,10 @@ impl Store {
         if self.has(digest) && !replace {
             drop(file);
             let _ = fs::remove_file(&path);
+            let _ = fs::remove_file(marker(&path));
             return Ok(None);
         }
+        unless_out_of_order(&file, &path)?;
         let mut hasher = Hasher::new(digest.algorithm());
         let mut offset: u64 = 0;
         let mut buf = vec![0u8; CHUNK];
@@ -1537,7 +1816,7 @@ impl Store {
     pub fn unpack_layers(&self, layers: &[Layer], limits: &Limits) -> Result<Vec<Unpacked>, Error> {
         let room = Room::new(&self.root.join("ingest"), limits)?;
         let mut out = Vec::with_capacity(layers.len());
-        self.unpack_in_order(layers, limits, &room, |_, tar| {
+        self.unpack_in_order(layers, limits, &room, &|_| Ok(()), |_, tar| {
             out.push(Unpacked(tar));
             Ok(())
         })?;
@@ -1557,6 +1836,7 @@ impl Store {
         layers: &[Layer],
         limits: &Limits,
         room: &Room,
+        ready: &(dyn Fn(usize) -> Result<(), Error> + Sync),
         mut each: impl FnMut(usize, Tar) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let workers = std::thread::available_parallelism()
@@ -1577,7 +1857,7 @@ impl Store {
                         while !stop.load(Ordering::Acquire) {
                             let i = next.fetch_add(1, Ordering::AcqRel);
                             let Some(layer) = layers.get(i) else { break };
-                            let r = self.unpack(layer, bytes, limits, room);
+                            let r = ready(i).and_then(|()| self.unpack(layer, bytes, limits, room));
                             if r.is_err() {
                                 stop.store(true, Ordering::Release);
                             }
@@ -1635,9 +1915,42 @@ impl Store {
     /// than `limits` allow (audit A10), and one build at a time goes on in a store,
     /// whichever process asks: a second of the same image finds the first's.
     pub fn rootfs(&self, layers: &[Layer], limits: &Limits) -> Result<PathBuf, Error> {
+        self.rootfs_as_ready(layers, limits, &|_| Ok(()))
+    }
+
+    /// [`Store::rootfs`], each layer unpacked once `ready` says its blob is here: called
+    /// with the layer's index, it returns when the blob is stored, or with why it never
+    /// will be. A pull builds as it downloads so (PM M114).
+    pub fn rootfs_as_ready(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        ready: &(dyn Fn(usize) -> Result<(), Error> + Sync),
+    ) -> Result<PathBuf, Error> {
+        self.rootfs_built(layers, limits, ready, false)
+    }
+
+    /// [`Store::rootfs_as_ready`], built again whether or not it is here, and put in the
+    /// old one's place whole: `pull --no-cache`.
+    pub fn rootfs_again_as_ready(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        ready: &(dyn Fn(usize) -> Result<(), Error> + Sync),
+    ) -> Result<PathBuf, Error> {
+        self.rootfs_built(layers, limits, ready, true)
+    }
+
+    fn rootfs_built(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        ready: &(dyn Fn(usize) -> Result<(), Error> + Sync),
+        again: bool,
+    ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let from = from_path(&self.rootfs_path(&diff_ids)?);
-        self.rootfs_by(layers, limits, |room, ingest| {
+        self.rootfs_by(layers, limits, again, |room, ingest| {
             // Stacked from the layers: nothing else wrote it, whatever was named before.
             match fs::remove_file(&from) {
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
@@ -1646,7 +1959,7 @@ impl Store {
             let (mut entries, mut metadata) = (0u64, 0u64);
             let mut tree = layer::root();
             let mut tars = Vec::with_capacity(layers.len());
-            self.unpack_in_order(layers, limits, room, |i, tar| {
+            self.unpack_in_order(layers, limits, room, ready, |i, tar| {
                 let source = u32::try_from(i).map_err(|_| Error("too many layers".into()))?;
                 let file = File::open(tar.path())?;
                 let mut count = |e: &crate::tar::Entry| {
@@ -1715,7 +2028,7 @@ impl Store {
     ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let from = from_path(&self.rootfs_path(&diff_ids)?);
-        self.rootfs_by(layers, limits, |room, ingest| {
+        self.rootfs_by(layers, limits, false, |room, ingest| {
             let mut marker = Partial::create(ingest)?;
             marker.write_all(producer.as_bytes())?;
             marker.replace(&from)?;
@@ -1735,11 +2048,12 @@ impl Store {
         &self,
         layers: &[Layer],
         limits: &Limits,
+        again: bool,
         make: impl FnOnce(&Room, &Path) -> Result<Partial, Error>,
     ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let path = self.rootfs_path(&diff_ids)?;
-        if path.is_file() {
+        if path.is_file() && !again {
             return Ok(path);
         }
         let building = File::options()
@@ -1748,7 +2062,7 @@ impl Store {
             .write(true)
             .open(self.root.join(format!("rootfs/v{ROOTFS_VERSION}/.building")))?;
         building.lock()?;
-        if path.is_file() {
+        if path.is_file() && !again {
             return Ok(path);
         }
         let ingest = self.root.join("ingest");
@@ -2824,6 +3138,123 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn a_blob_downloaded_in_ranges_is_whole_once_its_ranges_are_in() {
+        let root = temp("ranged");
+        let store = Store::open(&root).unwrap();
+        let blob: Vec<u8> = (0..1_000_003u32).map(|i| (i % 251) as u8).collect();
+        let digest = sha256(&blob);
+        let ranged = store
+            .download_ranged(&digest, blob.len() as u64, &Limits::none())
+            .unwrap()
+            .unwrap();
+        // Eight ranges, written backwards from eight threads.
+        let step = blob.len().div_ceil(8);
+        std::thread::scope(|s| {
+            for i in (0..8).rev() {
+                let (ranged, blob) = (&ranged, &blob);
+                s.spawn(move || {
+                    let lo = i * step;
+                    let hi = (lo + step).min(blob.len());
+                    ranged.write_at(lo as u64, &blob[lo..hi]).unwrap();
+                });
+            }
+        });
+        assert!(
+            ranged.write_at(blob.len() as u64 - 1, b"xx").is_err(),
+            "past its end"
+        );
+        let path = ranged.commit().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), blob);
+        assert!(
+            store
+                .download_ranged(&digest, blob.len() as u64, &Limits::none())
+                .unwrap()
+                .is_none()
+        );
+        // Bytes that hash to another digest are refused, and nothing is kept.
+        let other = sha256(b"something else");
+        let ranged = store
+            .download_ranged(&other, 4, &Limits::none())
+            .unwrap()
+            .unwrap();
+        ranged.write_at(0, b"abcd").unwrap();
+        assert!(ranged.commit().is_err());
+        assert!(!store.has(&other));
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_ranged_download_given_up_leaves_its_bytes_in_order_and_no_others() {
+        let root = temp("ranged-resume");
+        let store = Store::open(&root).unwrap();
+        let blob: Vec<u8> = (0..300_000u32).map(|i| (i % 249) as u8).collect();
+        let digest = sha256(&blob);
+        let partial = root.join(format!("ingest/sha256-{}.partial", digest.hex()));
+        let marker = root.join(format!("ingest/sha256-{}.ranged", digest.hex()));
+        let size = blob.len() as u64;
+        // Two ranges in, with a gap before the second: only the first is kept.
+        let ranged = store
+            .download_ranged(&digest, size, &Limits::none())
+            .unwrap()
+            .unwrap();
+        assert!(marker.exists());
+        ranged.write_at(0, &blob[..50_000]).unwrap();
+        ranged.write_at(50_000, &blob[50_000..70_000]).unwrap();
+        ranged.write_at(100_000, &blob[100_000..200_000]).unwrap();
+        drop(ranged);
+        assert_eq!(fs::metadata(&partial).unwrap().len(), 70_000);
+        assert!(!marker.exists());
+        // The next goes on from there, as a sequential download would.
+        let ranged = store
+            .download_ranged(&digest, size, &Limits::none())
+            .unwrap()
+            .unwrap();
+        assert_eq!(ranged.have(), 70_000);
+        assert!(ranged.commit().is_err(), "not all of it is in");
+        let ranged = store
+            .download_ranged(&digest, size, &Limits::none())
+            .unwrap()
+            .unwrap();
+        assert_eq!(ranged.have(), 70_000);
+        ranged.write_at(70_000, &blob[70_000..]).unwrap();
+        ranged.commit().unwrap();
+        assert_eq!(fs::read(store.blob_path(&digest)).unwrap(), blob);
+        assert!(!marker.exists() && !partial.exists());
+
+        // A process that ended mid-way left its file out of order, and the marker: the
+        // next download, of either kind, starts over.
+        let blob2: Vec<u8> = blob.iter().map(|b| b ^ 0x5a).collect();
+        let digest2 = sha256(&blob2);
+        let partial2 = root.join(format!("ingest/sha256-{}.partial", digest2.hex()));
+        // As it left them: the file at full size, bytes out of order, and the marker.
+        let mut left = vec![0u8; blob2.len()];
+        left[100_000..].copy_from_slice(&blob2[100_000..]);
+        fs::write(&partial2, &left).unwrap();
+        fs::write(partial2.with_extension("ranged"), b"").unwrap();
+        let mut download = store.download(&digest2, size, &Limits::none()).unwrap().unwrap();
+        assert_eq!(download.offset(), 0);
+        download.write(&blob2).unwrap();
+        download.commit().unwrap();
+        assert_eq!(fs::read(store.blob_path(&digest2)).unwrap(), blob2);
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ranges_written_are_merged_where_they_touch() {
+        let mut w = Vec::new();
+        for r in [(10, 20), (30, 40), (0, 5), (20, 30), (50, 60), (4, 9), (55, 70)] {
+            insert(&mut w, r);
+        }
+        assert_eq!(w, vec![(0, 9), (10, 40), (50, 70)]);
+        insert(&mut w, (9, 10));
+        assert_eq!(w, vec![(0, 40), (50, 70)]);
+        insert(&mut w, (0, 100));
+        assert_eq!(w, vec![(0, 100)]);
+    }
+
     /// Layers of uneven sizes, so that they finish unpacking out of order: layer `i`
     /// holds one file of `(n - i) * 64 KiB`.
     fn uneven_layers(store: &Store, n: usize) -> (Vec<Vec<u8>>, Vec<Layer>) {
@@ -2854,7 +3285,7 @@ mod tests {
         // Each layer reaches `each` once, in order, whole.
         let mut seen = Vec::new();
         store
-            .unpack_in_order(&layers, &limits, &room, |i, tar| {
+            .unpack_in_order(&layers, &limits, &room, &|_| Ok(()), |i, tar| {
                 assert_eq!(fs::read(tar.path()).unwrap(), tars[i]);
                 seen.push(i);
                 Ok(())
@@ -2870,7 +3301,7 @@ mod tests {
         }
         let mut seen = Vec::new();
         let e = store
-            .unpack_in_order(&bad, &limits, &room, |i, _| {
+            .unpack_in_order(&bad, &limits, &room, &|_| Ok(()), |i, _| {
                 seen.push(i);
                 Ok(())
             })
@@ -2881,7 +3312,7 @@ mod tests {
         // `each` failing stops the rest, and is the error, ahead of a later layer's.
         let mut seen = Vec::new();
         let e = store
-            .unpack_in_order(&bad, &limits, &room, |i, _| {
+            .unpack_in_order(&bad, &limits, &room, &|_| Ok(()), |i, _| {
                 seen.push(i);
                 if i == 1 {
                     Err(Error("stop at 1".into()))
@@ -2903,7 +3334,7 @@ mod tests {
         };
         assert!(largest < tight.bytes);
         let e = store
-            .unpack_in_order(&layers, &tight, &room, |_, _| Ok(()))
+            .unpack_in_order(&layers, &tight, &room, &|_| Ok(()), |_, _| Ok(()))
             .unwrap_err();
         assert!(e.0.contains("SHARDS_MAX_IMAGE_BYTES"), "{e}");
         let exact = Limits {
@@ -2911,7 +3342,7 @@ mod tests {
             ..Limits::none()
         };
         store
-            .unpack_in_order(&layers, &exact, &room, |_, _| Ok(()))
+            .unpack_in_order(&layers, &exact, &room, &|_| Ok(()), |_, _| Ok(()))
             .unwrap();
 
         assert_eq!(

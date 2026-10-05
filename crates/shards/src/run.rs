@@ -156,7 +156,11 @@ pub fn prepare(
             let report = |event: Event<'_>| match event {
                 Event::Layer(d) => say(&format!("{}: Download complete", short(&d.to_string()))),
                 Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
-                Event::Manifest(..) | Event::Progress(..) | Event::Building | Event::Pulling => {}
+                Event::Manifest(..)
+                | Event::Progress(..)
+                | Event::Building
+                | Event::Unpacking(_)
+                | Event::Pulling => {}
             };
             let (pulled, _) = crate::pull::fetch(
                 home,
@@ -166,6 +170,7 @@ pub fn prepare(
                 &say,
                 Some(cancel),
                 &|k| shards_ipc::env_value(&asked.registry_env, k),
+                false,
             )?;
             say(&format!("Digest: {}", pulled.resolved));
             say(&format!(
@@ -363,6 +368,7 @@ mod tests {
             healthcheck: None,
             shell: None,
             exposed_ports: Vec::new(),
+            ..RunConfig::default()
         }
     }
 

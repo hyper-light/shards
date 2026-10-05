@@ -14,6 +14,8 @@ use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 
 #[cfg(unix)]
 mod client;
+#[cfg(unix)]
+mod look;
 mod request;
 #[cfg(unix)]
 mod save;
@@ -27,7 +29,44 @@ const NOT_RUN: u8 = 125;
 
 pub fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    dispatch(args)
+}
+
+/// The commands shards has besides the catalog's: the daemon side's own words.
+const OWN: [&str; 7] = ["grants", "--version", "builder", "buildx", "help", "-h", "--help"];
+
+fn dispatch(args: Vec<OsString>) -> ExitCode {
     let words: Vec<&str> = args.iter().map_while(|a| a.to_str()).take(2).collect();
+    match words.as_slice() {
+        [] | ["help" | "-h" | "--help"] => return top_help(),
+        // `shards help pull` is `shards pull --help`.
+        ["help", ..] => {
+            let mut rest: Vec<OsString> = args.iter().skip(1).cloned().collect();
+            rest.push("--help".into());
+            return dispatch(rest);
+        }
+        [name @ ("image" | "container" | "vm")]
+        | [name @ ("image" | "container" | "vm"), "-h" | "--help"] => {
+            return management_help(name);
+        }
+        [name @ ("image" | "container"), word, ..]
+            if shards_cmdline::commands::find(&words).is_none()
+                && shards_cmdline::commands::build(&words).is_none()
+                && !matches!(*word, "run" | "exec") =>
+        {
+            return unknown(&shards_cmdline::catalog::unknown_in(name, word));
+        }
+        [word, ..]
+            if !word.starts_with('-')
+                && !OWN.contains(word)
+                && !shards_cmdline::catalog::TOP
+                    .iter()
+                    .any(|g| g.entries.iter().any(|e| e.name == *word)) =>
+        {
+            return unknown(&shards_cmdline::catalog::unknown(word));
+        }
+        _ => {}
+    }
     match words.as_slice() {
         ["run", ..] => request::run("shards run", args.get(1..).unwrap_or_default()),
         ["container", "run", ..] => request::run("shards container run", args.get(2..).unwrap_or_default()),
@@ -178,6 +217,48 @@ fn container(
     }
 }
 
+/// `shards --help`: shards' own page on a colour terminal, docker/cli's text elsewhere.
+fn top_help() -> ExitCode {
+    #[cfg(unix)]
+    if let Some(p) = look::styled() {
+        look::top(&p, &mut std::io::stdout().lock());
+        return ExitCode::SUCCESS;
+    }
+    let _ = std::io::stdout().write_all(shards_cmdline::catalog::top().as_bytes());
+    ExitCode::SUCCESS
+}
+
+/// A management command's help, as [`top_help`] says the root's.
+fn management_help(name: &str) -> ExitCode {
+    #[cfg(unix)]
+    if let Some(p) = look::styled()
+        && look::management(&p, name, &mut std::io::stdout().lock())
+    {
+        return ExitCode::SUCCESS;
+    }
+    match shards_cmdline::catalog::management_help(name) {
+        Some(text) => {
+            let _ = std::io::stdout().write_all(text.as_bytes());
+            ExitCode::SUCCESS
+        }
+        None => unknown(&shards_cmdline::catalog::unknown(name)),
+    }
+}
+
+/// A command shards does not have, refused as docker/cli refuses one (status 1); in a
+/// panel on a colour terminal.
+fn unknown(text: &str) -> ExitCode {
+    #[cfg(unix)]
+    if let Some(p) = look::styled_err() {
+        let first = text.lines().next().unwrap_or(text);
+        let first = first.strip_prefix("shards: ").unwrap_or(first);
+        look::error(&p, "shards", first, &["shards --help lists every command"]);
+        return ExitCode::FAILURE;
+    }
+    let _ = writeln!(std::io::stderr(), "{text}");
+    ExitCode::FAILURE
+}
+
 /// Reads `argv` for `command`, which `path` names; or answers its `--help` or its
 /// mistakes as the Docker CLI does, with the status to exit with.
 fn read(
@@ -189,8 +270,14 @@ fn read(
     match flags::parse(command, path, argv, validate) {
         Outcome::Run(parsed) => Ok(parsed),
         Outcome::Help { notices } => {
+            let _ = std::io::stdout().write_all(notices.as_bytes());
+            #[cfg(unix)]
+            if let Some(p) = look::styled() {
+                look::command(&p, command, path, &mut std::io::stdout().lock());
+                return Err(ExitCode::SUCCESS);
+            }
             let help = flags::help(command, path, columns());
-            let _ = write!(std::io::stdout(), "{notices}{help}");
+            let _ = write!(std::io::stdout(), "{help}");
             Err(ExitCode::SUCCESS)
         }
         Outcome::Fail {
@@ -199,6 +286,15 @@ fn read(
             status,
         } => {
             let _ = std::io::stdout().write_all(notices.as_bytes());
+            #[cfg(unix)]
+            if let Some(p) = look::styled_err() {
+                let first = text.lines().next().unwrap_or(&text);
+                let name = path.strip_prefix("shards ").unwrap_or(path);
+                let usage = format!("usage: {path} {}", command.usage);
+                let more = format!("{path} --help shows its options");
+                look::error(&p, name, first, &[usage.trim_end(), &more]);
+                return Err(ExitCode::from(status));
+            }
             let _ = writeln!(std::io::stderr(), "{text}");
             Err(ExitCode::from(status))
         }

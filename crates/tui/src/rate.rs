@@ -82,6 +82,7 @@ impl Rate {
                     Ink {
                         rank: 1,
                         color: tokens::prism(**v / top),
+                        alpha: 255,
                     },
                 );
             }
@@ -116,7 +117,7 @@ mod tests {
             r.at(f64::from(i) * 0.25, u64::try_from(i * i).unwrap_or(0) * 1000);
         }
         let mut s = String::new();
-        r.sparkline(&mut s, &Paint { truecolor: true }, 6);
+        r.sparkline(&mut s, &Paint::new(true), 6);
         let cells = s
             .chars()
             .filter(|c| *c == ' ' || ('\u{2800}'..='\u{28ff}').contains(c))

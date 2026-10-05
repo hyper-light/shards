@@ -74,7 +74,7 @@ fn answer(argv: &[String]) -> (String, String, u8, bool) {
 /// (`Flag::extension`), each a deliberate difference.
 const EXTENDED: &[(&str, &str)] = &[(
     "pull",
-    "\nShards options:\n      --output-agentfile string   Write the image's Agentfile to this\n                                  file, or into this directory\n",
+    "\nShards options:\n      --no-cache                  Fetch every layer again, though stored,\n                                  and build its microVM again\n      --output-agentfile string   Write the image's Agentfile to this\n                                  file, or into this directory\n",
 )];
 
 /// `got`, with the section shards adds to `argv`'s help taken off: that section must be

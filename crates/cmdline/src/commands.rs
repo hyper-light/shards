@@ -430,6 +430,12 @@ pub static PULL: Command = Command {
         .defaulting("true")
         .deprecated("support for docker content trust was removed"),
         HELP,
+        Flag::bool(
+            "no-cache",
+            None,
+            "Fetch every layer again, though stored, and build its microVM again",
+        )
+        .extension(),
         Flag::string(
             "output-agentfile",
             None,
