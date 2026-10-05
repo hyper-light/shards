@@ -148,6 +148,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 return 1;
             }
         };
+        // A colour terminal gets shards' page: the images as records.
+        if asker.styled() && !quiet && !no_trunc && !digests && !expanded {
+            reply.sheet(&self.sheet(&images));
+            return 0;
+        }
         let text = if quiet || no_trunc || digests {
             let now = asker.now / 1_000_000_000;
             table(&images, now, !no_trunc, quiet, digests)
@@ -168,6 +173,76 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         };
         let _ = reply.bytes(crate::spec::LOG_STDOUT, text.as_bytes());
         0
+    }
+
+    /// The images as records for a client's page: a head of totals, then one an image,
+    /// with what its manifest for our platform holds: its disk, its platform, its layers.
+    fn sheet(&self, images: &[Summary]) -> shards_ipc::Sheet {
+        let mut sheet = shards_ipc::Sheet::new("images");
+        let store = self.store().ok().flatten();
+        let stored: Vec<shards_image::store::Image> =
+            store.as_ref().and_then(|s| s.images().ok()).unwrap_or_default();
+        let (mut content, mut disks) = (0u64, 0u64);
+        let mut rows = Vec::new();
+        for image in images {
+            let found = stored.iter().find(|s| s.id.to_string() == image.id);
+            let (packed, disk) = found.map_or((0, 0), |s| (s.content, s.unpacked));
+            content = content.saturating_add(packed);
+            disks = disks.saturating_add(disk);
+            let platform = image
+                .manifests
+                .iter()
+                .find(|m| m.kind == Kind::Image && m.available)
+                .map(|m| m.platform.clone())
+                .unwrap_or_default();
+            let layers = found
+                .and_then(|s| s.config.as_ref())
+                .and_then(|c| serde_json::from_slice::<shards_image::oci::ImageConfig>(c).ok())
+                .map(|c| c.rootfs.diff_ids.len())
+                .unwrap_or(0);
+            let names: Vec<(String, String)> = if image.tags.is_empty() {
+                vec![("<none>".into(), "<none>".into())]
+            } else {
+                image
+                    .tags
+                    .iter()
+                    .map(
+                        |t| match t.rsplit_once(':').filter(|(_, tag)| !tag.contains('/')) {
+                            Some((repo, tag)) => (repo.to_string(), tag.to_string()),
+                            None => (t.clone(), "<none>".into()),
+                        },
+                    )
+                    .collect()
+            };
+            for (repo, tag) in names {
+                rows.push(vec![
+                    ("repo", repo),
+                    ("tag", tag),
+                    ("id", truncate_id(&image.id).to_string()),
+                    ("created", image.created.to_string()),
+                    ("content", packed.to_string()),
+                    ("disk", disk.to_string()),
+                    ("platform", platform.clone()),
+                    ("layers", layers.to_string()),
+                    ("in_use", image.containers.to_string()),
+                ]);
+            }
+        }
+        let free = shards_vmm::platform::disk_space(&self.home)
+            .map(|(available, _)| available.to_string())
+            .unwrap_or_default();
+        sheet.record(&[
+            ("kind", "head".into()),
+            ("images", images.len().to_string()),
+            ("content", content.to_string()),
+            ("disk", disks.to_string()),
+            ("store", self.home.join("images").display().to_string()),
+            ("free", free),
+        ]);
+        for row in rows {
+            sheet.record(&row);
+        }
+        sheet
     }
 
     /// The store's images as dockerd lists them, those with a reference `pattern` matches
@@ -280,7 +355,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
     /// `shards tag SOURCE TARGET` (moby client ImageTag, then the daemon's postImagesTag):
     /// TARGET, with `latest` if it names no tag, names what SOURCE does.
-    pub(super) fn tag(&self, args: &[String], reply: &super::commands::Reply<'_>) -> u8 {
+    pub(super) fn tag(&self, args: &[String], styled: bool, reply: &super::commands::Reply<'_>) -> u8 {
         use shards_image::reference::{AnyReference, Reference};
         let (Some(source), Some(target)) = (args.first(), args.get(1)) else {
             return 1;
@@ -320,10 +395,22 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             let existing = image.references.first().ok_or_else(|| not_found(source))?;
             store
                 .alias(&tagged.to_string(), existing)
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            Ok(image.id.to_string())
         });
         match found {
-            Ok(()) => 0,
+            Ok(id) => {
+                if styled {
+                    let mut sheet = shards_ipc::Sheet::new("tag");
+                    sheet.record(&[
+                        ("source", source.clone()),
+                        ("target", tagged.familiar()),
+                        ("id", truncate_id(&id).to_string()),
+                    ]);
+                    reply.sheet(&sheet);
+                }
+                0
+            }
             Err(e) => refuse(&format!("Error response from daemon: {e}")),
         }
     }
@@ -336,8 +423,23 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     pub(super) fn rmi(
         &self,
         parsed: &shards_cmdline::flags::Parsed,
+        styled: bool,
         reply: &super::commands::Reply<'_>,
     ) -> u8 {
+        // For a client on a colour terminal: what each name did, and what deleting frees.
+        let mut sheet = shards_ipc::Sheet::new("rmi");
+        let sizes: Vec<(String, u64)> = if styled {
+            self.store()
+                .ok()
+                .flatten()
+                .and_then(|s| s.images().ok())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|i| (i.id.to_string(), i.content.saturating_add(i.unpacked)))
+                .collect()
+        } else {
+            Vec::new()
+        };
         use super::rmi::{Record, Records, Removed};
         struct Store<'s>(&'s shards_image::store::Store);
         impl Records for Store<'_> {
@@ -382,17 +484,42 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 Ok(removed) => {
                     for r in removed {
                         match r {
+                            Removed::Untagged(name) if styled => {
+                                sheet.record(&[("given", given.clone()), ("untagged", name)]);
+                            }
                             Removed::Untagged(name) => reply.out(&format!("Untagged: {name}")),
                             Removed::Deleted(id) => {
-                                reply.out(&format!("Deleted: {id}"));
+                                if styled {
+                                    let freed = sizes.iter().find(|(i, _)| *i == id).map_or(0, |(_, n)| *n);
+                                    sheet.record(&[
+                                        ("given", given.clone()),
+                                        ("deleted", truncate_id(&id).to_string()),
+                                        ("freed", freed.to_string()),
+                                    ]);
+                                } else {
+                                    reply.out(&format!("Deleted: {id}"));
+                                }
                                 // What it held goes with the next collection.
                                 self.collect_soon();
                             }
                         }
                     }
                 }
+                Err(e) if styled => {
+                    let said = e
+                        .said
+                        .strip_prefix("Error response from daemon: ")
+                        .unwrap_or(&e.said)
+                        .to_string();
+                    sheet.record(&[("given", given.clone()), ("error", said)]);
+                    errors.push(e);
+                }
                 Err(e) => errors.push(e),
             }
+        }
+        if styled {
+            reply.sheet(&sheet);
+            return u8::from(!errors.is_empty() && (!force || errors.iter().any(|e| !e.not_found)));
         }
         if errors.is_empty() {
             return 0;

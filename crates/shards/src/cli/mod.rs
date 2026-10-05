@@ -15,10 +15,12 @@ use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 #[cfg(unix)]
 mod client;
 #[cfg(unix)]
-mod look;
+pub(crate) mod look;
 mod request;
 #[cfg(unix)]
 mod save;
+#[cfg(unix)]
+mod screens;
 #[cfg(unix)]
 mod show;
 #[cfg(unix)]

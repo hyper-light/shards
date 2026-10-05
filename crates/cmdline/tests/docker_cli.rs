@@ -103,8 +103,14 @@ fn command_lines_are_answered_as_the_docker_cli_answers_them() {
             .iter()
             .map(|a| a.as_str().unwrap().to_string())
             .collect();
+        // shards keeps `-h` for help, where docker/cli deprecates it: a deliberate
+        // difference, its notice the only one.
+        let stdout_want = case["stdout"]
+            .as_str()
+            .unwrap()
+            .replace("Flag shorthand -h has been deprecated, use --help\n", "");
         let want = (
-            case["stdout"].as_str().unwrap(),
+            stdout_want.as_str(),
             case["stderr"].as_str().unwrap(),
             case["status"].as_u64().unwrap(),
         );

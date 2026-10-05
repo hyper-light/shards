@@ -285,6 +285,11 @@ fn answer<'s>(
                 }
                 pass(&display, Shown::Progress(event));
             }
+            Ok(Some(m)) if m.kind == kind::SHEET => {
+                if let Some(sheet) = shards_ipc::Sheet::decode(&m.payload) {
+                    crate::cli::screens::show(&sheet);
+                }
+            }
             Ok(Some(m)) if m.kind == kind::OUT => pass(&display, Shown::Out(m.payload)),
             Ok(Some(m)) if m.kind == kind::ERR => pass(&display, Shown::Err(m.payload)),
             Ok(Some(m)) if m.kind == kind::END => {

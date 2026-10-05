@@ -252,10 +252,14 @@ fn cli_reports_usage_and_rejects_unknown_commands() {
     let none: [&str; 0] = [];
     let help = run_shards(&["--help"], &none, TIMEOUT);
     assert_eq!(help.status, Some(0), "{help}");
-    assert!(help.stdout.contains("vm run"), "{help}");
+    assert!(help.stdout.contains("\n  vm "), "{help}");
+    // As docker/cli refuses one: status 1, its words.
     let unknown = run_shards(&["frobnicate"], &none, TIMEOUT);
-    assert_eq!(unknown.status, Some(2), "{unknown}");
-    assert!(unknown.stderr.contains("unknown command"), "{unknown}");
+    assert_eq!(unknown.status, Some(1), "{unknown}");
+    assert!(
+        unknown.stderr.contains("unknown command: shards frobnicate"),
+        "{unknown}"
+    );
     let version = run_shards(&["version"], &none, TIMEOUT);
     assert!(version.stdout.starts_with("shards "), "{version}");
 }

@@ -78,11 +78,6 @@ impl Line {
         self
     }
 
-    fn to(&mut self, col: usize) -> &mut Line {
-        let n = col.saturating_sub(self.w);
-        self.pad(n)
-    }
-
     fn put(&mut self, p: &Paint, c: Rgb, text: &str) -> &mut Line {
         p.fg(&mut self.s, c);
         self.s.push_str(text);
@@ -358,7 +353,8 @@ impl Pull {
     fn header(&self, cols: usize, rows: usize, t: f64) -> Vec<(String, usize)> {
         let p = &self.paint;
         let with_mark = cols >= 56 && rows >= 14;
-        let indent = if with_mark { 12 } else { 2 };
+        // The head sits at the left edge, the body indented under it.
+        let indent = if with_mark { 10 } else { 0 };
         let room = cols.saturating_sub(indent + 1);
         let mut info: Vec<(String, usize)> = Vec::new();
         {
@@ -472,7 +468,6 @@ impl Pull {
         (0..info.len().max(mark_rows))
             .map(|i| {
                 let mut l = Line::new();
-                l.pad(2);
                 if with_mark {
                     if i < mark_rows {
                         self.mark.row(i, p, &mut l.s);
@@ -618,7 +613,7 @@ impl Pull {
                 State::Here => "stored".to_string(),
                 State::Verified => "verified".to_string(),
                 State::Unpacking => "unpacking".to_string(),
-                State::Unpacked => "in disk".to_string(),
+                State::Unpacked => "on disk".to_string(),
             };
             let bar_w = width
                 .saturating_sub(1 + 2 + id_w + 2 + 2 + size_w + 2 + STATE_W)
@@ -684,7 +679,8 @@ impl Pull {
         let long: usize = stages.iter().map(|s| s.0.len()).sum::<usize>() + 2 * 5 + 5 * 4 + 2;
         let use_long = long <= cols;
         let mut l = Line::new();
-        l.pad(2);
+        // Under the layers' dots: their column.
+        l.pad(4);
         for (k, (name, short, done, going)) in stages.iter().enumerate() {
             if k > 0 {
                 // The joint: a light running along it into the stage that goes.
@@ -759,57 +755,24 @@ impl Pull {
             .find(|w| w.chars().count() + 2 <= cols)
             .cloned()
             .unwrap_or_default();
+        // In the column the stages and the layers' dots are in, under the head.
         let mut l = Line::new();
-        l.pad(2)
+        l.pad(4)
             .bold(p, true)
             .fade(p, tokens::BRIGHT, alpha(0), &words)
             .bold(p, false);
         out.push(l.done());
         out.push((String::new(), 0));
         let facts = self.fact_rows(digest);
-        // Two columns where they fit, one where not, a long value on a row of its own;
-        // labels in the eyebrow's grey.
+        // A fact a row, labels in the eyebrow's grey.
         const LABEL: usize = 10;
-        let half = cols.saturating_sub(4) / 2;
-        let two = half >= LABEL + 28;
-        let whole_w = cols.saturating_sub(4 + LABEL);
-        let half_w = half.saturating_sub(LABEL + 2);
-        let mut rows: Vec<Vec<&(&str, String, Rgb)>> = Vec::new();
-        for fact in &facts {
-            let wide = !two || WIDE.contains(&fact.0) || fact.1.chars().count() > half_w;
-            match rows.last_mut() {
-                Some(row)
-                    if two
-                        && !wide
-                        && row.len() == 1
-                        && !row
-                            .iter()
-                            .any(|f| WIDE.contains(&f.0) || f.1.chars().count() > half_w) =>
-                {
-                    row.push(fact);
-                }
-                _ => rows.push(vec![fact]),
-            }
-        }
-        let mut k = 1;
-        for row in rows {
+        let value_w = cols.saturating_sub(6 + LABEL);
+        for (k, (label, value, tone)) in facts.iter().enumerate() {
+            let a = alpha(k + 1);
             let mut l = Line::new();
-            l.pad(2);
-            let paired = row.len() > 1;
-            for (c, (label, value, tone)) in row.into_iter().enumerate() {
-                if c > 0 {
-                    l.to(2 + half + 2);
-                }
-                let a = alpha(k);
-                k += 1;
-                l.fade(p, tokens::EYEBROW, a, &format!("{label:<LABEL$}"));
-                l.fade(
-                    p,
-                    *tone,
-                    a,
-                    &layout::clip(value, if paired { half_w } else { whole_w }),
-                );
-            }
+            l.pad(4);
+            l.fade(p, tokens::EYEBROW, a, &format!("{label:<LABEL$}"));
+            l.fade(p, *tone, a, &layout::clip(value, value_w));
             out.push(l.done());
         }
         out
@@ -817,7 +780,6 @@ impl Pull {
 
     /// The facts to show: label, value, and its colour.
     fn fact_rows(&self, digest: &str) -> Vec<(&'static str, String, Rgb)> {
-        // Facts with long values (`WIDE`) take a row of their own.
         let mut rows = Vec::new();
         let short = |d: &str| -> String {
             let hex = d.split_once(':').map_or(d, |(_, h)| h);
@@ -935,9 +897,6 @@ impl Pull {
         rows
     }
 }
-
-/// The facts whose values are long enough to want a row of their own.
-const WIDE: [&str; 5] = ["digest", "runs", "project", "stored", "source"];
 
 /// How long the facts take to be revealed.
 const REVEAL: f64 = 1.2;
@@ -1146,7 +1105,7 @@ mod tests {
         assert!(now.contains("85.3 MB EROFS disk"), "{now}");
         assert!(now.contains("412 GB free"), "{now}");
         assert!(now.contains("1 shared (1.00 MB)"), "{now}");
-        assert!(now.contains("in disk"), "{now}");
+        assert!(now.contains("on disk"), "{now}");
     }
 
     #[test]

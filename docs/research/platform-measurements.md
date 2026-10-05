@@ -3917,7 +3917,10 @@ revision before comparing a changed API/implementation.
   - `ab-pull.sh`: cold pulls of the image by b8fbb05 and by the change, 3 each, in turn,
     fresh homes; and one traced pull of the change alone (its connections, rate each
     second, each layer's end).
-  Apple M5 Max, macOS 26.4.1, home broadband, 2026-10-04.
+  Apple M5 Max, macOS 26.4.1, home broadband, 2026-10-04. Every run here fell between
+  17:55 and 19:37, while another session's 24 CPU-bound processes ran unintended on the
+  same machine: the CPU-bound parts (unpacking, the build after) were measured under that
+  load too, and are to be measured again.
 - **Results.**
   - MB/s by connections (median of 3; each round): 1: 73 (49, 74, 73); 2: 80 (92, 80,
     78); 4: 98 (94, 102, 98); 8: 90 (98, 90, 85); 16: 91 (95, 91, 91).

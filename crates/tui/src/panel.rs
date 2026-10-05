@@ -22,7 +22,11 @@ pub fn error(
     } else {
         width.saturating_sub(2).max(10)
     };
-    let heading = format!("{}  {}", text::eyebrow("error"), title);
+    let heading = if title.is_empty() {
+        text::eyebrow("error")
+    } else {
+        format!("{}  {}", text::eyebrow("error"), title)
+    };
     let edge = |s: &mut String| {
         if boxed {
             paint.fg(s, tokens::EDGE);

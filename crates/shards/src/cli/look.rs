@@ -14,62 +14,62 @@ use shards_tui::tokens::{self, Paint, Rgb};
 
 /// A line being made: its text, with colours, and its visible width.
 #[derive(Default)]
-struct Line {
-    s: String,
-    w: usize,
+pub(super) struct Line {
+    pub(super) s: String,
+    pub(super) w: usize,
 }
 
 impl Line {
-    fn pad(&mut self, n: usize) -> &mut Line {
+    pub(super) fn pad(&mut self, n: usize) -> &mut Line {
         self.s.extend(std::iter::repeat_n(' ', n));
         self.w += n;
         self
     }
 
-    fn to(&mut self, col: usize) -> &mut Line {
+    pub(super) fn to(&mut self, col: usize) -> &mut Line {
         let n = col.saturating_sub(self.w);
         self.pad(n)
     }
 
-    fn put(&mut self, p: &Paint, c: Rgb, text: &str) -> &mut Line {
+    pub(super) fn put(&mut self, p: &Paint, c: Rgb, text: &str) -> &mut Line {
         p.fg(&mut self.s, c);
         self.s.push_str(text);
         self.w += text.chars().count();
         self
     }
 
-    fn bold(&mut self, p: &Paint, on: bool) -> &mut Line {
+    pub(super) fn bold(&mut self, p: &Paint, on: bool) -> &mut Line {
         p.bold(&mut self.s, on);
         self
     }
 }
 
 /// A page being made.
-struct Page {
+pub(super) struct Page {
     lines: Vec<Line>,
     spare: Line,
 }
 
 impl Page {
-    fn new() -> Page {
+    pub(super) fn new() -> Page {
         Page {
             lines: Vec::new(),
             spare: Line::default(),
         }
     }
 
-    fn line(&mut self) -> &mut Line {
+    pub(super) fn line(&mut self) -> &mut Line {
         let at = self.lines.len();
         self.lines.push(Line::default());
         // Just pushed, so there; the fallback is never taken.
         self.lines.get_mut(at).unwrap_or(&mut self.spare)
     }
 
-    fn blank(&mut self) {
+    pub(super) fn blank(&mut self) {
         self.lines.push(Line::default());
     }
 
-    fn write(self, p: &Paint, out: &mut impl std::io::Write) {
+    pub(super) fn write(self, p: &Paint, out: &mut impl std::io::Write) {
         let mut text = String::new();
         for mut l in self.lines {
             p.reset(&mut l.s);
@@ -82,7 +82,7 @@ impl Page {
 }
 
 /// The paint for stdout, if it is a colour terminal: shards' pages are drawn there.
-pub fn styled() -> Option<Paint> {
+pub(crate) fn styled() -> Option<Paint> {
     // SAFETY: isatty(3) on this process's stdout.
     let tty = unsafe { libc::isatty(1) } == 1;
     let color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
@@ -109,7 +109,7 @@ pub fn styled_err() -> Option<Paint> {
 }
 
 /// The terminal's width, or 80.
-fn width() -> usize {
+pub(super) fn width() -> usize {
     match super::terminal::size(1).1 {
         0 => 80,
         w => usize::from(w),
@@ -118,14 +118,14 @@ fn width() -> usize {
 
 /// The head: the mark, where there is room, beside the brand and `name` in tracked
 /// capitals, then `lines` under them.
-fn head(page: &mut Page, p: &Paint, cols: usize, name: &str, lines: &[(Rgb, bool, String)]) {
+pub(super) fn head(page: &mut Page, p: &Paint, cols: usize, name: &str, lines: &[(Rgb, bool, String)]) {
     let with_mark = cols >= 56;
     let mut mark = Canvas::new(8, 4);
     if with_mark {
         // A still of the mark: a page is drawn once.
         shards_tui::mark::draw(&mut mark, 1.7);
     }
-    let room = cols.saturating_sub(if with_mark { 13 } else { 3 });
+    let room = cols.saturating_sub(if with_mark { 11 } else { 1 });
     let mut info: Vec<Line> = Vec::new();
     let mut brand = Line::default();
     let letters = text::eyebrow("shards");
@@ -153,7 +153,6 @@ fn head(page: &mut Page, p: &Paint, cols: usize, name: &str, lines: &[(Rgb, bool
     let mut info = info.into_iter();
     for r in 0..rows {
         let l = page.line();
-        l.pad(2);
         if with_mark {
             if r < mark.rows() {
                 mark.row(r, p, &mut l.s);
@@ -171,9 +170,10 @@ fn head(page: &mut Page, p: &Paint, cols: usize, name: &str, lines: &[(Rgb, bool
 }
 
 /// A section's heading: the site's eyebrow, in its grey.
-fn heading(page: &mut Page, p: &Paint, words: &str) {
+pub(super) fn heading(page: &mut Page, p: &Paint, words: &str) {
     page.blank();
-    page.line().pad(2).put(p, tokens::EYEBROW, &text::eyebrow(words));
+    // Plain capitals: tracked out, a heading over a list reads as letters, not a word.
+    page.line().pad(2).put(p, tokens::EYEBROW, &words.to_uppercase());
 }
 
 /// A usage line, its words coloured by what they are: the command's own, its options,
@@ -297,13 +297,24 @@ pub fn command(p: &Paint, command: &Command, path: &str, out: &mut impl std::io:
             page.line().pad(4).put(p, tokens::FOREGROUND, alias);
         }
     }
-    for (title, extension) in [("options", false), ("shards options", true)] {
-        let shown = flags::shown(command.flags, extension);
+    // Docker's options and shards' own in one set of columns.
+    let names = |f: &flags::Shown| -> usize {
+        4 + 2 + f.name.len() + if f.value.is_empty() { 0 } else { 1 + f.value.len() }
+    };
+    let sections = [("options", false), ("shards options", true)]
+        .map(|(title, extension)| (title, flags::shown(command.flags, extension)));
+    let pad = sections
+        .iter()
+        .flat_map(|(_, shown)| shown.iter().map(names))
+        .max()
+        .unwrap_or(0)
+        + 3;
+    for (title, shown) in &sections {
         if shown.is_empty() {
             continue;
         }
         heading(&mut page, p, title);
-        options(&mut page, p, cols, &shown, extension);
+        options(&mut page, p, cols, shown, pad, *title == "shards options");
     }
     page.write(p, out);
 }
@@ -311,11 +322,7 @@ pub fn command(p: &Paint, command: &Command, path: &str, out: &mut impl std::io:
 /// Options in columns: the short form in lavender, the long in the foreground, its
 /// value's kind subtle; what it does wrapped beside them, or under them where narrow;
 /// its default after, faint.
-fn options(page: &mut Page, p: &Paint, cols: usize, shown: &[flags::Shown], own: bool) {
-    let names = |f: &flags::Shown| -> usize {
-        4 + 2 + f.name.len() + if f.value.is_empty() { 0 } else { 1 + f.value.len() }
-    };
-    let pad = shown.iter().map(names).max().unwrap_or(0) + 3;
+fn options(page: &mut Page, p: &Paint, cols: usize, shown: &[flags::Shown], pad: usize, own: bool) {
     let beside = cols >= 4 + pad + 28;
     let about_w = if beside {
         cols.saturating_sub(4 + pad)
@@ -324,12 +331,12 @@ fn options(page: &mut Page, p: &Paint, cols: usize, shown: &[flags::Shown], own:
     };
     for f in shown {
         let l = page.line();
-        l.pad(4);
+        // Shards' own, marked in the margin as the site marks what is new; the columns
+        // stay the others'.
         if own {
-            // Shards' own, marked as the site marks what is new: a prism dot.
-            l.s.truncate(l.s.len() - 2);
-            l.w -= 2;
-            l.put(p, tokens::LAVENDER, "◆ ");
+            l.pad(2).put(p, tokens::LAVENDER, "◆ ");
+        } else {
+            l.pad(4);
         }
         match f.short {
             Some(s) => {
@@ -382,6 +389,75 @@ fn put_about(l: &mut Line, p: &Paint, part: &str) {
     }
 }
 
+/// `shards version`: what this shards is, where it runs, and what it runs its microVMs
+/// with.
+pub(crate) fn version(p: &Paint, out: &mut impl std::io::Write) {
+    let cols = width();
+    let mut page = Page::new();
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    };
+    let os = std::env::consts::OS;
+    head(
+        &mut page,
+        p,
+        cols,
+        "version",
+        &[(
+            tokens::BRIGHT,
+            true,
+            format!("shards {}", env!("CARGO_PKG_VERSION")),
+        )],
+    );
+    page.blank();
+    let backend = if cfg!(target_os = "macos") {
+        "Hypervisor.framework"
+    } else if cfg!(target_os = "linux") {
+        "KVM"
+    } else if cfg!(windows) {
+        "Windows Hypervisor Platform"
+    } else {
+        "none"
+    };
+    let home = shards_ipc::home().ok();
+    let kernel = crate::kernel::KERNEL.map(|k| {
+        let release = k.name.split('-').nth(1).unwrap_or(k.name);
+        let stored = home
+            .as_ref()
+            .is_some_and(|h| h.join("guest").join(format!("sha256-{}", k.sha256)).is_file());
+        format!(
+            "Linux {release} · {}",
+            if stored {
+                "stored"
+            } else {
+                "fetched on the first run"
+            }
+        )
+    });
+    let binary = std::env::current_exe().ok().map(|b| {
+        let size = std::fs::metadata(&b).map(|m| m.len()).unwrap_or(0);
+        format!("{} · {}", b.display(), text::bytes(size))
+    });
+    let rows: [(&str, Option<String>, Rgb); 6] = [
+        ("host", Some(format!("{os}/{arch}")), tokens::FOREGROUND),
+        ("guests", Some(format!("linux/{arch}")), tokens::FOREGROUND),
+        ("hypervisor", Some(backend.to_string()), tokens::LAVENDER),
+        ("kernel", kernel, tokens::FOREGROUND),
+        ("home", home.map(|h| h.display().to_string()), tokens::MUTED),
+        ("binary", binary, tokens::MUTED),
+    ];
+    for (label, value, c) in rows {
+        if let Some(value) = value {
+            let l = page.line();
+            l.pad(4).put(p, tokens::EYEBROW, &format!("{label:<12}"));
+            l.put(p, c, &layout::clip(&value, cols.saturating_sub(16)));
+        }
+    }
+    page.write(p, out);
+}
+
 /// An error, in a panel on stderr: `title` the command it came from, `message` what
 /// happened, and `hints` what to do.
 pub fn error(p: &Paint, title: &str, message: &str, hints: &[&str]) {
@@ -389,7 +465,18 @@ pub fn error(p: &Paint, title: &str, message: &str, hints: &[&str]) {
         0 => 80,
         w => usize::from(w),
     };
-    let lines = shards_tui::panel::error(p, cols, title, message, hints);
+    // The head, as every page has it, naming the command the error came from.
+    let mut page = Page::new();
+    head(
+        &mut page,
+        p,
+        cols,
+        if title == "shards" { "" } else { title },
+        &[],
+    );
+    page.blank();
+    page.write(p, &mut std::io::stderr().lock());
+    let lines = shards_tui::panel::error(p, cols, "", message, hints);
     let mut text = String::new();
     for (s, _) in lines {
         text.push_str(&s);
@@ -443,7 +530,7 @@ mod tests {
             assert!(text.contains(f), "{f}: {text}");
         }
         assert!(text.contains("P U L L"));
-        assert!(text.contains("S H A R D S   O P T I O N S"));
+        assert!(text.contains("SHARDS OPTIONS"));
         let mut out = Vec::new();
         assert!(management(&p, "image", &mut out));
         assert!(seen(&out).contains("ls"));

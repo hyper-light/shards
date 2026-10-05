@@ -128,6 +128,9 @@ fn build_answers_as_buildx() {
                     (notices, format!("{text}\n"), status, refused)
                 }
             };
+        // shards keeps `-h` for help, where buildx's root deprecates it: a deliberate
+        // difference, its notice the only one.
+        let stdout = stdout.replace("Flag shorthand -h has been deprecated, use --help\n", "");
         let ok = if refused {
             stdout.starts_with("RUN") && got_status == 1
         } else {

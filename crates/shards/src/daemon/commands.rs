@@ -31,6 +31,19 @@ const LAST_WAIT: Duration = Duration::from_secs(2);
 /// How long `stop` waits after a signal it could not send (moby daemon/stop.go).
 const UNSENT_WAIT: Duration = Duration::from_secs(2);
 
+/// How a container [`end_all`](Daemon::end_all) ended came to its end: it had already,
+/// by the signal it was sent, by SIGKILL asked for, by SIGKILL once its grace was up, by
+/// its VM killed, or it was not heard to end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum How {
+    Already,
+    Signal,
+    Kill,
+    Escalated,
+    Vm,
+    Lost,
+}
+
 /// A stop timeout's seconds as dockerd waits them: Go multiplies them into nanoseconds,
 /// wrapping (daemon/stop.go); a negative number waits for ever.
 fn grace_of(seconds: i64) -> Option<Duration> {
@@ -39,6 +52,7 @@ fn grace_of(seconds: i64) -> Option<Duration> {
         Duration::from_nanos(u64::try_from(ns).unwrap_or(0))
     })
 }
+
 /// What `stop`, `kill` and `rm` make of one argument before any container is ended: an
 /// answer now, or a container to end, with its signal and grace, and what to answer once
 /// it has ended (`true`) or would not (`false`).
@@ -61,6 +75,12 @@ pub(super) struct Reply<'a>(pub &'a UnixStream);
 impl Reply<'_> {
     pub(super) fn out(&self, line: &str) {
         let _ = self.bytes(LOG_STDOUT, format!("{line}\n").as_bytes());
+    }
+
+    /// What a command found, for a client on a colour terminal to lay out
+    /// (`kind::SHEET`).
+    pub(super) fn sheet(&self, sheet: &shards_ipc::Sheet) {
+        let _ = shards_ipc::send(self.0, kind::SHEET, &sheet.encode(), &[]);
     }
 
     /// A step of a pull, for a client on a colour terminal to show (`kind::PROGRESS`).
@@ -331,25 +351,25 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.settle();
         }
         if std::ptr::eq(command, &PS) {
-            self.ps(&parsed, asker.east_asian, reply)
+            self.ps(&parsed, asker, reply)
         } else if std::ptr::eq(command, &WAIT) {
             self.wait(&parsed.args, asker.client, reply)
         } else if std::ptr::eq(command, &LOGS) {
             self.logs(&parsed, asker, reply)
         } else if std::ptr::eq(command, &RM) {
-            self.rm(&parsed, reply)
+            self.rm(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &STOP) {
-            self.stop(&parsed, reply)
+            self.stop(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &KILL) {
-            self.kill(&parsed, reply)
+            self.kill(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &PORT) {
             self.port(&parsed.args, reply)
         } else if std::ptr::eq(command, &IMAGES) {
             self.images(&parsed, asker, reply)
         } else if std::ptr::eq(command, &TAG) {
-            self.tag(&parsed.args, reply)
+            self.tag(&parsed.args, asker.styled(), reply)
         } else if std::ptr::eq(command, &RMI) {
-            self.rmi(&parsed, reply)
+            self.rmi(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &IMAGE_INSPECT) {
             self.image_inspect(&parsed.args, reply)
         } else if std::ptr::eq(command, &SAVE) {
@@ -492,7 +512,17 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// does (stop.go, kill.go, rm.go): each success prints its argument as given, once it
     /// and those before it are done, unless it has nothing to say; the errors follow, one
     /// per line, and make the status 1.
-    fn each<'a>(&'a self, args: &[String], op: &dyn Fn(&str) -> Step<'a>, reply: &Reply<'_>) -> u8 {
+    fn each<'a>(
+        &'a self,
+        verb: &str,
+        styled: bool,
+        args: &[String],
+        op: &dyn Fn(&str) -> Step<'a>,
+        reply: &Reply<'_>,
+    ) -> u8 {
+        let began = Instant::now();
+        // How each ended and when, for a client on a colour terminal.
+        let mut hows: Vec<(Option<How>, Duration)> = vec![(None, Duration::ZERO); args.len()];
         let mut results: Vec<Option<Result<bool, String>>> = Vec::with_capacity(args.len());
         let mut thens: Vec<Option<Then<'a>>> = Vec::with_capacity(args.len());
         let mut ending = Vec::new();
@@ -514,6 +544,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 }
             }
         }
+        if styled {
+            return self.each_shown(verb, args, results, thens, ending, began, &mut hows, reply);
+        }
         let mut errors = Vec::new();
         let mut said = 0;
         // Each success, once it and those before it are done.
@@ -528,7 +561,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             }
         };
         say(&mut results, &mut errors);
-        self.end_all(ending, &mut |i, ended| {
+        self.end_all(ending, &mut |i, ended, _| {
             let result = match thens.get_mut(i).and_then(Option::take) {
                 Some(then) => then(ended),
                 None => Ok(ended),
@@ -544,6 +577,72 @@ impl<D: crate::containers::Disk> Daemon<D> {
         u8::from(!errors.is_empty())
     }
 
+    /// [`each`](Self::each), for a client on a colour terminal: every target's outcome,
+    /// how it ended and in how long, as a sheet once all are done.
+    #[allow(clippy::too_many_arguments)]
+    fn each_shown<'a>(
+        &'a self,
+        verb: &str,
+        args: &[String],
+        mut results: Vec<Option<Result<bool, String>>>,
+        mut thens: Vec<Option<Then<'a>>>,
+        ending: Vec<(usize, String, u32, Option<Duration>)>,
+        began: Instant,
+        hows: &mut [(Option<How>, Duration)],
+        reply: &Reply<'_>,
+    ) -> u8 {
+        self.end_all(ending, &mut |i, ended, how| {
+            let result = match thens.get_mut(i).and_then(Option::take) {
+                Some(then) => then(ended),
+                None => Ok(ended),
+            };
+            if let Some(slot) = results.get_mut(i) {
+                *slot = Some(result);
+            }
+            if let Some(h) = hows.get_mut(i) {
+                *h = (Some(how), began.elapsed());
+            }
+        });
+        let mut sheet = shards_ipc::Sheet::new("ended");
+        sheet.record(&[("kind", "head".into()), ("verb", verb.into())]);
+        let mut failed = false;
+        for (i, arg) in args.iter().enumerate() {
+            let (how, took) = hows.get(i).copied().unwrap_or((None, Duration::ZERO));
+            let (outcome, said) = match results.get_mut(i).and_then(Option::take) {
+                Some(Ok(true)) => ("ok", String::new()),
+                Some(Ok(false)) => ("none", String::new()),
+                Some(Err(e)) => {
+                    failed = true;
+                    (
+                        "error",
+                        e.strip_prefix("Error response from daemon: ")
+                            .unwrap_or(&e)
+                            .to_string(),
+                    )
+                }
+                None => ("none", String::new()),
+            };
+            let how = match how {
+                None => "now",
+                Some(How::Already) => "already",
+                Some(How::Signal) => "signal",
+                Some(How::Kill) => "kill",
+                Some(How::Escalated) => "escalated",
+                Some(How::Vm) => "vm",
+                Some(How::Lost) => "lost",
+            };
+            sheet.record(&[
+                ("target", arg.clone()),
+                ("outcome", outcome.into()),
+                ("how", how.into()),
+                ("ms", took.as_millis().to_string()),
+                ("error", said),
+            ]);
+        }
+        reply.sheet(&sheet);
+        u8::from(failed)
+    }
+
     /// Ends every container of `targets` (its index, ID, signal and grace) at once, from
     /// one loop, as dockerd ends one (moby daemon/stop.go, containerStop): the signal, then SIGKILL once its grace
     /// is up (2 s if it could not be sent), then its VM after 10 s more, then giving up
@@ -553,13 +652,20 @@ impl<D: crate::containers::Disk> Daemon<D> {
     fn end_all(
         &self,
         targets: Vec<(usize, String, u32, Option<Duration>)>,
-        done: &mut dyn FnMut(usize, bool),
+        done: &mut dyn FnMut(usize, bool, How),
     ) {
         enum Phase {
             Signalled,
             Killed,
+            Escalated,
             VmKilled,
         }
+        let how = |p: &Phase| match p {
+            Phase::Signalled => How::Signal,
+            Phase::Killed => How::Kill,
+            Phase::Escalated => How::Escalated,
+            Phase::VmKilled => How::Vm,
+        };
         struct Ending {
             index: usize,
             id: String,
@@ -575,12 +681,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 Ok(Some(w)) => w,
                 // Not running: ended already.
                 Ok(None) => {
-                    done(index, true);
+                    done(index, true, How::Already);
                     continue;
                 }
                 Err(e) => {
                     super::log(format!("container {id}: waiting for its end: {e}"));
-                    done(index, false);
+                    done(index, false, How::Lost);
                     continue;
                 }
             };
@@ -611,10 +717,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     match e.phase {
                         Phase::Signalled => {
                             self.signal(&e.id, 9);
-                            e.phase = Phase::Killed;
+                            e.phase = Phase::Escalated;
                             e.deadline = after(KILL_WAIT);
                         }
-                        Phase::Killed => {
+                        Phase::Killed | Phase::Escalated => {
                             if let Some(RunState::Tracked(t)) = lock(&self.runs).get(&e.id) {
                                 let _ = t.vm.kill(libc::SIGKILL);
                             }
@@ -627,7 +733,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             // Its end may have come as it was given up.
                             let _ = gone.told.set_nonblocking(true);
                             let mut byte = [0u8; 1];
-                            done(gone.index, matches!((&gone.told).read(&mut byte), Ok(1)));
+                            let ended = matches!((&gone.told).read(&mut byte), Ok(1));
+                            done(gone.index, ended, if ended { How::Vm } else { How::Lost });
                             continue;
                         }
                     }
@@ -655,7 +762,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 // Nothing to wait on: what is left is given up, as its time would be.
                 for gone in going.drain(..) {
                     self.forget_waiter(&gone.id, gone.waiter);
-                    done(gone.index, false);
+                    done(gone.index, false, How::Lost);
                 }
                 break;
             }
@@ -668,7 +775,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     if !ended {
                         self.forget_waiter(&gone.id, gone.waiter);
                     }
-                    done(gone.index, ended);
+                    done(
+                        gone.index,
+                        ended,
+                        if ended { how(&gone.phase) } else { How::Lost },
+                    );
                 }
             }
         }
@@ -711,9 +822,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// never starts, as dockerd removes a created container. One whose run is being handed
     /// over is removed once it is known whether it started, as dockerd's removal waits
     /// for a start under way (moby daemon/start.go holds the container's lock throughout).
-    fn rm(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
+    fn rm(&self, parsed: &Parsed, styled: bool, reply: &Reply<'_>) -> u8 {
         let force = parsed.bool("force");
         self.each(
+            "rm",
+            styled,
             &parsed.args,
             &|given| {
                 let reference = given.trim_matches('/');
@@ -802,7 +915,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// time waits for ever; a stopped container stops again without complaint. A container
     /// still starting is stopped once it runs: `shards run -d` prints its ID before then,
     /// where `docker run -d` prints it after.
-    fn stop(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
+    fn stop(&self, parsed: &Parsed, styled: bool, reply: &Reply<'_>) -> u8 {
         if parsed.changed("time") && parsed.changed("timeout") {
             reply.err("conflicting options: cannot specify both --timeout and --time");
             return 1;
@@ -810,6 +923,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let told = (parsed.changed("timeout") || parsed.changed("time")).then(|| parsed.int("timeout"));
         let signal = parsed.string("signal");
         self.each(
+            "stop",
+            styled,
             &parsed.args,
             &|reference| {
                 // As the Docker CLI's client sends it (`resolve`), dockerd's words name it.
@@ -872,9 +987,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// (moby daemon/kill.go ContainerKill). Every error names its container (moby
     /// container_routes.go postContainersKill). A container still starting is signalled
     /// once it runs, as `stop` stops it.
-    fn kill(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
+    fn kill(&self, parsed: &Parsed, styled: bool, reply: &Reply<'_>) -> u8 {
         let signal = parsed.string("signal");
         self.each(
+            "kill",
+            styled,
             &parsed.args,
             &|reference| {
                 // As the Docker CLI's client sends it (`resolve`), dockerd's words name it.
@@ -935,7 +1052,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// `shards ps`: the containers, as `docker ps` lists them (docker/cli v29.8.1
     /// cli/command/formatter/container.go): the running ones, or all with `-a`, or the
     /// last `-n` made (`-l`: one); newest first; with `-q` their IDs alone.
-    fn ps(&self, parsed: &Parsed, east_asian: bool, reply: &Reply<'_>) -> u8 {
+    fn ps(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
+        let east_asian = asker.east_asian;
         // `-l` is `-n 1`, unless `-n` says otherwise (docker/cli list.go).
         let last = match parsed.int("last") {
             -1 if parsed.bool("latest") => 1,
@@ -986,6 +1104,38 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 name: c.name.clone(),
             })
             .collect();
+        // A colour terminal gets shards' page: each microVM a record.
+        if asker.styled() && !parsed.bool("quiet") {
+            let mut sheet = shards_ipc::Sheet::new("ps");
+            let running = list.iter().filter(|c| c.state == Life::Running).count();
+            let total = lock(&self.containers).all().count();
+            sheet.record(&[
+                ("kind", "head".into()),
+                ("running", running.to_string()),
+                ("total", total.to_string()),
+                ("all", all.to_string()),
+            ]);
+            for (c, l) in list.iter().zip(&listed) {
+                let state = match c.state {
+                    Life::Running => "running",
+                    Life::Created => "created",
+                    _ => "exited",
+                };
+                sheet.record(&[
+                    ("name", c.name.clone()),
+                    ("id", c.id.get(..12).unwrap_or(&c.id).to_string()),
+                    ("image", c.image.clone()),
+                    ("command", l.command.clone()),
+                    ("state", state.into()),
+                    ("status", l.status.clone()),
+                    ("exit", c.exit_code.map(|e| e.to_string()).unwrap_or_default()),
+                    ("ports", l.ports.clone()),
+                    ("created", (c.created / 1_000_000_000).to_string()),
+                ]);
+            }
+            reply.sheet(&sheet);
+            return 0;
+        }
         let shown = Listing {
             trunc,
             quiet: parsed.bool("quiet"),
@@ -1775,6 +1925,13 @@ pub(super) struct Asker {
     pub color: bool,
     /// What they sent to be written: `save`'s archive's destination.
     pub files: Vec<OwnedFd>,
+}
+
+impl Asker {
+    /// Whether their stdout is a colour terminal, where shards draws its own pages.
+    pub(super) fn styled(&self) -> bool {
+        self.terminal && self.color
+    }
 }
 
 /// The times `logs` shows lines between, as dockerd's log forwarder keeps them (moby

@@ -154,6 +154,10 @@ pub mod kind {
     /// [`Progress`](super::Progress) a message, for the client to show as it likes, where
     /// a client that is not on a terminal gets `docker pull`'s lines.
     pub const PROGRESS: u8 = 29;
+    /// Daemon → client on a colour terminal: what a command found, as a
+    /// [`Sheet`](super::Sheet) of records, for the client to lay out as its own page,
+    /// where a client that is not on a terminal gets `docker`'s text.
+    pub const SHEET: u8 = 30;
 }
 
 /// An `EXEC_RUN` flag: the command reads the client's stdin (`-i`).
@@ -842,6 +846,20 @@ mod tests {
     }
 
     #[test]
+    fn a_sheet_reads_as_it_was_written() {
+        let mut sheet = Sheet::new("images");
+        sheet.record(&[("name", "node".into()), ("tag", "22=slim".into())]);
+        sheet.record(&[]);
+        sheet.record(&[("odd", "a\x1eb\x1fc".into())]);
+        let back = Sheet::decode(&sheet.encode()).unwrap();
+        assert_eq!(back.name, "images");
+        assert_eq!(back.get(0, "tag"), Some("22=slim"));
+        assert_eq!(back.records[1], Vec::new());
+        assert_eq!(back.get(2, "odd"), Some("a b c"));
+        assert_eq!(Sheet::decode(b"x"), Some(Sheet::new("x")));
+    }
+
+    #[test]
     fn every_message_kind_has_its_own_number() {
         let source = include_str!("lib.rs");
         let kinds = source
@@ -1070,6 +1088,79 @@ mod tests {
         put_str(&mut lying, "i");
         lying.extend_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(Run::decode(&lying), None);
+    }
+}
+
+/// What a command found, for a client on a colour terminal to lay out ([`kind::SHEET`]):
+/// the command's name and its records, each a list of named fields. Fields are
+/// separated by US (0x1f), records by RS (0x1e); either in a value is a space.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Sheet {
+    pub name: String,
+    pub records: Vec<Vec<(String, String)>>,
+}
+
+impl Sheet {
+    pub fn new(name: &str) -> Sheet {
+        Sheet {
+            name: name.to_string(),
+            records: Vec::new(),
+        }
+    }
+
+    /// Adds a record of `fields`.
+    pub fn record(&mut self, fields: &[(&str, String)]) {
+        self.records.push(
+            fields
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+        );
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let clean = |s: &str| -> String {
+            s.chars()
+                .map(|c| if c == '\x1e' || c == '\x1f' { ' ' } else { c })
+                .collect()
+        };
+        let mut out = clean(&self.name);
+        for record in &self.records {
+            out.push('\x1e');
+            let fields: Vec<String> = record
+                .iter()
+                .map(|(k, v)| format!("{}={}", clean(k).replace('=', " "), clean(v)))
+                .collect();
+            out.push_str(&fields.join("\x1f"));
+        }
+        out.into_bytes()
+    }
+
+    pub fn decode(payload: &[u8]) -> Option<Sheet> {
+        let text = std::str::from_utf8(payload).ok()?;
+        let mut parts = text.split('\x1e');
+        let name = parts.next()?.to_string();
+        let mut records = Vec::new();
+        for record in parts {
+            let mut fields = Vec::new();
+            if !record.is_empty() {
+                for field in record.split('\x1f') {
+                    let (k, v) = field.split_once('=')?;
+                    fields.push((k.to_string(), v.to_string()));
+                }
+            }
+            records.push(fields);
+        }
+        Some(Sheet { name, records })
+    }
+
+    /// The first value of `name` in record `i`.
+    pub fn get(&self, i: usize, name: &str) -> Option<&str> {
+        self.records
+            .get(i)?
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
     }
 }
 

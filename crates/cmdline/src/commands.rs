@@ -5,11 +5,9 @@
 
 use crate::flags::{Args, Command, Flag};
 
-/// The root's help flag, which every command inherits with its shorthand deprecated and
-/// itself hidden (docker/cli cli/cobra.go setupCommonRootCommand).
-const HELP: Flag = Flag::bool("help", Some(b'h'), "Print usage")
-    .short_deprecated("use --help")
-    .hidden();
+/// The root's help flag, which every command inherits, hidden (docker/cli cli/cobra.go
+/// setupCommonRootCommand). docker/cli deprecates its shorthand; shards keeps `-h`.
+const HELP: Flag = Flag::bool("help", Some(b'h'), "Print usage").hidden();
 
 /// `shards run`, whose `-h` is the hostname, so its own `--help` has no shorthand.
 pub static RUN: Command = Command {
