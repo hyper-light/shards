@@ -68,6 +68,8 @@ fn launch() -> Spec {
         resolv: None,
         stdin: true,
         builtin: 0,
+        hosts: Vec::new(),
+        domainname: Vec::new(),
     }
 }
 

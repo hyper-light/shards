@@ -337,12 +337,13 @@ fn config(f: &Facts<'_>) -> (Option<Vec<String>>, Option<Vec<String>>, Value) {
             user_cmd.or_else(|| image_strings(image, "Cmd")),
         ),
     };
-    // ExposedPorts: what -p publishes, then the image's.
+    // ExposedPorts: what -p publishes and --expose exposes, then the image's.
     let mut exposed: Vec<String> = run
         .publish
         .iter()
         .map(|p| format!("{}/{}", p.port, p.proto))
         .collect();
+    exposed.extend(run.expose.iter().cloned());
     if let Some(ports) = image
         .and_then(|i| i.get("ExposedPorts"))
         .and_then(serde_json::Value::as_object)
@@ -351,7 +352,8 @@ fn config(f: &Facts<'_>) -> (Option<Vec<String>>, Option<Vec<String>>, Value) {
     }
     exposed.sort();
     exposed.dedup();
-    let labels: Vec<(String, String)> = image
+    // Labels: the run's, over the image's (daemon/commit.go, merge).
+    let mut labels: std::collections::BTreeMap<String, String> = image
         .and_then(|i| i.get("Labels"))
         .and_then(serde_json::Value::as_object)
         .map(|m| {
@@ -360,6 +362,10 @@ fn config(f: &Facts<'_>) -> (Option<Vec<String>>, Option<Vec<String>>, Value) {
                 .collect()
         })
         .unwrap_or_default();
+    for l in &run.labels {
+        let (k, v) = l.split_once('=').unwrap_or((l, ""));
+        labels.insert(k.to_owned(), v.to_owned());
+    }
     let volumes = image
         .and_then(|i| i.get("Volumes"))
         .and_then(serde_json::Value::as_object)
@@ -377,7 +383,7 @@ fn config(f: &Facts<'_>) -> (Option<Vec<String>>, Option<Vec<String>>, Value) {
         .unwrap_or_else(|| c.id.get(..12).unwrap_or(&c.id).to_owned());
     let value = Struct::pointer("container.Config")
         .field("Hostname", s(&hostname))
-        .field("Domainname", s(""))
+        .field("Domainname", s(&run.domainname))
         .field("User", s(&user_or(&run.user, "User")))
         .field("AttachStdin", Value::Bool(attach && run.interactive))
         .field("AttachStdout", Value::Bool(attach))
@@ -548,10 +554,21 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("CapAdd", Value::NilList(Kind::String))
         .field("CapDrop", Value::NilList(Kind::String))
         .field("CgroupnsMode", s("private"))
-        .tagged("DNS", Some("Dns"), false, Value::NilList(Kind::String))
-        .tagged("DNSOptions", Some("DnsOptions"), false, strs(&[], false))
-        .tagged("DNSSearch", Some("DnsSearch"), false, strs(&[], false))
-        .field("ExtraHosts", Value::NilList(Kind::String))
+        // docker/cli's toNetipAddrSlice is nil for none; the rest never nil but ExtraHosts.
+        .tagged("DNS", Some("Dns"), false, strs(&run.dns, run.dns.is_empty()))
+        .tagged(
+            "DNSOptions",
+            Some("DnsOptions"),
+            false,
+            strs(&run.dns_options, false),
+        )
+        .tagged(
+            "DNSSearch",
+            Some("DnsSearch"),
+            false,
+            strs(&run.dns_search, false),
+        )
+        .field("ExtraHosts", strs(&run.add_hosts, run.add_hosts.is_empty()))
         .field("GroupAdd", Value::NilList(Kind::String))
         .field("IpcMode", s("private"))
         .field("Cgroup", s(""))
@@ -1003,6 +1020,7 @@ mod tests {
                 stop_timeout: run.stop_timeout,
                 ports: Vec::new(),
                 image_id: Some(golden["image_id"].as_str().unwrap().to_owned()),
+                labels: Default::default(),
             };
             let manifest = &want["ImageManifestDescriptor"];
             let facts = Facts {

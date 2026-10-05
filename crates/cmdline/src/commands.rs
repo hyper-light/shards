@@ -135,9 +135,35 @@ pub static RUN: Command = Command {
             "",
             "Working directory inside the container",
         ),
+        Flag::many(
+            "add-host",
+            None,
+            "list",
+            "Add a custom host-to-IP mapping (host:ip)",
+        ),
+        Flag::many("dns", None, "list", "Set custom DNS servers"),
+        Flag::many("dns-opt", None, "list", "Set DNS options")
+            .sharing("dns-option")
+            .hidden(),
+        Flag::many("dns-option", None, "list", "Set DNS options"),
+        Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
+        Flag::string("domainname", None, "", "Container NIS domain name"),
+        Flag::many(
+            "env-file",
+            None,
+            "list",
+            "Read in a file of environment variables",
+        ),
+        Flag::many("expose", None, "list", "Expose a port or a range of ports"),
+        Flag::many("label", Some(b'l'), "list", "Set meta data on a container"),
+        Flag::many(
+            "label-file",
+            None,
+            "list",
+            "Read in a line delimited file of labels",
+        ),
     ],
     unserved: "\
-add-host - m - -\n\
 annotation - m - -\n\
 attach a m - -\n\
 blkio-weight - s 0 -\n\
@@ -163,13 +189,6 @@ device-read-bps - m - -\n\
 device-read-iops - m - -\n\
 device-write-bps - m - -\n\
 device-write-iops - m - -\n\
-dns - m - -\n\
-dns-opt - m - dns-option\n\
-dns-option - m - -\n\
-dns-search - m - -\n\
-domainname - s - -\n\
-env-file - m - -\n\
-expose - m - -\n\
 gpus - m - -\n\
 group-add - m - -\n\
 io-maxbandwidth - s 0 -\n\
@@ -178,8 +197,6 @@ ip - s <nil> -\n\
 ip6 - s <nil> -\n\
 ipc - s - -\n\
 isolation - s - -\n\
-label l m - -\n\
-label-file - m - -\n\
 link - m - -\n\
 link-local-ip - m - -\n\
 log-driver - s - -\n\
@@ -336,9 +353,35 @@ pub static CREATE: Command = Command {
             "",
             "Working directory inside the container",
         ),
+        Flag::many(
+            "add-host",
+            None,
+            "list",
+            "Add a custom host-to-IP mapping (host:ip)",
+        ),
+        Flag::many("dns", None, "list", "Set custom DNS servers"),
+        Flag::many("dns-opt", None, "list", "Set DNS options")
+            .sharing("dns-option")
+            .hidden(),
+        Flag::many("dns-option", None, "list", "Set DNS options"),
+        Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
+        Flag::string("domainname", None, "", "Container NIS domain name"),
+        Flag::many(
+            "env-file",
+            None,
+            "list",
+            "Read in a file of environment variables",
+        ),
+        Flag::many("expose", None, "list", "Expose a port or a range of ports"),
+        Flag::many("label", Some(b'l'), "list", "Set meta data on a container"),
+        Flag::many(
+            "label-file",
+            None,
+            "list",
+            "Read in a line delimited file of labels",
+        ),
     ],
     unserved: "\
-add-host - m - -\n\
 annotation - m - -\n\
 attach a m - -\n\
 blkio-weight - s 0 -\n\
@@ -364,13 +407,6 @@ device-read-bps - m - -\n\
 device-read-iops - m - -\n\
 device-write-bps - m - -\n\
 device-write-iops - m - -\n\
-dns - m - -\n\
-dns-opt - m - dns-option\n\
-dns-option - m - -\n\
-dns-search - m - -\n\
-domainname - s - -\n\
-env-file - m - -\n\
-expose - m - -\n\
 gpus - m - -\n\
 group-add - m - -\n\
 io-maxbandwidth - s 0 -\n\
@@ -379,8 +415,6 @@ ip - s <nil> -\n\
 ip6 - s <nil> -\n\
 ipc - s - -\n\
 isolation - s - -\n\
-label l m - -\n\
-label-file - m - -\n\
 link - m - -\n\
 link-local-ip - m - -\n\
 log-driver - s - -\n\

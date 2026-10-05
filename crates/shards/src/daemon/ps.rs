@@ -120,7 +120,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             filters.matcher("id"),
             filters.matcher("status"),
         );
-        let no_labels = BTreeMap::new();
+        let no_annotations = BTreeMap::new();
         let mut listed = Vec::new();
         for c in candidates {
             if let Some(b) = &before {
@@ -146,8 +146,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             if task_filter && is_task {
                 continue;
             }
-            // Nor has labels or annotations yet: `--label` is unserved.
-            if !filters.kv("label", &no_labels) || !filters.kv("annotation", &no_labels) {
+            // Nor has annotations: `--annotation` is unserved.
+            if !filters.kv("label", &c.labels) || !filters.kv("annotation", &no_annotations) {
                 continue;
             }
             if limit.is_some_and(|l| listed.len() == l) {
@@ -292,51 +292,12 @@ fn ports(key: &str, value: &str, into: &mut HashSet<String>) -> Result<(), Strin
     if value.contains(':') {
         return Err(format!("filter for '{key}' should not contain ':': {value}"));
     }
-    let (start, end, proto) =
-        port_range(value).map_err(|e| format!("error while looking up for {key} {value}: {e}"))?;
+    let (start, end, proto) = shards_cmdline::ports::parse_port_range(value)
+        .map_err(|e| format!("error while looking up for {key} {value}: {e}"))?;
     for p in start..=end {
         into.insert(format!("{p}/{proto}"));
     }
     Ok(())
-}
-
-/// network.ParsePortRange (moby api/types/network/port.go).
-fn port_range(s: &str) -> Result<(u16, u16, String), String> {
-    if s.is_empty() {
-        return Err("invalid port range: value is empty".into());
-    }
-    let (range, proto) = s.split_once('/').unwrap_or((s, ""));
-    let proto = if proto.is_empty() {
-        "tcp".to_string()
-    } else {
-        proto.to_lowercase()
-    };
-    let (start, end) = match range.split_once('-') {
-        Some((a, b)) => (a, Some(b)),
-        None => (range, None),
-    };
-    let first = port_number(start).map_err(|e| format!("invalid start port '{start}': {e}"))?;
-    match end {
-        Some(end) if end != start => {
-            let last = port_number(end).map_err(|e| format!("invalid end port '{end}': {e}"))?;
-            if last < first {
-                return Err(format!("invalid port range: {s}"));
-            }
-            Ok((first, last, proto))
-        }
-        _ => Ok((first, first, proto)),
-    }
-}
-
-/// parsePortNumber: strconv.ParseUint(raw, 10, 16)'s answer and words.
-fn port_number(raw: &str) -> Result<u16, &'static str> {
-    if raw.is_empty() {
-        return Err("value is empty");
-    }
-    if !raw.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("invalid syntax");
-    }
-    raw.parse().map_err(|_| "value out of range")
 }
 
 /// strconv.Atoi's answer and words: an optional sign, then decimal digits, in 64 bits.
@@ -375,26 +336,44 @@ mod tests {
     /// moby's port_test.go cases for ParsePortRange, and its words.
     #[test]
     fn port_ranges_parse_as_mobys_do() {
-        assert_eq!(port_range("80"), Ok((80, 80, "tcp".into())));
-        assert_eq!(port_range("80/UDP"), Ok((80, 80, "udp".into())));
-        assert_eq!(port_range("80-82/tcp"), Ok((80, 82, "tcp".into())));
-        assert_eq!(port_range("80-80"), Ok((80, 80, "tcp".into())));
-        assert_eq!(port_range(""), Err("invalid port range: value is empty".into()));
         assert_eq!(
-            port_range("x"),
+            shards_cmdline::ports::parse_port_range("80"),
+            Ok((80, 80, "tcp".into()))
+        );
+        assert_eq!(
+            shards_cmdline::ports::parse_port_range("80/UDP"),
+            Ok((80, 80, "udp".into()))
+        );
+        assert_eq!(
+            shards_cmdline::ports::parse_port_range("80-82/tcp"),
+            Ok((80, 82, "tcp".into()))
+        );
+        assert_eq!(
+            shards_cmdline::ports::parse_port_range("80-80"),
+            Ok((80, 80, "tcp".into()))
+        );
+        assert_eq!(
+            shards_cmdline::ports::parse_port_range(""),
+            Err("invalid port range: value is empty".into())
+        );
+        assert_eq!(
+            shards_cmdline::ports::parse_port_range("x"),
             Err("invalid start port 'x': invalid syntax".into())
         );
         assert_eq!(
-            port_range("+1"),
+            shards_cmdline::ports::parse_port_range("+1"),
             Err("invalid start port '+1': invalid syntax".into())
         );
         assert_eq!(
-            port_range("70000"),
+            shards_cmdline::ports::parse_port_range("70000"),
             Err("invalid start port '70000': value out of range".into())
         );
-        assert_eq!(port_range("82-80"), Err("invalid port range: 82-80".into()));
         assert_eq!(
-            port_range("80-"),
+            shards_cmdline::ports::parse_port_range("82-80"),
+            Err("invalid port range: 82-80".into())
+        );
+        assert_eq!(
+            shards_cmdline::ports::parse_port_range("80-"),
             Err("invalid end port '': value is empty".into())
         );
         let mut into = HashSet::new();

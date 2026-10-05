@@ -264,3 +264,43 @@ pub fn natural_compare(a: &str, b: &str) -> std::cmp::Ordering {
     }
     a.len().cmp(&b.len())
 }
+
+/// network.ParsePortRange (moby api/types/network/port.go): `PORT[-PORT][/PROTO]`, its
+/// first and last port and its protocol, `tcp` unless named, lowercase.
+pub fn parse_port_range(s: &str) -> Result<(u16, u16, String), String> {
+    if s.is_empty() {
+        return Err("invalid port range: value is empty".into());
+    }
+    let (range, proto) = s.split_once('/').unwrap_or((s, ""));
+    let proto = if proto.is_empty() {
+        "tcp".to_string()
+    } else {
+        proto.to_lowercase()
+    };
+    let (start, end) = match range.split_once('-') {
+        Some((a, b)) => (a, Some(b)),
+        None => (range, None),
+    };
+    let first = port_number(start).map_err(|e| format!("invalid start port '{start}': {e}"))?;
+    match end {
+        Some(end) if end != start => {
+            let last = port_number(end).map_err(|e| format!("invalid end port '{end}': {e}"))?;
+            if last < first {
+                return Err(format!("invalid port range: {s}"));
+            }
+            Ok((first, last, proto))
+        }
+        _ => Ok((first, first, proto)),
+    }
+}
+
+/// parsePortNumber: strconv.ParseUint(raw, 10, 16)'s answer and words.
+fn port_number(raw: &str) -> Result<u16, &'static str> {
+    if raw.is_empty() {
+        return Err("value is empty");
+    }
+    if !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("invalid syntax");
+    }
+    raw.parse().map_err(|_| "value out of range")
+}

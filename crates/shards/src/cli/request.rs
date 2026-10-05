@@ -292,7 +292,7 @@ fn validate(flag: &Flag, value: &str) -> Result<String, String> {
         return network::attachment(value).map(|_| value.to_string());
     }
     if flag.name != "env" {
-        return Ok(value.to_string());
+        return shards_cmdline::flags::value(flag, value);
     }
     let (name, given) = match value.split_once('=') {
         Some((name, _)) => (name, true),
@@ -348,10 +348,35 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         })
         .collect();
     let given = |name: &str| Some(parsed.string(name).to_string()).filter(|v| !v.is_empty());
+    // opts.ReadKVEnvStrings and ReadKVStrings: the files' lines first, the flags' after.
+    let mut env = Vec::new();
+    for file in parsed.many("env-file") {
+        env.extend(kv_file(file, true)?);
+    }
+    env.extend(parsed.many("env").iter().cloned());
+    let mut labels = Vec::new();
+    for file in parsed.many("label-file") {
+        labels.extend(kv_file(file, false)?);
+    }
+    labels.extend(parsed.many("label").iter().cloned());
+    // Each range a port at a time, as the CLI exposes them (container/opts.go).
+    let mut expose = Vec::new();
+    for e in parsed.many("expose") {
+        let (first, last, proto) = shards_cmdline::ports::parse_port_range(e)
+            .map_err(|why| format!("invalid range format for --expose: {why}"))?;
+        expose.extend((first..=last).map(|p| format!("{p}/{proto}")));
+    }
     Ok(Run {
         image: image.clone(),
         cmd: cmd.to_vec(),
-        env: parsed.many("env").to_vec(),
+        env,
+        labels,
+        expose,
+        add_hosts: parsed.many("add-host").to_vec(),
+        dns: parsed.many("dns").to_vec(),
+        dns_search: parsed.many("dns-search").to_vec(),
+        dns_options: parsed.many("dns-option").to_vec(),
+        domainname: parsed.string("domainname").to_string(),
         workdir: parsed.string("workdir").to_string(),
         user: parsed.string("user").to_string(),
         hostname: given("hostname"),
@@ -396,6 +421,70 @@ pub(crate) fn for_test(args: &[String]) -> Result<Run, String> {
     match shards_cmdline::flags::parse(&RUN, "shards run", args, &validate) {
         shards_cmdline::flags::Outcome::Run(parsed) => request(&parsed),
         _ => Err(format!("{args:?} is no run")),
+    }
+}
+
+/// pkg/kvfile's Parse: the `KEY=VALUE` lines of file `path`, blank lines and `#` comments
+/// skipped, leading space trimmed, a byte-order mark dropped; a line of a key alone is
+/// the environment's value of it with `lookup` (`--env-file`), and dropped without it
+/// (`--label-file`), or where it is not set.
+fn kv_file(path: &str, lookup: bool) -> Result<Vec<String>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("open {path}: {}", go_errno(&e)))?;
+    let invalid = |why: String| format!("invalid env file ({path}): {why}");
+    let mut out = Vec::new();
+    // bufio.ScanLines: a last line without its newline is a line; a \r before one goes.
+    let mut lines: Vec<&[u8]> = bytes.split(|&b| b == b'\n').collect();
+    if lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    for (n, raw) in lines.into_iter().enumerate() {
+        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+        let Ok(text) = std::str::from_utf8(raw) else {
+            let shown: Vec<String> = raw.iter().map(u8::to_string).collect();
+            return Err(invalid(format!(
+                "invalid utf8 bytes at line {}: [{}]",
+                n + 1,
+                shown.join(" ")
+            )));
+        };
+        let text = if n == 0 {
+            text.strip_prefix('\u{feff}').unwrap_or(text)
+        } else {
+            text
+        };
+        let line = text.trim_start();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, has_value) = match line.split_once('=') {
+            Some((k, _)) => (k, true),
+            None => (line, false),
+        };
+        if key.is_empty() {
+            return Err(invalid(format!("no variable name on line '{line}'")));
+        }
+        if key.contains([' ', '\t']) {
+            return Err(invalid(format!("variable '{key}' contains whitespaces")));
+        }
+        if has_value {
+            out.push(line.to_string());
+        } else if lookup && let Ok(value) = std::env::var(line) {
+            out.push(format!("{key}={value}"));
+        }
+    }
+    Ok(out)
+}
+
+/// An I/O error as Go's syscall.Errno says it.
+fn go_errno(e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => "no such file or directory".into(),
+        std::io::ErrorKind::PermissionDenied => "permission denied".into(),
+        std::io::ErrorKind::IsADirectory => "is a directory".into(),
+        _ => {
+            let text = e.to_string();
+            text.split(" (os error").next().unwrap_or(&text).to_lowercase()
+        }
     }
 }
 

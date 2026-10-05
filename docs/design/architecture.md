@@ -1442,9 +1442,25 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   `image prune` never deletes the last name of an image a microVM was made from, which
   dockerd does when that microVM named it by a name since given to another (a stopped
   microVM starts again from its image, D37). Filters that need what shards does not have
-  yet (labels, volumes, networks) match no microVM. Tests:
+  yet (volumes, networks) match no microVM. Tests:
   `ps_filters_microvms_as_dockerd_filters_containers`,
   `images_and_prunes_filter_as_dockerd_does`.
+- **Labels, names and resolution** (`cli/request.rs`, `daemon.rs` `name_guest`, init
+  `set_hostname`). `run` and `create` take `--label`/`-l`, `--label-file`,
+  `--env-file`, `--expose`, `--add-host`, `--dns`, `--dns-option` (and the hidden
+  `--dns-opt`), `--dns-search` and `--domainname` as docker/cli v29.8.1 validates them
+  (opts.ValidateLabel, ValidateIPAddress, ValidateDNSSearch, ValidateExtraHost, held by
+  the docker-cli oracle) and reads their files (kvfile.Parse: a bare name in an env file
+  takes the client's value or is dropped, and in a label file is dropped). The daemon
+  writes them into the guest as dockerd's sandbox does: resolv.conf from `--dns*`
+  (moby resolvconf, an override skipping the legacy rewrite), /etc/hosts with each
+  `--add-host` and then the guest's own line `IP\tname.domain name` (makeHostsRecs), and
+  the NIS domain name (setdomainname(2)). `host-gateway` is the bridge's gateway, the
+  address at which the guest reaches its host. Labels are the image's with the run's
+  over them (moby merge), and reach `ps --filter label=`, `{{.Label}}`, the prunes'
+  `label`/`label!` and inspect. The request carries the new fields in an extension
+  section after the daemon identity, so a request of an older client still decodes.
+  Test: `run_labels_names_and_resolves_as_docker_run_does`.
 ### Shipping the guest (D28)
 
 `shards run IMAGE` works on first use: with no guest recorded and none named, a run boots

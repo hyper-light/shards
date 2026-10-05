@@ -131,6 +131,11 @@ pub struct Spec {
     /// Not a command but one of shards-init's own ([`builtin`]), answered on the exec's
     /// stdout as a command's output would be, with `argv` its arguments; 0 for a command.
     pub builtin: u8,
+    /// Docker's `--add-host`: `/etc/hosts` lines after its defaults, each `IP\tNAME`.
+    pub hosts: Vec<Vec<u8>>,
+    /// Docker's `--domainname`: the NIS domain name, and the host's full name in
+    /// `/etc/hosts`.
+    pub domainname: Vec<u8>,
 }
 
 /// What shards-init does itself for an exec ([`Spec::builtin`]).
@@ -224,6 +229,17 @@ impl Spec {
         if self.builtin != 0 {
             out.extend_from_slice(&[4, self.builtin]);
         }
+        if !self.hosts.is_empty() {
+            out.push(5);
+            put(out, self.hosts.len());
+            for h in &self.hosts {
+                put_bytes(out, h);
+            }
+        }
+        if !self.domainname.is_empty() {
+            out.push(6);
+            put_bytes(out, &self.domainname);
+        }
     }
 
     /// The bytes [`encode`](Spec::encode) writes, or `None` past `usize`: measured without
@@ -241,10 +257,22 @@ impl Spec {
             Some(r) => r.len().checked_add(5)?,
             None => 0,
         };
+        let hosts = if self.hosts.is_empty() {
+            0
+        } else {
+            strings(&self.hosts)?.checked_add(1)?
+        };
+        let domain = if self.domainname.is_empty() {
+            0
+        } else {
+            self.domainname.len().checked_add(5)?
+        };
         n.checked_add(if self.tty.is_some() { 5 } else { 0 })?
             .checked_add(resolv)?
             .checked_add(usize::from(self.stdin))?
-            .checked_add(if self.builtin != 0 { 2 } else { 0 })
+            .checked_add(if self.builtin != 0 { 2 } else { 0 })?
+            .checked_add(hosts)?
+            .checked_add(domain)
     }
 
     /// The spec in `bytes`, or `None` unless they hold exactly one.
@@ -260,10 +288,12 @@ impl Spec {
             resolv: None,
             stdin: false,
             builtin: 0,
+            hosts: Vec::new(),
+            domainname: Vec::new(),
         };
         let mut spec = spec;
         // Optional sections, each once, in order: 1 a terminal, 2 resolv.conf, 3 stdin, 4
-        // a built-in.
+        // a built-in, 5 hosts, 6 a domain name.
         let mut last = 0u8;
         while let Some(tag) = r.take(1).and_then(|t| t.first().copied()) {
             if tag <= last {
@@ -275,6 +305,8 @@ impl Spec {
                 2 => spec.resolv = Some(r.bytes()?),
                 3 => spec.stdin = true,
                 4 => spec.builtin = r.take(1)?.first().copied().filter(|&b| b != 0)?,
+                5 => spec.hosts = r.list().filter(|l| !l.is_empty())?,
+                6 => spec.domainname = r.bytes().filter(|d| !d.is_empty())?,
                 _ => return None,
             }
         }
@@ -344,17 +376,29 @@ mod tests {
             resolv: Some(b"nameserver 192.168.1.1\n".to_vec()),
             stdin: true,
             builtin: builtin::CHANGES,
+            hosts: vec![b"10.0.0.2\tdb".to_vec(), b"::1\tlocal6".to_vec()],
+            domainname: b"example.org".to_vec(),
         };
         let bytes = spec.encode();
         assert_eq!(bytes.len(), spec.encoded_len().unwrap());
         assert_eq!(Spec::decode(&bytes), Some(spec.clone()));
         // Its length measured as written, whichever optional sections it has (review 1.20).
-        for sections in 0..16u8 {
+        for sections in 0..64u8 {
             let some = Spec {
                 tty: (sections & 1 != 0).then_some(Size { rows: 1, cols: 2 }),
                 resolv: (sections & 2 != 0).then(|| b"nameserver 10.0.0.1\n".to_vec()),
                 stdin: sections & 4 != 0,
                 builtin: if sections & 8 != 0 { builtin::PROCESSES } else { 0 },
+                hosts: if sections & 16 != 0 {
+                    vec![b"1.2.3.4\tx".to_vec()]
+                } else {
+                    Vec::new()
+                },
+                domainname: if sections & 32 != 0 {
+                    b"d".to_vec()
+                } else {
+                    Vec::new()
+                },
                 ..spec.clone()
             };
             let written = some.encode();
@@ -362,6 +406,8 @@ mod tests {
             assert_eq!(Spec::decode(&written), Some(some), "{sections:04b}");
         }
         let piped = Spec {
+            hosts: Vec::new(),
+            domainname: Vec::new(),
             tty: None,
             resolv: None,
             stdin: false,
@@ -371,6 +417,8 @@ mod tests {
         let without = piped.encode();
         assert_eq!(Spec::decode(&without), Some(piped.clone()));
         let tty_only = Spec {
+            hosts: Vec::new(),
+            domainname: Vec::new(),
             resolv: None,
             stdin: false,
             builtin: 0,
@@ -378,16 +426,31 @@ mod tests {
         };
         let with_tty = tty_only.encode();
         let closed = Spec {
+            hosts: Vec::new(),
+            domainname: Vec::new(),
             stdin: false,
             builtin: 0,
             ..spec.clone()
         };
         let without_stdin = closed.encode();
         let commanded = Spec {
+            hosts: Vec::new(),
+            domainname: Vec::new(),
             builtin: 0,
             ..spec.clone()
         };
         let without_builtin = commanded.encode();
+        let hostless = Spec {
+            hosts: Vec::new(),
+            domainname: Vec::new(),
+            ..spec.clone()
+        };
+        let without_hosts = hostless.encode();
+        let domainless = Spec {
+            domainname: Vec::new(),
+            ..spec.clone()
+        };
+        let without_domain = domainless.encode();
         assert_eq!(Spec::decode(&Spec::default().encode()), Some(Spec::default()));
         let reading = Spec {
             stdin: true,
@@ -395,8 +458,8 @@ mod tests {
         };
         assert_eq!(Spec::decode(&reading.encode()), Some(reading));
         // Frames carry their length, so only a spec cut where a section ends reads as one:
-        // without its optional sections, with its terminal alone, without stdin, or without
-        // its built-in.
+        // without its optional sections, with its terminal alone, without stdin, without
+        // its built-in, without its hosts, or without its domain name.
         for cut in 0..bytes.len() {
             let expected = if cut == without.len() {
                 Some(piped.clone())
@@ -406,6 +469,10 @@ mod tests {
                 Some(closed.clone())
             } else if cut == without_builtin.len() {
                 Some(commanded.clone())
+            } else if cut == without_hosts.len() {
+                Some(hostless.clone())
+            } else if cut == without_domain.len() {
+                Some(domainless.clone())
             } else {
                 None
             };

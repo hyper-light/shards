@@ -79,6 +79,20 @@ pub fn host_resolv() -> Vec<u8> {
 /// without `ipv6`, or Google's when none remain; the last `search`; every `options`;
 /// other lines as they were; no comments, which name the engine that wrote them.
 pub fn resolv(host: &[u8], ipv6: bool) -> Vec<u8> {
+    resolv_with(host, ipv6, &[], &[], &[])
+}
+
+/// [`resolv`], with a run's `--dns`, `--dns-search` and `--dns-option` in place of the
+/// host's, as dockerd overrides them (daemon/libnetwork/sandbox_dns_unix.go,
+/// loadResolvConf): nameservers given are kept as given, loopback ones too
+/// (TransformForLegacyNw leaves an override alone), and a search domain of `.` is none.
+pub fn resolv_with(
+    host: &[u8],
+    ipv6: bool,
+    dns: &[String],
+    search_given: &[String],
+    options_given: &[String],
+) -> Vec<u8> {
     let text = String::from_utf8_lossy(host);
     let mut nameservers: Vec<IpAddr> = Vec::new();
     let mut search: Vec<&str> = Vec::new();
@@ -104,8 +118,23 @@ pub fn resolv(host: &[u8], ipv6: bool) -> Vec<u8> {
             _ => other.push(line),
         }
     }
+    if !search_given.is_empty() {
+        search = search_given
+            .iter()
+            .map(String::as_str)
+            .filter(|s| *s != ".")
+            .collect();
+    }
+    if !options_given.is_empty() {
+        options = options_given.iter().map(String::as_str).collect();
+    }
+    if !dns.is_empty() {
+        nameservers = dns.iter().filter_map(|a| a.parse::<IpAddr>().ok()).collect();
+    }
     // netip's Is6 holds for an IPv4-mapped address too.
-    nameservers.retain(|a| !loopback(a) && (ipv6 || a.is_ipv4()));
+    if dns.is_empty() {
+        nameservers.retain(|a| !loopback(a) && (ipv6 || a.is_ipv4()));
+    }
     if nameservers.is_empty() {
         nameservers = [
             "8.8.8.8",

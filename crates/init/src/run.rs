@@ -391,21 +391,46 @@ fn write_file(path: &str, bytes: &[u8]) -> Result<(), Failure> {
 const OWN_ADDRESS: &[u8] = b"127.0.1.1";
 
 /// Names the run in `/etc/hostname` and `/etc/hosts`, as Docker does: the name and a
-/// newline, and the name on a line of its own after [`HOSTS`]'s, both of mode 0644
-/// (moby daemon/libnetwork/sandbox_dns_unix.go).
-fn set_hostname(name: &[u8]) -> Result<(), Failure> {
+/// newline; then [`HOSTS`]'s lines, `--add-host`'s (`extra`), and the run's own, its full
+/// name with `domain` and its first label after (moby
+/// daemon/libnetwork/sandbox_dns_unix.go, buildHostsFile and makeHostsRecs), all of mode
+/// 0644. A domain is the NIS domain name too, as runc sets it.
+fn set_hostname(name: &[u8], domain: &[u8], extra: &[Vec<u8>]) -> Result<(), Failure> {
+    if !domain.is_empty() {
+        // SAFETY: a buffer of the given length.
+        if unsafe { libc::setdomainname(domain.as_ptr().cast(), domain.len()) } != 0 {
+            return Err(setup_failed(format!(
+                "setdomainname: {}",
+                io::Error::last_os_error()
+            )));
+        }
+    }
     let mut bytes = Vec::with_capacity(name.len() + 1);
     bytes.extend_from_slice(name);
     bytes.push(b'\n');
     write_file("/etc/hostname", &bytes)?;
     let mut hosts = Vec::with_capacity(HOSTS.len() + OWN_ADDRESS.len() + name.len() + 2);
     hosts.extend_from_slice(HOSTS);
+    for line in extra {
+        hosts.extend_from_slice(line);
+        hosts.push(b'\n');
+    }
     // The guest's own address on a network, as Docker names a container on its bridge;
     // the loopback's otherwise.
     let own = crate::net::from_cmdline().map(|(addr, _, _)| addr.to_string());
     hosts.extend_from_slice(own.as_deref().map_or(OWN_ADDRESS, str::as_bytes));
     hosts.push(b'\t');
-    hosts.extend_from_slice(&bytes);
+    let mut full = name.to_vec();
+    if !domain.is_empty() {
+        full.push(b'.');
+        full.extend_from_slice(domain);
+    }
+    hosts.extend_from_slice(&full);
+    if let Some(dot) = full.iter().position(|&b| b == b'.') {
+        hosts.push(b' ');
+        hosts.extend_from_slice(full.get(..dot).unwrap_or_default());
+    }
+    hosts.push(b'\n');
     write_file("/etc/hosts", &hosts)
 }
 
@@ -760,7 +785,7 @@ impl Standby {
                     io::Error::last_os_error()
                 )));
             }
-            set_hostname(&spec.hostname)?;
+            set_hostname(&spec.hostname, &spec.domainname, &spec.hosts)?;
         }
         if let Some(r) = &spec.resolv {
             write_file("/etc/resolv.conf", r)?;

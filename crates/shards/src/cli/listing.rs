@@ -327,6 +327,15 @@ fn container(row: &serde_json::Value) -> format::container::Container {
         state: text("state"),
         status: text("status"),
         health: text("health"),
+        labels: row
+            .get("labels")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
         ..Default::default()
     }
 }

@@ -1975,6 +1975,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     "command": command_line(&c.command),
                     "created": i64::try_from(c.created / 1_000_000_000).unwrap_or(0),
                     "ports": ports,
+                    "labels": c.labels,
                     "state": state,
                     "status": status(c, at, checked, removing.contains(&c.id), paused.contains(&c.id)),
                     "health": checked.map_or("", |s| match s {

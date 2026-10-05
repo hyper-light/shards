@@ -382,6 +382,18 @@ pub struct Run {
     pub restart: bool,
     /// The daemon binary this client would start.
     pub daemon: Identity,
+    /// `--label`s, after `--label-file`'s, each `KEY=VALUE` or `KEY`.
+    pub labels: Vec<String>,
+    /// `--expose`: ports and ranges, each `PORT[-PORT][/PROTO]`.
+    pub expose: Vec<String>,
+    /// `--add-host`, each `HOST:IP` (or `HOST:host-gateway`), as the CLI gives dockerd.
+    pub add_hosts: Vec<String>,
+    /// `--dns`, `--dns-search` and `--dns-option`.
+    pub dns: Vec<String>,
+    pub dns_search: Vec<String>,
+    pub dns_options: Vec<String>,
+    /// `--domainname`.
+    pub domainname: String,
 }
 
 /// A health check as a run sets it, or as an image's merged with a run's: its test
@@ -544,6 +556,32 @@ impl Run {
         w.push(u8::from(self.create));
         w.push(u8::from(self.restart));
         put_identity(&mut w, &self.daemon);
+        // Then what later builds added, each by name, so that a request kept by an
+        // earlier one (a container's, D37) still reads: what it lacks is empty.
+        let more: Vec<(&str, Vec<String>)> = [
+            ("labels", self.labels.clone()),
+            ("expose", self.expose.clone()),
+            ("add-hosts", self.add_hosts.clone()),
+            ("dns", self.dns.clone()),
+            ("dns-search", self.dns_search.clone()),
+            ("dns-options", self.dns_options.clone()),
+            (
+                "domainname",
+                if self.domainname.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.domainname.clone()]
+                },
+            ),
+        ]
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .collect();
+        w.extend_from_slice(&u32::try_from(more.len()).unwrap_or(0).to_be_bytes());
+        for (name, values) in &more {
+            put_str(&mut w, name);
+            put_list(&mut w, values);
+        }
         w
     }
 
@@ -629,7 +667,31 @@ impl Run {
             create: r.flag()?,
             restart: r.flag()?,
             daemon: r.identity()?,
+            ..Run::default()
         };
+        let mut run = run;
+        if !r.0.is_empty() {
+            let n = r.u32()? as usize;
+            // Each takes at least 8 bytes: its name's length and its list's.
+            if n > r.0.len() / 8 {
+                return None;
+            }
+            for _ in 0..n {
+                let name = r.str()?;
+                let values = r.list()?;
+                match name.as_str() {
+                    "labels" => run.labels = values,
+                    "expose" => run.expose = values,
+                    "add-hosts" => run.add_hosts = values,
+                    "dns" => run.dns = values,
+                    "dns-search" => run.dns_search = values,
+                    "dns-options" => run.dns_options = values,
+                    "domainname" => run.domainname = values.into_iter().next().unwrap_or_default(),
+                    // One a later build added: not this one's to read.
+                    _ => {}
+                }
+            }
+        }
         r.0.is_empty().then_some(run)
     }
 }
@@ -1092,11 +1154,32 @@ mod tests {
                 mtime_s: -4,
                 mtime_ns: 5,
             },
+            labels: vec!["a=1".into(), "b".into()],
+            expose: vec!["80".into(), "7000-7002/udp".into()],
+            add_hosts: vec!["db:10.0.0.2".into()],
+            dns: vec!["1.1.1.1".into()],
+            dns_search: vec!["example.com".into()],
+            dns_options: vec!["ndots:2".into()],
+            domainname: "example.org".into(),
         };
         let bytes = run.encode();
         let identity = run.daemon;
-        assert_eq!(Run::decode(&bytes), Some(run));
-        for n in 0..bytes.len() {
+        assert_eq!(Run::decode(&bytes), Some(run.clone()));
+        // A request an earlier build kept ends where the added fields begin: it reads,
+        // without them. Cut anywhere else, nothing does.
+        let earlier = Run {
+            labels: Vec::new(),
+            expose: Vec::new(),
+            add_hosts: Vec::new(),
+            dns: Vec::new(),
+            dns_search: Vec::new(),
+            dns_options: Vec::new(),
+            domainname: String::new(),
+            ..run.clone()
+        };
+        let boundary = earlier.encode().len() - 4;
+        assert_eq!(Run::decode(&bytes[..boundary]), Some(earlier));
+        for n in (0..bytes.len()).filter(|&n| n != boundary) {
             assert_eq!(Run::decode(&bytes[..n]), None, "a request cut at {n} decoded");
         }
         let mut longer = bytes.clone();

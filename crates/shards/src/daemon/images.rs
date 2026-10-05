@@ -1279,15 +1279,15 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 Some(Ok(t)) => Some(t),
                 None => None,
             };
-            // matchLabels, over a microVM's labels: none yet, as `--label` is unserved.
-            let labels = std::collections::BTreeMap::new();
-            let labelled = filters.kv("label", &labels)
-                && !(filters.contains("label!") && filters.kv("label!", &labels));
+            // matchLabels, over each microVM's labels.
+            let labelled = |labels: &std::collections::BTreeMap<String, String>| {
+                filters.kv("label", labels) && !(filters.contains("label!") && filters.kv("label!", labels))
+            };
             let stopped: Vec<(String, String)> = super::lock(&self.containers)
                 .all()
                 .filter(|c| c.state != crate::containers::State::Running)
                 .filter(|c| until.is_none_or(|u| i128::try_from(c.created).is_ok_and(|at| at <= u)))
-                .filter(|_| labelled)
+                .filter(|c| labelled(&c.labels))
                 .map(|c| (c.id.clone(), c.name.clone()))
                 .collect();
             for (id, name) in stopped {

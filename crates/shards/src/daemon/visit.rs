@@ -122,10 +122,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let cancel = shards_registry::http::Cancel::new();
         let mut prepared = crate::run::prepare(&stored, &self.home, &|_| {}, &cancel)?;
         // Its files as its runs see them, init's own included (handle()).
-        prepared.spec.resolv = Some(crate::build::step::resolv(
-            &crate::build::step::host_resolv(),
-            false,
-        ));
+        self.name_guest(&stored, &mut prepared.spec)?;
         prepared.spec.builtin = shards_abi::run::builtin::HOLD;
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a visit's connection: {e}"))?;
         let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;

@@ -1181,6 +1181,113 @@ fn inspect_answers_as_docker_inspect_does() {
 }
 
 #[test]
+fn run_labels_names_and_resolves_as_docker_run_does() {
+    let Some((home, image)) = home("containers-run-flags") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let env_file = home.join("env.list");
+    std::fs::write(&env_file, "# comment\nFROM_FILE=1\n\nSHARDS_TEST_UNSET_VAR\n").unwrap();
+    // A bare name in a label file is dropped, as kvfile.Parse drops it without a lookup.
+    let label_file = home.join("labels.list");
+    std::fs::write(&label_file, "tier=file\nfiled\n").unwrap();
+    let options = [
+        "--name",
+        "flagged",
+        "--label",
+        "tier=cli",
+        "-l",
+        "bare",
+        "--label-file",
+        label_file.to_str().unwrap(),
+        "--env-file",
+        env_file.to_str().unwrap(),
+        "--expose",
+        "7000-7001/udp",
+        "--add-host",
+        "db.internal:10.9.8.7",
+        "--add-host",
+        "gw=host-gateway",
+        "--dns",
+        "9.9.9.9",
+        "--dns-search",
+        "example.org",
+        "--dns-option",
+        "ndots:2",
+        "--hostname",
+        "box",
+        "--domainname",
+        "example.org",
+    ];
+    let ran = run_in(
+        &home,
+        &image,
+        &options,
+        &["stat", "/etc/hosts", "/etc/resolv.conf"],
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let text: Vec<&str> = ran.stdout.lines().filter_map(|l| l.strip_prefix("= ")).collect();
+    let [hosts, resolv] = text[..] else {
+        panic!("{ran}");
+    };
+    assert!(hosts.contains("10.9.8.7\tdb.internal\\n"), "{hosts}");
+    assert!(hosts.contains("\tgw\\n"), "{hosts}");
+    assert!(hosts.contains("\tbox.example.org box\\n"), "{hosts}");
+    assert_eq!(
+        resolv, "nameserver 9.9.9.9\\nsearch example.org\\noptions ndots:2\\n",
+        "{ran}"
+    );
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{json .Config.Labels}} {{json .Config.ExposedPorts}} {{.Config.Domainname}} {{.HostConfig.Dns}} {{.HostConfig.DnsSearch}} {{.HostConfig.DnsOptions}} {{.HostConfig.ExtraHosts}}",
+        "flagged",
+    ]);
+    assert_eq!(
+        (shown.status, shown.stdout.as_str()),
+        (
+            Some(0),
+            r#"{"bare":"","tier":"cli"} {"7000/udp":{},"7001/udp":{}} example.org [9.9.9.9] [example.org] [ndots:2] [db.internal:10.9.8.7 gw:host-gateway]
+"#
+        ),
+        "{shown}"
+    );
+    // The env file's lines, and a bare name from the client's environment, which it has not.
+    let report = run_in(
+        &home,
+        &image,
+        &["--env-file", env_file.to_str().unwrap()],
+        &["report"],
+    );
+    assert!(report.stdout.contains("env FROM_FILE=1\n"), "{report}");
+    assert!(!report.stdout.contains("SHARDS_TEST_UNSET_VAR"), "{report}");
+    let listed = shards(&[
+        "ps",
+        "-a",
+        "--filter",
+        "label=tier=cli",
+        "--format",
+        "{{.Names}} {{.Label \"tier\"}}",
+    ]);
+    assert_eq!(listed.stdout, "flagged cli\n", "{listed}");
+    let none = shards(&["ps", "-a", "--filter", "label=tier=file", "-q"]);
+    assert_eq!(none.stdout, "", "{none}");
+    // Docker's own refusals.
+    let bad = shards(&["run", "--pull", "never", "--add-host", "nohost", &image]);
+    assert_eq!(bad.status, Some(125), "{bad}");
+    assert!(
+        bad.stderr.contains(
+            "invalid argument \"nohost\" for \"--add-host\" flag: bad format for add-host: \"nohost\""
+        ),
+        "{bad}"
+    );
+    let pruned = shards(&["container", "prune", "-f", "--filter", "label!=tier"]);
+    assert_eq!(pruned.status, Some(0), "{pruned}");
+    let left = shards(&["ps", "-a", "--format", "{{.Names}}", "--filter", "name=flagged"]);
+    assert_eq!(left.stdout, "flagged\n", "{left}");
+}
+
+#[test]
 fn info_and_disk_usage_format_as_docker_does() {
     let Some((home, image)) = home("containers-info-df") else {
         return;

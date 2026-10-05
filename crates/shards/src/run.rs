@@ -55,6 +55,8 @@ pub struct Prepared {
     pub shell: Vec<String>,
     /// The image's `EXPOSE`d ports, `80/tcp` and the like.
     pub exposed: Vec<String>,
+    /// Its labels: the image's, and the run's over them (daemon/commit.go, merge).
+    pub labels: std::collections::BTreeMap<String, String>,
     /// The image's ID: what its reference resolved to.
     pub image_id: String,
 }
@@ -215,7 +217,30 @@ pub fn prepare(
             .and_then(|c| c.shell.clone())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| vec!["/bin/sh".into(), "-c".into()]),
-        exposed: image.config.config.map(|c| c.exposed_ports).unwrap_or_default(),
+        labels: {
+            let mut labels = image
+                .config
+                .config
+                .as_ref()
+                .and_then(|c| c.labels.clone())
+                .unwrap_or_default();
+            // opts.ConvertKVStringsToMap: `KEY` alone is an empty value.
+            for l in &request.labels {
+                let (k, v) = l.split_once('=').unwrap_or((l.as_str(), ""));
+                labels.insert(k.to_string(), v.to_string());
+            }
+            labels
+        },
+        // The image's, then `--expose`'s, which `-P` publishes with them.
+        exposed: {
+            let mut exposed = image.config.config.map(|c| c.exposed_ports).unwrap_or_default();
+            for e in &request.expose {
+                if !exposed.contains(e) {
+                    exposed.push(e.clone());
+                }
+            }
+            exposed
+        },
         image_id: image.resolved.to_string(),
     })
 }

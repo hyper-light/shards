@@ -54,6 +54,10 @@ pub struct Container {
     /// the containers of each); none in a record from before shards kept it.
     #[serde(default)]
     pub image_id: Option<String>,
+    /// Its labels: its image's, and its run's over them (Config.Labels); none in a
+    /// record from before shards kept them.
+    #[serde(default)]
+    pub labels: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -688,6 +692,7 @@ mod tests {
             stop_timeout: None,
             ports: Vec::new(),
             image_id: None,
+            labels: Default::default(),
         }
     }
 

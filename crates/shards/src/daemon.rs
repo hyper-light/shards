@@ -1722,10 +1722,11 @@ impl<D: Disk> Daemon<D> {
         // none (the legacy transform, neither with IPv6), read as the run starts; with
         // them the command still within a frame (review 1.y), as spec.rs measured it
         // without.
-        prepared.spec.resolv = Some(crate::build::step::resolv(
-            &crate::build::step::host_resolv(),
-            false,
-        ));
+        if let Err(e) = self.name_guest(&run, &mut prepared.spec) {
+            refuse(&e);
+            abandon(&id);
+            return None;
+        }
         if let Err(e) = crate::spec::fits(&prepared.spec) {
             refuse(&e);
             abandon(&id);
@@ -2091,6 +2092,39 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// What a run's guest knows of names (`run`'s `--dns*`, `--add-host` and
+    /// `--domainname`): its `/etc/resolv.conf`, the host's made over as dockerd makes it
+    /// for its bridge (the legacy transform, without IPv6), the run's resolvers in place
+    /// of the host's; `/etc/hosts`' extra lines, `host-gateway` the bridge's gateway, as
+    /// dockerd's HostGatewayIPs default to its bridge's; and the domain name.
+    pub(super) fn name_guest(&self, run: &Run, spec: &mut shards_abi::run::Spec) -> Result<(), String> {
+        spec.resolv = Some(crate::build::step::resolv_with(
+            &crate::build::step::host_resolv(),
+            false,
+            &run.dns,
+            &run.dns_search,
+            &run.dns_options,
+        ));
+        spec.hosts = run
+            .add_hosts
+            .iter()
+            .map(|h| {
+                let (name, ip) = h.split_once(':').unwrap_or((h.as_str(), ""));
+                let ip = if ip == "host-gateway" {
+                    self.bridge
+                        .as_ref()
+                        .map(|b| b.gateway().to_string())
+                        .ok_or("unable to derive the IP value for host-gateway")?
+                } else {
+                    ip.to_string()
+                };
+                Ok(format!("{ip}\t{name}").into_bytes())
+            })
+            .collect::<Result<_, &str>>()?;
+        spec.domainname = run.domainname.clone().into_bytes();
+        Ok(())
+    }
+
     /// Container `given`, to be started again (`shards start`): its ID, its log's newest
     /// segment, and the request it was made by; none if it runs, or is starting, already.
     /// From here until its run is handed over or abandoned, it is starting.
@@ -2250,6 +2284,7 @@ impl<D: Disk> Daemon<D> {
             stop_signal,
             stop_timeout: run.stop_timeout,
             ports,
+            labels: prepared.labels.clone(),
         });
         self.event_for(id, &name, &run.image, "create", &[]);
         // Its run is owned from the moment the container is visible.
@@ -4352,6 +4387,7 @@ mod tests {
                 options: crate::spec::Options::default(),
                 health: None,
                 shell: Vec::new(),
+                labels: Default::default(),
                 exposed: Vec::new(),
                 image_id: String::new(),
             };

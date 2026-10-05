@@ -539,52 +539,8 @@ fn prune_filters(parsed: &Parsed) -> Vec<String> {
             }
         }
     }
-    filters.sort_by(|a, b| natural(a, b));
+    filters.sort_by(|a, b| shards_cmdline::ports::natural_compare(a, b));
     filters
-}
-
-/// sortorder.NaturalCompare (github.com/fvbommel/sortorder): runs of digits compared as
-/// numbers (fewer leading zeros first when equal) and before other bytes, the rest byte
-/// by byte.
-fn natural(a: &str, b: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
-    // How many digits `s` starts with.
-    let split = |s: &[u8]| -> usize { s.iter().take_while(|c| c.is_ascii_digit()).count() };
-    loop {
-        let (Some(&x), Some(&y)) = (a.first(), b.first()) else {
-            return a.len().cmp(&b.len());
-        };
-        if x.is_ascii_digit() && y.is_ascii_digit() {
-            let (na, ra) = a.split_at(split(a));
-            let (nb, rb) = b.split_at(split(b));
-            let zeros = |n: &[u8]| n.iter().take_while(|c| **c == b'0').count();
-            let (ta, tb) = (
-                na.get(zeros(na)..).unwrap_or_default(),
-                nb.get(zeros(nb)..).unwrap_or_default(),
-            );
-            let by_value = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb));
-            if by_value != Ordering::Equal {
-                return by_value;
-            }
-            if na.len() != nb.len() {
-                return na.len().cmp(&nb.len());
-            }
-            (a, b) = (ra, rb);
-        } else if x.is_ascii_digit() != y.is_ascii_digit() {
-            // A string whose text ends where the other's goes on comes first.
-            return if x.is_ascii_digit() {
-                Ordering::Less
-            } else {
-                Ordering::Greater
-            };
-        } else {
-            if x != y {
-                return x.cmp(&y);
-            }
-            (a, b) = (a.get(1..).unwrap_or_default(), b.get(1..).unwrap_or_default());
-        }
-    }
 }
 
 /// Whether, asked `question` on stdout, stdin answers yes (`y`, as docker/cli's
@@ -795,31 +751,4 @@ fn vm(args: &[OsString]) -> ExitCode {
 fn failed(message: &str) -> ExitCode {
     let _ = writeln!(std::io::stderr(), "shards: {message}");
     ExitCode::FAILURE
-}
-
-#[cfg(test)]
-mod tests {
-    use super::natural;
-    use std::cmp::Ordering::{Equal, Greater, Less};
-
-    /// sortorder's rules: numbers by value, fewer leading zeros first, a number before
-    /// text that goes on, the rest by bytes.
-    #[test]
-    fn filters_sort_as_sortorder_sorts_them() {
-        for (a, b, want) in [
-            ("a1", "a2", Less),
-            ("a2", "a10", Less),
-            ("a1", "a01", Less),
-            ("a01", "a001", Less),
-            ("ab1", "abc1", Less),
-            ("a1b", "a1", Greater),
-            ("until=10m", "until=9m", Greater),
-            ("label!=x", "label=x", Less),
-            ("x", "x", Equal),
-            ("", "a", Less),
-        ] {
-            assert_eq!(natural(a, b), want, "{a} {b}");
-            assert_eq!(natural(b, a), want.reverse(), "{b} {a}");
-        }
-    }
 }

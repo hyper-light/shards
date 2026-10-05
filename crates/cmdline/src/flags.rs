@@ -620,16 +620,100 @@ fn go_json(s: &str) -> String {
 
 /// A value of a flag that takes many, as docker/cli's option type for it takes it: a
 /// filter (opts.FilterOpt.Set) is `name=value`, its name lowered and both trimmed, or
-/// empty; others are as given.
+/// empty; a run's `--label`, `--dns`, `--dns-search` and `--add-host` as their ListOpts
+/// validate them (opts/opts.go); others are as given.
 pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
+    match (flag.name, flag.kind) {
+        (_, Kind::Many("filter")) => filter(value),
+        ("label", Kind::Many("list")) => validate_label(value),
+        ("dns", Kind::Many("list")) => validate_ip(value),
+        ("dns-search", Kind::Many("list")) => validate_dns_search(value),
+        ("add-host", Kind::Many("list")) => validate_extra_host(value),
+        _ => Ok(value.to_string()),
+    }
+}
+
+fn filter(value: &str) -> Result<String, String> {
     // An empty filter is no filter (opts.FilterOpt.Set): kept empty, and skipped.
-    if flag.kind != Kind::Many("filter") || value.is_empty() {
-        return Ok(value.to_string());
+    if value.is_empty() {
+        return Ok(String::new());
     }
     let Some((name, val)) = value.split_once('=') else {
         return Err("bad format of filter (expected name=value)".into());
     };
     Ok(format!("{}={}", name.trim().to_lowercase(), val.trim()))
+}
+
+/// opts.ValidateLabel.
+fn validate_label(value: &str) -> Result<String, String> {
+    let key = value.split_once('=').map_or(value, |(k, _)| k);
+    let key = key.trim_start_matches([' ', '\t']);
+    if key.is_empty() {
+        return Err(format!("invalid label '{value}': empty name"));
+    }
+    if key.contains([' ', '\t']) {
+        return Err(format!("label '{key}' contains whitespaces"));
+    }
+    Ok(value.to_string())
+}
+
+/// opts.ValidateIPAddress: net.ParseIP of the trimmed value, as IP.String writes it (an
+/// IPv4-mapped address as IPv4).
+pub fn validate_ip(value: &str) -> Result<String, String> {
+    match value.trim().parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(v6)) if v6.to_ipv4_mapped().is_some() => {
+            Ok(v6.to_ipv4_mapped().map(|v4| v4.to_string()).unwrap_or_default())
+        }
+        Ok(ip) => Ok(ip.to_string()),
+        Err(_) => Err(format!("IP address is not correctly formatted: {value}")),
+    }
+}
+
+/// opts.ValidateDNSSearch: `.`, or a domain as validateDomain reads one.
+fn validate_dns_search(value: &str) -> Result<String, String> {
+    let value = value.trim_matches(' ');
+    if value == "." {
+        return Ok(value.to_string());
+    }
+    // alphaRegexp, then domainRegexp's first group, under 255 bytes. Its `(:?` are
+    // groups that may start with a colon, as Go reads them.
+    let invalid = || format!("{value} is not a valid domain");
+    if !value.bytes().any(|b| b.is_ascii_alphabetic()) {
+        return Err(invalid());
+    }
+    let domain = regex::Regex::new(
+        r"^(:?(:?[a-zA-Z0-9]|(:?[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]))(:?\.(:?[a-zA-Z0-9]|(:?[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])))*)\.?[\t\n\x0c\r ]*$",
+    )
+    .map_err(|e| e.to_string())?;
+    match domain.captures(value).and_then(|c| c.get(1)) {
+        Some(m) if m.as_str().len() < 255 => Ok(m.as_str().to_string()),
+        _ => Err(invalid()),
+    }
+}
+
+/// opts.ValidateExtraHost: `host=ip` or `host:ip`, the address bracketed or not, or
+/// `host-gateway`; given to dockerd as `host:ip`.
+fn validate_extra_host(value: &str) -> Result<String, String> {
+    let split = value.split_once('=').or_else(|| value.split_once(':'));
+    let (k, v) = match split {
+        Some((k, v)) if !k.is_empty() && !k.contains(':') => (k, v),
+        _ => return Err(format!("bad format for add-host: {}", crate::go::quote(value))),
+    };
+    if v != "host-gateway" {
+        let bare = if v.len() > 2 && v.starts_with('[') && v.ends_with(']') {
+            v.get(1..v.len() - 1).unwrap_or(v)
+        } else {
+            v
+        };
+        if validate_ip(bare).is_err() {
+            return Err(format!(
+                "invalid IP address in add-host: {}",
+                crate::go::quote(bare)
+            ));
+        }
+        return Ok(format!("{k}:{bare}"));
+    }
+    Ok(format!("{k}:{v}"))
 }
 
 /// pflag's parseLongArg: `--name`, `--name=value`, or `--name value`.

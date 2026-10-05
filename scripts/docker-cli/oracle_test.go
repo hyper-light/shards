@@ -25,14 +25,7 @@ import (
 
 // The flags shards serves, by command; the rest are hidden, as shards hides them.
 var served = map[string][]string{
-	"run": {
-		"detach", "detach-keys", "disable-content-trust", "entrypoint", "env", "help",
-		"hostname", "init", "interactive", "kernel-memory", "name", "net", "network", "pull",
-		"health-cmd", "health-interval", "health-retries", "health-start-interval",
-		"health-start-period", "health-timeout", "no-healthcheck", "publish", "publish-all",
-		"rm", "stop-signal",
-		"stop-timeout", "tty", "user", "workdir",
-	},
+	"run": {"add-host", "detach", "detach-keys", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "name", "net", "network", "no-healthcheck", "publish", "publish-all", "pull", "rm", "stop-signal", "stop-timeout", "tty", "user", "workdir"},
 	"ps":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet"},
 	"ls":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet"},
 	"wait": {"help"},
@@ -80,14 +73,7 @@ var served = map[string][]string{
 	// `container prune` and `system prune`, which share the name.
 	"prune":             {"all", "filter", "force", "help"},
 	"image prune":       {"all", "filter", "force", "help"},
-	"create": {
-		"disable-content-trust", "entrypoint", "env", "help",
-		"hostname", "init", "interactive", "kernel-memory", "name", "net", "network", "pull",
-		"health-cmd", "health-interval", "health-retries", "health-start-interval",
-		"health-start-period", "health-timeout", "no-healthcheck", "publish", "publish-all",
-		"rm", "stop-signal",
-		"stop-timeout", "tty", "user", "workdir",
-	},
+	"create": {"add-host", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "name", "net", "network", "no-healthcheck", "publish", "publish-all", "pull", "rm", "stop-signal", "stop-timeout", "tty", "user", "workdir"},
 	"container create": {
 		"disable-content-trust", "entrypoint", "env", "help",
 		"hostname", "init", "interactive", "kernel-memory", "name", "net", "network", "pull",
@@ -186,6 +172,20 @@ var cases = [][]string{
 	{"cp", "-x", "a:/x", "b"},
 	{"container", "cp", "-h"},
 	{"run"},
+	{"run", "--label", "a=1", "-l", "b", "--label-file", "f", "alpine"},
+	{"run", "--label", "=x", "alpine"},
+	{"run", "--label", "a b=1", "alpine"},
+	{"run", "--dns", " 1.1.1.1 ", "--dns", "::ffff:8.8.8.8", "alpine"},
+	{"run", "--dns", "nope", "alpine"},
+	{"run", "--dns-search", "example.com.", "--dns-search", ".", "alpine"},
+	{"run", "--dns-search", "-bad", "alpine"},
+	{"run", "--dns-search", "123", "alpine"},
+	{"run", "--dns-option", "ndots:2", "--dns-opt", "edns0", "alpine"},
+	{"run", "--add-host", "a=1.2.3.4", "--add-host", "b:[::1]", "--add-host", "c:host-gateway", "alpine"},
+	{"run", "--add-host", "a", "alpine"},
+	{"run", "--add-host", "a:nope", "alpine"},
+	{"run", "--domainname", "example.org", "--expose", "80", "--expose", "7000-7002/udp", "alpine"},
+	{"run", "--env-file", "a.env", "alpine"},
 	{"run", "--help"},
 	{"run", "-h"},
 	{"run", "--nope", "alpine"},

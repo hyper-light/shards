@@ -91,6 +91,9 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
         resolv: None,
         stdin: o.interactive,
         builtin: 0,
+        // Set by the daemon as it is handed over, as the resolvers are.
+        hosts: Vec::new(),
+        domainname: Vec::new(),
     };
     fits(&spec)?;
     Ok(spec)
