@@ -149,6 +149,16 @@ pub static RUN: Command = Command {
         Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
         Flag::string("domainname", None, "", "Container NIS domain name"),
         Flag::string("cidfile", None, "", "Write the container ID to the file"),
+        Flag::many("cap-add", None, "list", "Add Linux capabilities"),
+        Flag::many("cap-drop", None, "list", "Drop Linux capabilities"),
+        Flag::many("group-add", None, "list", "Add additional groups to join"),
+        Flag::int(
+            "oom-score-adj",
+            None,
+            "0",
+            "Tune host's OOM preferences (-1000 to 1000)",
+        ),
+        Flag::bool("privileged", None, "Give extended privileges to this container"),
         Flag::bool(
             "read-only",
             None,
@@ -233,8 +243,6 @@ annotation - m - -\n\
 attach a m - -\n\
 blkio-weight - s 0 -\n\
 blkio-weight-device - m - -\n\
-cap-add - m - -\n\
-cap-drop - m - -\n\
 cgroup-parent - s - -\n\
 cgroupns - s - -\n\
 cpu-count - i 0 -\n\
@@ -248,7 +256,6 @@ device-read-iops - m - -\n\
 device-write-bps - m - -\n\
 device-write-iops - m - -\n\
 gpus - m - -\n\
-group-add - m - -\n\
 io-maxbandwidth - s 0 -\n\
 io-maxiops - s 0 -\n\
 ip - s <nil> -\n\
@@ -263,9 +270,7 @@ mac-address - s - -\n\
 mount - m - -\n\
 net-alias - m - network-alias\n\
 network-alias - m - -\n\
-oom-score-adj - i 0 -\n\
 pid - s - -\n\
-privileged - b false -\n\
 restart - s no -\n\
 runtime - s - -\n\
 security-opt - m - -\n\
@@ -411,6 +416,16 @@ pub static CREATE: Command = Command {
         Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
         Flag::string("domainname", None, "", "Container NIS domain name"),
         Flag::string("cidfile", None, "", "Write the container ID to the file"),
+        Flag::many("cap-add", None, "list", "Add Linux capabilities"),
+        Flag::many("cap-drop", None, "list", "Drop Linux capabilities"),
+        Flag::many("group-add", None, "list", "Add additional groups to join"),
+        Flag::int(
+            "oom-score-adj",
+            None,
+            "0",
+            "Tune host's OOM preferences (-1000 to 1000)",
+        ),
+        Flag::bool("privileged", None, "Give extended privileges to this container"),
         Flag::bool(
             "read-only",
             None,
@@ -494,8 +509,6 @@ annotation - m - -\n\
 attach a m - -\n\
 blkio-weight - s 0 -\n\
 blkio-weight-device - m - -\n\
-cap-add - m - -\n\
-cap-drop - m - -\n\
 cgroup-parent - s - -\n\
 cgroupns - s - -\n\
 cpu-count - i 0 -\n\
@@ -510,7 +523,6 @@ device-read-iops - m - -\n\
 device-write-bps - m - -\n\
 device-write-iops - m - -\n\
 gpus - m - -\n\
-group-add - m - -\n\
 io-maxbandwidth - s 0 -\n\
 io-maxiops - s 0 -\n\
 ip - s <nil> -\n\
@@ -525,9 +537,7 @@ mac-address - s - -\n\
 mount - m - -\n\
 net-alias - m - network-alias\n\
 network-alias - m - -\n\
-oom-score-adj - i 0 -\n\
 pid - s - -\n\
-privileged - b false -\n\
 restart - s no -\n\
 runtime - s - -\n\
 security-opt - m - -\n\
@@ -1399,8 +1409,15 @@ pub static EXEC: Command = Command {
             "Override the key sequence for detaching a container",
         ),
         Flag::many("env", Some(b'e'), "list", "Set environment variables"),
+        Flag::many(
+            "env-file",
+            None,
+            "list",
+            "Read in a file of environment variables",
+        ),
         HELP,
         Flag::bool("interactive", Some(b'i'), "Keep STDIN open even if not attached"),
+        Flag::bool("privileged", None, "Give extended privileges to the command"),
         Flag::bool("tty", Some(b't'), "Allocate a pseudo-TTY"),
         Flag::string(
             "user",
@@ -1415,9 +1432,7 @@ pub static EXEC: Command = Command {
             "Working directory inside the container",
         ),
     ],
-    unserved: "\
-env-file - m - -\n\
-privileged - b false -",
+    unserved: "",
     interspersed: false,
     error_prefix: "",
 };

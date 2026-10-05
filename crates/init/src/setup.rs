@@ -279,6 +279,11 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
         if unsafe { libc::setrlimit(resource, &limit) } != 0 {
             return Err(last());
         }
+    } else if let Some(n) = text.strip_prefix("oom=") {
+        // runc sets the container's process's own (setupOOMScoreAdj, before exec).
+        std::fs::write("/proc/self/oom_score_adj", n).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+    } else if text == "privileged" {
+        privileged().map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
     } else if text == "readonly" {
         // runc's remount of the root: this mount namespace's, read-only.
         mount(
@@ -288,6 +293,88 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
             libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY,
             "",
         )?;
+    }
+    Ok(())
+}
+
+/// What a privileged container has of the host's, of the VM's (moby daemon/oci_linux.go,
+/// WithDevices, WithMounts and masked and read-only paths left out): no masked or
+/// read-only paths, `/sys` and its cgroup writable, and every device the VM has, made in
+/// `/dev` from what `/sys/dev` says of each, as runc makes a host's devices.
+fn privileged() -> io::Result<()> {
+    let detach = |p: &str| {
+        if let Some(c) = c(p) {
+            // SAFETY: umount2(2) of a NUL-terminated path; one not mounted is left.
+            unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) };
+        }
+    };
+    for p in crate::defaults::MASKED
+        .iter()
+        .chain(crate::defaults::READONLY.iter())
+    {
+        detach(p);
+    }
+    let remount = |path: &std::ffi::CStr, flags: libc::c_ulong| -> io::Result<()> {
+        // SAFETY: mount(2) remounting a NUL-terminated path.
+        if unsafe {
+            libc::mount(
+                std::ptr::null(),
+                path.as_ptr(),
+                std::ptr::null(),
+                flags,
+                std::ptr::null(),
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    };
+    let base = libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV;
+    // sysfs is read-only as mounted, its superblock and its mount both.
+    remount(c"/sys", libc::MS_REMOUNT | base)?;
+    remount(c"/sys", libc::MS_REMOUNT | libc::MS_BIND | base)?;
+    remount(c"/sys/fs/cgroup", libc::MS_REMOUNT | libc::MS_BIND | base)?;
+    for (dir, kind) in [
+        ("/sys/dev/char", libc::S_IFCHR),
+        ("/sys/dev/block", libc::S_IFBLK),
+    ] {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(uevent) = std::fs::read_to_string(entry.path().join("uevent")) else {
+                continue;
+            };
+            let field = |k: &str| uevent.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('='));
+            let (Some(major), Some(minor), Some(name)) = (
+                field("MAJOR").and_then(|m| m.parse::<u32>().ok()),
+                field("MINOR").and_then(|m| m.parse::<u32>().ok()),
+                field("DEVNAME"),
+            ) else {
+                continue;
+            };
+            let path = format!("/dev/{name}");
+            if std::fs::symlink_metadata(&path).is_ok() {
+                continue;
+            }
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                let _ = mkdir_all(&parent.to_string_lossy());
+            }
+            // devtmpfs's own mode where the kernel says one, else its default.
+            let mode = field("DEVMODE")
+                .and_then(|m| u32::from_str_radix(m, 8).ok())
+                .unwrap_or(0o600);
+            let Some(p) = c(&path) else {
+                continue;
+            };
+            // SAFETY: mknod(2) and chmod(2) of a NUL-terminated path.
+            unsafe {
+                if libc::mknod(p.as_ptr(), kind | mode, libc::makedev(major, minor)) == 0 {
+                    libc::chmod(p.as_ptr(), mode);
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -320,6 +407,12 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
             .and_then(|(name, _)| rlimit(name))
             .unwrap_or_default();
         return format!("error setting rlimit type {n}: {err}");
+    }
+    if text.starts_with("oom=") {
+        return format!("failed to write oom_score_adj: write /proc/self/oom_score_adj: {err}");
+    }
+    if text == "privileged" {
+        return format!("making the container privileged: {err}");
     }
     format!("error remounting the root read-only: {err}")
 }

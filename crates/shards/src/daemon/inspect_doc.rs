@@ -552,8 +552,8 @@ fn host_config(f: &Facts<'_>) -> Value {
             true,
             Value::NilMap(Kind::String),
         )
-        .field("CapAdd", Value::NilList(Kind::String))
-        .field("CapDrop", Value::NilList(Kind::String))
+        .field("CapAdd", strs(&run.cap_add, run.cap_add.is_empty()))
+        .field("CapDrop", strs(&run.cap_drop, run.cap_drop.is_empty()))
         .field("CgroupnsMode", s("private"))
         // docker/cli's toNetipAddrSlice is nil for none; the rest never nil but ExtraHosts.
         .tagged("DNS", Some("Dns"), false, strs(&run.dns, run.dns.is_empty()))
@@ -570,16 +570,24 @@ fn host_config(f: &Facts<'_>) -> Value {
             strs(&run.dns_search, false),
         )
         .field("ExtraHosts", strs(&run.add_hosts, run.add_hosts.is_empty()))
-        .field("GroupAdd", Value::NilList(Kind::String))
+        .field("GroupAdd", strs(&run.group_add, run.group_add.is_empty()))
         .field("IpcMode", s("private"))
         .field("Cgroup", s(""))
         .field("Links", Value::NilList(Kind::String))
-        .field("OomScoreAdj", int(0))
+        .field("OomScoreAdj", int(run.oom_score_adj))
         .field("PidMode", s(""))
-        .field("Privileged", Value::Bool(false))
+        .field("Privileged", Value::Bool(run.privileged))
         .field("PublishAllPorts", Value::Bool(run.publish_all))
         .field("ReadonlyRootfs", Value::Bool(run.read_only))
-        .field("SecurityOpt", Value::NilList(Kind::String))
+        // generateSecurityOpt (daemon/daemon_unix.go): a privileged container's labels off.
+        .field(
+            "SecurityOpt",
+            if run.privileged {
+                Value::strings(["label=disable"])
+            } else {
+                Value::NilList(Kind::String)
+            },
+        )
         .tagged(
             "StorageOpt",
             Some("StorageOpt"),
@@ -686,8 +694,23 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("IOMaximumIOps", Value::Uint(0))
         .field("IOMaximumBandwidth", Value::Uint(0))
         .tagged("Mounts", Some("Mounts"), true, Value::NilList(Kind::Any))
-        .field("MaskedPaths", Value::strings(MASKED))
-        .field("ReadonlyPaths", Value::strings(READONLY))
+        // A privileged container's are none (daemon/oci_linux.go).
+        .field(
+            "MaskedPaths",
+            if run.privileged {
+                Value::NilList(Kind::String)
+            } else {
+                Value::strings(MASKED)
+            },
+        )
+        .field(
+            "ReadonlyPaths",
+            if run.privileged {
+                Value::NilList(Kind::String)
+            } else {
+                Value::strings(READONLY)
+            },
+        )
         .tagged("Init", Some("Init"), true, Struct::nil("bool"))
         .value()
 }

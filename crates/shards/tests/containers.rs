@@ -1744,6 +1744,139 @@ fn run_sets_up_mounts_limits_and_sysctls_as_docker_run_does() {
     }
 }
 
+/// `--cap-add`, `--cap-drop`, `--group-add`, `--oom-score-adj` and `--privileged` as docker
+/// run takes them, and `exec --privileged`: capabilities as moby tweaks them, groups as
+/// moby adds them, the OOM score set before the command, an exec taking the workload's;
+/// a privileged microVM unmasked, its /sys writable, every capability; dockerd's refusals.
+#[test]
+fn run_sets_capabilities_groups_and_privileges_as_docker_run_does() {
+    let Some((home, image)) = home("containers-privileges") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let tweaked = [
+        "--cap-add",
+        "net_admin",
+        "--cap-drop",
+        "chown",
+        "--group-add",
+        "staff",
+        "--group-add",
+        "1234",
+        "--oom-score-adj",
+        "-500",
+    ];
+    let line = |out: &str, key: &str| {
+        out.lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix(' ').map(str::to_string))
+            .unwrap_or_default()
+    };
+    let mut options = vec!["-u", "root"];
+    options.extend(tweaked);
+    let ran = run_in(&home, &image, &options, &["report"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    // Docker's defaults, CHOWN dropped and NET_ADMIN added.
+    assert_eq!(line(&ran.stdout, "capeff"), "00000000a80435fa", "{ran}");
+    assert_eq!(line(&ran.stdout, "capbnd"), "00000000a80435fa", "{ran}");
+    assert_eq!(line(&ran.stdout, "groups"), "0,50,1234", "{ran}");
+    // An exec takes the workload's process: its bounding set, groups and OOM score.
+    let mut held_options = vec!["--name", "tweaked"];
+    held_options.extend(tweaked);
+    let mut held = start(&home, &image, &held_options, &["sleep"]);
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec"];
+        all.extend(args);
+        shards(&all)
+    };
+    let as_app = exec(&["tweaked", "/bin/testguest", "report"]);
+    assert_eq!(line(&as_app.stdout, "capeff"), "0000000000000000", "{as_app}");
+    assert_eq!(line(&as_app.stdout, "capbnd"), "00000000a80435fa", "{as_app}");
+    assert_eq!(line(&as_app.stdout, "groups"), "50,50,1000,1234", "{as_app}");
+    let oom = exec(&["tweaked", "/bin/testguest", "stat", "/proc/self/oom_score_adj"]);
+    assert!(oom.stdout.contains("= -500\\n"), "{oom}");
+    let privileged = exec(&[
+        "--privileged",
+        "-u",
+        "root",
+        "tweaked",
+        "/bin/testguest",
+        "report",
+    ]);
+    assert_eq!(
+        line(&privileged.stdout, "capeff"),
+        "000001ffffffffff",
+        "{privileged}"
+    );
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.CapAdd}} {{.HostConfig.CapDrop}} {{.HostConfig.GroupAdd}} {{.HostConfig.OomScoreAdj}} {{.HostConfig.Privileged}}",
+        "tweaked",
+    ]);
+    assert_eq!(
+        shown.stdout, "[CAP_NET_ADMIN] [CAP_CHOWN] [staff 1234] -500 false\n",
+        "{shown}"
+    );
+    assert_eq!(shards(&["kill", "tweaked"]).status, Some(0));
+    exit(&mut held);
+    // Privileged: every capability, nothing masked, /sys writable.
+    let all = run_in(
+        &home,
+        &image,
+        &["-u", "root", "--privileged"],
+        &["stat", "/proc/self/status", "/proc/self/mounts"],
+    );
+    assert_eq!(all.status, Some(0), "{all}");
+    assert!(all.stdout.contains("CapEff:\t000001ffffffffff"), "{all}");
+    assert!(all.stdout.contains("sysfs /sys sysfs rw,"), "{all}");
+    assert!(!all.stdout.contains(" /proc/kcore "), "{all}");
+    assert!(!all.stdout.contains(" /proc/sys proc ro,"), "{all}");
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.SecurityOpt}} {{.HostConfig.MaskedPaths}}",
+        "--type",
+        "container",
+        "tweaked",
+    ]);
+    assert_eq!(shown.status, Some(0), "{shown}");
+    // dockerd's refusals.
+    let help = "\n\nRun 'shards run --help' for more information\n";
+    for (options, words) in [
+        (
+            &["--cap-add", "foo"][..],
+            "invalid CapAdd: unknown capability: \"CAP_FOO\"",
+        ),
+        (
+            &["--cap-drop", "nope"][..],
+            "invalid CapDrop: unknown capability: \"CAP_NOPE\"",
+        ),
+        (
+            &["--oom-score-adj", "1001"][..],
+            "Invalid value 1001, range for oom score adj is [-1000, 1000]",
+        ),
+        (
+            &["--group-add", "nope"][..],
+            "unable to find group nope: no matching entries in group file",
+        ),
+    ] {
+        let r = run_in(&home, &image, options, &["exit", "0"]);
+        let stderr: String = r
+            .stderr
+            .split_inclusive('\n')
+            .filter(|l| !l.starts_with("shards-timing "))
+            .collect();
+        assert_eq!(
+            (r.status, stderr.as_str()),
+            (
+                Some(125),
+                format!("shards: Error response from daemon: {words}{help}").as_str()
+            ),
+            "{options:?}"
+        );
+    }
+}
+
 #[test]
 fn info_and_disk_usage_format_as_docker_does() {
     let Some((home, image)) = home("containers-info-df") else {

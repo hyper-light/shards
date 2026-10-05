@@ -1519,6 +1519,21 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   `run_sets_up_mounts_limits_and_sysctls_as_docker_run_does`. Not yet Docker's: the
   default rlimits, which are the guest kernel's (`nproc` 994, `memlock` 8 MiB) where
   dockerd's come from its own and containerd's.
+- **Capabilities, groups, OOM score, privilege** (`setup.rs` `capabilities`; init
+  `Inherited`, `setup::privileged`; `shards_user::additional_groups`). `run` and `create`
+  take `--cap-add`, `--cap-drop`, `--group-add`, `--oom-score-adj` and `--privileged`, and
+  `exec` `--privileged` and `--env-file`, as docker/cli v29.8.1 reads them. dockerd's
+  rules: capabilities kept as NormalizeLegacyCapabilities keeps them and checked as the
+  container is made, then tweaked as TweakCapabilities tweaks the defaults; groups added
+  as moby's getUser adds them (moby/sys/user GetAdditionalGroups), after the user's own;
+  the OOM score set on the process before it execs; a privileged container's every
+  capability, no masked or read-only paths, `/sys` and its cgroup writable, every device
+  the VM has made in `/dev` from `/sys/dev`, and `SecurityOpt` `label=disable`. An exec
+  takes the workload's process (moby daemon/exec.go): its capabilities (all, with
+  `--privileged`), groups, rlimits and OOM score. Checked side by side with Docker 29.3.1:
+  the same CapEff, CapBnd, groups and OOM score. Test:
+  `run_sets_capabilities_groups_and_privileges_as_docker_run_does`. Not yet Docker's: its
+  default seccomp profile, which shards' guest does not apply (`--security-opt`, with it).
 ### Shipping the guest (D28)
 
 `shards run IMAGE` works on first use: with no guest recorded and none named, a run boots

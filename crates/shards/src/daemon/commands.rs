@@ -298,10 +298,16 @@ impl<D: crate::containers::Disk> Daemon<D> {
             interactive: exec.interactive,
             tty: exec.tty.map(|(rows, cols)| shards_abi::run::Size { rows, cols }),
         };
-        let spec = match crate::spec::spec(&options, |_| None) {
+        let mut spec = match crate::spec::spec(&options, |_| None) {
             Ok(spec) => spec,
             Err(e) => return refuse(&format!("Error response from daemon: {e}")),
         };
+        // `--privileged`: every capability (moby daemon/exec_linux.go); the rest of its
+        // process is the workload's.
+        if exec.privileged {
+            let all = (1u64 << shards_abi::run::CAP_NAMES.len()) - 1;
+            spec.setup = vec![format!("caps={all}").into_bytes()];
+        }
         let mut flags = 0;
         if exec.interactive {
             flags |= shards_ipc::EXEC_INTERACTIVE;

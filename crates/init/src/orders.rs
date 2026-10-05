@@ -23,6 +23,8 @@ pub struct Orders {
     /// What the standby sets up in its namespaces before it execs, in order: entries of
     /// `Spec::setup` (run.rs `set_up`).
     pub setup: Vec<Vec<u8>>,
+    /// Its capabilities, a bit for each by number.
+    pub caps: u64,
 }
 
 impl Orders {
@@ -47,7 +49,7 @@ impl Orders {
             .chain(singles)
             .map(len)
             .fold(
-                14usize.saturating_add(self.groups.len().saturating_mul(4)),
+                22usize.saturating_add(self.groups.len().saturating_mul(4)),
                 usize::saturating_add,
             );
         let mut w = Vec::with_capacity(total);
@@ -65,6 +67,7 @@ impl Orders {
         list(&mut w, &self.env);
         list(&mut w, std::slice::from_ref(&self.tty));
         list(&mut w, &self.setup);
+        w.extend_from_slice(&self.caps.to_be_bytes());
         w
     }
 
@@ -119,6 +122,11 @@ impl Orders {
             tty: list(&mut r)?.pop()?,
             null_stdin: null_stdin != 0,
             setup: list(&mut r)?,
+            caps: {
+                let (head, rest) = r.split_first_chunk::<8>()?;
+                r = rest;
+                u64::from_be_bytes(*head)
+            },
         };
         r.is_empty().then_some(orders)
     }
@@ -161,6 +169,7 @@ mod tests {
             tty: b"/dev/pts/0".to_vec(),
             null_stdin: true,
             setup: vec![b"readonly".to_vec()],
+            caps: 0xa804_25fb,
         }
     }
 

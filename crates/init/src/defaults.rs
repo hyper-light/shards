@@ -4,10 +4,8 @@
 //! (Docker Desktop's dockerd 29.3.1 and BuildKit v0.28, 2026-10-02): its capabilities,
 //! the paths masked or made read-only, and what /dev holds.
 
-/// Capabilities, by number (linux/capability.h): CHOWN, DAC_OVERRIDE, FOWNER, FSETID,
-/// KILL, SETGID, SETUID, SETPCAP, NET_BIND_SERVICE, NET_RAW, SYS_CHROOT, MKNOD,
-/// AUDIT_WRITE and SETFCAP: CapBnd 00000000a80425fb.
-pub const CAPS: [u32; 14] = [0, 1, 3, 4, 5, 6, 7, 8, 10, 13, 18, 27, 29, 31];
+/// Capabilities, by number (shards_abi::run::CAPS).
+pub use shards_abi::run::CAPS;
 
 /// Paths masked: a file under /dev/null, a directory under an empty read-only tmpfs.
 pub const MASKED: [&str; 12] = [

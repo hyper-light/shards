@@ -45,9 +45,57 @@ fn tmpfs_map(run: &Run) -> std::collections::BTreeMap<String, String> {
         .collect()
 }
 
-/// What dockerd refuses of these as it makes a container: a `/dev/shm` below 0, and a
-/// tmpfs at `/` or at a relative path (ValidateTmpfsMountDestination).
+/// moby's NormalizeLegacyCapabilities (daemon/pkg/oci/caps/utils.go): each a known name,
+/// or `ALL`.
+fn known_caps(caps: &[String], which: &str) -> Result<(), String> {
+    for c in caps {
+        if c != "ALL" && !shards_abi::run::CAP_NAMES.contains(&c.as_str()) {
+            return Err(format!(
+                "invalid {which}: unknown capability: {}",
+                shards_cmdline::go::quote(c)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// moby's TweakCapabilities: every capability for a privileged container; else the
+/// defaults, less those dropped, and those added; `ALL` added is all but those dropped,
+/// and `ALL` dropped is those added alone. As a set of capability numbers.
+pub fn capabilities(run: &Run) -> u64 {
+    let names = &shards_abi::run::CAP_NAMES;
+    let all = (1u64 << names.len()) - 1;
+    let mask = |list: &[String]| {
+        list.iter()
+            .filter_map(|c| names.iter().position(|n| n == c))
+            .fold(0u64, |m, i| m | 1 << i)
+    };
+    if run.privileged {
+        return all;
+    }
+    let (add, drop) = (mask(&run.cap_add), mask(&run.cap_drop));
+    if run.cap_add.iter().any(|c| c == "ALL") {
+        return all & !drop;
+    }
+    if run.cap_drop.iter().any(|c| c == "ALL") {
+        return add;
+    }
+    let defaults = shards_abi::run::CAPS.iter().fold(0u64, |m, &c| m | 1 << c);
+    (defaults & !drop) | add
+}
+
+/// What dockerd refuses of these as it makes a container: unknown capabilities
+/// (validateCapabilities), an OOM score out of range, a `/dev/shm` below 0, and a tmpfs
+/// at `/` or at a relative path (ValidateTmpfsMountDestination).
 pub fn verify(run: &Run) -> Result<(), String> {
+    known_caps(&run.cap_add, "CapAdd")?;
+    known_caps(&run.cap_drop, "CapDrop")?;
+    if !(-1000..=1000).contains(&run.oom_score_adj) {
+        return Err(format!(
+            "Invalid value {}, range for oom score adj is [-1000, 1000]",
+            run.oom_score_adj
+        ));
+    }
     if run.shm_size < 0 {
         return Err("SHM size can not be less than 0".into());
     }
@@ -155,6 +203,20 @@ pub fn setup(run: &Run) -> Result<Vec<Vec<u8>>, String> {
     for (k, v) in sysctls {
         out.push(format!("sysctl={k}={v}").into_bytes());
     }
+    // The process's: capabilities, groups and OOM score, which its execs take too.
+    if run.privileged || !run.cap_add.is_empty() || !run.cap_drop.is_empty() {
+        out.push(format!("caps={}", capabilities(run)).into_bytes());
+    }
+    for g in &run.group_add {
+        out.push(format!("group={g}").into_bytes());
+    }
+    if run.oom_score_adj != 0 {
+        out.push(format!("oom={}", run.oom_score_adj).into_bytes());
+    }
+    // Privileged: what Docker gives such a container of the host's, of the VM's.
+    if run.privileged {
+        out.push(b"privileged".to_vec());
+    }
     if run.read_only {
         out.push(b"readonly".to_vec());
     }
@@ -170,6 +232,43 @@ mod tests {
             tmpfs: tmpfs.iter().map(|s| (*s).to_string()).collect(),
             ..Run::default()
         }
+    }
+
+    /// moby's TweakCapabilities, and dockerd's refusals.
+    #[test]
+    fn capabilities_are_tweaked_as_dockerd_tweaks_them() {
+        let caps = |add: &[&str], drop: &[&str], privileged: bool| {
+            capabilities(&Run {
+                cap_add: add.iter().map(|s| (*s).to_string()).collect(),
+                cap_drop: drop.iter().map(|s| (*s).to_string()).collect(),
+                privileged,
+                ..Run::default()
+            })
+        };
+        assert_eq!(caps(&[], &[], false), 0xa804_25fb);
+        assert_eq!(
+            caps(&["CAP_NET_ADMIN"], &["CAP_CHOWN"], false),
+            0xa804_25fb & !1 | 1 << 12
+        );
+        assert_eq!(caps(&["ALL"], &["CAP_CHOWN"], false), 0x1ff_ffff_fffe);
+        assert_eq!(caps(&["CAP_KILL"], &["ALL"], false), 1 << 5);
+        assert_eq!(caps(&[], &[], true), 0x1ff_ffff_ffff);
+        let refused = verify(&Run {
+            cap_add: vec!["CAP_FOO".into()],
+            ..Run::default()
+        });
+        assert_eq!(
+            refused,
+            Err("invalid CapAdd: unknown capability: \"CAP_FOO\"".into())
+        );
+        let oom = verify(&Run {
+            oom_score_adj: 1001,
+            ..Run::default()
+        });
+        assert_eq!(
+            oom,
+            Err("Invalid value 1001, range for oom score adj is [-1000, 1000]".into())
+        );
     }
 
     /// dockerd 29.3.1's refusals, and moby's merged options.

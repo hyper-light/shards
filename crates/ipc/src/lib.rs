@@ -197,6 +197,8 @@ pub struct Exec {
     /// not once it has found the container, where the CLI refuses it after its inspect.
     pub stdin_terminal: bool,
     pub daemon: Identity,
+    /// `--privileged`: every capability.
+    pub privileged: bool,
 }
 
 impl Exec {
@@ -219,6 +221,7 @@ impl Exec {
         }
         w.push(u8::from(self.stdin_terminal));
         put_identity(&mut w, &self.daemon);
+        w.push(u8::from(self.privileged));
         w
     }
 
@@ -241,6 +244,7 @@ impl Exec {
             },
             stdin_terminal: r.flag()?,
             daemon: r.identity()?,
+            privileged: r.flag()?,
         };
         r.0.is_empty().then_some(exec)
     }
@@ -416,6 +420,16 @@ pub struct Run {
     pub ulimits: Vec<String>,
     /// `--sysctl`, each `KEY=VALUE`.
     pub sysctls: Vec<String>,
+    /// `--cap-add` and `--cap-drop`, as docker/cli sends them (EffectiveCapAddCapDrop):
+    /// `CAP_` names or `ALL`, each once, sorted, an added one not dropped.
+    pub cap_add: Vec<String>,
+    pub cap_drop: Vec<String>,
+    /// `--group-add`, each a group's name or number.
+    pub group_add: Vec<String>,
+    /// `--oom-score-adj`.
+    pub oom_score_adj: i64,
+    /// `--privileged`.
+    pub privileged: bool,
 }
 
 /// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
@@ -728,6 +742,25 @@ impl Run {
             ),
             ("ulimits", self.ulimits.clone()),
             ("sysctls", self.sysctls.clone()),
+            ("cap-add", self.cap_add.clone()),
+            ("cap-drop", self.cap_drop.clone()),
+            ("group-add", self.group_add.clone()),
+            (
+                "oom-score-adj",
+                if self.oom_score_adj == 0 {
+                    Vec::new()
+                } else {
+                    vec![self.oom_score_adj.to_string()]
+                },
+            ),
+            (
+                "privileged",
+                if self.privileged {
+                    vec![String::new()]
+                } else {
+                    Vec::new()
+                },
+            ),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -851,6 +884,11 @@ impl Run {
                     "shm-size" => run.shm_size = values.first()?.parse().ok()?,
                     "ulimits" => run.ulimits = values,
                     "sysctls" => run.sysctls = values,
+                    "cap-add" => run.cap_add = values,
+                    "cap-drop" => run.cap_drop = values,
+                    "group-add" => run.group_add = values,
+                    "oom-score-adj" => run.oom_score_adj = values.first()?.parse().ok()?,
+                    "privileged" => run.privileged = true,
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1224,6 +1262,7 @@ mod tests {
             detach: false,
             tty: Some((24, 80)),
             stdin_terminal: true,
+            privileged: true,
             daemon: Identity {
                 dev: 1,
                 ino: 2,
@@ -1347,6 +1386,11 @@ mod tests {
             shm_size: 128 << 20,
             ulimits: vec!["nofile=1024:2048".into()],
             sysctls: vec!["net.core.somaxconn=1024".into()],
+            cap_add: vec!["CAP_NET_ADMIN".into()],
+            cap_drop: vec!["CAP_CHOWN".into()],
+            group_add: vec!["audio".into()],
+            oom_score_adj: -500,
+            privileged: true,
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -1370,6 +1414,11 @@ mod tests {
             shm_size: 0,
             ulimits: Vec::new(),
             sysctls: Vec::new(),
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            group_add: Vec::new(),
+            oom_score_adj: 0,
+            privileged: false,
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

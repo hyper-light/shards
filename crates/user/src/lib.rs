@@ -109,6 +109,55 @@ fn fast_uid_gid(spec: &[u8]) -> Option<(u32, u32)> {
     Some((id(u)?, id(g)?))
 }
 
+/// moby/sys/user's GetAdditionalGroups (user.go): each named group's GID from
+/// /etc/group, the first that matches; a number as it is where none matches; a name that
+/// matches none an error. Each GID once, ascending (moby keeps them in a map).
+pub fn additional_groups(args: &[Vec<u8>], group: Option<&[u8]>) -> Result<Vec<u32>, String> {
+    let mut parsed = Vec::new();
+    for a in args {
+        let (gid, numeric) = if a.is_empty() {
+            (0, false)
+        } else {
+            parse_numeric(a)?
+        };
+        parsed.push((a.as_slice(), gid, numeric));
+    }
+    let groups = match group {
+        Some(data) => parse_group(data).map_err(|e| {
+            let shown: Vec<String> = args
+                .iter()
+                .map(|a| String::from_utf8_lossy(a).into_owned())
+                .collect();
+            format!("unable to find additional groups [{}]: {e}", shown.join(" "))
+        })?,
+        None => Vec::new(),
+    };
+    let mut gids = std::collections::BTreeSet::new();
+    for (name, gid, numeric) in parsed {
+        let found = groups
+            .iter()
+            .find(|g| if numeric { g.gid == gid } else { g.name == name });
+        match found {
+            Some(g) if !(0..=MAX_ID).contains(&g.gid) => {
+                return Err(format!("uids and gids must be in range 0-{MAX_ID}"));
+            }
+            Some(g) => {
+                gids.insert(g.gid as u32);
+            }
+            None if numeric => {
+                gids.insert(gid as u32);
+            }
+            None => {
+                return Err(format!(
+                    "unable to find group {}: no matching entries in group file",
+                    String::from_utf8_lossy(name)
+                ));
+            }
+        }
+    }
+    Ok(gids.into_iter().collect())
+}
+
 /// runc's prepareEnv: the last value of each variable wins, in first-seen order; an empty
 /// HOME is dropped, and a missing one comes from /etc/passwd for `uid`, or is `/`.
 pub fn prepare_env(env: &[Vec<u8>], uid: u32, passwd: Option<&[u8]>) -> Result<Vec<Vec<u8>>, String> {
@@ -414,6 +463,24 @@ fn parse_group(data: &[u8]) -> Result<Vec<Group<'_>>, String> {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// moby/sys/user's GetAdditionalGroups cases (user_test.go).
+    #[test]
+    fn additional_groups_are_found_as_moby_finds_them() {
+        let group = b"root:x:0:\nadm:x:4343:root,adm-duplicate\nadm-duplicate:x:4344:\n";
+        let groups = |args: &[&str]| {
+            let args: Vec<Vec<u8>> = args.iter().map(|a| a.as_bytes().to_vec()).collect();
+            additional_groups(&args, Some(group))
+        };
+        assert_eq!(groups(&["adm"]), Ok(vec![4343]));
+        assert_eq!(groups(&["adm", "adm-duplicate"]), Ok(vec![4343, 4344]));
+        assert_eq!(groups(&["4343", "9999"]), Ok(vec![4343, 9999]));
+        assert_eq!(
+            groups(&["nope"]),
+            Err("unable to find group nope: no matching entries in group file".into())
+        );
+        assert_eq!(additional_groups(&[b"12".to_vec()], None), Ok(vec![12]));
+    }
 
     /// BuildKit's rules, beside Docker's (executor/oci/user.go).
     #[test]

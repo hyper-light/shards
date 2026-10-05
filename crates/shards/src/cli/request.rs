@@ -245,10 +245,20 @@ pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
     let Some((container, cmd)) = parsed.args.split_first() else {
         return crate::cli::failed("a container is required");
     };
+    // opts.ReadKVEnvStrings: the files' lines first, the flags' after (exec.go parseExec).
+    let mut env = Vec::new();
+    for file in parsed.many("env-file") {
+        match kv_file(file, true) {
+            Ok(lines) => env.extend(lines),
+            Err(e) => return refuse(&e),
+        }
+    }
+    env.extend(parsed.many("env").iter().cloned());
     let request = shards_ipc::Exec {
         container: container.clone(),
         cmd: cmd.to_vec(),
-        env: parsed.many("env").to_vec(),
+        env,
+        privileged: parsed.bool("privileged"),
         user: parsed.string("user").to_string(),
         workdir: parsed.string("workdir").to_string(),
         interactive: parsed.bool("interactive"),
@@ -400,6 +410,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         cpuset_mems: parsed.string("cpuset-mems").to_string(),
         pids_limit: parsed.int("pids-limit"),
     };
+    let (cap_add, cap_drop) = effective_caps(parsed.many("cap-add"), parsed.many("cap-drop"));
     // Each range a port at a time, as the CLI exposes them (container/opts.go).
     let mut expose = Vec::new();
     for e in parsed.many("expose") {
@@ -465,6 +476,11 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         shm_size: parsed.string("shm-size").parse().unwrap_or(0),
         ulimits: parsed.many("ulimit").to_vec(),
         sysctls: parsed.many("sysctl").to_vec(),
+        cap_add,
+        cap_drop,
+        group_add: parsed.many("group-add").to_vec(),
+        oom_score_adj: parsed.int("oom-score-adj"),
+        privileged: parsed.bool("privileged"),
         // The flag's default is DOCKER_DEFAULT_PLATFORM (docker/cli run.go, create.go).
         platform: if parsed.changed("platform") {
             parsed.string("platform").to_string()
@@ -644,6 +660,25 @@ fn kv_file(path: &str, lookup: bool) -> Result<Vec<String>, String> {
         }
     }
     Ok(out)
+}
+
+/// `--cap-add` and `--cap-drop` as dockerd keeps them (moby daemon/pkg/oci/caps,
+/// NormalizeLegacyCapabilities): upper case, `CAP_` before each but `ALL`, in the order
+/// given, duplicates and all; docker/cli sends them as given.
+fn effective_caps(add: &[String], drop: &[String]) -> (Vec<String>, Vec<String>) {
+    let normalize = |list: &[String]| -> Vec<String> {
+        list.iter()
+            .map(|c| {
+                let c = c.to_uppercase();
+                if c == "ALL" || c.starts_with("CAP_") {
+                    c
+                } else {
+                    format!("CAP_{c}")
+                }
+            })
+            .collect()
+    };
+    (normalize(add), normalize(drop))
 }
 
 /// An I/O error as Go's syscall.Errno says it.

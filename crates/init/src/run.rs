@@ -277,8 +277,43 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     masked()
 }
 
-/// The workload's rlimits, which its execs take too (`ulimit=` entries of its setup).
-static WORKLOAD_RLIMITS: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+/// What of the workload's process its execs take too, as runc's exec takes the
+/// container's (moby daemon/exec.go: the container's process, its command replaced).
+#[derive(Clone, Default)]
+struct Inherited {
+    /// Its capabilities, a bit for each by number; the defaults' where none were said.
+    caps: Option<u64>,
+    /// `--group-add`'s groups.
+    groups: Vec<Vec<u8>>,
+    /// Its setup entries an exec's standby applies too: `ulimit=` and `oom=`.
+    setup: Vec<Vec<u8>>,
+}
+
+/// The workload's [`Inherited`], once it starts.
+static WORKLOAD: std::sync::OnceLock<Inherited> = std::sync::OnceLock::new();
+
+/// [`Inherited`]'s, and the standby's own, of a spec's setup entries; sysctls are
+/// written here, by init.
+fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>, Failure> {
+    let mut standby = Vec::new();
+    for entry in entries {
+        if let Some(kv) = entry.strip_prefix(b"sysctl=") {
+            let kv = String::from_utf8_lossy(kv);
+            let (k, v) = kv.split_once('=').unwrap_or((&kv, ""));
+            crate::setup::write_sysctl(k, v).map_err(setup_failed)?;
+        } else if let Some(caps) = entry.strip_prefix(b"caps=") {
+            into.caps = std::str::from_utf8(caps).ok().and_then(|c| c.parse().ok());
+        } else if let Some(group) = entry.strip_prefix(b"group=") {
+            into.groups.push(group.to_vec());
+        } else {
+            if entry.starts_with(b"ulimit=") || entry.starts_with(b"oom=") {
+                into.setup.push(entry.clone());
+            }
+            standby.push(entry.clone());
+        }
+    }
+    Ok(standby)
+}
 
 /// Where the workload's cgroup is, as init sees the hierarchy.
 const WORKLOAD_CGROUP: &str = "/sys/fs/cgroup/workload";
@@ -970,45 +1005,43 @@ impl Standby {
             });
         }
         limit(&spec.cgroup)?;
-        // Sysctls, by init; the rest by the standby, in its namespaces. Its rlimits are an
-        // exec's too, as runc's exec takes the container's process's.
-        let mut setup = Vec::new();
-        for entry in &spec.setup {
-            match entry.strip_prefix(b"sysctl=") {
-                Some(kv) => {
-                    let kv = String::from_utf8_lossy(kv);
-                    let (k, v) = kv.split_once('=').unwrap_or((&kv, ""));
-                    crate::setup::write_sysctl(k, v).map_err(setup_failed)?;
-                }
-                None => setup.push(entry.clone()),
-            }
-        }
-        let _ = WORKLOAD_RLIMITS.set(
-            setup
-                .iter()
-                .filter(|e| e.starts_with(b"ulimit="))
-                .cloned()
-                .collect(),
-        );
-        standby.launch(spec, false, setup)
+        // Sysctls, by init; the rest by the standby, in its namespaces.
+        let mut inherited = Inherited::default();
+        let setup = sort_setup(&spec.setup, &mut inherited)?;
+        let _ = WORKLOAD.set(inherited.clone());
+        standby.launch(spec, false, setup, &inherited)
     }
 
     /// Resolves the spec as Docker and runc do, then has the standby exec it. The
     /// workload's working directory is made if missing, as `docker run` makes it; an
     /// exec's (`exec`) must be there, as runc's exec finds it, and its unknown user is the
     /// daemon's refusal.
-    fn launch(self, spec: &Spec, exec: bool, setup: Vec<Vec<u8>>) -> Result<Workload, Failure> {
+    fn launch(
+        self,
+        spec: &Spec,
+        exec: bool,
+        setup: Vec<Vec<u8>>,
+        process: &Inherited,
+    ) -> Result<Workload, Failure> {
         let standby = self;
         let argv0 = spec
             .argv
             .first()
             .ok_or_else(|| setup_failed("no command given"))?;
         let (passwd, group) = (standby.passwd.as_deref(), standby.group.as_deref());
-        let ExecUser { uid, gid, groups } =
+        let ExecUser { uid, gid, mut groups } =
             user::resolve(&spec.user, passwd, group).map_err(|m| Failure {
                 daemon: exec,
                 ..setup_failed(m)
             })?;
+        // `--group-add`, as moby's getUser adds them (GetAdditionalGroupsPath).
+        if !process.groups.is_empty() {
+            let added = user::additional_groups(&process.groups, group).map_err(|m| Failure {
+                daemon: exec,
+                ..setup_failed(m)
+            })?;
+            groups.extend(added);
+        }
         let env = user::prepare_env(&spec.env, uid, passwd).map_err(setup_failed)?;
         let cwd = if exec {
             exec_cwd(&spec.cwd)?
@@ -1077,6 +1110,9 @@ impl Standby {
             tty: pty.as_ref().map(|p| p.peer.clone()).unwrap_or_default(),
             null_stdin,
             setup: setup.clone(),
+            caps: process
+                .caps
+                .unwrap_or_else(|| CAPS.iter().fold(0, |m, &c| m | 1 << c)),
         }
         .encode();
         let Standby {
@@ -1221,6 +1257,7 @@ fn standby(ends: Ends, join: Option<libc::pid_t>) -> ! {
             tty: tty.as_ref(),
             err: err.as_raw_fd(),
             cwd: &cwd,
+            caps: o.caps,
             uid: o.uid,
             gid: o.gid,
             groups: &o.groups,
@@ -1418,10 +1455,13 @@ impl Exec {
         let started = if spec.builtin != 0 && running {
             builtin(spec.builtin, &spec.argv)
         } else if running {
+            // The workload's process, but for what the exec says (`--privileged`).
+            let mut process = WORKLOAD.get().cloned().unwrap_or_default();
+            if let Some(caps) = spec.setup.iter().find_map(|e| e.strip_prefix(b"caps=")) {
+                process.caps = std::str::from_utf8(caps).ok().and_then(|c| c.parse().ok());
+            }
             Standby::fork(Some(workload))
-                .and_then(|standby| {
-                    standby.launch(&spec, true, WORKLOAD_RLIMITS.get().cloned().unwrap_or_default())
-                })
+                .and_then(|standby| standby.launch(&spec, true, process.setup.clone(), &process))
                 .map(|w| Started {
                     pid: w.pid,
                     tty: w.tty,
@@ -1966,6 +2006,8 @@ struct Child<'a> {
     tty: Option<&'a CString>,
     err: RawFd,
     cwd: &'a CString,
+    /// Its capabilities, a bit for each by number.
+    caps: u64,
     uid: u32,
     gid: u32,
     groups: &'a [u32],
@@ -2038,7 +2080,7 @@ unsafe fn child(c: &Child<'_>) -> ! {
         // user, then set. For any user but root, execve then leaves none but the
         // bounding set, there being no file or ambient capabilities (capabilities(7)),
         // as Docker's are.
-        let keep = |cap: u32| CAPS.contains(&cap);
+        let keep = |cap: u32| cap < 64 && c.caps & (1 << cap) != 0;
         if !defaults::bound(c.last_cap, keep) || libc::prctl(libc::PR_SET_KEEPCAPS, 1, 0, 0, 0) != 0 {
             fail(step::USER);
         }
