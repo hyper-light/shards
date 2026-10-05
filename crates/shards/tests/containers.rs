@@ -5457,9 +5457,16 @@ fn import_makes_images_of_tarballs_as_docker_import_does() {
     );
     // Made a microVM, as a pull makes one, and published so to the local engine: here one
     // the test serves, which keeps what it is sent.
-    let socket = std::path::PathBuf::from(format!("/tmp/shards-engine-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&socket);
-    let engine = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    // Removed however the test ends.
+    struct Socket(std::path::PathBuf);
+    impl Drop for Socket {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let socket = Socket(format!("/tmp/shards-engine-{}.sock", std::process::id()).into());
+    let _ = std::fs::remove_file(&socket.0);
+    let engine = std::os::unix::net::UnixListener::bind(&socket.0).unwrap();
     let (sent, served) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         use std::io::{BufRead as _, Read as _, Write as _};
@@ -5510,7 +5517,7 @@ fn import_makes_images_of_tarballs_as_docker_import_does() {
         .args([tar.to_str().unwrap(), "imported:3"])
         .env("SHARDS_HOME", &*home)
         .env("SHARDS_LOCAL_STORE", "")
-        .env("DOCKER_HOST", format!("unix://{}", socket.display()))
+        .env("DOCKER_HOST", format!("unix://{}", socket.0.display()))
         .output()
         .unwrap();
     assert!(
@@ -5521,7 +5528,7 @@ fn import_makes_images_of_tarballs_as_docker_import_does() {
     let (request, microvm) = served
         .recv_timeout(std::time::Duration::from_secs(60))
         .expect("the import published nothing");
-    let _ = std::fs::remove_file(&socket);
+    drop(socket);
     assert!(request.starts_with("POST /images/load?quiet=1 "), "{request}");
     let artifact = String::from_utf8_lossy(&microvm);
     assert!(

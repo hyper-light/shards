@@ -291,9 +291,25 @@ pub fn unpublish(socket: &Path, reference: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// A path a test made, removed when it goes, however the test ends.
+    struct Gone(PathBuf);
+
+    impl std::ops::Deref for Gone {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0).or_else(|_| std::fs::remove_file(&self.0));
+        }
+    }
+
     /// An engine on a socket of its own that answers each request with the next of
     /// `answers`, and hands back the request lines it was sent.
-    fn fake_engine(answers: Vec<String>) -> (PathBuf, std::thread::JoinHandle<Vec<String>>) {
+    fn fake_engine(answers: Vec<String>) -> (Gone, std::thread::JoinHandle<Vec<String>>) {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let socket = PathBuf::from(format!("/tmp/shards-ls-{}-{n}.sock", std::process::id()));
@@ -328,23 +344,24 @@ mod tests {
             }
             asked
         });
-        (socket, served)
+        (Gone(socket), served)
     }
 
-    fn disk() -> (PathBuf, Digest) {
-        let dir = std::env::temp_dir().join(format!("shards-ls-disk-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+    /// A disk in a directory of its own, which goes with the guard.
+    fn disk() -> (Gone, PathBuf, Digest) {
+        let dir = Gone(std::env::temp_dir().join(format!("shards-ls-disk-{}", std::process::id())));
+        std::fs::create_dir_all(&*dir).unwrap();
         let disk = dir.join("disk.erofs");
         std::fs::write(&disk, vec![7u8; 8192]).unwrap();
         let source = Digest::parse(&format!("sha256:{}", "ab".repeat(32))).unwrap();
-        (disk, source)
+        (dir, disk, source)
     }
 
     /// A microVM the engine holds by its manifest's digest is not sent again; one it
     /// does not is loaded.
     #[test]
     fn a_microvm_the_engine_holds_is_not_sent_again() {
-        let (disk, source) = disk();
+        let (_dir, disk, source) = disk();
         let config = br#"{"architecture":"arm64","os":"linux"}"#;
         let named = name("held:1");
         let id = shards_image::save::MicroVm::of(&named, &disk, config, &source, "linux/arm64").unwrap();
@@ -371,7 +388,6 @@ mod tests {
                 "POST /images/load?quiet=1 HTTP/1.1"
             ]
         );
-        let _ = std::fs::remove_file(socket);
     }
 
     /// A name's jobs go in order, those queued behind one in flight collapsed to the last;
@@ -381,9 +397,9 @@ mod tests {
         let gone = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_string();
         // The first removal is held until the others are queued.
         let (slow, slow_served) = fake_engine(vec![gone.clone(), gone.clone()]);
-        let gate = slow.with_extension("gate");
-        let _ = std::fs::remove_file(&gate);
-        let gate_listener = std::os::unix::net::UnixListener::bind(&gate).unwrap();
+        let gate = Gone(slow.with_extension("gate"));
+        let _ = std::fs::remove_file(&*gate);
+        let gate_listener = std::os::unix::net::UnixListener::bind(&*gate).unwrap();
         let (asked, heard) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel::<()>();
         let held = std::thread::spawn(move || {
@@ -396,21 +412,21 @@ mod tests {
         });
         // A lane is busy while its first job is in flight: here, one that waits on the gate.
         queue(Job::Unpublish {
-            socket: gate.clone(),
+            socket: gate.to_path_buf(),
             reference: "lane:1".into(),
         });
         queue(Job::Unpublish {
-            socket: slow.clone(),
+            socket: slow.to_path_buf(),
             reference: "lane:1".into(),
         });
         queue(Job::Unpublish {
-            socket: slow.clone(),
+            socket: slow.to_path_buf(),
             reference: "lane:1".into(),
         });
         // Another name goes at once, while lane:1 waits.
         let (fast, fast_served) = fake_engine(vec![gone]);
         queue(Job::Unpublish {
-            socket: fast.clone(),
+            socket: fast.to_path_buf(),
             reference: "other:1".into(),
         });
         assert_eq!(fast_served.join().unwrap().len(), 1);
@@ -432,15 +448,12 @@ mod tests {
             std::thread::yield_now();
         }
         // One of the two answers was asked for: the engine still waits on the second.
-        let probe = UnixStream::connect(&slow).unwrap();
+        let probe = UnixStream::connect(&*slow).unwrap();
         (&probe).write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
         assert_eq!(
             slow_served.join().unwrap()[0],
             "DELETE /images/shards.local%2Flane%3A1 HTTP/1.1"
         );
-        for s in [slow, gate, fast] {
-            let _ = std::fs::remove_file(s);
-        }
     }
 
     #[test]
