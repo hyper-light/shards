@@ -1,0 +1,39 @@
+name: seccomp oracle
+
+# What Docker's own toolchain (dockerd's profile resolution, runc v1.3.4, libseccomp
+# 2.5.4) makes of crates/seccomp/testdata/cases.json, on each guest architecture's native
+# Linux, for crates/seccomp's tests to be held to (scripts/seccomp/generate). libseccomp
+# asks the running kernel what it supports, so neither architecture is emulated. Runs
+# when the generator or its cases change, or when asked; its files are the artifact.
+on:
+  push:
+    paths:
+      - scripts/seccomp/**
+      - crates/seccomp/testdata/cases.json
+      - .github/workflows/seccomp-oracle.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  oracle:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: uname -a && docker version --format '{{.Server.Version}}'
+      - run: SHARDS_SECCOMP_PLATFORMS=${{ matrix.platform }} scripts/seccomp/generate
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: seccomp-oracle-${{ strategy.job-index }}
+          path: |
+            crates/seccomp/testdata/oracle-*.json
+            crates/seccomp/testdata/syscalls-*.json

@@ -1,0 +1,40 @@
+#!/bin/sh
+# Regenerates crates/seccomp/testdata/: what Docker's own toolchain makes of each seccomp
+# case in crates/seccomp/testdata/cases.json, for shards' compiler (crates/seccomp) to be
+# held to decision for decision, and libseccomp's syscall tables, which it reads names by.
+#
+# Docker Desktop 4.x runs containers with runc v1.3.4 linked with libseccomp 2.5.4 (`runc
+# --version` in its VM, 2026-10-05), and dockerd docker-v29.8.1 resolves profiles with
+# github.com/moby/profiles/seccomp v0.2.3. Each case's profile (Docker's default, or one
+# of its own) is resolved by moby's setupSeccomp for the case's capabilities, converted by
+# runc's specconv, built into a libseccomp filter as runc's InitSeccomp builds it, and
+# patched as runc's patchbpf patches it (the -ENOSYS stub); the program that would be
+# loaded is recorded, instruction by instruction, with the flags and no_new_privs bit
+# runc would load it with. It runs once on each guest architecture, in a Debian
+# container with libseccomp built from its release tarball.
+#
+# libseccomp asks the running kernel what it supports (its API level), and emulation
+# answers it wrongly (amd64 under Docker Desktop on arm64 refused KILL_PROCESS and the log
+# flag, 2026-10-05): each architecture runs where it is native. The seccomp oracle
+# workflow (.github/workflows/seccomp-oracle.yml) runs it on GitHub's x86_64 and arm64
+# Linux runners; SHARDS_SECCOMP_PLATFORMS names the platforms to run here.
+#
+#   SHARDS_SECCOMP_PLATFORMS=linux/arm64 scripts/seccomp/generate
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+data="$root/crates/seccomp/testdata"
+image=golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+cp -R "$here/oracle" "$here/runc-export" "$here/inside.sh" "$data/cases.json" "$out/"
+for platform in ${SHARDS_SECCOMP_PLATFORMS:-linux/arm64 linux/amd64}; do
+	arch=${platform#linux/}
+	docker run --rm --platform "$platform" -v "$out:/work" "$image" sh /work/inside.sh "$arch"
+done
+for f in "$out"/oracle-*.json "$out"/syscalls-*.json; do
+	[ -e "$f" ] && cp "$f" "$data/"
+done
+echo "wrote $data"
