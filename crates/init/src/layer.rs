@@ -46,26 +46,68 @@ pub fn apply(conn: &File, first: u32) -> io::Result<()> {
 /// Sends the container's writable layer on `conn` as [`kind::LAYER`] frames, then an
 /// empty one.
 pub fn save(conn: &File) -> io::Result<()> {
-    let upper = crate::changes::upper().ok_or_else(|| io::Error::other("the writable layer was not kept"))?;
-    let opts = shards_archive::PackOptions {
-        exclude_patterns: MADE.iter().map(|p| p.as_bytes().to_vec()).collect(),
-        whiteout: shards_archive::WhiteoutFormat::Overlay,
-        ..Default::default()
-    };
-    // The kept descriptor's path is a link to a directory the root hides: entered, it is
-    // the directory. Init's work is done by now, so where it stands matters to nothing.
-    std::env::set_current_dir(&upper)?;
     let mut out = Sender {
         conn,
         buf: Vec::with_capacity(CHUNK),
     };
-    let packed = shards_archive::pack(std::path::Path::new("."), &opts, &mut out)
-        .map(drop)
-        .map_err(|e| io::Error::other(e.to_string()));
+    let packed = pack(&mut out);
     out.flush()?;
     // The end, whether or not all of it was sent: the host keeps only a whole one.
     send(conn, &[])?;
     packed
+}
+
+/// Writes the container's writable layer to `out`, as an OCI layer: what init made of
+/// every container left out, and the directories that hold nothing else and are as the
+/// image has them (Docker's init layer is beneath a container's, not in it).
+pub fn pack(out: &mut impl Write) -> io::Result<()> {
+    let upper = crate::changes::upper().ok_or_else(|| io::Error::other("the writable layer was not kept"))?;
+    let mut exclude: Vec<Vec<u8>> = MADE.iter().map(|p| p.as_bytes().to_vec()).collect();
+    exclude.extend(made_only(&upper).into_iter().map(String::into_bytes));
+    let opts = shards_archive::PackOptions {
+        exclude_patterns: exclude,
+        whiteout: shards_archive::WhiteoutFormat::Overlay,
+        ..Default::default()
+    };
+    // The kept descriptor's path is a link to a directory the root hides: entered, it is
+    // the directory. Where init stands matters to nothing else (a built-in's own
+    // process, or init after its workload).
+    std::env::set_current_dir(&upper)?;
+    shards_archive::pack(std::path::Path::new("."), &opts, out)
+        .map(drop)
+        .map_err(|e| io::Error::other(e.to_string()))
+}
+
+/// The directories of the writable layer `upper` that hold only what init made, and whose
+/// mode and owner are the image's: copied up for init's files, not changed by the
+/// container.
+fn made_only(upper: &str) -> Vec<String> {
+    use std::os::unix::fs::MetadataExt;
+    let mut dirs: Vec<&str> = MADE
+        .iter()
+        .filter_map(|m| m.rsplit_once('/').map(|(d, _)| d))
+        .collect();
+    dirs.sort_unstable();
+    dirs.dedup();
+    dirs.into_iter()
+        .filter(|dir| {
+            let Ok(entries) = std::fs::read_dir(format!("{upper}/{dir}")) else {
+                return false;
+            };
+            let only_made = entries.flatten().all(|e| {
+                let name = format!("{dir}/{}", e.file_name().to_string_lossy());
+                MADE.contains(&name.as_str())
+            });
+            let (Ok(here), Ok(image)) = (
+                std::fs::symlink_metadata(format!("{upper}/{dir}")),
+                std::fs::symlink_metadata(format!("/{dir}")),
+            ) else {
+                return false;
+            };
+            only_made && here.mode() == image.mode() && here.uid() == image.uid() && here.gid() == image.gid()
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 /// The layer's bytes from its frames.

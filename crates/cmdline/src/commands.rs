@@ -420,6 +420,66 @@ volumes-from - m - -",
     error_prefix: "",
 };
 
+/// `shards commit` (docker/cli cli/command/container/commit.go).
+pub static COMMIT: Command = Command {
+    usage: "[OPTIONS] CONTAINER [REPOSITORY[:TAG]]",
+    about: "Create a new image from a container's changes",
+    aliases: "shards container commit, shards commit",
+    args: Args::Range(1, 2),
+    flags: &[
+        Flag::string(
+            "author",
+            Some(b'a'),
+            "",
+            "Author (e.g., \"John Hannibal Smith <hannibal@a-team.com>\")",
+        ),
+        Flag::many(
+            "change",
+            Some(b'c'),
+            "list",
+            "Apply Dockerfile instruction to the created image",
+        ),
+        HELP,
+        Flag::string("message", Some(b'm'), "", "Commit message"),
+        Flag::bool("no-pause", None, "Disable pausing container during commit"),
+        Flag::bool(
+            "pause",
+            Some(b'p'),
+            "Pause container during commit (deprecated: use --no-pause instead)",
+        )
+        .defaulting("true")
+        .deprecated("and enabled by default. Use --no-pause to disable pausing during commit."),
+    ],
+    unserved: "",
+    interspersed: false,
+    error_prefix: "",
+};
+
+/// `shards cp` (docker/cli cli/command/container/cp.go): its Long, which its help shows.
+pub static COPY: Command = Command {
+    usage: "[OPTIONS] CONTAINER:SRC_PATH DEST_PATH|-\n\tdocker cp [OPTIONS] SRC_PATH|- CONTAINER:DEST_PATH",
+    about: "Copy files/folders between a container and the local filesystem\n\nUse '-' as the source to read a tar archive from stdin\nand extract it to a directory destination in a container.\nUse '-' as the destination to stream a tar archive of a\ncontainer source to stdout.",
+    aliases: "shards container cp, shards cp",
+    args: Args::Exactly(2),
+    flags: &[
+        Flag::bool(
+            "archive",
+            Some(b'a'),
+            "Archive mode (copy all uid/gid information)",
+        ),
+        Flag::bool("follow-link", Some(b'L'), "Always follow symlinks in SRC_PATH"),
+        HELP,
+        Flag::bool(
+            "quiet",
+            Some(b'q'),
+            "Suppress progress output during copy. Progress output is automatically suppressed if no terminal is attached",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards start` (docker/cli cli/command/container/start.go).
 pub static START: Command = Command {
     usage: "[OPTIONS] CONTAINER [CONTAINER...]",
@@ -1332,6 +1392,10 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["diff", ..] => (&DIFF, "shards diff", 1),
         ["events", ..] => (&EVENTS, "shards events", 1),
         ["start", ..] => (&START, "shards start", 1),
+        ["commit", ..] => (&COMMIT, "shards commit", 1),
+        ["cp", ..] => (&COPY, "shards cp", 1),
+        ["container", "cp", ..] => (&COPY, "shards container cp", 2),
+        ["container", "commit", ..] => (&COMMIT, "shards container commit", 2),
         ["container", "start", ..] => (&START, "shards container start", 2),
         ["restart", ..] => (&RESTART, "shards restart", 1),
         ["container", "restart", ..] => (&RESTART, "shards container restart", 2),

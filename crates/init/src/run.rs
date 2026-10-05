@@ -996,9 +996,15 @@ struct Exec {
 /// One of init's own for an exec ([`Spec::builtin`]), done in a child of init's, so that
 /// the relay goes on, its output on a pipe as a command's: what is asked for on stdout,
 /// status 0; why it could not be had on stderr, status 1.
-fn builtin(kind: u8) -> Result<Started, Failure> {
+fn builtin(kind: u8, args: &[Vec<u8>]) -> Result<Started, Failure> {
     let (stdout_r, stdout_w) = pipe()?;
     let (stderr_r, stderr_w) = pipe()?;
+    // What reads the host's stdin: unpacking an archive.
+    let input = if kind == run::builtin::EXTRACT {
+        Some(pipe()?)
+    } else {
+        None
+    };
     // SAFETY: init is single-threaded, so its child may run anything.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -1007,10 +1013,55 @@ fn builtin(kind: u8) -> Result<Started, Failure> {
     if pid == 0 {
         drop((stdout_r, stderr_r));
         let mut out = io::BufWriter::new(File::from(stdout_w));
+        // `cp`'s work, which says how it failed by its status (copy.rs).
+        if matches!(
+            kind,
+            run::builtin::STAT | run::builtin::ARCHIVE | run::builtin::EXTRACT
+        ) {
+            let path = args.first().map_or(&[][..], Vec::as_slice);
+            let done = match kind {
+                run::builtin::STAT => crate::copy::stat(path, &mut out),
+                run::builtin::ARCHIVE => crate::copy::archive(path, &mut out),
+                _ => match input {
+                    Some((r, w)) => {
+                        drop(w);
+                        let user = args.get(1).map(Vec::as_slice);
+                        let overwrite = args.get(2).is_some_and(|a| a == b"1");
+                        crate::copy::extract(path, user, overwrite, &mut File::from(r))
+                    }
+                    None => Err(crate::copy::Failed(1, "no input".into())),
+                },
+            }
+            .and_then(|()| out.flush().map_err(crate::copy::Failed::from));
+            let code = match done {
+                Ok(()) => 0,
+                Err(crate::copy::Failed(code, said)) => {
+                    let _ = writeln!(File::from(stderr_w), "{said}");
+                    code
+                }
+            };
+            // SAFETY: _exit(2) ends the child without running init's exit paths.
+            unsafe { libc::_exit(code) }
+        }
         let done = match kind {
             run::builtin::PROCESSES => out.write_all(&crate::procs::dump()),
             run::builtin::CHANGES => crate::changes::write(&mut out),
             run::builtin::EXPORT => export(&mut out),
+            run::builtin::LAYER => {
+                // Paused as dockerd pauses a container it commits (moby daemon/commit.go):
+                // every process but init and this one stopped, then let go on.
+                let pause = args.first().is_some_and(|a| a == b"pause");
+                if pause {
+                    // SAFETY: kill(2) of every process this one may signal.
+                    unsafe { libc::kill(-1, libc::SIGSTOP) };
+                }
+                let packed = crate::layer::pack(&mut out);
+                if pause {
+                    // SAFETY: as above.
+                    unsafe { libc::kill(-1, libc::SIGCONT) };
+                }
+                packed
+            }
             other => Err(io::Error::other(format!("no built-in {other}"))),
         }
         .and_then(|()| out.flush());
@@ -1025,10 +1076,14 @@ fn builtin(kind: u8) -> Result<Started, Failure> {
         unsafe { libc::_exit(code) }
     }
     drop((stdout_w, stderr_w));
+    let stdin = input.map(|(r, w)| {
+        drop(r);
+        w
+    });
     Ok(Started {
         pid,
         tty: false,
-        stdin: None,
+        stdin,
         stdout: Some(stdout_r),
         stderr: Some(stderr_r),
     })
@@ -1098,7 +1153,7 @@ impl Exec {
         exec.to_conn
             .extend(&[&run::header(kind::HELLO, run::TOKEN as u32), token]);
         let started = if spec.builtin != 0 && running {
-            builtin(spec.builtin)
+            builtin(spec.builtin, &spec.argv)
         } else if running {
             Standby::fork()
                 .and_then(|standby| standby.launch(&spec, true))

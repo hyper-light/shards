@@ -142,6 +142,17 @@ pub mod builtin {
     pub const CHANGES: u8 = 2;
     /// The container's files as a tar archive, for `shards export` (init run.rs).
     pub const EXPORT: u8 = 3;
+    /// The container's writable layer as an OCI layer, as it is now, for `shards
+    /// commit` (init layer.rs): with `pause` its only argument, its processes stopped
+    /// meanwhile.
+    pub const LAYER: u8 = 4;
+    /// `shards cp`'s (init copy.rs), each its path first: a path's stat as a JSON line;
+    /// a tar archive of it; and the tar archive on stdin unpacked into it, then the
+    /// container user's to own it all or empty, then `1` to let a directory and a file
+    /// replace each other.
+    pub const STAT: u8 = 5;
+    pub const ARCHIVE: u8 = 6;
+    pub const EXTRACT: u8 = 7;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

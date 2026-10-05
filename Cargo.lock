@@ -838,6 +838,7 @@ dependencies = [
  "sha2",
  "shards-abi",
  "shards-apple",
+ "shards-archive",
  "shards-build",
  "shards-cmdline",
  "shards-dockerfile",

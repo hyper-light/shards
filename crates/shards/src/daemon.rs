@@ -33,6 +33,8 @@ use shards_vmm::vm::Config;
 use crate::containers::{self, Container, Disk, Real, Registry, Removal, State as Life};
 
 mod commands;
+pub(crate) use commands::COPY_STEP;
+mod commit;
 mod demand;
 mod events;
 mod files;
@@ -93,7 +95,7 @@ const HANDOFF_TRIES: usize = 3;
 /// written as its microVM stops.
 pub(super) const LAYER: &str = "layer.tar";
 /// The request a container was made by, in its directory, for `shards start`.
-const REQUEST: &str = "request";
+pub(super) const REQUEST: &str = "request";
 const LAYER_NEW: &str = "layer.new";
 
 /// A new file for a container's layer to be written to, in place of any half-written
@@ -2069,15 +2071,7 @@ impl<D: Disk> Daemon<D> {
             runs.insert(id.clone(), RunState::Pending { cancelled: false });
         }
         // Its files as its last run left them, once its VM has saved them.
-        {
-            let mut settling = lock(&self.settling);
-            while settling.contains(&id) {
-                settling = self
-                    .settled
-                    .wait(settling)
-                    .unwrap_or_else(PoisonError::into_inner);
-            }
-        }
+        self.await_settled(&id);
         let dir = lock(&self.containers).dir(&id);
         let found = std::fs::read(dir.join(REQUEST))
             .ok()
@@ -2096,6 +2090,18 @@ impl<D: Disk> Daemon<D> {
                 lock(&self.runs).remove(&id);
                 Err(e)
             }
+        }
+    }
+
+    /// Waits until container `id`'s writable layer is whole where it is kept, if its VM
+    /// is still saving it (D37).
+    pub(super) fn await_settled(&self, id: &str) {
+        let mut settling = lock(&self.settling);
+        while settling.contains(id) {
+            settling = self
+                .settled
+                .wait(settling)
+                .unwrap_or_else(PoisonError::into_inner);
         }
     }
 

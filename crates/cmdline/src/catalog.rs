@@ -16,6 +16,9 @@ pub struct Entry {
     pub command: Option<&'static Command>,
 }
 
+/// cp.go's Short.
+const COPY_SHORT: &str = "Copy files/folders between a container and the local filesystem";
+
 /// A heading and what it lists.
 #[derive(Debug, Clone, Copy)]
 pub struct Group {
@@ -27,6 +30,15 @@ const fn of(name: &'static str, command: &'static Command) -> Entry {
     Entry {
         name,
         about: command.about,
+        command: Some(command),
+    }
+}
+
+/// A command whose help says more than its line in a list (cobra's Long and Short).
+const fn short(name: &'static str, about: &'static str, command: &'static Command) -> Entry {
+    Entry {
+        name,
+        about,
         command: Some(command),
     }
 }
@@ -71,6 +83,8 @@ pub static TOP: &[Group] = &[
     Group {
         heading: "Commands",
         entries: &[
+            of("commit", &commands::COMMIT),
+            short("cp", COPY_SHORT, &commands::COPY),
             of("create", &commands::CREATE),
             of("diff", &commands::DIFF),
             of("events", &commands::EVENTS),
@@ -104,6 +118,8 @@ pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
         "container",
         "Manage containers",
         &[
+            of("commit", &commands::COMMIT),
+            short("cp", COPY_SHORT, &commands::COPY),
             of("create", &commands::CREATE),
             of("diff", &commands::DIFF),
             of("exec", &commands::EXEC),

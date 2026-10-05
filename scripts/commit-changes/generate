@@ -1,0 +1,39 @@
+#!/bin/sh
+# Regenerates crates/dockerfile/testdata/commit-changes.json: what moby's dockerd makes of
+# `docker commit --change` and `docker import --change` (daemon/builder/dockerfile
+# BuildFromConfig, at the moby commit docker/cli v29.8.1 goes with), applied to the base
+# configs and changes in commit_test.go, which crates/dockerfile/tests/commit.rs expects
+# shards_dockerfile::commit to give. It runs in the Go image of the release moby's go.mod
+# names, on Linux, as dockerd does: the classic builder's paths, shells and signals are
+# its Linux build's. moby is a Go module that vendors its dependencies, so the test
+# imports exactly those.
+#
+#   scripts/commit-changes/generate [MOBY_CHECKOUT]
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+data="$root/crates/dockerfile/testdata"
+commit=464cd50c3d9e92877d56940ea160de6fca7bea23
+moby=${1:-}
+if [ -z "$moby" ]; then
+	moby=$(mktemp -d)
+	trap 'rm -rf "$moby"' EXIT
+	git -C "$moby" init --quiet
+	git -C "$moby" fetch --quiet --depth 1 https://github.com/moby/moby "$commit"
+	git -C "$moby" checkout --quiet FETCH_HEAD
+fi
+if [ "$(git -C "$moby" rev-parse HEAD)" != "$commit" ]; then
+	echo "$moby is not moby/moby $commit" >&2
+	exit 1
+fi
+
+test="$moby/daemon/builder/dockerfile/zz_shards_commit_test.go"
+cp "$here/commit_test.go" "$test"
+trap 'rm -f "$test"; [ -z "${1:-}" ] && rm -rf "$moby"' EXIT
+go=$(sed -n 's/^go //p' "$moby/go.mod")
+docker run --rm --user "$(id -u):$(id -g)" \
+	-e HOME=/tmp -e GOCACHE=/tmp/go-cache -e GOFLAGS=-mod=vendor -e GOTOOLCHAIN=local \
+	-e SHARDS_COMMIT_OUT=/data/commit-changes.json \
+	-v "$moby:/moby" -v "$data:/data" -w /moby "golang:$go" \
+	go test -count=1 -run '^TestShardsCommit$' ./daemon/builder/dockerfile/

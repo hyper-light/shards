@@ -93,6 +93,10 @@ var served = map[string][]string{
 	"container start":   {"attach", "detach-keys", "help", "interactive"},
 	"restart":           {"help", "signal", "time", "timeout"},
 	"container restart": {"help", "signal", "time", "timeout"},
+	"commit":            {"author", "change", "help", "message", "no-pause", "pause"},
+	"container commit":  {"author", "change", "help", "message", "no-pause", "pause"},
+	"cp":                {"archive", "follow-link", "help", "quiet"},
+	"container cp":      {"archive", "follow-link", "help", "quiet"},
 }
 
 // The command lines asked, each the words after `shards`.
@@ -142,6 +146,16 @@ var cases = [][]string{
 	{"create"},
 	{"create", "-d", "alpine"},
 	{"container", "create", "-h"},
+	{"commit"},
+	{"commit", "--help"},
+	{"commit", "a", "b", "c"},
+	{"commit", "-p=false", "x"},
+	{"container", "commit", "-h"},
+	{"cp"},
+	{"cp", "--help"},
+	{"cp", "a", "b", "c"},
+	{"cp", "-x", "a:/x", "b"},
+	{"container", "cp", "-h"},
 	{"run"},
 	{"run", "--help"},
 	{"run", "-h"},

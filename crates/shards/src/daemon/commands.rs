@@ -13,9 +13,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use shards_cmdline::commands::{
-    self, CONTAINER_INSPECT, CONTAINER_PRUNE, DIFF, EVENTS, EXPORT, HISTORY, IMAGE_INSPECT, IMAGE_PRUNE,
-    IMAGES, INFO, KILL, LOAD, LOGS, PAUSE, PORT, PS, PULL, PUSH, RENAME, RM, RMI, SAVE, STATS, STOP,
-    SYSTEM_DF, SYSTEM_PRUNE, TAG, TOP, UNPAUSE, WAIT,
+    self, COMMIT, CONTAINER_INSPECT, CONTAINER_PRUNE, DIFF, EVENTS, EXPORT, HISTORY, IMAGE_INSPECT,
+    IMAGE_PRUNE, IMAGES, INFO, KILL, LOAD, LOGS, PAUSE, PORT, PS, PULL, PUSH, RENAME, RM, RMI, SAVE, STATS,
+    STOP, SYSTEM_DF, SYSTEM_PRUNE, TAG, TOP, UNPAUSE, WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{gotime, width};
@@ -359,6 +359,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// Runs container command `argv` for a client, answering on `reply`, and returns its
     /// exit status, the client being `asker`.
     pub(super) fn command(&self, argv: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
+        // `shards cp`'s steps, which its client takes one at a time (cli/cp.rs).
+        if let Some((first, rest)) = argv.split_first()
+            && first == COPY_STEP
+        {
+            return self.copy_step(rest, asker, reply);
+        }
         let words: Vec<&str> = argv.iter().map(String::as_str).collect();
         let Some((command, path, named)) = commands::find(&words) else {
             reply.err(&format!("shards: no container command in {argv:?}"));
@@ -415,6 +421,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.prune(true, true, parsed.bool("all"), asker, reply)
         } else if std::ptr::eq(command, &SYSTEM_DF) {
             self.system_df(asker, reply)
+        } else if std::ptr::eq(command, &COMMIT) {
+            self.commit_image(&parsed, asker, reply)
         } else if std::ptr::eq(command, &EXPORT) {
             self.export(&parsed.args, asker, reply)
         } else if std::ptr::eq(command, &INFO) {
@@ -503,6 +511,140 @@ impl<D: crate::containers::Disk> Daemon<D> {
             }
             Ok(_) => refuse(format!("Error exporting container {given}: {}", why.trim())),
             Err(e) => refuse(format!("Error exporting container {given}: {e}")),
+        }
+    }
+
+    /// A step of `shards cp` in container `container`, as dockerd's archive routes take
+    /// them (moby daemon/archive.go): `stat PATH`, its stat as a JSON line; `archive
+    /// PATH`, a tar archive of it to the asker's file; `extract PATH UIDGID OVERWRITE`,
+    /// the archive the asker's file holds unpacked there, owned by the container's user
+    /// with `UIDGID` 1. Done in its microVM (init copy.rs), so a microVM that has ended
+    /// has nothing to copy, where dockerd copies to and from a stopped container.
+    fn copy_step(&self, args: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
+        let (Some(step), Some(given), Some(path)) = (args.first(), args.get(1), args.get(2)) else {
+            return 1;
+        };
+        let refuse = |said: String| {
+            reply.err(&format!("Error response from daemon: {said}"));
+            1
+        };
+        let id = match self.resolve(given) {
+            Ok(id) => id,
+            Err(e) => {
+                reply.err(&e);
+                return 1;
+            }
+        };
+        self.await_start(&id);
+        if !self.running(&id) {
+            return refuse(format!(
+                "container {id} is not running: a microVM's files end with it"
+            ));
+        }
+        if lock(&self.paused).contains(&id) {
+            return refuse(format!(
+                "container {id} is paused: its files can be copied once it is unpaused"
+            ));
+        }
+        use shards_abi::run::builtin;
+        let (kind, mut argv) = match step.as_str() {
+            "stat" => (builtin::STAT, vec![path.as_bytes().to_vec()]),
+            "archive" => (builtin::ARCHIVE, vec![path.as_bytes().to_vec()]),
+            "extract" => (builtin::EXTRACT, vec![path.as_bytes().to_vec()]),
+            _ => return 1,
+        };
+        if kind == builtin::EXTRACT {
+            // `-a`: everything the container's user's (archive_tarcopyoptions_unix.go).
+            let user = if args.get(3).is_some_and(|a| a == "1") {
+                self.container_user(&id)
+            } else {
+                String::new()
+            };
+            argv.push(user.into_bytes());
+            argv.push(args.get(4).map_or(b"0".to_vec(), |a| a.as_bytes().to_vec()));
+        }
+        let spec = shards_abi::run::Spec {
+            builtin: kind,
+            argv,
+            ..Default::default()
+        };
+        let (status, out, said) = if kind == builtin::STAT {
+            match self.exec_quietly(&id, &spec, None, 1 << 16, super::TAKE_TIMEOUT) {
+                Ok(q) => (q.status, q.output, Vec::new()),
+                Err(e) => return refuse(e.to_string()),
+            }
+        } else {
+            let Some(file) = asker.files.first() else {
+                return refuse("shards: cp: the client sent no file".into());
+            };
+            let pieces = std::fs::File::open("/dev/null").and_then(|null| Ok((null, std::io::pipe()?)));
+            let (null, (mut errs, into)) = match pieces {
+                Ok(p) => p,
+                Err(e) => return refuse(e.to_string()),
+            };
+            let stdio = if kind == builtin::EXTRACT {
+                [file.as_fd(), null.as_fd(), into.as_fd()]
+            } else {
+                [null.as_fd(), file.as_fd(), into.as_fd()]
+            };
+            let ended = self.exec_on(&id, &spec, kind == builtin::EXTRACT, stdio);
+            drop(into);
+            let mut said = Vec::new();
+            let _ = errs.read_to_end(&mut said);
+            match ended {
+                Ok(e) => (e.status, Vec::new(), said),
+                Err(e) => return refuse(e.to_string()),
+            }
+        };
+        let why = String::from_utf8_lossy(if said.is_empty() { &out } else { &said })
+            .trim()
+            .to_string();
+        match status {
+            Some(0) => {
+                if kind == builtin::STAT {
+                    let _ = reply.bytes(LOG_STDOUT, &out);
+                } else {
+                    let action = if kind == builtin::ARCHIVE {
+                        "archive-path"
+                    } else {
+                        "extract-to-dir"
+                    };
+                    self.container_event(&id, action, &[]);
+                }
+                0
+            }
+            Some(2) => refuse(format!("Could not find the file {path} in container {given}")),
+            Some(3) => refuse(why),
+            _ => refuse(if why.is_empty() {
+                format!("container {id}: the copy failed")
+            } else {
+                why
+            }),
+        }
+    }
+
+    /// The user container `id` runs as: its run's, else its image's.
+    fn container_user(&self, id: &str) -> String {
+        let dir = lock(&self.containers).dir(id);
+        let run = std::fs::read(dir.join(super::REQUEST))
+            .ok()
+            .and_then(|b| shards_ipc::Run::decode(&b));
+        match run {
+            Some(r) if !r.user.is_empty() => r.user,
+            _ => lock(&self.containers)
+                .get(id)
+                .and_then(|c| c.image_id.clone())
+                .and_then(|image| {
+                    let store = self.store().ok()??;
+                    let found = store
+                        .images()
+                        .ok()?
+                        .into_iter()
+                        .find(|i| i.id.to_string() == image)?;
+                    let config: serde_json::Value = serde_json::from_slice(found.config.as_deref()?).ok()?;
+                    config.pointer("/config/User")?.as_str().map(str::to_string)
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -999,7 +1141,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 
     /// Whether the container with `id` runs: its run was handed over, and has not ended.
-    fn running(&self, id: &str) -> bool {
+    pub(super) fn running(&self, id: &str) -> bool {
         matches!(lock(&self.runs).get(id), Some(RunState::Tracked(_)))
     }
 
@@ -2603,6 +2745,9 @@ impl DiffPage {
             .collect()
     }
 }
+
+/// The first word of `shards cp`'s steps, which no command line has.
+pub(crate) const COPY_STEP: &str = "\u{0}cp";
 
 /// The most of a microVM's process dump `top` takes: some 2 KiB a process.
 const TOP_LIMIT: usize = 16 << 20;

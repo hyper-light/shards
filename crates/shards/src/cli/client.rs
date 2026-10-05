@@ -241,6 +241,37 @@ pub fn container(home: &Path, daemon: &Path, command: &Command, fds: &[std::os::
     failed("the daemon kept asking for a restart")
 }
 
+/// Asks the daemon of `home`, whose binary is `daemon`, for `command` with `fds`, and
+/// takes its answer whole: its status, and what it said on stdout and on stderr.
+pub fn ask(
+    home: &Path,
+    daemon: &Path,
+    command: &Command,
+    fds: &[std::os::fd::BorrowedFd<'_>],
+) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
+    let mut started = enter(home, daemon)?;
+    // A daemon from another build answers RESTART once it has stepped aside.
+    for _ in 0..2 {
+        let conn = connect(home, daemon, &mut started)?;
+        shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), fds)
+            .map_err(|e| format!("asking the daemon: {e}"))?;
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        loop {
+            match shards_ipc::recv(&conn) {
+                Ok(Some(m)) if m.kind == kind::OUT => out.extend(m.payload),
+                Ok(Some(m)) if m.kind == kind::ERR => err.extend(m.payload),
+                Ok(Some(m)) if m.kind == kind::END => {
+                    return Ok((m.payload.first().copied().unwrap_or(1), out, err));
+                }
+                Ok(Some(m)) if m.kind == kind::RESTART => break,
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => return Err("the daemon ended before it answered".into()),
+            }
+        }
+    }
+    Err("the daemon kept asking for a restart".into())
+}
+
 /// The daemon's answer on `conn`: its output, as it comes, and its status, or `None`
 /// when it asks for a restart. Steps of a pull, which the daemon sends a terminal, are
 /// shown by a display of their own (show.rs), on a thread of this `scope`; the daemon's

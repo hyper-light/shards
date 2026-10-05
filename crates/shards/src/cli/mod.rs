@@ -15,6 +15,8 @@ use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 #[cfg(unix)]
 mod client;
 #[cfg(unix)]
+mod cp;
+#[cfg(unix)]
 pub(crate) mod listing;
 #[cfg(unix)]
 pub(crate) mod look;
@@ -294,28 +296,31 @@ fn container(
                     Some(None) => fds.push(stdin.as_fd()),
                     None => {}
                 }
-                let status = client::container(
-                    &home,
-                    &daemon,
-                    &shards_ipc::Command {
-                        argv,
-                        registry_env: shards_ipc::registry_env(),
-                        east_asian: shards_cmdline::width::east_asian(|name| {
-                            std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
-                        }),
-                        now: now_ns(),
-                        utc_offset: utc_offset(),
-                        // SAFETY: isatty(3) on this process's stdout.
-                        terminal: unsafe { libc::isatty(1) } == 1,
-                        width: terminal::size(1).1,
-                        // docker/cli's tui.NewOutput: any NO_COLOR but an empty one; and a
-                        // terminal that says it is dumb.
-                        color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
-                            && std::env::var_os("TERM").is_none_or(|t| t != "dumb"),
-                        daemon: identity,
-                    },
-                    &fds,
-                );
+                let command_of = |argv: Vec<String>| shards_ipc::Command {
+                    argv,
+                    registry_env: shards_ipc::registry_env(),
+                    east_asian: shards_cmdline::width::east_asian(|name| {
+                        std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
+                    }),
+                    now: now_ns(),
+                    utc_offset: utc_offset(),
+                    // SAFETY: isatty(3) on this process's stdout.
+                    terminal: unsafe { libc::isatty(1) } == 1,
+                    width: terminal::size(1).1,
+                    // docker/cli's tui.NewOutput: any NO_COLOR but an empty one; and a
+                    // terminal that says it is dumb.
+                    color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+                        && std::env::var_os("TERM").is_none_or(|t| t != "dumb"),
+                    daemon: identity,
+                };
+                // `cp` asks in steps, and moves the files itself (cli/cp.rs).
+                if std::ptr::eq(command, &shards_cmdline::commands::COPY) {
+                    drop(fds);
+                    return cp::copy(&parsed, &|argv, fds| {
+                        client::ask(&home, &daemon, &command_of(argv), fds)
+                    });
+                }
+                let status = client::container(&home, &daemon, &command_of(argv), &fds);
                 drop(fds);
                 match output.map(|o| o.finish(status)) {
                     Some(Err(e)) => {

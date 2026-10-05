@@ -426,6 +426,103 @@
   },
   {
     "argv": [
+      "commit"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards commit' requires at least 1 and at most 2 arguments\n\nUsage:  shards commit [OPTIONS] CONTAINER [REPOSITORY[:TAG]]\n\nRun 'shards commit --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "commit",
+      "--help"
+    ],
+    "stdout": "Usage:  shards commit [OPTIONS] CONTAINER [REPOSITORY[:TAG]]\n\nCreate a new image from a container's changes\n\nAliases:\n  shards container commit, shards commit\n\nOptions:\n  -a, --author string    Author (e.g., \"John Hannibal Smith\n                         \u003channibal@a-team.com\u003e\")\n  -c, --change list      Apply Dockerfile instruction to the created image\n  -m, --message string   Commit message\n      --no-pause         Disable pausing container during commit\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "commit",
+      "a",
+      "b",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards commit' requires at least 1 and at most 2 arguments\n\nUsage:  shards commit [OPTIONS] CONTAINER [REPOSITORY[:TAG]]\n\nRun 'shards commit --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "commit",
+      "-p=false",
+      "x"
+    ],
+    "stdout": "Flag --pause has been deprecated, and enabled by default. Use --no-pause to disable pausing during commit.\nRUN --pause=false \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "commit",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container commit [OPTIONS] CONTAINER [REPOSITORY[:TAG]]\n\nCreate a new image from a container's changes\n\nAliases:\n  shards container commit, shards commit\n\nOptions:\n  -a, --author string    Author (e.g., \"John Hannibal Smith\n                         \u003channibal@a-team.com\u003e\")\n  -c, --change list      Apply Dockerfile instruction to the created image\n  -m, --message string   Commit message\n      --no-pause         Disable pausing container during commit\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "cp"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards cp' requires 2 arguments\n\nUsage:  shards cp [OPTIONS] CONTAINER:SRC_PATH DEST_PATH|-\n\tdocker cp [OPTIONS] SRC_PATH|- CONTAINER:DEST_PATH\n\nRun 'shards cp --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "cp",
+      "--help"
+    ],
+    "stdout": "Usage:  shards cp [OPTIONS] CONTAINER:SRC_PATH DEST_PATH|-\n\tdocker cp [OPTIONS] SRC_PATH|- CONTAINER:DEST_PATH\n\nCopy files/folders between a container and the local filesystem\n\nUse '-' as the source to read a tar archive from stdin\nand extract it to a directory destination in a container.\nUse '-' as the destination to stream a tar archive of a\ncontainer source to stdout.\n\nAliases:\n  shards container cp, shards cp\n\nOptions:\n  -a, --archive       Archive mode (copy all uid/gid information)\n  -L, --follow-link   Always follow symlinks in SRC_PATH\n  -q, --quiet         Suppress progress output during copy. Progress\n                      output is automatically suppressed if no terminal\n                      is attached\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "cp",
+      "a",
+      "b",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards cp' requires 2 arguments\n\nUsage:  shards cp [OPTIONS] CONTAINER:SRC_PATH DEST_PATH|-\n\tdocker cp [OPTIONS] SRC_PATH|- CONTAINER:DEST_PATH\n\nRun 'shards cp --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "cp",
+      "-x",
+      "a:/x",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "unknown shorthand flag: 'x' in -x\n\nUsage:  shards cp [OPTIONS] CONTAINER:SRC_PATH DEST_PATH|-\n\tdocker cp [OPTIONS] SRC_PATH|- CONTAINER:DEST_PATH\n\nRun 'shards cp --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "cp",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container cp [OPTIONS] CONTAINER:SRC_PATH DEST_PATH|-\n\tdocker cp [OPTIONS] SRC_PATH|- CONTAINER:DEST_PATH\n\nCopy files/folders between a container and the local filesystem\n\nUse '-' as the source to read a tar archive from stdin\nand extract it to a directory destination in a container.\nUse '-' as the destination to stream a tar archive of a\ncontainer source to stdout.\n\nAliases:\n  shards container cp, shards cp\n\nOptions:\n  -a, --archive       Archive mode (copy all uid/gid information)\n  -L, --follow-link   Always follow symlinks in SRC_PATH\n  -q, --quiet         Suppress progress output during copy. Progress\n                      output is automatically suppressed if no terminal\n                      is attached\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "run"
     ],
     "stdout": "",

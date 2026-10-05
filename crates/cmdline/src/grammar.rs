@@ -74,6 +74,8 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("inspect", Thing::System) => &["info"],
         ("export", Thing::Vm | Thing::Container) => &["export"],
         ("start", Thing::Vm | Thing::Container) => &["start"],
+        ("commit", Thing::Vm | Thing::Container) => &["commit"],
+        ("copy" | "cp", Thing::Vm | Thing::Container) => &["cp"],
         ("restart", Thing::Vm | Thing::Container) => &["restart"],
         ("create" | "make", Thing::Vm | Thing::Container) => &["create"],
         ("unpause" | "resume" | "thaw", Thing::Vm | Thing::Container) => &["unpause"],
@@ -165,6 +167,7 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "guest",
         "Choose the kernel and shards-init runs boot",
     ),
+    ("manage", "copy", "vm", "Copy files into or out of a microVM"),
     ("manage", "kill", "vm", "Kill microVMs"),
     ("manage", "pause", "vm", "Freeze microVMs where they are"),
     (
@@ -193,6 +196,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "build",
         "image",
         "Build an image from a Dockerfile or Agentfile, and make it a microVM",
+    ),
+    (
+        "images",
+        "commit",
+        "vm",
+        "Make an image of what a microVM changed",
     ),
     (
         "images",
@@ -329,6 +338,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "guest --kernel FILE --init FILE",
         "Choose the kernel and shards-init runs boot",
     ),
+    (
+        "manage",
+        "copy",
+        "vm NAME:PATH PATH | vm PATH NAME:PATH",
+        "Copy files out of a microVM, or into one",
+    ),
     ("manage", "kill", "vm NAME", "Kill microVMs"),
     (
         "manage",
@@ -373,6 +388,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "build",
         "image PATH",
         "Build an image from a Dockerfile or Agentfile, and make it a microVM",
+    ),
+    (
+        "images",
+        "commit",
+        "vm NAME [IMAGE]",
+        "Make an image of what a microVM changed",
     ),
     (
         "images",

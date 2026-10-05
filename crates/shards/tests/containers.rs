@@ -597,6 +597,90 @@ fn export_writes_a_microvms_files_as_a_tar_archive() {
 }
 
 #[test]
+fn cp_copies_files_into_and_out_of_a_microvm_as_docker_cp_does() {
+    let Some((home, image)) = home("containers-cp") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let mut sleeper = start(&home, &image, &["--name", "copier", "-u", "0"], &["sleep"]);
+    let src = home.join("cp-src");
+    std::fs::create_dir_all(src.join("sub")).unwrap();
+    std::fs::write(src.join("a.txt"), "one").unwrap();
+    std::fs::write(src.join("sub/b.txt"), "two").unwrap();
+    // In: a directory under a new name, then out again, as it was.
+    let into = shards(&["cp", src.to_str().unwrap(), "copier:/in"]);
+    assert_eq!(
+        (into.status, into.stdout.as_str(), into.stderr.as_str()),
+        (Some(0), "", ""),
+        "{into}"
+    );
+    let back = home.join("cp-back");
+    let out = shards(&["container", "cp", "copier:/in", back.to_str().unwrap()]);
+    assert_eq!(out.status, Some(0), "{out}");
+    assert_eq!(std::fs::read_to_string(back.join("a.txt")).unwrap(), "one");
+    assert_eq!(std::fs::read_to_string(back.join("sub/b.txt")).unwrap(), "two");
+    // Into an existing directory, said: the file's size, and the archive's that carried it.
+    let said = shards(&[
+        "cp",
+        "-q=false",
+        src.join("a.txt").to_str().unwrap(),
+        "copier:/in/sub",
+    ]);
+    assert_eq!(
+        (said.status, said.stderr.as_str()),
+        (
+            Some(0),
+            "Successfully copied 3B (transferred 2.05kB) to copier:/in/sub\n"
+        ),
+        "{said}"
+    );
+    let file = shards(&[
+        "cp",
+        "copier:/in/sub/a.txt",
+        home.join("a-again").to_str().unwrap(),
+    ]);
+    assert_eq!(file.status, Some(0), "{file}");
+    assert_eq!(std::fs::read_to_string(home.join("a-again")).unwrap(), "one");
+    // A tar archive to stdout.
+    let streamed = shards(&["cp", "copier:/in/a.txt", "-"]);
+    assert_eq!(streamed.status, Some(0), "{streamed}");
+    assert!(
+        streamed.stdout.contains("a.txt\0") && streamed.stdout.contains("one"),
+        "{streamed}"
+    );
+    // In Docker's words.
+    let missing = shards(&["cp", "copier:/nope", home.join("x").to_str().unwrap()]);
+    assert_eq!(
+        (missing.status, missing.stderr.as_str()),
+        (
+            Some(1),
+            "Error response from daemon: Could not find the file /nope in container copier\n"
+        ),
+        "{missing}"
+    );
+    let across = shards(&["cp", "copier:/in", "copier:/out"]);
+    assert_eq!(
+        across.stderr, "copying between containers is not supported\n",
+        "{across}"
+    );
+    let neither = shards(&["cp", "a", "b"]);
+    assert_eq!(
+        neither.stderr, "must specify at least one container source\n",
+        "{neither}"
+    );
+    let no_dir = shards(&["cp", "copier:/in", home.join("none/there").to_str().unwrap()]);
+    assert_eq!(no_dir.status, Some(1), "{no_dir}");
+    assert!(
+        no_dir.stderr.starts_with("invalid output path: directory "),
+        "{no_dir}"
+    );
+    assert_eq!(shards(&["stop", "copier"]).status, Some(0));
+    exit(&mut sleeper);
+    let ended = shards(&["cp", "copier:/in", back.to_str().unwrap()]);
+    assert!(ended.stderr.contains("is not running"), "{ended}");
+}
+
+#[test]
 fn start_runs_a_stopped_microvm_again_over_its_own_files() {
     let Some((home, image)) = home("containers-start") else {
         return;
@@ -649,6 +733,81 @@ fn start_runs_a_stopped_microvm_again_over_its_own_files() {
         "{missing}"
     );
     assert_eq!(shards(&["rm", "-f", "later"]).status, Some(0));
+}
+
+#[test]
+fn commit_makes_an_image_of_what_a_microvm_changed() {
+    let Some((home, image)) = home("containers-commit") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    // Stopped: its kept layer.
+    let made = run_in(
+        &home,
+        &image,
+        &["--name", "changer", "-u", "0"],
+        &["fs", "write:/kept=yes", "rm:/etc/group"],
+    );
+    assert_eq!(made.status, Some(0), "{made}");
+    let committed = shards(&["commit", "-m", "a step", "changer", "test/committed:v1"]);
+    assert_eq!(committed.status, Some(0), "{committed}");
+    assert!(committed.stdout.starts_with("sha256:"), "{committed}");
+    let read = run_in(
+        &home,
+        "test/committed:v1",
+        &["--rm", "-u", "0"],
+        &["fs", "rm:/kept", "rm:/etc/group"],
+    );
+    // Its file is there to remove; the image's file it removed is not.
+    assert_eq!(read.status, Some(1), "{read}");
+    assert!(read.stderr.contains("rm:/etc/group: No such file"), "{read}");
+    let history = shards(&["history", "--format", "{{.Comment}}", "test/committed:v1"]);
+    assert_eq!(history.stdout.lines().next(), Some("a step"), "{history}");
+    // Running: paused for it, then going on.
+    let mut sleeper = start(&home, &image, &["--name", "live", "-u", "0"], &["sleep"]);
+    let wrote = shards(&["exec", "-u", "0", "live", "/bin/testguest", "fs", "write:/live=1"]);
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    let live = shards(&["commit", "live", "test/committed:live"]);
+    assert_eq!(live.status, Some(0), "{live}");
+    let ps = shards(&["ps", "--format", "{{.Names}} {{.State}}"]);
+    assert_eq!(ps.stdout, "live running\n", "{ps}");
+    let read = run_in(
+        &home,
+        "test/committed:live",
+        &["--rm", "-u", "0"],
+        &["fs", "rm:/live"],
+    );
+    assert_eq!(read.status, Some(0), "{read}");
+    // Its configuration changed as a Dockerfile's instructions would.
+    let changed = shards(&[
+        "commit",
+        "-c",
+        "ENV STAGE=committed",
+        "-c",
+        "WORKDIR /srv",
+        "live",
+        "test/committed:changed",
+    ]);
+    assert_eq!(changed.status, Some(0), "{changed}");
+    let inspected = shards(&["image", "inspect", "test/committed:changed"]);
+    assert!(inspected.stdout.contains("\"STAGE=committed\""), "{inspected}");
+    assert!(
+        inspected.stdout.contains("\"WorkingDir\": \"/srv\""),
+        "{inspected}"
+    );
+    let refused = shards(&["commit", "-c", "FROM x", "live"]);
+    assert_eq!(refused.status, Some(1), "{refused}");
+    let both = shards(&["commit", "--pause", "--no-pause", "live"]);
+    assert_eq!(
+        (both.status, both.stderr.as_str()),
+        (
+            Some(1),
+            "conflicting options: --no-pause and --pause cannot be used together\n"
+        ),
+        "{both}"
+    );
+    assert_eq!(shards(&["rm", "-f", "live"]).status, Some(0));
+    exit(&mut sleeper);
 }
 
 #[test]
