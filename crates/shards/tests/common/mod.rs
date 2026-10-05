@@ -507,9 +507,9 @@ impl Run {
     }
 }
 
-/// Runs `shards vm run <args>`, killing it (and failing) after `timeout`.
+/// Runs `shards run <args>`, `<args>` starting `--kernel`, killing it (and failing) after `timeout`.
 pub fn vm_run<S: AsRef<std::ffi::OsStr>>(args: &[S], timeout: Duration) -> Run {
-    run_shards(&["vm", "run"], args, timeout)
+    run_shards(&["run"], args, timeout)
 }
 
 /// Runs `shards <command...> <args...>`, killing it (and failing) after `timeout`.

@@ -1,4 +1,4 @@
-//! Commands run in images, end to end: `shards vm run --rootfs IMAGE -- COMMAND` boots a
+//! Commands run in images, end to end: `shards run --rootfs IMAGE -- COMMAND` boots a
 //! real VM into an EROFS image, shards-init runs the command as `docker run` would, and
 //! its output and exit status come back through shards. The command is the test guest,
 //! run as a workload (crates/testguest/src/workload.rs). Runs need vsock, which shards has
@@ -45,15 +45,10 @@ impl std::fmt::Display for Output {
     }
 }
 
-/// Runs `shards vm run ... --rootfs IMAGE <options> -- <command>`, with `stdin` as its
+/// Runs `shards run ... --rootfs IMAGE <options> -- <command>`, with `stdin` as its
 /// input.
 fn run(image: &Path, options: &[&str], command: &[&str], stdin: &[u8]) -> Output {
-    let mut args: Vec<&OsStr> = vec![
-        "vm".as_ref(),
-        "run".as_ref(),
-        "--kernel".as_ref(),
-        kernel().as_os_str(),
-    ];
+    let mut args: Vec<&OsStr> = vec!["run".as_ref(), "--kernel".as_ref(), kernel().as_os_str()];
     args.extend([
         "--init".as_ref(),
         guest_init().as_os_str(),
@@ -66,9 +61,9 @@ fn run(image: &Path, options: &[&str], command: &[&str], stdin: &[u8]) -> Output
     shards_with(&args, stdin)
 }
 
-/// Runs `shards vm restore TEMPLATE <options> -- <command>`.
+/// Runs `shards restore TEMPLATE <options> -- <command>`.
 fn restore(template: &Path, options: &[&str], command: &[&str]) -> Output {
-    let mut args: Vec<&OsStr> = vec!["vm".as_ref(), "restore".as_ref(), template.as_os_str()];
+    let mut args: Vec<&OsStr> = vec!["restore".as_ref(), template.as_os_str()];
     args.extend(options.iter().map(OsStr::new));
     args.push("--".as_ref());
     args.extend(command.iter().map(OsStr::new));
@@ -378,7 +373,7 @@ fn templates_restore_into_runs_of_their_own() {
     let image = workload_image(&dir);
     let template = dir.join("template");
     let saved = Command::new(shards())
-        .args(["vm", "run", "--kernel"])
+        .args(["run", "--kernel"])
         .arg(kernel())
         .args([
             "--init".as_ref(),
@@ -473,7 +468,7 @@ fn signaled_ignoring(image: &Path, command: &[&str], signal: libc::c_int, ignori
         });
     }
     let mut child = run
-        .args(["vm", "run", "--kernel"])
+        .args(["run", "--kernel"])
         .arg(kernel())
         .args([
             "--init".as_ref(),

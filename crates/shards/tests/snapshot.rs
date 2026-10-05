@@ -53,7 +53,7 @@ fn boot_and_snapshot_in(dir: &Path, disk: &str, s: &Scratch, then: &str) -> Run 
     let snapshot = s.snapshot().display().to_string();
     run_shards_in(
         dir,
-        &["vm", "run"],
+        &["run"],
         &[
             "--kernel",
             kernel().to_str().unwrap(),
@@ -77,14 +77,14 @@ fn boot_and_snapshot_in(dir: &Path, disk: &str, s: &Scratch, then: &str) -> Run 
 }
 
 fn restore(dir: &Path) -> Run {
-    run_shards(&["vm", "restore"], &[dir.to_str().unwrap()], TIMEOUT)
+    run_shards(&["restore"], &[dir.to_str().unwrap()], TIMEOUT)
 }
 
 /// [`restore`], logging at `info`, which says what the restore dropped once set up.
 fn restore_logged(dir: &Path) -> Run {
     let info = std::ffi::OsStr::new("info");
     common::run_shards_env(
-        &["vm", "restore"],
+        &["restore"],
         &[dir.to_str().unwrap()],
         &[("SHARDS_LOG", info)],
         TIMEOUT,
@@ -167,7 +167,7 @@ fn a_restore_given_its_files_refuses_a_snapshot_naming_others() {
     let dir = s.snapshot();
     let ours = s.disk();
     let given = run_shards(
-        &["vm", "restore"],
+        &["restore"],
         &[dir.to_str().unwrap(), "--backing", &ours],
         TIMEOUT,
     );
@@ -177,7 +177,7 @@ fn a_restore_given_its_files_refuses_a_snapshot_naming_others() {
     std::fs::copy(s.0.join("ro.img"), s.0.join("other.img")).unwrap();
     let other = format!("{}:ro", s.0.join("other.img").display());
     let refused = run_shards(
-        &["vm", "restore"],
+        &["restore"],
         &[dir.to_str().unwrap(), "--backing", &other],
         TIMEOUT,
     );
@@ -245,7 +245,7 @@ fn restores_elsewhere_read_the_disks_the_snapshot_was_taken_with() {
     assert_eq!(original.status, Some(0), "{original}");
 
     let snapshot = s.snapshot();
-    let moved = run_shards_in(&elsewhere, &["vm", "restore"], &[snapshot.as_os_str()], TIMEOUT);
+    let moved = run_shards_in(&elsewhere, &["restore"], &[snapshot.as_os_str()], TIMEOUT);
     assert_eq!(moved.status, Some(0), "{moved}");
     assert!(moved.stdout.contains("SHARDS-TEST PASS"), "{moved}");
 
@@ -286,7 +286,6 @@ mod storm {
     fn storm_args(s: &Scratch, cpus: u32, sock: &Path, then: &str) -> Vec<std::ffi::OsString> {
         let rw = s.0.join("rw.img");
         [
-            "vm".into(),
             "run".into(),
             "--kernel".into(),
             kernel().as_os_str().to_owned(),
@@ -433,7 +432,6 @@ mod storm {
                 let stop = Arc::new(AtomicBool::new(false));
                 let streamer = stream(sock.clone(), stop.clone());
                 let mut copy = Vm::spawn(&[
-                    "vm".as_ref(),
                     "restore".as_ref(),
                     s.snapshot().as_os_str(),
                     "--vsock".as_ref(),

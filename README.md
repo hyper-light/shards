@@ -34,7 +34,7 @@ Your agents can:
 Shards never needs root.
 
 ```console
-$ time shards vm run --kernel vmlinux --init shards-init --cmdline "console=ttyS0 quiet"
+$ time shards run --kernel vmlinux --init shards-init --cmdline "console=ttyS0 quiet"
 shards-init: pid 1 running at uptime 0.012768s
 [    0.015804] reboot: Power down
 
@@ -42,7 +42,7 @@ real	0m0.028s
 user	0m0.019s
 sys	0m0.007s
 
-$ time shards vm restore snap
+$ time shards restore snap
 SHARDS-TEST PASS
 [    0.016121] reboot: Power down
 
@@ -135,7 +135,7 @@ cp target/$arch-unknown-linux-musl/guest/shards-init .
 Boot it:
 
 ```console
-$ shards vm run --kernel vmlinux --init shards-init --cpus 4 --memory 512 --cmdline "console=ttyS0 quiet"
+$ shards run --kernel vmlinux --init shards-init --cpus 4 --memory 512 --cmdline "console=ttyS0 quiet"
 shards-init: pid 1 running at uptime 0.014162s
 [    0.018563] reboot: Power down
 ```
@@ -155,14 +155,14 @@ cp target/$arch-unknown-linux-musl/guest/shards-testguest .
 ```
 
 ```console
-$ shards vm run --kernel vmlinux --init shards-testguest --snapshot-dir snap \
+$ shards run --kernel vmlinux --init shards-testguest --snapshot-dir snap \
     --cmdline "console=ttyS0 quiet shards_test=resume"
 $ du -h snap/*
  43M	snap/memory
  20K	snap/state
 ```
 
-Empty memory isn't stored, so 256 MiB of RAM takes 43 MiB on disk. `shards vm restore snap`
+Empty memory isn't stored, so 256 MiB of RAM takes 43 MiB on disk. `shards restore snap`
 starts a copy exactly where the original asked to be saved, as in the example at the top.
 
 - **Copies are cheap.** They share the snapshot's memory until they write to it.
@@ -174,7 +174,7 @@ starts a copy exactly where the original asked to be saved, as in the example at
 `--hold` preloads a copy and waits. A line on stdin starts it in 150 µs:
 
 ```console
-$ (sleep 1; echo) | shards vm restore snap --hold
+$ (sleep 1; echo) | shards restore snap --hold
 shards-ready
 SHARDS-TEST PASS
 [    0.016274] reboot: Power down
@@ -210,18 +210,18 @@ Firecracker. The plan and its evidence are in
 | Command | What it does |
 |---|---|
 | `shards pull [-q] IMAGE` | Pull `IMAGE` as `docker pull` does, for this machine's architecture. Every layer is checked against its digests before it is kept |
-| `shards run [OPTIONS] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container, with `-d`, `-e`, `-h`, `-i`, `-t`, `-u`, `-w`, `--detach-keys`, `--entrypoint`, `--name`, `--pull` and `--rm`. `IMAGE` is pulled first if it isn't here. With `-it`, your terminal is the command's: ctrl-p ctrl-q leaves it running. It boots shards' own kernel and `shards-init`, or the ones `shards guest use` chose, or `SHARDS_KERNEL` and `SHARDS_INIT` |
+| `shards run [OPTIONS] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container, with `-d`, `-e`, `-h`, `-i`, `-t`, `-u`, `-w`, `--detach-keys`, `--entrypoint`, `--name`, `--pull` and `--rm`. `IMAGE` is pulled first if it isn't here. With `-it`, your terminal is the command's: ctrl-p ctrl-q leaves it running. It boots shards' own kernel and `shards-init`, or the ones `shards configure guest` chose, or `SHARDS_KERNEL` and `SHARDS_INIT` |
 | `shards ps [-a] [-q] [-n N] [-l] [--no-trunc]` | List containers, as `docker ps` does: each run is one, until `shards rm` or `--rm` removes it |
 | `shards wait CONTAINER...` | Wait for containers to stop, and print their exit codes |
 | `shards logs [-f] [-t] [-n N] [--since T] [--until T] CONTAINER` | Print what a container wrote, stdout to stdout and stderr to stderr |
 | `shards stop [-t SECONDS] [-s SIGNAL] CONTAINER...` | Stop containers: the signal (SIGTERM), then SIGKILL after 10 s |
 | `shards kill [-s SIGNAL] CONTAINER...` | Send containers a signal (SIGKILL) |
 | `shards rm [-f] CONTAINER...` | Remove stopped containers; with `-f`, running ones too |
-| `shards daemon stop` | Stop the background service (`shardsd daemon`) that `shards run` starts on its own. It keeps up to `SHARDS_POOL` microVMs ready for each image you run (default 2), as many as your runs of it have come at once, and none once it has gone unused for `SHARDS_POOL_KEEP` seconds (default 600); it removes what no image you have pulled still needs, such as what a tag named before a pull moved it, and exits after `SHARDS_DAEMON_IDLE` seconds without a run (default 900). Each container's log keeps its newest output, `SHARDS_LOG_MAX_FILE` files (default 5) of `SHARDS_LOG_MAX_SIZE` bytes (default 20 MiB), as Docker's `local` log driver does. Stopping it stops the containers running, as Docker's does |
-| `shards guest use --kernel FILE --init FILE` | Choose the kernel and shards-init that `shards run` boots instead of shards' own. The first run of an image saves a copy of its booted microVM, and later runs start from that copy. `shards guest` shows the ones in use |
-| `shards vm run --kernel FILE [options]` | Boot a new machine |
-| `shards vm restore DIR [--hold]` | Start a copy of the machine saved in `DIR`. `--hold` preloads it and waits for a line on stdin |
-| `shards vm restore DIR [--hold] [-e …] [-w …] [-u …] -- COMMAND [ARG...]` | Run `COMMAND` in a copy of a template saved by `--rootfs` with `--snapshot-dir` |
+| `shards stop daemon` | Stop the background service (`shardsd daemon`) that `shards run` starts on its own. It keeps up to `SHARDS_POOL` microVMs ready for each image you run (default 2), as many as your runs of it have come at once, and none once it has gone unused for `SHARDS_POOL_KEEP` seconds (default 600); it removes what no image you have pulled still needs, such as what a tag named before a pull moved it, and exits after `SHARDS_DAEMON_IDLE` seconds without a run (default 900). Each container's log keeps its newest output, `SHARDS_LOG_MAX_FILE` files (default 5) of `SHARDS_LOG_MAX_SIZE` bytes (default 20 MiB), as Docker's `local` log driver does. Stopping it stops the containers running, as Docker's does |
+| `shards configure guest --kernel FILE --init FILE` | Choose the kernel and shards-init that `shards run` boots instead of shards' own. The first run of an image saves a copy of its booted microVM, and later runs start from that copy. `shards guest` shows the ones in use |
+| `shards run --kernel FILE [options]` | Boot a new machine |
+| `shards restore DIR [--hold]` | Start a copy of the machine saved in `DIR`. `--hold` preloads it and waits for a line on stdin |
+| `shards restore DIR [--hold] [-e …] [-w …] [-u …] -- COMMAND [ARG...]` | Run `COMMAND` in a copy of a template saved by `--rootfs` with `--snapshot-dir` |
 | `shards version` · `shards help` | |
 
 | Option | What it does |
@@ -233,7 +233,7 @@ Firecracker. The plan and its evidence are in
 | `--disk FILE[:ro]` | A disk. Repeat for more |
 | `--vsock PATH` | A vsock device. Host programs connect to the Unix socket `PATH` and send `CONNECT <port>`; the guest reaches host port P at `PATH_P`. A restored copy needs its own `PATH` |
 | `--rootfs FILE -- COMMAND [ARG...]` | Boot into the EROFS image `FILE` and run `COMMAND` there, as `docker run` would. Its output and exit status are shards'. `--init` must be shards-init |
-| `--rootfs FILE --snapshot-dir DIR` | Boot into `FILE` and save a template to `DIR` once the image is mounted, for `vm restore DIR -- COMMAND` |
+| `--rootfs FILE --snapshot-dir DIR` | Boot into `FILE` and save a template to `DIR` once the image is mounted, for `restore DIR -- COMMAND` |
 | `-e` · `-w` · `-u` · `--hostname` · `-i` | With `--rootfs`: as for `docker run` |
 | `--snapshot-dir DIR` | Save the machine to `DIR` when it asks, then exit. `--snapshot-then resume` keeps it running. Works with `restore` too |
 | `--no-console` | Hide the console |

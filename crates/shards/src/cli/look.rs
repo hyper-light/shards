@@ -228,6 +228,28 @@ fn entries(page: &mut Page, p: &Paint, cols: usize, entries: &[Entry]) {
     }
 }
 
+/// [`entries`], what each does in shards' words.
+fn entries_worded(page: &mut Page, p: &Paint, cols: usize, list: &[Entry]) {
+    let pad = list.iter().map(|e| e.name.len()).max().unwrap_or(0) + 3;
+    let about_w = cols.saturating_sub(4 + pad);
+    for e in list {
+        let about = ours(e.about);
+        let parts = if about_w >= 20 {
+            layout::wrap(&about, about_w)
+        } else {
+            Vec::new()
+        };
+        let l = page.line();
+        l.pad(4).put(p, tokens::FOREGROUND, e.name);
+        if let Some(first) = parts.first() {
+            l.to(4 + pad).put(p, tokens::BODY, first);
+        }
+        for more in parts.iter().skip(1) {
+            page.line().pad(4 + pad).put(p, tokens::BODY, more);
+        }
+    }
+}
+
 /// The root's help: what shards is, and its commands by group.
 pub fn top(p: &Paint, out: &mut impl std::io::Write) {
     let cols = width();
@@ -240,12 +262,41 @@ pub fn top(p: &Paint, out: &mut impl std::io::Write) {
         &[(tokens::BRIGHT, true, catalog::ABOUT.to_string())],
     );
     heading(&mut page, p, "usage");
-    usage(&mut page, p, cols, "shards COMMAND");
+    usage(&mut page, p, cols, "shards ACTION THING [ARG...]");
+    // shards' grammar first: each action, what it takes, what it does.
+    heading(&mut page, p, "actions");
+    {
+        let pad = shards_cmdline::grammar::ACTIONS
+            .iter()
+            .map(|(a, t, _)| a.len() + 1 + t.len())
+            .max()
+            .unwrap_or(0)
+            + 3;
+        for (action, takes, about) in shards_cmdline::grammar::ACTIONS {
+            let parts = layout::wrap(about, cols.saturating_sub(4 + pad).max(20));
+            let l = page.line();
+            l.pad(4)
+                .put(p, tokens::FOREGROUND, action)
+                .pad(1)
+                .put(p, tokens::TEAL, takes);
+            if let Some(first) = parts.first() {
+                l.to(4 + pad).put(p, tokens::BODY, first);
+            }
+            for more in parts.iter().skip(1) {
+                page.line().pad(4 + pad).put(p, tokens::BODY, more);
+            }
+        }
+    }
+    // The commands by their names alone.
     for group in catalog::TOP {
         let name = group.heading.strip_suffix(" Commands").unwrap_or(group.heading);
-        let name = if name == "Commands" { "more" } else { name };
-        heading(&mut page, p, name);
-        entries(&mut page, p, cols, group.entries);
+        let name = match name {
+            "Commands" => "more".to_string(),
+            other => other.to_string(),
+        };
+        heading(&mut page, p, &name);
+        let worded: Vec<Entry> = group.entries.to_vec();
+        entries_worded(&mut page, p, cols, &worded);
     }
     page.blank();
     let l = page.line();

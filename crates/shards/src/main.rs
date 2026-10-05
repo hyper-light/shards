@@ -63,12 +63,11 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
             usage_error("the daemon needs Unix sockets, which shards does not support on this platform yet")
         }
         Some("guest") => guest::guest(args),
-        // `shards vm`'s broker: not for people to run.
+        // the VM's broker (`shards run --kernel`, `shards restore`): not for people to run.
         #[cfg(target_os = "macos")]
         Some("grants") => grant_answer::broker(),
         Some("build") => build::build(args),
         Some("run") => usage_error("run: the `shards` command runs commands, through the daemon"),
-        Some("vm") => usage_error("vm: the `shards` command runs microVMs, through shards-vm"),
         Some("version" | "--version") => {
             #[cfg(unix)]
             if let Some(p) = cli::look::styled() {

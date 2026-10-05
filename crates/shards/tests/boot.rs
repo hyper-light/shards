@@ -212,7 +212,6 @@ fn rejects_invalid_vm_configuration() {
 #[test]
 fn rejects_malformed_vm_arguments() {
     let cases: &[(&[&str], &str)] = &[
-        (&["--cpus", "1"], "--kernel is required"),
         (&["--kernel", "k", "--bogus"], "unknown argument"),
         (&["--kernel"], "--kernel needs a value"),
         (&["--kernel", "k", "--cpus", "two"], "--cpus"),
@@ -252,7 +251,7 @@ fn cli_reports_usage_and_rejects_unknown_commands() {
     let none: [&str; 0] = [];
     let help = run_shards(&["--help"], &none, TIMEOUT);
     assert_eq!(help.status, Some(0), "{help}");
-    assert!(help.stdout.contains("\n  vm "), "{help}");
+    assert!(help.stdout.contains("\n  run "), "{help}");
     // As docker/cli refuses one: status 1, its words.
     let unknown = run_shards(&["frobnicate"], &none, TIMEOUT);
     assert_eq!(unknown.status, Some(1), "{unknown}");

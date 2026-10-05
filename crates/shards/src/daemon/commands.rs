@@ -451,6 +451,40 @@ impl<D: crate::containers::Disk> Daemon<D> {
 
     /// The ID of the container `reference` names: all of its ID, its name, or the start of
     /// its ID and of no other's (moby daemon/container.go, GetContainer).
+    /// `args`, each name of no microVM but of an image some run from said as those
+    /// microVMs' names: `shards stop ubuntu:latest` stops what runs from it. With
+    /// `running`, only the running ones. A name of a microVM is itself.
+    fn by_image(&self, args: &[String], running: bool) -> Vec<String> {
+        use shards_image::reference::Reference;
+        let familiar = |name: &str| {
+            Reference::parse_normalized(name)
+                .map(|r| r.tag_name_only().familiar())
+                .unwrap_or_else(|_| name.to_string())
+        };
+        let mut out = Vec::with_capacity(args.len());
+        for arg in args {
+            if self.resolve(arg).is_ok() {
+                out.push(arg.clone());
+                continue;
+            }
+            let wanted = familiar(arg.trim());
+            let mut runs: Vec<(u128, String)> = lock(&self.containers)
+                .all()
+                .filter(|c| !running || c.state == Life::Running)
+                .filter(|c| familiar(&c.image) == wanted)
+                .map(|c| (c.created, c.name.clone()))
+                .collect();
+            if runs.is_empty() {
+                // Neither: it fails as a name, in dockerd's words.
+                out.push(arg.clone());
+                continue;
+            }
+            runs.sort();
+            out.extend(runs.into_iter().map(|(_, name)| name));
+        }
+        out
+    }
+
     pub(super) fn resolve(&self, reference: &str) -> Result<String, String> {
         self.resolve_held(lock(&self.containers), reference).1
     }
@@ -833,10 +867,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// for a start under way (moby daemon/start.go holds the container's lock throughout).
     fn rm(&self, parsed: &Parsed, styled: bool, reply: &Reply<'_>) -> u8 {
         let force = parsed.bool("force");
+        let args = self.by_image(&parsed.args, false);
         self.each(
             "rm",
             styled,
-            &parsed.args,
+            &args,
             &|given| {
                 let reference = given.trim_matches('/');
                 if reference.is_empty() {
@@ -931,10 +966,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
         let told = (parsed.changed("timeout") || parsed.changed("time")).then(|| parsed.int("timeout"));
         let signal = parsed.string("signal");
+        let args = self.by_image(&parsed.args, true);
         self.each(
             "stop",
             styled,
-            &parsed.args,
+            &args,
             &|reference| {
                 // As the Docker CLI's client sends it (`resolve`), dockerd's words name it.
                 let reference = reference.trim();
@@ -998,10 +1034,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// once it runs, as `stop` stops it.
     fn kill(&self, parsed: &Parsed, styled: bool, reply: &Reply<'_>) -> u8 {
         let signal = parsed.string("signal");
+        let args = self.by_image(&parsed.args, true);
         self.each(
             "kill",
             styled,
-            &parsed.args,
+            &args,
             &|reference| {
                 // As the Docker CLI's client sends it (`resolve`), dockerd's words name it.
                 let reference = reference.trim();

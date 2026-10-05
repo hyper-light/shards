@@ -83,20 +83,6 @@ pub static TOP: &[Group] = &[
             of("wait", &commands::WAIT),
         ],
     },
-    Group {
-        heading: "Shards Commands",
-        entries: &[
-            own(
-                "daemon",
-                "Serve runs from warm microVMs (the first run starts it)",
-            ),
-            own("guest", "Choose the kernel and shards-init that runs boot"),
-            own(
-                "vm",
-                "Boot a kernel, or resume a snapshot, in a microVM of its own",
-            ),
-        ],
-    },
 ];
 
 /// The management commands: their name, what they do, and their commands.
@@ -129,14 +115,6 @@ pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
             of("rm", &commands::RMI),
             of("save", &commands::SAVE),
             of("tag", &commands::TAG),
-        ],
-    ),
-    (
-        "vm",
-        "Boot a kernel, or resume a snapshot, in a microVM of its own",
-        &[
-            own("restore", "Resume a microVM from a snapshot"),
-            own("run", "Boot a kernel directly in a microVM"),
         ],
     ),
 ];
@@ -226,7 +204,7 @@ mod tests {
         for (name, _, entries) in MANAGEMENT {
             for e in *entries {
                 // `run` and `exec` the command line reads before the rest (shards' cli).
-                if e.command.is_some() && *name != "vm" && !matches!(e.name, "run" | "exec") {
+                if e.command.is_some() && !matches!(e.name, "run" | "exec") {
                     let words = [*name, e.name];
                     assert!(
                         commands::find(&words).is_some() || commands::build(&words).is_some(),

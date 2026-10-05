@@ -176,7 +176,7 @@ A Linux host runs VMs on Linux 6.10 or later with Landlock enabled (its `lsm=` l
 ABI v5 is the first to govern `/dev/kvm`'s ioctls: a VM process starts under no weaker
 confinement (D30). macOS runs them under App Sandbox (D30).
 
-Every target builds and passes the lints. Until a target's backend lands, `vm run` there
+Every target builds and passes the lints. Until a target's backend lands, `run --kernel` there
 fails with an explanation (`vm::check_host`), as it does where the OS reports no hardware
 virtualization, such as hosted CI runners without nested virtualization.
 
@@ -242,7 +242,7 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
 
 ### Running a workload (D16)
 
-`shards vm run --rootfs IMAGE -- COMMAND` boots into an image and runs a command there as
+`shards run --rootfs IMAGE -- COMMAND` boots into an image and runs a command there as
 `docker run` does. The guest side is `crates/init/src/run.rs`; the host side is
 `crates/shards/src/workload.rs`.
 
@@ -276,10 +276,10 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     it is not executable or is a directory; 125 otherwise.
   - The run ends with the main process. Everything left is killed, as when a container's
     PID namespace ends.
-- **Warm runs.** `vm run --rootfs IMAGE --snapshot-dir DIR` saves a template: shards-init
+- **Warm runs.** `run --kernel --rootfs IMAGE --snapshot-dir DIR` saves a template: shards-init
   asks for the snapshot once the image is mounted and the kernel's crypto self-tests have
   finished (at most 2 s), before it dials the host. Each
-  `vm restore DIR -- COMMAND` resumes a copy that dials in for its own command (D2, D14).
+  `restore DIR -- COMMAND` resumes a copy that dials in for its own command (D2, D14).
   Copies share the image and nothing they write.
   - With `--hold`, the copy resumes at once, reseeds and connects. Its request is then only
     the command. It is answered in 1.0 ms at p50 and 2.4 ms at p99, over six templates
@@ -313,7 +313,7 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
   - They travel on a second vsock connection that the guest opens once the command runs,
     so unread stdin cannot hold them up.
   - Through the daemon, a signal that arrives once the container is made, before the
-    command runs, waits for it (D26). `vm run`, whose process is the VM, ends as that
+    command runs, waits for it (D26). `run --kernel`, whose process is the VM, ends as that
     signal would end it. dockerd instead drops a signal sent before its container starts
     (warm-pool-daemon.md §2.7).
   - Before the container is made, as the image is pulled, SIGINT and SIGTERM end the
@@ -344,7 +344,7 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     has gone and nothing is left to read; ending at POLLHUP would lose output.
   - A resize travels beside the signals, as its own frame; the kernel then signals the
     terminal's foreground group, if the size changed.
-- **Not yet:** a terminal for `vm run --rootfs`, whose commands are shards' tests and
+- **Not yet:** a terminal for `run --kernel --rootfs`, whose commands are shards' tests and
   benchmarks. Detached runs came with containers (D27).
 - **Tests:** E2E runs a minimal image (no `/proc`, `/sys` or `/dev`). It covers users,
   groups, the environment, working directories, mounts and every exit status. It also
@@ -820,8 +820,8 @@ for a command (D2). The client asks the daemon for a run, passes it its stdio, a
 for the exit status.
 
 - **Built: warm VMs** (`crates/shards/src/warm.rs`; messages in `crates/ipc`).
-  - `shards vm restore DIR --warm FD` is one, where FD is its socket to the daemon.
-    `shards vm run … --rootfs R [--snapshot-dir D] --warm FD` boots one instead, saving a
+  - `shards restore DIR --warm FD` is one, where FD is its socket to the daemon.
+    `shards run … --rootfs R [--snapshot-dir D] --warm FD` boots one instead, saving a
     template on the way if asked.
   - It says `READY` once the guest waits for its command.
   - The daemon answers with `RUN`: the command, plus four descriptors passed by
@@ -1606,7 +1606,7 @@ audit's "Security and test coverage").
   - It fails closed: a VM process not in App Sandbox, or given nothing to ask, starts no
     VM. Its spawner keeps each descriptor it sends until the VM's next message, as XNU
     flushes a socket in flight that no process holds [PM M24].
-  - The daemon answers its own VMs, on the thread that watches each. `shards vm`, which
+  - The daemon answers its own VMs, on the thread that watches each. `shards run --kernel`, which
     becomes the VM by exec, starts a broker, `shardsd grants`, that answers and exits. A
     broker per VM would cost each warm VM's start 3.9 ms, 95% [3.8, 4.1], all of it a
     directory's bookmark made in a fresh process, where the daemon makes one in 0.4 ms;
@@ -1974,7 +1974,7 @@ microVM rather than a container on the build host's kernel.
   reaching the build process through the vsock muxer. Its steps then cost no boot and no
   root filesystem written: BuildKit prepares a snapshot and starts a runc container for
   every step, about 176 ms each on this host (Docker Desktop, 20 `RUN`s 3.85 s, one 0.48
-  s, 2026-10-02); a whole cold shards VM is 39 ms (`vm run` of alpine `true`, n = 22).
+  s, 2026-10-02); a whole cold shards VM is 39 ms (`run --kernel` of alpine `true`, n = 22).
 - **Layers by id, never twice.** The guest holds layers, directories overlayfs stacks,
   written once from the host's change streams (`shards_abi::changes`): a host step's own
   changes when a `RUN` first stands on them (`shards_build::sync`), and each `RUN`'s upper

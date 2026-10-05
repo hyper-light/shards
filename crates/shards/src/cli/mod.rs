@@ -1,6 +1,6 @@
 //! The command line: `run` and the container and image commands read as the Docker CLI
 //! reads them, their `--help` and usage mistakes answered here, the rest asked of the
-//! daemon; `shards daemon stop` stops it; `shards vm` becomes the VM process; every other
+//! daemon; `shards daemon stop` stops it; `shards run --kernel` and `shards restore` become the VM process; every other
 //! command is the daemon side's (main.rs, `shardsd`), in this process. One binary does it
 //! all and starts as fast as the command alone did: it links no framework that loads at
 //! launch, binding Apple's when first needed (shards_apple, the VMM's hvf::ffi; PM M113).
@@ -35,9 +35,33 @@ pub fn main() -> ExitCode {
 }
 
 /// The commands shards has besides the catalog's: the daemon side's own words.
-const OWN: [&str; 7] = ["grants", "--version", "builder", "buildx", "help", "-h", "--help"];
+/// `daemon` and `guest` are what `run daemon`, `stop daemon` and `configure guest` are
+/// said as, and how the client starts the daemon.
+const OWN: [&str; 10] = [
+    "daemon",
+    "guest",
+    "grants",
+    "--version",
+    "builder",
+    "buildx",
+    "help",
+    "-h",
+    "--help",
+    "restore",
+];
 
 fn dispatch(args: Vec<OsString>) -> ExitCode {
+    // shards' own grammar, `ACTION THING ...`, said as the command it runs.
+    let text: Vec<String> = args
+        .iter()
+        .map_while(|a| a.to_str().map(str::to_string))
+        .collect();
+    if text.len() == args.len()
+        && let Some(said) = shards_cmdline::grammar::rewrite(&text)
+        && said != text
+    {
+        return dispatch(said.into_iter().map(OsString::from).collect());
+    }
     let words: Vec<&str> = args.iter().map_while(|a| a.to_str()).take(2).collect();
     match words.as_slice() {
         [] | ["help" | "-h" | "--help"] => return top_help(),
@@ -47,8 +71,7 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
             rest.push("--help".into());
             return dispatch(rest);
         }
-        [name @ ("image" | "container" | "vm")]
-        | [name @ ("image" | "container" | "vm"), "-h" | "--help"] => {
+        [name @ ("image" | "container")] | [name @ ("image" | "container"), "-h" | "--help"] => {
             return management_help(name);
         }
         [name @ ("image" | "container"), word, ..]
@@ -70,6 +93,12 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         _ => {}
     }
     match words.as_slice() {
+        // `shards run --kernel FILE ...`: a kernel booted directly, in the VM process.
+        ["run", "--kernel", ..] => {
+            let mut boot = vec![OsString::from("run")];
+            boot.extend(args.iter().skip(1).cloned());
+            vm(&boot)
+        }
         ["run", ..] => request::run("shards run", args.get(1..).unwrap_or_default()),
         ["container", "run", ..] => request::run("shards container run", args.get(2..).unwrap_or_default()),
         ["exec", ..] => request::exec("shards exec", args.get(1..).unwrap_or_default()),
@@ -81,7 +110,8 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
             Ok(home) => client::stop(&home),
             Err(e) => failed(&e),
         },
-        ["vm", ..] => vm(args.get(1..).unwrap_or_default()),
+        // `shards restore DIR`: a microVM resumed from its snapshot.
+        ["restore", ..] => vm(&args),
         // `build` (or `builder build`, `image build`, `buildx build`, `buildx b`): shardsd's.
         _ if let Some(named) = shards_cmdline::commands::build(&words) => {
             let mut rest = vec![OsString::from("build")];
@@ -391,7 +421,7 @@ fn instead(args: &[OsString]) -> ExitCode {
     }
 }
 
-/// `shards vm`: becomes shards-vm. On macOS, where shards-vm runs in App Sandbox and may
+/// `shards run --kernel` and `shards restore`: become shards-vm. On macOS, where shards-vm runs in App Sandbox and may
 /// open nothing it is not granted, it first starts the VM's broker, `shardsd grants`, on a
 /// socket the VM then asks on (`--grants`; docs/research/macos-confinement.md §3). The VM
 /// keeps this process: its terminal, its signals, its exit status. The broker leads a
@@ -448,7 +478,7 @@ fn vm(args: &[OsString]) -> ExitCode {
     instead(&with)
 }
 
-/// `shards vm`: becomes shards-vm.
+/// `shards run --kernel` and `shards restore`: become shards-vm.
 #[cfg(not(target_os = "macos"))]
 fn vm(args: &[OsString]) -> ExitCode {
     instead(args)

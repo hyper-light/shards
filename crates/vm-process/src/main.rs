@@ -1,5 +1,5 @@
 //! shards-vm: one microVM per process, booted (`run`) or resumed from a snapshot
-//! (`restore`), for `shards vm` and for the daemon's templates and warm VMs. It links the
+//! (`restore`), for `shards run --kernel` and `shards restore` and for the daemon's templates and warm VMs. It links the
 //! VMM and what a VM process runs, its workload's relay and its link to the daemon, and
 //! nothing else of shards: a process maps and relocates its whole binary as it starts, and
 //! shardsd's registry, TLS and image code cost each VM about 1 MiB of memory
@@ -46,7 +46,7 @@ fn main() -> ExitCode {
         other => {
             let _ = writeln!(
                 std::io::stderr(),
-                "shards-vm: unknown command {other:?}; `shards vm run` and `shards vm restore` run it"
+                "shards-vm: unknown command {other:?}; `shards run` and `shards restore` run it"
             );
             ExitCode::from(2)
         }

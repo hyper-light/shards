@@ -26,7 +26,6 @@ const ECHO_PORT: u32 = 1234;
 
 fn guest_args(mode: &str, vsock: &Path) -> Vec<std::ffi::OsString> {
     vec![
-        "vm".into(),
         "run".into(),
         "--kernel".into(),
         kernel().into(),
@@ -129,7 +128,6 @@ fn restored_copies_listen_on_their_own_sockets() {
     let restore = |name: &str| {
         let sock = dir.join(name);
         let vm = Vm::spawn(&[
-            "vm".as_ref(),
             "restore".as_ref(),
             snap.as_os_str(),
             "--vsock".as_ref(),
@@ -148,7 +146,7 @@ fn restored_copies_listen_on_their_own_sockets() {
     ta.join().unwrap();
     tb.join().unwrap();
 
-    let mut bare = Vm::spawn(&["vm".as_ref(), "restore".as_ref(), snap.as_os_str()]);
+    let mut bare = Vm::spawn(&["restore".as_ref(), snap.as_os_str()]);
     assert_eq!(bare.wait_exit(), Some(1));
     assert!(
         bare.seen.iter().any(|l| l.contains("--vsock")),
@@ -197,7 +195,6 @@ fn restored_copies_find_held_connections_closed() {
         let sock = dir.join(name);
         let greeted = greet_once(&sock);
         let mut copy = Vm::spawn(&[
-            "vm".as_ref(),
             "restore".as_ref(),
             snap.as_os_str(),
             "--vsock".as_ref(),

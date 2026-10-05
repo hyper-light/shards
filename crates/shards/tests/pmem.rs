@@ -96,7 +96,7 @@ fn restored_copies_map_the_same_files() {
     let original = vm_run(&a, TIMEOUT);
     assert_eq!(original.status, Some(0), "{original}");
     for _ in 0..2 {
-        let r = run_shards(&["vm", "restore"], &[&snap], TIMEOUT);
+        let r = run_shards(&["restore"], &[&snap], TIMEOUT);
         assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
     }
     assert_unchanged(&images);

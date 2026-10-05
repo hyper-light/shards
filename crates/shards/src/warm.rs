@@ -1,5 +1,5 @@
 //! A warm VM: restored from a template, resumed and connected, waiting for the daemon to
-//! hand it one request (docs/design/architecture.md D26). `shards vm restore DIR --warm FD`
+//! hand it one request (docs/design/architecture.md D26). `shards restore DIR --warm FD`
 //! runs one, FD being its Unix socket to the daemon.
 //!
 //! It tells the daemon `READY` once the guest waits for its command. The daemon answers

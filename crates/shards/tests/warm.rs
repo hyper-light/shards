@@ -1,4 +1,4 @@
-//! Warm VMs, end to end: `shards vm restore TEMPLATE --warm FD` resumes a template of an
+//! Warm VMs, end to end: `shards restore TEMPLATE --warm FD` resumes a template of an
 //! image, lets its guest connect, and serves one request that arrives on FD
 //! (crates/shards/src/warm.rs). Here the test is both the daemon, which hands over a
 //! command with a client's connection and stdio, and that client. Needs vsock and
@@ -45,7 +45,7 @@ fn template(dir: &Path) -> PathBuf {
     let image = workload_image(dir);
     let template = dir.join("template");
     let saved = Command::new(shards())
-        .args(["vm", "run", "--kernel"])
+        .args(["run", "--kernel"])
         .arg(kernel())
         .arg("--init")
         .arg(guest_init())
@@ -566,7 +566,7 @@ fn warm_needs_a_socket_of_its_own() {
     let template = template(&dir);
     for fd in ["0", "2", "9"] {
         let out = Command::new(shards())
-            .args(["vm", "restore"])
+            .args(["restore"])
             .arg(&template)
             .args(["--warm", fd])
             .stdin(Stdio::null())

@@ -1,4 +1,4 @@
-//! `shards vm run` boots a kernel directly in a microVM; `shards vm restore` resumes one
+//! `shards run` boots a kernel directly in a microVM; `shards restore` resumes one
 //! from a snapshot. Either can run a command in an image as `docker run` does
 //! (workload.rs): `vm run --rootfs IMAGE -- COMMAND` boots into the image for it, and
 //! `vm run --rootfs IMAGE --snapshot-dir DIR` saves a template, booted and mounted, that
@@ -18,14 +18,14 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards vm run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
-       shards vm run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
-       shards vm run --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
+const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+       shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
+       shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
   --rootfs: boot into the EROFS image IMAGE. With a COMMAND, run it there as `docker run`
             would: its output is shards' output, and its exit status shards' exit status.
             With --snapshot-dir instead, save the VM to DIR once the image is mounted: a
-            template for `shards vm restore DIR -- COMMAND`.
+            template for `shards restore DIR -- COMMAND`.
   Workload options, as for `docker run`: -e NAME[=VALUE], -w DIR, -u USER[:GROUP],
   --hostname NAME, -i.
   --vsock: a vsock device. Host programs connect to the Unix socket PATH and send
@@ -33,11 +33,11 @@ const RUN_USAGE: &str = "usage: shards vm run --kernel PATH [--initrd PATH | --i
   --snapshot-dir: where to write a snapshot when the guest asks for one (then stop, by default)
   Console escape: Ctrl-A x stops the VM.";
 
-const RESTORE_USAGE: &str = "usage: shards vm restore DIR [--hold] [--vsock PATH] [--no-console] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
-       shards vm restore DIR [--hold] [--backing PATH[:ro]]... [WORKLOAD OPTIONS] -- COMMAND [ARG...]
-       shards vm restore DIR --warm FD [--backing PATH[:ro]]...
+const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
+       shards restore DIR [--hold] [--backing PATH[:ro]]... [WORKLOAD OPTIONS] -- COMMAND [ARG...]
+       shards restore DIR --warm FD [--backing PATH[:ro]]...
   Resumes the VM in snapshot directory DIR. With a COMMAND, DIR is a template saved by
-  `shards vm run --rootfs`, and the command runs there as `docker run` would.
+  `shards run --rootfs`, and the command runs there as `docker run` would.
   Workload options, as for `docker run`: -e NAME[=VALUE], -w DIR, -u USER[:GROUP],
   --hostname NAME, -i.
   --vsock: this VM's vsock socket; without a COMMAND, required when the snapshot has a
@@ -1026,7 +1026,7 @@ fn absolute(path: &Path) -> Result<PathBuf, String> {
 /// template naming another is refused.
 static BACKING: std::sync::OnceLock<Vec<(PathBuf, bool)>> = std::sync::OnceLock::new();
 
-/// The directory relative paths are of (`--cwd DIR`): `shards vm`'s own on macOS, where App
+/// The directory relative paths are of (`--cwd DIR`): the VM's starter's own on macOS, where App
 /// Sandbox starts a VM process in its container instead.
 static CWD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
@@ -1214,7 +1214,7 @@ fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
     }
     let link = GRANTS
         .get()
-        .ok_or("nothing was granted to this VM: start it with `shards vm`, which grants it its files")?;
+        .ok_or("nothing was granted to this VM: start it with `shards run --kernel` or `shards restore`, which grant it its files")?;
     crate::grant_ask::obtain(link, wanted)
 }
 

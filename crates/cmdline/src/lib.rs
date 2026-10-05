@@ -7,6 +7,7 @@
 //! - `flags`: spf13/pflag's parsing, cobra's order of checks, and docker/cli's usage,
 //!   help and error texts;
 //! - `commands`: the commands, with docker/cli's flags and words;
+//! - `grammar`: shards' own `ACTION THING` grammar, said as the commands it runs;
 //! - `go`: the Go formats those texts print values in (`strconv`);
 //! - `gotime`: Go's time formats, as `logs --since` and `--until` take them;
 //! - `network`: `--network`'s attachments, and the checks the CLI makes of them;
@@ -25,6 +26,7 @@ pub mod commands;
 pub mod flags;
 pub mod go;
 pub mod gotime;
+pub mod grammar;
 pub mod network;
 pub mod ports;
 mod tables;
