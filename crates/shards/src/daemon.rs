@@ -149,7 +149,9 @@ pub fn daemon(args: impl Iterator<Item = OsString>) -> ExitCode {
             None => Err(format!("--ready: {:?} is not a descriptor", args.get(1))),
         },
         (1, Some("-h" | "--help")) => {
-            let _ = writeln!(io::stdout(), "{USAGE}");
+            if !crate::cli::look::usage_page("daemon", USAGE) {
+                let _ = writeln!(io::stdout(), "{USAGE}");
+            }
             return ExitCode::SUCCESS;
         }
         _ => Err(format!("unexpected arguments {args:?}\n{USAGE}")),

@@ -386,8 +386,13 @@ fn options(page: &mut Page, p: &Paint, cols: usize, shown: &[flags::Shown], pad:
 fn put_about(l: &mut Line, p: &Paint, part: &str) {
     match part.find("(default ") {
         Some(at) => {
-            let (body, default) = part.split_at(at);
-            l.put(p, tokens::BODY, body).put(p, tokens::FAINT, default);
+            let (body, rest) = part.split_at(at);
+            // The default, to its closing parenthesis; what follows it is the body again.
+            let end = rest.find(')').map_or(rest.len(), |e| e + 1);
+            let (default, after) = rest.split_at(end);
+            l.put(p, tokens::BODY, body)
+                .put(p, tokens::FAINT, default)
+                .put(p, tokens::BODY, after);
         }
         None => {
             l.put(p, tokens::BODY, part);
@@ -500,6 +505,86 @@ pub(crate) fn started(p: &Paint, id: &str, image: &str, name: Option<&str>, out:
         l.put(p, tokens::TEAL, &command);
     }
     page.write(p, out);
+}
+
+/// The help of one of shards' own commands, from its usage text: `usage:` lines, then
+/// what it does, then `word: what it means` entries, `SHARDS_…` ones its environment;
+/// each entry's further lines indented under it.
+pub(crate) fn usage_page(name: &str, text: &str) -> bool {
+    let Some(p) = styled() else {
+        return false;
+    };
+    let cols = width();
+    let mut uses: Vec<String> = Vec::new();
+    let mut about: Vec<String> = Vec::new();
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut env: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(u) = line.strip_prefix("usage: ") {
+            uses.push(u.trim().to_string());
+        } else if trimmed.starts_with("shards ") && about.is_empty() && entries.is_empty() {
+            uses.push(trimmed.to_string());
+        } else if line.starts_with("    ") {
+            // More of the last entry.
+            if let Some(last) = env.last_mut().or(entries.last_mut()) {
+                last.1.push(' ');
+                last.1.push_str(trimmed);
+            } else {
+                about.push(trimmed.to_string());
+            }
+        } else if let Some((key, rest)) = trimmed.split_once(": ").filter(|(k, _)| !k.contains(' ')) {
+            let entry = (key.to_string(), rest.to_string());
+            if key.starts_with("SHARDS_") {
+                env.push(entry);
+            } else {
+                entries.push(entry);
+            }
+        } else if !trimmed.is_empty() {
+            about.push(trimmed.to_string());
+        }
+    }
+    let mut page = Page::new();
+    head(
+        &mut page,
+        &p,
+        cols,
+        name,
+        &[(tokens::BRIGHT, true, about.join(" "))],
+    );
+    heading(&mut page, &p, "usage");
+    for u in &uses {
+        usage(&mut page, &p, cols, u);
+    }
+    let pad = entries
+        .iter()
+        .chain(&env)
+        .map(|(k, _)| k.len())
+        .max()
+        .unwrap_or(0)
+        + 3;
+    for (title, list) in [("options", &entries), ("environment", &env)] {
+        if list.is_empty() {
+            continue;
+        }
+        heading(&mut page, &p, title);
+        for (key, what) in list {
+            let parts = layout::wrap(what, cols.saturating_sub(4 + pad).max(20));
+            let l = page.line();
+            l.pad(4).put(&p, tokens::FOREGROUND, key);
+            if let Some(first) = parts.first() {
+                l.to(4 + pad);
+                put_about(l, &p, first);
+            }
+            for more in parts.iter().skip(1) {
+                let l = page.line();
+                l.pad(4 + pad);
+                put_about(l, &p, more);
+            }
+        }
+    }
+    page.write(&p, &mut std::io::stdout().lock());
+    true
 }
 
 /// What the daemon said went wrong, in a panel on stderr; under the head, unless a page

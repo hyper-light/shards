@@ -89,7 +89,13 @@ pub fn guest(args: impl Iterator<Item = OsString>) -> ExitCode {
                 Ok(())
             }
             Some("-h" | "--help") => {
-                let _ = writeln!(io::stdout(), "{USAGE}");
+                #[cfg(unix)]
+                let shown = crate::cli::look::usage_page("guest", USAGE);
+                #[cfg(not(unix))]
+                let shown = false;
+                if !shown {
+                    let _ = writeln!(io::stdout(), "{USAGE}");
+                }
                 Ok(())
             }
             Some(other) => Err(format!("unknown guest command {other:?}")),
