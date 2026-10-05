@@ -253,6 +253,15 @@ pub fn shards() -> &'static Path {
     V.get_or_init(|| binaries().join(format!("shards{}", std::env::consts::EXE_SUFFIX)))
 }
 
+/// A `shards` command as tests run it: publishing the microVMs it makes to no local
+/// image store (pull.rs `publish`), so that no test writes to the Docker engine of the
+/// host it runs on; a test of publishing names an engine of its own.
+pub fn command() -> Command {
+    let mut cmd = Command::new(shards());
+    cmd.env("SHARDS_LOCAL_STORE", "none");
+    cmd
+}
+
 /// The VM process, for what runs microVMs without the command in front.
 pub fn shards_vm() -> &'static Path {
     static V: OnceLock<PathBuf> = OnceLock::new();
@@ -563,7 +572,7 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
     timeout: Duration,
 ) -> Run {
     let start = Instant::now();
-    let mut cmd = Command::new(shards());
+    let mut cmd = self::command();
     if let Some(dir) = dir {
         cmd.current_dir(dir);
     }
@@ -1144,7 +1153,7 @@ pub struct Vm {
 #[cfg(unix)]
 impl Vm {
     pub fn spawn<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Vm {
-        let mut child = Command::new(shards())
+        let mut child = command()
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

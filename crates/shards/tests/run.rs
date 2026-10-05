@@ -13,10 +13,10 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use common::{TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, shards, workload_image};
+use common::{TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, workload_image};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -72,7 +72,7 @@ fn restore(template: &Path, options: &[&str], command: &[&str]) -> Output {
 
 /// Runs shards with `args`, `stdin` as its input, and a timeout.
 fn shards_with(args: &[&OsStr], stdin: &[u8]) -> Output {
-    let mut child = Command::new(shards())
+    let mut child = common::command()
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -372,7 +372,7 @@ fn templates_restore_into_runs_of_their_own() {
     let dir = TempDir::new("run-template");
     let image = workload_image(&dir);
     let template = dir.join("template");
-    let saved = Command::new(shards())
+    let saved = common::command()
         .args(["run", "--kernel"])
         .arg(kernel())
         .args([
@@ -457,7 +457,7 @@ fn signaled(image: &Path, command: &[&str], signal: libc::c_int) -> Output {
 fn signaled_ignoring(image: &Path, command: &[&str], signal: libc::c_int, ignoring: bool) -> Output {
     use std::io::BufRead;
     use std::os::unix::process::CommandExt;
-    let mut run = Command::new(shards());
+    let mut run = common::command();
     let action = if ignoring { libc::SIG_IGN } else { libc::SIG_DFL };
     // SAFETY: signal(2) only, between fork and exec.
     unsafe {

@@ -24,9 +24,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use common::{
-    TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, shards, shards_vm, workload_image,
-};
+use common::{TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, shards_vm, workload_image};
 use shards_abi::run::Spec;
 use shards_ipc::kind;
 
@@ -44,7 +42,7 @@ fn pipe() -> (File, File) {
 fn template(dir: &Path) -> PathBuf {
     let image = workload_image(dir);
     let template = dir.join("template");
-    let saved = Command::new(shards())
+    let saved = common::command()
         .args(["run", "--kernel"])
         .arg(kernel())
         .arg("--init")
@@ -84,7 +82,7 @@ impl Broker {
     fn spawn() -> (Broker, UnixStream) {
         let (vm, theirs) = UnixStream::pair().unwrap();
         let fd = theirs.as_raw_fd();
-        let mut command = Command::new(shards());
+        let mut command = common::command();
         command.arg("grants").stdin(Stdio::null()).stdout(Stdio::null());
         // SAFETY: runs in the child between fork and exec, calling only dup2(2) and
         // fcntl(2), which are async-signal-safe.
@@ -574,7 +572,7 @@ fn warm_needs_a_socket_of_its_own() {
     let dir = TempDir::new("warm-bad");
     let template = template(&dir);
     for fd in ["0", "2", "9"] {
-        let out = Command::new(shards())
+        let out = common::command()
             .args(["restore"])
             .arg(&template)
             .args(["--warm", fd])

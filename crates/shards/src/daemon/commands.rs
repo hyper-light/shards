@@ -416,7 +416,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &TAG) {
             self.tag(&parsed.args, asker.styled(), reply)
         } else if std::ptr::eq(command, &RMI) {
-            self.rmi(&parsed, asker.styled(), reply)
+            self.rmi(&parsed, asker.styled(), &asker.registry_env, reply)
         } else if std::ptr::eq(command, &IMAGE_INSPECT) {
             self.image_inspect(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &CONTAINER_PRUNE) {
@@ -461,6 +461,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.pull(&parsed, asker, reply)
         } else if std::ptr::eq(command, &PUSH) {
             self.push(&parsed, asker, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::IMPORT) {
+            self.import(&parsed, asker, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::UPDATE) {
             self.update(&parsed, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_CREATE) {

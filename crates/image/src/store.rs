@@ -1473,7 +1473,7 @@ impl Store {
                         }
                     }
                     listed.available = whole;
-                    if let Ok(Held::Whole(bytes)) = self.held(&manifest.config, oci::MAX_CONFIG)
+                    if let Ok(Held::Whole(bytes)) = self.held(manifest.image_config(), oci::MAX_CONFIG)
                         && let Ok(config) = oci::parse_config(&bytes)
                     {
                         if desc.digest == ours.digest {
@@ -1700,7 +1700,7 @@ impl Store {
                     blobs.insert(self.blob_path(&digest));
                 }
             }
-            let Held::Whole(config) = self.held(&manifest.config, oci::MAX_CONFIG)? else {
+            let Held::Whole(config) = self.held(manifest.image_config(), oci::MAX_CONFIG)? else {
                 continue;
             };
             let Ok(config) = oci::parse_config(&config) else {

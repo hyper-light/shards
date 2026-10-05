@@ -87,8 +87,27 @@ pub struct Manifest {
     pub schema_version: u32,
     #[serde(default)]
     pub media_type: Option<String>,
+    /// An artifact's type: a shards microVM's is `save::MICROVM`.
+    #[serde(default)]
+    pub artifact_type: Option<String>,
     pub config: Descriptor,
     pub layers: Vec<Descriptor>,
+}
+
+impl Manifest {
+    /// The image config: a shards microVM's is the one it carries (save::MICROVM_CONFIG),
+    /// its own config empty, as an artifact's is.
+    pub fn image_config(&self) -> &Descriptor {
+        if self.artifact_type.as_deref() == Some(crate::save::MICROVM)
+            && let Some(carried) = self
+                .layers
+                .iter()
+                .find(|l| l.media_type == crate::save::MICROVM_CONFIG)
+        {
+            return carried;
+        }
+        &self.config
+    }
 }
 
 /// An image config: the platform, the runtime defaults, and the layers' DiffIDs.

@@ -193,7 +193,7 @@ pub fn command(
                 && (same || (reference.digest.is_some() && !downloaded.load(Ordering::Relaxed)));
             #[cfg(unix)]
             if let Some(disk) = &pulled.rootfs {
-                publish(reference, &pulled.id, &pulled.config, disk, env);
+                publish(home, reference, &pulled.id, &pulled.config, disk, env);
             }
             if let Some(progress) = show {
                 progress(&Progress::Facts(facts(home, reference, &pulled)));
@@ -221,43 +221,44 @@ pub fn command(
     status
 }
 
-/// Puts the microVM `disk` made of `reference` in the machine's local image store, on a
-/// thread of its own, so that the pull does not wait: unless `SHARDS_LOCAL_STORE` is
-/// `none`, or no store is found (local_store.rs).
+/// Puts the microVM `disk` made of `reference` in the machine's local image store, by the
+/// daemon's publisher, so that the pull does not wait: unless `SHARDS_LOCAL_STORE` is
+/// `none`, or no store is found (local_store.rs). The client's `env` names the store,
+/// else the daemon's own.
 #[cfg(unix)]
-fn publish(
+pub(crate) fn publish(
+    home: &Path,
     reference: &Reference,
     id: &shards_image::reference::Digest,
     config: &shards_image::oci::ImageConfig,
     disk: &Path,
     env: &dyn Fn(&str) -> Option<String>,
 ) {
+    // The client's, where it says, else the daemon's own.
+    let env = |k: &str| env(k).or_else(|| std::env::var(k).ok());
     if env("SHARDS_LOCAL_STORE").is_some_and(|v| v == "none") {
         return;
     }
-    let Some(socket) = crate::local_store::engine(&|k| env(k).or_else(|| std::env::var(k).ok())) else {
+    let Some(socket) = crate::local_store::engine(&env) else {
         return;
     };
     let platform = match config.variant.as_deref() {
         Some(v) if !v.is_empty() => format!("{}/{}/{v}", config.os, config.architecture),
         _ => format!("{}/{}", config.os, config.architecture),
     };
-    let (reference, id, disk) = (reference.to_string(), id.clone(), disk.to_path_buf());
-    let spawned = std::thread::Builder::new()
-        .name("shards-publish".into())
-        .spawn(move || {
-            // To the daemon's log, where its stderr goes.
-            if let Err(e) = crate::local_store::publish(&socket, &reference, &id, &platform, &disk) {
-                let _ = writeln!(std::io::stderr(), "shards daemon {}: {e}", std::process::id());
-            }
-        });
-    if let Err(e) = spawned {
-        let _ = writeln!(
-            std::io::stderr(),
-            "shards daemon {}: publishing: {e}",
-            std::process::id()
-        );
-    }
+    // The image config as it is stored, which the microVM keeps (save::MICROVM_CONFIG).
+    let config_bytes = store(home)
+        .ok()
+        .and_then(|s| std::fs::read(s.blob_path(id)).ok())
+        .unwrap_or_default();
+    crate::local_store::queue(crate::local_store::Job::Publish {
+        socket,
+        reference: reference.to_string(),
+        source: id.clone(),
+        platform,
+        disk: disk.to_path_buf(),
+        config: config_bytes,
+    });
 }
 
 /// What there is to know of `pulled`, for a client on a terminal to show: its names,

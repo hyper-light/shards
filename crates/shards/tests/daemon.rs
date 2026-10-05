@@ -88,7 +88,7 @@ fn runs_may_clean_the_cache_over_their_image() {
 
 /// `shards run ARGS` in `home`, its stdout piped and its stdin closed.
 fn spawn_run(home: &Path, args: &[&str]) -> Child {
-    Command::new(shards())
+    common::command()
         .arg("run")
         .args(args)
         .env("SHARDS_HOME", home)
@@ -213,7 +213,7 @@ fn signals_reach_a_warm_run() {
     let (image, _) = served();
     let home = home("daemon-signals", &image);
     for ignored in [false, true] {
-        let mut run = Command::new(shards());
+        let mut run = common::command();
         run.args(["run", "--pull", "never", &image, "trap", "INT"])
             .env("SHARDS_HOME", &*home)
             .stdin(Stdio::null())
@@ -383,7 +383,7 @@ fn a_daemon_ending_its_runs_is_waited_for() {
         .unwrap();
     assert_eq!(line, "ready\n");
     let before = daemon_pid(&home).expect("a daemon pid");
-    let mut stopping = Command::new(shards())
+    let mut stopping = common::command()
         .args(["daemon", "stop"])
         .env("SHARDS_HOME", &*home)
         .stdin(Stdio::null())
@@ -441,6 +441,7 @@ fn a_rebuilt_binary_replaces_the_daemon() {
     let out = Command::new(&other)
         .args(["run", "--pull", "never", &image, "exit", "0"])
         .env("SHARDS_HOME", &*home)
+        .env("SHARDS_LOCAL_STORE", "none")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -489,7 +490,7 @@ fn a_daemon_idles_from_its_last_runs_end() {
     let env = [("SHARDS_HOME", home.as_os_str())];
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
-    let mut client = Command::new(shards())
+    let mut client = common::command()
         .args(["run", "-i", "--pull", "never", &image, "cat"])
         .env("SHARDS_HOME", &*home)
         .env("SHARDS_DAEMON_IDLE", "1")
@@ -538,7 +539,7 @@ fn interactive_stdin_ends_with_its_client() {
             (waiting, since) = (now, Instant::now());
         }
     }
-    let mut client = Command::new(shards())
+    let mut client = common::command()
         .args(["run", "-i", "--pull", "never", &image, "cat"])
         .env("SHARDS_HOME", &*home)
         .stdin(Stdio::piped())
@@ -608,6 +609,7 @@ fn a_background_run_stops_to_read_its_terminal() {
         ])
         .env("SHARDS_TEST_SHELL", format!("{}\n{image}", shards().display()))
         .env("SHARDS_HOME", &*home)
+        .env("SHARDS_LOCAL_STORE", "none")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -692,13 +694,14 @@ fn start_daemon(home: &Path, limit: Option<u32>) -> i32 {
             sh
         }
         None => {
-            let mut plain = Command::new(shards());
+            let mut plain = common::command();
             plain.arg("ps");
             plain
         }
     };
     let out = cmd
         .env("SHARDS_HOME", home)
+        .env("SHARDS_LOCAL_STORE", "none")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -791,6 +794,7 @@ fn a_daemon_raises_its_descriptor_limit() {
         .arg("ulimit -S -n 256 && exec \"$0\" ps")
         .arg(shards())
         .env("SHARDS_HOME", &*home)
+        .env("SHARDS_LOCAL_STORE", "none")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -838,7 +842,7 @@ fn a_client_that_says_nothing_holds_up_no_stop() {
 fn clients_past_the_cap_wait_their_turn() {
     more_descriptors();
     let home = TempDir::new("daemon-cap");
-    let started = Command::new(shards())
+    let started = common::command()
         .arg("ps")
         .env("SHARDS_HOME", &*home)
         .env("SHARDS_MAX_CLIENTS", "16")
@@ -859,7 +863,7 @@ fn clients_past_the_cap_wait_their_turn() {
     }
     let sock = home.join("daemon.sock");
     let mut silent: Vec<UnixStream> = (0..16).map(|_| connect_patiently(&sock)).collect();
-    let mut listing = Command::new(shards())
+    let mut listing = common::command()
         .arg("ps")
         .env("SHARDS_HOME", &*home)
         .stdin(Stdio::null())
@@ -946,14 +950,14 @@ fn waiters_shut_out_no_client() {
         TIMEOUT,
     );
     assert_eq!(up.status, Some(0), "{}", up.stderr);
-    let mut waiting = Command::new(shards())
+    let mut waiting = common::command()
         .args(["wait", "up"])
         .env("SHARDS_HOME", &*home)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let mut following = Command::new(shards())
+    let mut following = common::command()
         .args(["logs", "-f", "up"])
         .env("SHARDS_HOME", &*home)
         .stdout(Stdio::null())
@@ -1055,7 +1059,7 @@ fn a_stop_cancels_the_downloads_of_runs_being_prepared() {
     }
     let home = TempDir::new("daemon-pulling");
     let image = format!("127.0.0.1:{port}/silent:latest");
-    let run = Command::new(shards())
+    let run = common::command()
         .args(["run", "--pull", "always", &image, "exit", "0"])
         .env("SHARDS_HOME", &*home)
         .env("SHARDS_KERNEL", kernel())
@@ -1650,7 +1654,7 @@ fn idle_followers_cost_nothing_and_end_with_their_container() {
     assert_eq!(up.status, Some(0), "{}", up.stderr);
     let mut followers: Vec<Child> = (0..100)
         .map(|_| {
-            Command::new(shards())
+            common::command()
                 .args(["logs", "-f", "up"])
                 .env("SHARDS_HOME", &*home)
                 .stdin(Stdio::null())

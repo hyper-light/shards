@@ -99,6 +99,7 @@ impl Terminal {
             .arg(shards())
             .args(args)
             .env("SHARDS_HOME", home)
+            .env("SHARDS_LOCAL_STORE", "none")
             .env("SHARDS_KERNEL", kernel())
             .env("SHARDS_INIT", guest_init())
             .env_remove("NORAW")

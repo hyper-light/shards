@@ -2385,6 +2385,53 @@ CLI's, held to Docker Engine 29.3.1's.
   numbers are the guest filesystem's blocks, not Docker Desktop's ext4's: the same writes
   measured 16 kB in a microVM and 8 kB under Docker 29.3.1.
 
+### Import (D41)
+
+`shards import` is `docker import` (docker/cli image/import.go; moby docker-v29.8.1
+image_routes.go postImagesCreate and daemon/containerd/image_import.go, ImportImage;
+`daemon/import.rs`): a tarball from a file or stdin, which the client sends, or a URL the
+daemon fetches (BuildKit's HTTP source, `build/http.rs`), made an image of one layer, its
+config BuildFromConfig of `--change` over an empty one, its platform `--platform`
+normalized or the host's default spec (`v8` on arm64, as containerd's DefaultSpec), its
+history one step with the comment (`-m`, else `Imported from -` or the URL), its ID the
+manifest's digest. Its output, refusals and ordering are the CLI's and dockerd's, held to
+Docker Engine 29.3.1's.
+
+- The layer is kept as it came where it is a layer already: gzip and zstd as they are,
+  bzip2 and xz decompressed (neither is a layer's media type), and a plain tar as it is,
+  where dockerd spends a gzip on it: no compression on the import's path, the same diff ID.
+- What an import or a commit writes is under the store's lease until it is named: a
+  collection, which a daemon starting runs, took an import's blob from `ingest/` before.
+- What it makes is a microVM, as a pull makes one (D25): an import of a container's files
+  builds the image's EROFS disk at once and publishes it to the local engine as
+  `shards.local/NAME`, so that its first run builds nothing. The
+  tarball is kept once as it came and then read by what it is: an OCI image layout or a
+  `docker save` archive is taken as `load` takes one (each image made a microVM, the one
+  image it holds also named by the reference given), where dockerd would make a
+  meaningless one-layer image of the archive's files; and a shards microVM (below) is one
+  already, imported whole, its disk its root filesystem with nothing to unpack.
+- A shards microVM is an OCI artifact (`application/vnd.shards.microvm.v1`): its own
+  config the empty one, and two layers, its EROFS disk (`application/vnd.shards.erofs.v1`)
+  and the image config it was made from (`application/vnd.shards.microvm.config.v1+json`),
+  which `inspect` shows and a run runs by (`Manifest::image_config`). Docker 29.3.1 loads,
+  lists and saves it and will not run it; `docker save shards.local/NAME | shards import -`
+  brings one back.
+- Publishing to the local engine never holds up what asked for it, and is robust to the
+  engine (`local_store.rs`, PM M118). A pull, import or `rmi` only queues its request;
+  each name's requests go in order on a thread of the name's, the ones queued behind a
+  request in flight collapsed to the last, and names do not wait on each other. No upload
+  is cut off part way, by a deadline or otherwise: Docker keeps the content of an upload
+  cut off locked, and later loads of it fail with 502 after 60 s or never end, while other
+  content still loads; an engine stuck on one image's content so holds up that image
+  alone. A microVM the engine holds already, by its manifest's digest (the ID it gives
+  it), is not sent again: one GET of 5.4 ms p50 in place of an upload of the whole disk,
+  which took 10 to 50 s on the same loaded host.
+- The engine is the client's: `DOCKER_HOST`, `DOCKER_CONTEXT` and `SHARDS_LOCAL_STORE`
+  are sent with each request, as the Docker CLI uses its own, the daemon's taken where the
+  client sets none. The E2E tests set `SHARDS_LOCAL_STORE=none` (`common::command`) and
+  publish only to an engine of their own; before, every test daemon published to the
+  host's Docker, and any upload a test's end cut off would lock its content there.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

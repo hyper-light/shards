@@ -30,7 +30,7 @@ impl Drop for Temp {
 const ENDS: [libc::c_int; 4] = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM];
 
 /// An OS error in Go's words: its strerror, lower-cased, as Go's tables copy it.
-fn go(e: &std::io::Error) -> String {
+pub(crate) fn go(e: &std::io::Error) -> String {
     let text = e.to_string();
     let text = e
         .raw_os_error()

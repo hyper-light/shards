@@ -42,6 +42,7 @@ mod filters;
 mod follow;
 mod health;
 mod images;
+mod import;
 mod info;
 mod inspect;
 mod inspect_doc;

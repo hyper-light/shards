@@ -955,8 +955,10 @@ impl Run {
 
 /// What a registry is reached by (shards_registry's credentials, certs and proxy): the
 /// Docker CLI's config, credential helpers on `PATH`, the homes of `certs.d`, and the
-/// proxies Go's net/http takes from the environment.
-pub const REGISTRY_ENV: [&str; 14] = [
+/// proxies Go's net/http takes from the environment; and the local engine a made microVM
+/// is published to, as the Docker CLI finds it (`DOCKER_HOST`, `DOCKER_CONTEXT`), or none
+/// (`SHARDS_LOCAL_STORE=none`).
+pub const REGISTRY_ENV: [&str; 17] = [
     "DOCKER_AUTH_CONFIG",
     "DOCKER_CONFIG",
     "HOME",
@@ -971,6 +973,9 @@ pub const REGISTRY_ENV: [&str; 14] = [
     "NO_PROXY",
     "no_proxy",
     "REQUEST_METHOD",
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "SHARDS_LOCAL_STORE",
 ];
 
 /// This process's [`REGISTRY_ENV`], as `NAME=VALUE`, those it has.

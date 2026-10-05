@@ -1049,6 +1049,33 @@ pub static IMAGE_PRUNE: Command = Command {
     error_prefix: "",
 };
 
+/// `shards import` (docker/cli cli/command/image/import.go).
+pub static IMPORT: Command = Command {
+    usage: "[OPTIONS] file|URL|- [REPOSITORY[:TAG]]",
+    about: "Import the contents from a tarball to create a filesystem image",
+    aliases: "shards image import, shards import",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::many(
+            "change",
+            Some(b'c'),
+            "list",
+            "Apply Dockerfile instruction to the created image",
+        ),
+        HELP,
+        Flag::string("message", Some(b'm'), "", "Set commit message for imported image"),
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Set platform if server is multi-platform capable",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards update` (docker/cli cli/command/container/update.go): a running container's
 /// limits change as it runs.
 pub static UPDATE: Command = Command {
@@ -1860,6 +1887,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["image", "ls" | "list", ..] => (&IMAGES, "shards image ls", 2),
         ["container", "port", ..] => (&PORT, "shards container port", 2),
         ["update", ..] => (&UPDATE, "shards update", 1),
+        ["import", ..] => (&IMPORT, "shards import", 1),
+        ["image", "import", ..] => (&IMPORT, "shards image import", 2),
         ["container", "update", ..] => (&UPDATE, "shards container update", 2),
         ["volume", "create", ..] => (&VOLUME_CREATE, "shards volume create", 2),
         ["volume", "ls" | "list", ..] => (&VOLUME_LS, "shards volume ls", 2),

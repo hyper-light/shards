@@ -59,7 +59,7 @@ fn start(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Child 
     static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let stderr = std::fs::File::create(home.join(format!("run-{n}.stderr"))).unwrap();
-    let mut child = Command::new(shards())
+    let mut child = common::command()
         .args(run_args(image, options, command))
         .env("SHARDS_HOME", home)
         .env("SHARDS_KERNEL", kernel())
@@ -455,7 +455,7 @@ fn events_tell_a_microvms_life_as_docker_events_does() {
         .as_secs()
         .to_string();
     // A listener, which hears renames as they happen.
-    let mut live = Command::new(common::shards())
+    let mut live = common::command()
         .args(["events", "--since", &since, "--filter", "event=rename"])
         .env("SHARDS_HOME", &*home)
         .stdout(Stdio::piped())
@@ -2061,7 +2061,7 @@ fn logs_keep_what_a_container_wrote() {
     assert_eq!((logs.stdout.as_str(), logs.stderr.as_str()), ("", "to stderr"));
 
     let mut sleeper = start(&home, &image, &["--name", "follow"], &["sleep"]);
-    let follower = Command::new(shards())
+    let follower = common::command()
         .args(["logs", "-f", "follow"])
         .env("SHARDS_HOME", &*home)
         .stdout(Stdio::piped())
@@ -2283,6 +2283,7 @@ impl Gated {
         let mut child = Command::new(self.dir.join("shards"))
             .args(args)
             .env("SHARDS_HOME", home)
+            .env("SHARDS_LOCAL_STORE", "none")
             .env("SHARDS_KERNEL", kernel())
             .env("SHARDS_INIT", guest_init())
             .env("SHARDS_VM_BINARY", self.dir.join("shards-vm"))
@@ -2474,7 +2475,7 @@ fn a_stopping_daemon_starts_no_pending_run() {
 /// `shards ARGS` in `home` whose daemon keeps logs in three segments of 100,000 bytes,
 /// its output as bytes.
 fn retained(home: &Path) -> Command {
-    let mut command = Command::new(shards());
+    let mut command = common::command();
     command
         .env("SHARDS_HOME", home)
         .env("SHARDS_KERNEL", kernel())
@@ -2663,7 +2664,7 @@ fn logs_carry_lines_longer_than_a_message() {
         log.extend(piece);
     }
     std::fs::write(dir.join("log"), log).unwrap();
-    let out = Command::new(shards())
+    let out = common::command()
         .args(["logs", "-t", "long"])
         .env("SHARDS_HOME", &*home)
         .stdin(Stdio::null())
@@ -2999,7 +3000,7 @@ fn exec_runs_commands_in_a_running_container_as_docker_exec_does() {
         "{split}"
     );
     // -i: its stdin is this client's.
-    let mut cat = Command::new(shards())
+    let mut cat = common::command()
         .args(["exec", "-i", "ex", "/bin/testguest", "cat"])
         .env("SHARDS_HOME", &*home)
         .stdin(Stdio::piped())
@@ -3897,7 +3898,7 @@ fn an_interrupted_save_leaves_nothing_behind() {
             .collect()
     };
     for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-        let mut save = Command::new(shards());
+        let mut save = common::command();
         save.args(["save", "-o", dest.to_str().unwrap(), "any:1"])
             .env("SHARDS_HOME", &*home)
             .stdin(Stdio::null())
@@ -3924,7 +3925,7 @@ fn an_interrupted_save_leaves_nothing_behind() {
     // file, where no daemon can be.
     let nowhere = out.join("not-a-home");
     std::fs::write(&nowhere, b"").unwrap();
-    let failed = Command::new(shards())
+    let failed = common::command()
         .args(["save", "-o", dest.to_str().unwrap(), "any:1"])
         .env("SHARDS_HOME", &nowhere)
         .stdin(Stdio::null())
@@ -3967,7 +3968,7 @@ fn save_writes_images_as_docker_save_does() {
     // 0600 whatever the umask, as atomicwriter's Close chmods it: made under umask 0377,
     // the file would be 0400.
     let strict = out.join("strict.tar");
-    let mut save = Command::new(common::shards());
+    let mut save = common::command();
     save.args(["save", "-o", strict.to_str().unwrap(), &image])
         .env("SHARDS_HOME", &*home)
         .stdout(Stdio::null());
@@ -4117,7 +4118,7 @@ fn save_writes_images_as_docker_save_does() {
         "{none}"
     );
     // To stdout, the same archive.
-    let piped = Command::new(common::shards())
+    let piped = common::command()
         .args(["save", &image])
         .env("SHARDS_HOME", &*home)
         .env("SHARDS_KERNEL", kernel())
@@ -4202,7 +4203,7 @@ fn load_reads_archives_as_docker_load_does() {
     let gzipped = gz.wait_with_output().unwrap().stdout;
     feeding.join().unwrap();
     let again = TempDir::new("containers-load-gz");
-    let mut load = Command::new(common::shards())
+    let mut load = common::command()
         .args(["load"])
         .env("SHARDS_HOME", &*again)
         .env("SHARDS_KERNEL", kernel())
@@ -4557,7 +4558,7 @@ fn a_push_ends_with_its_client_and_the_daemon() {
     let target = format!("127.0.0.1:{port}/team/app:1");
     assert_eq!(shards(&["tag", &source, &target]).status, Some(0));
     let push = || {
-        Command::new(common::shards())
+        common::command()
             .args(["push", &target])
             .env("SHARDS_HOME", &*home)
             .stdout(Stdio::null())
@@ -4612,7 +4613,7 @@ fn a_run_interrupted_as_it_pulls_ends_as_docker_runs_do() {
     let (port, begun, ended) = common::registry_stalling_blobs(index, blobs);
     let image = format!("127.0.0.1:{port}/test/image:v1");
     let home = TempDir::new("containers-run-interrupted");
-    let mut client = Command::new(shards());
+    let mut client = common::command();
     // SAFETY: signal(2), async-signal-safe, between fork and exec.
     unsafe {
         client.pre_exec(|| {
@@ -5388,4 +5389,230 @@ fn sizes_are_listed_as_docker_ps_and_inspect_list_them() {
     assert_eq!(shards(&["stop", "-t", "0", "sized"]).status, Some(0));
     let _ = exit(&mut held);
     assert_eq!(sizes(&["-s"]), (rw, root), "as its last run left it");
+}
+
+/// `import`, as `docker import`: a microVM's files exported, then imported as an image
+/// of one layer, plain or compressed, from a file or stdin, its config from `--change`,
+/// and run; dockerd's refusals.
+#[cfg(unix)]
+#[test]
+fn import_makes_images_of_tarballs_as_docker_import_does() {
+    let Some((home, image)) = home("containers-import") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    assert_eq!(shards(&["create", "--name", "source", &image]).status, Some(0));
+    let tar = home.join("fs.tar");
+    let exported = shards(&["export", "-o", tar.to_str().unwrap(), "source"]);
+    assert_eq!(exported.status, Some(0), "{exported}");
+    let made = shards(&[
+        "import",
+        "-m",
+        "from source",
+        "-c",
+        "ENTRYPOINT [\"/bin/testguest\"]",
+        "-c",
+        "ENV IMPORTED=yes",
+        tar.to_str().unwrap(),
+        "imported:1",
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    assert!(
+        made.stdout.starts_with("sha256:") && made.stdout.lines().count() == 1,
+        "{made}"
+    );
+    let shown = shards(&[
+        "image",
+        "inspect",
+        "-f",
+        "{{json .Config.Entrypoint}} {{json .Config.Env}} {{.Comment}} {{len .RootFS.Layers}}",
+        "imported:1",
+    ]);
+    assert_eq!(
+        shown.stdout, "[\"/bin/testguest\"] [\"IMPORTED=yes\"] from source 1\n",
+        "{shown}"
+    );
+    let ran = run_in(&home, "imported:1", &["--rm"], &["stat", "/proc/self/environ"]);
+    assert!(ran.stdout.contains("IMPORTED=yes"), "{ran}");
+    // gzip'd, from stdin: the layer as it came; its diff ID the tar's.
+    let gz = home.join("fs.tar.gz");
+    let zipped = Command::new("gzip").arg("-k").arg(&tar).status().unwrap();
+    assert!(zipped.success());
+    let piped = common::command()
+        .args(["import", "-", "imported:2"])
+        .env("SHARDS_HOME", &*home)
+        .stdin(std::fs::File::open(&gz).unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        piped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&piped.stderr)
+    );
+    let layers = |name: &str| shards(&["image", "inspect", "-f", "{{json .RootFS.Layers}}", name]).stdout;
+    assert_eq!(layers("imported:1"), layers("imported:2"));
+    assert_eq!(
+        shards(&["image", "inspect", "-f", "{{.Comment}}", "imported:2"]).stdout,
+        "Imported from -\n"
+    );
+    // Made a microVM, as a pull makes one, and published so to the local engine: here one
+    // the test serves, which keeps what it is sent.
+    let socket = std::path::PathBuf::from(format!("/tmp/shards-engine-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&socket);
+    let engine = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let (sent, served) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::{BufRead as _, Read as _, Write as _};
+        // Asked first whether it holds the microVM, which it does not.
+        let (mut stream, mut reader, request) = loop {
+            let (mut stream, _) = engine.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            let mut request = String::new();
+            while reader.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+                request.push_str(&line);
+                line.clear();
+            }
+            if request.starts_with("GET /images/shards.local%2Fimported%3A3/json ") {
+                stream
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                    .unwrap();
+                continue;
+            }
+            break (stream, reader, request);
+        };
+        let mut line = String::new();
+        let mut body = Vec::new();
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let n = usize::from_str_radix(line.trim(), 16).unwrap();
+            let mut chunk = vec![0; n + 2];
+            reader.read_exact(&mut chunk).unwrap();
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..n]);
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+            .unwrap();
+        let _ = sent.send((request, body));
+    });
+    let published = common::command()
+        .args([
+            "import",
+            "-c",
+            "ENTRYPOINT [\"/bin/testguest\"]",
+            "-c",
+            "ENV IMPORTED=yes",
+        ])
+        .args([tar.to_str().unwrap(), "imported:3"])
+        .env("SHARDS_HOME", &*home)
+        .env("SHARDS_LOCAL_STORE", "")
+        .env("DOCKER_HOST", format!("unix://{}", socket.display()))
+        .output()
+        .unwrap();
+    assert!(
+        published.status.success(),
+        "{}",
+        String::from_utf8_lossy(&published.stderr)
+    );
+    let (request, microvm) = served
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the import published nothing");
+    let _ = std::fs::remove_file(&socket);
+    assert!(request.starts_with("POST /images/load?quiet=1 "), "{request}");
+    let artifact = String::from_utf8_lossy(&microvm);
+    assert!(
+        artifact.contains("application/vnd.shards.microvm.v1")
+            && artifact.contains("shards.local/imported:3"),
+        "not a microVM"
+    );
+    // A shards microVM imported is one already: run as the image it was made from.
+    let vm = home.join("microvm.tar");
+    std::fs::write(&vm, &microvm).unwrap();
+    let back = shards(&["import", vm.to_str().unwrap(), "from-microvm:1"]);
+    assert_eq!(back.status, Some(0), "{back}");
+    let ran = run_in(
+        &home,
+        "from-microvm:1",
+        &["--rm"],
+        &["stat", "/proc/self/environ"],
+    );
+    assert!(ran.stdout.contains("IMPORTED=yes"), "{ran}");
+    // An image archive: its images, each made a microVM, the one it holds named too.
+    let saved = home.join("saved.tar");
+    let out = shards(&["save", "-o", saved.to_str().unwrap(), "imported:1"]);
+    assert_eq!(out.status, Some(0), "{out}");
+    let from_save = shards(&["import", saved.to_str().unwrap(), "from-save:1"]);
+    assert_eq!(from_save.status, Some(0), "{from_save}");
+    let ran = run_in(&home, "from-save:1", &["--rm"], &["stat", "/proc/self/environ"]);
+    assert!(ran.stdout.contains("IMPORTED=yes"), "{ran}");
+    for (args, said) in [
+        (
+            &["import", "nope.tar"][..],
+            "open nope.tar: no such file or directory\n",
+        ),
+        (
+            &["import", "-c", "RUN x", tar.to_str().unwrap()][..],
+            "Error response from daemon: RUN is not a valid change command\n",
+        ),
+        (
+            &["import", tar.to_str().unwrap(), "BAD:REF:x"][..],
+            "invalid reference format: repository name (library/BAD) must be lowercase\n",
+        ),
+    ] {
+        let out = shards(args);
+        assert_eq!((out.status, out.stderr.as_str()), (Some(1), said), "{args:?}");
+    }
+}
+
+/// A run that ends while its container is inspected: the end holds the run's inbox while
+/// it takes the daemon's runs, and inspect, which reads the run's execs, took the runs and
+/// then the inbox, so that each waited on the other for good (seen in a full suite,
+/// 2026-10-05). Inspected over and over while runs end, every step keeps its deadline.
+#[test]
+fn inspecting_a_run_as_it_ends_never_deadlocks() {
+    let Some((home, image)) = home("containers-inspect-ending") else {
+        return;
+    };
+    let current = std::sync::Mutex::new(String::new());
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|s| {
+        let inspectors: Vec<_> = (0..16)
+            .map(|_| {
+                s.spawn(|| {
+                    let mut asked = 0;
+                    while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                        let name = current.lock().unwrap().clone();
+                        if name.is_empty() {
+                            std::thread::yield_now();
+                            continue;
+                        }
+                        // Asked before the container is made, it is not there yet: what fails is
+                        // only a step that never ends.
+                        let out = shards_in(&home, &["inspect", "-f", "{{.State.Status}}", &name]);
+                        assert!(
+                            out.status == Some(0) || out.stderr.contains("no such object"),
+                            "{out}"
+                        );
+                        asked += usize::from(out.status == Some(0));
+                    }
+                    asked
+                })
+            })
+            .collect();
+        for i in 0..100 {
+            let name = format!("ending-{i}");
+            *current.lock().unwrap() = name.clone();
+            let out = run_in(&home, &image, &["-d", "--name", &name], &["exit", "0"]);
+            assert_eq!(out.status, Some(0), "{out}");
+            let waited = shards_in(&home, &["wait", &name]);
+            assert_eq!(waited.status, Some(0), "{waited}");
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        let asked: usize = inspectors.into_iter().map(|i| i.join().unwrap()).sum();
+        assert!(asked > 40, "inspected only {asked} times");
+    });
 }

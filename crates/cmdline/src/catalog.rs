@@ -91,6 +91,7 @@ pub static TOP: &[Group] = &[
             of("events", &commands::EVENTS),
             of("export", &commands::EXPORT),
             of("history", &commands::HISTORY),
+            of("import", &commands::IMPORT),
             of("info", &commands::INFO),
             of("inspect", &commands::INSPECT),
             of("kill", &commands::KILL),
@@ -151,6 +152,7 @@ pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
         &[
             BUILD,
             of("history", &commands::HISTORY),
+            of("import", &commands::IMPORT),
             of("inspect", &commands::IMAGE_INSPECT),
             of("load", &commands::LOAD),
             of("ls", &commands::IMAGES),

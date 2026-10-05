@@ -100,6 +100,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 Err(e) => return refuse(e),
             };
         }
+        // Held while what it writes is not yet named: no collection takes it meanwhile.
+        let _lease = match store.lease() {
+            Ok(l) => l,
+            Err(e) => return refuse(e.to_string()),
+        };
         // The layer of what it changed: as it is now, from its microVM, paused unless
         // told otherwise; or as its last run left it.
         let mut writer = match store.writer() {

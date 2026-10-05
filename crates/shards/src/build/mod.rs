@@ -35,7 +35,7 @@ use shards_registry::pull::{self as registry_pull, Event};
 
 mod builder;
 mod exec;
-mod http;
+pub(crate) mod http;
 #[cfg(unix)]
 mod live;
 pub(crate) mod step;

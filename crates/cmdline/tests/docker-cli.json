@@ -501,6 +501,42 @@
   },
   {
     "argv": [
+      "import",
+      "--help"
+    ],
+    "stdout": "Usage:  shards import [OPTIONS] file|URL|- [REPOSITORY[:TAG]]\n\nImport the contents from a tarball to create a filesystem image\n\nAliases:\n  shards image import, shards import\n\nOptions:\n  -c, --change list       Apply Dockerfile instruction to the created image\n  -m, --message string    Set commit message for imported image\n      --platform string   Set platform if server is multi-platform capable\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "import",
+      "-c",
+      "ENV A=1",
+      "-c",
+      "CMD x",
+      "-m",
+      "msg",
+      "--platform",
+      "linux/arm64",
+      "f.tar",
+      "repo:tag"
+    ],
+    "stdout": "RUN --change=[ENV A=1 CMD x] --message=msg --platform=linux/arm64 \"f.tar\" \"repo:tag\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "import"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards import' requires at least 1 argument\n\nUsage:  shards import [OPTIONS] file|URL|- [REPOSITORY[:TAG]]\n\nSee 'shards import --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
       "update",
       "--help"
     ],

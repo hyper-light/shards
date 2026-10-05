@@ -399,60 +399,18 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             Ok(fd) => std::fs::File::from(fd),
             Err(e) => return refuse(&e.to_string()),
         };
-        // DecompressStream: plain, bzip2, gzip, xz or zstd, as its first bytes say.
-        let imported = shards_build::archive::decompressed(file, 1 << 20)
-            .map_err(|e| format!("failed to decompress input tar archive: {e}"))
-            .and_then(|mut input| import(&store, &mut input));
-        // What it ingested before failing goes with the next collection.
-        let refuse = |said: &str| {
-            self.collect_soon();
-            refuse(said)
-        };
-        let (index, contents) = match imported {
-            Ok(imported) => imported,
+        let loaded = match self.load_archive(&store, file) {
+            Ok(loaded) => loaded,
             Err(e) => return refuse(&e),
         };
-        let limits = shards_image::store::Limits::none();
-        for image in named(&index) {
-            let ours = ours(&store, &image.target);
-            let resolved = match image.target.digest() {
-                Ok(d) => d,
-                Err(e) => return refuse(&e.to_string()),
-            };
-            let recorded = store.tag_from(
-                &image.name,
-                ours.as_ref().unwrap_or(&image.target),
-                &image.target,
-                &contents,
-                source(&image.target).as_deref(),
-            );
-            if let Err(e) = recorded {
-                return refuse(&e.to_string());
-            }
-            let shown = if image.dangling {
-                format!("Loaded image ID: {}", image.target.digest)
-            } else {
-                Reference::parse_normalized(&image.name).map_or_else(|_| image.name.clone(), |r| r.familiar())
-            };
-            let unpacked = ours.as_ref().map(|desc| {
-                shards_registry::pull::unpack(
-                    &store,
-                    &shown,
-                    desc,
-                    resolved.clone(),
-                    &shards_image::platform::guest(),
-                    &limits,
-                )
-            });
-            // moby daemon/containerd/image_exporter.go: the image's digest, named so too.
-            self.image_event(&image.target.digest, &image.target.digest, "load");
+        for image in loaded {
             if image.dangling {
-                reply.out(&shown);
+                reply.out(&image.shown);
             } else {
-                reply.out(&format!("Loaded image: {shown}"));
+                reply.out(&format!("Loaded image: {}", image.shown));
             }
-            if let Some(Err(e)) = unpacked {
-                reply.out(&format!("Error unpacking image {shown}: {e}"));
+            if let Some(Err(e)) = image.unpacked {
+                reply.out(&format!("Error unpacking image {}: {e}", image.shown));
             }
         }
         drop(lease);
@@ -460,6 +418,73 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         self.collect_soon();
         0
     }
+
+    /// The images of archive `file` (a `docker save` archive or an OCI image layout, as
+    /// tar, plain or compressed), stored, named, and each made a microVM, as containerd's
+    /// importer and then shards' unpack do: what each is said as, and how its unpack went.
+    /// The caller holds the store's lease.
+    pub(super) fn load_archive(&self, store: &Store, file: std::fs::File) -> Result<Vec<Loaded>, String> {
+        // DecompressStream: plain, bzip2, gzip, xz or zstd, as its first bytes say.
+        let imported = shards_build::archive::decompressed(file, 1 << 20)
+            .map_err(|e| format!("failed to decompress input tar archive: {e}"))
+            .and_then(|mut input| import(store, &mut input));
+        // What it ingested before failing goes with the next collection.
+        let (index, contents) = imported.inspect_err(|_| self.collect_soon())?;
+        let limits = shards_image::store::Limits::none();
+        let mut loaded = Vec::new();
+        for image in named(&index) {
+            let ours = ours(store, &image.target);
+            let resolved = image.target.digest().map_err(|e| e.to_string())?;
+            store
+                .tag_from(
+                    &image.name,
+                    ours.as_ref().unwrap_or(&image.target),
+                    &image.target,
+                    &contents,
+                    source(&image.target).as_deref(),
+                )
+                .map_err(|e| e.to_string())?;
+            let shown = if image.dangling {
+                format!("Loaded image ID: {}", image.target.digest)
+            } else {
+                Reference::parse_normalized(&image.name).map_or_else(|_| image.name.clone(), |r| r.familiar())
+            };
+            let unpacked = ours.as_ref().map(|desc| {
+                shards_registry::pull::unpack(
+                    store,
+                    &shown,
+                    desc,
+                    resolved.clone(),
+                    &shards_image::platform::guest(),
+                    &limits,
+                )
+                .map_err(|e| e.to_string())
+            });
+            // moby daemon/containerd/image_exporter.go: the image's digest, named so too.
+            self.image_event(&image.target.digest, &image.target.digest, "load");
+            loaded.push(Loaded {
+                name: image.name.clone(),
+                shown,
+                digest: image.target.digest.clone(),
+                dangling: image.dangling,
+                unpacked,
+            });
+        }
+        Ok(loaded)
+    }
+}
+
+/// An image an archive held ([`Daemon::load_archive`]).
+pub(super) struct Loaded {
+    /// The name it is recorded by.
+    pub name: String,
+    /// What `load` says of it.
+    pub shown: String,
+    pub digest: String,
+    pub dangling: bool,
+    /// Its microVM, made (its disk and config), or why not; none where no manifest of
+    /// it is for this host's guests.
+    pub unpacked: Option<Result<shards_registry::pull::Pulled, String>>,
 }
 
 #[cfg(test)]

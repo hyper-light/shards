@@ -4025,3 +4025,32 @@ revision before comparing a changed API/implementation.
   slope, 25.4 KiB a MiB, rounded up to 26. The table is this kernel's on arm64; x86_64 uses
   it until measured on x86_64, and `run_limits_resources_as_docker_run_does` holds, on
   each CI architecture, that a workload limited to L has L available.
+
+### M118. What a local Docker engine does with an upload cut off part way
+
+- **Question.** Can publishing a microVM to the local engine (`POST /images/load`) give
+  up on an engine that stops answering without harm, and what does skipping an upload
+  the engine already has save?
+- **Method.** `docs/research/measurements/docker-load-lock/probe.py` sends an OCI layout
+  of one fresh random blob to Docker Desktop's socket up to half the blob and closes the
+  connection; then loads the same layout whole, a layout of another fresh blob, and the
+  first again, each with a deadline. The presence check is 50 `GET
+  /images/shards.local%2Falpine%3Alatest/json` in a row. Docker Engine 29.3.1 (Docker
+  Desktop, containerd image store, 468 images), macOS 26.4, Apple M5 Max, revision
+  0404821 plus the D41 work, load average 9 to 14 from other projects' tests, 2026-10-05.
+- **Results.**
+  - 4 MiB blob, 120 s deadlines: the same layout whole got `502 Bad Gateway` after 60.3 s
+    (Docker Desktop's proxy); another blob had no answer in 120 s; the first again, 502
+    after 60.4 s.
+  - 1 MiB blob, 300 s deadlines: the same layout whole, 502 after 59.6 s; another blob,
+    `200 OK` in 49.2 s; the first again, no answer in 300 s.
+  - Earlier the same day a `docker load` killed at 60 s left its disk's digest failing
+    the same way 10 minutes later, while a copy of the disk with one byte added loaded.
+  - Loads of fresh 8 and 32 MiB artifacts each waited 13 and 15 s on a single write and
+    11 and 7 s from their last byte to the answer; one of 64 MiB did not end in 400 s.
+  - Presence check: n=50, p50 5.4 ms, p90 6.6 ms, p99 11.4 ms, max 11.4 ms.
+- **Consequence.** An upload cut off leaves its content locked in the engine for at
+  least minutes, and the engine's silences on a busy host run to tens of seconds, so a
+  deadline would both cut off legitimate loads and lock what it cut off. shards cuts no
+  upload off: each name's requests go on a thread of their own, so a stuck one holds up
+  that name alone, and a microVM the engine holds already is not sent again (D41).

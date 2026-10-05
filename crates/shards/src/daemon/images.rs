@@ -723,6 +723,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         &self,
         parsed: &shards_cmdline::flags::Parsed,
         styled: bool,
+        env: &[String],
         reply: &super::commands::Reply<'_>,
     ) -> u8 {
         // For a client on a colour terminal: what each name did, and what deleting frees.
@@ -803,12 +804,12 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                         match r {
                             Removed::Untagged(name) if styled => {
                                 self.image_event(&target, &name, "untag");
-                                unpublish(&name);
+                                unpublish(&name, env);
                                 sheet.record(&[("given", given.clone()), ("untagged", name)]);
                             }
                             Removed::Untagged(name) => {
                                 self.image_event(&target, &name, "untag");
-                                unpublish(&name);
+                                unpublish(&name, env);
                                 reply.out(&format!("Untagged: {name}"));
                             }
                             Removed::Deleted(id) => {
@@ -1503,15 +1504,18 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 }
 
-/// The microVM a name made, gone from the machine's local image store with the name.
-fn unpublish(name: &str) {
-    if std::env::var("SHARDS_LOCAL_STORE").is_ok_and(|v| v == "none") {
+/// The microVM a name made, gone from the machine's local image store with the name: the
+/// store the client `env` names, else the daemon's own (pull.rs `publish`).
+fn unpublish(name: &str, env: &[String]) {
+    let env = |k: &str| shards_ipc::env_value(env, k).or_else(|| std::env::var(k).ok());
+    if env("SHARDS_LOCAL_STORE").is_some_and(|v| v == "none") {
         return;
     }
-    if let Some(socket) = crate::local_store::engine(&|k| std::env::var(k).ok())
-        && let Err(e) = crate::local_store::unpublish(&socket, name)
-    {
-        super::log(e);
+    if let Some(socket) = crate::local_store::engine(&env) {
+        crate::local_store::queue(crate::local_store::Job::Unpublish {
+            socket,
+            reference: name.to_string(),
+        });
     }
 }
 

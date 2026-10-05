@@ -468,16 +468,22 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 ..shards_ipc::Run::default()
             });
         let (config, manifest) = self.image_facts(c.image_id.as_deref());
-        let (pid, mac, exec_ids) = match super::lock(&self.runs).get(&c.id) {
-            Some(super::RunState::Tracked(t)) if !t.visit => {
-                let execs = super::lock(&t.inbox)
+        // The run's inbox is locked after `runs` is let go: a run's end holds its inbox
+        // while it takes `runs` (take_messages, run_ended).
+        let tracked = match super::lock(&self.runs).get(&c.id) {
+            Some(super::RunState::Tracked(t)) if !t.visit => Some((t.vm.id(), t.mac, t.inbox.clone())),
+            _ => None,
+        };
+        let (pid, mac, exec_ids) = match tracked {
+            Some((pid, mac, inbox)) => {
+                let execs = super::lock(&inbox)
                     .exec_ids
                     .iter()
                     .map(|(_, e)| e.clone())
                     .collect();
-                (Some(t.vm.id()), t.mac, execs)
+                (Some(pid), mac, execs)
             }
-            _ => (None, None, Vec::new()),
+            None => (None, None, Vec::new()),
         };
         let health = super::lock(&self.health).get(&c.id).map(|h| Health {
             status: match h.status {

@@ -488,6 +488,11 @@ pub fn unpack(
     let Document::Manifest(manifest) = oci::parse_document(&bytes, &manifest_desc.media_type)? else {
         return Err(Error::new(format!("{name}: its record names an index")));
     };
+    // A shards microVM (save::microvm): its disk is its root filesystem, nothing to
+    // unpack; what runs is in the image config it carries.
+    if manifest.artifact_type.as_deref() == Some(shards_image::save::MICROVM) {
+        return microvm(store, name, manifest_desc, &manifest, resolved, targets);
+    }
     contents(name, &manifest)?;
     let config = stored(store, name, &manifest.config, oci::MAX_CONFIG)?;
     let (config, layers) = checked(name, manifest_desc, &manifest, &config, targets)?;
@@ -504,6 +509,67 @@ pub fn unpack(
         rootfs: Some(rootfs),
         layers: manifest.layers.len(),
         compressed,
+        platforms: Vec::new(),
+        attestations: 0,
+    })
+}
+
+/// A stored shards microVM: its disk, checked against its digest's file being there and
+/// its size, and the image config it was made from.
+fn microvm(
+    store: &Store,
+    name: &str,
+    manifest_desc: &Descriptor,
+    manifest: &Manifest,
+    resolved: Digest,
+    targets: &[Target],
+) -> Result<Pulled, Error> {
+    use shards_image::save::{MICROVM_CONFIG, MICROVM_DISK};
+    let layer = |media: &str| {
+        manifest
+            .layers
+            .iter()
+            .find(|l| l.media_type == media)
+            .ok_or_else(|| Error::new(format!("{name}: a microVM without its {media}")))
+    };
+    let (disk, config_desc) = (layer(MICROVM_DISK)?, layer(MICROVM_CONFIG)?);
+    let bytes = stored(store, name, config_desc, oci::MAX_CONFIG)?;
+    let config = oci::parse_config(&bytes)?;
+    let platform = manifest_desc.platform.clone().unwrap_or_else(|| Platform {
+        architecture: config.architecture.clone(),
+        os: config.os.clone(),
+        variant: config.variant.clone(),
+        os_features: Vec::new(),
+    });
+    if !platform::runs(&platform, targets) {
+        return Err(Error::new(format!(
+            "{name} is for {}/{}, not {}",
+            platform.os,
+            platform.architecture,
+            wanted(targets)
+        )));
+    }
+    let path = store.blob_path(&disk.digest()?);
+    let size = std::fs::metadata(&path).map(|m| m.len()).map_err(|e| {
+        Error::of(
+            ErrorKind::Changed,
+            format!("{name}: its disk {}: {e}", disk.digest),
+        )
+    })?;
+    if size != disk.size()? {
+        return Err(Error::of(
+            ErrorKind::Changed,
+            format!("{name}: its disk is {size} bytes, not {}", disk.digest),
+        ));
+    }
+    Ok(Pulled {
+        resolved,
+        manifest: manifest_desc.digest()?,
+        id: config_desc.digest()?,
+        config,
+        rootfs: Some(path),
+        layers: 1,
+        compressed: size,
         platforms: Vec::new(),
         attestations: 0,
     })

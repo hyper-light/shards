@@ -337,8 +337,30 @@ fn container(
         } else {
             None
         };
-        // `load` reads what the client opens, or its stdin.
-        let input = if std::ptr::eq(command, &shards_cmdline::commands::LOAD) {
+        // `import` reads the file the client opens, or its stdin (`-`); a URL is the
+        // daemon's to fetch (import.go runImport).
+        let mut argv = argv;
+        let input = if std::ptr::eq(command, &shards_cmdline::commands::IMPORT) {
+            // The flag's default is DOCKER_DEFAULT_PLATFORM.
+            if !parsed.changed("platform")
+                && let Ok(p) = std::env::var("DOCKER_DEFAULT_PLATFORM")
+                && !p.is_empty()
+            {
+                argv.splice(0..0, ["--platform".to_string(), p]);
+            }
+            match parsed.args.first().map(String::as_str) {
+                Some("-") => Some(None),
+                Some(s) if s.starts_with("http://") || s.starts_with("https://") => None,
+                Some(path) => match std::fs::File::open(path) {
+                    Ok(f) => Some(Some(f)),
+                    Err(e) => {
+                        let _ = writeln!(std::io::stderr(), "open {path}: {}", save::go(&e));
+                        return ExitCode::FAILURE;
+                    }
+                },
+                None => None,
+            }
+        } else if std::ptr::eq(command, &shards_cmdline::commands::LOAD) {
             match save::input(parsed.string("input")) {
                 Ok(input) => Some(input),
                 Err(e) => {
@@ -351,7 +373,6 @@ fn container(
         };
         let stdin = std::io::stdin();
         // The daemon reads the command line again, by the same words.
-        let mut argv = argv;
         argv.splice(0..0, words.iter().take(named).map(|w| (*w).to_string()));
         let resolved = shardsd().and_then(|daemon| {
             let identity =
