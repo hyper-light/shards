@@ -461,9 +461,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
 
     /// `shards export CONTAINER` (moby daemon/export.go, ContainerExport): the
     /// microVM's files as a tar archive, written by its init straight to where the
-    /// client asked (`-o`'s file or its stdout), through no copy here. A microVM's
-    /// writable layer lives with it, so one that has ended has nothing to export, where
-    /// dockerd keeps a stopped container's.
+    /// client asked (`-o`'s file or its stdout), through no copy here: a stopped one's in
+    /// a VM visiting them (visit.rs).
     fn export(&self, args: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
         let (Some(given), Some(out)) = (args.first(), asker.files.first()) else {
             reply.err("shards: export: the client sent nowhere to write");
@@ -481,9 +480,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
             }
         };
         self.await_start(&id);
-        if !self.running(&id) {
+        if !self.reachable(&id) {
             return refuse(format!(
-                "container {id} is not running: a microVM's files end with it"
+                "container {id}: its files cannot be reached (see the daemon's log)"
             ));
         }
         if lock(&self.paused).contains(&id) {
@@ -518,8 +517,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// them (moby daemon/archive.go): `stat PATH`, its stat as a JSON line; `archive
     /// PATH`, a tar archive of it to the asker's file; `extract PATH UIDGID OVERWRITE`,
     /// the archive the asker's file holds unpacked there, owned by the container's user
-    /// with `UIDGID` 1. Done in its microVM (init copy.rs), so a microVM that has ended
-    /// has nothing to copy, where dockerd copies to and from a stopped container.
+    /// with `UIDGID` 1. Done in its microVM (init copy.rs): a stopped one's in a VM
+    /// visiting its files (visit.rs), which keeps what was copied in as it ends.
     fn copy_step(&self, args: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
         let (Some(step), Some(given), Some(path)) = (args.first(), args.get(1), args.get(2)) else {
             return 1;
@@ -536,9 +535,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
             }
         };
         self.await_start(&id);
-        if !self.running(&id) {
+        if !self.reachable(&id) {
             return refuse(format!(
-                "container {id} is not running: a microVM's files end with it"
+                "container {id}: its files cannot be reached (see the daemon's log)"
             ));
         }
         if lock(&self.paused).contains(&id) {
@@ -650,9 +649,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
 
     /// `shards diff CONTAINER` (moby daemon/changes.go, ContainerChanges): what the
     /// microVM changed of its image's files, as its init finds them (init changes.rs),
-    /// one `KIND PATH` a line as docker/cli prints them (diff.go). Its writable layer
-    /// lives with it, so a microVM that has ended has none to show, where dockerd keeps a
-    /// stopped container's.
+    /// one `KIND PATH` a line as docker/cli prints them (diff.go): a stopped one's in a VM
+    /// visiting its files (visit.rs).
     fn diff(&self, args: &[String], styled: bool, reply: &Reply<'_>) -> u8 {
         let Some(given) = args.first() else {
             return 1;
@@ -669,9 +667,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
             }
         };
         self.await_start(&id);
-        if !self.running(&id) {
+        if !self.reachable(&id) {
             return refuse(format!(
-                "container {id} is not running: a microVM's changes end with it"
+                "container {id}: its files cannot be reached (see the daemon's log)"
             ));
         }
         if lock(&self.paused).contains(&id) {
@@ -1142,6 +1140,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
 
     /// Whether the container with `id` runs: its run was handed over, and has not ended.
     pub(super) fn running(&self, id: &str) -> bool {
+        matches!(lock(&self.runs).get(id), Some(RunState::Tracked(t)) if !t.visit)
+    }
+
+    /// Whether container `id` has a VM to read its files in: its run's, or a visit's.
+    pub(super) fn reachable(&self, id: &str) -> bool {
         matches!(lock(&self.runs).get(id), Some(RunState::Tracked(_)))
     }
 

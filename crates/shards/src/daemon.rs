@@ -55,6 +55,7 @@ mod record;
 mod refill;
 mod rmi;
 mod top;
+mod visit;
 use crate::run::{Boot, Prepared};
 use crate::segments::log_segment;
 use crate::spec::{LogRetention, NOT_RUN};
@@ -327,6 +328,9 @@ struct Keep<'a> {
     named: Option<String>,
     /// Its VM saves its writable layer as it stops (`RUN_LAYER_OUT`).
     layer_pending: bool,
+    /// A visit to a stopped container's files (visit.rs): no start, no end, no state of
+    /// the container's changes with it.
+    visit: bool,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -370,6 +374,8 @@ struct Tracked {
     socket: Arc<RunSocket>,
     vm: Arc<shards_ipc::Child>,
     inbox: Arc<Mutex<Inbox>>,
+    /// [`Keep::visit`]: the container is not running.
+    visit: bool,
 }
 
 /// What a run has told the daemon, and the socket it tells it on: read under this lock
@@ -403,6 +409,8 @@ struct Inbox {
     /// What has come of the VM's next message: a VM that stops partway through one holds
     /// up no reader (`take_messages`).
     incoming: shards_ipc::Incoming,
+    /// [`Keep::visit`].
+    visit: bool,
 }
 
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
@@ -607,6 +615,10 @@ struct Daemon<D: Disk = Real> {
     /// one is no more.
     settling: Mutex<HashSet<String>>,
     settled: Condvar,
+    /// Stopped containers whose files a VM is visiting (visit.rs), and its end's wakeup:
+    /// one visit at a time each, and no start meanwhile.
+    visiting: Mutex<HashSet<String>>,
+    visited: Condvar,
     /// The containers `shards pause` froze: their VM processes stopped (SIGSTOP), until
     /// `unpause`, or a stop or kill, lets them go on.
     paused: Mutex<HashSet<String>>,
@@ -1123,6 +1135,8 @@ impl<D: Disk> Daemon<D> {
             events: events::Events::default(),
             settling: Mutex::default(),
             settled: Condvar::new(),
+            visiting: Mutex::default(),
+            visited: Condvar::new(),
             spare: Mutex::default(),
             saved: AtomicU64::new(0),
             collecting: Collecting {
@@ -1566,7 +1580,12 @@ impl<D: Disk> Daemon<D> {
                     color: command.color,
                     files: message.fds,
                 };
+                // A stopped container's files are read in a VM booted over them (visit.rs).
+                let visit = self.visit_for(threads, &command.argv);
                 let status = self.command(&command.argv, &asker, &commands::Reply(conn));
+                if let Some(id) = visit {
+                    self.end_visit(&id);
+                }
                 let _ = shards_ipc::send(conn, kind::END, &[status], &[]);
                 return None;
             }
@@ -1868,6 +1887,7 @@ impl<D: Disk> Daemon<D> {
                 published,
                 named: again.clone().filter(|_| run.detach),
                 layer_pending: layer_out.is_some(),
+                visit: false,
             },
             || self.warm_for(threads, &prepared, &start, &say),
         );
@@ -1899,8 +1919,19 @@ impl<D: Disk> Daemon<D> {
         mut acquire: impl FnMut() -> Result<Ready, String>,
     ) -> Result<Arc<Mutex<Inbox>>, String> {
         let mut keep = keep;
+        // A visit that cannot start leaves the container as it was.
+        let visit = keep.visit;
+        let failed = |why: &str| {
+            if visit {
+                lock(&self.runs).remove(id);
+                self.resolved.notify_all();
+                why.to_string()
+            } else {
+                self.not_started(id, why)
+            }
+        };
         for _ in 0..HANDOFF_TRIES {
-            let ready = acquire().map_err(|e| self.not_started(id, &e))?;
+            let ready = acquire().map_err(|e| failed(&e))?;
             // Every way on leaves `Handing` while `ready` holds the socket it names.
             if let Err(said) = self.commit(id, ready.socket.as_raw_fd()) {
                 self.give_back(threads, ready);
@@ -1951,7 +1982,7 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         }
-        Err(self.not_started(id, "no warm VM took the run"))
+        Err(failed("no warm VM took the run"))
     }
 
     /// A new container's ID, and its log: the spare's, made ahead, or made now.
@@ -2064,12 +2095,18 @@ impl<D: Disk> Daemon<D> {
                 "Error response from daemon: container is marked for removal and cannot be started".into(),
             );
         }
-        {
+        // A visit to its files (visit.rs) ends first; it starts only where no run is.
+        loop {
+            self.await_visit(&id);
             let mut runs = lock(&self.runs);
+            if lock(&self.visiting).contains(&id) {
+                continue;
+            }
             if runs.contains_key(&id) {
                 return Ok(None);
             }
             runs.insert(id.clone(), RunState::Pending { cancelled: false });
+            break;
         }
         // Its files as its last run left them, once its VM has saved them.
         self.await_settled(&id);
@@ -2544,6 +2581,7 @@ impl<D: Disk> Daemon<D> {
             published,
             named,
             layer_pending,
+            visit,
         } = keep;
         if layer_pending {
             lock(&self.settling).insert(id.to_string());
@@ -2577,12 +2615,14 @@ impl<D: Disk> Daemon<D> {
             layer_pending,
             named,
             incoming: shards_ipc::Incoming::default(),
+            visit,
         }));
         let tracked = Tracked {
             base: Arc::new(Base { options, health }),
             socket,
             vm: ready.vm,
             inbox: inbox.clone(),
+            visit,
         };
         // As the daemon stops, the stop thread, which this wakes, stops it.
         lock(&self.runs).insert(id.to_string(), RunState::Tracked(tracked));
@@ -2782,6 +2822,9 @@ impl<D: Disk> Daemon<D> {
     /// `SetRunning`).
     fn run_started(&self, id: &str, inbox: &mut Inbox) {
         inbox.started = true;
+        if inbox.visit {
+            return;
+        }
         let changed = lock(&self.containers).change(id, |c| {
             c.state = Life::Running;
             c.started = Some(containers::now());
@@ -2807,6 +2850,14 @@ impl<D: Disk> Daemon<D> {
     /// Run `id` ended: `done` is its DONE, or `None` for a VM that ended without one.
     fn run_ended(&self, id: &str, inbox: &mut Inbox, done: Option<&[u8]>) {
         inbox.ended = true;
+        // A visit's end is its own: the container stays as it was.
+        if inbox.visit {
+            lock(&self.runs).remove(id);
+            self.resolved.notify_all();
+            *lock(&self.last) = Instant::now();
+            self.wake_listener();
+            return;
+        }
         let (pid, started) = (inbox.pid, inbox.started);
         // DONE carries the status, and for a command that never started what dockerd
         // would say and the code its container keeps (warm.rs finish).
@@ -4327,6 +4378,7 @@ mod tests {
                         published: Vec::new(),
                         named: None,
                         layer_pending: false,
+                        visit: false,
                     },
                     acquire,
                 )?;
@@ -6153,6 +6205,7 @@ mod tests {
                 published: Vec::new(),
                 named: None,
                 layer_pending: false,
+                visit: false,
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);

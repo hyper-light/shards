@@ -2087,19 +2087,28 @@ gone with the VM. So a container that stays (not `--rm`) keeps it on the host:
   (`RUN_LAYER_IN`), which init applies over the image's root before the command, as
   go-archive's ApplyLayer does; its log goes on from its newest segment. `restart` stops
   it first; `create` makes it, and starts nothing.
+- **Visits** (`daemon/visit.rs`). `cp`, `diff` and `export` of a stopped container read
+  its files as dockerd reads a stopped container's: in a VM booted over them, its image
+  and its layer put back, running nothing of the image's (`builtin::HOLD`: init's standby,
+  never given its orders, is the workload). The same built-ins answer as for a running
+  one, so both are read alike; the container stays stopped (no state, no event of the
+  visit's), one visit at a time, and `start` waits for one under way; what `cp` copied in
+  is saved as its layer as the visit ends. It costs 5.7 ms at p50 over a running one's
+  [PM M116]. `top` of a stopped container is refused, as dockerd refuses it.
 - Open: keeping the layer on the host from the start (a disk under the overlay) would
-  cost a stop nothing and let `diff`, `export` and `cp` read a stopped container's files
-  without a VM; to be measured against this.
+  cost a stop nothing and let a stopped container's files be read without a VM; to be
+  measured against M115 and M116.
 - **`cp`.** docker/cli's `cp.go` on shards-archive's port of go-archive's copy rules;
   dockerd's half (stat, archive, extract into a directory, `-a`'s owner) runs as init
   built-ins in the microVM, and the archive passes between it and the client through a
   pipe the daemon hands on, never through the daemon. Two of the CLI's faults are not
   kept: its progress line adds the running total to itself (`last += n`) where shards
   keeps what it drew, and a copy from stdin reports `0B` where shards counts what came.
-  A microVM that has ended has nothing to copy, until the layer above is on the host.
+  A stopped microVM's files are copied as a running one's.
 - **Tests:** `start_runs_a_stopped_microvm_again_over_its_own_files` (files and
   deletions survive, `create`, `restart`, errors);
-  `cp_copies_files_into_and_out_of_a_microvm_as_docker_cp_does`; shards-archive's oracle
+  `cp_copies_files_into_and_out_of_a_microvm_as_docker_cp_does`,
+  `a_stopped_microvms_files_are_read_and_written_as_dockerd_does`; shards-archive's oracle
   for the layer's form against go-archive on overlayfs.
 
 ### Agentfiles: a Dockerfile and shards' directives (D35)

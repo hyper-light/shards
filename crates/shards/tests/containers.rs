@@ -438,8 +438,9 @@ fn diff_shows_what_a_microvm_changed_as_docker_diff_does() {
     );
     assert_eq!(shards(&["stop", "changed"]).status, Some(0));
     exit(&mut sleeper);
+    // Stopped, its changes are still there to show (visit.rs).
     let ended = shards(&["diff", "changed"]);
-    assert!(ended.stderr.contains("is not running"), "{ended}");
+    assert_eq!(ended.status, Some(0), "{ended}");
 }
 
 #[test]
@@ -592,8 +593,15 @@ fn export_writes_a_microvms_files_as_a_tar_archive() {
     assert_eq!(tar.len() % 512, 0);
     assert_eq!(shards(&["stop", "exported"]).status, Some(0));
     exit(&mut sleeper);
+    // Stopped, its files are still there to export (visit.rs).
     let ended = shards(&["export", "-o", out.to_str().unwrap(), "exported"]);
-    assert!(ended.stderr.contains("is not running"), "{ended}");
+    assert_eq!(ended.status, Some(0), "{ended}");
+    let again = std::fs::read(&out).unwrap();
+    assert!(
+        again
+            .windows(b"by the microVM".len())
+            .any(|w| w == b"by the microVM")
+    );
 }
 
 #[test]
@@ -676,8 +684,97 @@ fn cp_copies_files_into_and_out_of_a_microvm_as_docker_cp_does() {
     );
     assert_eq!(shards(&["stop", "copier"]).status, Some(0));
     exit(&mut sleeper);
-    let ended = shards(&["cp", "copier:/in", back.to_str().unwrap()]);
-    assert!(ended.stderr.contains("is not running"), "{ended}");
+    // Stopped, its files are still there to copy (visit.rs).
+    let ended = shards(&["cp", "copier:/in", home.join("cp-stopped").to_str().unwrap()]);
+    assert_eq!(ended.status, Some(0), "{ended}");
+    assert_eq!(
+        std::fs::read_to_string(home.join("cp-stopped/a.txt")).unwrap(),
+        "one"
+    );
+}
+
+#[test]
+fn a_stopped_microvms_files_are_read_and_written_as_dockerd_does() {
+    let Some((home, image)) = home("containers-visit") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let made = run_in(
+        &home,
+        &image,
+        &["--name", "resting", "-u", "0"],
+        &["fs", "write:/made=yes", "rm:/etc/group"],
+    );
+    assert_eq!(made.status, Some(0), "{made}");
+    let before = shards(&["ps", "-a", "--format", "{{.Names}} {{.State}} {{.Status}}"]);
+    // Its changes, read in a VM over its files, as dockerd reads a stopped container's.
+    let diff = shards(&["diff", "resting"]);
+    assert_eq!(diff.status, Some(0), "{diff}");
+    assert!(
+        diff.stdout.contains("A /made\n") && diff.stdout.contains("D /etc/group\n"),
+        "{diff}"
+    );
+    // Copied in, kept; copied out.
+    let note = home.join("note");
+    std::fs::write(&note, "visited").unwrap();
+    let into = shards(&["cp", note.to_str().unwrap(), "resting:/note"]);
+    assert_eq!((into.status, into.stderr.as_str()), (Some(0), ""), "{into}");
+    let out = home.join("made-out");
+    let copied = shards(&["cp", "resting:/made", out.to_str().unwrap()]);
+    assert_eq!(copied.status, Some(0), "{copied}");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "yes");
+    assert!(shards(&["diff", "resting"]).stdout.contains("A /note\n"));
+    let tar = home.join("resting.tar");
+    let exported = shards(&["export", "-o", tar.to_str().unwrap(), "resting"]);
+    assert_eq!(exported.status, Some(0), "{exported}");
+    let listed = Command::new("tar").arg("tf").arg(&tar).output().unwrap();
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    assert!(
+        listed.lines().any(|n| n == "made") && listed.lines().any(|n| n == "note"),
+        "{listed}"
+    );
+    assert!(!listed.lines().any(|n| n == "etc/group"), "{listed}");
+    // Still stopped, as it was: the visits started and ended nothing.
+    let after = shards(&["ps", "-a", "--format", "{{.Names}} {{.State}} {{.Status}}"]);
+    assert_eq!(after.stdout, before.stdout);
+    // Until a second on: `0s` is this second's start, as the client sends whole seconds.
+    let until = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 1)
+    .to_string();
+    let events = shards(&[
+        "events",
+        "--since",
+        "1",
+        "--until",
+        &until,
+        "--format",
+        "{{.Action}}",
+    ]);
+    let actions: Vec<&str> = events.stdout.lines().collect();
+    assert_eq!(actions.iter().filter(|a| **a == "start").count(), 1, "{events}");
+    assert_eq!(actions.iter().filter(|a| **a == "die").count(), 1, "{events}");
+    assert!(
+        actions.contains(&"extract-to-dir") && actions.contains(&"export"),
+        "{events}"
+    );
+    // Started again, over what was copied in.
+    let started = shards(&["start", "-a", "resting"]);
+    assert!(
+        started.stderr.contains("rm:/etc/group: No such file"),
+        "{started}"
+    );
+    let again = shards(&["cp", "resting:/note", home.join("note-again").to_str().unwrap()]);
+    assert_eq!(again.status, Some(0), "{again}");
+    assert_eq!(
+        std::fs::read_to_string(home.join("note-again")).unwrap(),
+        "visited"
+    );
+    // top, as dockerd's, reads only a running one.
+    let top = shards(&["top", "resting"]);
+    assert_eq!(top.status, Some(1), "{top}");
 }
 
 #[test]

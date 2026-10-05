@@ -609,6 +609,9 @@ struct Workload {
     stderr: Option<OwnedFd>,
     sigchld: OwnedFd,
     tty: bool,
+    /// A held standby's orders, never sent: it waits on them until it is killed
+    /// ([`run::builtin::HOLD`]).
+    _held: Option<OwnedFd>,
 }
 
 /// A pty's master, and the path of its peer, which the standby opens as the workload's
@@ -762,6 +765,27 @@ impl Standby {
         if let Some(r) = &spec.resolv {
             write_file("/etc/resolv.conf", r)?;
         }
+        // A visit to a stopped container's files (`shards cp`, `diff`, `export`): the
+        // standby is the workload, run nothing of the image's, and holds until killed.
+        if spec.builtin == run::builtin::HOLD {
+            let Standby {
+                pid,
+                orders,
+                stdout,
+                stderr,
+                sigchld,
+                ..
+            } = standby;
+            return Ok(Workload {
+                pid,
+                stdin: None,
+                stdout: Some(stdout),
+                stderr: Some(stderr),
+                sigchld,
+                tty: false,
+                _held: Some(orders),
+            });
+        }
         standby.launch(spec, false)
     }
 
@@ -888,6 +912,7 @@ impl Standby {
                 stderr: Some(stderr),
                 sigchld,
                 tty: false,
+                _held: None,
             });
         };
         // The terminal carries everything; the pipes go unused.
@@ -902,6 +927,7 @@ impl Standby {
             stderr: None,
             sigchld,
             tty: true,
+            _held: None,
         })
     }
 }

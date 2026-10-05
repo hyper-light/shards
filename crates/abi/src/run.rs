@@ -153,6 +153,10 @@ pub mod builtin {
     pub const STAT: u8 = 5;
     pub const ARCHIVE: u8 = 6;
     pub const EXTRACT: u8 = 7;
+    /// As a run's own command: nothing of the image's runs, and the container holds,
+    /// its files there for the builtins above, until it is killed: the daemon's visit to
+    /// a stopped container (D37).
+    pub const HOLD: u8 = 8;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

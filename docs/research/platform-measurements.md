@@ -3966,3 +3966,19 @@ revision before comparing a changed API/implementation.
   at 64 KiB a frame. A writable layer kept on the host from the start (a disk of its own
   under the overlay) would cost a stop nothing; to be measured against this.
 
+
+### M116. What a visit to a stopped microVM's files costs
+
+- **Question.** `cp`, `diff` and `export` of a stopped microVM read its files in a VM
+  booted over them (D37, `daemon/visit.rs`): its image, its writable layer put back,
+  holding (`builtin::HOLD`), then ended with its changes saved. What does that add?
+- **Method.** `docs/research/measurements/visit/visit.py`: `shards diff` of a running
+  alpine microVM and of a stopped one, interleaved, 100 each after 5 warm-ups, each timed
+  from the client's start to its exit. Apple M5 Max, macOS 26.4.1, revision 7d1065c plus
+  the visit, 2026-10-05, at load averages of 5 to 9 from other work on the host.
+- **Results** (ms, n 100 each). Running: p50 4.07, p90 4.86, p99 5.73, max 5.73.
+  Stopped: p50 9.76, p90 10.60, p99 11.79, max 11.79.
+- **Consequence.** A visit costs about 5.7 ms at p50 over reading a running microVM: a warm
+  VM restored, the layer applied, the layer saved again. dockerd reads a stopped
+  container's layer where it lies; a layer kept on the host from the start would let
+  shards do the same, to be measured against this.
