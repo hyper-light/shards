@@ -242,6 +242,119 @@ fn docker_manifest(store: &Store, image: &Image, names: &[String]) -> Result<Str
     ))
 }
 
+/// What a microVM is, as an OCI artifact: its type, and its disk's.
+pub const MICROVM: &str = "application/vnd.shards.microvm.v1";
+pub const MICROVM_DISK: &str = "application/vnd.shards.erofs.v1";
+
+/// A microVM as an OCI image layout in a tar, for a local image store to load (`docker
+/// load`): one artifact manifest, of type [`MICROVM`], whose one layer is its EROFS disk
+/// `disk`, named `name` (`shards.local/ubuntu:latest`), for `platform` (`linux/arm64`),
+/// made from the image `source` (its ID). An artifact, not an image: a container engine
+/// lists it and will not run it (Docker 29.3.1, measured).
+pub fn microvm<W: Write>(
+    name: &str,
+    disk: &std::path::Path,
+    source: &Digest,
+    platform: &str,
+    out: W,
+) -> Result<(), Error> {
+    use sha2::{Digest as _, Sha256};
+    let hex = |b: &[u8]| -> String { b.iter().map(|x| format!("{x:02x}")).collect() };
+    // The disk's digest, read through once: the blob is named by it.
+    let mut hasher = Sha256::new();
+    let mut file = File::open(disk)?;
+    let mut buf = vec![0u8; 1 << 20];
+    let mut size = 0u64;
+    loop {
+        let n = match std::io::Read::read(&mut file, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        };
+        hasher.update(buf.get(..n).unwrap_or_default());
+        size += n as u64;
+    }
+    let disk_digest = format!("sha256:{}", hex(&hasher.finalize()));
+    let empty = b"{}".to_vec();
+    let empty_digest = format!("sha256:{}", hex(&Sha256::digest(&empty)));
+    let (os, rest) = platform.split_once('/').unwrap_or(("linux", platform));
+    let (architecture, variant) = match rest.split_once('/') {
+        Some((a, v)) => (a, Some(v)),
+        None => (rest, None),
+    };
+    let annotations = serde_json::json!({
+        "org.opencontainers.image.ref.name": name,
+        "io.containerd.image.name": name,
+        "dev.shards.microvm.source": source.to_string(),
+    });
+    let manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": oci::media::OCI_MANIFEST,
+        "artifactType": MICROVM,
+        "config": {"mediaType": "application/vnd.oci.empty.v1+json", "digest": empty_digest, "size": empty.len()},
+        "layers": [{"mediaType": MICROVM_DISK, "digest": disk_digest, "size": size}],
+        "annotations": annotations,
+    })
+    .to_string()
+    .into_bytes();
+    let manifest_digest = format!("sha256:{}", hex(&Sha256::digest(&manifest)));
+    let mut platform_json = serde_json::json!({"os": os, "architecture": architecture});
+    if let (Some(v), Some(fields)) = (variant, platform_json.as_object_mut()) {
+        fields.insert("variant".into(), serde_json::Value::from(v));
+    }
+    let index = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": oci::media::OCI_INDEX,
+        "manifests": [{
+            "mediaType": oci::media::OCI_MANIFEST,
+            "artifactType": MICROVM,
+            "digest": manifest_digest,
+            "size": manifest.len(),
+            "annotations": annotations,
+            "platform": platform_json,
+        }],
+    })
+    .to_string()
+    .into_bytes();
+    let blob = |d: &str| format!("blobs/sha256/{}", d.trim_start_matches("sha256:"));
+    let mut tar = crate::tar::writer::Writer::new(out);
+    let put = |tar: &mut crate::tar::writer::Writer<W>,
+               name: String,
+               mode: i64,
+               bytes: &[u8]|
+     -> Result<(), Error> {
+        tar.header(&crate::tar::writer::Header {
+            name: name.into_bytes(),
+            typeflag: crate::tar::writer::REG,
+            mode,
+            size: i64::try_from(bytes.len()).map_err(|e| Error(e.to_string()))?,
+            ..Default::default()
+        })?;
+        tar.write(bytes)?;
+        Ok(())
+    };
+    put(
+        &mut tar,
+        "oci-layout".into(),
+        0o444,
+        br#"{"imageLayoutVersion":"1.0.0"}"#,
+    )?;
+    put(&mut tar, "index.json".into(), 0o644, &index)?;
+    put(&mut tar, blob(&empty_digest), 0o444, &empty)?;
+    put(&mut tar, blob(&manifest_digest), 0o444, &manifest)?;
+    tar.header(&crate::tar::writer::Header {
+        name: blob(&disk_digest).into_bytes(),
+        typeflag: crate::tar::writer::REG,
+        mode: 0o444,
+        size: i64::try_from(size).map_err(|e| Error(e.to_string()))?,
+        ..Default::default()
+    })?;
+    tar.copy(File::open(disk)?)?;
+    tar.finish()?.flush()?;
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

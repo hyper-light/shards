@@ -485,9 +485,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     for r in removed {
                         match r {
                             Removed::Untagged(name) if styled => {
+                                unpublish(&name);
                                 sheet.record(&[("given", given.clone()), ("untagged", name)]);
                             }
-                            Removed::Untagged(name) => reply.out(&format!("Untagged: {name}")),
+                            Removed::Untagged(name) => {
+                                unpublish(&name);
+                                reply.out(&format!("Untagged: {name}"));
+                            }
                             Removed::Deleted(id) => {
                                 if styled {
                                     let freed = sizes.iter().find(|(i, _)| *i == id).map_or(0, |(_, n)| *n);
@@ -527,6 +531,18 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         let said: Vec<&str> = errors.iter().map(|e| e.said.as_str()).collect();
         reply.err(&said.join("\n"));
         u8::from(!force || errors.iter().any(|e| !e.not_found))
+    }
+}
+
+/// The microVM a name made, gone from the machine's local image store with the name.
+fn unpublish(name: &str) {
+    if std::env::var("SHARDS_LOCAL_STORE").is_ok_and(|v| v == "none") {
+        return;
+    }
+    if let Some(socket) = crate::local_store::engine(&|k| std::env::var(k).ok())
+        && let Err(e) = crate::local_store::unpublish(&socket, name)
+    {
+        super::log(e);
     }
 }
 

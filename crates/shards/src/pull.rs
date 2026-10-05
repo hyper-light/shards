@@ -189,6 +189,10 @@ pub fn command(
             // Docker's: up to date when the tag already named this image, or when a
             // digest's content was all here.
             let up_to_date = same || (reference.digest.is_some() && !downloaded.load(Ordering::Relaxed));
+            #[cfg(unix)]
+            if let Some(disk) = &pulled.rootfs {
+                publish(reference, &pulled.id, &pulled.config, disk, env);
+            }
             if let Some(progress) = show {
                 progress(&Progress::Facts(facts(home, reference, &pulled)));
                 progress(&Progress::Done {
@@ -213,6 +217,45 @@ pub fn command(
         (out.out)(&named.to_string());
     }
     status
+}
+
+/// Puts the microVM `disk` made of `reference` in the machine's local image store, on a
+/// thread of its own, so that the pull does not wait: unless `SHARDS_LOCAL_STORE` is
+/// `none`, or no store is found (local_store.rs).
+#[cfg(unix)]
+fn publish(
+    reference: &Reference,
+    id: &shards_image::reference::Digest,
+    config: &shards_image::oci::ImageConfig,
+    disk: &Path,
+    env: &dyn Fn(&str) -> Option<String>,
+) {
+    if env("SHARDS_LOCAL_STORE").is_some_and(|v| v == "none") {
+        return;
+    }
+    let Some(socket) = crate::local_store::engine(&|k| env(k).or_else(|| std::env::var(k).ok())) else {
+        return;
+    };
+    let platform = match config.variant.as_deref() {
+        Some(v) if !v.is_empty() => format!("{}/{}/{v}", config.os, config.architecture),
+        _ => format!("{}/{}", config.os, config.architecture),
+    };
+    let (reference, id, disk) = (reference.to_string(), id.clone(), disk.to_path_buf());
+    let spawned = std::thread::Builder::new()
+        .name("shards-publish".into())
+        .spawn(move || {
+            // To the daemon's log, where its stderr goes.
+            if let Err(e) = crate::local_store::publish(&socket, &reference, &id, &platform, &disk) {
+                let _ = writeln!(std::io::stderr(), "shards daemon {}: {e}", std::process::id());
+            }
+        });
+    if let Err(e) = spawned {
+        let _ = writeln!(
+            std::io::stderr(),
+            "shards daemon {}: publishing: {e}",
+            std::process::id()
+        );
+    }
 }
 
 /// What there is to know of `pulled`, for a client on a terminal to show: its names,

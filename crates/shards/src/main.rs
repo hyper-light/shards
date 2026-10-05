@@ -26,6 +26,8 @@ mod guest;
 mod helpers;
 mod kernel;
 #[cfg(unix)]
+mod local_store;
+#[cfg(unix)]
 mod names;
 #[cfg(unix)]
 mod netproc;
